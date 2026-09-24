@@ -21,11 +21,20 @@ Covers these edge cases:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from chrys.foundation.events.types import InvocationMessage
+from chrys.foundation.events.types import Error, InvocationMessage, UserMessage
+from chrys.orchestration.invoker.contracts import AbortCause
 from chrys.service.llm.mock import MockResponse
-from tests.support.pipeline_helpers import create_test_engine
+from tests.support.pipeline_helpers import (
+    create_test_engine,
+    error_on_nth,
+    fail_before_response_on_nth,
+    interrupt_on_nth,
+)
+from tests.support.waiting import wait_for
 
 
 def _streaming_chunks(events: list) -> list[str]:
@@ -306,6 +315,210 @@ class TestStreamingSkipsIntermediate:
             assert _finals(ctx.events) == ["All done"]
         finally:
             await ctx.cleanup()
+
+
+class TestStreamingUnstartedCallText:
+    """Text streamed with a call the kernel answers without a tool start stays in its own turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "outcome",
+        ["completed", "failed", "interrupted", "failed-before-response", "interrupted-before-response"],
+    )
+    async def test_text_is_published_before_the_turn_ends(self, tmp_path, outcome):
+        """The next response's start releases the text; a pass that ends first releases it itself."""
+        ctx = await create_test_engine(
+            [
+                MockResponse(text="Let me look\n", tool_calls=[("no_such_tool", "c1", {})]),
+                MockResponse(text="Done one"),
+                MockResponse(text="Checking\n", tool_calls=[("echo", "c2", {"message": "x"})]),
+                MockResponse(text="Done two"),
+            ],
+            tmp_path,
+            stream=True,
+        )
+
+        async def _collect_error(event: Error) -> None:
+            ctx.events.append(event)
+
+        await ctx.bus.subscribe(Error, _collect_error)
+        try:
+            restore = None
+            if outcome == "failed":
+                restore = error_on_nth(ctx, 2)
+            elif outcome == "interrupted":
+                restore = interrupt_on_nth(ctx, 2)
+            elif outcome.endswith("before-response"):
+                restore = fail_before_response_on_nth(ctx, 2, interrupt=outcome.startswith("interrupted"))
+            await ctx.send_message("first")
+            if restore is not None:
+                restore()
+            first_turn = list(ctx.events)
+            assert _intermediates(first_turn) == ["Let me look\n"]
+            text_at = next(
+                i for i, e in enumerate(first_turn) if isinstance(e, InvocationMessage) and e.is_intermediate
+            )
+            if outcome == "completed":
+                assert _streaming_chunks(first_turn) == ["Done one"]
+                answer_at = next(
+                    i
+                    for i, e in enumerate(first_turn)
+                    if isinstance(e, InvocationMessage) and not e.is_intermediate and e.text == "Done one"
+                )
+                assert text_at < answer_at
+            elif outcome.startswith("failed"):
+                assert text_at < next(i for i, e in enumerate(first_turn) if isinstance(e, Error))
+
+            await ctx.send_message("second")
+            assert "Let me look\n" not in _intermediates(ctx.events[len(first_turn) :])
+        finally:
+            await ctx.bus.unsubscribe(Error, _collect_error)
+            await ctx.cleanup()
+
+
+class TestPassEndRelease:
+    """The pass end publishes text still buffered and always leaves the turn state reset."""
+
+    @pytest.mark.asyncio
+    async def test_an_interrupt_during_the_release_survives_the_reset(self, tmp_path):
+        ctx = await create_test_engine([MockResponse(text="Done")], tmp_path, stream=True)
+        bindings = ctx.engine.current.loaded.bindings
+        buffer = bindings._intermediate_buffer
+        assert buffer is not None
+
+        async def _stop(event: InvocationMessage) -> None:
+            if event.is_intermediate:
+                bindings._interrupt.set_interrupted()
+
+        await ctx.bus.subscribe(InvocationMessage, _stop)
+        try:
+            buffer.store("Let me look\n")
+            bindings.state.running = True
+            await bindings.finished()
+
+            assert _intermediates(ctx.events) == ["Let me look\n"]
+            assert not bindings._interrupt.is_interrupted
+            assert bindings.state.was_interrupted
+            assert bindings.abort_cause() is AbortCause.USER_CANCEL
+            assert not bindings.state.running
+        finally:
+            await ctx.bus.unsubscribe(InvocationMessage, _stop)
+            await ctx.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_settles_a_publication_the_pass_end_waits_for(self, tmp_path, monkeypatch):
+        """A subscriber that never returns cannot hold the close, and nothing it held is delivered after the pass."""
+        monkeypatch.setattr("chrys.orchestration.engine.session_lifecycle._SHUTDOWN_POST_RUN_TIMEOUT_SECONDS", 0.01)
+        ctx = await create_test_engine(
+            [
+                MockResponse(text="Let me look\n", tool_calls=[("no_such_tool", "c1", {})]),
+                MockResponse(text="Done one"),
+            ],
+            tmp_path,
+            stream=True,
+        )
+        bindings = ctx.engine.current.loaded.bindings
+        buffer = bindings._intermediate_buffer
+        validation = bindings._response_validation
+        assert buffer is not None
+        assert validation is not None
+        publishing = asyncio.Event()
+        abandoned = asyncio.Event()
+        delivered: list[str] = []
+
+        async def _stuck(event: InvocationMessage) -> None:
+            if event.is_intermediate:
+                publishing.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    abandoned.set()
+                    raise
+
+        async def _late(event: InvocationMessage) -> None:
+            if event.is_intermediate:
+                delivered.append(event.text)
+
+        await ctx.bus.subscribe(InvocationMessage, _stuck)
+        await ctx.bus.subscribe(InvocationMessage, _late)
+        closed = False
+        try:
+            await ctx.bus.publish(UserMessage(text="first"))
+
+            def _publishing_or_ended() -> bool:
+                run_task = ctx.engine.turns.turn_state.lease.run_task
+                return publishing.is_set() or (run_task is not None and run_task.done())
+
+            await wait_for(_publishing_or_ended, description="the next response start publishing")
+            assert publishing.is_set()
+
+            await ctx.cleanup()
+            closed = True
+
+            assert ctx.engine.turns.turn_state.shutdown_used_cancel_fallback
+            assert abandoned.is_set()
+            assert buffer._publication is None
+            assert delivered == []
+            assert not bindings.state.running
+            assert not bindings._interrupt.is_interrupted
+            assert validation._observation_hook is None
+        finally:
+            await ctx.bus.unsubscribe(InvocationMessage, _stuck)
+            await ctx.bus.unsubscribe(InvocationMessage, _late)
+            if not closed:
+                await ctx.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_while_the_next_response_publishes_the_text_still_delivers_it(self, tmp_path):
+        """Stop cancels the next response's start mid-publication; the pass end completes it for every subscriber."""
+        ctx = await create_test_engine(
+            [
+                MockResponse(text="Let me look\n", tool_calls=[("no_such_tool", "c1", {})]),
+                MockResponse(text="Done one"),
+            ],
+            tmp_path,
+            stream=True,
+        )
+        bindings = ctx.engine.current.loaded.bindings
+        publishing = asyncio.Event()
+        gate = asyncio.Event()
+        delivered: list[str] = []
+
+        async def _slow(event: InvocationMessage) -> None:
+            if event.is_intermediate:
+                publishing.set()
+                await gate.wait()
+
+        async def _late(event: InvocationMessage) -> None:
+            if event.is_intermediate:
+                delivered.append(event.text)
+
+        await ctx.bus.subscribe(InvocationMessage, _slow)
+        await ctx.bus.subscribe(InvocationMessage, _late)
+        turn: asyncio.Task[None] | None = None
+        try:
+            turn = asyncio.create_task(ctx.send_message("first"))
+            await wait_for(
+                lambda: publishing.is_set() or turn.done(), description="the next response start publishing the text"
+            )
+            if turn.done():
+                await turn
+            assert publishing.is_set()
+            await ctx.send_interrupt()
+            gate.set()
+            await turn
+
+            assert delivered == ["Let me look\n"]
+            assert _intermediates(ctx.events) == ["Let me look\n"]
+            assert _streaming_chunks(ctx.events) == []
+            assert bindings.state.was_interrupted
+        finally:
+            gate.set()
+            await ctx.bus.unsubscribe(InvocationMessage, _slow)
+            await ctx.bus.unsubscribe(InvocationMessage, _late)
+            await ctx.cleanup()
+            if turn is not None:
+                await asyncio.gather(turn, return_exceptions=True)
 
 
 class TestStreamingDisabled:

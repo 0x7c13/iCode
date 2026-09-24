@@ -91,9 +91,7 @@ class TurnRunner:
     ) -> None:
         """Execute a fresh agent turn and finalize it."""
         _ = injection_window
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
-        self._current.loaded.bindings.inputs.begin_invocation()
+        self._current.require_loaded().bindings.inputs.begin_invocation()
         if contents is None:
             contents = await self._prepare_user_contents(text)
             if contents is None:
@@ -134,15 +132,15 @@ class TurnRunner:
             self._queue_skill_reference_reminder(text, for_next_turn=True)
             if self._current.loaded is not None:
                 if run_scope is not None:
-                    self._current.loaded.reminder_middleware.prepare_turn(
+                    self._current.require_loaded().reminder_middleware.prepare_turn(
                         reminder_scope=run_scope.reminder_scope,
                         usage=self._session.runtime_meta.last_usage_details or None,
                     )
                 else:
-                    self._current.loaded.reminder_middleware.prepare_turn(
+                    self._current.require_loaded().reminder_middleware.prepare_turn(
                         usage=self._session.runtime_meta.last_usage_details or None
                     )
-            self._current.loaded.bindings.approval.set_user_messages([text] if text else [])
+            self._current.require_loaded().bindings.approval.set_user_messages([text] if text else [])
             self._turn_state.set_current_input(text, contents, created_at)
             if preamble is not None:
                 await preamble.finished(outcome=PreparationOutcome.HANDOFF)
@@ -162,11 +160,11 @@ class TurnRunner:
             if binding_failure is not None:
                 self._record_admission_failure(binding_failure)
             elif self._turn_state.lease.consume_pre_executor_interrupt():
-                self._current.loaded.bindings.record_pre_run_interrupt()
+                self._current.require_loaded().bindings.record_pre_run_interrupt()
             else:
-                self._current.loaded.bindings.record_outcome(
-                    await self._current.loaded.bindings.backend.run(
-                        self._current.loaded.bindings.inputs.fresh_request(contents, created_at=created_at)
+                self._current.require_loaded().bindings.record_outcome(
+                    await self._current.require_loaded().bindings.backend.run(
+                        self._current.require_loaded().bindings.inputs.fresh_request(contents, created_at=created_at)
                     )
                 )
         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
@@ -178,7 +176,10 @@ class TurnRunner:
             # a model request carried the notice (Stop, load/hook failure,
             # cancellation) must hand it back for the next turn.
             self._requeue_undelivered_file_change()
-        if self._current.loaded.bindings.state.run_failed or self._current.loaded.bindings.state.was_interrupted:
+        if (
+            self._current.require_loaded().bindings.state.run_failed
+            or self._current.require_loaded().bindings.state.was_interrupted
+        ):
             self._history.ensure_user_message(
                 text, created_at=created_at, contents=contents, item_id=self._opening_item_id
             )
@@ -197,8 +198,6 @@ class TurnRunner:
     ) -> None:
         """Resume the agent from current state and finalize it."""
         _ = injection_window
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         try:
             await self.pre_run(
                 reset_batch_id=False,
@@ -231,21 +230,21 @@ class TurnRunner:
             await self._compute_workspace_notice(is_retry=True)
             if self._current.loaded is not None:
                 if run_scope is not None:
-                    self._current.loaded.reminder_middleware.prepare_turn(
+                    self._current.require_loaded().reminder_middleware.prepare_turn(
                         reminder_scope=run_scope.reminder_scope,
                         usage=self._session.runtime_meta.last_usage_details or None,
                         preserve_last_words=True,
                         preserve_turn_reminders=True,
                     )
                 else:
-                    self._current.loaded.reminder_middleware.prepare_turn(
+                    self._current.require_loaded().reminder_middleware.prepare_turn(
                         usage=self._session.runtime_meta.last_usage_details or None,
                         preserve_last_words=True,
                         preserve_turn_reminders=True,
                     )
             approval_context = self._retry_approval_context_messages(additional_text)
             if approval_context:
-                self._current.loaded.bindings.approval.set_user_messages(approval_context)
+                self._current.require_loaded().bindings.approval.set_user_messages(approval_context)
             if additional_text:
                 # Retry guidance is user-authored MID-TURN input: a recovery
                 # checkpoint must re-create it flagged (kind-aware), or a crash
@@ -268,13 +267,13 @@ class TurnRunner:
             raise
         try:
             if self._turn_state.lease.consume_pre_executor_interrupt():
-                self._current.loaded.bindings.record_pre_run_interrupt()
+                self._current.require_loaded().bindings.record_pre_run_interrupt()
                 if additional_text:
                     self._history.ensure_user_message(
                         additional_text, created_at=created_at, kind="injected", item_id=self._opening_item_id
                     )
             else:
-                async with self._current.loaded.bindings.inputs.retry_request(
+                async with self._current.require_loaded().bindings.inputs.retry_request(
                     additional_text=additional_text, created_at=created_at
                 ) as request:
                     if request is not None:
@@ -282,8 +281,8 @@ class TurnRunner:
                             if binding_failure is not None:
                                 self._record_admission_failure(binding_failure)
                             else:
-                                self._current.loaded.bindings.record_outcome(
-                                    await self._current.loaded.bindings.backend.run(request)
+                                self._current.require_loaded().bindings.record_outcome(
+                                    await self._current.require_loaded().bindings.backend.run(request)
                                 )
                         except (StaleContinuation, OverlappingRun, PreparedClosed, UnsupportedRequest) as exc:
                             # Exit normally so retry_request restores its input
@@ -295,7 +294,7 @@ class TurnRunner:
             if run_scope is not None:
                 self._turn_state.lease.close_injection_admission(run_scope)
             self._requeue_undelivered_file_change()
-        state = self._current.loaded.bindings.state
+        state = self._current.require_loaded().bindings.state
         if additional_text and (state.run_failed or state.was_interrupted):
             # retry_request restores guidance only after its yield. A rejection
             # at its entrance validation (owner closed between promotion and
@@ -311,9 +310,7 @@ class TurnRunner:
 
     def _record_admission_failure(self, error: Exception) -> None:
         """Reject once, then use the ordinary Turn finalizer/save/lease release."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
-        state = self._current.loaded.bindings.state
+        state = self._current.require_loaded().bindings.state
         state.run_failed = True
         state.last_error = str(error)
         logger.error("Turn admission failed: %s", error)
@@ -342,15 +339,13 @@ class TurnRunner:
         message (a fresh prompt or retry guidance) — only then does the pass
         have an opening item to name in its ``turn.started`` event.
         """
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         self._turn_state.lease.advance_conversation_revision()
         self._fire_turn_started()
-        self._current.loaded.consumed_injections.clear()
-        self._current.loaded.intermediate_texts.clear()
+        self._current.require_loaded().consumed_injections.clear()
+        self._current.require_loaded().intermediate_texts.clear()
         if not is_retry:
             self._session.turn_number += 1
-        turn_counter = self._current.loaded.bindings.backend.history_state.get("turn_counter", 0)
+        turn_counter = self._current.require_loaded().bindings.backend.history_state.get("turn_counter", 0)
         self._turn_state.history_start_index = len(self._history.messages)
         logger.debug(
             "pre_run: is_retry=%s turn_number=%d turn_counter=%d fsm=%s",
@@ -359,9 +354,9 @@ class TurnRunner:
             turn_counter,
             self._fsm.state.name,
         )
-        self._current.loaded.bindings.reset_counters(reset_batch_id=reset_batch_id)
-        if self._current.loaded is not None and self._current.loaded.loop_recorder is not None:
-            self._current.loaded.loop_recorder.reset()
+        self._current.require_loaded().bindings.reset_counters(reset_batch_id=reset_batch_id)
+        if self._current.loaded is not None and self._current.require_loaded().loop_recorder is not None:
+            self._current.require_loaded().loop_recorder.reset()
         if self._session.mutation_tracker is not None:
             if is_retry and self._session.mutation_tracker.current_turn is not None:
                 self._session.mutation_tracker.reset_file_cache()
@@ -381,8 +376,6 @@ class TurnRunner:
         preparation_scope_operation_id: str | None,
     ) -> None:
         """Open the pass's trajectory turn and bind the run context on the executor."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         recorder = self._trajectory_recorder
         self._opening_item_id = new_analytics_id() if has_opening_input else None
         await recorder.turn_started(
@@ -391,7 +384,7 @@ class TurnRunner:
             agent_profile_fingerprint=self._current.manifest.agent_profile_fingerprint,
             model_profile_fingerprint=self._current.manifest.model_profile_fingerprint,
             primary_cwd=self._session.workspace.primary_cwd if self._session.workspace is not None else "",
-            history_state=self._current.loaded.bindings.backend.history_state,
+            history_state=self._current.require_loaded().bindings.backend.history_state,
             opening_item_id=self._opening_item_id,
             preparation_scope_operation_id=preparation_scope_operation_id,
         )
@@ -407,8 +400,8 @@ class TurnRunner:
                     model_profile_fingerprint=self._current.manifest.model_profile_fingerprint,
                 )
             )
-        self._current.loaded.bindings.trajectory_context = context
-        self._current.loaded.bindings.inputs.set_opening_item_id(self._opening_item_id)
+        self._current.require_loaded().bindings.trajectory_context = context
+        self._current.require_loaded().bindings.inputs.set_opening_item_id(self._opening_item_id)
 
     @staticmethod
     def _preparation_operation_id(preparation: PreparationTrace | None) -> str | None:
@@ -430,22 +423,20 @@ class TurnRunner:
             logger.debug("Failed to run turn started callback", exc_info=True)
 
     def _open_turn_preamble(self) -> PreparationTrace | None:
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         return PreparationTrace.open(
             scope=PreparationScope.TURN_PREAMBLE,
             phase="turn_dispatch",
-            context=self._current.loaded.bindings.trajectory_context,
+            context=self._current.require_loaded().bindings.trajectory_context,
         )
 
     def _bind_turn_preamble(self, preamble: PreparationTrace) -> None:
         if not preamble.start_committed:
             return
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
-        context = self._current.loaded.bindings.trajectory_context
+        context = self._current.require_loaded().bindings.trajectory_context
         if context is not None:
-            self._current.loaded.bindings.trajectory_context = context.with_turn_preamble(preamble.operation_id)
+            self._current.require_loaded().bindings.trajectory_context = context.with_turn_preamble(
+                preamble.operation_id
+            )
 
     async def _fire_before_turn(
         self,
@@ -500,11 +491,9 @@ class TurnRunner:
 
     def _requeue_undelivered_file_change(self) -> None:
         """Return a drained notice that no model request received."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         if self._current.loaded is None:
             return
-        notice = self._current.loaded.reminder_middleware.take_undelivered_file_change()
+        notice = self._current.require_loaded().reminder_middleware.take_undelivered_file_change()
         if notice:
             self._workspace_change_tracker.requeue_notice(
                 notice,
@@ -562,25 +551,21 @@ class TurnRunner:
 
     def _tag_consumed_profile_switch(self) -> None:
         """Tag the last user message when the reminder middleware consumed a profile switch."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
-        if self._current.loaded is None or not self._current.loaded.reminder_middleware.consumed_switch_to:
+        if self._current.loaded is None or not self._current.require_loaded().reminder_middleware.consumed_switch_to:
             return
         self._history.tag_last_user_message(
             HistoryMarkerKind.PROFILE_SWITCH_TO_KEY,
-            self._current.loaded.reminder_middleware.consumed_switch_to,
+            self._current.require_loaded().reminder_middleware.consumed_switch_to,
         )
 
     def _queue_skill_reference_reminder(self, text: str, *, for_next_turn: bool) -> None:
         """Queue a system reminder when *text* starts with a loaded skill reference."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         if self._current.loaded is None:
             return
         reminder = self._skill_reference_reminder(text)
         if reminder is None:
             return
-        self._current.loaded.reminder_middleware.queue_hook_reminders(
+        self._current.require_loaded().reminder_middleware.queue_hook_reminders(
             [reminder],
             for_next_turn=for_next_turn,
         )

@@ -221,7 +221,8 @@ class KernelConversation:
 
     async def run(self, request: RunRequest) -> InvocationOutcome:
         task = asyncio.current_task()
-        assert task is not None
+        if task is None:
+            raise RuntimeError("Running a conversation requires an asyncio task.")
         self.validate(request)
         self.invalidate_continuation()
         invocation_id = request.origin.invocation_id
@@ -316,7 +317,8 @@ class KernelConversation:
                     error=clean_error_message(error),
                     exception=error,
                 )
-            assert response is not None
+            if response is None:
+                raise RuntimeError("A successful kernel pass did not produce a response.")
             return Ok(
                 handle=handle,
                 usage=usage,

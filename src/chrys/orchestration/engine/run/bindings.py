@@ -677,6 +677,7 @@ class TurnBindings:
             lambda operation: self._publish_hosted_operation(operation, emitter=emitter),
             run_generation=self._hosted_run_generation,
             batch_id=self._intermediate_buffer.batch_id if self._intermediate_buffer is not None else 0,
+            before_response=self.tool_events.release_intermediate_text,
         )
         if self._response_validation is not None:
             self._response_validation.set_observation_hook(self._hosted_bridge)
@@ -705,6 +706,8 @@ class TurnBindings:
         self.state.run_failed = True
         self.state.last_error = clean_error_message(e)
         tb = traceback.format_exc()
+        # Text left buffered by a call that started no tool precedes the error.
+        await self.tool_events.release_intermediate_text()
         err_msg = self.state.last_error
         logger.error("Turn error: %s", err_msg)
         if self._hosted_bridge is not None:
@@ -716,19 +719,25 @@ class TurnBindings:
 
     async def finished(self) -> None:
         try:
+            # An interrupted or cancelled pass publishes no outcome, and the
+            # buffer outlives the pass: text still waiting for a tool start
+            # would otherwise surface at a tool start in a later turn.
+            await self.tool_events.finish_intermediate_text()
+            if self._interrupt.is_interrupted and self._hosted_bridge is not None:
+                await self._hosted_bridge.attempt_rejected(
+                    "Execution interrupted",
+                    status=HostedToolStatus.INTERRUPTED,
+                    preserve_provisional=True,
+                )
+        finally:
+            # Close can cancel the awaits above. The reset must not erase an
+            # interrupt that arrived while they ran.
             if self._interrupt.is_interrupted:
                 self.state.was_interrupted = True
-                if self._hosted_bridge is not None:
-                    await self._hosted_bridge.attempt_rejected(
-                        "Execution interrupted",
-                        status=HostedToolStatus.INTERRUPTED,
-                        preserve_provisional=True,
-                    )
             if self._response_validation is not None:
                 self._response_validation.set_observation_hook(None)
             self._interrupt.reset()
             self.state.running = False
-        finally:
             if self._bound_emitter is not None:
                 self._invocation_publishers.unbind(self._bound_emitter.origin)
             self._bound_emitter = None
@@ -1010,8 +1019,10 @@ class _MainStreamObserver:
     text/tool order within the same update therefore does not matter.
 
     ``on_retry_boundary`` discards text from the rejected provider attempt.
-    ``before_finalize`` checks the batch once more after iteration as a safety
-    net for a last tool response with no following update. It emits the final
+    ``before_finalize`` first publishes intermediate text no tool start or
+    response start has released, then checks the batch once more after
+    iteration as a safety net for a last tool response with no following
+    update. It emits the final
     response's remaining text progressively by line as cumulative
     ``InvocationMessage(is_final=False)`` events, including one last emission for
     an unterminated tail, before ``_publish_response_text`` emits
@@ -1054,6 +1065,10 @@ class _MainStreamObserver:
         if self._ibuf is not None and self._ibuf.batch_id != self._last_batch_id:
             self._buffer = ""
         executor = self._executor
+        # Text streamed with a call that started no tool precedes the final
+        # text. The next response's start releases it, and a run that ends
+        # without one releases it here.
+        await executor.tool_events.release_intermediate_text()
         if self._buffer and not self._bridge_owns_text and not executor._interrupt.is_interrupted:
             lines = self._buffer.splitlines(keepends=True)
             emitted = ""

@@ -37,6 +37,7 @@ install_stopped_child_reap_fix()
 _CP_UTF8 = 65001
 _STOPPED_PROCESS_POLL_INTERVAL = 1.0
 _PROCESS_WAIT_CLEANUP_TIMEOUT = 2.0
+_WINDOWS_TREE_KILL_TIMEOUT = 2.0
 
 
 class SubprocessStoppedError(RuntimeError):
@@ -880,25 +881,28 @@ async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncIterator[as
         should_kill_owned_tree = body_raised or proc.returncode is None
         if process_group_id is not None and should_kill_owned_tree:
             kill_process_group(process_group_id)
-        if sys.platform == "win32" and proc.pid is not None and should_kill_owned_tree:
-            kill_windows_process_tree(proc.pid)
-        if proc.returncode is None:
-            # Keep the direct child moving if process-group cleanup was
-            # unavailable or a custom setup kept the child outside the group.
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-            # Close the subprocess transport BEFORE wait() so pipe
-            # transports are released immediately.  Without this,
-            # wait() blocks until all inherited pipe handles close —
-            # which hangs when a wrapper process (e.g. `uv run python`)
-            # spawns a child that inherits the pipes and outlives the
-            # killed parent.
-            finalize_subprocess_transport(proc)
-            with contextlib.suppress(ProcessLookupError, OSError, asyncio.CancelledError, TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)
-        else:
-            # Process already exited — just release the transport.
-            finalize_subprocess_transport(proc)
+        try:
+            if proc.pid is not None and should_kill_owned_tree:
+                # Returns at once off Windows, where the group kill above reached the tree.
+                await kill_windows_process_tree(proc.pid)
+        finally:
+            if proc.returncode is None:
+                # Keep the direct child moving if process-group cleanup was
+                # unavailable or a custom setup kept the child outside the group.
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                # Close the subprocess transport BEFORE wait() so pipe
+                # transports are released immediately.  Without this,
+                # wait() blocks until all inherited pipe handles close —
+                # which hangs when a wrapper process (e.g. `uv run python`)
+                # spawns a child that inherits the pipes and outlives the
+                # killed parent.
+                finalize_subprocess_transport(proc)
+                with contextlib.suppress(ProcessLookupError, OSError, asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)
+            else:
+                # Process already exited — just release the transport.
+                finalize_subprocess_transport(proc)
 
 
 managed_subprocess = contextlib.asynccontextmanager(_managed_subprocess_gen)
@@ -1007,26 +1011,61 @@ def kill_process_session(process_session_id: int) -> bool:
     return killed
 
 
-def kill_windows_process_tree(pid: int) -> bool:
-    """Best-effort Windows subtree kill using the platform ``taskkill`` utility."""
-    if sys.platform != "win32" or pid <= 0:
+async def kill_windows_process_tree(pid: int) -> bool:
+    """Best-effort Windows subtree kill using the platform ``taskkill`` utility.
+
+    ``taskkill`` runs as an asyncio subprocess, whose exit the loop awaits on its
+    completion port (``IocpProactor.wait_for_handle``, as for every asyncio
+    subprocess), so the loop keeps serving other work meanwhile. A blocking run
+    stalled the whole TUI on every hook timeout, and concurrent timeouts queued
+    behind one another.
+
+    A cancelled caller waits for the bounded kill to end before its cancellation
+    goes on. Stopping ``taskkill`` part-way would leave the caller to kill only the
+    direct child, and the descendants ``taskkill`` had yet to reach would outlive it.
+    """
+    argv = _windows_tree_kill_argv(pid)
+    if argv is None:
         return False
-    taskkill = shutil.which("taskkill")
-    if taskkill is None:
-        return False
+    kill = asyncio.ensure_future(_run_windows_tree_kill(argv))
     try:
-        result = subprocess.run(  # noqa: S603
-            [taskkill, "/PID", str(pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=2,
+        return await asyncio.shield(kill)
+    except asyncio.CancelledError:
+        while not kill.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(kill)
+        raise
+
+
+async def _run_windows_tree_kill(argv: list[str]) -> bool:
+    try:
+        killer = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
             **_windows_hidden_subprocess_kwargs(),
         )
-    except OSError, subprocess.SubprocessError:
+    except OSError:
         return False
-    return result.returncode == 0
+    try:
+        return await asyncio.wait_for(killer.wait(), timeout=_WINDOWS_TREE_KILL_TIMEOUT) == 0
+    except TimeoutError:
+        return False
+    finally:
+        if killer.returncode is None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                killer.kill()
+        finalize_subprocess_transport(killer)
+
+
+def _windows_tree_kill_argv(pid: int) -> list[str] | None:
+    if sys.platform != "win32" or pid <= 0:
+        return None
+    taskkill = shutil.which("taskkill")
+    if taskkill is None:
+        return None
+    return [taskkill, "/PID", str(pid), "/T", "/F"]
 
 
 def _infer_process_group_id(proc: asyncio.subprocess.Process, kwargs: dict[str, Any]) -> int | None:

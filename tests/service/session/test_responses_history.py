@@ -39,7 +39,8 @@ from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
 from chrys.service.session.persistence import agent_profile_context_fingerprint, model_profile_context_fingerprint
 from chrys.service.state.store import JsonFileStateStore
-from tests.support.loaded_agents import install_loaded_agent, make_manifest
+from tests.support.components import make_current
+from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, make_manifest
 from tests.support.turn_services import make_turn_runner
 
 
@@ -570,8 +571,8 @@ async def test_post_run_clears_in_memory_service_session_after_failed_turn() -> 
         _trajectory_recorder=TrajectoryRecorder(),
         _on_successful_turn=lambda: None,
         writer=SimpleNamespace(save_current_session=_save_current_session),
-        current=SimpleNamespace(
-            loaded=SimpleNamespace(
+        current=make_current(
+            loaded=make_loaded_agent(
                 bindings=executor,
                 loop_recorder=None,
                 injection=SimpleNamespace(drain_pending=list),
@@ -639,8 +640,8 @@ async def test_post_run_uses_phase3_pre_output_floor_for_metadata_and_backfill()
         _trajectory_recorder=TrajectoryRecorder(),
         _on_successful_turn=lambda: None,
         writer=SimpleNamespace(save_current_session=_save_current_session),
-        current=SimpleNamespace(
-            loaded=SimpleNamespace(
+        current=make_current(
+            loaded=make_loaded_agent(
                 bindings=executor,
                 loop_recorder=None,
                 injection=SimpleNamespace(drain_pending=list),
@@ -724,8 +725,8 @@ async def test_post_run_uses_refreshed_floor_after_force_compress_rewrites_phase
         _trajectory_recorder=TrajectoryRecorder(),
         _on_successful_turn=lambda: None,
         writer=SimpleNamespace(save_current_session=_save_current_session),
-        current=SimpleNamespace(
-            loaded=SimpleNamespace(
+        current=make_current(
+            loaded=make_loaded_agent(
                 bindings=executor,
                 loop_recorder=None,
                 injection=SimpleNamespace(drain_pending=list),

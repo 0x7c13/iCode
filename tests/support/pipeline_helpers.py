@@ -41,6 +41,7 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.kernel import FunctionTool
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
+from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.schema import (
     AgentProfile,
@@ -53,11 +54,14 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.phase4_stubs import StubLastWordsGenerator
+from tests.support.scripted_clients import HostedMockChatClient
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
+
+    from chrys.kernel.middleware import ChatContext
 
 
 def make_mock_settings_and_registry(
@@ -196,7 +200,7 @@ async def create_test_engine(
     """Create a fully wired mock engine without advisory workspace scans.
 
     Args:
-        responses: Scripted LLM responses.
+        responses: Scripted LLM responses; a ``HostedMockResponse`` adds provider-hosted output.
         tmp_path: Temporary directory for session storage.
         workspace: Explicit workspace (defaults to tmp_path, never the checkout).
         approval_default: Approval policy ("auto", "require", "skip").
@@ -263,7 +267,7 @@ async def create_test_engine(
         workspace_change_notice=False,
     )
 
-    mock_client = MockChatClient(responses=responses)
+    mock_client = HostedMockChatClient(responses=responses)
     test_tools = tools if tools is not None else list(ALL_TEST_TOOLS)
 
     # Monkey-patch create_client to return our mock with callbacks forwarded.
@@ -720,3 +724,55 @@ def interrupt_on_nth(ctx: PipelineTestContext, n: int) -> Callable[[], None]:
 
     ctx.mock_client._inner_get_response = _interrupt_on_nth
     return functools.partial(restore_mock_client, ctx)
+
+
+def fail_before_response_on_nth(ctx: PipelineTestContext, n: int, *, interrupt: bool = False) -> Callable[[], None]:
+    """Make the ``n``-th model request fail before its response starts; return a restoring callable.
+
+    The failure is raised above the response validation middleware, where a
+    context or middleware failure between two responses lands, so no
+    response-start hook runs for that request. With *interrupt*, the user's
+    Stop arrives first and the failure ends an interrupted pass.
+    """
+    bindings = ctx.engine.current.loaded.bindings
+    validation = bindings._response_validation
+    assert validation is not None
+    original = validation.process
+    calls = itertools.count(1)
+
+    async def _process(context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        if next(calls) == n:
+            if interrupt:
+                bindings._interrupt.set_interrupted()
+            raise RuntimeError("Simulated failure before the response started")
+        await original(context, call_next)
+
+    vars(validation)["process"] = _process
+
+    def _restore() -> None:
+        vars(validation).pop("process", None)
+
+    return _restore
+
+
+def fail_nested_before_response_on_nth(
+    monkeypatch: pytest.MonkeyPatch, n: int, *, main: ResponseValidationMiddleware | None = None
+) -> None:
+    """Make the ``n``-th model request of a sub-agent or workflow node fail before its response starts.
+
+    ``fail_before_response_on_nth`` for a middleware built after this call:
+    every response validation middleware but *main*, the chat turn's own,
+    counts toward ``n``, and the failure is raised above it, so no
+    response-start hook runs for that request.
+    """
+    original = ResponseValidationMiddleware.process
+    calls = itertools.count(1)
+
+    async def _process(
+        self: ResponseValidationMiddleware, context: ChatContext, call_next: Callable[[], Awaitable[None]]
+    ) -> None:
+        if self is not main and next(calls) == n:
+            raise RuntimeError("Simulated failure before the response started")
+        await original(self, context, call_next)
+
+    monkeypatch.setattr(ResponseValidationMiddleware, "process", _process)

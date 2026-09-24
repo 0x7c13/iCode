@@ -39,7 +39,7 @@ def _read_catalog(path: Path) -> Catalog:
 
 def _write_catalog(path: Path, catalog: Catalog) -> None:
     with path.open("wb") as stream:
-        write_po(stream, catalog, width=0, sort_output=True, include_lineno=True)
+        write_po(stream, catalog, width=0, sort_output=True, include_lineno=False)
 
 
 def _message(catalog: Catalog, key: str):

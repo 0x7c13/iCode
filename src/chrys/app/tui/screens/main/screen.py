@@ -2517,7 +2517,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         app = cast("ChrysApp", self.app)
         store = UserThemeStore()
         theme = app.get_theme(picker.original_theme if picker is not None else app.theme)
-        assert theme is not None
+        if theme is None:
+            raise RuntimeError("The selected theme is not registered.")
         revision = None
         if not theme_is_read_only(theme.name):
             try:

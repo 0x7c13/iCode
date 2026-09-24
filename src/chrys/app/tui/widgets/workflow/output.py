@@ -110,7 +110,8 @@ class WorkflowOutputView(Vertical):
         self._show_page()
 
     def _paginate(self) -> None:
-        assert self._results is not None
+        if self._results is None:
+            raise RuntimeError("Paginating workflow outputs requires loaded results.")
         output = "\n\n".join(result.render(self._locale) for result in self._results)
         self._output = output = output or text.render(text.NO_OUTPUTS.bind(), self._locale)
         self._page_ends = []

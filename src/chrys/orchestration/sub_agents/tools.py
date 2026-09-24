@@ -1004,7 +1004,8 @@ class SubAgentTools:
                 if sub_agent_trace is not None:
                     await sub_agent_trace.started(tool_name=tool_name, agent_profile=profile.name)
                 config = profile.acp
-                assert config is not None
+                if config is None:
+                    raise RuntimeError("An ACP sub-agent requires ACP configuration.")
                 if self._session_dir is not None:
                     log_writer = SubAgentSessionLogWriter(
                         parent_session_dir=self._session_dir,
@@ -1184,7 +1185,8 @@ class SubAgentTools:
                         )
                         _record_terminal_audit(terminal_written)
 
-                assert controller is not None
+                if controller is None:
+                    raise RuntimeError("The sub-agent invocation has no controller.")
                 controller.bind_parent_interrupt_commit(_commit_parent_interruption)
                 policy = AcpSubAgentPolicy(
                     shell=controller,
@@ -1246,12 +1248,13 @@ class SubAgentTools:
                     )
                     _record_terminal_audit(terminal_written)
                 return result
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 hook_status = "cancelled"
                 hook_summary = "cancelled"
                 _commit_interrupted_parent_result(parent_metadata)
                 if policy is not None:
-                    assert controller is not None
+                    if controller is None:
+                        raise RuntimeError("The sub-agent invocation has no controller.") from exc
                     await _finish_cancellation_cleanup(controller.finalize_cancellation())
                 raise
             except BaseException as exc:
@@ -1771,7 +1774,8 @@ class SubAgentTools:
                 retry_kwargs: dict[str, Any] = {}
                 if self._max_transient_retries is not None:
                     retry_kwargs["max_retries"] = self._max_transient_retries
-                assert controller is not None
+                if controller is None:
+                    raise RuntimeError("The sub-agent invocation has no controller.")
                 controller.bind_parent_interrupt_commit(_commit_parent_interruption)
                 policy = KernelSubAgentPolicy(
                     shell=controller,
@@ -1842,17 +1846,21 @@ class SubAgentTools:
                     else contextlib.nullcontext()
                 ):
                     result = await controller.run()
+                segment = policy.final_segment
+                if parent_result_metadata is not None and segment is not None and segment.transcript != segment.result:
+                    parent_result_metadata.transcript_final_text = segment.transcript
                 hook_status = "failed" if result.startswith("Error:") else "ok"
                 hook_result_summary = result[:500]
                 if hook_status == "failed":
                     sub_agent_failure_code = "tool_error"
                 return result
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 hook_status = "cancelled"
                 hook_result_summary = "cancelled"
                 _commit_interrupted_parent_result(parent_result_metadata)
                 if policy is not None:
-                    assert controller is not None
+                    if controller is None:
+                        raise RuntimeError("The sub-agent invocation has no controller.") from exc
                     await _finish_cancellation_cleanup(controller.finalize_cancellation())
                 elif log_writer is not None:
                     with contextlib.suppress(Exception):
@@ -1955,7 +1963,8 @@ class SubAgentTools:
                     unbind()
                 if approval_mw is not None:
                     try:
-                        assert conversation is not None
+                        if conversation is None:
+                            raise RuntimeError("Closing sub-agent approvals requires their owning conversation.")
                         await conversation.release(approval_mw.close)
                     except asyncio.CancelledError:
                         cleanup_cancelled = True

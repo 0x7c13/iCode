@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -162,11 +161,38 @@ class ToolEventMiddleware(FunctionMiddleware):
         self._tool_result_ceiling_tokens = tool_result_ceiling_tokens
         self._tool_batch_records: list[ToolBatchRecord] = []
         self._tool_invocation_order = 0
-        self._intermediate_flush_lock = asyncio.Lock()
 
     def bind_origin(self, origin: InvocationOrigin) -> None:
         """Bind the next pass; each dispatched callback captures its own origin."""
         self._origin = origin
+
+    async def release_intermediate_text(self) -> None:
+        """Publish intermediate text that no tool start has released yet.
+
+        A call that never enters the tool pipeline (unknown tool, pre-pipeline
+        argument rejection) starts no tool, so the text streamed with it stays
+        buffered until the next response starts or the pass ends.
+        """
+        await self._release_intermediate_text(self._origin, None)
+
+    async def finish_intermediate_text(self) -> None:
+        """Release what is still buffered as the pass ends; see ``IntermediateTextBuffer.finish``."""
+        if self._intermediate_buffer is not None:
+            await self._intermediate_buffer.finish(self._intermediate_publisher(self._origin))
+
+    async def _release_intermediate_text(self, origin: InvocationOrigin, preamble: PreparationTrace | None) -> None:
+        if self._intermediate_buffer is not None:
+            await self._intermediate_buffer.release(self._intermediate_publisher(origin), preamble)
+
+    def _intermediate_publisher(self, origin: InvocationOrigin) -> Callable[[str], Awaitable[None]]:
+        async def publish(text: str) -> None:
+            await self._bus.publish(
+                InvocationMessage(
+                    origin=origin, text=text, is_final=False, is_intermediate=True, session_id=self._session_id
+                )
+            )
+
+        return publish
 
     async def process(
         self,
@@ -247,29 +273,14 @@ class ToolEventMiddleware(FunctionMiddleware):
         self._tool_invocation_order = max(self._tool_invocation_order, tool_order + 1)
         set_tool_invocation_order(context, tool_order)
 
-        # Drain any intermediate text accumulated by the result_hook and
-        # publish it BEFORE InvocationToolCallStart so the TUI renders it first.
-        # Parallel tool calls run this middleware concurrently (the kernel
-        # loop dispatches the batch via asyncio.gather), so the drain and
-        # publish must be atomic across siblings: whichever sibling drains
-        # the text suspends inside the publish awaiting bus handlers, and
-        # without the lock the other siblings' InvocationToolCallStart events overtake
-        # it — the text lands mid-batch and the TUI splits the tool group,
-        # orphaning already-rendered cards. Every sibling passes through the
-        # lock before publishing its start, so the text is fully delivered
-        # (including stream consumers) before any start of the batch.
-        if self._intermediate_buffer is not None:
-            async with preparation_lock(self._intermediate_flush_lock, preamble):
-                for text in self._intermediate_buffer.drain():
-                    await self._bus.publish(
-                        InvocationMessage(
-                            origin=origin,
-                            text=text,
-                            is_final=False,
-                            is_intermediate=True,
-                            session_id=self._session_id,
-                        )
-                    )
+        # Publish the intermediate text accumulated by the result_hook BEFORE
+        # InvocationToolCallStart so the TUI renders it first. Parallel tool
+        # calls run this middleware concurrently (the kernel loop dispatches
+        # the batch via asyncio.gather); the release holds every sibling until
+        # the text is fully delivered (including stream consumers), because a
+        # start that overtakes it lands the text mid-batch and the TUI splits
+        # the tool group, orphaning already-rendered cards.
+        await self._release_intermediate_text(origin, preamble)
 
         provider_call_id = get_provider_call_id(context)
         call_id = get_call_id(context) or uuid4().hex[:_SHORT_ID_LEN]

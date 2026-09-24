@@ -608,15 +608,16 @@ def _assert_catalog_fresh(
         )
         if metadata != expected_metadata:
             raise CatalogToolError(f"{label} source metadata is stale for {key!r}")
-        # Locations are the one part of an entry that goes stale without any
-        # key, fingerprint or placeholder changing: edit a line above a
-        # ``msg()`` and every reference below it shifts. Nothing else in this
-        # gate looks at them, so the drift is invisible until someone reads a
-        # ``#:`` comment and lands in the wrong function.
-        if tuple(message.locations) != extracted.locations:
+        # ``#:`` comments name the defining FILE only: line numbers would make
+        # every edit above a ``msg()`` regenerate both catalogs and conflict
+        # between branches. A definition moving to another module still goes
+        # stale without any key, fingerprint or placeholder changing, and a
+        # leftover ``path:line`` spelling is not what the writer emits.
+        expected_locations = tuple((path, None) for path, _lineno in extracted.locations)
+        if tuple(message.locations) != expected_locations:
             raise CatalogToolError(
                 f"{label} source locations are stale for {key!r}: "
-                f"found {tuple(message.locations)}, expected {extracted.locations}"
+                f"found {tuple(message.locations)}, expected {expected_locations}"
             )
         if require_untranslated and any(has_visible_content(form) for form in _translation_forms(message)):
             raise CatalogToolError(f"{label} must not contain translations for {key!r}")
@@ -1115,7 +1116,7 @@ def _write_po(path: Path, catalog: Catalog) -> None:
             dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
         ) as stream:
             temporary_path = Path(stream.name)
-            write_po(stream, catalog, width=0, sort_output=True, include_lineno=True)
+            write_po(stream, catalog, width=0, sort_output=True, include_lineno=False)
         _replace_generated_file(temporary_path, path)
         temporary_path = None
     except OSError as error:

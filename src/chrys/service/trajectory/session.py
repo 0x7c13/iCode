@@ -342,8 +342,8 @@ class SessionTrajectory:
         writer = state.writer
         if writer is not None:
             submitted = writer.submit(draft, payload_factory=payload_factory)
-            if submitted.pending is None:
-                return submitted.immediate
+            if isinstance(submitted.result, EmitResult):
+                return submitted.result
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -615,16 +615,15 @@ class SessionTrajectory:
             self._disable(TrajectoryDisabledReason.SEQUENCE_EXHAUSTED)
             return
         truncated_bytes = self._recovered_truncated_bytes
-        resumed = scan is not None and scan.had_valid_events
-        if resumed:
-            assert scan is not None
-            assert scan.last_event is not None
+        last_event = scan.last_event if scan is not None else None
+        resumed = last_event is not None
+        if last_event is not None:
             # Recovery only supplies a branch when nobody has chosen one: a
             # rollback that opened a branch before the log was activated is
             # already on the new branch, and must not be pulled back onto the
             # one it superseded.
             if self._branch_id is None:
-                self._branch_id = scan.last_event.branch_id
+                self._branch_id = last_event.branch_id
             self._coverage_reason = CoverageReason.RUNTIME_RESUMED
         else:
             if self._branch_id is None:

@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
-from chrys.service.workflows.graph import ON_EXHAUSTED_CONTINUE, GraphSpec, NodeSpec
+from chrys.service.workflows.graph import ON_EXHAUSTED_CONTINUE, GraphSpec, LoopSpec, NodeSpec
 from chrys.service.workflows.outcomes import RunOutcome
 from chrys.service.workflows.sdk import SourceValue, WorkflowValue
 from chrys.service.workflows.values import default_combine
@@ -391,10 +391,10 @@ class WorkflowScheduler:
             return ()
         self._expect_until(act, iteration)
         out: list[Decision] = []
-        loop = self._node(act).loop
-        assert loop is not None
+        loop = self._require_loop(act)
         exit_value = act.output
-        assert exit_value is not None
+        if exit_value is None:
+            raise SchedulerInvariantError("Loop condition evaluation requires an exit value.")
         if verdict:
             out.append(LoopIteration(act.ref, iteration, LoopVerdict.EXIT, exit_value))
             self._body_done(act, exit_value, out)
@@ -556,7 +556,8 @@ class WorkflowScheduler:
         node = self._node(act)
         act.phase = AttemptPhase.BODY
         if node.is_loop:
-            assert act.input_value is not None
+            if act.input_value is None:
+                raise SchedulerInvariantError("A loop activation requires an input value.")
             out.append(LoopActivated(act.ref, act.input_value))
             self._begin_iteration(act, 1, act.input_value, out)
         else:
@@ -570,16 +571,20 @@ class WorkflowScheduler:
         if not node.is_loop:
             self._dispatch(act, out)
             return
-        assert act.input_value is not None
+        if act.input_value is None:
+            raise SchedulerInvariantError("A loop activation requires an input value.")
         out.append(LoopActivated(act.ref, act.input_value))
         if act.phase is AttemptPhase.UNTIL:
-            assert act.output is not None
+            if act.output is None:
+                raise SchedulerInvariantError("Resuming loop evaluation requires an output value.")
             out.append(EvaluateLoopUntil(act.ref, act.iteration, act.output))
         elif act.phase is AttemptPhase.OUTGOING:
-            assert act.output is not None
+            if act.output is None:
+                raise SchedulerInvariantError("Resuming loop evaluation requires an output value.")
             out.append(EvaluateOutgoing(act.ref, act.output, self._graph.conditional_edges[node.node_id]))
         else:
-            assert act.iteration_input is not None
+            if act.iteration_input is None:
+                raise SchedulerInvariantError("Resuming a loop body requires its iteration input.")
             self._begin_iteration(act, act.iteration, act.iteration_input, out)
 
     def _body_done(self, act: _Activation, value: WorkflowValue, out: list[Decision]) -> None:
@@ -684,9 +689,14 @@ class WorkflowScheduler:
 
     # -- loops ---------------------------------------------------------------
 
-    def _begin_iteration(self, act: _Activation, iteration: int, value: WorkflowValue, out: list[Decision]) -> None:
+    def _require_loop(self, act: _Activation) -> LoopSpec:
         loop = self._node(act).loop
-        assert loop is not None
+        if loop is None:
+            raise SchedulerInvariantError(f"Loop activation {act.activation_id!r} has no loop specification.")
+        return loop
+
+    def _begin_iteration(self, act: _Activation, iteration: int, value: WorkflowValue, out: list[Decision]) -> None:
+        loop = self._require_loop(act)
         act.phase = AttemptPhase.BODY
         act.iteration = iteration
         act.body_epoch += 1
@@ -705,14 +715,14 @@ class WorkflowScheduler:
             self._iteration_barrier(loop_act, out)
 
     def _iteration_barrier(self, loop_act: _Activation, out: list[Decision]) -> None:
-        loop = self._node(loop_act).loop
-        assert loop is not None
+        loop = self._require_loop(loop_act)
         exit_act = self._activations[activation_id(loop.exit, loop_act.body_epoch)]
         if exit_act.state is ActivationState.SKIPPED:
             message = f"iteration {loop_act.iteration} of {loop_act.node_id!r} closed every edge into its exit node."
             self._fail(loop_act, FailureReport(ErrorClass.LOOP_NO_VALUE, message), out)
             return
-        assert exit_act.output is not None
+        if exit_act.output is None:
+            raise SchedulerInvariantError("The loop exit completed without an output value.")
         loop_act.output = exit_act.output
         loop_act.phase = AttemptPhase.UNTIL
         out.append(EvaluateLoopUntil(loop_act.ref, loop_act.iteration, exit_act.output))

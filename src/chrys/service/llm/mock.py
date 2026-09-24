@@ -40,36 +40,18 @@ from chrys.kernel import (
 )
 from chrys.kernel.client import _prepare_provider_request_messages, _PreparedRequestObserverClient
 from chrys.kernel.types import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream, UsageDetails
-from chrys.service.llm.instrumented import _ExchangeObserver, resolve_exchange_trace
+from chrys.service.llm.instrumented import (
+    _count_function_calls,
+    _ExchangeObserver,
+    _extract_intermediate_text,
+    resolve_exchange_trace,
+)
 from chrys.service.trajectory.revisions import record_context_revision
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 
     from chrys.kernel.compaction import TokenizerProtocol
-
-
-def _extract_intermediate_text(response: ChatResponse[Any]) -> str | None:
-    """Return concatenated text if a response contains both text and function_call."""
-    text_parts: list[str] = []
-    has_function_calls = False
-    for msg in response.messages:
-        for content in msg.contents:
-            if content.type == "text":
-                if content.text:
-                    text_parts.append(content.text)
-            elif content.type == "function_call" and not content.informational_only:
-                has_function_calls = True
-    if text_parts and has_function_calls:
-        return "".join(text_parts)
-    return None
-
-
-def _count_function_calls(response: ChatResponse[Any]) -> int:
-    """Return the number of function_call content items in a response."""
-    return sum(
-        1 for msg in response.messages for c in msg.contents if c.type == "function_call" and not c.informational_only
-    )
 
 
 @dataclass

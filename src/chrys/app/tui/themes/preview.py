@@ -128,7 +128,8 @@ class ThemePreview:
 
     def _refresh(self) -> None:
         theme = self.current
-        assert theme is not None
+        if theme is None:
+            raise RuntimeError("Refreshing the theme preview requires a current theme.")
         app = self.app
         classes = {name: False for name in app.classes if name.startswith("-theme-")}
         classes.update(

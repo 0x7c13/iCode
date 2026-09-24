@@ -487,24 +487,23 @@ def _packed_lanes(operations: tuple[TimelineOperation, ...]) -> tuple[dict[int, 
     """Assign overlap-free lanes so every slice imports losslessly."""
     placeable = sorted(
         (
-            (index, operation)
+            (index, operation.start_ns, operation.end_ns)
             for index, operation in enumerate(operations)
             if operation.start_ns is not None and operation.end_ns is not None
         ),
-        key=lambda pair: (pair[1].start_ns, pair[1].end_ns, pair[0]),
+        key=lambda item: (item[1], item[2], item[0]),
     )
     lane_ends: list[int] = []
     lane_by_index: dict[int, int] = {}
-    for index, operation in placeable:
-        assert operation.start_ns is not None and operation.end_ns is not None
+    for index, start_ns, end_ns in placeable:
         for lane, end in enumerate(lane_ends):
-            if end <= operation.start_ns:
-                lane_ends[lane] = operation.end_ns
+            if end <= start_ns:
+                lane_ends[lane] = end_ns
                 lane_by_index[index] = lane
                 break
         else:
             lane_by_index[index] = len(lane_ends)
-            lane_ends.append(operation.end_ns)
+            lane_ends.append(end_ns)
     return lane_by_index, max(1, len(lane_ends))
 
 

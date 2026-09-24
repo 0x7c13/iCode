@@ -108,7 +108,8 @@ class Shell:
         await self._ready.wait()
 
     def start(self) -> None:
-        assert self._task is None
+        if self._task is not None:
+            raise RuntimeError("The terminal shell has already been started.")
         self._task = asyncio.create_task(self.run(), name=repr(self))
 
     # -- talking to the shell ----------------------------------------------------------------------

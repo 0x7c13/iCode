@@ -413,7 +413,8 @@ class WorkflowNodeDialog(BaseDialog[None]):
             if generation != self._generation or not self.is_mounted or self._torn_down():
                 return ""
             if live and journal is not None:
-                assert self.agent_spec is not None
+                if self.agent_spec is None:
+                    raise RuntimeError("A live agent transcript requires an agent specification.")
                 surface = AgentTranscriptSurface(journal, profile_name=self.agent_spec.profile)
                 await container.mount(surface)
             elif archived is not None and attempt is not None:

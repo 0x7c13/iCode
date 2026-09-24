@@ -86,12 +86,11 @@ class WorkspaceMruRecentDirs:
 
     async def _collect_seed_paths(self) -> list[tuple[str, datetime]]:
         """Collect ``(path, last_used_at)`` seeds from saved session metadata."""
-        assert self._state_store is not None
         exclude = get_default_favorite_paths()
         seed: list[tuple[str, datetime]] = []
         seen: set[str] = set()
 
-        sessions = sorted(await self._state_store.list_sessions(), key=lambda s: s.updated_at, reverse=True)
+        sessions = sorted(await self._require_state_store().list_sessions(), key=lambda s: s.updated_at, reverse=True)
         for meta in sessions:
             for cwd in [meta.primary_cwd, *meta.working_dirs]:
                 if not cwd:
@@ -111,9 +110,13 @@ class WorkspaceMruRecentDirs:
                     return seed
         return seed
 
+    def _require_state_store(self) -> StateStore:
+        if self._state_store is None:
+            raise RuntimeError("Reading recent session directories requires a state store.")
+        return self._state_store
+
     def _session_root_key(self) -> str:
-        assert self._state_store is not None
-        return session_root_key(self._state_store.session_dir("__workspace_mru_probe__").parent)
+        return session_root_key(self._require_state_store().session_dir("__workspace_mru_probe__").parent)
 
     @staticmethod
     def _format(paths: list[str]) -> list[tuple[str, str]]:

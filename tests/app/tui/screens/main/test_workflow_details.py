@@ -359,7 +359,10 @@ async def test_shutdown_starts_before_node_screen_detaches(tmp_path: Path, monke
 
 
 async def test_closing_node_details_while_its_tabs_mount(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Removal drops new mounts before it detaches the dialog, so the added tab fails its late validation."""
+    """Removal drops new mounts before it detaches the dialog, so the added tab never mounts.
+
+    Activating it then keeps the bar's current tab instead of raising "No Tab with id".
+    """
     from textual.await_complete import AwaitComplete
 
     from chrys.app.tui.widgets.workflow.projector import WorkflowProjector
@@ -367,7 +370,7 @@ async def test_closing_node_details_while_its_tabs_mount(tmp_path: Path, monkeyp
     monkeypatch.chdir(make_project(tmp_path))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     original_add = Tabs.add_tab
-    rejected = asyncio.Event()
+    added = asyncio.Event()
     projector = WorkflowProjector()
     projector.record(events.WorkflowRunStarted(run_id="run"))
     projector.record(
@@ -393,18 +396,17 @@ async def test_closing_node_details_while_its_tabs_mount(tmp_path: Path, monkeyp
             # Textual marks the subtree when removal starts and mounts nothing into it from then on.
             await wait_for(lambda: tabs._pruning, description="node dialog is being removed")
             assert dialog.is_attached and app.is_running
-            try:
-                await original_add(tabs, tab)
-            except ValueError:
-                rejected.set()
-                raise
+            await original_add(tabs, tab)
+            assert tabs.active == "" and not tabs.query(Tab)
+            added.set()
 
         return AwaitComplete(add_during_removal())
 
     monkeypatch.setattr(Tabs, "add_tab", add_tab)
     async with app.run_test(size=(120, 45)) as pilot:
         app.push_screen(dialog)
-        await wait_for(lambda: rejected.is_set() and not dialog.is_attached, pilot=pilot)
+        await wait_for(lambda: added.is_set() and not dialog.is_attached, pilot=pilot)
+        assert app.is_running
 
 
 def _pane_text(dialog: WorkflowNodeDialog, pane: str) -> str:

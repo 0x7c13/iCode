@@ -23,13 +23,14 @@ from pathlib import Path
 
 import pytest
 
+from chrys.foundation.platform import process as process_mod
 from chrys.foundation.platform import runtime_paths
 from chrys.service.hooks import runner as runner_mod
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.loader import load_hooks_project
-from chrys.service.hooks.runner import HookRunner
+from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun
-from tests.support.waiting import wait_until
+from tests.support.waiting import wait_for, wait_until
 
 
 @pytest.fixture
@@ -332,6 +333,91 @@ async def test_stopped_grandchild_hook_returns_and_cleans_group(runner: HookRunn
         await asyncio.sleep(0.05)
     else:
         pytest.fail(f"stopped hook grandchild survived cleanup with state={state!r}")
+
+
+# Stands in for ``taskkill``: it announces itself, then exits only once the test
+# creates the release file, and records that it saw it.
+_TREE_KILL_STAND_IN = textwrap.dedent(
+    """
+    import pathlib, sys, time
+    started, release, released = map(pathlib.Path, sys.argv[1:])
+    started.touch()
+    deadline = time.monotonic() + 20
+    while not release.exists():
+        if time.monotonic() > deadline:
+            sys.exit(1)
+        time.sleep(0.01)
+    released.touch()
+    """
+)
+
+
+def _route_tree_kill_to_stand_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, list[int]]:
+    """Send every process tree kill to the stand-in.
+
+    Returns its release and released files and the pids the kills were aimed at.
+    """
+    started, release, released = tmp_path / "started", tmp_path / "release", tmp_path / "released"
+    targets: list[int] = []
+
+    def tree_kill_argv(pid: int) -> list[str]:
+        targets.append(pid)
+        return [sys.executable, "-c", _TREE_KILL_STAND_IN, str(started), str(release), str(released)]
+
+    monkeypatch.setattr(process_mod, "_windows_tree_kill_argv", tree_kill_argv)
+    monkeypatch.setattr(process_mod, "_WINDOWS_TREE_KILL_TIMEOUT", 25.0)
+    return release, released, targets
+
+
+async def _time_out_into_the_tree_kill(runner: HookRunner, tmp_path: Path) -> asyncio.Task[HookResult]:
+    """Start a hook that times out, and return its run once the stand-in tree kill is running."""
+    hook = _command_hook(argv=[sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.2)
+    run = asyncio.create_task(runner.run_and_wait(hook, {}))
+    started = tmp_path / "started"
+    await wait_for(lambda: started.exists() or run.done(), timeout=20, description="the tree kill to start")
+    assert not run.done(), f"the hook finished before this test saw its tree kill running: {run.result()!r}"
+    return run
+
+
+@pytest.mark.asyncio
+async def test_timeout_keeps_the_loop_running_while_the_process_tree_kill_runs(
+    runner: HookRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed-out hook's tree kill is a subprocess the loop awaits, not one it blocks on.
+
+    Only this coroutine creates the release file, so a kill that held the loop until
+    its own deadline would leave the stand-in waiting and never mark it released.
+    """
+    release, released, targets = _route_tree_kill_to_stand_in(monkeypatch, tmp_path)
+    run = await _time_out_into_the_tree_kill(runner, tmp_path)
+
+    release.touch()
+    result = await asyncio.wait_for(run, timeout=20)
+
+    assert result.timed_out is True
+    assert len(targets) == 1
+    assert released.exists()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_hook_during_its_process_tree_kill_lets_the_kill_finish(
+    runner: HookRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook cancelled mid tree kill, as a drain past its grace does, lets the kill finish first.
+
+    Stopping the kill there would leave cleanup to end only the direct child, and the
+    descendants the kill had yet to reach would keep running.
+    """
+    release, released, _targets = _route_tree_kill_to_stand_in(monkeypatch, tmp_path)
+    run = await _time_out_into_the_tree_kill(runner, tmp_path)
+
+    run.cancel()
+    assert not await wait_until(run.done, timeout=0.5), "the cancellation cut the tree kill short"
+    release.touch()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run, timeout=20)
+
+    assert released.exists()
 
 
 @pytest.mark.asyncio

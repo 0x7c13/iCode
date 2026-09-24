@@ -309,3 +309,11 @@ def test_ansi_base_token(value: str | None, expected: str | None) -> None:
 )
 def test_ansi_display_label(value: str, expected: str | None) -> None:
     assert _ansi_display_label(value) == expected
+
+
+def test_palette_fields_have_matching_display_labels() -> None:
+    from chrys.app.tui.screens.themes import messages
+    from chrys.app.tui.screens.themes.palette import _BUCKET_ORDER, BUTTON_COLOR_VARIABLES
+
+    assert set(messages.GROUPS) == set(_BUCKET_ORDER)
+    assert set(messages.BUTTON_FIELDS) == set(BUTTON_COLOR_VARIABLES)

@@ -60,6 +60,11 @@ class ThemeDocument:
     def owns(self, token: EditToken) -> bool:
         return self.transaction is not None and self.transaction.token == token
 
+    def require_transaction(self) -> EditTransaction:
+        if self.transaction is None:
+            raise RuntimeError("The theme document has no active edit transaction.")
+        return self.transaction
+
     def stage(self, token: EditToken, value: str | None) -> Theme | None:
         if not self.owns(token):
             return None
@@ -80,8 +85,7 @@ class ThemeDocument:
     def commit(self, token: EditToken) -> bool:
         if not self.owns(token):
             return False
-        assert self.transaction is not None
-        candidate = self.transaction.candidate
+        candidate = self.require_transaction().candidate
         self.transaction = None
         return self.replace(candidate)
 

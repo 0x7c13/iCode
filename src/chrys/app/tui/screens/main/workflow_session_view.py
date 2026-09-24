@@ -128,7 +128,8 @@ class WorkflowSessionView:
 
     async def _restore_session(self, token: FlowToken, session_id: str, run_id: str) -> None:
         store = self.host.services.state_store
-        assert store is not None
+        if store is None:
+            raise RuntimeError("Restoring a workflow session requires a state store.")
         self.host.feedback.show_loading(
             title=text.LOAD_SESSION.bind(name=""),
             message=text.LOAD_SESSION_RECORD.bind(),
@@ -268,13 +269,12 @@ class WorkflowSessionView:
     def open_node(self, node_id: str) -> None:
         panel, directory = self.host.panel, self._session_dir()
         preview, run = panel.preview, self.view_run()
-        if preview is None and run is None:
-            return
         if run is not None:
             manifest = run.started.manifest
-        else:
-            assert preview is not None
+        elif preview is not None:
             manifest = preview.manifest
+        else:
+            return
         node = next((node for node in manifest.get("nodes", []) if node["id"] == node_id), None)
         if node is None:
             return

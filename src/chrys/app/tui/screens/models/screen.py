@@ -641,10 +641,8 @@ def _validate_chat_option_logit_bias(
     *,
     render_message: _RenderMessage = format_message,
 ) -> list[str]:
-    errors = _validate_chat_option_object(index, "logit_bias", parsed, render_message=render_message)
-    if errors:
-        return errors
-    assert isinstance(parsed, dict)
+    if not isinstance(parsed, dict):
+        return _validate_chat_option_object(index, "logit_bias", parsed, render_message=render_message)
 
     for token_id, bias in parsed.items():
         if isinstance(bias, bool) or not isinstance(bias, int | float) or not math.isfinite(float(bias)):
@@ -674,10 +672,8 @@ def _validate_chat_option_extra_headers(
     *,
     render_message: _RenderMessage = format_message,
 ) -> list[str]:
-    errors = _validate_chat_option_object(index, "extra_headers", parsed, render_message=render_message)
-    if errors:
-        return errors
-    assert isinstance(parsed, dict)
+    if not isinstance(parsed, dict):
+        return _validate_chat_option_object(index, "extra_headers", parsed, render_message=render_message)
 
     for header, value in parsed.items():
         if is_chrys_managed_header_name(str(header)):

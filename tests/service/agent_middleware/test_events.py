@@ -67,7 +67,7 @@ from tests.service.agent_middleware._event_fakes import (
     _ctx,
 )
 from tests.support.event_capture import capture_events
-from tests.support.waiting import wait_until
+from tests.support.waiting import wait_for, wait_until
 
 # ──────────────── IntermediateTextBuffer ────────────────────────────────
 
@@ -103,6 +103,110 @@ def test_buffer_new_batch_increments_without_text() -> None:
     buf.new_batch()
     assert buf.batch_id == 2
     # No text was stored
+    assert buf.drain() == []
+
+
+async def test_buffer_release_cancelled_mid_publication_keeps_the_rest() -> None:
+    """A cancelled release completes the publication it started, once, and leaves the rest for the next release."""
+    buf = IntermediateTextBuffer()
+    buf.store("first")
+    buf.store("second")
+    gate = asyncio.Event()
+    started: list[str] = []
+    delivered: list[str] = []
+
+    async def publish(text: str) -> None:
+        started.append(text)
+        if text == "first":
+            await gate.wait()
+        delivered.append(text)
+
+    release = asyncio.create_task(buf.release(publish))
+    await wait_for(lambda: started or release.done(), description="the first publication starting")
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+    assert started == ["first"]
+
+    gate.set()
+    await buf.release(publish)
+
+    assert started == ["first", "second"]
+    assert delivered == ["first", "second"]
+    assert buf.drain() == []
+
+
+class _StuckPublisher:
+    """Publishes ``first`` into a subscriber that never returns until cancelled."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+        self.delivered: list[str] = []
+        self.abandoned = False
+
+    async def __call__(self, text: str) -> None:
+        self.started.append(text)
+        if text == "first":
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.abandoned = True
+                raise
+        self.delivered.append(text)
+
+
+async def _leave_first_in_flight(buf: IntermediateTextBuffer, publish: _StuckPublisher) -> None:
+    buf.store("first")
+    buf.store("second")
+    release = asyncio.create_task(buf.release(publish))
+    await wait_for(lambda: publish.started or release.done(), description="the first publication starting")
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+
+
+async def test_buffer_finish_cancelled_while_waiting_settles_the_publication() -> None:
+    """Cancelling the pass end cancels the publication it waits for and drops the rest before it returns."""
+    buf = IntermediateTextBuffer()
+    publish = _StuckPublisher()
+    await _leave_first_in_flight(buf, publish)
+
+    finish = asyncio.create_task(buf.finish(publish))
+    assert not await wait_until(finish.done, timeout=0.2)
+    finish.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await finish
+
+    assert publish.abandoned
+    assert publish.started == ["first"]
+    assert publish.delivered == []
+    assert buf.drain() == []
+
+
+async def test_buffer_finish_in_a_cancelled_pass_abandons_without_waiting() -> None:
+    """A pass its owner cancelled does not wait on subscribers at its end."""
+    buf = IntermediateTextBuffer()
+    publish = _StuckPublisher()
+    await _leave_first_in_flight(buf, publish)
+    entered = asyncio.Event()
+
+    async def closed_pass() -> None:
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+        finally:
+            await buf.finish(publish)
+
+    task = asyncio.create_task(closed_pass())
+    await wait_for(lambda: entered.is_set() or task.done(), description="the pass running")
+    task.cancel()
+    await wait_for(task.done, description="the cancelled pass ending without its subscriber")
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert publish.abandoned
+    assert publish.started == ["first"]
+    assert publish.delivered == []
     assert buf.drain() == []
 
 

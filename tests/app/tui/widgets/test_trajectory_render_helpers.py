@@ -17,6 +17,7 @@ from chrys.app.tui.widgets.trajectory import panel as trajectory_panel
 from chrys.app.tui.widgets.trajectory.chartkit import (
     bordered_section,
     coverage_bar,
+    fit_cells,
     section_interior_width,
     time_ruler,
     unresolved_bar,
@@ -416,3 +417,9 @@ async def test_submission_aggregate_renders_derived_precision_for_the_same_durat
     aggregate = next(line.plain for line in lines if "started a new turn" in line.plain)
     assert aggregate.count("4.00 s") == 3
     assert aggregate.endswith(badge)
+
+
+@pytest.mark.parametrize("value", ["", "abc", "中文", "e\u0301", "a中b"])
+@pytest.mark.parametrize("width", [-1, 0, 1, 2, 5, 12])
+def test_fit_cells_pads_and_crops_to_terminal_width(value: str, width: int) -> None:
+    assert cell_len(fit_cells(value, width)) == max(0, width)

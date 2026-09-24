@@ -1151,3 +1151,34 @@ def test_pseudo_output_guard_uses_real_paths(tmp_path: Path) -> None:
     )
 
     assert result.is_file()
+
+
+def test_catalog_locations_name_the_file_only_so_line_shifts_stay_fresh(tmp_path: Path) -> None:
+    source_root, pot_path, po_path, mo_path = _prepare_translated_catalog(tmp_path)
+    before = {path: path.read_bytes() for path in (pot_path, po_path, mo_path)}
+    assert "#: messages.py\n" in pot_path.read_text(encoding="utf-8")
+    assert "#: messages.py:" not in po_path.read_text(encoding="utf-8")
+
+    source = (source_root / "messages.py").read_text(encoding="utf-8")
+    shifted = source.replace("\nCLOSE = ", "\n\n\n# padding\nCLOSE = ", 1)
+    assert shifted != source
+    (source_root / "messages.py").write_text(shifted, encoding="utf-8")
+    i18n.check_catalogs(source_root=source_root, pot_path=pot_path, po_path=po_path, location_root=source_root)
+    i18n.extract_catalog(source_root=source_root, pot_path=pot_path, location_root=source_root)
+    i18n.update_catalog(source_root=source_root, po_path=po_path, location_root=source_root)
+
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize("target", ["pot", "po"])
+def test_check_rejects_line_numbered_or_moved_locations(tmp_path: Path, target: str) -> None:
+    source_root, pot_path, po_path, _mo_path = _prepare_translated_catalog(tmp_path)
+    path = pot_path if target == "pot" else po_path
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace("#: messages.py\n", "#: messages.py:2\n", 1), encoding="utf-8")
+    with pytest.raises(i18n.CatalogToolError, match="source locations are stale"):
+        i18n.check_catalogs(source_root=source_root, pot_path=pot_path, po_path=po_path, location_root=source_root)
+
+    path.write_text(text.replace("#: messages.py\n", "#: other.py\n", 1), encoding="utf-8")
+    with pytest.raises(i18n.CatalogToolError, match="source locations are stale"):
+        i18n.check_catalogs(source_root=source_root, pot_path=pot_path, po_path=po_path, location_root=source_root)

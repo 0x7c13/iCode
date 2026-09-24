@@ -31,7 +31,8 @@ def read_observed_run(record: WorkflowRunRecord) -> ObservedRun:
         if event is not None:
             projector.record(event)
     run = projector.current
-    assert run is not None
+    if run is None:
+        raise RuntimeError("Replaying a workflow record did not establish a run.")
     terminal = run.finished
     if terminal is None:
         terminal = events.WorkflowRunFinished(

@@ -131,7 +131,8 @@ def _carry_out(arg: str | None, render: Render) -> CommandAnswer:
         refusal = pet_refusal(buddy)
         if refusal is not None:
             return refusal
-        assert buddy is not None  # a missing buddy was refused above
+        if buddy is None:
+            raise RuntimeError("Petting requires an existing buddy.")
         actions.record_pet()
         return stock_reply(buddy), "information"
     if verb not in {"info", "mute", "name"}:

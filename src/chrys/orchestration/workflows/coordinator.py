@@ -239,7 +239,8 @@ class WorkflowCoordinator:
         try:
             await owner.open()
             async with owner.edit() as available:
-                assert available
+                if not available:
+                    raise RuntimeError("The workflow session closed before it could be edited.")
                 yield owner
         finally:
             await finish_close(asyncio.create_task(owner.close()))
@@ -280,9 +281,8 @@ class WorkflowCoordinator:
             with self._turn_state.lease.session_operation():
                 try:
                     async with self._session_owner(event.session_id) as owner:
-                        assert owner.session.workspace is not None
                         settings = await self._load_run_settings(
-                            Path(owner.session.workspace.primary_cwd), request_id=event.request_id
+                            Path(owner.require_workspace().primary_cwd), request_id=event.request_id
                         )
                         result = await rollback_files(owner, event, settings=settings)
                 except (KeyError, ValueError, OSError) as exc:
@@ -478,13 +478,16 @@ class WorkflowCoordinator:
                     )
                 )
                 return
-            assert active.owner is not None
+            if active.owner is None:
+                raise RuntimeError("The active workflow has no session owner.")
             active.runner = runner
             if active.cancel_reason is not None:
                 cancelled = runner.cancel(reason=active.cancel_reason)
-                assert cancelled is not None  # a fresh runner has no terminal yet
+                if cancelled is None:
+                    raise RuntimeError("Cancelling a fresh workflow runner did not return a drain task.")
                 await cancelled  # applied before the start: the run begins cancelled and no node executes
-            assert active.owner.selection is not None
+            if active.owner.selection is None:
+                raise RuntimeError("Accepting a workflow run requires a session selection.")
             await self._reply(
                 WorkflowRunAccepted(
                     request_id=event.request_id,
@@ -492,11 +495,11 @@ class WorkflowCoordinator:
                     selection=active.owner.selection,
                 )
             )
-            assert active.owner.session.session_id is not None
-            workflow_session_id = active.owner.session.session_id
+            workflow_session_id = active.owner.require_session_id()
 
             async def attach_session() -> None:
-                assert active.owner is not None
+                if active.owner is None:
+                    raise RuntimeError("The active workflow has no session owner.")
                 await self._hooks.attach(active.owner)
 
             async def start_hooks() -> None:
@@ -576,8 +579,7 @@ class WorkflowCoordinator:
             and owner.selection.identity != event.target.identity
         ):
             raise _Rejection(REJECT_SPEC_CHANGED, "This session belongs to another workflow. Start a new session.")
-        workspace = owner.session.workspace
-        assert workspace is not None
+        workspace = owner.require_workspace()
         config_dir = self._config_dir()
         project_cwd = Path(workspace.primary_cwd)
         settings = await self._load_run_settings(project_cwd, request_id=event.request_id)
@@ -660,11 +662,9 @@ class WorkflowCoordinator:
                 )
             except ValueError as exc:
                 raise _Rejection(REJECT_SPEC_CHANGED, str(exc)) from exc
-            assert owner.state is not None
-            owner.state.model = model
+            owner.require_state().model = model
             session = owner.session
-            session_id, session_dir = session.session_id, session.session_dir
-            assert session_id and session_dir
+            session_id, session_dir = owner.require_session_id(), owner.require_session_dir()
             header = RunHeader(
                 run_id=execution.run_id,
                 session_id=session_id,
@@ -731,7 +731,8 @@ class WorkflowCoordinator:
             agent_registry=self._agent_registry,
             model_registry=self._model_registry,
         )
-        assert owner.trajectory is not None
+        if owner.trajectory is None:
+            raise RuntimeError("Preparing a workflow runner requires a session trajectory.")
         runner = WorkflowRunner(
             admitted=admitted,
             journal=journal,

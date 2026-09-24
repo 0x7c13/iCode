@@ -258,12 +258,13 @@ class WorkflowRunStore:
             raise WorkflowStorageFailed("the run record is closed.")
         submitted = self._writer.submit(EventDraft(event_type=event_type, payload=payload))
         outcome = await self._writer.wait(submitted)
-        if outcome is not EmitResult.WRITTEN or submitted.pending is None:
+        result = submitted.result
+        if outcome is not EmitResult.WRITTEN or isinstance(result, EmitResult):
             raise WorkflowStorageFailed(self._failure(f"{event_type} was not written"))
-        self._last_written = submitted.pending.sequence
+        self._last_written = result.sequence
         if durable and await self._writer.checkpoint() is not EmitResult.WRITTEN:
             raise WorkflowStorageFailed(self._failure(f"{event_type} could not be made durable"))
-        return submitted.pending.sequence
+        return result.sequence
 
     def write_node_value(self, activation_id: str, attempt: int, kind: str, payload: Mapping[str, Any]) -> Path:
         """Persist a full value under ``nodes/``; returns the file written."""

@@ -72,10 +72,12 @@ class WorkflowSessionHooks:
 
     async def attach(self, resources: WorkflowSessionOwner) -> None:
         session = resources.session
-        assert session.session_id and session.workspace and resources.identity
+        if not session.session_id or not session.workspace or (not resources.identity):
+            raise RuntimeError("Attaching workflow hooks requires a session id, workspace and workflow identity.")
         manager = session.hook_manager
         recorder = resources.trajectory
-        assert recorder is not None
+        if recorder is None:
+            raise RuntimeError("Attaching workflow hooks requires a trajectory recorder.")
         context = recorder.context()
         if manager is not None:
             manager.trajectory_context_provider = lambda: context
@@ -132,7 +134,8 @@ class WorkflowSessionHooks:
     async def _end_session(self, attachment: _Attachment) -> None:
         """Idle end hooks borrow the same session guard before opening a fresh writer."""
         manager = attachment.manager
-        assert manager is not None
+        if manager is None:
+            raise RuntimeError("Ending an attached hook session requires its hook manager.")
         session_id = attachment.recorder.session_id
         recorder = None
         acquired = False

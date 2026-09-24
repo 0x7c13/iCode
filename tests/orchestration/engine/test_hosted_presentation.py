@@ -52,6 +52,7 @@ from chrys.service.llm.mock import MockResponse
 from chrys.service.llm.openai_responses import RawOpenAIChatClient
 from tests.orchestration.invoker._main_pass import continuation_pass
 from tests.support.pipeline_helpers import create_test_engine
+from tests.support.scripted_clients import HostedMockResponse, hosted_image_result
 
 
 class _FakeAsyncOpenAI:
@@ -578,5 +579,54 @@ async def test_non_hosted_response_keeps_existing_final_text_path(tmp_path: Any)
         assert not any(
             (isinstance(event, InvocationToolCallStart) and event.origin.kind == "turn") for event in context.events
         )
+    finally:
+        await context.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "blocking"])
+@pytest.mark.parametrize(
+    "call",
+    [("echo", "local_1", {"message": "hello"}), ("no_such_tool", "c-1", {})],
+    ids=["tool-start", "unknown-tool"],
+)
+async def test_narration_before_hosted_output_is_published_once(
+    tmp_path: Any, call: tuple[str, str, dict[str, Any]], stream: bool
+) -> None:
+    """The narration precedes the next response's hosted output, and the run-end reconcile leaves it alone."""
+    context = await create_test_engine(
+        [
+            MockResponse(text="Let me look. ", tool_calls=[call]),
+            HostedMockResponse(text="Here it is.", hosted=[hosted_image_result()]),
+        ],
+        tmp_path,
+        stream=stream,
+    )
+    try:
+        await context.send_message("go")
+
+        narration_at = next(
+            i
+            for i, event in enumerate(context.events)
+            if isinstance(event, InvocationMessage) and event.is_intermediate and event.text == "Let me look. "
+        )
+        hosted_at = next(
+            i
+            for i, event in enumerate(context.events)
+            if isinstance(event, (InvocationToolCallStart, InvocationToolCallResult)) and event.provider_hosted
+        )
+        assert narration_at < hosted_at
+        assert [
+            event.provider_hosted
+            for event in context.events
+            if isinstance(event, InvocationToolCallResult) and event.origin.kind == "turn"
+        ] == ([False, True] if call[0] == "echo" else [True])
+        turn_messages = [
+            (event.text, event.is_intermediate, event.is_final)
+            for event in context.events
+            if isinstance(event, InvocationMessage) and event.origin.kind == "turn" and event.text
+        ]
+        assert [text for text, intermediate, _final in turn_messages if intermediate] == ["Let me look. "]
+        assert turn_messages[-1] == ("Here it is.", False, True)
     finally:
         await context.cleanup()

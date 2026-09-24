@@ -13,6 +13,7 @@ from tests.architecture import (
     test_hygiene_exchange_walkers,
     test_hygiene_i18n_messages,
     test_hygiene_optional_imports,
+    test_hygiene_source_asserts,
     test_hygiene_subprocess_stdin,
     test_hygiene_test_source_rules,
     test_hygiene_tui_bindings,
@@ -36,6 +37,7 @@ from tests.architecture.test_hygiene_exchange_walkers import (
 )
 from tests.architecture.test_hygiene_i18n_messages import _assert_i18n_message_construction_is_canonical
 from tests.architecture.test_hygiene_optional_imports import _assert_optional_extra_imports_are_function_scoped
+from tests.architecture.test_hygiene_source_asserts import _assert_no_source_asserts
 from tests.architecture.test_hygiene_subprocess_stdin import _assert_subprocess_stdin_is_explicit
 from tests.architecture.test_hygiene_test_source_rules import (
     _assert_integration_marker_directory_disjoint,
@@ -76,6 +78,7 @@ _RULE_MODULES = (
     test_hygiene_exchange_walkers,
     test_hygiene_i18n_messages,
     test_hygiene_optional_imports,
+    test_hygiene_source_asserts,
     test_hygiene_subprocess_stdin,
     test_hygiene_test_source_rules,
     test_hygiene_tui_bindings,
@@ -96,6 +99,7 @@ _HYGIENE_RULES = (
 )
 
 _SRC_HYGIENE_RULES = (
+    _assert_no_source_asserts,
     _assert_subprocess_stdin_is_explicit,
     _assert_optional_extra_imports_are_function_scoped,
     _assert_no_hand_rolled_exchange_walkers,
@@ -173,7 +177,7 @@ def test_sweep_shard_partitions_are_complete_disjoint_and_non_empty(monkeypatch:
     _definition_sites()
     monkeypatch.setattr(Path, "read_text", lambda _path, *, encoding: "")
     problems: list[str] = []
-    for collector, root in ((_test_sources, TESTS_ROOT), (_src_sources, SRC_ROOT / "chrys")):
+    for collector, root in ((_test_sources, TESTS_ROOT), (_src_sources, SRC_ROOT)):
         enumerated_keys = {path.relative_to(REPO_ROOT) for path in root.rglob("*.py")}
         all_keys = set(collector())
         collector_missing = enumerated_keys - all_keys

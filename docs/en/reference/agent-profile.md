@@ -506,6 +506,8 @@ The **Agent Configuration** window in the TUI checks the concurrency values and 
 
 Tool calls within non-ACP sub-agents use the parent agent's `approval` configuration. The sub-agent's own `approval` configuration does not affect these calls.
 
+A non-ACP sub-agent returns its final reply to the parent agent, without the text it wrote between tool calls. If the final reply has no text, it returns all the text it wrote, in order. An ACP sub-agent returns what [`result_mode`](#acp) selects.
+
 For configuration instructions and call verification, see [Configure agents](../guides/configuration/agents.md#configure-sub-agents-for-an-agent).
 
 ## acp

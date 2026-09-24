@@ -216,14 +216,16 @@ def create_runtime(
     chain: list[ChatMiddleware] = []
     if isinstance(recipe, MainRecipe):
         chain.extend(ctx.middleware)
-        assert injection is not None
+        if injection is None:
+            raise RuntimeError("The main agent recipe requires injection middleware.")
         chain.append(injection)
     elif recipe.registration:
         chain.extend(ctx.middleware)
     chain.append(image_stub_middleware_for_model(vision_enabled=shared.vision))
     chain.append(reminder)
     if isinstance(recipe, MainRecipe):
-        assert validation is not None
+        if validation is None:
+            raise RuntimeError("The main agent recipe requires response validation middleware.")
         chain.append(validation)
     agent = Agent(
         client=shared.client,

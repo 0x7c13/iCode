@@ -113,7 +113,8 @@ def admit_manifest(
         if node.kind != KIND_AGENT:
             continue
         agent = node.agent
-        assert agent is not None
+        if agent is None:
+            raise RuntimeError("A validated agent node has no agent specification.")
         selector = agent.profile
         profile = agent_registry.resolve_selector(selector)
         if profile is None:

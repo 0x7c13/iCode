@@ -135,8 +135,11 @@ class TurnResumePolicy:
 
     def continuation_request(self, messages: list[Message]) -> RunRequest:
         ticket = self.outcome.continuation if isinstance(self.outcome, Failed) else None
-        if ticket is not None and not self.backend.continuation_is_live(ticket, self.origin):
-            assert isinstance(self.outcome, Failed)
+        if (
+            isinstance(self.outcome, Failed)
+            and ticket is not None
+            and not self.backend.continuation_is_live(ticket, self.origin)
+        ):
             self.outcome = replace(self.outcome, continuation=None)
             ticket = None
         return RunRequest(messages, RunIntent.RETRY if ticket is not None else RunIntent.CONTINUE, self.origin, ticket)

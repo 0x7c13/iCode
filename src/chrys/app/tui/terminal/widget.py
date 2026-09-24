@@ -341,7 +341,8 @@ class Terminal(ScrollView, can_focus=True):
     def _strip_cache(self) -> LRUCache[int, Strip]:
         if isinstance(self._strips, DetachedLruCache):
             self.renew_render_cache()
-        assert isinstance(self._strips, LRUCache)
+        if not isinstance(self._strips, LRUCache):
+            raise TypeError("Renewing the terminal render cache did not install an LRU cache.")
         return self._strips
 
     def _text_selection(self) -> Selection | None:

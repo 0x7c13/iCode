@@ -34,6 +34,7 @@ from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.widget import Widget
 
     from chrys.service.profiles.agents.registry import AgentProfileRegistry, AgentProfileRegistrySnapshot
     from chrys.service.profiles.agents.schema import AgentProfile
@@ -1023,7 +1024,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             return
         from chrys.app.tui.screens.agents.panels.basic import BasicConfigPanel
 
-        basic = self.query_one(BasicConfigPanel).get_config()
+        basic = self._live_panel(BasicConfigPanel).get_config()
         self._apply_basic_to_profile(draft.profile, basic, is_builtin=False)
         if wants_acp:
             self._sanitize_profile_for_acp(draft.profile)
@@ -1621,7 +1622,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             if tab_id not in self._mounted_tabs:
                 continue
             try:
-                errors.extend(self.query_one(panel_cls).validate())
+                errors.extend(self._live_panel(panel_cls).validate())
             except Exception:
                 logger.debug("Validation skipped for %s", panel_cls.__name__, exc_info=True)
 
@@ -1746,6 +1747,19 @@ class AgentsConfigScreen(BaseDialog[str]):
                 retargeted_profiles.append(updated)
         return retargeted_profiles
 
+    def _live_panel[P: Widget](self, panel_cls: type[P]) -> P:
+        """Return the mounted ``panel_cls`` panel, skipping one that a profile load is replacing.
+
+        ``_load_profile`` removes the old panels without waiting, and a removed
+        panel stays in the DOM, ahead of its replacement, until all its children
+        have exited. Reading it then yields its previous profile's values for the
+        widgets already gone, which a harvest would write into the new draft.
+        """
+        for panel in self.query(panel_cls).results(panel_cls):
+            if not panel._pruning:
+                return panel
+        raise NoMatches(f"No {panel_cls.__name__} is mounted")
+
     def _build_profile_from_mounted_panels(self, draft: _AgentDraft):
         """Return a profile copy built from the currently mounted tab panels."""
         from chrys.app.tui.screens.agents.panels.acp import AcpConfigPanel
@@ -1799,7 +1813,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             if tab_id not in self._mounted_tabs:
                 continue
             try:
-                cfg = self.query_one(panel_cls).get_config()
+                cfg = self._live_panel(panel_cls).get_config()
             except NoMatches as exc:
                 not_ready.append(
                     self._render_toast(

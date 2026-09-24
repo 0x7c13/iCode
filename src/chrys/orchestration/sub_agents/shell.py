@@ -125,18 +125,21 @@ class SubAgentToolShell:
 
     def bind_parent_interrupt_commit(self, callback: Callable[[], None]) -> None:
         """Bind the recipe's parent commit exactly once, before execution."""
-        assert not self._parent_interrupt_commit_bound
+        if self._parent_interrupt_commit_bound:
+            raise RuntimeError("The parent interrupt commit is already bound.")
         self._parent_interrupt_commit_bound = True
         self._parent_interrupted_result_commit = callback
 
     @property
     def policy(self) -> SubAgentPolicy:
-        assert self._policy is not None
+        if self._policy is None:
+            raise RuntimeError("The sub-agent policy has not been attached.")
         return self._policy
 
     def attach_policy(self, policy: SubAgentPolicy) -> None:
         """Install the invocation recipe once, without changing its owner."""
-        assert self._policy is None
+        if self._policy is not None:
+            raise RuntimeError("The sub-agent policy is already attached.")
         self._policy = policy
         if self._owner_close_cause is not None:
             policy.latch_abort(self._owner_close_cause)
@@ -161,23 +164,28 @@ class SubAgentToolShell:
         self._status = status
 
     def attach_operation(self, operation: OperationLifetime) -> None:
-        assert self._operation is None
+        if self._operation is not None:
+            raise RuntimeError("The sub-agent operation is already attached.")
         self._operation = operation
+
+    def _require_operation(self) -> OperationLifetime:
+        if self._operation is None:
+            raise RuntimeError("The sub-agent operation has not been attached.")
+        return self._operation
 
     @property
     def drained(self) -> Awaitable[None]:
-        assert self._operation is not None
-        return self._operation.drained
+        return self._require_operation().drained
 
     def request_close(self, cause: AbortCause) -> None:
-        assert self._operation is not None
+        operation = self._require_operation()
         self._owner_close_cause = cause
         self._latch_cascade()
         if self._policy is not None:
             self._policy.latch_abort(cause)
-            self._operation.close_with(self.cascade_abort)
+            operation.close_with(self.cascade_abort)
         else:
-            self._operation.cancel_preparation()
+            operation.cancel_preparation()
 
     def _latch_cascade(self) -> None:
         self._cascade_requested = True

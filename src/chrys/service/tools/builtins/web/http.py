@@ -165,7 +165,8 @@ class ValidatedAsyncTransport(httpx.AsyncBaseTransport):
         # httpx has no public network_backend argument. These two private pool
         # members are pinned by connection/TLS tests and the direct dependency.
         pool = self.inner._pool
-        assert isinstance(pool, httpcore.AsyncConnectionPool)
+        if not isinstance(pool, httpcore.AsyncConnectionPool):
+            raise TypeError("The httpx transport no longer exposes the expected httpcore connection pool.")
         pool._network_backend = IdentityBackend(pool._network_backend)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -179,7 +180,8 @@ class ValidatedAsyncTransport(httpx.AsyncBaseTransport):
         # normalize_url IDNA-encodes the authority: DNS resolution and TLS SNI
         # need the A-label form, while request.url.host may keep the U-label.
         host = urlsplit(url).hostname
-        assert host is not None  # normalize_url rejects an authority without a host
+        if host is None:
+            raise WebError("invalid_url")
         if self.remote_dns:
             return await self._send_by_name(request, host, granted=target in self.policy.private_origins)
         addresses = await resolve_addresses(host, request.url.port or (443 if request.url.scheme == "https" else 80))

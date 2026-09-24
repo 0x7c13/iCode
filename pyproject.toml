@@ -157,7 +157,6 @@ select = [
 ignore = [
     "E501",     # line length handled by formatter
     "RET504",   # unnecessary variable before return — often clearer to keep
-    "S101",     # assert is fine for invariant checks
     "S104",     # binding 0.0.0.0 is supported by the browser-hosted TUI serve command
     "S105",     # false positives on variable names like token_type
     "S108",     # hardcoded /tmp path is fine for debug logs

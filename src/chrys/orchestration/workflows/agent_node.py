@@ -66,7 +66,7 @@ from chrys.orchestration.workflows.agent_node_build import (
     build_acp_node,
     build_kernel_node,
 )
-from chrys.service.agent_middleware.events.hosted_tools import ResponsePresentationPlan
+from chrys.service.agent_middleware.events.hosted_tools import FinalSegment
 from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
 from chrys.service.agent_middleware.response_validation import hosted_commits_from_error
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
@@ -263,8 +263,7 @@ class WorkflowAgentShell:
         _PASS_SHELL.set(self)
         await self._flush_progress()
         await self._resources.usage_publisher.drain()
-        assert self._checkpoint is not None
-        await self._checkpoint.close()
+        await self._require_checkpoint().close()
         await self._save_transcript(
             status=result.kind if result is not None else "failed" if error else "cancelled",
             error=result.failure.message if result is not None and result.failure is not None else error,
@@ -406,8 +405,7 @@ class WorkflowAgentShell:
 
     async def begin(self, request: RunRequest, resources: PassResources) -> None:
         self._intermediate_buffer.drain()
-        assert isinstance(self._parts, KernelNodeParts)
-        self._pass_start_index = len(self._parts.history.messages())
+        self._pass_start_index = len(self._require_kernel_parts().history.messages())
         resources.begin()
         self._active_run_input = list(request.messages)
         await self._save_transcript()
@@ -417,11 +415,13 @@ class WorkflowAgentShell:
             await self._parts.events.reconcile_hosted_response(response.messages)
 
     async def failed(self, error: Exception, /) -> None:
-        assert isinstance(self._parts, KernelNodeParts)
-        self._parts.history.repair_after_failure(self._active_run_input, self._pass_start_index)
+        self._require_kernel_parts().history.repair_after_failure(self._active_run_input, self._pass_start_index)
 
     async def finished(self) -> None:
-        pass
+        # A failed or interrupted pass publishes no outcome; its buffered text
+        # belongs to this pass's transcript, not the next one.
+        if isinstance(self._parts, KernelNodeParts):
+            await self._parts.events.finish_intermediate_text()
 
     async def interrupt(self) -> None:
         pass
@@ -516,8 +516,9 @@ class WorkflowAgentShell:
             )
         if ticket is not None and backend.continuation_is_live(ticket, self.origin):
             self._ticket = None
-            assert isinstance(self._parts, KernelNodeParts)
-            return RunRequest(self._parts.history.retry_input(self._seed_input), RunIntent.RETRY, self.origin, ticket)
+            return RunRequest(
+                self._require_kernel_parts().history.retry_input(self._seed_input), RunIntent.RETRY, self.origin, ticket
+            )
         self._ticket = None
         if self._passes:
             backend.history_state = {}  # a fresh pass starts from the prompt, not from a stale transcript
@@ -527,21 +528,21 @@ class WorkflowAgentShell:
         self._evidence = self._evidence.add(outcome.effects)
         if isinstance(outcome, Ok):
             self._ticket = None
-            text = value = _response_text(outcome)
-            final_text = self._backend.transcript_final_text if isinstance(self._backend, AcpConversation) else None
             if isinstance(outcome.backend_payload, AgentResponse):
-                # The aggregate result includes intermediate prose; the shared
-                # presentation plan retains only the final transcript segment.
-                final_text = ResponsePresentationPlan.from_messages(outcome.backend_payload.messages).final_text
-                # That segment is the node's value too: what the agent wrote between tool calls stays
-                # in the transcript, and an answer without text falls back to everything the turn said.
+                # The node's value is the final segment, as a sub-agent's result is; what the agent wrote
+                # between tool calls is already in the transcript.
+                segment = FinalSegment.of(outcome.backend_payload)
+                value, transcript = segment.result, segment.transcript
+            else:
                 # An ACP result is left alone, since the profile's result mode already chose its extent.
-                value = final_text or text
+                value = transcript = _response_text(outcome)
+                if isinstance(self._backend, AcpConversation) and self._backend.transcript_final_text is not None:
+                    transcript = self._backend.transcript_final_text
             await self._emitter.publish(
                 InvocationMessage(
                     origin=self.origin,
                     agent_name=self._display_name,
-                    text=final_text if final_text is not None else text,
+                    text=transcript,
                     is_final=True,
                     session_id=self._session_id,
                 )
@@ -566,7 +567,8 @@ class WorkflowAgentShell:
             return AgentAttemptResult(
                 "failed", failure=FailureReport(error_class, outcome.error, backend_approved=approved)
             )
-        assert isinstance(outcome, Aborted)
+        if not isinstance(outcome, Aborted):
+            raise TypeError("Expected an aborted agent outcome after handling success and failure.")
         self._ticket = outcome.continuation
         if outcome.cause is AbortCause.CALLER_TIMEOUT:
             limit = f"{timeout:g}s" if timeout is not None else "its deadline"
@@ -598,9 +600,18 @@ class WorkflowAgentShell:
 
     # ------------------------------------------------------------------ history
 
+    def _require_checkpoint(self) -> CoalescedCheckpoint:
+        if self._checkpoint is None:
+            raise RuntimeError("The agent node checkpoint has not been opened.")
+        return self._checkpoint
+
+    def _require_kernel_parts(self) -> KernelNodeParts:
+        if not isinstance(self._parts, KernelNodeParts):
+            raise TypeError("A kernel agent pass requires kernel node resources.")
+        return self._parts
+
     async def _mark_dirty(self) -> None:
-        assert self._checkpoint is not None
-        self._checkpoint.changed()
+        self._require_checkpoint().changed()
 
     async def _adopt_acp_translator(self, translator: AcpUpdateTranslator) -> None:
         self._acp_translators.append(translator)
@@ -761,9 +772,6 @@ def _exact_zero(count: Count) -> bool:
 
 
 def _response_text(outcome: Ok) -> str:
-    payload = outcome.backend_payload
-    if isinstance(payload, AgentResponse):
-        return payload.text
     return "".join(
         segment.text for segment in outcome.segments if segment.type == "text" and isinstance(segment.text, str)
     ).strip()

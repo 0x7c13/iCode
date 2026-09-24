@@ -32,8 +32,8 @@ Two callback modes (names chosen so async vs sync is visible at a glance):
 - ``on_intermediate_text_sync`` — called synchronously from a ``result_hook``
   during **streaming**.  The hook fires after the stream finalizes but
   *before* tool execution.  The callback stores text in an
-  ``IntermediateTextBuffer``; ``ToolEventMiddleware`` drains and publishes
-  it before the next ``ToolCallStart``.
+  ``IntermediateTextBuffer``, released before the next ``ToolCallStart``
+  (or, for a call that starts no tool, the next response or the pass end).
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ from chrys.foundation.util.header_charset import (
     header_value_charset_error,
     model_id_charset_error,
 )
+from chrys.service.agent_middleware.events.intermediate_text import intermediate_text_contents
 from chrys.service.llm.openai_timestamps import normalize_openai_created_payload
 from chrys.service.llm.route_sessions import llm_parent_session_id, llm_route_session_id
 from chrys.service.session.message_metadata import stamp_message_response_timing
@@ -473,21 +474,8 @@ def _merge_openai_assistant_message(target: dict[str, Any], source: dict[str, An
 
 
 def _extract_intermediate_text(response: ChatResponse[Any]) -> str | None:
-    """Return concatenated text if a response contains both text and function_call."""
-    text_parts: list[str] = []
-    has_function_calls = False
-    for msg in response.messages:
-        for content in msg.contents:
-            if content.provider_hosted:
-                return None
-            if content.type == "text":
-                if content.text:
-                    text_parts.append(content.text)
-            elif content.type == "function_call" and not content.informational_only:
-                has_function_calls = True
-    if text_parts and has_function_calls:
-        return "".join(text_parts)
-    return None
+    """Return the text the intermediate-text callback publishes for *response*, if any."""
+    return "".join(content.text or "" for content in intermediate_text_contents(response.messages)) or None
 
 
 def _count_function_calls(response: ChatResponse[Any]) -> int:
@@ -847,8 +835,8 @@ class _IntermediateTextMixin(_IntermediateTextBase):
         3. ``ToolEventMiddleware`` publishes ``ToolCallStart``
 
         The sync callback (``_on_intermediate_text_sync``) stores text in an
-        ``IntermediateTextBuffer``.  ``ToolEventMiddleware`` drains and
-        publishes it before the next ``ToolCallStart``.
+        ``IntermediateTextBuffer``, released before the next ``ToolCallStart``
+        (or, for a call that starts no tool, the next response or the pass end).
 
         **Important**: ``_inner_get_response(stream=True)`` returns a
         ``ResponseStream`` directly (not a coroutine), and ``ResponseStream``

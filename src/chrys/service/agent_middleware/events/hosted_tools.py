@@ -31,7 +31,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERRORED_METADATA_KEY,
     TOOL_FAILURE_TEXT_SYNTHESIZED_METADATA_KEY,
 )
-from chrys.kernel import Content, Message
+from chrys.kernel import AgentResponse, Content, Message
 from chrys.kernel.exchanges import (
     TOOL_CALL_CONTENT_TYPES,
     TOOL_RESULT_CONTENT_TYPES,
@@ -45,6 +45,7 @@ from chrys.kernel.exchanges import (
 )
 from chrys.kernel.identity import WeakIdentityRegistry
 from chrys.kernel.images import is_image_data_uri, is_image_media_type
+from chrys.service.agent_middleware.events.intermediate_text import intermediate_text_contents
 
 type ContentOrder = tuple[int, int, int]
 
@@ -772,7 +773,8 @@ def cross_provider_hosted_degradations(
                 degradations[id(member)] = None
             degradations[id(anchor)] = hosted_context_summary(call, result)
             representative = call or result
-            assert representative is not None
+            if representative is None:
+                raise RuntimeError("A hosted exchange requires a call or a result.")
             logger.debug(
                 "Degrading provider-hosted history to assistant context: source=%s target=%s family=%s item_type=%s",
                 source_provider,
@@ -962,6 +964,27 @@ class ResponsePresentationPlan:
         return cls(operations, final_text, bool(successful_structured_occurrences))
 
 
+@dataclass(frozen=True, slots=True)
+class FinalSegment:
+    """A delegated agent's answer: the caller's result and the transcript's last text.
+
+    The caller receives the response's final segment, as a main turn's answer
+    is its last message: text written between tool calls and hosted outputs
+    is published live as intermediate transcript text. A response whose final
+    segment is empty (it ends on a tool result or hosted output) gives the
+    caller everything it said instead; all of that is intermediate text
+    already, so ``transcript`` stays empty.
+    """
+
+    result: str
+    transcript: str
+
+    @classmethod
+    def of(cls, response: AgentResponse[Any]) -> FinalSegment:
+        final_text = ResponsePresentationPlan.from_messages(response.messages).final_text
+        return cls(final_text or response.text, final_text)
+
+
 @dataclass
 class _LiveRecord:
     operation: PresentationOperation | None = None
@@ -1007,6 +1030,9 @@ class HostedPresentationBridge:
     run_generation: int = 0
     response_index: int = 0
     batch_id: int = 0
+    # Awaited as each logical response begins, before anything it produces
+    # is presented; it publishes text an earlier response left buffered.
+    before_response: Callable[[], Awaitable[None]] | None = None
     attempt_index: int = field(default=-1, init=False)
     next_occurrence_ordinal: int = field(default=0, init=False)
     published_terminal_signatures: set[tuple[Any, ...]] = field(default_factory=set, init=False)
@@ -1039,6 +1065,8 @@ class HostedPresentationBridge:
 
     async def begin_response(self, *, response_index: int | None = None, batch_id: int | None = None) -> None:
         """Begin another logical response without resetting run-monotonic ordinals."""
+        if self.before_response is not None:
+            await self.before_response()
         if response_index is not None:
             self.response_index = response_index
         elif self._response_started:
@@ -1204,6 +1232,11 @@ class HostedPresentationBridge:
             if occurrence not in self._accepted_occurrences:
                 self._accepted_occurrences.append(occurrence)
         if messages is not None:
+            # The client's intermediate-text callback already owns this
+            # response's narration, and a final reconcile over a run with
+            # hosted output would publish it a second time.
+            for content in intermediate_text_contents(messages):
+                self._published_canonical_text_contents.register(content)
             # A logical response inside agent.run() is not necessarily the
             # turn's final response: local function calls can continue the
             # loop. Publish its canonical text/tool ordering now, but leave
@@ -1684,6 +1717,7 @@ class HostedPresentationBridge:
 
 __all__ = [
     "CodeHostedAdapter",
+    "FinalSegment",
     "FinalTextOp",
     "GenericHostedAdapter",
     "HostedPresentationBridge",

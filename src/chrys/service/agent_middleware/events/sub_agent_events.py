@@ -190,7 +190,6 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         self._stats = stats
         self._tool_result_ceiling_tokens = tool_result_ceiling_tokens
         self._intermediate_buffer = intermediate_buffer
-        self._intermediate_flush_lock = asyncio.Lock()
         self._tool_call_count = 0
         self._tool_invocation_order = 0
         self._total_tokens = 0
@@ -206,6 +205,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         self._hosted_bridge = HostedPresentationBridge(
             self._publish_hosted_operation,
             run_generation=self._hosted_run_generation,
+            before_response=self.release_intermediate_text,
         )
         return self._hosted_bridge
 
@@ -216,10 +216,42 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         tool starts can arrive: barriers for calls that never entered the
         tool pipeline (unknown tool, pre-pipeline argument rejection) must
         be released here or the hosted events behind them stay buffered
-        forever.
+        forever. The text such a call streamed is released first, so it
+        precedes what the reconcile publishes.
         """
+        await self.release_intermediate_text()
         if self._hosted_bridge is not None:
             await self._hosted_bridge.reconcile_accepted(messages, final=True)
+
+    async def release_intermediate_text(self) -> None:
+        """Publish intermediate text that no tool start has released yet.
+
+        A call that never enters the tool pipeline (unknown tool, pre-pipeline
+        argument rejection) starts no tool, so the text streamed with it stays
+        buffered until the next response starts or the pass ends.
+        """
+        await self._release_intermediate_text(None)
+
+    async def finish_intermediate_text(self) -> None:
+        """Release what is still buffered as the pass ends; see ``IntermediateTextBuffer.finish``."""
+        if self._intermediate_buffer is not None:
+            await self._intermediate_buffer.finish(self._publish_intermediate_text)
+
+    async def _release_intermediate_text(self, preamble: PreparationTrace | None) -> None:
+        if self._intermediate_buffer is not None:
+            await self._intermediate_buffer.release(self._publish_intermediate_text, preamble)
+
+    async def _publish_intermediate_text(self, text: str) -> None:
+        await self._bus.publish(
+            InvocationMessage(
+                is_final=False,
+                is_intermediate=True,
+                origin=self._origin,
+                agent_name=self._agent_name,
+                text=text,
+                session_id=self._session_id,
+            )
+        )
 
     async def reject_hosted_attempt(
         self,
@@ -515,19 +547,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         self._tool_invocation_order = max(self._tool_invocation_order, tool_order + 1)
         set_tool_invocation_order(context, tool_order)
 
-        if self._intermediate_buffer is not None:
-            async with preparation_lock(self._intermediate_flush_lock, preamble):
-                for text in self._intermediate_buffer.drain():
-                    await self._bus.publish(
-                        InvocationMessage(
-                            is_final=False,
-                            is_intermediate=True,
-                            origin=self._origin,
-                            agent_name=self._agent_name,
-                            text=text,
-                            session_id=self._session_id,
-                        )
-                    )
+        await self._release_intermediate_text(preamble)
 
         provider_call_id = get_provider_call_id(context)
         call_id = get_call_id(context) or uuid4().hex[:_SHORT_ID_LEN]

@@ -86,19 +86,18 @@ class TurnFinalizer:
 
     async def finalize(self) -> PostRunOutcome:
         """Run post-execution fixup without starting pending retry dispatch."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         completed_scope = self._turn_state.lease.current_run_scope
-        failed = self._current.loaded.bindings.state.run_failed or self._current.loaded.bindings.state.was_interrupted
-        interrupted = self._current.loaded.bindings.state.was_interrupted
-        approval_decisions = self._current.loaded.bindings.approval.drain_decisions()
+        loaded = self._current.require_loaded()
+        failed = loaded.bindings.state.run_failed or loaded.bindings.state.was_interrupted
+        interrupted = loaded.bindings.state.was_interrupted
+        approval_decisions = loaded.bindings.approval.drain_decisions()
         metadata_start_index = _post_compaction_history_start_index(self._turn_state, self._current)
 
         if failed:
             # The pass-start boundary keeps a retried/resumed pass's recovered
             # messages AFTER retained work from an earlier same-turn pass.
             # A failed pass can finalize only after construction installs its recorder.
-            loop_recorder = self._current.loaded.loop_recorder
+            loop_recorder = loaded.loop_recorder
             self._history.merge_loop_messages(
                 loop_recorder,
                 insert_index=metadata_start_index,
@@ -215,15 +214,14 @@ class TurnFinalizer:
 
     async def _drain_abandoned_injections(self) -> None:
         """Close and publish unconsumed injections unless shutdown owns notification."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
-        abandoned: list[QueuedInjection] = self._current.loaded.injection.drain_pending()
+        abandoned: list[QueuedInjection] = self._current.require_loaded().injection.drain_pending()
         for injection in abandoned:
             # The text never reached the model, so its commit-time reminders
             # must not either — a pending retry preserves turn reminders and
             # would otherwise carry them into the next model call.
+            loaded = self._current.loaded
             withdraw_committed_injection_reminders(
-                self._current.loaded.reminder_middleware if self._current.loaded is not None else None,
+                loaded.reminder_middleware if loaded is not None else None,
                 self._turn_state.lease.current_run_scope,
                 injection,
             )
@@ -253,9 +251,8 @@ class TurnFinalizer:
         failed: bool,
     ) -> None:
         """Attach post-run metadata after any failed-run history repair."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
-        batch_records = self._current.loaded.bindings.tool_events.drain_batch_records()
+        loaded = self._current.require_loaded()
+        batch_records = loaded.bindings.tool_events.drain_batch_records()
         tool_call_count = sum(
             1
             for message in self._history.messages
@@ -270,16 +267,16 @@ class TurnFinalizer:
             failed,
         )
         batch_anchors = self._history.persist_batch_ids(batch_records)
-        if self._current.loaded.intermediate_texts:
-            self._history.persist_intermediate_texts(dict(self._current.loaded.intermediate_texts), batch_anchors)
-            self._current.loaded.intermediate_texts.clear()
+        if loaded.intermediate_texts:
+            self._history.persist_intermediate_texts(dict(loaded.intermediate_texts), batch_anchors)
+            loaded.intermediate_texts.clear()
         self._history.persist_approval_decisions(
             approval_decisions,
             start_index=metadata_start_index,
         )
-        if self._current.loaded.consumed_injections:
-            self._history.persist_consumed_injections(self._current.loaded.consumed_injections)
-            self._current.loaded.consumed_injections.clear()
+        if loaded.consumed_injections:
+            self._history.persist_consumed_injections(loaded.consumed_injections)
+            loaded.consumed_injections.clear()
         self._history.backfill_missing_created_at(start_index=metadata_start_index)
         _clear_post_compaction_history_start_index(self._current)
 
@@ -289,14 +286,13 @@ class TurnFinalizer:
 
     def _apply_terminal_history_state(self, *, failed: bool, interrupted: bool) -> None:
         """Apply FSM transitions and terminal history markers."""
-        if TYPE_CHECKING:
-            assert self._current.loaded is not None
         if failed:
+            loaded = self._current.require_loaded()
             if interrupted:
                 self._history.insert_interrupted_marker()
                 self._fsm.try_transition(Trigger.RUN_INTERRUPTED)
             else:
-                last_error = self._current.loaded.bindings.state.last_error
+                last_error = loaded.bindings.state.last_error
                 if last_error:
                     self._history.insert_interrupted_marker(reason=last_error, source="error")
                 else:
@@ -309,7 +305,7 @@ class TurnFinalizer:
             # A failed/interrupted Responses turn can leave KernelConversation
             # holding a service id from an incomplete provider-side state. Drop it
             # so retry/resume replays local recovery history instead of skipping it.
-            self._current.loaded.bindings.backend.service_session_id = ""
+            loaded.bindings.backend.service_session_id = ""
         else:
             self._history.remove_all_status_markers()
             self._fsm.try_transition(Trigger.RUN_COMPLETED)
@@ -396,10 +392,11 @@ class TurnFinalizer:
 def _post_compaction_history_start_index(turn_state: TurnRuntimeState, current: CurrentAgent) -> int:
     """Return the current-run metadata floor after request-time history compression."""
     start_index = turn_state.history_start_index
-    if TYPE_CHECKING:
-        assert current.loaded is not None
+    loaded = current.loaded
+    if loaded is None:
+        return start_index
     try:
-        history_state = current.loaded.bindings.backend.history_state
+        history_state = loaded.bindings.backend.history_state
     except AttributeError:
         return start_index
     pre_output_len = history_state.get(PRE_OUTPUT_HISTORY_LEN_STATE_KEY)
@@ -408,10 +405,11 @@ def _post_compaction_history_start_index(turn_state: TurnRuntimeState, current: 
 
 def _clear_post_compaction_history_start_index(current: CurrentAgent) -> None:
     """Clear the transient request-time compression metadata floor."""
-    if TYPE_CHECKING:
-        assert current.loaded is not None
+    loaded = current.loaded
+    if loaded is None:
+        return
     try:
-        history_state = current.loaded.bindings.backend.history_state
+        history_state = loaded.bindings.backend.history_state
     except AttributeError:
         return
     history_state.pop(PRE_OUTPUT_HISTORY_LEN_STATE_KEY, None)
@@ -424,5 +422,6 @@ def _expire_current_run_scope(
     if scope is None:
         return
     turn_state.lease.clear_current_run_scope(scope)
-    if current.loaded is not None:
-        current.loaded.reminder_middleware.expire_current_run_scope(scope.reminder_scope)
+    loaded = current.loaded
+    if loaded is not None:
+        loaded.reminder_middleware.expire_current_run_scope(scope.reminder_scope)

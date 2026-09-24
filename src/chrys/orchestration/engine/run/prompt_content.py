@@ -173,7 +173,8 @@ class PromptContentPreparer:
                     )
                 )
             return None
-        assert loaded is not None, "image attachment loading did not produce a result"
+        if loaded is None:
+            raise RuntimeError("Image attachment loading did not produce a result.")
         if loaded.errors:
             if self._should_publish(should_publish):
                 await self._bus.publish(

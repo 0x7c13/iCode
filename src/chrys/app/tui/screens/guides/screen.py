@@ -160,7 +160,8 @@ class GuideDialog(BaseDialog[None]):
 
     def _enter_error_state(self) -> None:
         """Show a localized error state when docs or the index are unavailable."""
-        assert self._tree is not None and self._markdown is not None and self._empty is not None
+        if self._tree is None or self._markdown is None or self._empty is None:
+            raise RuntimeError("The guide widgets have not been mounted.")
         self._tree.display = False
         self._markdown.display = False
         ref = _GUIDE_INDEX_ERROR.bind() if self._index_error else _GUIDE_DOCS_UNAVAILABLE.bind()
@@ -191,16 +192,24 @@ class GuideDialog(BaseDialog[None]):
     # Topic tree
     # ------------------------------------------------------------------
 
+    def _require_tree(self) -> Tree[GuideTopic]:
+        tree = self._tree
+        if tree is None:
+            raise RuntimeError("The guide tree has not been mounted.")
+        return tree
+
     def _rebuild_tree(self) -> None:
-        assert self._tree is not None and self._index is not None
-        self._tree.clear()
+        tree = self._require_tree()
+        if self._index is None:
+            raise RuntimeError("Rebuilding the guide tree requires mounted widgets and a loaded index.")
+        tree.clear()
         target = self._active_topic
         for topic in self._index.topics:
-            self._add_topic(self._tree.root, topic)
+            self._add_topic(tree.root, topic)
         # Keep the active topic highlighted across rebuilds (first build,
         # global locale switch).
         if target is not None:
-            selected = self._find_topic_node(self._tree.root, target)
+            selected = self._find_topic_node(tree.root, target)
             if selected is not None:
                 self._highlight_after_refresh(selected)
 
@@ -211,8 +220,7 @@ class GuideDialog(BaseDialog[None]):
         dropped when another topic became active in the meantime, so a late
         callback cannot pull the highlight away from the document on screen.
         """
-        tree = self._tree
-        assert tree is not None
+        tree = self._require_tree()
 
         def move() -> None:
             if node.data is self._active_topic:
@@ -228,8 +236,7 @@ class GuideDialog(BaseDialog[None]):
         renders or idles.  A stale line (-1 for a new node) lands the cursor on
         whatever row it clamps to, so read ``last_line`` first to number them.
         """
-        tree = self._tree
-        assert tree is not None
+        tree = self._require_tree()
         _ = tree.last_line
         tree.move_cursor(node)
 

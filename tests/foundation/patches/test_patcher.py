@@ -210,6 +210,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         textual_message_pump,
         textual_option_list,
         textual_precompose,
+        textual_pruned_tabs,
         textual_selection_extract,
         textual_tab_selection,
         textual_utf8_decoder,
@@ -241,6 +242,7 @@ def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch.setattr(textual_dispatch_cache, "apply_runtime_patch", lambda: calls.append("dispatch_cache"))
     monkeypatch.setattr(textual_option_list, "apply_runtime_patch", lambda: calls.append("option_list"))
     monkeypatch.setattr(textual_precompose, "apply_runtime_patch", lambda: calls.append("precompose"))
+    monkeypatch.setattr(textual_pruned_tabs, "apply_runtime_patch", lambda: calls.append("pruned_tabs"))
     monkeypatch.setattr(textual_selection_extract, "apply_runtime_patch", lambda: calls.append("selection_extract"))
     monkeypatch.setattr(textual_tab_selection, "apply_runtime_patch", lambda: calls.append("tab_selection"))
     monkeypatch.setattr(textual_ime_cursor_anchor, "apply_runtime_patch", lambda: calls.append("ime_cursor_anchor"))
@@ -262,6 +264,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         "dispatch_cache",
         "option_list",
         "precompose",
+        "pruned_tabs",
         "selection_extract",
         "tab_selection",
         "ime_cursor_anchor",
