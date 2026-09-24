@@ -447,13 +447,46 @@ async def test_preview_cancellation_waits_for_cleanup_and_cannot_open_a_late_vie
 async def test_preview_deadline_and_confirmation_cancel_stay_in_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from chrys.app.tui.screens.main import workflow_browser as workflow_controller
+    from chrys.orchestration.workflows.preview import WorkflowPreview
 
     project = make_project(tmp_path)
     monkeypatch.chdir(project)
     write_workflow(project, "slow", b"import time\ntime.sleep(60)\n")
-    # Discovery and inspection now share the deadline; leave time to reach the Trust dialog.
-    monkeypatch.setattr(workflow_controller, "PREVIEW_TIMEOUT_SECONDS", 1.0)
+    real_preview = WorkflowCatalog.preview
+
+    async def preview(
+        catalog: WorkflowCatalog,
+        workflow_id: str,
+        *,
+        timeout: float | None = None,
+        request_id: str = "",
+        expected_identity=None,
+        trust: bool = False,
+        authorize=None,
+    ) -> WorkflowPreview:
+        # Time out a second after the source is trusted. Discovery and inspection before the Trust
+        # dialog count against the preview deadline, and a loaded runner can spend a short one
+        # there, so the dialog would never open.
+        deadline = asyncio.timeout(None)
+
+        async def authorize_then_start_deadline(inspection) -> bool:
+            accepted = await authorize(inspection)
+            if accepted:
+                deadline.reschedule(asyncio.get_running_loop().time() + 1.0)
+            return accepted
+
+        async with deadline:
+            return await real_preview(
+                catalog,
+                workflow_id,
+                timeout=timeout,
+                request_id=request_id,
+                expected_identity=expected_identity,
+                trust=trust,
+                authorize=None if authorize is None else authorize_then_start_deadline,
+            )
+
+    monkeypatch.setattr(WorkflowCatalog, "preview", create_autospec(real_preview, side_effect=preview))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
     async with app.run_test(size=(120, 40)) as pilot:
         main = app._main_screen
@@ -472,7 +505,6 @@ async def test_preview_deadline_and_confirmation_cancel_stay_in_selection(
         await dismiss_workflow_notice(main, pilot, "timed out")
         assert workflow_selecting(main) and panel.preview is None
         write_workflow(project, "slow", python_workflow("def fn(value):\n    return value\n", "fn"))
-        monkeypatch.setattr(workflow_controller, "PREVIEW_TIMEOUT_SECONDS", 30.0)
         main._workflow.browser.open("slow", input_text="start after loading")
         await wait_for(
             lambda: isinstance(app.screen, WorkflowConfirmDialog) and app.screen.is_mounted,

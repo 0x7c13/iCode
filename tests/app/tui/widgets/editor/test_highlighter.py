@@ -403,6 +403,9 @@ async def test_editor_sources_do_not_reference_textual_symbols_added_by_chrys_pa
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
+                        # A wrapped dunder replaces a method every class has; counting it would flag every super().__init__().
+                        if target.attr.startswith("__") and target.attr.endswith("__"):
+                            continue
                         if target.value.id[:1].isupper() or target.value.id.endswith("_mod"):
                             patch_added_symbols.add(target.attr)
                     elif (

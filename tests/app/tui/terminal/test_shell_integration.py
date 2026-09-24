@@ -11,9 +11,11 @@ import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Protocol
+from unittest.mock import patch
 
 import pytest
 
+from chrys.app.tui.terminal import shell_integration
 from chrys.app.tui.terminal.emulator import CommandSubmitted, DirectoryChanged, TerminalEmulator
 from chrys.app.tui.terminal.pty_process import PtyProcess, spawn_pty_process
 from chrys.app.tui.terminal.shell_integration import ShellLaunch, prepare_shell_launch
@@ -77,6 +79,39 @@ def test_bash_gets_its_rcfile_option_ahead_of_every_other_argument() -> None:
     finally:
         launch.clean_up()
     assert not rcfile.exists()
+
+
+@pytest.mark.parametrize(("command", "failed_file"), [("bash", "init.bash"), ("zsh", ".zshenv"), ("zsh", ".zshrc")])
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt])
+def test_failed_startup_file_write_removes_scratch_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, failed_file: str, error_type: type[BaseException]
+) -> None:
+    monkeypatch.setattr(shell_integration.tempfile, "tempdir", str(tmp_path))
+    env = {"HOME": str(tmp_path / "home"), "ZDOTDIR": str(tmp_path / "user-zsh")}
+    original_env = env.copy()
+    real_write_text = Path.write_text
+    written: list[Path] = []
+    error = error_type("startup write failed")
+
+    def failing_write_text(
+        path: Path, data: str, encoding: str | None = None, errors: str | None = None, newline: str | None = None
+    ) -> int:
+        result = real_write_text(path, data, encoding=encoding, errors=errors, newline=newline)
+        written.append(path)
+        if path.name == failed_file:
+            raise error
+        return result
+
+    with (
+        patch.object(Path, "write_text", autospec=True, side_effect=failing_write_text),
+        pytest.raises(error_type, match="startup write failed") as caught,
+    ):
+        prepare_shell_launch(command, env)
+
+    assert caught.value is error
+    assert written[-1].name == failed_file
+    assert list(tmp_path.iterdir()) == []
+    assert env == original_env
 
 
 def test_fish_gets_its_hooks_as_an_init_command() -> None:

@@ -5,16 +5,21 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
 from textual.message import Message
-from textual.widgets import Button, ContentSwitcher, Tab, TabbedContent, Tabs
+from textual.screen import ModalScreen
+from textual.widgets import Button, ContentSwitcher, Static, Tab, TabbedContent, Tabs
+from textual.widgets._tabs import Underline
 
 from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
 from chrys.app.tui.screens.dialogs.workflow_confirm import WorkflowConfirmDialog
 from chrys.app.tui.screens.dialogs.workflow_picker import WorkflowPickerDialog
+from chrys.app.tui.screens.main import workflow_session_view
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
@@ -39,6 +44,19 @@ from ._workflow_support import (
     switch_mode,
     workflow_selection,
 )
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+    from textual.pilot import Pilot
+
+    from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.widgets.workflow.projector import ObservedRun
+    from chrys.service.workflows.artifacts import WorkflowRunRecord
+
+
+class _Cover(ModalScreen[None]):
+    def compose(self) -> ComposeResult:
+        yield Static("cover")
 
 
 async def test_overlapping_run_tabs_keep_latest_request_and_append_existing_tabs(
@@ -163,6 +181,92 @@ async def test_a_run_tab_update_leaves_other_tab_bars_working_while_it_waits(
         assert update.exception() is None
         assert [tab.id for tab in tabs.query(Tab)] == ["run-r3"] and tabs.active == ""
         await assert_app_handles_messages(app)
+
+
+async def _restore_archived_runs(main: MainScreen, pilot: Pilot, cwd: Path) -> tuple[str, str]:
+    """Restore a session of two archived runs, showing the later one; returns (earlier, later)."""
+    store = main._services.state_store
+    assert store is not None
+    session_id = str(uuid4())
+    earlier, later = uuid4().hex, uuid4().hex
+    for run_id in (earlier, later):
+        await record_workflow_run(
+            store.session_dir(session_id) / "workflows" / run_id,
+            session_id=session_id,
+            title="Archived review",
+            outcome="completed",
+        )
+    await save_workflow_session(store, session_id, cwd)
+    await switch_mode(main, pilot)
+    await main._workflow.session_view.restore_session(session_id, later)
+    await wait_for(lambda: main._workflow_panel.run_id == later and main.app.screen is main, pilot=pilot)
+    return earlier, later
+
+
+def _underlines(tabs: Tabs, tab: Tab) -> bool:
+    underline = tabs.query_one(Underline)
+    span = tab.virtual_region.shrink(tab.styles.gutter).column_span
+    return tab.has_class("-active") and (underline.highlight_start, underline.highlight_end) == span
+
+
+async def test_the_run_tab_underline_follows_clicks_that_open_archived_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each click opens a loading dialog over the bar before the underline moves."""
+    monkeypatch.chdir(make_project(tmp_path))
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(145, 45)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        earlier, later = await _restore_archived_runs(main, pilot, tmp_path)
+        panel = main._workflow_panel
+        tabs = panel.query_one("#workflow-run-tabs", Tabs)
+        for run_id in (earlier, later, earlier):
+            await click_when_settled(pilot, f"#run-{run_id}")
+            await wait_for(lambda run_id=run_id: panel.run_id == run_id and app.screen is main, pilot=pilot)
+            tab = tabs.query_one(f"#run-{run_id}", Tab)
+            await wait_for(lambda tab=tab: _underlines(tabs, tab), pilot=pilot, description="underline under the run")
+
+
+async def test_a_run_shown_once_its_covered_loading_dialog_closes_keeps_its_tab(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(make_project(tmp_path))
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(145, 45)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        earlier, later = await _restore_archived_runs(main, pilot, tmp_path)
+        panel = main._workflow_panel
+        tabs = panel.query_one("#workflow-run-tabs", Tabs)
+        read_started, release = threading.Event(), threading.Event()
+        original_read = workflow_session_view.read_observed_run
+
+        def read(record: WorkflowRunRecord) -> ObservedRun:
+            read_started.set()
+            release.wait(ENGINE_TURN_TIMEOUT)
+            return original_read(record)
+
+        monkeypatch.setattr(workflow_session_view, "read_observed_run", read)
+        cover = _Cover()
+        try:
+            # The screen handling the click awaits the read, so nothing here may settle Pilot until it ends.
+            tab = tabs.query_one(f"#run-{earlier}", Tab)
+            assert tab.post_message(Tab.Clicked(tab))
+            await wait_for(
+                lambda: read_started.is_set() and isinstance(app.screen, AgentLoadDialog) and app.screen.is_mounted,
+                description="the archived run is read behind a mounted loading dialog",
+            )
+            await app.push_screen(cover)
+        finally:
+            release.set()
+        await wait_for(lambda: not main._workflow.session_view.tab_flow.active, pilot=pilot)
+        # The run is only shown once the covered dialog can close; until then the bar keeps the shown run.
+        assert panel.run_id == later and tabs.active == f"run-{later}"
+        cover.dismiss()
+        await wait_for(lambda: app.screen is main and panel.run_id == earlier, pilot=pilot)
+        assert tabs.active == f"run-{earlier}"
+        await wait_for(lambda: _underlines(tabs, tab), pilot=pilot, description="underline under the shown run")
 
 
 async def test_start_adds_runs_retry_does_not_and_history_controls_are_read_only(

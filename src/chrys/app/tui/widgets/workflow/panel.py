@@ -113,6 +113,8 @@ class WorkflowPanel(Vertical):
     WorkflowPanel.-empty #workflow-stop { display: none; }
     WorkflowPanel #workflow-code-scroll { height: 1fr; overflow: auto auto; scrollbar-size: 1 1; }
     WorkflowPanel #workflow-info-scroll { height: 1fr; padding: 0; scrollbar-size: 1 1; }
+    WorkflowPanel #workflow-input-scroll { height: 1fr; scrollbar-size-vertical: 1; }
+    WorkflowPanel #workflow-run-input { margin: 0 1; }
     WorkflowPanel #workflow-code-source { height: auto; width: auto; min-width: 100%; margin-left: -1; }
     """
 
@@ -223,7 +225,7 @@ class WorkflowPanel(Vertical):
                     Content.from_text(text.render(text.INPUT.bind(), self.locale_controller), markup=False),
                     id="workflow-input-tab",
                 ),
-                VerticalScroll(),
+                VerticalScroll(id="workflow-input-scroll"),
             ):
                 yield Static(id="workflow-run-input")
             with TabPane(
@@ -350,6 +352,7 @@ class WorkflowPanel(Vertical):
         self.query_one("#workflow-info-scroll", VerticalScroll).scroll_home(animate=False)
         self.clear_outputs()
         self.run_id = run_id
+        self._select_run_tab()
         self._graph_run_id = None
         self.previewing = False
         self.remove_class("-empty")
@@ -383,6 +386,14 @@ class WorkflowPanel(Vertical):
                 self.run_ids = requested
                 tabs.active = f"run-{self.run_id}" if self.run_id in requested else ""
                 tabs.display = bool(requested)
+
+    def _select_run_tab(self) -> None:
+        """Move the tab bar to a run shown after its switch ended; ``show_runs`` settles tabs it still adds."""
+        tabs = self.query_one("#workflow-run-tabs", Tabs)
+        tab_id = f"run-{self.run_id}"
+        if self.run_id and tabs.active != tab_id and tabs.query(f"#tabs-list > #{tab_id}"):
+            with tabs.prevent(Tabs.TabActivated):
+                tabs.active = tab_id
 
     @on(Tabs.TabActivated, "#workflow-run-tabs")
     def run_selected(self, event: Tabs.TabActivated) -> None:
