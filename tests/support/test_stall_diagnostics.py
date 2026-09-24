@@ -1,0 +1,122 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""The stall sampler tells a busy loop thread from a starved executor."""
+
+from __future__ import annotations
+
+import gc
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from tests.support.stall_diagnostics import StallSampler, format_report
+from tests.support.waiting import wait_for
+
+_SAMPLES = 5
+_SPIN_DEADLINE_SECONDS = 5.0
+
+
+def _spin_until_sampled(sampler: StallSampler) -> None:
+    """Keep the calling thread busy in Python until the sampler has seen it enough times: the stretch to attribute.
+
+    Spinning on the sampler's own count, not on the clock, keeps the number of samples the same under any load.
+    """
+    deadline = time.monotonic() + _SPIN_DEADLINE_SECONDS
+    while sampler.sampled()[0] < _SAMPLES:
+        assert time.monotonic() < deadline, "the sampler stopped sampling"
+
+
+def _hold(release: threading.Event) -> None:
+    release.wait()
+
+
+def test_sampler_attributes_a_busy_loop_thread_and_a_starved_executor() -> None:
+    reports: list[str] = []
+    sampler = StallSampler(
+        loop_thread_ident=threading.get_ident(), sink=reports.append, interval=0.02, report_after=0.0
+    )
+    sampler.start()
+    release = threading.Event()
+    try:
+        # One thread, two holds: the second sits in the queue for as long as the phase lasts.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="asyncio") as pool:
+            pool.submit(_hold, release)
+            pool.submit(_hold, release)
+            sampler.begin_phase("busy")
+            _spin_until_sampled(sampler)
+            phase = sampler.end_phase(failed=False)
+            release.set()
+    finally:
+        sampler.close()
+
+    assert phase is not None
+    assert phase.samples >= _SAMPLES
+    assert phase.idle_samples == 0
+    assert sum(phase.busy.values()) == phase.samples
+    assert all("_spin_until_sampled" in signature for signature in phase.busy)
+    assert "_spin_until_sampled" in phase.longest_busy[0]
+    assert 0.0 < phase.longest_busy[1] <= phase.seconds
+    assert phase.executor_threads_max == 1
+    assert phase.executor_queue_max == 1
+    assert any("_hold" in signature for signature in phase.executor_busy)
+    assert not phase.freezes
+    # Long enough to be reported, with every finding in the text.
+    assert reports == [format_report(phase, failed=False)]
+    report = reports[0]
+    assert "passed after" in report
+    assert "_spin_until_sampled" in report and "_hold" in report and "queue max 1" in report
+
+
+@pytest.mark.asyncio
+async def test_sampler_sees_a_loop_waiting_in_the_selector_as_idle() -> None:
+    reports: list[str] = []
+    sampler = StallSampler(loop_thread_ident=threading.get_ident(), sink=reports.append, interval=0.02)
+    sampler.start()
+    try:
+        sampler.begin_phase("idle")
+        # The subject: between two polls of this predicate the loop has nothing to run and sits in the
+        # selector, which the sampler must recognise on this platform's event loop as idle.
+        await wait_for(lambda: sampler.sampled()[1] >= _SAMPLES, description="the loop was sampled idle")
+        phase = sampler.end_phase(failed=False)
+    finally:
+        sampler.close()
+
+    assert phase is not None
+    assert phase.idle_samples >= _SAMPLES
+    assert reports == []  # short and green: nothing to report
+    assert "in the selector" in format_report(phase, failed=True)
+
+
+def test_sampler_reports_a_failed_phase_however_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    reports: list[str] = []
+    sampler = StallSampler(loop_thread_ident=threading.get_ident(), sink=reports.append, interval=0.02)
+    # A test that pins the clock (as the duration-formatting tests do) must not pin the phase's length.
+    monkeypatch.setattr(time, "monotonic", lambda: 1e6)
+    sampler.begin_phase("failed")
+    phase = sampler.end_phase(failed=True)
+    assert phase is not None
+    assert phase.seconds < 1.0
+    assert reports == [format_report(phase, failed=True)]
+    assert "failed after 0.0s" in reports[0] and "no samples" in reports[0]
+    assert sampler.end_phase(failed=True) is None
+
+
+def test_sampler_lists_the_collections_that_paused_the_phase() -> None:
+    reports: list[str] = []
+    # Any collection counts, so the one forced below is listed whatever this machine's speed.
+    sampler = StallSampler(loop_thread_ident=threading.get_ident(), sink=reports.append, interval=0.02, gc_pause=0.0)
+    sampler.start()
+    try:
+        sampler.begin_phase("collecting")
+        gc.collect()
+        phase = sampler.end_phase(failed=False)
+    finally:
+        sampler.close()
+    assert sampler._on_gc not in gc.callbacks
+
+    assert phase is not None
+    assert [generation for _, generation, _ in phase.gc_pauses][-1] == 2
+    assert all(0.0 <= at <= phase.seconds for at, _, _ in phase.gc_pauses)
+    assert "gen2" in format_report(phase, failed=True)

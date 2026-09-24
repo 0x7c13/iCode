@@ -1,0 +1,615 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Tests for the hook subprocess runner.
+
+These tests shell out to ``python -c`` so they're platform-portable
+without a fixture script tree.  They cover the happy path, the
+``CHRYS_HOOK_RESULT`` contract, the timeout, and the env-var
+plumbing.  The ``detach`` path is harder to test deterministically
+(by design — we lose visibility of the child) so it gets a single
+smoke test that just confirms detached launch doesn't raise.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from chrys.foundation.platform import runtime_paths
+from chrys.service.hooks import runner as runner_mod
+from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.loader import load_hooks_project
+from chrys.service.hooks.runner import HookRunner
+from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun
+from tests.support.waiting import wait_until
+
+
+@pytest.fixture
+def runner(tmp_path: Path) -> HookRunner:
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    return HookRunner(hooks_dir=hooks_dir)
+
+
+def _exe(path: Path) -> Path:
+    if sys.platform == "win32" and not path.suffix:
+        return path.with_name(path.name + ".exe")
+    return path
+
+
+def _make_executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _patch_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    python: Path,
+    prefix: Path,
+    scripts: Path,
+) -> None:
+    monkeypatch.setattr(runtime_paths.sys, "executable", str(python))
+    monkeypatch.setattr(runtime_paths.sys, "prefix", str(prefix))
+    monkeypatch.setattr(runtime_paths.sys, "exec_prefix", str(prefix))
+    monkeypatch.setattr(
+        runtime_paths.sysconfig,
+        "get_path",
+        lambda name: str(scripts) if name == "scripts" else "",
+    )
+
+
+def _command_hook(*, argv: list[str], timeout: float = 5.0) -> HookConfig:
+    return HookConfig(
+        id="t",
+        event=HookEvent.BEFORE_TOOL_CALL,
+        run=HookRun(type="command", argv=argv),
+        execution=HookExecution(mode="blocking", timeout_seconds=timeout),
+        match=HookMatch(),
+    )
+
+
+def _process_state(pid: int) -> str | None:
+    result = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    state = result.stdout.strip()
+    return state[:1] if state else None
+
+
+def test_find_python_runner_prefers_system_uv_when_frozen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bin = tmp_path / "runtime" / "bin"
+    system_bin = tmp_path / "system" / "bin"
+    _make_executable(_exe(runtime_bin / "uv"))
+    system_uv = _make_executable(_exe(system_bin / "uv"))
+    _patch_runtime(
+        monkeypatch,
+        python=_exe(runtime_bin / "python"),
+        prefix=tmp_path / "runtime",
+        scripts=runtime_bin,
+    )
+    if sys.platform == "win32":
+        monkeypatch.setenv("PATHEXT", ".exe")
+    monkeypatch.setenv("PYAPP", "1")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
+
+    assert runner_mod._find_python_runner() == [str(system_uv), "run"]
+
+
+def test_find_python_runner_prefers_system_python_over_runtime_uv_when_frozen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bin = tmp_path / "runtime" / "bin"
+    system_bin = tmp_path / "system" / "bin"
+    _make_executable(_exe(runtime_bin / "uv"))
+    system_python = _make_executable(_exe(system_bin / "python"))
+    _patch_runtime(
+        monkeypatch,
+        python=_exe(runtime_bin / "python"),
+        prefix=tmp_path / "runtime",
+        scripts=runtime_bin,
+    )
+    if sys.platform == "win32":
+        monkeypatch.setenv("PATHEXT", ".exe")
+    monkeypatch.setenv("PYAPP", "1")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
+
+    assert runner_mod._find_python_runner() == [str(system_python)]
+
+
+def test_command_invocation_demotes_runtime_path_when_frozen(
+    runner: HookRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_bin = tmp_path / "runtime" / "bin"
+    system_bin = tmp_path / "system" / "bin"
+    _patch_runtime(
+        monkeypatch,
+        python=_exe(runtime_bin / "python"),
+        prefix=tmp_path / "runtime",
+        scripts=runtime_bin,
+    )
+    monkeypatch.setenv("PYAPP", "1")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
+    hook = _command_hook(argv=["python", "--version"])
+
+    invocation = runner._build_invocation(hook, {"cwd": str(tmp_path), "profile": "Code", "session_id": "s1"})
+
+    assert invocation.env["PATH"].split(os.pathsep)[:2] == [str(system_bin), str(runtime_bin)]
+
+
+def test_command_invocation_strips_inherited_python_runtime_overrides(
+    runner: HookRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONHOME", "/bad/home")
+    monkeypatch.setenv("PYTHONPATH", "/bad/path")
+    hook = _command_hook(argv=["python", "--version"])
+
+    invocation = runner._build_invocation(hook, {"cwd": str(tmp_path), "profile": "Code", "session_id": "s1"})
+
+    try:
+        env_keys = {key.upper() for key in invocation.env}
+        assert "PYTHONHOME" not in env_keys
+        assert "PYTHONPATH" not in env_keys
+    finally:
+        invocation.result_path.unlink(missing_ok=True)
+        invocation.payload_path.unlink(missing_ok=True)
+
+
+def test_command_invocation_allows_explicit_python_runtime_overrides(
+    runner: HookRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTHONHOME", "/bad/home")
+    monkeypatch.setenv("PYTHONPATH", "/bad/path")
+    hook = HookConfig(
+        id="explicit-python-env",
+        event=HookEvent.SESSION_START,
+        run=HookRun(
+            type="command",
+            argv=["python", "--version"],
+            env={"PYTHONHOME": "/explicit/home", "PYTHONPATH": "/explicit/path"},
+        ),
+        execution=HookExecution(mode="blocking", timeout_seconds=5),
+        match=HookMatch(),
+    )
+
+    invocation = runner._build_invocation(hook, {"cwd": str(tmp_path), "profile": "Code", "session_id": "s1"})
+
+    try:
+        assert invocation.env["PYTHONHOME"] == "/explicit/home"
+        assert invocation.env["PYTHONPATH"] == "/explicit/path"
+    finally:
+        invocation.result_path.unlink(missing_ok=True)
+        invocation.payload_path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_command_runs_and_captures_stdout(runner: HookRunner) -> None:
+    hook = _command_hook(argv=[sys.executable, "-c", "print('hello')"])
+    result = await runner.run_and_wait(hook, {"profile": "Code", "session_id": "s1"})
+    assert result.exit_code == 0
+    assert "hello" in result.stdout
+    assert result.timed_out is False
+
+
+@pytest.mark.asyncio
+async def test_decision_via_result_file(runner: HookRunner) -> None:
+    script = textwrap.dedent(
+        """
+        import json, os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"action": "block", "reason": "policy: nope"}, f)
+        print("debug log line")
+        """
+    )
+    hook = _command_hook(argv=[sys.executable, "-c", script])
+    result = await runner.run_and_wait(hook, {"profile": "Code"})
+    assert result.exit_code == 0
+    # stdout reserved for logs, not the decision.
+    assert "debug log line" in result.stdout
+    assert result.decision == {"action": "block", "reason": "policy: nope"}
+
+
+@pytest.mark.asyncio
+async def test_empty_result_file_is_no_opinion(runner: HookRunner) -> None:
+    hook = _command_hook(argv=[sys.executable, "-c", "pass"])
+    result = await runner.run_and_wait(hook, {})
+    assert result.exit_code == 0
+    assert result.decision == {}
+
+
+def test_oversized_result_file_is_rejected_before_json_parse(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner_mod, "HOOK_RESULT_FILE_MAX_BYTES", 100)
+    path = tmp_path / "oversized.json"
+    path.write_bytes(b'{"action":"allow","padding":"' + b"x" * 100 + b'"}')
+
+    with caplog.at_level(logging.WARNING, logger="chrys.service.hooks.runner"):
+        result = runner_mod._read_result_file(path)
+
+    assert result == {}
+    assert "exceeded the 100-byte limit" in caplog.text
+
+
+def test_result_file_at_byte_limit_is_parsed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = b'{"action":"allow"}'
+    monkeypatch.setattr(runner_mod, "HOOK_RESULT_FILE_MAX_BYTES", len(payload))
+    path = tmp_path / "at-limit.json"
+    path.write_bytes(payload)
+
+    assert runner_mod._read_result_file(path) == {"action": "allow"}
+
+
+@pytest.mark.asyncio
+async def test_payload_visible_via_file(runner: HookRunner) -> None:
+    script = textwrap.dedent(
+        """
+        import os, json
+        with open(os.environ["CHRYS_HOOK_PAYLOAD_FILE"]) as payload_file:
+            payload = json.load(payload_file)
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"extra_context": payload["event"]}, f)
+        """
+    )
+    hook = _command_hook(argv=[sys.executable, "-c", script])
+    result = await runner.run_and_wait(hook, {"event": "before_tool_call"})
+    assert result.decision == {"extra_context": "before_tool_call"}
+
+
+@pytest.mark.asyncio
+async def test_launch_error_returns_failed_result(runner: HookRunner) -> None:
+    hook = _command_hook(argv=["/definitely/not/a/real/chrys-hook-command"])
+    result = await runner.run_and_wait(hook, {})
+    assert result.exit_code is None
+    assert result.stderr
+
+
+@pytest.mark.asyncio
+async def test_timeout_kills_process(runner: HookRunner) -> None:
+    hook = _command_hook(
+        argv=[sys.executable, "-c", "import time; time.sleep(10)"],
+        timeout=0.5,
+    )
+    result = await runner.run_and_wait(hook, {})
+    assert result.timed_out is True
+    assert result.exit_code is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups only")
+@pytest.mark.asyncio
+async def test_stopped_grandchild_hook_returns_and_cleans_group(runner: HookRunner, tmp_path: Path) -> None:
+    pid_file = tmp_path / "child.pid"
+    script = textwrap.dedent(
+        f"""
+        import os
+        import signal
+        import subprocess
+        import sys
+
+        subprocess.Popen([
+            sys.executable,
+            "-c",
+            "import os, pathlib, signal, time; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='ascii'); os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
+        ])
+        """
+    )
+    hook = _command_hook(argv=[sys.executable, "-c", script], timeout=10)
+
+    result = await runner.run_and_wait(hook, {})
+
+    assert result.timed_out is True
+    assert "stopped state" in result.stderr
+    child_pid = int(pid_file.read_text(encoding="ascii"))
+    for _ in range(20):
+        state = _process_state(child_pid)
+        if state is None or state == "Z":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(f"stopped hook grandchild survived cleanup with state={state!r}")
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_recorded(runner: HookRunner) -> None:
+    hook = _command_hook(argv=[sys.executable, "-c", "import sys; sys.exit(7)"])
+    result = await runner.run_and_wait(hook, {})
+    assert result.exit_code == 7
+
+
+@pytest.mark.asyncio
+async def test_extra_env_passed_through(runner: HookRunner) -> None:
+    script = textwrap.dedent(
+        """
+        import os, json
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"extra_context": os.environ.get("MY_VAR", "")}, f)
+        """
+    )
+    hook = HookConfig(
+        id="env",
+        event=HookEvent.SESSION_START,
+        run=HookRun(type="command", argv=[sys.executable, "-c", script], env={"MY_VAR": "set-via-${profile}"}),
+        execution=HookExecution(mode="blocking", timeout_seconds=5),
+        match=HookMatch(),
+    )
+    result = await runner.run_and_wait(hook, {"profile": "Code"})
+    assert result.decision == {"extra_context": "set-via-Code"}
+
+
+@pytest.mark.asyncio
+async def test_script_path_resolves_relative_to_hooks_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import chrys.service.hooks.runner as runner_mod
+
+    hooks_dir = tmp_path / "hooks"
+    scripts_dir = hooks_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    script = scripts_dir / "smoke.py"
+    script.write_text("print('from-script')\n", encoding="utf-8")
+
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="s",
+        event=HookEvent.SESSION_START,
+        run=HookRun(type="script", path="scripts/smoke.py"),
+        execution=HookExecution(mode="blocking", timeout_seconds=5),
+        match=HookMatch(),
+    )
+    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    result = await runner.run_and_wait(hook, {})
+    assert result.exit_code == 0
+    assert "from-script" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_project_script_path_resolves_relative_to_project_hooks_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "project"
+    config_hooks_dir = tmp_path / "config" / "hooks"
+    project_scripts_dir = project_root / ".chrys" / "hooks" / "scripts"
+    project_scripts_dir.mkdir(parents=True)
+    config_hooks_dir.mkdir(parents=True)
+    (project_root / ".chrys" / "hooks" / "hooks.yaml").write_text(
+        """\
+version: 1
+hooks:
+  - id: project-script
+    event: session_start
+    run:
+      type: script
+      path: scripts/project_smoke.py
+    execution:
+      mode: blocking
+      timeout_seconds: 5
+""",
+        encoding="utf-8",
+    )
+    (project_scripts_dir / "project_smoke.py").write_text("print('from-project-script')\n", encoding="utf-8")
+
+    file = load_hooks_project(project_root)
+    assert file is not None
+    hook = file.hooks[0]
+    runner = HookRunner(hooks_dir=config_hooks_dir)
+
+    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    result = await runner.run_and_wait(hook, {})
+
+    assert result.exit_code == 0
+    assert "from-project-script" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="setsid not available on Windows")
+@pytest.mark.asyncio
+async def test_detached_spawn_does_not_raise(tmp_path: Path) -> None:
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="detached",
+        event=HookEvent.SESSION_END,
+        run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+        execution=HookExecution(mode="fire_and_forget", detach=True, timeout_seconds=5),
+        match=HookMatch(),
+    )
+    await runner.spawn_detached(hook, {"session_id": "abc"})
+    # Poll for the detached child to flush its log dir: a fixed sleep races the
+    # detached subprocess spawn under slow/parallel CI.
+    log_root = hooks_dir / "logs" / "abc"
+    assert await wait_until(log_root.exists), "expected log dir for detached hook"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+@pytest.mark.asyncio
+async def test_detached_log_file_is_owner_only(tmp_path: Path) -> None:
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="detached",
+        event=HookEvent.SESSION_END,
+        run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+        execution=HookExecution(mode="fire_and_forget", detach=True, timeout_seconds=5),
+        match=HookMatch(),
+    )
+    await runner.spawn_detached(hook, {"session_id": "abc"})
+
+    log_files = list((hooks_dir / "logs" / "abc").glob("*.log"))
+    assert log_files, "expected detached hook log file"
+    assert os.stat(log_files[0]).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_detached_spawn_uses_windows_creation_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import subprocess
+
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="detached-win",
+        event=HookEvent.SESSION_END,
+        run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+        execution=HookExecution(mode="fire_and_forget", detach=True, timeout_seconds=5),
+        match=HookMatch(),
+    )
+    seen: dict[str, object] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
+            seen["cmd"] = cmd
+            seen["kwargs"] = kwargs
+
+    def _fake_popen(cmd: list[str], **kwargs: object) -> _FakePopen:
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(runtime_paths.sysconfig, "get_path", lambda name: "")
+    monkeypatch.setattr(subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
+    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setenv("PYAPP", "1")
+    monkeypatch.setenv("PYTHONHOME", "/bad/home")
+    monkeypatch.setenv("PYTHONPATH", "/bad/path")
+
+    await runner.spawn_detached(hook, {"session_id": "abc"})
+
+    cmd = seen["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[:4] == [sys.executable, "-s", "-m", "chrys.service.hooks.detached_worker"]
+    assert len(cmd) == 5
+    kwargs = seen["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["creationflags"] == 0x00000208
+    assert "start_new_session" not in kwargs
+    assert kwargs["stdout"] is kwargs["stderr"]
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    env_keys = {str(key).upper() for key in env}
+    assert "PYTHONHOME" not in env_keys
+    assert "PYTHONPATH" not in env_keys
+    assert env["PYTHONNOUSERSITE"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_detached_spawn_keeps_user_site_for_non_frozen_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="detached-user-site",
+        event=HookEvent.SESSION_END,
+        run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+        execution=HookExecution(mode="fire_and_forget", detach=True, timeout_seconds=5),
+        match=HookMatch(),
+    )
+    seen: dict[str, object] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
+            seen["cmd"] = cmd
+            seen["kwargs"] = kwargs
+
+    def _fake_popen(cmd: list[str], **kwargs: object) -> _FakePopen:
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.delenv("PYAPP", raising=False)
+    monkeypatch.delenv("CHRYS_FORCE_FROZEN", raising=False)
+    monkeypatch.delenv("PYTHONNOUSERSITE", raising=False)
+
+    await runner.spawn_detached(hook, {"session_id": "abc"})
+
+    cmd = seen["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[:3] == [sys.executable, "-m", "chrys.service.hooks.detached_worker"]
+    assert len(cmd) == 4
+    kwargs = seen["kwargs"]
+    assert isinstance(kwargs, dict)
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert "PYTHONNOUSERSITE" not in env
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+@pytest.mark.asyncio
+async def test_detached_invocation_file_is_owner_only(tmp_path: Path) -> None:
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="detached",
+        event=HookEvent.SESSION_END,
+        run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+        execution=HookExecution(mode="fire_and_forget", detach=True, timeout_seconds=5),
+        match=HookMatch(),
+    )
+    invocation = runner._build_invocation(hook, {"session_id": "abc"})
+    invocation_path = runner._write_detached_invocation(invocation, hook_id=hook.id, job=None)
+    try:
+        assert os.stat(invocation_path).st_mode & 0o777 == 0o600
+    finally:
+        invocation_path.unlink(missing_ok=True)
+        invocation.result_path.unlink(missing_ok=True)
+        invocation.payload_path.unlink(missing_ok=True)
+
+
+def test_detached_invocation_json_strips_inherited_python_runtime_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    runner = HookRunner(hooks_dir=hooks_dir)
+    hook = HookConfig(
+        id="detached",
+        event=HookEvent.SESSION_END,
+        run=HookRun(type="command", argv=[sys.executable, "-c", "pass"]),
+        execution=HookExecution(mode="fire_and_forget", detach=True, timeout_seconds=5),
+        match=HookMatch(),
+    )
+    monkeypatch.setenv("PYTHONHOME", "/bad/home")
+    monkeypatch.setenv("PYTHONPATH", "/bad/path")
+    invocation = runner._build_invocation(hook, {"session_id": "abc"})
+    invocation_path = runner._write_detached_invocation(invocation, hook_id=hook.id, job=None)
+    try:
+        raw = json.loads(invocation_path.read_text(encoding="utf-8"))
+        env = raw["env"]
+        assert isinstance(env, dict)
+        env_keys = {key.upper() for key in env}
+        assert "PYTHONHOME" not in env_keys
+        assert "PYTHONPATH" not in env_keys
+    finally:
+        invocation_path.unlink(missing_ok=True)
+        invocation.result_path.unlink(missing_ok=True)
+        invocation.payload_path.unlink(missing_ok=True)

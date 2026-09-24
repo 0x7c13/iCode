@@ -1,0 +1,78 @@
+AgentLoadDialog {
+    align: center middle;
+}
+
+#agent-load-container {
+    width: 60;
+    max-width: 90%;
+    height: auto;
+    min-height: 8;
+    max-height: 85%;
+    background: $surface;
+    border: round $tui-border-warning $border-opacity;
+    border-title-color: $warning;
+    border-title-style: bold;
+    border-subtitle-color: $warning;
+}
+
+#agent-load-inner {
+    width: 100%;
+    height: auto;
+    min-height: 4;
+    background: $surface;
+    padding: 1 1;
+}
+
+#agent-load-loading {
+    width: 100%;
+    height: 1;
+    color: $warning;
+    margin: 1 0;
+}
+
+#agent-load-result-title {
+    width: 100%;
+    height: auto;
+    text-align: center;
+    margin: 0 1 1 1;
+}
+
+#agent-load-message {
+    width: 100%;
+    height: auto;
+    max-height: 18;
+    overflow-y: auto;
+    text-align: left;
+    margin: 0 1;
+}
+
+#agent-load-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1;
+}
+
+#agent-load-buttons > Button {
+    margin: 0 1;
+}
+
+AgentLoadDialog.-success #agent-load-container {
+    border: round $tui-border-success $border-opacity;
+    border-title-color: $success;
+    border-subtitle-color: $success;
+}
+
+AgentLoadDialog.-success #agent-load-loading {
+    color: $success;
+}
+
+AgentLoadDialog.-error #agent-load-container {
+    border: round $tui-border-error $border-opacity;
+    border-title-color: $error;
+    border-subtitle-color: $error;
+}
+
+AgentLoadDialog.-error #agent-load-loading {
+    color: $error;
+}

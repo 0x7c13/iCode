@@ -1,0 +1,385 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+    inputs:
+      build_ref:
+        description: 'Release ref to validate; empty uses the triggering ref'
+        type: string
+        default: ''
+
+concurrency:
+  group: ci-${{ inputs.build_ref || github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - run: uv sync --extra all
+      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
+      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
+
+  test_linux:
+    name: Unix shard (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux/core
+            artifact: linux
+            os: linux
+            workers: 4
+            pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
+          # The main screen's tests drive whole workflow runs and weigh as much
+          # as the rest of the TUI suite, which alone fills a runner; the
+          # second shard takes everything the first does not name.
+          - label: linux/1/tui
+            artifact: linux-tui-1
+            os: linux
+            workers: 4
+            pytest_args: tests/app/tui/screens/main
+          - label: linux/2/tui
+            artifact: linux-tui-2
+            os: linux
+            workers: 4
+            pytest_args: tests/app/tui --ignore=tests/app/tui/screens/main
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      # The oldest interpreter a workflow worker may run in; set up first so
+      # the project interpreter below stays first on PATH.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        id: py39
+        with:
+          python-version: "3.9"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - run: uv sync --extra all
+      - name: Prewarm src bytecode
+        run: uv run python -m compileall -q src
+      - name: Prewarm test collection
+        # Measured on #553: cuts the test step ~90-100s on Linux/Windows, but
+        # costs ~27s on macOS with no test-step payback — skip it there.
+        if: matrix.os != 'macos'
+        run: uv run pytest --collect-only -q -n 0 -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Fetch ripgrep binary
+        run: ./scripts/fetch_rg.sh
+      # ``gc_calibration`` tests are slow real-App probes covered by the
+      # scheduled gc-freeze-calibration workflow, not PR CI.
+      - name: Run tests
+        timeout-minutes: 15
+        env:
+          CHRYS_PY39_INTERPRETER: ${{ steps.py39.outputs.python-path }}
+          CHRYS_TEST_STALL_DIAGNOSTICS: "1"
+        run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Typecheck (ty)
+        # Keep test and type diagnostics independent; run once after tests,
+        # even if they failed, but stop when the workflow is cancelled. A
+        # platform's extra core shards opt out, so the check runs once.
+        if: ${{ !cancelled() && !endsWith(matrix.label, '/tui') && !matrix.skip_typecheck }}
+        run: uv run ty check --error-on-warning src/chrys
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-${{ matrix.artifact }}
+          path: test-results-${{ matrix.artifact }}.xml
+
+  test_macos:
+    name: Unix shard (${{ matrix.label }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos/core
+            artifact: macos
+            os: macos
+            workers: 6
+            pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
+          - label: macos/tui
+            artifact: macos-tui
+            os: macos
+            workers: 6
+            pytest_args: tests/app/tui
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - run: uv sync --extra all
+      - name: Prewarm src bytecode
+        run: uv run python -m compileall -q src
+      - name: Prewarm test collection
+        # Measured on #553: cuts the test step ~90-100s on Linux/Windows, but
+        # costs ~27s on macOS with no test-step payback — skip it there.
+        if: matrix.os != 'macos'
+        run: uv run pytest --collect-only -q -n 0 -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Fetch ripgrep binary
+        run: ./scripts/fetch_rg.sh
+      # ``gc_calibration`` tests are slow real-App probes covered by the
+      # scheduled gc-freeze-calibration workflow, not PR CI.
+      - name: Run tests
+        timeout-minutes: 15
+        env:
+          CHRYS_TEST_STALL_DIAGNOSTICS: "1"
+        run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Typecheck (ty)
+        # Keep test and type diagnostics independent; run once after tests,
+        # even if they failed, but stop when the workflow is cancelled. A
+        # platform's extra core shards opt out, so the check runs once.
+        if: ${{ !cancelled() && !endsWith(matrix.label, '/tui') && !matrix.skip_typecheck }}
+        run: uv run ty check --error-on-warning src/chrys
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-${{ matrix.artifact }}
+          path: test-results-${{ matrix.artifact }}.xml
+
+  test_windows:
+    name: Windows shard (${{ matrix.label }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Either suite alone saturates a two-vCPU runner, and hosted Windows
+          # runners differ up to ~1.7x in speed, so each splits across runners
+          # at measured, roughly even wall-clock cuts: core in two, and TUI in
+          # three because the main screen's tests drive whole workflow runs.
+          # Each last shard takes everything the earlier ones do not name.
+          - label: windows/1/core
+            artifact: windows-core-1
+            workers: 4
+            py39: true
+            pytest_args: tests/service tests/integration
+          - label: windows/2/core
+            artifact: windows-core-2
+            workers: 4
+            py39: true
+            skip_typecheck: true
+            pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui --ignore=tests/service --ignore=tests/integration
+          - label: windows/1/tui
+            artifact: windows-tui-1
+            workers: 4
+            py39: false
+            pytest_args: >-
+              tests/app/tui/screens/themes tests/app/tui/screens/settings tests/app/tui/behaviors
+              tests/app/tui/support tests/app/tui/i18n tests/app/tui/widgets/editor
+              tests/app/tui/widgets/chat tests/app/tui/widgets/markdown
+          - label: windows/2/tui
+            artifact: windows-tui-2
+            workers: 4
+            py39: false
+            pytest_args: tests/app/tui/screens/main
+          - label: windows/3/tui
+            artifact: windows-tui-3
+            workers: 4
+            py39: false
+            pytest_args: >-
+              tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/screens/themes --ignore=tests/app/tui/screens/settings
+              --ignore=tests/app/tui/behaviors --ignore=tests/app/tui/support --ignore=tests/app/tui/i18n
+              --ignore=tests/app/tui/widgets/editor --ignore=tests/app/tui/widgets/chat
+              --ignore=tests/app/tui/widgets/markdown
+    steps:
+      # Hosted Windows images already disable real-time Defender scanning, so
+      # changing Defender settings here is a measured no-op.
+      - name: Keep temporary files on the local disk
+        # TEMP defaults to C:, the runner's network-backed OS disk; D: is its
+        # local temporary storage. Every test's tmp_path, session store and
+        # scratch repository lives under TEMP, and the suite's create, fsync
+        # and remove churn measured 6-10x faster on D:.
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP "tmp"
+          New-Item -ItemType Directory -Force -Path $temp | Out-Null
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - name: Install Python 3.9
+        # The oldest interpreter a workflow worker may run in; only the core
+        # suite spawns one. uv puts it on D: in seconds, where setup-python
+        # spent ~45s installing into the C: tool cache.
+        if: matrix.py39
+        run: |
+          uv python install 3.9
+          "CHRYS_PY39_INTERPRETER=$(uv python find 3.9)" >> $env:GITHUB_ENV
+      - name: Cache .venv
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.14-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+      - run: uv sync --extra all
+      - name: Prewarm src bytecode
+        run: uv run python -m compileall -q src
+      - name: Prewarm test collection
+        run: uv run pytest --collect-only -q -n 0 -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Fetch ripgrep binary
+        run: .\scripts\fetch_rg.ps1
+      # pytest-timeout's thread method can fail to kill workers blocked in
+      # Windows IOCP, so the step also has a hard wall-clock limit.
+      - name: Run tests
+        timeout-minutes: 15
+        env:
+          CHRYS_TEST_STALL_DIAGNOSTICS: "1"
+        # Separate runners give the TUI and core suites independent CPU
+        # capacity; four workers also overlap their async and IO waits.
+        run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
+      - name: Typecheck (ty)
+        # Keep test and type diagnostics independent; run once after tests,
+        # even if they failed, but stop when the workflow is cancelled. A
+        # platform's extra core shards opt out, so the check runs once.
+        if: ${{ !cancelled() && !endsWith(matrix.label, '/tui') && !matrix.skip_typecheck }}
+        run: uv run ty check --error-on-warning src/chrys
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-${{ matrix.artifact }}
+          path: test-results-${{ matrix.artifact }}.xml
+
+  architecture:
+    name: Architecture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - run: uv sync --extra all
+      - name: Run architecture tests
+        timeout-minutes: 15
+        run: uv run pytest -q --tb=short --durations=20 --junitxml=test-results-architecture.xml -n 0 -m "not integration and not gc_calibration" tests/architecture
+      - name: Upload architecture test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-architecture
+          path: test-results-architecture.xml
+
+  test_linux_gate:
+    name: Test (linux)
+    if: always()
+    needs: [test_linux, architecture]
+    runs-on: ubuntu-slim
+    steps:
+      - name: Verify linux shards and architecture tests
+        env:
+          ARCHITECTURE_RESULT: ${{ needs.architecture.result }}
+          PLATFORM_RESULT: ${{ needs.test_linux.result }}
+        run: |
+          test "$PLATFORM_RESULT" = "success"
+          test "$ARCHITECTURE_RESULT" = "success"
+
+  test_macos_gate:
+    name: Test (macos)
+    if: always()
+    needs: [test_macos, architecture]
+    runs-on: ubuntu-slim
+    steps:
+      - name: Verify macos shards and architecture tests
+        env:
+          ARCHITECTURE_RESULT: ${{ needs.architecture.result }}
+          PLATFORM_RESULT: ${{ needs.test_macos.result }}
+        run: |
+          test "$PLATFORM_RESULT" = "success"
+          test "$ARCHITECTURE_RESULT" = "success"
+
+  test_windows_gate:
+    name: Test (windows)
+    if: always()
+    needs: [test_windows, architecture]
+    runs-on: ubuntu-slim
+    steps:
+      - name: Verify Windows shards and architecture tests
+        env:
+          ARCHITECTURE_RESULT: ${{ needs.architecture.result }}
+          WINDOWS_RESULT: ${{ needs.test_windows.result }}
+        run: |
+          test "$WINDOWS_RESULT" = "success"
+          test "$ARCHITECTURE_RESULT" = "success"
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - run: uv build
+      - name: Check the wheel bundles the user guide
+        # /help reads docs/ from inside the installed package; a wheel without it opens an empty guide.
+        run: |
+          python - <<'EOF'
+          import glob
+          import subprocess
+          import zipfile
+
+          prefix = "chrys/app/tui/screens/guides/_docs/"
+          (wheel,) = glob.glob("dist/*.whl")
+          bundled = {name[len(prefix):] for name in zipfile.ZipFile(wheel).namelist() if name.startswith(prefix)}
+          listed = subprocess.run(["git", "ls-files", "-z", "docs"], check=True, capture_output=True, text=True)
+          tracked = {path[len("docs/"):] for path in listed.stdout.split("\0") if path}
+          missing = sorted(tracked - bundled)
+          if missing:
+              raise SystemExit(f"{wheel} is missing user-guide files: {missing}")
+          print(f"{wheel} bundles all {len(tracked)} user-guide files")
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7

@@ -1,0 +1,52 @@
+name: Tag Release
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    name: Create version tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 2
+
+      - name: Check if version changed
+        id: version
+        run: |
+          current=$(grep -m1 '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          previous=$(git show HEAD~1:pyproject.toml 2>/dev/null | grep -m1 '^version' | sed 's/version = "\(.*\)"/\1/' || echo "")
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          if [ "$current" != "$previous" ] && [ -n "$current" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $previous → $current"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version unchanged ($current), skipping tag"
+          fi
+
+      - name: Create and push tag
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          tag="v${{ steps.version.outputs.current }}"
+          if git ls-remote --tags origin "$tag" | grep -q "$tag"; then
+            echo "Tag $tag already exists, skipping"
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "$tag"
+          echo "Created tag: $tag"
+
+      - name: Trigger CD pipeline
+        if: steps.version.outputs.changed == 'true'
+        run: gh workflow run cd.yml -f ref="v${{ steps.version.outputs.current }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

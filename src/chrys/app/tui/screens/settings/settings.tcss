@@ -1,0 +1,406 @@
+SettingsDialog {
+    align: center middle;
+    background: $background 40%;
+}
+
+/* Same breathing room above and below as the agent configuration modal; the
+   cap fits the tallest tab, so a taller terminal only grows the margins. */
+#settings-container {
+    width: 92%;
+    max-width: 92;
+    height: 85%;
+    max-height: 48;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: $surface;
+    padding: 0;
+}
+
+#settings-tabs {
+    height: 1fr;
+}
+
+#settings-tabs ContentSwitcher {
+    height: 1fr;
+}
+
+#settings-tabs TabPane {
+    height: 1fr;
+    padding: 0;
+}
+
+/* No right padding: Textual draws the scrollbar inside the padding box, and
+   the bar belongs flush with the frame; the sections keep the gap via margin. */
+.settings-pane-scroll {
+    width: 100%;
+    height: 1fr;
+    padding: 0 0 0 1;
+    scrollbar-size: 1 1;
+    /* Rows must not shift sideways when a tab starts or stops overflowing. */
+    scrollbar-gutter: stable;
+}
+
+/* Each section is a bordered group named by its title; a blank line follows
+   the title, rows sit one line apart, and the last row's margin keeps the
+   bottom border off the content. Sections sit one line apart. */
+.settings-section {
+    width: 100%;
+    height: auto;
+    margin: 1 1 0 0;
+    padding: 1 1 0 2;
+    border: round $tui-border-foreground 15%;
+    border-title-color: $secondary;
+    border-title-style: bold;
+}
+
+/* One blank line between rows. */
+.settings-row {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.settings-row-main {
+    width: 100%;
+    height: auto;
+    min-height: 1;
+}
+
+.settings-row-label {
+    width: 32;
+    height: 1;
+    padding: 0 1 0 0;
+    content-align: left middle;
+}
+
+.settings-row-checkbox {
+    height: 1;
+    padding: 0;
+    border: none;
+    background: transparent;
+    margin: 0;
+    width: auto;
+}
+
+.settings-row-checkbox:focus {
+    border: none;
+    background: transparent;
+}
+
+.settings-row-checkbox:focus > .toggle--label {
+    color: $text;
+    background: transparent;
+    text-style: none;
+}
+
+.settings-row-checkbox > .toggle--button {
+    color: $foreground 35%;
+    background: $foreground 6%;
+}
+
+.settings-row-checkbox.-on > .toggle--button {
+    color: $success;
+    background: $foreground 6%;
+}
+
+/* Compact controls, as in the model profile editor: one line, no frame. */
+.settings-row-select {
+    width: 1fr;
+    max-width: 44;
+    height: auto;
+    margin: 0;
+}
+
+.settings-row-select > SelectCurrent {
+    height: 1;
+    border: none;
+    background: $foreground 8%;
+    padding: 0 1;
+}
+
+.settings-row-select:focus > SelectCurrent {
+    border: none;
+    background: $foreground 12%;
+}
+
+.settings-row-select > SelectOverlay {
+    height: auto;
+    max-height: 16;
+    /* The list's own scrollbar sits flush with the frame, not inside padding. */
+    padding: 0 0 0 1;
+    border: round $tui-border-primary $border-opacity;
+    background: $surface;
+}
+
+.settings-row-input {
+    width: 1fr;
+    max-width: 44;
+    height: 1;
+    border: none;
+    background: $foreground 8%;
+    padding: 0 1;
+    margin: 0;
+}
+
+.settings-row-input:focus {
+    border: none;
+    background: $foreground 12%;
+}
+
+/* Link-style actions ("Browse", "Migrate sessions", "Test"): the theme's flat
+   default buttons assume a coloured background, so give these their own ink.
+   Scoped by container id so the rule outranks the theme's flat-button ink;
+   the migration wizard's Browse buttons share it. */
+#settings-container Button.settings-row-link,
+#migrate-container Button.settings-row-link {
+    height: 1;
+    min-width: 6;
+    margin: 0 0 0 1;
+    padding: 0 1;
+    border: none;
+    background: $primary 20%;
+    color: $primary;
+    text-style: none;
+}
+
+#settings-container Button.settings-row-link:hover,
+#migrate-container Button.settings-row-link:hover {
+    background: $primary 40%;
+}
+
+#settings-container Button.settings-row-link:focus,
+#migrate-container Button.settings-row-link:focus {
+    background: $primary 40%;
+    text-style: none;
+}
+
+#settings-container Button.settings-row-link:disabled,
+#migrate-container Button.settings-row-link:disabled {
+    background: transparent;
+    border: none;
+    color: $text-muted;
+}
+
+.settings-row-badges {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+    text-style: italic;
+}
+
+/* Description under a control: "└─ text", wrapped lines aligned after the glyph. */
+.settings-row-hint-line {
+    width: 100%;
+    height: auto;
+    padding: 0 0 0 2;
+}
+
+.settings-row-hint-tree {
+    width: 3;
+    height: 1;
+    color: $text-disabled;
+}
+
+.settings-row-hint {
+    width: 1fr;
+    height: auto;
+    color: $text-muted;
+}
+
+.settings-row-hint.-error {
+    color: $error;
+}
+
+.session-root-footer {
+    width: 100%;
+    height: auto;
+}
+
+.session-root-in-use {
+    width: 100%;
+    height: 1;
+    padding: 0 0 0 5;
+    color: $text-muted;
+}
+
+/* A link on its own line, one line below the in-use line, flush with the label column. */
+#settings-container Button.session-root-migrate {
+    width: auto;
+    margin: 1 0 0 0;
+}
+
+#notifications-content {
+    width: 100%;
+    height: auto;
+}
+
+#notifications-enabled-settings {
+    height: auto;
+}
+
+#notifications-enabled {
+    margin: 0;
+}
+
+.notification-delivery-option {
+    margin: 0 0 1 0;
+}
+
+#notifications-content Checkbox {
+    height: 1;
+    padding: 0;
+    border: none;
+    background: transparent;
+    margin: 0;
+}
+
+#notifications-content Checkbox:focus {
+    border: none;
+    background: transparent;
+}
+
+#notifications-content Checkbox:focus > .toggle--label {
+    color: $text;
+    background: transparent;
+    text-style: none;
+}
+
+#notifications-content Checkbox > .toggle--button {
+    color: $foreground 35%;
+    background: $foreground 6%;
+}
+
+#notifications-content Checkbox.-on > .toggle--button {
+    color: $success;
+    background: $foreground 6%;
+}
+
+/* Same rhythm as the generic rows: a blank line after each option. */
+#notifications-content #notifications-enabled,
+#notifications-content Checkbox.notification-delivery-option {
+    margin: 0 0 1 0;
+}
+
+.notification-event-description-line {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 2;
+}
+
+.notification-event-description {
+    width: 1fr;
+    height: auto;
+    color: $text-muted;
+}
+
+/* The Test link sits one line under the last section, flush left. */
+#notifications-actions {
+    width: 100%;
+    height: 1;
+    align-horizontal: left;
+    margin: 1 0 0 0;
+}
+
+#notifications-content #notifications-test {
+    margin: 0 0 0 1;
+}
+
+#settings-container {
+    border-subtitle-color: $text-muted;
+}
+
+#settings-container.-status-active {
+    border-subtitle-color: $warning;
+}
+
+MigrateSessionsDialog {
+    align: center middle;
+    background: $background 40%;
+}
+
+#migrate-container {
+    width: 84;
+    max-width: 96%;
+    height: auto;
+    max-height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: $surface;
+    padding: 0;
+}
+
+#migrate-body {
+    width: 100%;
+    height: auto;
+    padding: 1 2 0 2;
+}
+
+.migrate-path-row {
+    width: 100%;
+    height: 1;
+    margin: 0 0 1 0;
+}
+
+.migrate-path-label {
+    width: 6;
+    height: 1;
+    content-align: left middle;
+}
+
+.migrate-path-input {
+    width: 1fr;
+    height: 1;
+    border: none;
+    background: $foreground 8%;
+    padding: 0 1;
+}
+
+.migrate-path-input:focus {
+    border: none;
+    background: $foreground 12%;
+}
+
+#migrate-description {
+    width: 100%;
+    height: auto;
+    color: $text-muted;
+    margin: 1 0 0 0;
+}
+
+#migrate-status-line {
+    width: 100%;
+    height: auto;
+}
+
+#migrate-status {
+    width: auto;
+    max-width: 100%;
+    height: auto;
+    margin: 1 0 0 0;
+    color: $text;
+}
+
+/* Animated dots after "Copying sessions" for as long as the copy runs. */
+#migrate-loading {
+    width: 10;
+    height: 1;
+    margin: 1 0 0 1;
+    content-align: left middle;
+    color: $primary;
+    display: none;
+}
+
+#migrate-status.-error {
+    color: $error;
+}
+
+#migrate-buttons {
+    dock: bottom;
+    align-horizontal: right;
+    height: 3;
+    margin: 1 0 0 0;
+    padding: 0 2;
+}

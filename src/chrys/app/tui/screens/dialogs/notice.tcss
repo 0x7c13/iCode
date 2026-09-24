@@ -1,0 +1,14 @@
+NoticeDialog #confirm-container {
+    width: 64;
+    max-width: 90%;
+    max-height: 90%;
+}
+
+NoticeDialog #confirm-inner {
+    max-height: 100%;
+}
+
+NoticeDialog #notice-scroll {
+    height: auto;
+    max-height: 60vh;
+}

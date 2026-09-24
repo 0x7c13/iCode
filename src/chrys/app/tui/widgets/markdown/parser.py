@@ -1,0 +1,1006 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Markdown token parser — converts markdown-it tokens into MarkdownBlock objects."""
+
+from __future__ import annotations
+
+import html
+import re
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import quote
+
+from markdown_it import MarkdownIt
+from markdown_it.common.utils import isLinkClose, isLinkOpen
+from markdown_it.rules_block import fence as _markdown_it_block_fence
+from markdown_it.rules_core.linkify import linkify as _markdown_it_core_linkify
+from markdown_it.rules_inline.linkify import SCHEME_RE
+from markdown_it.rules_inline.linkify import linkify as _markdown_it_inline_linkify
+from markdown_it.token import Token
+from textual._cells import cell_len
+from textual._slug import slug_for_tcss_id
+from textual.content import Content, Span
+from textual.highlight import highlight
+from textual.style import Style
+
+from chrys.app.tui.widgets.markdown.blocks import BULLETS, MarkdownBlock
+from chrys.app.tui.widgets.markdown.diagram.model import DiagnosticSeverity
+from chrys.app.tui.widgets.markdown.links import terminal_link_target
+from chrys.app.tui.widgets.syntax_theme import NoErrorHighlightTheme
+
+if TYPE_CHECKING:
+    from markdown_it.ruler import Ruler
+    from markdown_it.rules_block.state_block import StateBlock
+    from markdown_it.rules_core.state_core import StateCore
+    from markdown_it.rules_inline.state_inline import StateInline
+
+    from chrys.app.tui.widgets.markdown.diagram.model import CompiledDiagram
+
+_ZERO_WIDTH_JOINER = "\u200d"
+_LINKIFY_SOURCE_META = "_chrys_linkify_source"
+_FENCE_CLOSED_META = "_chrys_fence_closed"
+# CJK sentence punctuation (fullwidth/halfwidth variants and their vertical and
+# small presentation forms included), the ellipsis leaders CJK prose typically
+# doubles, and the full set of CJK/fullwidth paired delimiters (both sides of
+# each pair): parentheses, square/curly/angle/corner/lenticular/tortoise
+# brackets and quotation marks, including the curly quotes CJK prose shares
+# with English typography.  Dash and wave-dash families are deliberately
+# excluded: they double as joiners inside prose and URLs.
+_CJK_LINK_BOUNDARIES = frozenset(
+    "\uff0c\u3002\uff01\uff1f\uff1b\uff1a\u3001\u2026\u2025\uff0e\uff61\uff64"
+    "\uff08\uff09\u3010\u3011\u300a\u300b\u300c\u300d\u300e\u300f"
+    "\uff3b\uff3d\uff5b\uff5d\u3008\u3009\u3014\u3015\u3016\u3017"
+    "\u3018\u3019\u301a\u301b\uff62\uff63\u301d\u301e\u301f\uff5f\uff60"
+    "\u201c\u201d\u2018\u2019\uff02\uff07\uff1c\uff1e"
+    "\ufe10\ufe11\ufe12\ufe13\ufe14\ufe15\ufe16\ufe17\ufe18\ufe19\ufe30"
+    "\ufe35\ufe36\ufe37\ufe38\ufe39\ufe3a\ufe3b\ufe3c\ufe3d\ufe3e"
+    "\ufe3f\ufe40\ufe41\ufe42\ufe43\ufe44\ufe47\ufe48"
+    "\ufe50\ufe51\ufe52\ufe54\ufe55\ufe56\ufe57"
+    "\ufe59\ufe5a\ufe5b\ufe5c\ufe5d\ufe5e\ufe64\ufe65"
+)
+
+
+HEADING_STYLES = {
+    1: "virtualized-markdown--h1",
+    2: "virtualized-markdown--h2",
+    3: "virtualized-markdown--h3",
+    4: "virtualized-markdown--h4",
+    5: "virtualized-markdown--h5",
+    6: "virtualized-markdown--h6",
+}
+
+
+def _is_hex_pair(text: str) -> bool:
+    """Whether *text* is exactly two hexadecimal digits."""
+    return len(text) == 2 and all(char in "0123456789abcdefABCDEF" for char in text)
+
+
+def _raw_boundary_index(display: str, raw: str, start: int) -> tuple[int | None, int, bool]:
+    """Align linkified display text against its raw source spelling.
+
+    Walks *display* and ``raw[start:]`` in lockstep.  A display character that
+    the source spells as a percent escape, an HTML entity, or a backslash
+    escape was explicitly written into the construct and is never treated as a
+    prose boundary.  Returns ``(boundary, end, complete)``: *boundary* is the
+    display index of the first literally-written CJK boundary character
+    (``None`` when every one is escaped), *end* is the raw index one past the
+    aligned text, and *complete* is False when the walk stopped early because
+    ``raw`` stopped spelling *display* — normalization this walk cannot model,
+    such as a punycode host rendered decoded.  ``raw`` is always the
+    construct's own stamped source, so a boundary found before that point was
+    aligned lockstep against it and remains trustworthy; only positions after
+    the stop are unknown.
+    """
+    boundary: int | None = None
+    raw_index = start
+    display_index = 0
+    while display_index < len(display):
+        char = display[display_index]
+        if raw_index >= len(raw):
+            return boundary, raw_index, False
+        # ``urllib.parse.quote`` always treats RFC 3986 unreserved ASCII as
+        # safe, even when ``safe`` is empty.  Build the byte spelling directly
+        # so source escapes such as ``%41`` and ``%2D`` align as decoded text.
+        encoded = "".join(f"%{byte:02X}" for byte in char.encode())
+        if (
+            len(encoded) > 1
+            and raw[raw_index : raw_index + len(encoded)].upper() == encoded.upper()
+            and display[display_index : display_index + len(encoded)] != raw[raw_index : raw_index + len(encoded)]
+        ):
+            # Percent-encoded in the source: written intent, never a boundary.
+            # If the display also spells the same ``%XX`` text, linkify kept it
+            # verbatim rather than decoding it (notably ``%25``).
+            raw_index += len(encoded)
+            display_index += 1
+            continue
+        if (
+            char == "%"
+            and raw[raw_index] == "%"
+            and display[display_index + 1 : display_index + 3].upper() == raw[raw_index + 1 : raw_index + 3].upper()
+            and _is_hex_pair(display[display_index + 1 : display_index + 3])
+        ):
+            # An escape the renderer kept verbatim but re-emitted in uppercase
+            # (``%2c`` displays as ``%2C``); consume the whole triple on both
+            # sides.  Same-case triples take this branch too, equivalently.
+            raw_index += 3
+            display_index += 3
+            continue
+        if (
+            raw[raw_index] == "&"
+            and (semi := raw.find(";", raw_index + 1, raw_index + 40)) > 0
+            and html.unescape(raw[raw_index : semi + 1]) == char
+            and display[display_index : display_index + semi + 1 - raw_index] != raw[raw_index : semi + 1]
+        ):
+            # An HTML entity or numeric character reference the renderer decoded
+            # (linkify keeps entities verbatim — then display spells the same
+            # ``&...;`` and the literal branch below must consume it instead).
+            raw_index = semi + 1
+            display_index += 1
+            continue
+        if (
+            raw[raw_index] == "\\"
+            and raw_index + 1 < len(raw)
+            and raw[raw_index + 1] == char
+            and char.isascii()
+            and not char.isalnum()
+        ):
+            # A backslash escape (CommonMark escapes ASCII punctuation only).
+            raw_index += 2
+            display_index += 1
+            continue
+        if raw[raw_index] == char:
+            if boundary is None and char in _CJK_LINK_BOUNDARIES:
+                boundary = display_index
+            raw_index += 1
+            display_index += 1
+            continue
+        return boundary, raw_index, False
+    return boundary, raw_index, True
+
+
+def _path_start(url: str) -> int:
+    """The index where a URL's path/query/fragment begins (its length if none)."""
+    if url.startswith("//"):
+        # Protocol-relative: the authority follows immediately.
+        index = 2
+    else:
+        scheme_end = url.find("://")
+        index = scheme_end + 3 if scheme_end >= 0 else 0
+    while index < len(url) and url[index] not in "/?#":
+        index += 1
+    return index
+
+
+def _boundary_past_authority(display: str, raw: str) -> int | None:
+    """Fallback boundary alignment that skips the authority component.
+
+    A punycode host is spelled ``xn--…`` in the source but rendered decoded
+    (``例え.jp``), so the lockstep walk cannot align it.  IDNA labels cannot
+    contain CJK punctuation, so no prose boundary is lost by fast-forwarding
+    both sides to where the path begins and walking only the remainder.
+    """
+    display_start = _path_start(display)
+    boundary, _, _ = _raw_boundary_index(display[display_start:], raw, _path_start(raw))
+    return None if boundary is None else display_start + boundary
+
+
+def _inline_linkify_with_source(state: StateInline, silent: bool) -> bool:
+    """Run markdown-it's inline linkifier and retain the exact source spelling."""
+    start = state.pos
+    token_count = len(state.tokens)
+    scheme_match = SCHEME_RE.search(state.pending)
+    matched = _markdown_it_inline_linkify(state, silent)
+    if not matched or silent or scheme_match is None:
+        return matched
+
+    source = state.src[start - len(scheme_match.group(1)) : state.pos]
+    for token in state.tokens[token_count:]:
+        if token.type == "link_open" and token.markup == "linkify":
+            token.meta[_LINKIFY_SOURCE_META] = source
+            break
+    return matched
+
+
+def _core_linkify_sources(state: StateCore, tokens: list[Token]) -> list[str]:
+    """Collect the raw matches markdown-it's core linkifier will replace."""
+    linkify = state.md.linkify
+    if linkify is None:
+        return []
+    html_link_level = 0
+    matches_by_position: list[tuple[int, list[str]]] = []
+    index = len(tokens)
+    while index >= 1:
+        index -= 1
+        current = tokens[index]
+
+        if current.type == "link_close":
+            index -= 1
+            while tokens[index].level != current.level and tokens[index].type != "link_open":
+                index -= 1
+            continue
+
+        if current.type == "html_inline":
+            if isLinkOpen(current.content) and html_link_level > 0:
+                html_link_level -= 1
+            if isLinkClose(current.content):
+                html_link_level += 1
+        if html_link_level > 0 or current.type != "text" or not linkify.test(current.content):
+            continue
+
+        links = linkify.match(current.content) or []
+        if links and links[0].index == 0 and index > 0 and tokens[index - 1].type == "text_special":
+            links = links[1:]
+        sources = [link.text for link in links if state.md.validateLink(state.md.normalizeLink(link.url))]
+        if sources:
+            matches_by_position.append((index, sources))
+
+    return [source for _, sources in reversed(matches_by_position) for source in sources]
+
+
+def _core_linkify_with_source(state: StateCore) -> None:
+    """Run markdown-it's core linkifier and annotate its generated links."""
+    sources_by_inline = [
+        (inline_token, _core_linkify_sources(state, inline_token.children))
+        for inline_token in state.tokens
+        if (
+            inline_token.type == "inline"
+            and state.md.linkify
+            and state.md.linkify.pretest(inline_token.content)
+            and inline_token.children is not None
+        )
+    ]
+
+    _markdown_it_core_linkify(state)
+
+    for inline_token, sources in sources_by_inline:
+        source_index = 0
+        for token in inline_token.children or []:
+            if (
+                token.type == "link_open"
+                and token.markup == "linkify"
+                and _LINKIFY_SOURCE_META not in token.meta
+                and source_index < len(sources)
+            ):
+                token.meta[_LINKIFY_SOURCE_META] = sources[source_index]
+                source_index += 1
+
+
+def _fence_closing_line(state: StateBlock, line: int, markup: str) -> bool:
+    """Whether *line* is the closing marker consumed for a fence token."""
+    if line < 0 or line >= len(state.bMarks) or not markup:
+        return False
+
+    position = state.bMarks[line] + state.tShift[line]
+    maximum = state.eMarks[line]
+    if position >= maximum or state.is_code_block(line) or state.src[position] != markup[0]:
+        return False
+
+    marker_end = state.skipCharsStr(position, markup[0])
+    if marker_end - position < len(markup):
+        return False
+    return state.skipSpaces(marker_end) >= maximum
+
+
+def _block_fence_with_closed_meta(state: StateBlock, start_line: int, end_line: int, silent: bool) -> bool:
+    """Run markdown-it's fence rule and retain whether it found an end marker."""
+    token_count = len(state.tokens)
+    matched = _markdown_it_block_fence(state, start_line, end_line, silent)
+    if not matched or silent or len(state.tokens) == token_count:
+        return matched
+
+    token = state.tokens[-1]
+    token.meta[_FENCE_CLOSED_META] = bool(
+        token.map is not None and _fence_closing_line(state, token.map[1] - 1, token.markup)
+    )
+    return matched
+
+
+def _installed_rule_fn(ruler: Ruler[Any], name: str) -> Callable[..., Any] | None:
+    """The function currently installed for rule *name* (``None`` when absent)."""
+    for rule in ruler.__rules__:
+        if rule.name == name:
+            return rule.fn
+    return None
+
+
+def _configure_markdown_parser(parser: MarkdownIt) -> MarkdownIt:
+    """Instrument a MarkdownIt parser to preserve raw auto-link spellings.
+
+    Only the stock linkify rules are replaced, with wrappers that delegate to
+    them.  A caller-supplied parser factory may have installed custom linkify
+    rules; the source-stamping wrappers are semantically valid only around the
+    stock behavior they mirror, so custom rules are left in place and their
+    links simply render without boundary splitting.
+    """
+    if _installed_rule_fn(parser.inline.ruler, "linkify") is _markdown_it_inline_linkify:
+        parser.inline.ruler.at("linkify", _inline_linkify_with_source)
+    if _installed_rule_fn(parser.core.ruler, "linkify") is _markdown_it_core_linkify:
+        parser.core.ruler.at("linkify", _core_linkify_with_source)
+    if _installed_rule_fn(parser.block.ruler, "fence") is _markdown_it_block_fence:
+        parser.block.ruler.at("fence", _block_fence_with_closed_meta)
+    return parser
+
+
+def _restore_ipv6_authority(url: str) -> str:
+    """Restore IPv6 authority brackets in an already normalized destination."""
+    # mdurl percent-encodes IPv6 brackets as if they were path characters.
+    # Restore only authority brackets; encoded path/query data stays intact.
+    return re.sub(
+        r"^(https?://(?:[^/?#]*@)?)%5B([^/?#]+)%5D(?=[:/?#]|$)",
+        r"\1[\2]",
+        url,
+        flags=re.IGNORECASE,
+    )
+
+
+def _restore_ipv6_link_targets(state: StateCore) -> None:
+    """Repair normalized link and image targets after the linkify rules run."""
+    for token in state.tokens:
+        for child in token.children or []:
+            if child.type not in {"link_open", "image"}:
+                continue
+            attribute = "href" if child.type == "link_open" else "src"
+            if isinstance(target := child.attrGet(attribute), str):
+                child.attrSet(attribute, _restore_ipv6_authority(target))
+
+
+def _create_markdown_parser() -> MarkdownIt:
+    """Create the default Markdown parser used by the TUI."""
+    parser = MarkdownIt("gfm-like")
+    parser.core.ruler.after("linkify", "chrys_ipv6_links", _restore_ipv6_link_targets)
+    if parser.linkify is not None:
+        # Bare filenames and identifiers can also be valid domain names.
+        # Only explicit HTTP(S) prefixes opt ordinary prose into auto-linking.
+        parser.linkify.set({"fuzzy_link": False, "fuzzy_email": False, "fuzzy_ip": False})
+        for scheme in ("ftp:", "mailto:", "//"):
+            parser.linkify.add(scheme, None)
+    return _configure_markdown_parser(parser)
+
+
+def _hard_line_breaks(state: StateCore) -> None:
+    for token in state.tokens:
+        for child in token.children or []:
+            if child.type == "softbreak":
+                child.type = "hardbreak"
+
+
+def create_line_break_markdown_parser() -> MarkdownIt:
+    """The default parser, keeping each newline inside a paragraph as a line break."""
+    parser = _create_markdown_parser()
+    parser.core.ruler.push("chrys_hard_line_breaks", _hard_line_breaks)
+    return parser
+
+
+def _token_to_content(
+    token: Token, get_style: Callable[[str], Style] | None = None, *, open_links: bool = True
+) -> Content:
+    """Convert an inline token to Textual Content.
+
+    Args:
+        token: A markdown token.
+        get_style: Optional callable to resolve component class styles.
+        open_links: Emit terminal hyperlinks for allowed external destinations.
+
+    Returns:
+        Content instance.
+    """
+    if token.children is None:
+        return Content("")
+
+    tokens: list[str] = []
+    spans: list[Span] = []
+    style_stack: list[tuple[Style | str, int]] = []
+    position: int = 0
+    split_linkified_text: tuple[str, str] | None = None
+    skip_link_close = False
+
+    def add_content(text: str) -> None:
+        nonlocal position
+        tokens.append(text)
+        position += len(text)
+
+    def add_style(style: Style | str) -> None:
+        style_stack.append((style, position))
+
+    def close_tag() -> None:
+        style, start = style_stack.pop()
+        spans.append(Span(start, position, style))
+
+    for child_index, child in enumerate(token.children):
+        child_type = child.type
+        if child_type == "text":
+            if split_linkified_text is None:
+                add_content(re.sub(r"\s+", " ", child.content))
+            else:
+                link_text, suffix = split_linkified_text
+                add_content(link_text)
+                close_tag()
+                add_content(suffix)
+                split_linkified_text = None
+                skip_link_close = True
+        if child_type == "hardbreak":
+            add_content("\n")
+        if child_type == "softbreak":
+            add_content(" ")
+        elif child_type == "code_inline":
+            add_style(".code_inline")
+            add_content(child.content)
+            close_tag()
+        elif child_type == "em_open":
+            add_style(".em")
+        elif child_type == "strong_open":
+            add_style(".strong")
+        elif child_type == "s_open":
+            add_style(".s")
+        elif child_type == "link_open":
+            href = cast("str", child.attrs.get("href", ""))
+            if child.markup == "linkify" and child_index + 1 < len(token.children):
+                next_child = token.children[child_index + 1]
+                if next_child.type == "text" and not _CJK_LINK_BOUNDARIES.isdisjoint(next_child.content):
+                    display = next_child.content
+                    boundary = None
+                    raw_source = child.meta.get(_LINKIFY_SOURCE_META)
+                    if isinstance(raw_source, str):
+                        boundary, _, complete = _raw_boundary_index(display, raw_source, 0)
+                        if boundary is None and not complete:
+                            # A punycode host renders decoded and defeats the
+                            # lockstep walk before any literal boundary was
+                            # seen; retry from where the path begins.
+                            boundary = _boundary_past_authority(display, raw_source)
+                    if boundary is not None:
+                        link_text = display[:boundary]
+                        suffix = display[boundary:]
+                        # Truncate the href at the occurrence matching the display
+                        # boundary: earlier occurrences may be explicitly encoded
+                        # URL content that must be preserved.
+                        encoded_boundary = quote(display[boundary], safe="").upper()
+                        occurrence = link_text.count(display[boundary]) + 1
+                        href_upper = href.upper()
+                        href_boundary = -1
+                        for _ in range(occurrence):
+                            href_boundary = href_upper.find(encoded_boundary, href_boundary + 1)
+                            if href_boundary < 0:
+                                break
+                        href = href[:href_boundary] if href_boundary >= 0 else link_text
+                        split_linkified_text = (link_text, suffix)
+            action = f"link({href!r})"
+            target = terminal_link_target(href) if open_links else None
+            # None inherits a nested image's link; an empty link explicitly clears it.
+            add_style(Style(underline=True, link=target or "") + Style.from_meta({"@click": action}))
+        elif child_type == "image":
+            href = cast("str", child.attrs.get("src", ""))
+            alt = child.attrs.get("alt", "")
+            action = f"link({href!r})"
+            target = terminal_link_target(href) if open_links else None
+            add_style(Style(underline=True, link=target or "") + Style.from_meta({"@click": action}))
+            add_content("\U0001f5bc  ")
+            if alt:
+                add_content(f"({alt})")
+            if child.children is not None:
+                for grandchild in child.children:
+                    add_content(grandchild.content)
+            close_tag()
+        elif child_type.endswith("_close"):
+            if child_type == "link_close" and skip_link_close:
+                skip_link_close = False
+            else:
+                close_tag()
+
+    content = Content("".join(tokens), spans=spans)
+    return content
+
+
+def _get_list_indent(stack: list[dict]) -> int:
+    """Get the indent from the nearest list_item in the stack."""
+    for parent in reversed(stack):
+        if parent["type"] == "list_item":
+            return parent.get("indent", 0)
+    return 0
+
+
+def _parse_tokens(
+    tokens: Iterable[Token],
+    unhandled_token: Callable[[Token], MarkdownBlock | None] | None = None,
+    compile_diagram: Callable[[str], CompiledDiagram] | None = None,
+    *,
+    open_links: bool = True,
+) -> list[MarkdownBlock]:
+    """Parse markdown-it tokens into a flat list of MarkdownBlock objects.
+
+    Args:
+        tokens: Iterable of markdown-it tokens.
+        unhandled_token: Optional callback for unhandled token types.
+        open_links: Emit terminal hyperlinks for allowed external destinations.
+
+    Returns:
+        A list of MarkdownBlock data objects.
+    """
+    blocks: list[MarkdownBlock] = []
+
+    stack: list[dict] = []
+    list_stack: list[dict] = []
+
+    for token in tokens:
+        token_type = token.type
+        source_range = (token.map[0], token.map[1]) if token.map is not None else (0, 0)
+
+        if token_type == "heading_open":
+            level = int(token.tag[1])
+            stack.append(
+                {
+                    "type": "heading",
+                    "level": level,
+                    "source_range": source_range,
+                }
+            )
+
+        elif token_type == "heading_close":
+            ctx = stack.pop()
+            content = ctx.get("content", Content(""))
+            slug_text = content.plain
+            block_id = f"heading-{slug_for_tcss_id(slug_text)}"
+
+            top_margin = 2 if ctx["level"] <= 2 else 1
+            blocks.append(
+                MarkdownBlock(
+                    block_type="heading",
+                    content=content,
+                    level=ctx["level"],
+                    block_id=block_id,
+                    source_range=ctx["source_range"],
+                    style_name=HEADING_STYLES.get(ctx["level"], "virtualized-markdown--h1"),
+                    top_margin=top_margin,
+                    bottom_margin=1,
+                    text_align="center" if ctx["level"] == 1 else "left",
+                )
+            )
+
+        elif token_type == "paragraph_open":
+            stack.append({"type": "paragraph", "source_range": source_range})
+
+        elif token_type == "paragraph_close":
+            ctx = stack.pop()
+            content = ctx.get("content", Content(""))
+            indent = 0
+            prefix = ""
+            style_name = "virtualized-markdown--paragraph"
+            border_left = ""
+            in_list = False
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            if bq_depth > 0:
+                border_left = "\u258c " * bq_depth
+                style_name = "virtualized-markdown--block-quote"
+                for parent in reversed(stack):
+                    if parent["type"] == "list_item":
+                        indent = parent.get("indent", 0)
+                        in_list = True
+                        if not parent.get("first_para_done"):
+                            prefix = parent.get("prefix", "")
+                            parent["first_para_done"] = True
+                        break
+            else:
+                for parent in reversed(stack):
+                    if parent["type"] == "list_item":
+                        indent = parent.get("indent", 0)
+                        in_list = True
+                        if not parent.get("first_para_done"):
+                            prefix = parent.get("prefix", "")
+                            parent["first_para_done"] = True
+                        break
+
+            in_blockquote = bq_depth > 0
+            blocks.append(
+                MarkdownBlock(
+                    block_type="paragraph",
+                    content=content,
+                    source_range=ctx["source_range"],
+                    style_name=style_name,
+                    bottom_margin=0 if (in_list or in_blockquote) else 1,
+                    indent=indent,
+                    prefix=prefix,
+                    border_left=border_left,
+                    bq_depth=bq_depth,
+                )
+            )
+
+        elif token_type == "blockquote_open":
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            if bq_depth == 0 and blocks and blocks[-1].bottom_margin < 1:
+                blocks[-1].bottom_margin = 1
+            if bq_depth > 0:
+                parent_bq = None
+                for s in reversed(stack):
+                    if s["type"] == "blockquote":
+                        parent_bq = s
+                        break
+                if parent_bq and len(blocks) > parent_bq.get("block_count_at_open", 0):
+                    list_indent = _get_list_indent(stack)
+                    blocks.append(
+                        MarkdownBlock(
+                            block_type="blockquote_spacer",
+                            content=Content(" "),
+                            source_range=source_range,
+                            style_name="virtualized-markdown--block-quote",
+                            border_left="\u258c " * bq_depth,
+                            bq_depth=bq_depth,
+                            indent=list_indent,
+                            bottom_margin=0,
+                        )
+                    )
+            stack.append(
+                {
+                    "type": "blockquote",
+                    "source_range": source_range,
+                    "block_count_at_open": len(blocks),
+                }
+            )
+
+        elif token_type == "blockquote_close":
+            stack.pop()
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            if bq_depth > 0:
+                list_indent = _get_list_indent(stack)
+                blocks.append(
+                    MarkdownBlock(
+                        block_type="blockquote_spacer",
+                        content=Content(" "),
+                        source_range=source_range,
+                        style_name="virtualized-markdown--block-quote",
+                        border_left="\u258c " * bq_depth,
+                        bq_depth=bq_depth,
+                        indent=list_indent,
+                        bottom_margin=0,
+                    )
+                )
+            elif blocks:
+                blocks[-1].bottom_margin = 1
+
+        elif token_type == "bullet_list_open":
+            depth = sum(1 for s in list_stack if s["type"] in ("bullet_list", "ordered_list"))
+            list_stack.append(
+                {
+                    "type": "bullet_list",
+                    "depth": depth,
+                    "item_count": 0,
+                }
+            )
+            stack.append({"type": "bullet_list", "source_range": source_range})
+
+        elif token_type == "bullet_list_close":
+            list_stack.pop()
+            stack.pop()
+            if not list_stack and blocks:
+                blocks[-1].bottom_margin = 1
+
+        elif token_type == "ordered_list_open":
+            depth = sum(1 for s in list_stack if s["type"] in ("bullet_list", "ordered_list"))
+            list_stack.append(
+                {
+                    "type": "ordered_list",
+                    "depth": depth,
+                    "item_count": 0,
+                    "start": int(token.attrGet("start") or 1),
+                }
+            )
+            stack.append({"type": "ordered_list", "source_range": source_range})
+
+        elif token_type == "ordered_list_close":
+            list_stack.pop()
+            stack.pop()
+            if not list_stack and blocks:
+                blocks[-1].bottom_margin = 1
+
+        elif token_type == "list_item_open":
+            if not list_stack:
+                continue
+            list_ctx = list_stack[-1]
+            list_ctx["item_count"] += 1
+
+            depth = list_ctx["depth"]
+            indent = 4 + depth * 2
+
+            if list_ctx["type"] == "bullet_list":
+                bullet_idx = depth % len(BULLETS)
+                prefix = BULLETS[bullet_idx]
+            else:
+                number = list_ctx["start"] + list_ctx["item_count"] - 1
+                prefix = f"{number}. "
+
+            stack.append(
+                {
+                    "type": "list_item",
+                    "indent": indent,
+                    "prefix": prefix,
+                    "first_para_done": False,
+                    "source_range": source_range,
+                }
+            )
+
+        elif token_type == "list_item_close":
+            stack.pop()
+
+        elif token_type == "hr":
+            blocks.append(
+                MarkdownBlock(
+                    block_type="hr",
+                    content=Content(""),
+                    source_range=source_range,
+                    style_name="virtualized-markdown--hr",
+                    top_margin=2,
+                    bottom_margin=1,
+                )
+            )
+
+        elif token_type == "table_open":
+            stack.append(
+                {
+                    "type": "table",
+                    "headers": [],
+                    "rows": [],
+                    "current_row": [],
+                    "in_head": False,
+                    "source_range": source_range,
+                }
+            )
+
+        elif token_type == "thead_open":
+            if stack and stack[-1]["type"] == "table":
+                stack[-1]["in_head"] = True
+
+        elif token_type == "thead_close":
+            if stack and stack[-1]["type"] == "table":
+                stack[-1]["in_head"] = False
+
+        elif token_type == "tbody_open" or token_type == "tbody_close":
+            pass
+
+        elif token_type == "tr_open":
+            if stack and stack[-1]["type"] == "table":
+                stack[-1]["current_row"] = []
+
+        elif token_type == "tr_close":
+            if stack and stack[-1]["type"] == "table":
+                if stack[-1]["in_head"]:
+                    stack[-1]["headers"] = stack[-1]["current_row"][:]
+                else:
+                    stack[-1]["rows"].append(stack[-1]["current_row"][:])
+                stack[-1]["current_row"] = []
+
+        elif token_type in ("th_open", "td_open"):
+            stack.append({"type": "table_cell"})
+
+        elif token_type in ("th_close", "td_close"):
+            ctx = stack.pop()
+            content = ctx.get("content", Content(""))
+            for parent in reversed(stack):
+                if parent["type"] == "table":
+                    parent["current_row"].append(content)
+                    break
+
+        elif token_type == "table_close":
+            ctx = stack.pop()
+            headers = ctx.get("headers", [])
+            rows = ctx.get("rows", [])
+            blocks.extend(_build_table_blocks(headers, rows, ctx["source_range"]))
+
+        elif token_type == "inline":
+            if stack:
+                content = _token_to_content(token, open_links=open_links)
+                stack[-1]["content"] = content
+
+        elif token_type in ("fence", "code_block"):
+            code = token.content.rstrip()
+            language = token.info or ""
+            normalized_language = language.split(maxsplit=1)[0].casefold() if language.strip() else ""
+
+            if token_type == "fence" and normalized_language == "mermaid" and token.meta.get(_FENCE_CLOSED_META, False):
+                if compile_diagram is None:
+                    from chrys.app.tui.widgets.markdown.diagram import compile_mermaid
+
+                    compile_diagram = compile_mermaid
+                diagram_source = token.content.rstrip("\n")
+                diagram = compile_diagram(diagram_source)
+
+                if not any(diagnostic.severity is DiagnosticSeverity.ERROR for diagnostic in diagram.diagnostics):
+                    indent = 0
+                    bq_depth = sum(1 for parent in stack if parent["type"] == "blockquote")
+                    border_left = "\u258c " * bq_depth if bq_depth > 0 else ""
+                    for parent in reversed(stack):
+                        if parent["type"] == "list_item":
+                            indent = parent.get("indent", 0)
+                            break
+
+                    blocks.append(
+                        MarkdownBlock(
+                            block_type="diagram",
+                            content=Content.from_text("", markup=False),
+                            source_range=source_range,
+                            style_name="virtualized-markdown--diagram",
+                            top_margin=1,
+                            bottom_margin=1,
+                            code_language="mermaid",
+                            indent=indent,
+                            padding_top=1,
+                            padding_bottom=1,
+                            padding_left=1,
+                            padding_right=1,
+                            border_left=border_left,
+                            bq_depth=bq_depth,
+                            diagram=diagram,
+                        )
+                    )
+                    continue
+
+            highlighted = highlight(code, language=language or None, theme=NoErrorHighlightTheme)
+
+            indent = 0
+            prefix = ""
+            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
+            border_left = "\u258c " * bq_depth if bq_depth > 0 else ""
+            for parent in reversed(stack):
+                if parent["type"] == "list_item":
+                    indent = parent.get("indent", 0)
+                    break
+
+            blocks.append(
+                MarkdownBlock(
+                    block_type="fence",
+                    content=highlighted,
+                    source_range=source_range,
+                    style_name="virtualized-markdown--fence",
+                    top_margin=1,
+                    bottom_margin=1,
+                    code_language=language,
+                    indent=indent,
+                    prefix=prefix,
+                    padding_top=1,
+                    padding_bottom=1,
+                    padding_left=2,
+                    padding_right=1,
+                    border_left=border_left,
+                    bq_depth=bq_depth,
+                )
+            )
+
+        elif unhandled_token is not None:
+            external = unhandled_token(token)
+            if external is not None:
+                blocks.append(external)
+
+    return blocks
+
+
+def _build_table_blocks(
+    headers: list[Content],
+    rows: list[list[Content]],
+    source_range: tuple[int, int],
+) -> list[MarkdownBlock]:
+    """Build MarkdownBlock objects for a table.
+
+    Stores raw table data; actual rendering is done at layout time
+    when the available width is known.
+    """
+    if not headers:
+        return []
+
+    return [
+        MarkdownBlock(
+            block_type="table",
+            content=Content(""),
+            source_range=source_range,
+            style_name="virtualized-markdown--table",
+            bottom_margin=1,
+            table_headers=headers,
+            table_rows=rows,
+        )
+    ]
+
+
+def _wrap_cell_text(text: str, width: int) -> list[str]:
+    """Wrap text to fit within width cells (CJK-aware).
+
+    Args:
+        text: The text to wrap.
+        width: Maximum cell width per line.
+
+    Returns:
+        A list of wrapped lines.
+    """
+    if width <= 0:
+        return [text]
+    if text.isascii() and "\t" not in text:
+        result: list[str] = []
+        for paragraph in text.split("\n"):
+            if paragraph:
+                result.extend(paragraph[index : index + width] for index in range(0, len(paragraph), width))
+            else:
+                result.append("")
+        return result or [""]
+    result: list[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        for char in paragraph:
+            candidate = current + char
+            if cell_len(candidate) > width and current and not _is_cluster_continuation(current, char):
+                result.append(current)
+                current = char
+            else:
+                current = candidate
+        result.append(current)
+    return result or [""]
+
+
+def _cell_wrapped_height(text: str, width: int) -> int:
+    """Return the number of visual rows ``_wrap_cell_text`` would produce."""
+    if width <= 0:
+        return 1
+    if text.isascii() and "\t" not in text:
+        return sum(max(1, (len(paragraph) + width - 1) // width) for paragraph in text.split("\n"))
+    height = 0
+    for paragraph in text.split("\n"):
+        current_chars: list[str] = []
+        current_width = 0
+        previous_char = ""
+        for char in paragraph:
+            continuation = char == _ZERO_WIDTH_JOINER or previous_char == _ZERO_WIDTH_JOINER or cell_len(char) == 0
+            if continuation:
+                current_chars.append(char)
+                current_width = cell_len("".join(current_chars))
+                previous_char = char
+                continue
+
+            char_width = cell_len(char)
+            if current_width + char_width > width and current_chars:
+                height += 1
+                current_chars = [char]
+                current_width = char_width
+            else:
+                current_chars.append(char)
+                current_width += char_width
+            previous_char = char
+        height += 1
+    return max(1, height)
+
+
+def _is_cluster_continuation(current: str, char: str) -> bool:
+    """Return whether ``char`` should stay attached to the current cluster."""
+    return char == _ZERO_WIDTH_JOINER or current.endswith(_ZERO_WIDTH_JOINER) or cell_len(char) == 0
+
+
+def _cell_min_width(text: str) -> int:
+    """Return the narrowest width that can keep each display cluster intact."""
+    if text.isascii():
+        return 1
+    max_width = 1
+    cluster = ""
+    for char in text:
+        if cluster and not _is_cluster_continuation(cluster, char):
+            max_width = max(max_width, cell_len(cluster))
+            cluster = char
+        else:
+            cluster += char
+    if cluster:
+        max_width = max(max_width, cell_len(cluster))
+    return max_width
+
+
+def _cell_prefix_length(text: str, target_cells: int) -> int:
+    """Return the character count that fits without splitting a wide glyph.
+
+    When the text is wider than the target — e.g. a double-width CJK glyph in a
+    column the layout squeezed narrower than the glyph — only the whole leading
+    characters that fit are kept; the table renderer pads the remainder.  A cell
+    that renders even one cell wide of its column shifts every separator to its
+    right (the misaligned-bars bug).
+    """
+    if target_cells <= 0:
+        return 0
+    if text.isascii() and "\t" not in text:
+        return min(len(text), target_cells)
+    out = ""
+    for char in text:
+        candidate = out + char
+        if cell_len(candidate) > target_cells:
+            break
+        out = candidate
+    return len(out)

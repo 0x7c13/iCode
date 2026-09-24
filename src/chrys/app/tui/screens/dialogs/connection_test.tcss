@@ -1,0 +1,92 @@
+ConnectionTestDialog {
+    align: center middle;
+}
+
+#connection-test-container {
+    width: 60;
+    max-width: 90%;
+    height: auto;
+    min-height: 8;
+    max-height: 85%;
+    background: $surface;
+    border: round $tui-border-warning $border-opacity;
+    border-title-color: $warning;
+    border-title-style: bold;
+    border-subtitle-color: $warning;
+    border-subtitle-style: bold;
+}
+
+#connection-test-inner {
+    width: 100%;
+    height: auto;
+    min-height: 4;
+    background: $surface;
+    padding: 1 1;
+}
+
+#connection-test-loading {
+    width: 100%;
+    height: 1;
+    color: $warning;
+    margin: 1 0;
+}
+
+#connection-test-message {
+    width: 100%;
+    height: auto;
+    max-height: 14;
+    overflow-y: auto;
+    text-align: center;
+    margin: 0 1;
+}
+
+/* Markdown result mode (structured reports, e.g. the ACP handshake): the
+   container grows into a wide report pane and the Markdown body scrolls. */
+ConnectionTestDialog.-markdown #connection-test-container {
+    width: 90%;
+    max-width: 110;
+    max-height: 90%;
+}
+
+/* The scroll wrapper owns the scrollbar at the container's inner edge; the
+   markdown's own `padding: 0 2` (widget default) insets the content. */
+#connection-test-markdown-scroll {
+    margin: 1 0 0 0;
+    padding: 0;
+}
+
+#connection-test-markdown {
+    width: 100%;
+    height: auto;
+}
+
+#connection-test-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1;
+}
+
+#connection-test-buttons > Button {
+    margin: 0 1;
+}
+
+ConnectionTestDialog.-success #connection-test-container {
+    border: round $tui-border-success $border-opacity;
+    border-title-color: $success;
+    border-subtitle-color: $success;
+}
+
+ConnectionTestDialog.-success #connection-test-loading {
+    color: $success;
+}
+
+ConnectionTestDialog.-error #connection-test-container {
+    border: round $tui-border-error $border-opacity;
+    border-title-color: $error;
+    border-subtitle-color: $error;
+}
+
+ConnectionTestDialog.-error #connection-test-loading {
+    color: $error;
+}

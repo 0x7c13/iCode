@@ -1,0 +1,45 @@
+LogViewerScreen {
+    align: center middle;
+}
+
+#lv-container {
+    width: 85%;
+    min-width: 60;
+    max-width: 200;
+    height: 85%;
+    max-height: 85%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    border-subtitle-color: $primary;
+    background: $surface;
+    padding: 0;
+}
+
+#lv-tabs {
+    height: 1fr;
+}
+
+#lv-tabs ContentSwitcher {
+    height: 1fr;
+}
+
+#lv-tabs TabPane {
+    height: 1fr;
+    padding: 0;
+}
+
+#lv-tabs .lv-log-stack {
+    height: 1fr;
+}
+
+#lv-tabs RichLog {
+    height: 1fr;
+    scrollbar-size: 1 1;
+    scrollbar-gutter: stable;
+    padding: 0 0 0 1;
+}
+
+#lv-tabs .lv-empty {
+    height: 1fr;
+}

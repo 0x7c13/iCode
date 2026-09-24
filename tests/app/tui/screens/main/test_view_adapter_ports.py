@@ -1,0 +1,172 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Port conformance checks for the main-screen Textual adapter."""
+
+from __future__ import annotations
+
+import inspect
+from typing import Protocol
+
+import pytest
+from textual.widgets import Static
+
+from chrys.app.tui import i18n as tui_i18n
+from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
+from chrys.app.tui.screens.main import ports
+from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
+from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chrome.status_bar import StatusBar
+from chrys.foundation.config.settings import Settings
+from chrys.foundation.i18n import MessageRef
+from tests.support.tui_helpers import WidgetApp
+
+
+def _protocol_member_names(protocol: type[Protocol]) -> set[str]:
+    names: set[str] = set()
+    for base in reversed(protocol.__mro__):
+        if base in {Protocol, object}:
+            continue
+        for name, value in base.__dict__.items():
+            if name.startswith("_"):
+                continue
+            if inspect.isfunction(value) or isinstance(value, property):
+                names.add(name)
+    return names
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    [
+        ports.InputFlowView,
+        ports.ShellModeView,
+        ports.InputFocusView,
+        ports.SuggestionPopupView,
+        ports.BuddyCommandView,
+        ports.SessionLifecycleView,
+        ports.RuntimeConfigView,
+        ports.WorkspaceView,
+        ports.CopyActionView,
+        ports.DiffView,
+        ports.RollbackView,
+        ports.NavigationView,
+        ports.ToolActionView,
+        ports.DialogGatewayView,
+        ports.MainScreenPresentationView,
+        ports.BackendEventView,
+    ],
+)
+def test_main_screen_view_adapter_implements_view_ports(protocol: type[Protocol]) -> None:
+    missing = sorted(name for name in _protocol_member_names(protocol) if not hasattr(MainScreenViewAdapter, name))
+
+    assert missing == []
+
+
+async def test_main_view_status_callers_preserve_message_refs_for_live_retranslation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual.widgets import Footer
+
+    from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
+    from chrys.app.tui.terminal.panel import ShellPanel
+    from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
+
+    controller = LocaleController(Settings(locale="en"))
+    monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
+
+    class _RetryPanel:
+        async def prepare_retry(self) -> None:
+            return
+
+        async def add_retry(self, *_args: object) -> None:
+            return
+
+    class _Terminal:
+        def focus(self) -> None:
+            return
+
+    class _Shell:
+        def query_one(self, _widget_type: type) -> _Terminal:
+            return _Terminal()
+
+    class _Sidebar:
+        def suppress_visibility(self, _owner: str, _active: bool) -> None:
+            return
+
+    class _Footer:
+        display = True
+
+    class _Screen:
+        _shell_mode = True
+        _agent_running = True
+
+        def __init__(self, status_bar: StatusBar) -> None:
+            self.status_bar = status_bar
+            self.retry_panel = _RetryPanel()
+            self.shell = _Shell()
+            self.sidebar = _Sidebar()
+            self.footer = _Footer()
+            self.terminal_title_result = ""
+
+        def _mark_terminal_title_completed(self) -> None:
+            self.terminal_title_result = "✓"
+
+        def _mark_terminal_title_failed(self) -> None:
+            self.terminal_title_result = "✗"
+
+        def query_one(self, widget_type: type):
+            if widget_type is StatusBar:
+                return self.status_bar
+            if widget_type is ChatPanel:
+                return self.retry_panel
+            if widget_type is ShellPanel:
+                return self.shell
+            if widget_type is SidebarPanel:
+                return self.sidebar
+            if widget_type is Footer:
+                return self.footer
+            raise AssertionError(widget_type)
+
+    async with WidgetApp(lambda: StatusBar(locale_controller=controller)).run_test() as pilot:
+        status_bar = pilot.app.query_one(StatusBar)
+        screen = _Screen(status_bar)
+        adapter = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+
+        adapter.flash_interrupted()
+        assert status_bar._flash is not None
+        assert isinstance(status_bar._flash.text, MessageRef)
+        assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+        assert status_bar.query_one("#status-flash", Static).render().plain == "已由用户中断"
+
+        adapter.flash_turn_complete()
+        adapter.mark_terminal_title_completed()
+        assert screen.terminal_title_result == "✓"
+        assert status_bar._flash is not None
+        assert isinstance(status_bar._flash.text, MessageRef)
+        assert status_bar.query_one("#status-flash", Static).render().plain.startswith("已在 ")
+
+        adapter.flash_status(status_bar._flash.text, error=True)
+        adapter.mark_terminal_title_failed()
+        assert screen.terminal_title_result == "✗"
+
+        adapter.start_tool_status("read_file")
+        assert isinstance(status_bar.status, MessageRef)
+        assert status_bar.query_one("#status-text", Static).render().plain == "正在运行：read_file"  # noqa: RUF001
+
+        await adapter.show_retry_attempt("temporary", 2, 4, 1)
+        assert isinstance(status_bar.status, MessageRef)
+        assert status_bar.query_one("#status-text", Static).render().plain == "正在重试（2/4）..."  # noqa: RUF001
+
+        adapter.set_alternate_screen_active(False)
+        assert status_bar._flash is not None
+        assert isinstance(status_bar._flash.text, MessageRef)
+        assert status_bar.query_one("#status-flash", Static).render().plain == (
+            "终端模式 — 连按两次 Esc 或输入 exit 退出"
+        )
+
+        screen._shell_mode = False
+        status_bar.set_profile("Code Agent")
+        status_bar.flash("Interactive terminal")
+        adapter.set_alternate_screen_active(False)
+        assert status_bar.visible is True
+        assert status_bar._flash is None
+        assert status_bar.query_one("#profile-tag", Static).render().plain == "Code Agent"

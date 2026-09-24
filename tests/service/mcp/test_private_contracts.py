@@ -1,0 +1,249 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Fail-loudly contracts for MCP symbols chrys depends on.
+
+``chrys.service.mcp.adapter`` reaches into a handful of **private** symbols of the
+official ``mcp`` SDK and subclasses the Chrys-owned MCP engine.  Each private
+SDK touchpoint either has a runtime fallback (ImportError → stock client /
+literal defaults) or is an owned method whose shape adapter mixins rely on.
+
+These tests pin the **existence and shape** of every such symbol so a dependency
+upgrade that moves, renames, or reshapes one fails *here* — loudly, in one
+obvious place — instead of silently disabling a workaround (stdout banner
+tolerance, ping-storm suppression, structured-content fallback, dynamic header
+injection) at runtime.
+
+The SDK ``StreamableHTTPTransport._handle_post_request`` hook that
+``_chrys_streamable_http_client`` overrides is pinned here as well; the
+behaviour it enables (POST-failure wake-up, stock-client fallbacks) is
+exercised in ``test_http_transport.py``.
+"""
+
+from __future__ import annotations
+
+import contextvars
+import inspect
+
+from pydantic import BaseModel
+
+
+def _assert_keyword_call_shape(
+    func: object,
+    *,
+    required_keywords: set[str],
+    call_label: str,
+) -> inspect.Signature:
+    """Assert chrys can keep calling a dependency hook with named arguments."""
+    signature = inspect.signature(func)
+    params = signature.parameters
+    assert required_keywords <= set(params), f"{call_label} is missing parameters chrys passes"
+    keywordable = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    for name in required_keywords:
+        assert params[name].kind in keywordable, f"{call_label}.{name} is no longer keyword-callable"
+    new_required = {
+        name
+        for name, param in params.items()
+        if name not in required_keywords
+        and param.kind in {inspect.Parameter.POSITIONAL_ONLY, *keywordable}
+        and param.default is inspect.Parameter.empty
+    }
+    assert not new_required, f"{call_label} added required parameters chrys does not pass: {sorted(new_required)}"
+    return signature
+
+
+# --------------------------------------------------------------------------- #
+# mcp.client.stdio — private primitives behind ``tolerant_stdio_client``
+# --------------------------------------------------------------------------- #
+
+
+def test_stdio_private_primitives_contract() -> None:
+    """``tolerant_stdio_client`` is built on these private stdio symbols.
+
+    If any disappears the adapter degrades to the stock ``stdio_client`` (losing
+    banner tolerance) — but a *rename* of the kwargs we pass would instead break
+    at runtime without tripping the ImportError fallback, so pin the signatures.
+    """
+    import mcp.client.stdio as stdio
+
+    # Process-termination knobs used in the cleanup ``finally``.
+    assert stdio.PROCESS_TERMINATION_TIMEOUT == 2.0
+
+    terminate = getattr(stdio, "_terminate_process_tree", None)
+    assert terminate is not None, "mcp SDK removed mcp.client.stdio._terminate_process_tree"
+    assert inspect.iscoroutinefunction(terminate)
+
+    spawn = getattr(stdio, "_create_platform_compatible_process", None)
+    assert spawn is not None, "mcp SDK removed mcp.client.stdio._create_platform_compatible_process"
+    assert inspect.iscoroutinefunction(spawn)
+    _assert_keyword_call_shape(
+        spawn,
+        required_keywords={"command", "args", "env", "errlog", "cwd"},
+        call_label="mcp.client.stdio._create_platform_compatible_process",
+    )
+
+    resolve = getattr(stdio, "_get_executable_command", None)
+    assert resolve is not None, "mcp SDK removed mcp.client.stdio._get_executable_command"
+    assert callable(resolve)
+
+
+def test_stdio_stock_fallback_contract() -> None:
+    """The stock-client fallback calls ``stdio_client(server, errlog=...)``.
+
+    It rebuilds the server params via ``StdioServerParameters.model_copy`` to
+    re-inject chrys's sanitized inherited environment, so the params type must remain
+    a pydantic model and the stock client must keep its ``(server, errlog)`` API.
+    """
+    import mcp.client.stdio as stdio
+
+    assert issubclass(stdio.StdioServerParameters, BaseModel), (
+        "mcp SDK changed StdioServerParameters off pydantic — model_copy(update=...) fallback breaks"
+    )
+    assert hasattr(stdio.StdioServerParameters, "model_copy")
+
+    client = getattr(stdio, "stdio_client", None)
+    assert client is not None, "mcp SDK removed the public mcp.client.stdio.stdio_client"
+    signature = _assert_keyword_call_shape(
+        client,
+        required_keywords={"server", "errlog"},
+        call_label="mcp.client.stdio.stdio_client",
+    )
+    params = signature.parameters
+    assert {"server", "errlog"} <= set(params)
+    assert params["errlog"].default is not inspect.Parameter.empty
+
+
+# --------------------------------------------------------------------------- #
+# mcp.shared.message — message wrapper used by patched transports
+# --------------------------------------------------------------------------- #
+
+
+def test_session_message_contract() -> None:
+    """Patched HTTP/stdio transports construct ``SessionMessage`` directly."""
+    from mcp.shared.message import SessionMessage
+
+    signature = _assert_keyword_call_shape(
+        SessionMessage,
+        required_keywords={"message"},
+        call_label="mcp.shared.message.SessionMessage",
+    )
+    params = signature.parameters
+    assert params["message"].default is inspect.Parameter.empty
+    assert params["message"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD, (
+        "SessionMessage.message must stay positional-or-keyword: stdio calls SessionMessage(message) "
+        "positionally, while HTTP uses message=."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# mcp.shared._httpx_utils — timeout constants behind ``_build_httpx_client``
+# --------------------------------------------------------------------------- #
+
+
+def test_httpx_utils_default_constants_contract() -> None:
+    """``_build_httpx_client`` mirrors these defaults.
+
+    Its literal ImportError fallback (30.0s connect / 300.0s SSE read) is only
+    the correct degraded value while these constants hold; pin them so a drift in
+    the upstream defaults is visible rather than silently diverging.
+    """
+    from mcp.shared._httpx_utils import (
+        MCP_DEFAULT_SSE_READ_TIMEOUT,
+        MCP_DEFAULT_TIMEOUT,
+        create_mcp_http_client,
+    )
+
+    assert MCP_DEFAULT_TIMEOUT == 30.0
+    assert MCP_DEFAULT_SSE_READ_TIMEOUT == 300.0
+    assert callable(create_mcp_http_client)
+
+
+# --------------------------------------------------------------------------- #
+# chrys.service.mcp.owned — owned base methods + module privates
+# --------------------------------------------------------------------------- #
+
+
+def test_owned_mcptool_overridden_methods_exist() -> None:
+    """Adapter mixins override these owned base methods."""
+    from chrys.service.mcp.owned import MCPTool
+
+    ensure = getattr(MCPTool, "_ensure_connected", None)
+    assert ensure is not None
+    assert inspect.iscoroutinefunction(ensure)
+    assert list(inspect.signature(ensure).parameters) == ["self"]
+
+    parse = getattr(MCPTool, "_parse_tool_result_from_mcp", None)
+    assert parse is not None
+    assert not inspect.iscoroutinefunction(parse)
+    assert list(inspect.signature(parse).parameters) == ["self", "mcp_type"]
+
+
+def test_owned_mcptool_public_surface_contract() -> None:
+    """Adapter / cache read ``MCPTool.functions`` and await ``MCPTool.call_tool``."""
+    from chrys.service.mcp.owned import MCPTool
+
+    assert isinstance(MCPTool.functions, property)
+    assert inspect.iscoroutinefunction(MCPTool.call_tool)
+
+
+def test_owned_mcp_module_privates_contract() -> None:
+    """``_HTTPMCPTool.get_mcp_client`` relies on these owned helpers."""
+    from httpx import URL
+
+    from chrys.service.mcp import owned
+
+    assert isinstance(owned._mcp_call_headers, contextvars.ContextVar)
+    assert owned.MCP_DEFAULT_TIMEOUT == 30
+    assert owned.MCP_DEFAULT_SSE_READ_TIMEOUT == 300
+
+    origin = getattr(owned, "_url_origin", None)
+    assert origin is not None
+    assert isinstance(origin(URL("http://h.example/a")), tuple)
+    # Same host/scheme/port share an origin; a scheme change does not — this is
+    # the invariant the per-call header-injection security relies on.
+    assert origin(URL("http://h.example/a")) == origin(URL("http://h.example/b"))
+    assert origin(URL("http://h.example/a")) != origin(URL("https://h.example/a"))
+
+
+# --------------------------------------------------------------------------- #
+# mcp.client.streamable_http — private POST hook overridden by the patched client
+# --------------------------------------------------------------------------- #
+
+
+def test_streamable_http_private_post_hook_contract() -> None:
+    """Fail loudly if MCP SDK private HTTP hook changes under our patch.
+
+    ``_chrys_streamable_http_client`` subclasses ``StreamableHTTPTransport``
+    and overrides ``_handle_post_request`` to wake pending MCP requests when
+    an HTTP POST task fails.  That is a private SDK hook, so dependency updates
+    must surface here instead of silently disabling the workaround.
+    """
+    import mcp.client.streamable_http as streamable_http
+    from mcp.client.streamable_http import RequestContext, StreamableHTTPTransport
+
+    hook = getattr(StreamableHTTPTransport, "_handle_post_request", None)
+    assert hook is not None, "MCP SDK removed StreamableHTTPTransport._handle_post_request"
+    assert inspect.iscoroutinefunction(hook), "MCP SDK changed _handle_post_request away from async"
+
+    signature = inspect.signature(hook)
+    assert list(signature.parameters) == ["self", "ctx"]
+    assert signature.parameters["ctx"].annotation is RequestContext
+    assert signature.return_annotation is None
+
+    context_fields = set(getattr(RequestContext, "__annotations__", {}))
+    assert {"client", "session_message", "read_stream_writer"} <= context_fields
+
+    assert streamable_http.CONTENT_TYPE == "content-type"
+    assert streamable_http.JSON == "application/json"
+    assert streamable_http.SSE == "text/event-stream"
+
+    helper_names = [
+        "_prepare_headers",
+        "_is_initialization_request",
+        "_maybe_extract_session_id_from_response",
+        "_handle_json_response",
+        "_handle_sse_response",
+        "_handle_unexpected_content_type",
+        "_send_session_terminated_error",
+    ]
+    for name in helper_names:
+        assert hasattr(StreamableHTTPTransport, name), f"MCP SDK removed StreamableHTTPTransport.{name}"

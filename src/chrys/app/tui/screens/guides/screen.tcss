@@ -1,0 +1,52 @@
+GuideDialog {
+    align: center middle;
+}
+
+#gd-container {
+    width: 94%;
+    min-width: 60;
+    max-width: 220;
+    height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    border-subtitle-color: $primary;
+    background: $surface;
+}
+
+#gd-body {
+    height: 1fr;
+}
+
+#gd-tree {
+    width: 30%;
+    min-width: 28;
+    max-width: 40;
+    height: 1fr;
+    background: $panel;
+    padding: 0 0 0 1;
+    border-right: solid $tui-border-foreground 45%;
+    scrollbar-size-vertical: 1;
+}
+
+#gd-tree > .tree--cursor {
+    background: $primary;
+    color: $button-color-foreground;
+    text-style: bold;
+}
+
+/* Flush right: the scrollbar sits against the dialog border, one cell wide.
+   Both panes stay hidden until the first load decides which one to show. */
+#gd-doc {
+    display: none;
+    width: 1fr;
+    height: 1fr;
+    padding: 0 0 0 2;
+    scrollbar-size-vertical: 1;
+}
+
+#gd-empty {
+    display: none;
+    width: 1fr;
+    height: 1fr;
+}

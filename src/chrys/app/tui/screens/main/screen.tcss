@@ -1,0 +1,21 @@
+MainScreen {
+    layout: vertical;
+}
+
+MainScreen > Horizontal {
+    height: 1fr;
+    layers: base overlay;
+}
+
+TrajectoryDashboard {
+    border-subtitle-align: right;
+    border-subtitle-color: $tui-border-title-accent;
+}
+
+TrajectoryDashboard > TrajectoryTextView.-overview {
+    overflow-x: hidden;
+}
+
+TrajectoryDashboard > SessionJsonPanel {
+    border: none;
+}

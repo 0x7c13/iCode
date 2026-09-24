@@ -1,0 +1,46 @@
+ConfirmDialog {
+    align: center middle;
+}
+
+#confirm-container {
+    width: 43;
+    height: auto;
+    min-height: 8;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+}
+
+#confirm-inner {
+    width: 100%;
+    height: auto;
+    min-height: 6;
+    background: $surface;
+}
+
+#confirm-message {
+    width: 100%;
+    height: auto;
+    min-height: 1;
+    content-align: center middle;
+    text-align: center;
+    margin: 1 0;
+    padding: 0 2;
+}
+
+#confirm-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1 0 1;
+}
+
+#confirm-buttons > Button {
+    margin: 0 1;
+}
+
+/* Variant: warning-colored border */
+ConfirmDialog.-warning-border #confirm-container {
+    border: round $tui-border-warning $border-opacity;
+    border-title-color: $warning;
+}

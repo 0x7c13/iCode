@@ -1,0 +1,35 @@
+VisionUnsupportedDialog {
+    align: center middle;
+}
+
+#vision-unsupported-container {
+    width: 68;
+    max-width: 90%;
+    height: auto;
+    max-height: 85%;
+    background: $surface;
+    border: round $tui-border-warning $border-opacity;
+    border-title-color: $warning;
+    border-title-style: bold;
+}
+
+#vision-unsupported-inner {
+    width: 100%;
+    height: auto;
+    background: $surface;
+    padding: 1 2;
+}
+
+#vision-unsupported-message {
+    width: 100%;
+    height: auto;
+    max-height: 16;
+    overflow-y: auto;
+}
+
+#vision-unsupported-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1;
+}
