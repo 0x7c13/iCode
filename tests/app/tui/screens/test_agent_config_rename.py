@@ -13,6 +13,7 @@ from textual.widgets import (
     Select,
 )
 
+from chrys.app.tui.screens.agents.panels.basic import BasicConfigPanel
 from chrys.service.profiles.agents.loader import load_profile_from_yaml
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import (
@@ -30,6 +31,7 @@ from tests.app.tui.screens._agent_config_support import (
     open_agent_config,
     registry_with,
 )
+from tests.support.tui_helpers import BusyWidget
 from tests.support.waiting import wait_for
 
 # The polling helpers in _agent_config_support share one 45s ceiling, below
@@ -262,6 +264,67 @@ async def test_agent_config_failed_rename_validation_rolls_back_retargeted_draft
     assert [ref.profile for ref in parent.sub_agents.agents] == ["Other"]
     assert registry.get("Other") is not None
     assert registry.get("Child") is None
+
+
+async def test_agent_config_edit_while_the_replaced_basic_panel_is_removed_updates_the_new_draft() -> None:
+    """A save reloads the profile while the old panel is still leaving; only the new panel is harvested.
+
+    The old panel stays in the DOM, ahead of its replacement, until its last child exits, and reads its
+    previous profile for the fields already gone. On slow runners that outlasts hydration's retries, and
+    a harvest then wrote the old name back into the draft for good.
+    """
+    registry = registry_with(make_profile("Child", display_name="Child Agent", description="Child agent"))
+    async with open_agent_config(registry, current_profile="Child Agent") as (screen, pilot):
+        old_panel = screen.query_one(BasicConfigPanel)
+        busy = BusyWidget()
+        await old_panel.mount(busy)
+        screen.query_one("#bc-name", Input).value = "Other"
+        await wait_for(
+            lambda: _draft_for_original(screen, "Child").profile.name == "Other",
+            pilot=pilot,
+            timeout=_DEFAULT_WAIT_TIMEOUT,
+            description="the rename is harvested",
+        )
+        # Waits while the busy widget holds go around Pilot, which waits for every message loop.
+        busy.hold()
+        try:
+            await wait_for(
+                lambda: busy.holding,
+                timeout=_DEFAULT_WAIT_TIMEOUT,
+                description="the busy widget holds its message loop",
+            )
+            screen.query_one("#ac-save", Button).press()
+            await wait_for(
+                lambda: busy.exit_requested and not old_panel.query("#bc-name") and not screen._hydrating,
+                timeout=_DEFAULT_WAIT_TIMEOUT,
+                description="the saved profile is reloaded while the old panel is still leaving",
+            )
+            [new_panel] = [panel for panel in screen.query(BasicConfigPanel) if panel is not old_panel]
+            await wait_for(
+                lambda: bool(new_panel.query("#bc-display-name")),
+                timeout=_DEFAULT_WAIT_TIMEOUT,
+                description="the new fields mount",
+            )
+            draft = _draft_for_original(screen, "Other")
+            harvested = draft.profile
+            new_panel.query_one("#bc-display-name", Input).value = "Renamed Agent"
+            await wait_for(
+                lambda: draft.profile is not harvested,
+                timeout=_DEFAULT_WAIT_TIMEOUT,
+                description="the edit is harvested",
+            )
+            assert old_panel.is_attached
+            assert (draft.profile.name, draft.profile.display_name) == ("Other", "Renamed Agent")
+        finally:
+            busy.release.set()
+        await wait_for(
+            lambda: not old_panel.is_attached,
+            pilot=pilot,
+            timeout=_DEFAULT_WAIT_TIMEOUT,
+            description="the old panel is gone",
+        )
+        await _wait_for_hydrated(screen, pilot)
+        assert (draft.profile.name, draft.profile.display_name) == ("Other", "Renamed Agent")
 
 
 async def test_agent_config_save_persists_retargeted_subagent_refs_after_rename(tmp_path: Path) -> None:

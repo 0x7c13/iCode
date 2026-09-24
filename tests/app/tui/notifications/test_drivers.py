@@ -228,11 +228,14 @@ async def test_run_command_timeout_cleanup_hides_taskkill_console(monkeypatch: p
     Regression: timeout cleanup ran ``taskkill.exe`` via bare
     ``subprocess.run``, flashing a console after the 5s notification timeout.
     """
-    taskkill_calls: list[tuple[list[str], dict[str, object]]] = []
+    taskkill = "C:\\Windows\\System32\\taskkill.exe"
+    taskkill_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def _fake_taskkill(argv: list[str], **kwargs: object) -> SimpleNamespace:
-        taskkill_calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=0)
+    class _TaskkillProcess:
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
 
     class _HungProcess:
         pid = 4242
@@ -252,22 +255,22 @@ async def test_run_command_timeout_cleanup_hides_taskkill_console(monkeypatch: p
 
     hung = _HungProcess()
 
-    async def _hung_spawn(*_args: object, **_kwargs: object) -> _HungProcess:
+    async def _spawn(*argv: object, **kwargs: object) -> _HungProcess | _TaskkillProcess:
+        if argv[0] == taskkill:
+            taskkill_calls.append((argv, kwargs))
+            return _TaskkillProcess()
         return hung
 
     hidden = {"creationflags": process_mod._CREATE_NEW_CONSOLE, "startupinfo": "hidden-startupinfo"}
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
     monkeypatch.setattr(process_mod, "_windows_hidden_subprocess_kwargs", lambda: dict(hidden))
-    monkeypatch.setattr(
-        process_mod.shutil, "which", lambda name: "C:\\Windows\\System32\\taskkill.exe" if name == "taskkill" else None
-    )
-    monkeypatch.setattr(process_mod.subprocess, "run", _fake_taskkill)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", _hung_spawn)
+    monkeypatch.setattr(process_mod.shutil, "which", lambda name: taskkill if name == "taskkill" else None)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
 
     assert await drivers._run_command(["C:\\pwsh.exe", "-Command", "notify"], timeout=0.001) is False
 
     assert hung.killed is True
-    argv, kwargs = taskkill_calls[0]
-    assert argv == ["C:\\Windows\\System32\\taskkill.exe", "/PID", "4242", "/T", "/F"]
+    [(argv, kwargs)] = taskkill_calls
+    assert argv == (taskkill, "/PID", "4242", "/T", "/F")
     assert kwargs["creationflags"] == process_mod._CREATE_NEW_CONSOLE
     assert kwargs["startupinfo"] == "hidden-startupinfo"

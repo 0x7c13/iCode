@@ -10,6 +10,7 @@ import subprocess
 import sys
 import textwrap
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -126,24 +127,60 @@ def test_process_session_status_falls_back_to_ps_on_non_linux(monkeypatch: pytes
     assert process_mod._process_groups_in_session(300) == {100, 101}
 
 
-def test_windows_process_tree_cleanup_uses_taskkill(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[list[str], dict[str, object]]] = []
+def _stub_subprocess_spawn(monkeypatch: pytest.MonkeyPatch, spawn: object) -> None:
+    """Point the process module's ``asyncio.create_subprocess_exec`` at *spawn*, leaving asyncio itself alone."""
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio), create_subprocess_exec=spawn)
+    monkeypatch.setattr(process_mod, "asyncio", shadow)
 
-    def fake_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+
+async def test_windows_process_tree_cleanup_runs_taskkill_as_a_hidden_async_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    class _Exited:
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def spawn(*argv: str, **kwargs: object) -> _Exited:
         calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=0)
+        return _Exited()
 
     hidden = {"creationflags": process_mod._CREATE_NEW_CONSOLE, "startupinfo": "hidden-startupinfo"}
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
     monkeypatch.setattr(process_mod, "_windows_hidden_subprocess_kwargs", lambda: dict(hidden))
     monkeypatch.setattr(process_mod.shutil, "which", lambda name: "C:\\Windows\\System32\\taskkill.exe")
-    monkeypatch.setattr(process_mod.subprocess, "run", fake_run)
+    _stub_subprocess_spawn(monkeypatch, spawn)
 
-    assert process_mod.kill_windows_process_tree(1234)
-    argv, kwargs = calls[0]
-    assert argv == ["C:\\Windows\\System32\\taskkill.exe", "/PID", "1234", "/T", "/F"]
-    assert kwargs["creationflags"] == process_mod._CREATE_NEW_CONSOLE
-    assert kwargs["startupinfo"] == "hidden-startupinfo"
+    assert await process_mod.kill_windows_process_tree(1234)
+    [(argv, kwargs)] = calls
+    assert argv == ("C:\\Windows\\System32\\taskkill.exe", "/PID", "1234", "/T", "/F")
+    devnull = asyncio.subprocess.DEVNULL
+    assert kwargs == {"stdin": devnull, "stdout": devnull, "stderr": devnull, **hidden}
+
+
+async def test_windows_process_tree_kill_gives_up_on_a_taskkill_past_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawned: list[asyncio.subprocess.Process] = []
+
+    async def spawn(*argv: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        proc = await asyncio.create_subprocess_exec(*argv, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(
+        process_mod, "_windows_tree_kill_argv", lambda _pid: [sys.executable, "-c", "import time; time.sleep(60)"]
+    )
+    monkeypatch.setattr(process_mod, "_WINDOWS_TREE_KILL_TIMEOUT", 0.2)
+    _stub_subprocess_spawn(monkeypatch, spawn)
+
+    assert await process_mod.kill_windows_process_tree(1234) is False
+    [killer] = spawned
+    await wait_for(lambda: killer.returncode is not None, description="the stuck taskkill to be killed")
 
 
 def test_public_hidden_subprocess_helper_preserves_legacy_alias() -> None:

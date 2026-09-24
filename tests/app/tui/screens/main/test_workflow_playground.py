@@ -183,9 +183,7 @@ async def test_playground_waits_for_manual_retry_then_continues_without_replayin
         await screenshot("03-completed.svg")
 
 
-async def test_playground_rerun_gets_a_fresh_worker_and_cancel_ends_it_at_the_retry_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_playground_rerun_gets_a_fresh_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async with _playground_awaiting_retry(tmp_path, monkeypatch) as playground:
         app, pilot, host, main = playground.app, playground.pilot, playground.host, playground.main
         panel, projector = main._workflow_panel, main._workflow.session_view.projector
@@ -204,8 +202,7 @@ async def test_playground_rerun_gets_a_fresh_worker_and_cancel_ends_it_at_the_re
         assert run.finished is not None and run.finished.outcome == "completed"
         assert run.nodes["flaky_check"].attempt == 3 and app.screen is main
 
-        # The failure counter is worker module state, so a reused worker would pass at once;
-        # Stop at the same boundary cancels the run instead of continuing it.
+        # The failure counter is worker module state, so a reused worker would pass at once.
         await wait_for(lambda: not panel.query_one("#workflow-start", Button).disabled, pilot=pilot)
         await start_workflow(pilot)
         await wait_for(
@@ -220,10 +217,23 @@ async def test_playground_rerun_gets_a_fresh_worker_and_cancel_ends_it_at_the_re
         )
         rerun = projector.current
         assert rerun is not None and rerun.nodes["flaky_check"].attempt == 2
+        assert playground.client.call_count == 0
+
+
+async def test_playground_cancel_at_the_retry_boundary_ends_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _playground_awaiting_retry(tmp_path, monkeypatch) as playground:
+        pilot, host, main = playground.pilot, playground.host, playground.main
+        panel = main._workflow_panel
+        run = main._workflow.session_view.projector.current
+        assert run is not None
+        # Stop at the boundary where Retry would continue the run cancels it instead.
         assert str(panel.query_one("#workflow-stop", Button).label) == "■ Cancel"
         await click_when_settled(pilot, "#workflow-stop")
         await confirm_workflow_cancel(pilot)
-        await wait_for(lambda: rerun.finished is not None, pilot=pilot)
+        await wait_for(lambda: run.finished is not None, pilot=pilot)
         await host.engine.wait_for_run_task()
-        assert rerun.finished is not None and rerun.finished.outcome == "cancelled"
+        assert run.finished is not None and run.finished.outcome == "cancelled"
+        assert run.nodes["flaky_check"].attempt == 2
         assert playground.client.call_count == 0

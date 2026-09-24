@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "4f0eea7eb6da4e2061ee6bbb8c5b54dc14684587e6d1e1c9d5177d71866f0f47",
+  "inventory_sha256": "b30c245c63b2a491954173ba4368e3bda61483f28cc2b852f81e44276f040bf1",
   "nodes": [
     {
       "cases": [
@@ -398,7 +398,7 @@
       "primitive": "sync_primitive",
       "qualname": "ManagedStdioProcess.wait",
       "source_column": 19,
-      "source_line": 208,
+      "source_line": 209,
       "wrapper_target": null
     },
     {
@@ -418,7 +418,7 @@
       "primitive": "multi_wait",
       "qualname": "ManagedStdioProcess.wait",
       "source_column": 8,
-      "source_line": 227,
+      "source_line": 228,
       "wrapper_target": null
     },
     {
@@ -438,7 +438,7 @@
       "primitive": "timeout",
       "qualname": "_cancel_subprocess_wait",
       "source_column": 8,
-      "source_line": 975,
+      "source_line": 979,
       "wrapper_target": null
     },
     {
@@ -458,7 +458,7 @@
       "primitive": "awaitable",
       "qualname": "_managed_subprocess_gen",
       "source_column": 11,
-      "source_line": 871,
+      "source_line": 872,
       "wrapper_target": null
     },
     {
@@ -471,14 +471,34 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)",
+      "expression": "await kill_windows_process_tree(proc.pid)",
       "identity": "chrys.foundation.platform.process:_managed_subprocess_gen:2",
       "module": "chrys.foundation.platform.process",
       "ordinal": 2,
-      "primitive": "timeout",
+      "primitive": "wrapper",
       "qualname": "_managed_subprocess_gen",
       "source_column": 16,
-      "source_line": 898,
+      "source_line": 887,
+      "wrapper_target": "chrys.foundation.platform.process.kill_windows_process_tree"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)",
+      "identity": "chrys.foundation.platform.process:_managed_subprocess_gen:3",
+      "module": "chrys.foundation.platform.process",
+      "ordinal": 3,
+      "primitive": "timeout",
+      "qualname": "_managed_subprocess_gen",
+      "source_column": 20,
+      "source_line": 902,
       "wrapper_target": null
     },
     {
@@ -492,13 +512,13 @@
         }
       ],
       "expression": "proc.wait()",
-      "identity": "chrys.foundation.platform.process:_managed_subprocess_gen:3",
+      "identity": "chrys.foundation.platform.process:_managed_subprocess_gen:4",
       "module": "chrys.foundation.platform.process",
-      "ordinal": 3,
+      "ordinal": 4,
       "primitive": "subprocess",
       "qualname": "_managed_subprocess_gen",
-      "source_column": 39,
-      "source_line": 898,
+      "source_column": 43,
+      "source_line": 902,
       "wrapper_target": null
     },
     {
@@ -518,7 +538,7 @@
       "primitive": "sleep",
       "qualname": "_monitor_process_group_stopped",
       "source_column": 8,
-      "source_line": 1047,
+      "source_line": 1086,
       "wrapper_target": null
     },
     {
@@ -538,7 +558,7 @@
       "primitive": "thread_pool",
       "qualname": "_monitor_process_group_stopped",
       "source_column": 11,
-      "source_line": 1048,
+      "source_line": 1087,
       "wrapper_target": null
     },
     {
@@ -558,7 +578,7 @@
       "primitive": "sleep",
       "qualname": "_monitor_processes_stopped",
       "source_column": 8,
-      "source_line": 1055,
+      "source_line": 1094,
       "wrapper_target": null
     },
     {
@@ -578,7 +598,47 @@
       "primitive": "thread_pool",
       "qualname": "_monitor_processes_stopped",
       "source_column": 11,
-      "source_line": 1056,
+      "source_line": 1095,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **_windows_hidden_subprocess_kwargs())",
+      "identity": "chrys.foundation.platform.process:_run_windows_tree_kill:1",
+      "module": "chrys.foundation.platform.process",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "_run_windows_tree_kill",
+      "source_column": 17,
+      "source_line": 1042,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.wait_for(killer.wait(), timeout=_WINDOWS_TREE_KILL_TIMEOUT)",
+      "identity": "chrys.foundation.platform.process:_run_windows_tree_kill:2",
+      "module": "chrys.foundation.platform.process",
+      "ordinal": 2,
+      "primitive": "timeout",
+      "qualname": "_run_windows_tree_kill",
+      "source_column": 15,
+      "source_line": 1052,
       "wrapper_target": null
     },
     {
@@ -598,7 +658,7 @@
       "primitive": "wrapper",
       "qualname": "_spawn_windows_managed_stdio_process",
       "source_column": 68,
-      "source_line": 749,
+      "source_line": 750,
       "wrapper_target": "chrys.foundation.platform.process._wrap_windows_parent_pipes"
     },
     {
@@ -618,7 +678,7 @@
       "primitive": "awaitable",
       "qualname": "_windows_process_exit",
       "source_column": 4,
-      "source_line": 781,
+      "source_line": 782,
       "wrapper_target": null
     },
     {
@@ -638,7 +698,7 @@
       "primitive": "awaitable",
       "qualname": "_wrap_windows_parent_pipes",
       "source_column": 30,
-      "source_line": 614,
+      "source_line": 615,
       "wrapper_target": null
     },
     {
@@ -658,7 +718,7 @@
       "primitive": "awaitable",
       "qualname": "_wrap_windows_parent_pipes",
       "source_column": 30,
-      "source_line": 618,
+      "source_line": 619,
       "wrapper_target": null
     },
     {
@@ -678,7 +738,47 @@
       "primitive": "awaitable",
       "qualname": "_wrap_windows_parent_pipes",
       "source_column": 29,
-      "source_line": 621,
+      "source_line": 622,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.shield(kill)",
+      "identity": "chrys.foundation.platform.process:kill_windows_process_tree:1",
+      "module": "chrys.foundation.platform.process",
+      "ordinal": 1,
+      "primitive": "shield",
+      "qualname": "kill_windows_process_tree",
+      "source_column": 15,
+      "source_line": 1032,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.shield(kill)",
+      "identity": "chrys.foundation.platform.process:kill_windows_process_tree:2",
+      "module": "chrys.foundation.platform.process",
+      "ordinal": 2,
+      "primitive": "shield",
+      "qualname": "kill_windows_process_tree",
+      "source_column": 16,
+      "source_line": 1036,
       "wrapper_target": null
     },
     {
@@ -698,7 +798,7 @@
       "primitive": "wrapper",
       "qualname": "spawn_managed_stdio_process",
       "source_column": 15,
-      "source_line": 313,
+      "source_line": 314,
       "wrapper_target": "chrys.foundation.platform.process._spawn_windows_managed_stdio_process"
     },
     {
@@ -718,7 +818,7 @@
       "primitive": "awaitable",
       "qualname": "spawn_managed_stdio_process",
       "source_column": 14,
-      "source_line": 322,
+      "source_line": 323,
       "wrapper_target": null
     },
     {
@@ -738,7 +838,7 @@
       "primitive": "sync_primitive",
       "qualname": "spawn_managed_stdio_process",
       "source_column": 8,
-      "source_line": 336,
+      "source_line": 337,
       "wrapper_target": null
     },
     {
@@ -758,7 +858,7 @@
       "primitive": "timeout",
       "qualname": "wait_for_subprocess",
       "source_column": 15,
-      "source_line": 939,
+      "source_line": 943,
       "wrapper_target": null
     },
     {
@@ -778,7 +878,7 @@
       "primitive": "timeout",
       "qualname": "wait_for_subprocess",
       "source_column": 15,
-      "source_line": 941,
+      "source_line": 945,
       "wrapper_target": null
     },
     {
@@ -798,7 +898,7 @@
       "primitive": "multi_wait",
       "qualname": "wait_for_subprocess",
       "source_column": 25,
-      "source_line": 949,
+      "source_line": 953,
       "wrapper_target": null
     },
     {
@@ -818,7 +918,7 @@
       "primitive": "wrapper",
       "qualname": "wait_for_subprocess",
       "source_column": 12,
-      "source_line": 955,
+      "source_line": 959,
       "wrapper_target": "chrys.foundation.platform.process._cancel_subprocess_wait"
     },
     {
@@ -838,7 +938,7 @@
       "primitive": "awaitable",
       "qualname": "wait_for_subprocess",
       "source_column": 19,
-      "source_line": 958,
+      "source_line": 962,
       "wrapper_target": null
     },
     {
@@ -858,7 +958,7 @@
       "primitive": "wrapper",
       "qualname": "wait_for_subprocess",
       "source_column": 8,
-      "source_line": 960,
+      "source_line": 964,
       "wrapper_target": "chrys.foundation.platform.process._cancel_subprocess_wait"
     },
     {
@@ -878,7 +978,7 @@
       "primitive": "awaitable",
       "qualname": "wait_for_subprocess",
       "source_column": 15,
-      "source_line": 961,
+      "source_line": 965,
       "wrapper_target": null
     },
     {
@@ -898,7 +998,7 @@
       "primitive": "wrapper",
       "qualname": "wait_for_subprocess",
       "source_column": 12,
-      "source_line": 964,
+      "source_line": 968,
       "wrapper_target": "chrys.foundation.platform.process._cancel_subprocess_wait"
     },
     {
@@ -918,7 +1018,7 @@
       "primitive": "awaitable",
       "qualname": "wait_for_subprocess",
       "source_column": 12,
-      "source_line": 969,
+      "source_line": 973,
       "wrapper_target": null
     },
     {
@@ -46418,7 +46518,7 @@
       "primitive": "wrapper",
       "qualname": "WebFetchTools._fetch",
       "source_column": 8,
-      "source_line": 102,
+      "source_line": 106,
       "wrapper_target": "chrys.service.tools.builtins.web.progress.report_web_progress"
     },
     {
@@ -46438,7 +46538,7 @@
       "primitive": "async_context",
       "qualname": "WebFetchTools._fetch",
       "source_column": 19,
-      "source_line": 105,
+      "source_line": 109,
       "wrapper_target": null
     },
     {
@@ -46458,7 +46558,7 @@
       "primitive": "async_context",
       "qualname": "WebFetchTools._fetch",
       "source_column": 31,
-      "source_line": 115,
+      "source_line": 119,
       "wrapper_target": null
     },
     {
@@ -46478,7 +46578,7 @@
       "primitive": "wrapper",
       "qualname": "WebFetchTools._fetch",
       "source_column": 30,
-      "source_line": 151,
+      "source_line": 155,
       "wrapper_target": "chrys.service.tools.builtins.web.http.bounded_body"
     },
     {
@@ -46498,7 +46598,7 @@
       "primitive": "wrapper",
       "qualname": "WebFetchTools._fetch",
       "source_column": 27,
-      "source_line": 152,
+      "source_line": 156,
       "wrapper_target": "chrys.service.tools.builtins.web.http.run_off_loop"
     },
     {
@@ -46518,7 +46618,7 @@
       "primitive": "sleep",
       "qualname": "WebFetchTools._fetch",
       "source_column": 16,
-      "source_line": 161,
+      "source_line": 165,
       "wrapper_target": null
     },
     {
@@ -46538,7 +46638,7 @@
       "primitive": "timeout",
       "qualname": "WebFetchTools.web_fetch",
       "source_column": 23,
-      "source_line": 187,
+      "source_line": 191,
       "wrapper_target": null
     },
     {
@@ -46558,7 +46658,7 @@
       "primitive": "async_context",
       "qualname": "WebFetchTools.web_fetch",
       "source_column": 62,
-      "source_line": 187,
+      "source_line": 191,
       "wrapper_target": null
     },
     {
@@ -46578,7 +46678,7 @@
       "primitive": "async_context",
       "qualname": "WebFetchTools.web_fetch",
       "source_column": 31,
-      "source_line": 191,
+      "source_line": 195,
       "wrapper_target": null
     },
     {
@@ -46598,7 +46698,7 @@
       "primitive": "wrapper",
       "qualname": "WebFetchTools.web_fetch",
       "source_column": 31,
-      "source_line": 193,
+      "source_line": 197,
       "wrapper_target": "chrys.service.tools.builtins.web.fetch.tool.WebFetchTools._fetch"
     },
     {
@@ -46618,7 +46718,7 @@
       "primitive": "wrapper",
       "qualname": "WebFetchTools.web_fetch",
       "source_column": 36,
-      "source_line": 195,
+      "source_line": 199,
       "wrapper_target": "chrys.service.tools.builtins.web.http.run_off_loop"
     },
     {
@@ -47018,7 +47118,7 @@
       "primitive": "wrapper",
       "qualname": "WebSearchTools._first_answer",
       "source_column": 12,
-      "source_line": 170,
+      "source_line": 175,
       "wrapper_target": "chrys.service.tools.builtins.web.progress.report_web_progress"
     },
     {
@@ -47038,7 +47138,7 @@
       "primitive": "async_context",
       "qualname": "WebSearchTools._first_answer",
       "source_column": 23,
-      "source_line": 175,
+      "source_line": 180,
       "wrapper_target": null
     },
     {
@@ -47058,7 +47158,7 @@
       "primitive": "async_context",
       "qualname": "WebSearchTools._first_answer",
       "source_column": 35,
-      "source_line": 178,
+      "source_line": 183,
       "wrapper_target": null
     },
     {
@@ -47078,7 +47178,7 @@
       "primitive": "awaitable",
       "qualname": "WebSearchTools._first_answer",
       "source_column": 35,
-      "source_line": 179,
+      "source_line": 184,
       "wrapper_target": null
     },
     {
@@ -47098,7 +47198,7 @@
       "primitive": "sleep",
       "qualname": "WebSearchTools._first_answer",
       "source_column": 24,
-      "source_line": 193,
+      "source_line": 198,
       "wrapper_target": null
     },
     {
@@ -47118,7 +47218,7 @@
       "primitive": "async_context",
       "qualname": "WebSearchTools.web_search",
       "source_column": 23,
-      "source_line": 123,
+      "source_line": 124,
       "wrapper_target": null
     },
     {
@@ -47138,7 +47238,7 @@
       "primitive": "async_context",
       "qualname": "WebSearchTools.web_search",
       "source_column": 53,
-      "source_line": 123,
+      "source_line": 124,
       "wrapper_target": null
     },
     {
@@ -47158,7 +47258,7 @@
       "primitive": "wrapper",
       "qualname": "WebSearchTools.web_search",
       "source_column": 27,
-      "source_line": 125,
+      "source_line": 126,
       "wrapper_target": "chrys.service.tools.builtins.web.search.tool.WebSearchTools._first_answer"
     },
     {
@@ -47178,7 +47278,7 @@
       "primitive": "wrapper",
       "qualname": "WebSearchTools.web_search",
       "source_column": 23,
-      "source_line": 144,
+      "source_line": 145,
       "wrapper_target": "chrys.service.tools.builtins.web.http.run_off_loop"
     },
     {

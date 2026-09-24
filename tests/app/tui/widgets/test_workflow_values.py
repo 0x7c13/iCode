@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import contextlib
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from rich.syntax import Syntax
@@ -29,6 +30,11 @@ from chrys.app.tui.widgets.workflow.values import (
 )
 from tests.support.tui_helpers import BusyWidget, click_when_settled, rich_plain
 from tests.support.waiting import wait_for, wait_until
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from textual.widget import Widget
 
 _TEXT_TABS = (ValueTab.MARKDOWN, ValueTab.PLAIN)
 
@@ -349,3 +355,66 @@ async def test_switching_again_while_widgets_are_being_removed_leaves_none_behin
             pilot=pilot,
             description="the view still switches",
         )
+
+
+class _HeaderProbe(WorkflowValueView):
+    """Calls ``on_bar_built`` as soon as a rebuild has built a tab bar, just before it mounts the bar."""
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.on_bar_built: Callable[[], None] | None = None
+
+    def _header_widgets(self, document: ValueDocument, tab: ValueTab | None) -> list[Widget]:
+        widgets = super()._header_widgets(document, tab)
+        if self.on_bar_built is not None:
+            self.on_bar_built()
+        return widgets
+
+
+class _ProbeHarness(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _HeaderProbe()
+
+
+def _after_turns(turns: int, action: Callable[[], object]) -> None:
+    """Run ``action`` once ``turns`` more loop turns have passed, waking no task in between.
+
+    The turns pick how far the bar's nested mount has got when ``action`` removes it.
+    """
+    if turns:
+        asyncio.get_running_loop().call_soon(_after_turns, turns - 1, action)
+    else:
+        action()
+
+
+@pytest.mark.parametrize("turns", range(6))
+async def test_removing_the_view_while_its_tab_bar_mounts_leaves_the_app_running(turns: int) -> None:
+    """The node dialog closes while its records load, so a value's tab bar never gets its tabs."""
+    app = _ProbeHarness()
+    async with app.run_test(size=(100, 40)) as pilot:
+        view = app.query_one(_HeaderProbe)
+        view.on_bar_built = lambda: _after_turns(turns, view.remove)
+        await view.show(ValueDocument((ShownValue("text", {"k": 1}),)))
+        await wait_for(lambda: not view.is_attached, pilot=pilot, description="the view is removed")
+        assert app.is_running
+    # Leaving run_test re-raises what took the App down, such as "No Tab with id ...".
+
+
+@pytest.mark.parametrize("turns", range(6))
+async def test_a_new_header_can_replace_a_bar_left_mounting_by_a_cancelled_show(turns: int) -> None:
+    """Selecting another attempt cancels the record loader while it mounts a value's tab bar."""
+    app = _ProbeHarness()
+    async with app.run_test(size=(100, 40)):
+        view = app.query_one(_HeaderProbe)
+        showing = asyncio.create_task(view.show(ValueDocument((ShownValue("text", {"k": 1}),))))
+        view.on_bar_built = lambda: _after_turns(turns, showing.cancel)
+        with contextlib.suppress(asyncio.CancelledError):
+            await showing
+        view.on_bar_built = None
+        # The notice changes the header, so this rebuild removes the half-mounted bar.
+        await view.show(ValueDocument((ShownValue("other"),), notice="dropped"))
+        notice, tabs = view.header.children
+        assert isinstance(notice, Static) and str(notice.content) == "dropped"
+        assert isinstance(tabs, Tabs) and tabs.active == "workflow-value-markdown"
+        assert _tab_labels(view) == ["Markdown", "Plain text"]
+        assert view.body.query_one(VirtualizedMarkdown).source == "other"
