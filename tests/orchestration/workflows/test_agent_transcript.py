@@ -18,7 +18,7 @@ from chrys.foundation.events.types import (
     WorkflowNodeStateChanged,
 )
 from chrys.orchestration.workflows.agent_archive import AgentNodeArchive, CoalescedCheckpoint
-from chrys.service.llm.mock import MockChatClient
+from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.store import read_node_value
 from chrys.service.workflows.transcript import read_node_transcript, read_node_usage
@@ -30,6 +30,12 @@ from tests.orchestration.workflows._hosting import (
     patch_runtime,
     run,
     write_workflow,
+)
+from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
+from tests.support.scripted_clients import (
+    HostedMockChatClient,
+    HostedMockResponse,
+    hosted_image_result,
 )
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -130,6 +136,167 @@ async def test_attempt_archive_survives_shutdown_with_reused_call_ids(
         output = read_node_value(directory, "node@iter#1", 1, "output", node_kind="agent")
         assert output is not None and output["value"] == {"text": "Done", "data": None}
         assert [item.value.text for item in result.outputs] == ["Done"]
+
+
+async def test_streamed_prose_of_an_unknown_tool_call_reaches_the_node_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unknown tool starts no tool, which is what releases streamed prose, and the value leaves it out."""
+    project = make_project(tmp_path)
+    node_client = MockChatClient(
+        responses=[
+            MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
+            MockResponse(text="Done"),
+        ]
+    )
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
+    write_workflow(project, "archive", source())
+    host = make_host(tmp_path, project=project, stream=True)
+    prose: list[tuple[str, bool]] = []
+
+    async def record(event: InvocationMessage) -> None:
+        if event.origin.kind == "workflow_node":
+            prose.append((event.text, event.is_intermediate))
+
+    await host.event_bus.subscribe(InvocationMessage, record)
+    try:
+        await confirm(host, "archive")
+        result, _events = await run(host, "archive", input_text="Check")
+        assert result.outcome.value == "completed"
+        assert prose == [("Let me check. ", True), ("Done", False)]
+        assert [item.value.text for item in result.outputs] == ["Done"]
+    finally:
+        await host.shutdown()
+        await host.event_bus.unsubscribe(InvocationMessage, record)
+
+
+@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "blocking"])
+async def test_prose_before_hosted_output_reaches_the_node_transcript_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    """The prose precedes the next response's hosted output, and the run-end reconcile leaves it alone."""
+    project = make_project(tmp_path)
+    node_client = HostedMockChatClient(
+        responses=[
+            MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
+            HostedMockResponse(text="Done", hosted=[hosted_image_result()]),
+        ]
+    )
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
+    write_workflow(project, "archive", source())
+    host = make_host(tmp_path, project=project, stream=stream)
+    transcript: list[tuple[str, bool] | str] = []
+
+    async def record(event: InvocationMessage) -> None:
+        if event.origin.kind == "workflow_node":
+            transcript.append((event.text, event.is_intermediate))
+
+    async def record_start(event: InvocationToolCallStart) -> None:
+        if event.origin.kind == "workflow_node" and event.provider_hosted:
+            transcript.append("hosted start")
+
+    await host.event_bus.subscribe(InvocationMessage, record)
+    await host.event_bus.subscribe(InvocationToolCallStart, record_start)
+    try:
+        await confirm(host, "archive")
+        result, _events = await run(host, "archive", input_text="Check")
+        assert result.outcome.value == "completed"
+        assert transcript == [("Let me check. ", True), "hosted start", ("Done", False)]
+        assert [item.value.text for item in result.outputs] == ["Done"]
+    finally:
+        await host.shutdown()
+        await host.event_bus.unsubscribe(InvocationToolCallStart, record_start)
+        await host.event_bus.unsubscribe(InvocationMessage, record)
+
+
+async def test_prose_of_a_failed_pass_reaches_the_node_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass that fails after an unknown call still publishes the prose streamed with it."""
+    project = make_project(tmp_path)
+    node_client = MockChatClient(
+        responses=[MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})])]
+    )
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
+    # No next response starts, so only the end of the failed pass can release the prose.
+    fail_nested_before_response_on_nth(monkeypatch, 2)
+    write_workflow(project, "archive", source())
+    host = make_host(tmp_path, project=project, stream=True)
+    prose: list[tuple[str, bool]] = []
+
+    async def record(event: InvocationMessage) -> None:
+        if event.origin.kind == "workflow_node":
+            prose.append((event.text, event.is_intermediate))
+
+    await host.event_bus.subscribe(InvocationMessage, record)
+    try:
+        await confirm(host, "archive")
+        result, _events = await run(host, "archive", input_text="Check")
+        assert result.outcome.value == "node_failed"
+        assert prose == [("Let me check. ", True)]
+    finally:
+        await host.shutdown()
+        await host.event_bus.unsubscribe(InvocationMessage, record)
+
+
+@pytest.mark.parametrize("close", ["cancel", "shutdown"])
+async def test_closing_the_run_settles_prose_a_subscriber_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, close: str
+) -> None:
+    """A subscriber that never returns cannot hold a closing node, and nothing it held arrives after the pass."""
+    project = make_project(tmp_path)
+    node_client = MockChatClient(
+        responses=[
+            MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
+            MockResponse(text="Done"),
+        ]
+    )
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
+    write_workflow(project, "archive", source())
+    host = make_host(tmp_path, project=project, stream=True)
+    publishing = asyncio.Event()
+    abandoned = asyncio.Event()
+    delivered: list[str] = []
+
+    async def stuck(event: InvocationMessage) -> None:
+        if event.origin.kind == "workflow_node" and event.is_intermediate:
+            publishing.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                abandoned.set()
+                raise
+
+    async def late(event: InvocationMessage) -> None:
+        if event.origin.kind == "workflow_node" and event.is_intermediate:
+            delivered.append(event.text)
+
+    await host.event_bus.subscribe(InvocationMessage, stuck)
+    await host.event_bus.subscribe(InvocationMessage, late)
+    task = None
+    try:
+        await confirm(host, "archive")
+        task = asyncio.create_task(run(host, "archive", input_text="Check"))
+        await wait_for(lambda: publishing.is_set() or task.done(), timeout=ENGINE_TURN_TIMEOUT)
+        if task.done():
+            await task
+        assert publishing.is_set()
+
+        if close == "cancel":
+            await host.cancel_workflow()
+        else:
+            await host.shutdown()
+        await wait_for(task.done, timeout=ENGINE_TURN_TIMEOUT, description="the closed run ending")
+        result, _events = await task
+        assert result.outcome.value == "cancelled"
+        assert abandoned.is_set()
+        assert delivered == []
+    finally:
+        await host.shutdown()
+        await host.event_bus.unsubscribe(InvocationMessage, stuck)
+        await host.event_bus.unsubscribe(InvocationMessage, late)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_manual_retry_keeps_the_failed_attempt_archive_unchanged(

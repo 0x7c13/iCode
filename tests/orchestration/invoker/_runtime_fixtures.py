@@ -20,6 +20,7 @@ class SubAgentPolicyDouble:
     """A real common shell over a scripted backend; each test supplies execute()."""
 
     failure_reason = None
+    final_segment = None
 
     def __init__(self, *, shell, prompt):
         self.shell = shell

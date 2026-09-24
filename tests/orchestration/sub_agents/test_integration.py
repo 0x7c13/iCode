@@ -49,14 +49,17 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
     InvocationRetryRequested,
     InvocationToolCallResult,
+    InvocationToolCallStart,
     SessionReady,
     UsageUpdate,
     UserInterrupt,
     UserMessage,
 )
+from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.tool_kinds import KIND_SKILL
+from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
@@ -77,7 +80,8 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
 from chrys.service.state.store import JsonFileStateStore
-from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
+from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
+from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom, HostedMockResponse, hosted_image_result
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, await_run_task_chain
 
 if TYPE_CHECKING:
@@ -204,6 +208,7 @@ async def _make_ctx(
         InvocationMessage,
         ApprovalRequest,
         ApprovalResponse,
+        InvocationToolCallStart,
         InvocationToolCallResult,
         InvocationPaused,
         InvocationResumed,
@@ -582,6 +587,231 @@ async def test_sub_agent_usage_updates_flow_before_parent_tool_finishes(
             if (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn") and e.tool_name == "Explore"
         )
         assert final_progress_index < parent_result_index
+    finally:
+        await ctx.cleanup()
+
+
+async def _narrated_sub_agent_ctx(tmp_path: Path, agent_engine) -> _SubAgentPipelineCtx:
+    """A sub-agent that narrates one tool call, then answers."""
+    return await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(
+                text="Let me check the tree. ",
+                tool_calls=[("sleep", "sleep-1", {"seconds": 0, "reason": "look around"})],
+            ),
+            MockResponse(text="The answer is 42."),
+        ],
+        sub_builtins=["sleep"],
+        agent_engine=agent_engine,
+    )
+
+
+def _explore_result(ctx: _SubAgentPipelineCtx) -> InvocationToolCallResult:
+    (tool_result,) = [
+        e
+        for e in ctx.events
+        if isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn" and e.tool_name == "Explore"
+    ]
+    return tool_result
+
+
+@pytest.mark.asyncio
+async def test_parent_receives_the_final_segment_not_the_narration(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    """Text written between the sub-agent's tool calls stays in its transcript."""
+    ctx = await _narrated_sub_agent_ctx(tmp_path, agent_engine)
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        tool_result = _explore_result(ctx)
+        assert tool_result.result == "The answer is 42."
+        # The result is the final segment, so the transcript needs no declaration.
+        assert SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY not in tool_result.metadata
+        sent = [
+            str(content.result)
+            for messages, _options in ctx.main_client.call_history
+            for message in messages
+            for content in message.contents
+            if content.type == "function_result" and content.call_id == "call-1"
+        ]
+        assert sent == ["The answer is 42."]
+        assert [
+            e.text
+            for e in ctx.events
+            if isinstance(e, InvocationMessage) and e.origin.kind == "sub_agent" and e.is_intermediate
+        ] == ["Let me check the tree. "]
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call",
+    [("no_such_tool", "c-1", {}), ("sleep", "sleep-1", {})],
+    ids=["unknown-tool", "invalid-arguments"],
+)
+async def test_streamed_narration_of_a_call_outside_the_tool_pipeline_reaches_the_transcript(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, call: tuple[str, str, dict[str, Any]]
+) -> None:
+    """The kernel answers these calls without a tool start, which is what releases streamed text."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(text="Let me check the tree. ", tool_calls=[call]),
+            MockResponse(text="The answer is 42."),
+        ],
+        sub_stream=True,
+        sub_builtins=["sleep"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        assert _explore_result(ctx).result == "The answer is 42."
+        narration = [
+            i
+            for i, e in enumerate(ctx.events)
+            if isinstance(e, InvocationMessage)
+            and e.origin.kind == "sub_agent"
+            and e.is_intermediate
+            and e.text == "Let me check the tree. "
+        ]
+        assert len(narration) == 1
+        assert narration[0] < ctx.events.index(_explore_result(ctx))
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_stream", [True, False], ids=["streamed", "blocking"])
+@pytest.mark.parametrize(
+    "call",
+    [("sleep", "sleep-1", {"seconds": 0}), ("no_such_tool", "c-1", {})],
+    ids=["tool-start", "unknown-tool"],
+)
+async def test_narration_before_hosted_output_reaches_the_transcript_once(
+    tmp_path: Path,
+    fast_sub_agent_controller: None,
+    agent_engine,
+    call: tuple[str, str, dict[str, Any]],
+    sub_stream: bool,
+) -> None:
+    """The narration precedes the next response's hosted output, and the run-end reconcile leaves it alone."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(text="Let me check the tree. ", tool_calls=[call]),
+            HostedMockResponse(text="Here it is.", hosted=[hosted_image_result()]),
+        ],
+        sub_stream=sub_stream,
+        sub_builtins=["sleep"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        assert _explore_result(ctx).result == "Here it is."
+        child_results = [
+            (e.tool_name, e.provider_hosted)
+            for e in ctx.events
+            if isinstance(e, InvocationToolCallResult) and e.origin.kind == "sub_agent"
+        ]
+        assert (HostedToolFamily.IMAGE, True) in child_results
+        assert (call[0] == "sleep") == (("sleep", False) in child_results)
+        narration = [
+            i
+            for i, e in enumerate(ctx.events)
+            if isinstance(e, InvocationMessage) and e.origin.kind == "sub_agent" and e.is_intermediate
+        ]
+        assert [ctx.events[i].text for i in narration] == ["Let me check the tree. "]
+        hosted_start_at = next(
+            i
+            for i, e in enumerate(ctx.events)
+            if isinstance(e, InvocationToolCallStart) and e.origin.kind == "sub_agent" and e.provider_hosted
+        )
+        assert narration[0] < hosted_start_at
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_narration_of_a_failed_pass_precedes_its_pause(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Streamed text of a call that started no tool belongs to the pass that wrote it, not to the retry."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(text="Let me check the tree. ", tool_calls=[("no_such_tool", "c-1", {})]),
+            MockResponse(text="The answer is 42."),
+        ],
+        sub_stream=True,
+        agent_engine=agent_engine,
+    )
+    # No next response starts, so only the end of the failed pass can release the text.
+    fail_nested_before_response_on_nth(monkeypatch, 2, main=ctx.engine.current.loaded.bindings._response_validation)
+
+    def narration() -> list[int]:
+        return [
+            i
+            for i, e in enumerate(ctx.events)
+            if isinstance(e, InvocationMessage) and e.origin.kind == "sub_agent" and e.is_intermediate
+        ]
+
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (paused,) = await ctx.wait_for_event(InvocationPaused)
+        assert len(narration()) == 1
+        assert narration()[0] < ctx.events.index(paused)
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=paused.origin.invocation_id))
+        await ctx.wait_for_event(InvocationResumed)
+        await ctx.wait_for_idle()
+
+        assert _explore_result(ctx).result == "The answer is 42."
+        assert [ctx.events[i].text for i in narration()] == ["Let me check the tree. "]
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_declared_final_segment_reaches_the_parent_result_metadata(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    """A run that ends on hosted output returns everything it said and tells the transcript so."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(
+                text="Let me check the tree. ",
+                tool_calls=[("sleep", "sleep-1", {"seconds": 0, "reason": "look around"})],
+            ),
+            HostedMockResponse(text="", hosted=[hosted_image_result()]),
+        ],
+        sub_builtins=["sleep"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        assert any(
+            isinstance(e, InvocationToolCallResult) and e.origin.kind == "sub_agent" and e.provider_hosted
+            for e in ctx.events
+        )
+        tool_result = _explore_result(ctx)
+        assert tool_result.result == "Let me check the tree. "
+        assert tool_result.metadata[SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY] == ""
     finally:
         await ctx.cleanup()
 

@@ -61,7 +61,7 @@ from chrys.orchestration.invoker.contracts import (
 from chrys.orchestration.invoker.kernel import KernelConversation
 from chrys.orchestration.invoker.origin import BoundEmitter
 from chrys.orchestration.invoker.resources import Conversation, PassResources
-from chrys.service.agent_middleware.events.hosted_tools import adapt_hosted_tool, hosted_replay_status
+from chrys.service.agent_middleware.events.hosted_tools import FinalSegment, adapt_hosted_tool, hosted_replay_status
 from chrys.service.agent_middleware.response_validation import (
     RetryableResponseValidationError,
 )
@@ -219,6 +219,8 @@ class KernelSubAgentPolicy:
         self._last_error: str = ""
         self._failure_reason: SubAgentFailureReason | None = None
         self._retry_attempts_total: int = 0
+        # The answer of the pass that completed the invocation, if any.
+        self.final_segment: FinalSegment | None = None
         # The seed prompt is one persisted context item: it keeps a single
         # analytics identity across prompt replays so the trajectory can
         # account for every model request that re-sent it.
@@ -295,7 +297,10 @@ class KernelSubAgentPolicy:
         self._record_failure(error)
 
     async def finished(self) -> None:
-        pass
+        # A failed or interrupted pass publishes no outcome, and the buffer
+        # spans the invocation: its text must not wait for a later pass.
+        if self._tool_event_middleware is not None:
+            await self._tool_event_middleware.finish_intermediate_text()
 
     def cancelled(self) -> None:
         pass
@@ -642,15 +647,18 @@ class KernelSubAgentPolicy:
         self._pending_record_finalizer(path)
 
     @staticmethod
-    def _extract_text(response: AgentResponse[Any]) -> str:
-        """Extract a parent-visible result from an ``AgentResponse``.
+    def _final_segment(response: AgentResponse[Any]) -> FinalSegment:
+        """Return the parent result and the transcript's final text for *response*.
 
-        Text remains authoritative. A hosted image/artifact-only response is
-        still a successful structured result, so synthesize a neutral parent
-        result after its rich payload has been published by reconciliation.
+        ``FinalSegment`` decides both, as it does for a workflow agent node.
+        A hosted image/artifact-only response is still a successful
+        structured result, so synthesize a neutral parent result, shown in the
+        transcript too, after its rich payload has been published by
+        reconciliation.
         """
-        if response.text:
-            return response.text
+        segment = FinalSegment.of(response)
+        if segment.result:
+            return segment
 
         has_images = False
         has_artifacts = False
@@ -664,12 +672,14 @@ class KernelSubAgentPolicy:
                 has_images = has_images or bool(view.image_contents)
                 has_artifacts = has_artifacts or bool(view.artifacts)
         if has_images and has_artifacts:
-            return "Sub-agent returned image and artifact output."
-        if has_images:
-            return "Sub-agent returned image output."
-        if has_artifacts:
-            return "Sub-agent returned artifact output."
-        return ""
+            note = "Sub-agent returned image and artifact output."
+        elif has_images:
+            note = "Sub-agent returned image output."
+        elif has_artifacts:
+            note = "Sub-agent returned artifact output."
+        else:
+            return segment
+        return FinalSegment(note, note)
 
     def request(self, ticket: ContinuationTicket | None) -> RunRequest:
         return RunRequest(
@@ -685,7 +695,8 @@ class KernelSubAgentPolicy:
                 response = cast(AgentResponse[Any], outcome.backend_payload)
             if response is not None:
                 self._shell.set_status(SubAgentStatus.COMPLETED)
-                text = self._extract_text(response)
+                segment = self._final_segment(response)
+                text = segment.result
                 if not text:
                     error_text = tool_error(
                         "sub_agent_empty_output",
@@ -702,6 +713,7 @@ class KernelSubAgentPolicy:
                     return error_text
                 record_tool_success()
                 await self._write_log(status="completed", result=text, ended=True)
+                self.final_segment = segment
                 return text
 
         except asyncio.CancelledError:

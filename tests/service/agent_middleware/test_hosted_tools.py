@@ -598,6 +598,33 @@ class TestHostedPresentationBridgeStreaming:
         assert sum(isinstance(operation, PresentationAttemptAcceptedOp) for operation in operations) == 1
         assert operations[-1] == FinalTextOp("answer")
 
+    async def test_local_call_narration_is_left_to_the_intermediate_text_callback(
+        self, sink: tuple[list[object], object]
+    ) -> None:
+        operations, publish = sink
+        bridge = HostedPresentationBridge(publish)
+        local_call = Content.from_function_call("local_1", "read_file", arguments={"path": "README.md"})
+        first = _assistant([Content.from_text("Let me look. "), local_call])
+
+        await bridge.begin_response()
+        await bridge.attempt_started()
+        await bridge.observe_contents(first.contents, is_final=True)
+        await bridge.attempt_accepted([first])
+
+        second = _assistant([_search_call(), _search_result(), Content.from_text("answer")])
+        await bridge.begin_response()
+        await bridge.attempt_started()
+        await bridge.observe_contents(second.contents, is_final=True)
+        await bridge.attempt_accepted([second])
+        await bridge.reconcile_accepted(
+            [first, Message("tool", [Content.from_function_result("local_1", result="ok")]), second],
+            final=True,
+        )
+
+        assert not any(isinstance(operation, IntermediateTextOp) for operation in operations)
+        assert any(isinstance(operation, HostedToolResultOp) for operation in operations)
+        assert operations[-1] == FinalTextOp("answer")
+
     async def test_rejected_attempt_retracts_published_provisional_text(
         self, sink: tuple[list[object], object]
     ) -> None:

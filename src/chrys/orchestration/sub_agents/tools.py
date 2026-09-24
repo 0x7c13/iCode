@@ -1842,6 +1842,9 @@ class SubAgentTools:
                     else contextlib.nullcontext()
                 ):
                     result = await controller.run()
+                segment = policy.final_segment
+                if parent_result_metadata is not None and segment is not None and segment.transcript != segment.result:
+                    parent_result_metadata.transcript_final_text = segment.transcript
                 hook_status = "failed" if result.startswith("Error:") else "ok"
                 hook_result_summary = result[:500]
                 if hook_status == "failed":

@@ -132,6 +132,13 @@ def test_extract_defers_hosted_response_text_to_presentation_bridge() -> None:
     assert _extract_intermediate_text(resp) is None
 
 
+def test_extract_defers_hosted_response_text_even_beside_a_local_call() -> None:
+    hosted = SimpleNamespace(type="search_tool_call", provider_hosted=True)
+    resp = _make_response(_make_msg(_text("checking"), hosted, _fn_call()))
+
+    assert _extract_intermediate_text(resp) is None
+
+
 # ──────────────── _count_function_calls ─────────────────────────────────
 
 
