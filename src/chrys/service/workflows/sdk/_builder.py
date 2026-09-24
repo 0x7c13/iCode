@@ -650,7 +650,8 @@ def _validate(d: WorkflowDefinition) -> list[dict[str, Any]]:
             root = d.start
         else:
             loop = d.nodes[scope_id].loop
-            assert loop is not None
+            if loop is None:
+                raise WorkflowValidationError("A loop scope requires a loop definition.")
             root = loop.entry
         unreachable = _unreachable(d, members, root)
         if unreachable:

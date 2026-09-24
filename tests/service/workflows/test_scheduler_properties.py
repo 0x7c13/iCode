@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -279,6 +280,14 @@ def test_start_twice_is_an_invariant_error() -> None:
     runner = SimulatedRunner(_single_graph())
     runner.start()
     with pytest.raises(SchedulerInvariantError, match="already started"):
+        runner.start()
+
+
+def test_missing_loop_specification_is_a_scheduler_invariant_error() -> None:
+    graph = _single_graph()
+    invalid_node = replace(graph.nodes[graph.start], kind="loop", loop=None)
+    runner = SimulatedRunner(replace(graph, nodes={graph.start: invalid_node}))
+    with pytest.raises(SchedulerInvariantError, match="has no loop specification"):
         runner.start()
 
 

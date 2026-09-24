@@ -13,7 +13,7 @@ from chrys.foundation.tool_kinds import KIND_SLEEP, get_tool_kind
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import _SLEEP_INTERRUPTED_KEY, _SLEEP_SKIPPED_KEY
 from chrys.service.agent_middleware.events.hook_dispatch import get_call_id
-from chrys.service.tools.builtins.sleep import format_sleep_seconds, normalize_sleep_seconds, validate_sleep_seconds
+from chrys.service.tools.builtins.sleep import format_sleep_seconds, parse_sleep_seconds
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -54,12 +54,10 @@ class SleepMiddleware(FunctionMiddleware):
             return
 
         args = context.arguments if isinstance(context.arguments, dict) else {}
-        seconds = normalize_sleep_seconds(args.get("seconds"))
-        error = validate_sleep_seconds(seconds)
-        if error:
-            context.result = error
+        seconds = parse_sleep_seconds(args.get("seconds"))
+        if isinstance(seconds, str):
+            context.result = seconds
             return
-        assert seconds is not None
 
         call_id = get_call_id(context)
         start = time.monotonic()

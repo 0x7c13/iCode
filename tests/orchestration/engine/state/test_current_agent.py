@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields
+from types import SimpleNamespace
 
 import pytest
 
 from chrys.orchestration.engine.build.loaded import LoadedAgent
 from tests.support.components import make_current
-from tests.support.loaded_agents import make_loaded_agent
+from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent
 
 
 @pytest.mark.parametrize("field", [field.name for field in fields(LoadedAgent)])
@@ -53,3 +54,23 @@ async def test_shutdown_releases_resources_and_retains_the_installed_manifest() 
     engine.lifecycle.reset_for_restart(None)
     assert engine.current.loaded is None
     assert engine.current.manifest is manifest
+
+
+async def test_required_resources_follow_replacement_and_unload() -> None:
+    current = make_current()
+    with pytest.raises(RuntimeError, match="has not been loaded"):
+        current.require_loaded()
+    owner = SimpleNamespace(current=current)
+    first, second = make_loaded_agent(), make_loaded_agent()
+    try:
+        install_loaded_agent(owner, loaded=first)
+        assert current.require_loaded() is first
+        install_loaded_agent(owner, loaded=second)
+        await first.aclose()
+        assert current.require_loaded() is second
+        install_loaded_agent(owner, loaded=None)
+        with pytest.raises(RuntimeError, match="has not been loaded"):
+            current.require_loaded()
+    finally:
+        await first.aclose()
+        await second.aclose()

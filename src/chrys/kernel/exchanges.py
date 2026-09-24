@@ -532,7 +532,8 @@ class _PairingState:
         raw_id = occurrence.raw_id
         if raw_id:
             key = namespaced_pairing_key(occurrence.content_type, raw_id)
-            assert key is not None
+            if key is None:
+                raise RuntimeError("An occurrence with a non-empty id must have a pairing key.")
             self.first_call_seq.setdefault(key, seq)
             self.truthy_assignments.setdefault(key, []).append([occurrence, None])
             return
@@ -557,7 +558,8 @@ class _PairingState:
         raw_id = occurrence.raw_id
         if raw_id:
             key = namespaced_pairing_key(occurrence.content_type, raw_id)
-            assert key is not None
+            if key is None:
+                raise RuntimeError("An occurrence with a non-empty id must have a pairing key.")
             first_seen = self.first_call_seq.get(key)
             if first_seen is not None and first_seen <= seq:
                 self.eligible_truthy.setdefault(key, []).append(occurrence)

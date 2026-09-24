@@ -1981,7 +1981,8 @@ def build_pixel_frame(
     # 4. Preserve the authored pupil colors; only blinking changes their shape.
     img = matrix_to_image(raw_frame, palette)
     pixels = img.load()
-    assert pixels is not None  # guaranteed for non-zero-dimension RGBA images
+    if pixels is None:
+        raise RuntimeError("The buddy sprite has no pixel buffer.")
 
     if blink:
         _apply_blink(pixels, raw_frame, palette)
@@ -2009,7 +2010,8 @@ def _fit_pixel_frame(image: Image.Image, width: int, *, pupils: list[tuple[int, 
     for x, y in pupils or ():
         target = (int((x + 0.5) * width / PIXEL_WIDTH), int((y + 0.5) * height / PIXEL_HEIGHT))
         color = image.getpixel((x, y))
-        assert color is not None  # RGBA images always have a pixel value
+        if color is None:
+            raise RuntimeError("The buddy pupil has no pixel value.")
         fitted.putpixel(target, color)
     canvas = Image.new("RGBA", (width, PIXEL_HEIGHT))
     canvas.paste(fitted, (0, (PIXEL_HEIGHT - height) // 2))

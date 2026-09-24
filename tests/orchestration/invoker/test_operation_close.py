@@ -54,12 +54,12 @@ def test_parent_commit_cannot_rebind_after_consumption():
     )
     committed = []
     shell.bind_parent_interrupt_commit(lambda: committed.append("first"))
-    with pytest.raises(AssertionError):
+    with pytest.raises(RuntimeError, match="parent interrupt commit is already bound"):
         shell.bind_parent_interrupt_commit(lambda: committed.append("second"))
     # A synchronous shell has no running OperationLifetime to request_close.
     shell._commit_parent_interrupted_result()
     assert committed == ["first"]
-    with pytest.raises(AssertionError):
+    with pytest.raises(RuntimeError, match="parent interrupt commit is already bound"):
         shell.bind_parent_interrupt_commit(lambda: committed.append("third"))
     shell._commit_parent_interrupted_result()
     assert committed == ["first"]

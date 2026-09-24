@@ -216,7 +216,8 @@ class PreparedAgent(ResourceScope):
             raise PreparedClosed("Prepared agent is closing")
         conversation = Conversation(on_closed=self._forget_conversation)
         task = asyncio.current_task()
-        assert task is not None
+        if task is None:
+            raise RuntimeError("Opening a conversation requires an asyncio task.")
         opening = (task, asyncio.Event())
         self._opening.append(opening)
         try:

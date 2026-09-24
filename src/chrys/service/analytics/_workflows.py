@@ -47,9 +47,9 @@ def workflow_runs(
         for node in family.values():
             raise_if_cancelled(cancel_event)
             parents = {e.parent_operation_id for e in (*node.starts, *node.finishes)}
-            for parent in parents - {None}:
-                assert parent is not None
-                children[parent].append(node)
+            for parent in parents:
+                if parent is not None:
+                    children[parent].append(node)
 
     def endpoints(node: _Node) -> tuple[list[_Endpoint], list[_Endpoint]]:
         return (

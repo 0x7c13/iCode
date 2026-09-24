@@ -227,7 +227,8 @@ class ChatSelectionController:
         stationary pointer, exactly like Textual's screen-space walker.
         """
         end = select_state.end
-        assert end is not None
+        if end is None:
+            raise RuntimeError("Extending a chat selection requires an end anchor.")
         point = self._clamp_into(select_state.screen_offset, panel.region)
         containing: Widget | None = None
         row_hit: Widget | None = None
@@ -300,7 +301,8 @@ class ChatSelectionController:
     def _project(self, panel: ChatPanel) -> dict[Widget, Selection]:
         """Build the bounded selections map: visible slice plus anchors."""
         first, last = self._first, self._last
-        assert first is not None and last is not None
+        if first is None or last is None:
+            raise RuntimeError("Projecting a chat selection requires both anchors.")
         entries: list[tuple[DocKey, Widget, Selection]] = []
         if first.leaf is last.leaf:
             entries.append((first.key, first.leaf, self._merged_selection(first, last)))
@@ -326,7 +328,8 @@ class ChatSelectionController:
             return None
         panel = self._panel
         first, last = self._first, self._last
-        assert panel is not None and first is not None and last is not None
+        if panel is None or first is None or last is None:
+            raise RuntimeError("An active chat selection requires its panel and both anchors.")
         if not self._anchors_alive(panel):
             self.clear()
             return None

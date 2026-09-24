@@ -376,7 +376,8 @@ async def tolerant_stdio_client(
 
     async def stdout_reader() -> None:
         nonlocal warned_once
-        assert process.stdout, "Opened process is missing stdout"
+        if not process.stdout:
+            raise RuntimeError("Opened process is missing stdout")
         try:
             async with read_stream_writer:
                 buffer = ""
@@ -436,7 +437,8 @@ async def tolerant_stdio_client(
             await anyio.lowlevel.checkpoint()
 
     async def stdin_writer() -> None:
-        assert process.stdin, "Opened process is missing stdin"
+        if not process.stdin:
+            raise RuntimeError("Opened process is missing stdin")
         try:
             async with write_stream_reader:
                 async for session_message in write_stream_reader:

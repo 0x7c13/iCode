@@ -152,7 +152,8 @@ class WorkflowContent:
                 if view.directory is None:
                     raise ValueError(text.render(text.NO_RECORD.bind(), self._locale))
                 return read_run_source(run_dir(view.directory, view.run_id))
-            assert view.preview is not None
+            if view.preview is None:
+                raise RuntimeError("Reading workflow source requires a run or a preview.")
             source = view.preview.source
             return read_source(Path(source.canonical_path), source.source_kind).source
 
@@ -191,7 +192,8 @@ class WorkflowContent:
             self._panel.show_outputs(self._outputs)
 
     async def _load_outputs(self, run: ObservedRun, view: _View) -> None:
-        assert run.finished is not None
+        if run.finished is None:
+            raise RuntimeError("Loading workflow outputs requires a finished run.")
         # Snapshot identities before crossing into a worker thread; live dictionaries
         # belong to the main pump even when this particular run has finished.
         outputs = tuple(run.finished.outputs)

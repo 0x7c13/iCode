@@ -186,9 +186,7 @@ def percentage_meter(
 
 def fit_cells(value: str, width: int) -> str:
     """Crop or pad text to exactly *width* terminal cells."""
-    fitted = set_cell_size(value, max(0, width))
-    assert cell_len(fitted) == max(0, width)
-    return fitted
+    return set_cell_size(value, max(0, width))
 
 
 def bordered_section(

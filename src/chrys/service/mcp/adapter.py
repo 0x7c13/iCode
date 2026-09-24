@@ -575,7 +575,8 @@ class MCPAdapter:
         except MCPConnectionError as err:
             self._failures[config.name] = err
             raise
-        assert lease is not None
+        if lease is None:
+            raise RuntimeError("Acquiring an MCP connection did not return a lease.")
 
         try:
             catalog = [tool for tool in lease.mcp_tool.functions if isinstance(tool, FunctionTool)]
@@ -642,7 +643,8 @@ class MCPAdapter:
             await self._release_unregistered_lease(config.name, lease)
             if prune_private_cache:
                 await self._cache.prune_idle(max_idle_seconds=0)
-            assert duplicate_tools is not None
+            if duplicate_tools is None:
+                raise RuntimeError("A duplicate MCP registration has no registered tools.")
             return duplicate_tools
 
         self._failures.pop(config.name, None)

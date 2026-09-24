@@ -38,13 +38,13 @@ async def rollback_files(
     owner: WorkflowSessionOwner, request: WorkflowRollbackRequest, *, settings: Settings
 ) -> WorkflowRollbackResult:
     """Reload and recheck the plan on both preview and commit; keep Run history intact."""
-    state, session = owner.state, owner.session
-    assert state is not None and session.session_dir is not None and session.workspace is not None
+    state = owner.require_state()
+    directory, workspace = owner.require_session_dir(), owner.require_workspace()
     if state.mutations is None:
         raise ValueError("This session has no recorded file changes.")
-    directory, workspace, mutations = session.session_dir, session.workspace, state.mutations
+    mutations = state.mutations
     coordinator = MutationCoordinator(
-        registry_root=session.session_dir.parent / ATTRIBUTION_DIR_NAME, session_id=request.session_id
+        registry_root=directory.parent / ATTRIBUTION_DIR_NAME, session_id=request.session_id
     )
 
     def apply() -> tuple[WorkflowRollbackResult, dict[str, Any] | None]:
@@ -144,7 +144,8 @@ async def rollback_files(
     try:
         # Drain both the file writes and checkpoint before releasing the lock.
         await finish_close(asyncio.create_task(complete()))
-        assert result is not None
+        if result is None:
+            raise RuntimeError("Workflow rollback completed without a result.")
         return result
     finally:
         await asyncio.to_thread(coordinator.close)

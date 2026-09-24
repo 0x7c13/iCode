@@ -604,7 +604,8 @@ class ShellTools:
                     if index == len(argv_variants) - 1:
                         raise
                     logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
-            assert proc is not None
+            if proc is None:
+                raise RuntimeError("No shell process was created by the configured spawn variants.")
         except BaseException:
             # Clean up both fds if subprocess creation fails
             os.close(slave)
@@ -753,7 +754,8 @@ class ShellTools:
                     if index == len(argv_variants) - 1:
                         raise
                     logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
-            assert proc is not None
+            if proc is None:
+                raise RuntimeError("No shell process was created by the configured spawn variants.")
             capture = _PipeOutputCapture()
             try:
                 progress_cb = shell_progress_callback.get(None)
@@ -790,7 +792,8 @@ class ShellTools:
 
         async def _drain_stdout() -> None:
             nonlocal last_emit
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("The shell process has no stdout pipe.")
             line_buf = bytearray()
             while chunk := await proc.stdout.read(64 * 1024):
                 capture.stdout_parts.append(chunk)
@@ -817,7 +820,8 @@ class ShellTools:
                     pending.clear()
 
         async def _drain_stderr() -> None:
-            assert proc.stderr is not None
+            if proc.stderr is None:
+                raise RuntimeError("The shell process has no stderr pipe.")
             while chunk := await proc.stderr.read(64 * 1024):
                 capture.stderr_parts.append(chunk)
 

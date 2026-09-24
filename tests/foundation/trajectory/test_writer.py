@@ -123,6 +123,26 @@ def _draft(n: int, **extra: object) -> EventDraft:
 # --------------------------------------------------------------------------- basics
 
 
+async def test_submitted_event_preserves_sequence_or_returns_immediate_refusal(tmp_path: Path) -> None:
+    path, backend = _open(tmp_path)
+    writer = _writer(backend)
+    try:
+        submitted = writer.submit(_draft(1))
+        assert not isinstance(submitted.result, EmitResult)
+        assert submitted.result.sequence == 1
+        assert await writer.emit(_draft(2)) is EmitResult.WRITTEN
+        assert await writer.wait(submitted) is EmitResult.WRITTEN
+        assert [event.payload["turn_number"] for event in read_trajectory(path).events] == [1, 2]
+    finally:
+        await writer.close(reason=RuntimeFinishReason.GRACEFUL_SHUTDOWN)
+
+    next_sequence = writer.snapshot().next_sequence
+    refused = writer.submit(_draft(3))
+    assert refused.result is EmitResult.DEGRADED
+    assert await writer.wait(refused) is EmitResult.DEGRADED
+    assert writer.snapshot().next_sequence == next_sequence
+
+
 async def test_emit_is_written_through_and_readable_immediately(tmp_path: Path) -> None:
     """Acceptance 15 (in-process half): WRITTEN means the line is already in the file."""
     path, backend = _open(tmp_path)

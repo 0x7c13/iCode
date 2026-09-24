@@ -188,7 +188,8 @@ async def build_kernel_node(
     session_id = res.session_id
     display_name = binding.agent.display_name or binding.agent.name
     model = binding.model
-    assert model is not None
+    if model is None:
+        raise RuntimeError("A kernel workflow node requires a model binding.")
     profile = binding.agent
     chat_options = effective_chat_options(model)
     client = create_client(
@@ -596,7 +597,8 @@ def build_acp_node(
     session_id = res.session_id
     display_name = binding.agent.display_name or binding.agent.name
     config = binding.agent.acp
-    assert config is not None
+    if config is None:
+        raise RuntimeError("An ACP workflow node requires ACP configuration.")
     if binding.model is not None:
         config = replace(config, model_id=binding.model.model_id)
     environment = SessionEnvironment.capture(session_id=res.session_id, workspace=res.workspace)

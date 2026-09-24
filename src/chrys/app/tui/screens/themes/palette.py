@@ -92,8 +92,6 @@ _VARIABLE_GROUPS = (
 )
 _CANONICAL_VARIABLE_NAMES = tuple(name for _group, names in _VARIABLE_GROUPS for name in names)
 _BUCKET_ORDER = tuple(group for group, _names in _VARIABLE_GROUPS)
-assert set(M.GROUPS) == set(_BUCKET_ORDER), "Theme variable groups must have matching display labels"
-assert set(M.BUTTON_FIELDS) == set(BUTTON_COLOR_VARIABLES), "Button fields must have matching display labels"
 _RESET_BUTTON_LABEL = "↺"
 _ANSI_COLOR_TOKENS = (
     "ansi_default",
@@ -588,7 +586,8 @@ class _Xterm256PalettePicker(Widget, can_focus=True):
             )
         # WITH_HINT placeholder row — only emitted when ``_disabled_hint`` is set.
         if label is None and not indices:
-            assert self._disabled_hint is not None
+            if self._disabled_hint is None:
+                raise RuntimeError("A disabled palette row requires hint text.")
             hint = self._disabled_hint
             text = render_str(widget_localizer(self), hint) if isinstance(hint, MessageRef) else hint
             return Strip([Segment(text, Style(dim=True, italic=True))])

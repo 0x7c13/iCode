@@ -205,7 +205,8 @@ class WorkflowInputDialog(BaseDialog[WorkflowInputResult]):
         )
 
     async def _apply_directory(self, path: str) -> None:
-        assert self._change_directory is not None
+        if self._change_directory is None:
+            raise RuntimeError("Changing the workflow directory requires a directory handler.")
         error = self.query_one("#workflow-input-directory-error", Static)
         error.display = False
         loading = self.query_one("#workflow-input-directory-loading", Static)

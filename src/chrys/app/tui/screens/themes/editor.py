@@ -228,7 +228,8 @@ class ResettableThemeEditor(Widget):
             self.cancel_active_dialog()
             if theme_is_read_only(name):
                 source = self.app.get_theme(name)
-                assert source is not None
+                if source is None:
+                    raise RuntimeError("The selected built-in theme is not registered.")
                 theme, revision = copy_theme(source), None
             else:
                 theme, revision = await asyncio.to_thread(self.store.load, name)
@@ -306,7 +307,8 @@ class ResettableThemeEditor(Widget):
 
     def _show(self, theme: Theme, field: str = "") -> bool:
         preview = self.host.theme_preview
-        assert preview is not None
+        if preview is None:
+            raise RuntimeError("The theme editor has no preview controller.")
         success = preview.show(theme, field)
         self._display_error()
         return success
@@ -352,8 +354,7 @@ class ResettableThemeEditor(Widget):
         self._preview_timer = None
         token, self._pending = self._pending, None
         if token is not None and self.document.owns(token):
-            assert self.document.transaction is not None
-            self._show(self.document.transaction.candidate, token.field)
+            self._show(self.document.require_transaction().candidate, token.field)
 
     def _clear_pending(self) -> None:
         self._pending = None
@@ -364,17 +365,15 @@ class ResettableThemeEditor(Widget):
     def restore_transaction(self, token: EditToken) -> None:
         if not self.document.owns(token):
             return
-        assert self.document.transaction is not None
         self._clear_pending()
-        self.document.transaction.candidate = copy_theme(self._theme)
+        self.document.require_transaction().candidate = copy_theme(self._theme)
         self._show(self._theme)
 
     def commit_edit(self, token: EditToken) -> bool:
         if not self.document.owns(token):
             return False
         self._clear_pending()
-        assert self.document.transaction is not None
-        if not self._show(self.document.transaction.candidate, token.field):
+        if not self._show(self.document.require_transaction().candidate, token.field):
             return False
         self.document.commit(token)
         self._refresh_state()
@@ -475,7 +474,8 @@ class ResettableThemeEditor(Widget):
                 if self._theme.name == name:
                     await self._load_theme(DEFAULT_THEME, allow_covered=True)
                 preview = self.host.theme_preview
-                assert preview is not None
+                if preview is None:
+                    raise RuntimeError("The theme editor has no preview controller.")
                 preview.history.clear()
                 preview.checkpoint()
                 self.notify(M.text(self, M.DELETED, name=name), title=M.text(self, M.TITLE), markup=False, timeout=3)

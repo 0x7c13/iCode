@@ -119,6 +119,11 @@ class NodeSpec:
     def is_loop(self) -> bool:
         return self.kind == KIND_LOOP
 
+    def require_loop(self) -> LoopSpec:
+        if self.loop is None:
+            raise ManifestError(f"Node {self.node_id!r} has no loop specification.")
+        return self.loop
+
 
 @dataclass(frozen=True, slots=True)
 class GraphSpec:
@@ -383,8 +388,7 @@ def _check_scopes(nodes: Mapping[str, NodeSpec], edges: Mapping[str, EdgeSpec], 
                 raise ManifestError("manifest.start must be the only top-level node without in-edges.")
             root = start
         else:
-            loop = nodes[scope_id].loop
-            assert loop is not None
+            loop = nodes[scope_id].require_loop()
             root = loop.entry
             if nodes[root].in_edges:
                 raise ManifestError(f"loop {scope_id!r} entry must not have in-edges.")

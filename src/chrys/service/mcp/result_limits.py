@@ -68,11 +68,13 @@ def _truncate_mcp_list_result(
     joined_texts = "\n\n".join(texts)
     info = try_spill_text(spill_dir, "mcp", joined_texts, budget, reserved_footer)
     bounded = truncate_content_texts(texts, budget, truncation_suffix=info.notice if info else "")
-    assert bounded is not None
+    if bounded is None:
+        raise RuntimeError("MCP text truncation did not return bounded content.")
     if info is not None and info.notice not in "\n".join(value for value in bounded if value is not None):
         discard_spill(info)
         bounded = truncate_content_texts(texts, budget)
-        assert bounded is not None
+        if bounded is None:
+            raise RuntimeError("MCP text truncation did not return bounded content.")
 
     output: list[Content] = []
     text_index = 0

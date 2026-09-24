@@ -181,7 +181,8 @@ class CodeColumn(ScrollView):
         scrolls over a clipped diff: the crop then changes with every frame, and the generic cache
         would walk every visible row although the rows themselves are all cached.
         """
-        assert self._frame is not None
+        if self._frame is None:
+            raise RuntimeError("Rendering diff lines requires a prepared frame.")
         content_width = self._frame.content_width
         rich_style = self.visual_style.rich_style
         line_filters = self.get_line_filters()

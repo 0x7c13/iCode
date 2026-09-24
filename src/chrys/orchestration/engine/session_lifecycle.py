@@ -488,9 +488,8 @@ class SessionLifecycle:
         # Every session (fresh, restored, reset) starts here: re-arm the
         # once-per-session ``session_end`` hook fired by shutdown/delete.
         self._session.begin(agent_profile=profile, workspace=workspace)
-        if TYPE_CHECKING:
-            # begin() establishes this postcondition before any suspension.
-            assert self._session.session_id is not None
+        if self._session.session_id is None:
+            raise RuntimeError("Session begin did not establish a session id.")
         staged_workspace = workspace if workspace is not None else self._session.workspace
 
         if not self._session.guard.ensure(self._session.session_id):

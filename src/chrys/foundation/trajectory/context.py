@@ -324,7 +324,8 @@ class ExchangeTrace:
 
     @property
     def operation_id(self) -> str:
-        assert self.context.exchange_operation_id is not None
+        if self.context.exchange_operation_id is None:
+            raise RuntimeError("An exchange scope requires an operation id.")
         return self.context.exchange_operation_id
 
     @property

@@ -32,7 +32,8 @@ def hatch(rng: Random | None = None) -> Buddy:
     """Hatch a buddy. When one already exists, in this instance or another, that one is returned."""
     newborn = hatchling(rng if rng is not None else SystemRandom())
     record = _STORE.update(lambda current: current if current is not None else newborn)
-    assert record is not None  # the change above always leaves a record behind
+    if record is None:
+        raise RuntimeError("Hatching a buddy did not produce a stored record.")
     return Buddy.of(record)
 
 

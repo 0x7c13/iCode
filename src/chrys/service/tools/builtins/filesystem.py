@@ -140,7 +140,8 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
         if platform.is_windows:
             fd, tmp_path = tempfile.mkstemp(dir=parent, suffix=".tmp")
         else:
-            assert target_mode is not None
+            if target_mode is None:
+                raise RuntimeError("A POSIX atomic write requires a target file mode.")
             fd, tmp_path = _open_posix_atomic_temp(parent, target_mode)
         with os.fdopen(fd, "w", encoding=encoding, errors=errors, newline="") as f:
             fd = None  # os.fdopen takes ownership of the fd
@@ -149,7 +150,8 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
             if preserve_existing_mode:
                 # Existing modes override umask and must be restored exactly.
                 # This must run while fdopen still owns an open descriptor.
-                assert target_mode is not None
+                if target_mode is None:
+                    raise RuntimeError("A POSIX atomic write requires a target file mode.")
                 os.fchmod(f.fileno(), target_mode)
             os.fsync(f.fileno())
         for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):

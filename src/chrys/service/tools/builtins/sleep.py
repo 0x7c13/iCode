@@ -55,6 +55,15 @@ def validate_sleep_seconds(seconds: int | None) -> str:
     return ""
 
 
+def parse_sleep_seconds(value: object) -> int | str:
+    """Return normalized seconds or the model-visible validation error."""
+    seconds = normalize_sleep_seconds(value)
+    if seconds is None:
+        return validate_sleep_seconds(None)
+    error = validate_sleep_seconds(seconds)
+    return error or seconds
+
+
 def format_sleep_seconds(seconds: int) -> str:
     """Format seconds with a singular/plural unit."""
     unit = "second" if seconds == 1 else "seconds"
@@ -75,10 +84,8 @@ async def sleep(
     Do not use sleep loops to monitor long-running commands, files, or services;
     prefer background execution and monitoring for those workflows.
     """
-    duration = normalize_sleep_seconds(seconds)
-    error = validate_sleep_seconds(duration)
-    if error:
-        return error
-    assert duration is not None
+    duration = parse_sleep_seconds(seconds)
+    if isinstance(duration, str):
+        return duration
     await asyncio.sleep(duration)
     return f"Slept for {format_sleep_seconds(duration)}."

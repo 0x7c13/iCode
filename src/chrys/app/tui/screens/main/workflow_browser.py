@@ -120,11 +120,10 @@ class WorkflowBrowser:
     def refresh_preview_models(self) -> None:
         loaded = self.loaded
         handle = self.host.services.settings_handle
-        if loaded is None or self.host.services.agent_registry is None or handle is None:
+        registry = self.host.services.agent_registry
+        if loaded is None or registry is None or handle is None:
             return
         workspace, model = self.host.workspace, self.host.model
-        registry = self.host.services.agent_registry
-        assert registry is not None
         startup = self.startup_settings or handle.loaded
 
         async def resolve(token: FlowToken) -> None:
@@ -413,7 +412,8 @@ class WorkflowBrowser:
             return True
         previous_task = self._cancel_workspace_change()
         task = asyncio.current_task()
-        assert task is not None
+        if task is None:
+            raise RuntimeError("Changing the workflow workspace requires an asyncio task.")
         self._workspace_task = task
         self.preview_flow.invalidate()
         self._dismiss_confirmation()

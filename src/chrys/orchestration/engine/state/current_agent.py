@@ -18,3 +18,9 @@ class CurrentAgent:
     def __init__(self) -> None:
         self.loaded = None
         self.manifest = AgentManifest.empty()
+
+    def require_loaded(self) -> LoadedAgent:
+        """Read the current build at use time; do not retain it across rebuilds."""
+        if self.loaded is None:
+            raise RuntimeError("The current agent has not been loaded.")
+        return self.loaded

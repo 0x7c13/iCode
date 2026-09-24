@@ -691,7 +691,8 @@ class KernelSubAgentPolicy:
             if isinstance(outcome, Failed):
                 response = None
             else:
-                assert isinstance(outcome, Ok)
+                if not isinstance(outcome, Ok):
+                    raise TypeError("A completed sub-agent pass must have an Ok or Failed outcome.")
                 response = cast(AgentResponse[Any], outcome.backend_payload)
             if response is not None:
                 self._shell.set_status(SubAgentStatus.COMPLETED)

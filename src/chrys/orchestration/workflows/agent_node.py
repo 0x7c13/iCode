@@ -263,8 +263,7 @@ class WorkflowAgentShell:
         _PASS_SHELL.set(self)
         await self._flush_progress()
         await self._resources.usage_publisher.drain()
-        assert self._checkpoint is not None
-        await self._checkpoint.close()
+        await self._require_checkpoint().close()
         await self._save_transcript(
             status=result.kind if result is not None else "failed" if error else "cancelled",
             error=result.failure.message if result is not None and result.failure is not None else error,
@@ -406,8 +405,7 @@ class WorkflowAgentShell:
 
     async def begin(self, request: RunRequest, resources: PassResources) -> None:
         self._intermediate_buffer.drain()
-        assert isinstance(self._parts, KernelNodeParts)
-        self._pass_start_index = len(self._parts.history.messages())
+        self._pass_start_index = len(self._require_kernel_parts().history.messages())
         resources.begin()
         self._active_run_input = list(request.messages)
         await self._save_transcript()
@@ -417,8 +415,7 @@ class WorkflowAgentShell:
             await self._parts.events.reconcile_hosted_response(response.messages)
 
     async def failed(self, error: Exception, /) -> None:
-        assert isinstance(self._parts, KernelNodeParts)
-        self._parts.history.repair_after_failure(self._active_run_input, self._pass_start_index)
+        self._require_kernel_parts().history.repair_after_failure(self._active_run_input, self._pass_start_index)
 
     async def finished(self) -> None:
         # A failed or interrupted pass publishes no outcome; its buffered text
@@ -519,8 +516,9 @@ class WorkflowAgentShell:
             )
         if ticket is not None and backend.continuation_is_live(ticket, self.origin):
             self._ticket = None
-            assert isinstance(self._parts, KernelNodeParts)
-            return RunRequest(self._parts.history.retry_input(self._seed_input), RunIntent.RETRY, self.origin, ticket)
+            return RunRequest(
+                self._require_kernel_parts().history.retry_input(self._seed_input), RunIntent.RETRY, self.origin, ticket
+            )
         self._ticket = None
         if self._passes:
             backend.history_state = {}  # a fresh pass starts from the prompt, not from a stale transcript
@@ -569,7 +567,8 @@ class WorkflowAgentShell:
             return AgentAttemptResult(
                 "failed", failure=FailureReport(error_class, outcome.error, backend_approved=approved)
             )
-        assert isinstance(outcome, Aborted)
+        if not isinstance(outcome, Aborted):
+            raise TypeError("Expected an aborted agent outcome after handling success and failure.")
         self._ticket = outcome.continuation
         if outcome.cause is AbortCause.CALLER_TIMEOUT:
             limit = f"{timeout:g}s" if timeout is not None else "its deadline"
@@ -601,9 +600,18 @@ class WorkflowAgentShell:
 
     # ------------------------------------------------------------------ history
 
+    def _require_checkpoint(self) -> CoalescedCheckpoint:
+        if self._checkpoint is None:
+            raise RuntimeError("The agent node checkpoint has not been opened.")
+        return self._checkpoint
+
+    def _require_kernel_parts(self) -> KernelNodeParts:
+        if not isinstance(self._parts, KernelNodeParts):
+            raise TypeError("A kernel agent pass requires kernel node resources.")
+        return self._parts
+
     async def _mark_dirty(self) -> None:
-        assert self._checkpoint is not None
-        self._checkpoint.changed()
+        self._require_checkpoint().changed()
 
     async def _adopt_acp_translator(self, translator: AcpUpdateTranslator) -> None:
         self._acp_translators.append(translator)

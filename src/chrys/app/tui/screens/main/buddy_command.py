@@ -111,7 +111,8 @@ class BuddyCommandController:
                     message, severity = refusal
                     self._toast(message, _TOAST_SECONDS, severity=severity)
                     return
-                assert buddy is not None  # a missing buddy was refused above
+                if buddy is None:
+                    raise RuntimeError("Petting requires an existing buddy.")
                 # Judged again: an answer another surface started meanwhile drops this pet whole too.
                 if not self._replies.start(buddy):
                     return

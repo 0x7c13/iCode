@@ -127,6 +127,7 @@ ARCHITECTURE_RULES = (
         ("src/chrys/app/tui/**", "src/chrys/foundation/i18n/**"),
     ),
     TestRule("tests/architecture/test_hygiene_optional_imports.py", ("src/chrys/**",)),
+    TestRule("tests/architecture/test_hygiene_source_asserts.py"),
     TestRule("tests/architecture/test_hygiene_subprocess_stdin.py"),
     TestRule("tests/architecture/test_hygiene_test_source_rules.py", ("tests/**",)),
     TestRule("tests/architecture/test_hygiene_tui_bindings.py", ("src/chrys/app/tui/**",)),

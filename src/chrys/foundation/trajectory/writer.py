@@ -168,12 +168,11 @@ class _GapBookkeeping:
     attempt_failed: bool = False
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class SubmittedEvent:
-    """Handle of a queued line: ``immediate`` when nothing was queued (degraded/gap)."""
+    """A queued line or the immediate result when nothing was queued (degraded/gap)."""
 
-    pending: _Pending | None
-    immediate: EmitResult | None
+    result: _Pending | EmitResult
 
 
 class TrajectoryWriter:
@@ -357,15 +356,14 @@ class TrajectoryWriter:
         always lands after it. Pass the result to :meth:`wait` to observe
         the ack and keep the bounded-wait contract.
         """
-        pending, immediate = self._prepare(draft, payload_factory=payload_factory)
-        return SubmittedEvent(pending=pending, immediate=immediate)
+        return SubmittedEvent(self._prepare(draft, payload_factory=payload_factory))
 
     async def wait(self, submitted: SubmittedEvent) -> EmitResult:
         """Await the ack of a :meth:`submit` (timeout flips the writer degraded)."""
-        if submitted.pending is None:
-            assert submitted.immediate is not None
-            return submitted.immediate
-        return await self._await_ack(submitted.pending)
+        result = submitted.result
+        if isinstance(result, EmitResult):
+            return result
+        return await self._await_ack(result)
 
     async def emit(
         self, draft: EventDraft, *, payload_factory: Callable[[int], Mapping[str, Any]] | None = None
@@ -380,21 +378,19 @@ class TrajectoryWriter:
         events whose payload refers to their own position (``session.rollback``
         closes its superseded range at ``sequence - 1``).
         """
-        pending, immediate = self._prepare(draft, payload_factory=payload_factory)
-        if pending is None:
-            assert immediate is not None
-            return immediate
-        return await self._await_ack(pending)
+        prepared = self._prepare(draft, payload_factory=payload_factory)
+        if isinstance(prepared, EmitResult):
+            return prepared
+        return await self._await_ack(prepared)
 
     def emit_blocking(
         self, draft: EventDraft, *, payload_factory: Callable[[int], Mapping[str, Any]] | None = None
     ) -> EmitResult:
         """Synchronous ``emit`` for threads that do not run an event loop."""
-        pending, immediate = self._prepare(draft, payload_factory=payload_factory)
-        if pending is None:
-            assert immediate is not None
-            return immediate
-        return self._wait_ack_blocking(pending)
+        prepared = self._prepare(draft, payload_factory=payload_factory)
+        if isinstance(prepared, EmitResult):
+            return prepared
+        return self._wait_ack_blocking(prepared)
 
     async def checkpoint(self) -> EmitResult:
         """Write ``trajectory.checkpoint`` and ``fsync``; ``last_durable`` advances here only."""
@@ -406,15 +402,14 @@ class TrajectoryWriter:
                 "last_durable": self._last_durable,
             }
 
-        pending, immediate = self._prepare(
+        prepared = self._prepare(
             EventDraft(event_type=EventType.CHECKPOINT, actor=SYSTEM_ACTOR),
             payload_factory=payload,
             fsync_after=True,
         )
-        if pending is None:
-            assert immediate is not None
-            return immediate
-        return await self._await_ack(pending)
+        if isinstance(prepared, EmitResult):
+            return prepared
+        return await self._await_ack(prepared)
 
     async def close(self, *, reason: str, join_timeout: float = DEFAULT_CLOSE_JOIN_TIMEOUT_SECONDS) -> bool:
         """Graceful close: freeze → (final gap) → coverage.ended → runtime.finished → fsync → close.
@@ -467,16 +462,16 @@ class TrajectoryWriter:
         fsync_after: bool = False,
         system: bool = False,
         covers: tuple[DroppedRange, ...] = (),
-    ) -> tuple[_Pending | None, EmitResult | None]:
+    ) -> _Pending | EmitResult:
         with self._lock:
             if (self._frozen and not system) or self._stop_requested:
-                return None, EmitResult.DEGRADED
+                return EmitResult.DEGRADED
             sequence = self._next_sequence
             self._next_sequence += 1
             if self._state is not WriterState.ACTIVE and not system:
                 # Virtual slot only: no payload is retained, no wait is taken.
                 self._uncovered_slots.append(sequence)
-                return None, EmitResult.DEGRADED
+                return EmitResult.DEGRADED
             try:
                 payload = payload_factory(sequence) if payload_factory is not None else None
                 event = build_event(
@@ -504,7 +499,7 @@ class TrajectoryWriter:
                 # next sequence, so the prefix stays explained.
                 self._uncovered_slots.append(sequence)
                 self._enqueue_gap_locked(reason=encoded)
-                return None, EmitResult.DEGRADED
+                return EmitResult.DEGRADED
             pending = _Pending(
                 sequence=sequence,
                 data=encoded,
@@ -518,7 +513,7 @@ class TrajectoryWriter:
             if not self._started:
                 self._thread.start()
                 self._started = True
-        return pending, None
+        return pending
 
     async def _await_ack(self, pending: _Pending) -> EmitResult:
         loop = asyncio.get_running_loop()
@@ -848,16 +843,15 @@ class TrajectoryWriter:
         payload_factory: Callable[[int], dict[str, Any]],
         fsync_after: bool = False,
     ) -> EmitResult:
-        pending, immediate = self._prepare(
+        prepared = self._prepare(
             EventDraft(event_type=event_type, actor=SYSTEM_ACTOR),
             payload_factory=payload_factory,
             fsync_after=fsync_after,
             system=True,
         )
-        if pending is None:
-            assert immediate is not None
-            return immediate
-        return await self._await_ack(pending)
+        if isinstance(prepared, EmitResult):
+            return prepared
+        return await self._await_ack(prepared)
 
     def _stop_worker(self, join_timeout: float) -> None:
         with self._lock:

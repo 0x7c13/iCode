@@ -41,6 +41,8 @@ from chrys.service.workflows.orphans import reconcile_orphaned_runs
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
@@ -100,6 +102,29 @@ class WorkflowSessionOwner:
         self._resources.own(self._close_trajectory)
         self._resources.own(self.usage.settle)
 
+    def require_session_id(self) -> str:
+        session_id = self.session.session_id
+        if not session_id:
+            raise RuntimeError("The workflow session has no id.")
+        return session_id
+
+    def require_session_dir(self) -> Path:
+        directory = self.session.session_dir
+        if directory is None:
+            raise RuntimeError("The workflow session has no directory.")
+        return directory
+
+    def require_workspace(self) -> Workspace:
+        workspace = self.session.workspace
+        if workspace is None:
+            raise RuntimeError("The workflow session has no workspace.")
+        return workspace
+
+    def require_state(self) -> WorkflowSessionState:
+        if self.state is None:
+            raise RuntimeError("The workflow session has not been prepared.")
+        return self.state
+
     @property
     def identity(self) -> WorkflowIdentity | None:
         return self.state.identity if self.state is not None else None
@@ -120,12 +145,13 @@ class WorkflowSessionOwner:
     async def _open(self, *, reconcile: bool) -> None:
         """Lock and restore the workspace before any discovery, settings or worker loading."""
         session = self.session
-        assert session.session_id
+        self.require_session_id()
         store = self.persistence.state_store
-        assert store is not None
+        if store is None:
+            raise RuntimeError("The workflow session requires a state store.")
         await finish_close(asyncio.create_task(self._acquire_guard()))
         if self.restoring:
-            state = await store.load_workflow_session(session.session_id)
+            state = await store.load_workflow_session(self.require_session_id())
             if state is None:
                 raise WorkflowSessionNotFound("The workflow session no longer exists. Start a new session.")
             self.state = state
@@ -153,16 +179,18 @@ class WorkflowSessionOwner:
         request_id: str = "",
     ) -> None:
         session = self.session
-        assert session.session_id and session.session_dir and session.workspace
+        session_id = self.require_session_id()
+        session_dir = self.require_session_dir()
+        workspace = self.require_workspace()
         if self.state is not None and self.state.identity != identity:
             raise ValueError("This session belongs to another workflow. Start a new session.")
         if self.state is None:
-            self.state = WorkflowSessionState(identity, WorkspaceSnapshot.capture(session.workspace))
+            self.state = WorkflowSessionState(identity, WorkspaceSnapshot.capture(workspace))
         self.title = title
         self.state.run_count += 1
         self.state.latest_run_id = run_id
         session.runtime_meta = self.state.runtime or SessionUsageMetadata()
-        snapshots = SnapshotStore(session.session_dir, policy=SnapshotPolicy.from_settings(settings))
+        snapshots = SnapshotStore(session_dir, policy=SnapshotPolicy.from_settings(settings))
         mutations = self.state.mutations
         session.mutation_tracker = (
             MutationTracker.deserialize(mutations, snapshots) if mutations is not None else MutationTracker(snapshots)
@@ -170,37 +198,40 @@ class WorkflowSessionOwner:
         session.mutation_tracker.start_workflow_run(run_id)
         if settings.mutation_coordination:
             session.mutation_coordinator = MutationCoordinator(
-                registry_root=session.session_dir.parent / ATTRIBUTION_DIR_NAME, session_id=session.session_id
+                registry_root=session_dir.parent / ATTRIBUTION_DIR_NAME,
+                session_id=session_id,
             )
         self._resources.own(self._close_mutations)
         session.hook_manager = await hooks(
-            project_root=session.workspace.primary_cwd,
+            project_root=workspace.primary_cwd,
             project_hooks_enabled=settings.project_hooks_enabled,
-            session_id=session.session_id,
+            session_id=session_id,
             request_id=request_id,
         )
         self._resources.own(self._close_hooks)
         if has_agents:
             self._prepare_agents(settings, model_registry)
-        cwd = session.workspace.primary_cwd
+        cwd = self.require_workspace().primary_cwd
+        session_id = self.require_session_id()
+        session_dir = self.require_session_dir()
         self.trajectory = SessionTrajectory(
-            session_id=session.session_id,
-            session_dir=session.session_dir,
-            write_lock_path=session.session_write_lock_path(session.session_id),
+            session_id=session_id,
+            session_dir=session_dir,
+            write_lock_path=session.session_write_lock_path(session_id),
             session_start_info=lambda: SessionStartInfo(cwd, "", ""),
         )
 
     def _reconcile_storage(self) -> None:
         session = self.session
-        assert session.session_dir is not None
+        directory = self.require_session_dir()
         try:
-            reconcile_orphaned_runs(session.session_dir)
+            reconcile_orphaned_runs(directory)
         except OSError, RuntimeError, UnicodeError, ValueError:
-            logger.warning("Unable to reconcile workflow runs under %s", session.session_dir, exc_info=True)
+            logger.warning("Unable to reconcile workflow runs under %s", directory, exc_info=True)
         try:
-            reconcile_spill_storage(session.session_dir, session.spill_quota)
+            reconcile_spill_storage(directory, session.spill_quota)
         except OSError, RuntimeError, UnicodeError:
-            logger.warning("Unable to reconcile spill storage under %s", session.session_dir, exc_info=True)
+            logger.warning("Unable to reconcile spill storage under %s", directory, exc_info=True)
             session.spill_quota.disable_storage()
 
     def _prepare_agents(self, settings: Settings, model_registry: ModelProfileRegistry | None) -> None:
@@ -223,16 +254,14 @@ class WorkflowSessionOwner:
         if self._judge_model is None:
             return None
         session = self.session
-        assert session.session_id
+        session_id = self.require_session_id()
         profile = self._judge_model(node_model)
         judge = self._judges.get(profile.id)
         if judge is None:
             judge = self._judges[profile.id] = ApprovalJudge(
                 profile,
-                session_id=derive_llm_route_session_id(
-                    session.session_id, route_kind="approval-judge", model_profile=profile
-                ),
-                parent_session_id=session.session_id,
+                session_id=derive_llm_route_session_id(session_id, route_kind="approval-judge", model_profile=profile),
+                parent_session_id=session_id,
                 session_dir=session.session_dir,
             )
         return judge
@@ -250,7 +279,8 @@ class WorkflowSessionOwner:
     def _require_open(self) -> None:
         if not self._opened or self._resources.closing:
             raise ValueError("The workflow session is not open.")
-        assert self._lifecycle_lock.locked(), "Session writes require the lifecycle lock"
+        if not self._lifecycle_lock.locked():
+            raise RuntimeError("Session writes require the lifecycle lock")
 
     @asynccontextmanager
     async def edit(self) -> AsyncIterator[bool]:
@@ -281,8 +311,7 @@ class WorkflowSessionOwner:
 
     async def _save_mutations(self, mutations: dict[str, Any]) -> None:
         self._require_open()
-        assert self.state is not None
-        checkpoint = deepcopy(self.state)
+        checkpoint = deepcopy(self.require_state())
         checkpoint.mutations = mutations
         await self._write_state(checkpoint)
         self.state = checkpoint
@@ -294,21 +323,22 @@ class WorkflowSessionOwner:
         async with self._lifecycle_lock:
             self._require_open()
             session = self.session
-            assert self.state is not None
-            self.state.runtime = session.runtime_meta
+            state = self.require_state()
+            state.runtime = session.runtime_meta
             if session.mutation_tracker is not None:
-                self.state.mutations = session.mutation_tracker.serialize()
-            await self._write_state(self.state)
+                state.mutations = session.mutation_tracker.serialize()
+            await self._write_state(state)
 
     def commit_admission(self) -> None:
         """The run is admitted; subsequent writes belong to this run's state."""
         self._admission_checkpoint = None
 
     async def _write_state(self, state: WorkflowSessionState) -> None:
-        session = self.session
         store = self.persistence.state_store
-        assert store is not None and session.session_id and session.workspace
-        await store.save_workflow_session(session.session_id, state, title=self.title)
+        if store is None:
+            raise RuntimeError("The workflow session requires a state store.")
+        self.require_workspace()
+        await store.save_workflow_session(self.require_session_id(), state, title=self.title)
 
     async def discard_admission(self) -> None:
         """Undo a failed admission save while still holding the session lock.
@@ -330,8 +360,7 @@ class WorkflowSessionOwner:
                 logger.exception("Unable to restore the session checkpoint after failed workflow admission")
 
     async def _acquire_guard(self) -> None:
-        session_id = self.session.session_id
-        assert session_id is not None
+        session_id = self.require_session_id()
         if not await asyncio.to_thread(self.session.guard.ensure, session_id):
             raise WorkflowSessionInUse(self.session.guard.conflict_message(session_id))
 

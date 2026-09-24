@@ -397,7 +397,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                 self._render_message(_TOOLTIP_RUN.bind(run_id=row.workflow.run_id)),
             ]
         else:
-            assert meta.kind == "chat"
+            if meta.kind != "chat":
+                raise ValueError("Unsupported session kind for chat tooltip.")
             parts = [
                 self._render_message(_TOOLTIP_TITLE.bind(title=title_display(meta))),
                 self._render_message(_TOOLTIP_AGENT.bind(agent=profile_display(meta))),

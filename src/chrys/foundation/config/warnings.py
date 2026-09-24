@@ -159,7 +159,8 @@ def warning_display_message(warning: SettingsWarning) -> MessageRef:
     reason = outcome.reason
     # ``Coerced`` refuses to be built without one for these two statuses, and
     # only these two reach here.
-    assert reason is not None
+    if reason is None:
+        raise RuntimeError("A coercion warning requires a reason.")
     definition = _REASON_MESSAGES[reason]
     source = setting_source_label(warning.key, warning.origin)
     if reason is CoerceReason.NOT_A_CHOICE:

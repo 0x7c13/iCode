@@ -654,7 +654,8 @@ class WorkflowWorkerClient:
         self._capacity["sync"] = max(0, LIMITS.worker_thread_pool_size - self._leaked_threads_by_pool["body"])
 
     def _lost_error(self) -> WorkerLostError:
-        assert self._lost is not None
+        if self._lost is None:
+            raise RuntimeError("The workflow worker has not been marked lost.")
         return self._lost
 
     def _stderr_suffix(self) -> str:
@@ -668,7 +669,8 @@ class WorkflowWorkerClient:
         self._lost_event.set()
         for request_id in tuple(self._pending):
             pending = self._pop_pending(request_id)
-            assert pending is not None
+            if pending is None:
+                raise RuntimeError("A registered worker request disappeared during failure handling.")
             if not pending.future.done():
                 pending.future.set_exception(self._lost)
         self._capacity_changed.set()  # also wake callers that never registered a request
@@ -806,7 +808,8 @@ class WorkflowWorkerClient:
         self._asks.discard(task)
 
     async def _serve_ask(self, request_id: int, ref: AttemptRef, prompt: str) -> None:
-        assert self._ask_handler is not None
+        if self._ask_handler is None:
+            raise RuntimeError("Serving a workflow question requires an ask handler.")
         try:
             answer = await self._ask_handler(ref, prompt)
         except asyncio.CancelledError:

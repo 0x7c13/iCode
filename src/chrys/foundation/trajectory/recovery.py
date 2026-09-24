@@ -41,7 +41,6 @@ class RecoveryScan:
     sequence out again would put two lines on one slot.
     """
     last_event: TrajectoryEvent | None
-    had_valid_events: bool
     newer_schema_version: int | None = None
     """Set when the tail was written under a schema this build must not append after."""
     unreadable_slots: tuple[int, int] | None = None
@@ -60,6 +59,10 @@ class RecoveryScan:
     cannot be skipped over, because the next sequence to hand out is exactly
     the thing in question. There is nothing to resume from here.
     """
+
+    @property
+    def had_valid_events(self) -> bool:
+        return self.last_event is not None
 
     @property
     def truncated_bytes(self) -> int:
@@ -82,7 +85,7 @@ def scan_open_file(fd: int) -> RecoveryScan:
     """
     size = os.fstat(fd).st_size
     if size == 0:
-        return RecoveryScan(file_size=0, complete_offset=0, last_sequence=0, last_event=None, had_valid_events=False)
+        return RecoveryScan(file_size=0, complete_offset=0, last_sequence=0, last_event=None)
     window = min(size, _INITIAL_TAIL_BYTES)
     while True:
         start = size - window
@@ -91,9 +94,7 @@ def scan_open_file(fd: int) -> RecoveryScan:
         if newline_at < 0:
             if start == 0:
                 # No newline anywhere: the whole file is one torn line.
-                return RecoveryScan(
-                    file_size=size, complete_offset=0, last_sequence=0, last_event=None, had_valid_events=False
-                )
+                return RecoveryScan(file_size=size, complete_offset=0, last_sequence=0, last_event=None)
             window = min(size, window * 2)
             continue
         complete_offset = start + newline_at + 1
@@ -107,7 +108,6 @@ def scan_open_file(fd: int) -> RecoveryScan:
                 complete_offset=complete_offset,
                 last_sequence=0,
                 last_event=None,
-                had_valid_events=False,
                 newer_schema_version=tail.newer_schema_version,
             )
         if tail.event is not None:
@@ -117,7 +117,6 @@ def scan_open_file(fd: int) -> RecoveryScan:
                 complete_offset=complete_offset,
                 last_sequence=last_sequence,
                 last_event=tail.event,
-                had_valid_events=True,
                 unreadable_slots=_range_after(tail.event.sequence, last_sequence),
                 unreadable_tail=tail.unreadable_tail,
             )
@@ -131,7 +130,6 @@ def scan_open_file(fd: int) -> RecoveryScan:
                 complete_offset=complete_offset,
                 last_sequence=tail.claimed_sequence,
                 last_event=None,
-                had_valid_events=False,
                 unreadable_slots=_range_after(0, tail.claimed_sequence),
                 unreadable_tail=tail.unreadable_tail,
             )

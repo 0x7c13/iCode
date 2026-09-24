@@ -292,7 +292,8 @@ class WorkflowRunner:
 
         async def invoke() -> None:
             task = asyncio.current_task()
-            assert task is not None
+            if task is None:
+                raise RuntimeError("Dispatching workflow hooks requires an asyncio task.")
             self._tasks.add(task)  # inline subscribers must recognize their run owner
             await step()
 
@@ -495,10 +496,12 @@ class WorkflowRunner:
         ref = decision.ref
         try:
             if decision.kind == KIND_PYTHON:
-                assert decision.value is not None
+                if decision.value is None:
+                    raise RuntimeError("Activating a Python or agent node requires an input value.")
                 await self._run_python(ref, decision.value)
             elif decision.kind == KIND_AGENT:
-                assert decision.value is not None
+                if decision.value is None:
+                    raise RuntimeError("Activating a Python or agent node requires an input value.")
                 async with self._agent_slots:
                     await self._run_agent(ref, decision.value)
             elif decision.kind == KIND_JOIN:
@@ -582,7 +585,8 @@ class WorkflowRunner:
         if result.kind == "completed":
             await self._complete(ref, WorkflowValue(text=result.text))
         elif result.kind == "failed":
-            assert result.failure is not None
+            if result.failure is None:
+                raise RuntimeError("A failed agent attempt requires a failure report.")
             await self._fail(ref, result.failure)
         elif result.kind == "cancelled" and self._terminal is None:
             await self._fail(ref, FailureReport(ErrorClass.AGENT_NON_TRANSIENT, "agent pass was cancelled"))
@@ -907,7 +911,8 @@ class WorkflowRunner:
         if self._result is not None:
             return self._result
         terminal = self._terminal
-        assert terminal is not None
+        if terminal is None:
+            raise RuntimeError("Finishing a workflow run requires a terminal decision.")
         outputs = terminal.outputs
         duration = time.monotonic() - self._started
         summaries = [

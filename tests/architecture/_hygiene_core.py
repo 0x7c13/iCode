@@ -45,7 +45,7 @@ def _test_sources(shard: int | None = None) -> dict[Path, str]:
 
 
 def _src_sources(shard: int | None = None) -> dict[Path, str]:
-    relative = ((path, path.relative_to(REPO_ROOT)) for path in sorted((SRC_ROOT / "chrys").rglob("*.py")))
+    relative = ((path, path.relative_to(REPO_ROOT)) for path in sorted(SRC_ROOT.rglob("*.py")))
     return {rel: path.read_text(encoding="utf-8") for path, rel in relative if shard is None or _shard_of(rel) == shard}
 
 

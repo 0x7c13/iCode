@@ -2194,7 +2194,8 @@ def _revision_memberships(
         if revision_errors:
             errors[revision_id] = tuple(revision_errors)
             continue
-        assert membership is not None
+        if membership is None:
+            raise RuntimeError("A validated context revision has no resolved membership.")
         ordered_memberships[revision_id] = membership
     return _RevisionResolution(
         memberships={

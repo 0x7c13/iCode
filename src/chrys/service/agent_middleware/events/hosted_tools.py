@@ -773,7 +773,8 @@ def cross_provider_hosted_degradations(
                 degradations[id(member)] = None
             degradations[id(anchor)] = hosted_context_summary(call, result)
             representative = call or result
-            assert representative is not None
+            if representative is None:
+                raise RuntimeError("A hosted exchange requires a call or a result.")
             logger.debug(
                 "Degrading provider-hosted history to assistant context: source=%s target=%s family=%s item_type=%s",
                 source_provider,

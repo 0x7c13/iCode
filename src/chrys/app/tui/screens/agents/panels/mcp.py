@@ -1812,7 +1812,8 @@ class MCPConfigPanel(VerticalScroll):
     @work(thread=False)
     async def _run_test_requested(self, index: int) -> None:
         card = self._card_by_index(index)
-        assert card is not None, "MCP test card should remain mounted while test is marked in-flight"
+        if card is None:
+            raise RuntimeError("MCP test card should remain mounted while test is marked in-flight")
 
         server_name = ""
         with contextlib.suppress(Exception):

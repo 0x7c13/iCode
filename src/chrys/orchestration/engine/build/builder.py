@@ -937,7 +937,8 @@ async def build_agent(
             injection=injection,
         )
         validation_middleware = assembled.validation
-        assert validation_middleware is not None
+        if validation_middleware is None:
+            raise RuntimeError("The main agent assembly requires response validation middleware.")
         agent = assembled.agent
         reminder_middleware = assembled.reminder
         await agent.__aenter__()

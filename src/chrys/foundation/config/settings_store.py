@@ -616,7 +616,8 @@ def _within_project_bounds(
         return not bool(value) or bool(current)
     # TIGHTEN_ONLY — the spec's ``__post_init__`` guarantees the comparator.
     semantic = entry.semantic_value
-    assert semantic is not None
+    if semantic is None:
+        raise RuntimeError("A tighten-only setting requires a semantic comparator.")
     return semantic(replace(baseline, **{name: value}), eval_context) <= semantic(baseline, eval_context)
 
 
