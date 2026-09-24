@@ -29,7 +29,9 @@ import pytest
 from chrys.foundation import platform as platform_mod
 from chrys.foundation.patches import mdurl_cache as _mdurl_cache
 from chrys.foundation.patches import textual_dispatch_cache as _textual_dispatch_cache
+from chrys.foundation.patches import textual_one_shot_timer as _textual_one_shot_timer
 from chrys.foundation.patches import textual_pruned_tabs as _textual_pruned_tabs
+from chrys.foundation.patches import textual_removed_screen_callbacks as _textual_removed_screen_callbacks
 from chrys.foundation.patches import textual_selection_extract as _textual_selection_extract
 from chrys.foundation.patches import textual_tab_selection as _textual_tab_selection
 from chrys.foundation.patches import textual_win_sleep as _textual_win_sleep
@@ -100,6 +102,14 @@ _textual_selection_extract.apply_runtime_patch()
 # Tab bars are removed with their screens exactly as in the app; unpatched, a bar
 # removed before its tabs mount raises "No Tab with id" and takes the App down.
 _textual_pruned_tabs.apply_runtime_patch()
+
+# Loading dialogs open and close over the main screen exactly as in the app; unpatched, work
+# a widget under one scheduled after a refresh can be dropped with the dialog.
+_textual_removed_screen_callbacks.apply_runtime_patch()
+
+# Tab bars move their underline from a one-shot timer exactly as in the app; unpatched, a
+# collection or descheduling right after that timer starts means it never fires.
+_textual_one_shot_timer.apply_runtime_patch()
 
 
 @pytest.fixture(autouse=True)

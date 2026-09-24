@@ -208,9 +208,11 @@ def test_apply_all_isolates_runtime_patch_failures(
         textual_ime_cursor_anchor,
         textual_kitty_keyboard,
         textual_message_pump,
+        textual_one_shot_timer,
         textual_option_list,
         textual_precompose,
         textual_pruned_tabs,
+        textual_removed_screen_callbacks,
         textual_selection_extract,
         textual_tab_selection,
         textual_utf8_decoder,
@@ -240,9 +242,15 @@ def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch.setattr(textual_compositor_cjk, "apply_runtime_patch", broken_compositor_patch)
     monkeypatch.setattr(textual_message_pump, "apply_runtime_patch", lambda: calls.append("message_pump"))
     monkeypatch.setattr(textual_dispatch_cache, "apply_runtime_patch", lambda: calls.append("dispatch_cache"))
+    monkeypatch.setattr(textual_one_shot_timer, "apply_runtime_patch", lambda: calls.append("one_shot_timer"))
     monkeypatch.setattr(textual_option_list, "apply_runtime_patch", lambda: calls.append("option_list"))
     monkeypatch.setattr(textual_precompose, "apply_runtime_patch", lambda: calls.append("precompose"))
     monkeypatch.setattr(textual_pruned_tabs, "apply_runtime_patch", lambda: calls.append("pruned_tabs"))
+    monkeypatch.setattr(
+        textual_removed_screen_callbacks,
+        "apply_runtime_patch",
+        lambda: calls.append("removed_screen_callbacks"),
+    )
     monkeypatch.setattr(textual_selection_extract, "apply_runtime_patch", lambda: calls.append("selection_extract"))
     monkeypatch.setattr(textual_tab_selection, "apply_runtime_patch", lambda: calls.append("tab_selection"))
     monkeypatch.setattr(textual_ime_cursor_anchor, "apply_runtime_patch", lambda: calls.append("ime_cursor_anchor"))
@@ -262,9 +270,11 @@ def test_apply_all_isolates_runtime_patch_failures(
         "compositor_cjk",
         "message_pump",
         "dispatch_cache",
+        "one_shot_timer",
         "option_list",
         "precompose",
         "pruned_tabs",
+        "removed_screen_callbacks",
         "selection_extract",
         "tab_selection",
         "ime_cursor_anchor",

@@ -153,9 +153,8 @@ def prepare_shell_launch(command: str, env: dict[str, str]) -> ShellLaunch:
     if name.startswith("zsh"):
         return _launch_zsh(argv, env)
     if name.startswith("bash"):
-        scratch = tempfile.mkdtemp(prefix="chrys_bash_")
+        scratch = _write_scratch("chrys_bash_", {"init.bash": _BASH_RC})
         rcfile = Path(scratch, "init.bash")
-        rcfile.write_text(_BASH_RC, encoding="utf-8")
         # bash wants its long options ahead of any short ones.
         return ShellLaunch([program, "--rcfile", str(rcfile), *arguments], scratch)
     if name.startswith("fish"):
@@ -176,11 +175,24 @@ def _split_command(command: str) -> list[str]:
     return argv or [command]
 
 
+def _write_scratch(prefix: str, files: dict[str, str]) -> str:
+    """Write shell startup files, removing their directory if any write fails."""
+    scratch = tempfile.mkdtemp(prefix=prefix)
+    try:
+        for name, content in files.items():
+            Path(scratch, name).write_text(content, encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+    return scratch
+
+
 def _launch_zsh(argv: list[str], env: dict[str, str]) -> ShellLaunch:
-    scratch = tempfile.mkdtemp(prefix="chrys_zsh_")
     # The home the shell will see, which is where it would have looked.
     user_zdotdir = env.get("ZDOTDIR") or env.get("HOME") or os.path.expanduser("~")
-    Path(scratch, ".zshenv").write_text(_ZSH_ENV.format(user_zdotdir=shlex.quote(user_zdotdir)), encoding="utf-8")
-    Path(scratch, ".zshrc").write_text(_ZSH_RC, encoding="utf-8")
+    scratch = _write_scratch(
+        "chrys_zsh_",
+        {".zshenv": _ZSH_ENV.format(user_zdotdir=shlex.quote(user_zdotdir)), ".zshrc": _ZSH_RC},
+    )
     env["ZDOTDIR"] = scratch
     return ShellLaunch(argv, scratch)

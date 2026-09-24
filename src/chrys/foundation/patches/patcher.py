@@ -219,9 +219,11 @@ def apply_all() -> list[PatchResult]:
     import chrys.foundation.patches.textual_ime_cursor_anchor as textual_ime_cursor_anchor
     import chrys.foundation.patches.textual_kitty_keyboard as textual_kitty_keyboard
     import chrys.foundation.patches.textual_message_pump as textual_message_pump
+    import chrys.foundation.patches.textual_one_shot_timer as textual_one_shot_timer
     import chrys.foundation.patches.textual_option_list as textual_option_list
     import chrys.foundation.patches.textual_precompose as textual_precompose
     import chrys.foundation.patches.textual_pruned_tabs as textual_pruned_tabs
+    import chrys.foundation.patches.textual_removed_screen_callbacks as textual_removed_screen_callbacks
     import chrys.foundation.patches.textual_selection_extract as textual_selection_extract
     import chrys.foundation.patches.textual_tab_selection as textual_tab_selection
     import chrys.foundation.patches.textual_utf8_decoder as textual_utf8_decoder
@@ -259,9 +261,11 @@ def apply_all() -> list[PatchResult]:
             ("textual_compositor_cjk", textual_compositor_cjk.apply_runtime_patch),
             ("textual_message_pump", textual_message_pump.apply_runtime_patch),
             ("textual_dispatch_cache", textual_dispatch_cache.apply_runtime_patch),
+            ("textual_one_shot_timer", textual_one_shot_timer.apply_runtime_patch),
             ("textual_option_list", textual_option_list.apply_runtime_patch),
             ("textual_precompose", textual_precompose.apply_runtime_patch),
             ("textual_pruned_tabs", textual_pruned_tabs.apply_runtime_patch),
+            ("textual_removed_screen_callbacks", textual_removed_screen_callbacks.apply_runtime_patch),
             ("textual_selection_extract", textual_selection_extract.apply_runtime_patch),
             ("textual_tab_selection", textual_tab_selection.apply_runtime_patch),
             ("textual_ime_cursor_anchor", textual_ime_cursor_anchor.apply_runtime_patch),

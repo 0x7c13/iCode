@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "e79f8d5a0a2a35737551723ccceab9689c310d4a8168f53d99dd0a809a82be96",
+  "inventory_sha256": "6629dc5a6c8ce8e35def8534a9f56e9ae56cfb0b3d42c665c517ef834e47bfa7",
   "nodes": [
     {
       "cases": [
@@ -219,6 +219,26 @@
       "qualname": "apply_runtime_patch._compose",
       "source_column": 8,
       "source_line": 53,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await original(self, screen)",
+      "identity": "chrys.foundation.patches.textual_removed_screen_callbacks:apply_runtime_patch._replace_screen:1",
+      "module": "chrys.foundation.patches.textual_removed_screen_callbacks",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "apply_runtime_patch._replace_screen",
+      "source_column": 19,
+      "source_line": 44,
       "wrapper_target": null
     },
     {

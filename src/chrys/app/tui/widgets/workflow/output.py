@@ -44,8 +44,9 @@ class WorkflowOutputView(Vertical):
     WorkflowOutputView { height: 1fr; }
     WorkflowOutputView #workflow-outputs-scroll { height: 1fr; padding: 0; scrollbar-size-vertical: 1; }
     WorkflowOutputView #workflow-outputs-scroll > Static { margin: 0 1; height: auto; }
-    WorkflowOutputView #workflow-outputs-scroll > #workflow-iterations { display: none; margin-bottom: 1; }
-    WorkflowOutputView #workflow-outputs-scroll > #workflow-outputs { margin-top: 1; }
+    /* Whole margins: a lone margin-top or margin-bottom would zero the side margins above. */
+    WorkflowOutputView #workflow-outputs-scroll > #workflow-iterations { display: none; margin: 0 1 1 1; }
+    WorkflowOutputView #workflow-outputs-scroll > #workflow-outputs { margin: 1 1 0 1; }
     WorkflowOutputView #workflow-output-pages { height: 1; margin: 1 0; padding: 0 1; align: right middle; }
     WorkflowOutputView #workflow-output-pages Button {
         min-width: 10; width: auto; height: 1; border: none; padding: 0 1;
