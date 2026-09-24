@@ -1,0 +1,305 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""The loop's model cycle is closed on every exit, interrupts included.
+
+A cycle whose start marker landed and whose terminal one never did reads as a
+cycle still running, so the abort path has to keep its handle until the
+terminal is on its way.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+
+import pytest
+
+from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG
+from chrys.foundation.trajectory.envelope import MeasurementSource
+from chrys.foundation.trajectory.event_types import EventType, ToolOutcome
+from chrys.kernel import ChatMiddlewareLayer, ChatResponse, Content, Message, tool
+from chrys.kernel import loop as loop_module
+from chrys.kernel.client import BaseChatClient
+from chrys.kernel.middleware import FunctionInvocationContext, FunctionMiddleware
+from chrys.service.llm.instrumented import _IntermediateTextMixin
+from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
+from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
+
+
+class _HostedCallClient:
+    """Wire client whose single response carries one provider-hosted call."""
+
+    def get_response(self, messages: object, **kwargs: object) -> object:
+        del messages, kwargs
+
+        async def _resolve() -> ChatResponse:
+            return ChatResponse(
+                messages=[
+                    Message(
+                        "assistant",
+                        [
+                            Content.from_hosted_tool_call(
+                                "hosted-1",
+                                tool_name="web_search",
+                                status="completed",
+                                hosted_family="search",
+                                hosted_provider="openai",
+                            ),
+                            Content.from_text("done"),
+                        ],
+                    )
+                ]
+            )
+
+        return _resolve()
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_interrupted_while_recording_hosted_calls_is_still_closed() -> None:
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_HostedCallClient()))
+    # 1 = the cycle's start marker, 2 = the exchange that landed, 3 = the
+    # hosted call the response carried.
+    sink = CancelAckSink(at=3)
+    context = make_context(sink)
+
+    with pytest.raises(asyncio.CancelledError):
+        await layer.get_response(
+            [Message("user", ["hi"])],
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: context},
+        )
+
+    assert sink.only(EventType.HOSTED_CALL_OBSERVED)
+    started = sink.only(EventType.MODEL_CYCLE_STARTED)
+    finished = sink.only(EventType.MODEL_CYCLE_FINISHED)
+    assert finished.operation_id == started.operation_id
+
+
+class _WireClient(BaseChatClient):
+    """The real preparation path: compaction runs before the request is sent."""
+
+    OTEL_PROVIDER_NAME = "test"
+
+    def _inner_get_response(self, *, messages: object, stream: bool = False, **kwargs: object) -> object:
+        del messages, stream, kwargs
+
+        async def _resolve() -> ChatResponse:
+            return ChatResponse(messages=[Message("assistant", ["hi"])])
+
+        return _resolve()
+
+
+class _InstrumentedClient(_IntermediateTextMixin, _WireClient):
+    pass
+
+
+class _SuspendingCompaction:
+    """A compaction pass that awaits, the way a summarization side call does."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+
+    async def __call__(self, messages: object, context: object = None) -> None:
+        del messages, context
+        self.entered.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_before_the_request_is_sent_records_no_exchange() -> None:
+    """The exchange handle is minted before the call, and the client reports
+    the start immediately before sending. An interrupt in between — compaction
+    is the window that actually suspends there — ends a trace that never
+    reached the provider, so it must leave no terminal behind."""
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_InstrumentedClient()))
+    sink = FakeSink()
+    compaction = _SuspendingCompaction()
+
+    task = asyncio.create_task(
+        layer.get_response(
+            [Message("user", ["hi"])],
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+            compaction_strategy=compaction,
+        )
+    )
+    await asyncio.wait_for(compaction.entered.wait(), timeout=5.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert EventType.MODEL_EXCHANGE_FINISHED not in sink.event_types
+    assert EventType.MODEL_EXCHANGE_STARTED not in sink.event_types
+    # The cycle around it is still closed: that span did open.
+    assert sink.only(EventType.MODEL_CYCLE_FINISHED)
+
+
+class _AlwaysCallsClient:
+    """A provider that answers every request with a function call.
+
+    Including the exhaustion tail's, where ``tool_choice="none"`` asked it
+    not to.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_response(self, messages: object, **kwargs: object) -> object:
+        del messages, kwargs
+        self.calls += 1
+        call_id = f"c{self.calls}"
+
+        async def _resolve() -> ChatResponse:
+            return ChatResponse(
+                messages=[Message("assistant", [Content.from_function_call(call_id, "echo", arguments={"text": "x"})])]
+            )
+
+        return _resolve()
+
+
+@pytest.mark.asyncio
+async def test_the_exhaustion_tail_counts_the_calls_it_refused() -> None:
+    """A tail reporting no calls would read as a provider that complied."""
+
+    @tool(name="echo")
+    async def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_AlwaysCallsClient()), max_iterations=1)
+    sink = FakeSink()
+
+    await layer.get_response(
+        [Message("user", ["hi"])],
+        options={"tools": [echo]},
+        client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+    )
+
+    # The exhausted cycle, then the tail that asked for text and got a call.
+    counts = [event.payload["function_call_count"] for event in sink.of_type(EventType.MODEL_CYCLE_FINISHED)]
+    assert counts == [1, 1]
+
+
+class _TwoCallClient:
+    """Wire client whose single response asks for two calls in one batch."""
+
+    def get_response(self, messages: object, **kwargs: object) -> object:
+        del messages, kwargs
+
+        async def _resolve() -> ChatResponse:
+            return ChatResponse(
+                messages=[
+                    Message(
+                        "assistant",
+                        [
+                            Content.from_function_call("c1", "echo", arguments={"text": "a"}),
+                            Content.from_function_call("c2", "echo", arguments={"text": "b"}),
+                        ],
+                    )
+                ]
+            )
+
+        return _resolve()
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_cancelled_before_it_ever_ran_still_settles_its_operation() -> None:
+    """A task cancelled before its first step runs no line of its own, so the
+    loop has to still own that operation when reconciliation comes round."""
+
+    @tool(name="echo")
+    async def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    outer: asyncio.Task[object] | None = None
+
+    class _CancelTheRun(FunctionMiddleware):
+        async def process(
+            self,
+            context: FunctionInvocationContext,
+            call_next: Callable[[], Awaitable[None]],
+        ) -> None:
+            del context
+            # Synchronous, inside the first sibling's very first step: the
+            # second sibling's task is queued and has not run yet, so it is
+            # cancelled before its body executes at all.
+            assert outer is not None
+            outer.cancel()
+            await call_next()
+
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_TwoCallClient()))
+    sink = FakeSink()
+    outer = asyncio.create_task(
+        layer.get_response(
+            [Message("user", ["hi"])],
+            options={"tools": [echo]},
+            middleware=[_CancelTheRun()],
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await outer
+
+    assert sink.only(EventType.TOOL_OPERATION_FINISHED).payload["outcome"] == ToolOutcome.FILTERED
+    sink.assert_operations_settled()
+
+
+class _UnnamedCallClient:
+    """Wire client whose response carries a tool call the provider left unnamed."""
+
+    def get_response(self, messages: object, **kwargs: object) -> object:
+        del messages, kwargs
+
+        async def _resolve() -> ChatResponse:
+            return ChatResponse(
+                messages=[Message("assistant", [Content.from_function_call(None, "echo", arguments={"text": "x"})])]
+            )
+
+        return _resolve()
+
+
+@pytest.mark.asyncio
+async def test_a_call_the_provider_left_unnamed_still_settles_its_operation() -> None:
+    """Landing mints the operation and the batch counts it dispatched, so the
+    refusal at the pipeline door is what owes it a terminal."""
+
+    @tool(name="echo")
+    async def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_UnnamedCallClient()))
+    sink = FakeSink()
+
+    with pytest.raises(KeyError, match="missing call_id"):
+        await layer.get_response(
+            [Message("user", ["hi"])],
+            options={"tools": [echo]},
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+
+    assert sink.only(EventType.TOOL_OPERATION_FINISHED).payload["outcome"] == ToolOutcome.FILTERED
+    sink.assert_operations_settled()
+
+
+@pytest.mark.asyncio
+async def test_a_wall_clock_jump_does_not_stretch_the_cycle_it_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Durations come from the monotonic clock, which no clock correction moves."""
+    hour_ns = 3_600_000_000_000
+    calls = 0
+
+    def jumping_time_ns() -> int:
+        nonlocal calls
+        calls += 1
+        # The step lands between the two reads a duration would have used.
+        return 1_700_000_000_000_000_000 + (hour_ns if calls > 1 else 0)
+
+    monkeypatch.setattr(loop_module, "time_ns", jumping_time_ns)
+
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_HostedCallClient()))
+    sink = FakeSink()
+
+    await layer.get_response(
+        [Message("user", ["hi"])],
+        client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+    )
+
+    finished = sink.only(EventType.MODEL_CYCLE_FINISHED)
+    assert finished.payload["duration_ms"] < 60_000  # an hour of skew, none of it recorded
+    assert finished.measurements["/payload/duration_ms"]["source"] == MeasurementSource.MONOTONIC_CLOCK

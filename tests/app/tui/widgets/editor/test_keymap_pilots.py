@@ -1,0 +1,285 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Focused real-Textual pilots for editor keymap integration and history."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+import pytest
+from textual.app import App, ComposeResult
+from textual.events import Paste
+
+from chrys.app.tui.widgets.editor import EditorMode, EditorStatus, EmacsKeymap, MessageEditor, VimKeymap, VimState
+from chrys.foundation.i18n import MessageRef
+from chrys.foundation.i18n.formatting import format_message
+
+pytestmark = pytest.mark.asyncio
+
+
+def _render_status(status: EditorStatus) -> str:
+    return format_message(status) if isinstance(status, MessageRef) else status
+
+
+class _EditorApp(App[None]):
+    def __init__(
+        self,
+        text: str,
+        cursor: tuple[int, int],
+        mode: EditorMode,
+        *,
+        tab_behavior: Literal["focus", "indent"] = "focus",
+    ) -> None:
+        super().__init__()
+        self.editor = MessageEditor(text=text, cursor_location=cursor, mode=mode, tab_behavior=tab_behavior)
+
+    def compose(self) -> ComposeResult:
+        yield self.editor
+
+
+@pytest.mark.parametrize("undo_key", ["ctrl+/", "ctrl+underscore", "ctrl+slash"])
+async def test_emacs_kill_yank_undo_redo_are_isolated_real_history_units(undo_key: str) -> None:
+    app = _EditorApp("one two", (0, 0), EditorMode.EMACS)
+    async with app.run_test() as pilot:
+        await pilot.press("alt+d")
+        assert app.editor.text == " two"
+        assert isinstance(app.editor.active_keymap, EmacsKeymap)
+        assert app.editor.active_keymap.kill_ring == "one"
+
+        await pilot.press(undo_key)
+        assert app.editor.text == "one two"
+        await pilot.press("ctrl+y")
+        assert app.editor.text == "oneone two"
+
+
+async def test_emacs_delegated_edit_deactivates_stale_mark_before_later_kill() -> None:
+    app = _EditorApp("abc def", (0, 0), EditorMode.EMACS)
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+space", "alt+f", "X", "alt+f")
+
+        assert app.editor.text == "X def"
+        assert app.editor.selected_text == ""
+        assert isinstance(app.editor.active_keymap, EmacsKeymap)
+        assert app.editor.active_keymap.mark is None
+
+        await pilot.press("ctrl+w")
+        assert app.editor.text == "X "
+        assert app.editor.active_keymap.kill_ring == "def"
+
+
+async def test_emacs_indent_tab_remains_a_delegated_edit() -> None:
+    app = _EditorApp("alpha", (0, 0), EditorMode.EMACS, tab_behavior="indent")
+    async with app.run_test() as pilot:
+        await pilot.press("ctrl+space", "alt+f")
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, EmacsKeymap)
+        assert keymap.mark == (0, 0)
+        assert app.editor.selected_text == "alpha"
+
+        await pilot.press("tab")
+
+        assert keymap.mark is None
+        assert app.editor.selected_text == ""
+        assert app.editor.text != "alpha"
+
+
+@pytest.mark.parametrize(
+    ("keys", "changed"),
+    [
+        (("3", "d", "d"), "four"),
+        (("J",), "one two three\nfive\nfour"),
+        (("r", "X"), "Xne\ntwo three\nfive\nfour"),
+        (("D",), "\ntwo three\nfive\nfour"),
+        (("s",), "ne\ntwo three\nfive\nfour"),
+    ],
+)
+async def test_vim_compound_command_is_one_real_undo_and_redo(keys: tuple[str, ...], changed: str) -> None:
+    original = "one\ntwo three\nfive\nfour"
+    app = _EditorApp(original, (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press(*keys)
+        assert app.editor.text == changed
+
+        await pilot.press("escape", "u")
+        assert app.editor.text == original
+        await pilot.press("ctrl+r")
+        assert app.editor.text == changed
+
+
+@pytest.mark.parametrize("redo_key", ["ctrl+r", "ctrl+shift+r"])
+async def test_vim_linewise_visual_paste_supports_redo_key_variants(redo_key: str) -> None:
+    app = _EditorApp("one two\nthree four", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("V", "y", "p")
+        assert app.editor.text == "one two\none two\nthree four"
+
+        await pilot.press("u")
+        assert app.editor.text == "one two\nthree four"
+        await pilot.press(redo_key)
+        assert app.editor.text == "one two\none two\nthree four"
+
+
+async def test_vim_change_then_insert_uses_documented_two_public_undo_units() -> None:
+    app = _EditorApp("one two", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("c", "w", "N", "E", "W", "escape")
+        assert app.editor.text == "NEW two"
+
+        await pilot.press("u")
+        assert app.editor.text == " two"
+        await pilot.press("u")
+        assert app.editor.text == "one two"
+
+
+async def test_vim_change_inner_quote_then_insert_uses_documented_two_public_undo_units() -> None:
+    original = '"one two" tail'
+    app = _EditorApp(original, (0, 2), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("c", "i", '"', "N", "E", "W", "escape")
+        assert app.editor.text == '"NEW" tail'
+
+        await pilot.press("u")
+        assert app.editor.text == '"" tail'
+        await pilot.press("u")
+        assert app.editor.text == original
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("i", "Xone"),
+        ("I", "Xone"),
+        ("a", "oXne"),
+        ("A", "oneX"),
+        ("o", "one\nX"),
+        ("O", "X\none"),
+    ],
+)
+async def test_vim_insert_commands_uniformly_ignore_counts(command: str, expected: str) -> None:
+    app = _EditorApp("one", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("3", command, "X", "escape")
+
+        assert app.editor.text == expected
+
+
+async def test_mode_switch_replaces_and_resets_incomplete_keymap_state() -> None:
+    app = _EditorApp("one two", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("d")
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, VimKeymap)
+        assert keymap.state is VimState.OPERATOR_PENDING
+
+        app.editor.set_mode(EditorMode.STANDARD)
+        app.editor.set_mode(EditorMode.VIM)
+        await pilot.pause()
+        assert app.editor.mode is EditorMode.VIM
+        replacement = app.editor.active_keymap
+        assert isinstance(replacement, VimKeymap)
+        assert replacement is not keymap
+        assert replacement.state is VimState.NORMAL
+
+
+async def test_vim_empty_lines_unicode_visual_and_linewise_register_paste() -> None:
+    app = _EditorApp("🙂 alpha\n\nomega", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("x")
+        assert app.editor.text == " alpha\n\nomega"
+        await pilot.press("j", "d", "d", "p")
+        assert app.editor.text == " alpha\nomega\n"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_state"),
+    [
+        ((), VimState.NORMAL),
+        (("d",), VimState.OPERATOR_PENDING),
+        (("v",), VimState.VISUAL_CHAR),
+        ((":",), VimState.COMMAND),
+    ],
+)
+async def test_vim_paste_is_rejected_outside_insert_without_changing_modal_state(
+    prefix: tuple[str, ...],
+    expected_state: VimState,
+) -> None:
+    app = _EditorApp("one two", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        if prefix:
+            await pilot.press(*prefix)
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, VimKeymap)
+        assert keymap.state is expected_state
+
+        await app.editor._on_paste(Paste("PASTED"))
+
+        assert app.editor.text == "one two"
+        assert keymap.state is expected_state
+        assert _render_status(app.editor.status_text) == "Paste requires Insert mode"
+
+
+async def test_vim_paste_edits_document_in_insert_mode() -> None:
+    app = _EditorApp("one two", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        await app.editor._on_paste(Paste("PASTED"))
+
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, VimKeymap)
+        assert keymap.state is VimState.INSERT
+        assert app.editor.text == "PASTEDone two"
+
+
+async def test_vim_shift_insert_pastes_only_in_insert_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
+    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_paste", lambda: "PASTED")
+    app = _EditorApp("one two", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("shift+insert")
+        assert app.editor.text == "one two"
+
+        await pilot.press("i", "shift+insert")
+        assert app.editor.text == "PASTEDone two"
+
+
+async def test_vim_ctrl_insert_copies_visual_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    copied: list[str] = []
+    monkeypatch.setattr("chrys.app.tui.clipboard.platform_helpers.clipboard_copy", copied.append)
+    app = _EditorApp("one two", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("v", "l", "ctrl+insert")
+
+        assert app.clipboard == "on"
+        assert copied == ["on"]
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, VimKeymap)
+        assert keymap.state is VimState.VISUAL_CHAR
+
+
+async def test_unbound_printable_delegates_in_emacs_but_not_vim_normal() -> None:
+    emacs_app = _EditorApp("", (0, 0), EditorMode.EMACS)
+    async with emacs_app.run_test() as pilot:
+        await pilot.press("x", "enter", "y")
+        assert emacs_app.editor.text == "x\ny"
+
+    vim_app = _EditorApp("", (0, 0), EditorMode.VIM)
+    async with vim_app.run_test() as pilot:
+        await pilot.press("f", "F", "t", "T", ".", "/", "?", "q", "@", '"')
+        assert vim_app.editor.text == ""
+        assert vim_app.editor.cursor_location == (0, 0)
+        assert all(
+            token not in _render_status(vim_app.editor.status_text)
+            for token in ("Search", "Macro", "Register", "Repeat")
+        )
+
+
+async def test_general_ex_command_is_non_destructive_and_remains_correctable() -> None:
+    app = _EditorApp("draft", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press(":", *"set number", "enter")
+
+        assert app.editor.text == "draft"
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, VimKeymap)
+        assert keymap.state is VimState.COMMAND
+        assert _render_status(app.editor.status_text) == "Not an editor command: set number"

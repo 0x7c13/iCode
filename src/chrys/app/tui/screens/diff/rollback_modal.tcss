@@ -1,0 +1,248 @@
+/* Rollback modal — 80% x 80% overlay with turn picker + diff preview. */
+
+RollbackModal {
+    align: center middle;
+}
+
+RollbackProgressModal {
+    align: center middle;
+}
+
+/* An explicit command, or confirmation from the interactive picker, uses
+   this blocking shell. Its 13-row content plus two border rows exactly
+   matches the completed no-diff rollback modal, avoiding a height jump. */
+#rollback-progress-container {
+    width: 80%;
+    height: 15;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: $surface;
+}
+
+#rollback-progress-state {
+    width: 100%;
+    height: 13;
+    align: center middle;
+}
+
+#rollback-progress-loading {
+    width: 100%;
+    height: 1;
+    color: $primary;
+}
+
+#rollback-container {
+    width: 80%;
+    height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: $surface;
+}
+
+/* Production opens with this state before it scans rollback snapshots
+   and the session history.  Keep it independent of the Select/footer so
+   those widgets can be composed off-screen after the scan, while this
+   indicator continues animating. */
+#rollback-initial-loading-state {
+    width: 100%;
+    /* Match the completed empty shell exactly: Select slot (4 rows),
+       empty-preview slot (6 rows), and footer buttons (3 rows). The
+       container's two border rows bring both states to 15 rows total. */
+    height: 13;
+    align: center middle;
+}
+
+#rollback-initial-loading-state > #rollback-loading {
+    width: 100%;
+    height: 1;
+    color: $primary;
+}
+
+#rollback-initial-loading-state > #rollback-load-error {
+    height: auto;
+    padding: 1;
+}
+
+#rollback-initial-loading-state > #btn-close {
+    width: auto;
+    min-width: 12;
+    margin: 1 0 0 0;
+}
+
+/* Initial loading indicator sits in the diff wrapper's placeholder
+   slot with the same vertical footprint as #rollback-diff-placeholder
+   in the empty layout (1 row + 2-row padding), so loading → "No file
+   changes" swaps in place without a height jump. */
+#rollback-diff-wrapper > #rollback-loading {
+    width: 100%;
+    height: 1;
+    margin: 2 0;
+    color: $primary;
+}
+
+#rollback-container > .rollback-content {
+    width: 100%;
+    height: 1fr;
+}
+
+#rollback-load-error,
+#rollback-preview-error {
+    width: 100%;
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+    color: $error;
+    padding: 0 1;
+}
+
+/* Compact layout while the preview loads and when the selected turn
+   has no file changes.  The container composes with the ``empty``
+   class so the modal opens at just Select + loading slot + button
+   row; _render_diff_pane removes the class as soon as a real diff
+   mounts (full-height layout above) and re-adds it for no-change
+   turns — the 90% overlay is visually empty otherwise. */
+#rollback-container.empty {
+    height: auto;
+}
+#rollback-container.empty > .rollback-content {
+    height: auto;
+}
+#rollback-container.empty #rollback-diff-wrapper {
+    height: auto;
+}
+#rollback-container.empty #rollback-diff-placeholder {
+    height: auto;
+    padding: 2 0;
+}
+#rollback-container.empty #rollback-load-error,
+#rollback-container.empty #rollback-preview-error {
+    height: auto;
+    padding: 2 1;
+}
+
+#rollback-turn-select {
+    width: 100%;
+    margin: 1 1 0 1;
+}
+
+#rollback-diff-wrapper {
+    width: 100%;
+    height: 1fr;
+    margin: 1 1 0 1;
+    padding: 0;
+}
+
+#rollback-diff-placeholder {
+    width: 100%;
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+    color: $text-muted;
+}
+
+#rollback-diff-wrapper DiffPeriodPane {
+    width: 100%;
+    height: 1fr;
+}
+
+/* Non-checkable note listing files the rollback plan excluded
+   (no restorable backup, move-poisoned, foreign/contested, ...). */
+#rollback-exclusions-note {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+#rollback-warnings-note {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+    color: $warning;
+}
+
+/* DiffPeriodPane inner borders — mirror screen.tcss so the diff view
+   renders the same inside this modal as it does inside the /diff screen. */
+#rollback-diff-wrapper .diff-body {
+    height: 1fr;
+}
+
+#rollback-diff-wrapper .diff-changelist {
+    width: 1fr;
+    max-width: 25%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary 90%;
+    border-subtitle-color: $primary 90%;
+}
+
+#rollback-diff-wrapper .diff-changelist Tree {
+    scrollbar-size-vertical: 1;
+}
+
+#rollback-diff-wrapper .diff-changelist .workspace-tree {
+    height: 1fr;
+}
+
+#rollback-diff-wrapper .diff-changelist .external-tree {
+    height: auto;
+    max-height: 50%;
+    border-top: solid $tui-border-primary 30%;
+}
+
+#rollback-diff-wrapper .diff-content {
+    width: 3fr;
+    height: 1fr;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary 90%;
+    border-subtitle-color: $primary 90%;
+}
+
+#rollback-diff-wrapper .diff-content DiffView {
+    height: 1fr;
+}
+
+#rollback-diff-wrapper .diff-content .diff-message {
+    width: 1fr;
+    height: 1fr;
+    content-align: center middle;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+#rollback-diff-wrapper CodeColumn {
+    scrollbar-size: 1 1;
+}
+
+#rollback-buttons {
+    dock: bottom;
+    layout: horizontal;
+    height: 3;
+    padding: 0 1 0 1;
+    align: left middle;
+}
+
+/* Checkbox sits left-padded — the 1fr spacer that follows absorbs
+   remaining horizontal space so the buttons dock to the right edge.
+   Styled to match the "Streaming" checkbox in the model-config screen
+   (see screens/models/screen.tcss): 1-row tall, no border, transparent
+   background so the flat-button footer stays visually coherent. */
+#rollback-buttons Checkbox {
+    height: 1;
+    padding: 0;
+    border: none;
+    background: transparent;
+    /* top=1 so the 1-row checkbox label baselines with the flat
+       button text inside the 3-row footer. */
+    margin: 1 1 0 1;
+}
+
+#rollback-buttons #rollback-buttons-spacer {
+    width: 1fr;
+    height: 1;
+}
+
+#rollback-buttons > Button {
+    margin: 0 1;
+}

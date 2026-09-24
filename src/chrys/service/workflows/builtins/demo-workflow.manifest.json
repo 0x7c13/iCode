@@ -1,0 +1,635 @@
+{
+  "description": "A read-only guided tour of this project: quick or deep, reviewed by you for up to 2 rounds",
+  "edges": [
+    {
+      "conditional": false,
+      "dst": "brief",
+      "id": "open_round->brief",
+      "predicate": null,
+      "src": "open_round",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "write_tour",
+      "id": "brief->write_tour",
+      "predicate": null,
+      "src": "brief",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:review",
+      "id": "open_round->join:review",
+      "predicate": null,
+      "src": "open_round",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:review",
+      "id": "write_tour->join:review",
+      "predicate": null,
+      "src": "write_tour",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "review",
+      "id": "join:review->review",
+      "predicate": null,
+      "src": "join:review",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "scan_tree",
+      "id": "read_request->scan_tree",
+      "predicate": null,
+      "src": "read_request",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "read_key_files",
+      "id": "scan_tree->read_key_files",
+      "predicate": null,
+      "src": "scan_tree",
+      "switch": null
+    },
+    {
+      "conditional": true,
+      "dst": "choose_depth",
+      "id": "read_key_files->choose_depth",
+      "predicate": "must_ask_depth",
+      "src": "read_key_files",
+      "switch": null
+    },
+    {
+      "conditional": true,
+      "dst": "plan",
+      "id": "read_key_files->plan",
+      "predicate": "depth_is_known",
+      "src": "read_key_files",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "plan",
+      "id": "choose_depth->plan",
+      "predicate": null,
+      "src": "choose_depth",
+      "switch": null
+    },
+    {
+      "conditional": true,
+      "dst": "fan_out",
+      "id": "plan->fan_out",
+      "predicate": "wants_deep",
+      "src": "plan",
+      "switch": {
+        "default": false,
+        "group": "plan",
+        "position": 0
+      }
+    },
+    {
+      "conditional": true,
+      "dst": "hand_over",
+      "id": "plan->hand_over",
+      "predicate": null,
+      "src": "plan",
+      "switch": {
+        "default": true,
+        "group": "plan",
+        "position": null
+      }
+    },
+    {
+      "conditional": false,
+      "dst": "quick_scan",
+      "id": "hand_over->quick_scan",
+      "predicate": null,
+      "src": "hand_over",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "architecture",
+      "id": "fan_out->architecture",
+      "predicate": null,
+      "src": "fan_out",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "entry_points",
+      "id": "fan_out->entry_points",
+      "predicate": null,
+      "src": "fan_out",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "conventions",
+      "id": "fan_out->conventions",
+      "predicate": null,
+      "src": "fan_out",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:merge_findings",
+      "id": "architecture->join:merge_findings",
+      "predicate": null,
+      "src": "architecture",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:merge_findings",
+      "id": "entry_points->join:merge_findings",
+      "predicate": null,
+      "src": "entry_points",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:merge_findings",
+      "id": "conventions->join:merge_findings",
+      "predicate": null,
+      "src": "conventions",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "merge_findings",
+      "id": "join:merge_findings->merge_findings",
+      "predicate": null,
+      "src": "join:merge_findings",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:refine",
+      "id": "plan->join:refine",
+      "predicate": null,
+      "src": "plan",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:refine",
+      "id": "merge_findings->join:refine",
+      "predicate": null,
+      "src": "merge_findings",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "join:refine",
+      "id": "quick_scan->join:refine",
+      "predicate": null,
+      "src": "quick_scan",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "refine",
+      "id": "join:refine->refine",
+      "predicate": null,
+      "src": "join:refine",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "render_tour",
+      "id": "refine->render_tour",
+      "predicate": null,
+      "src": "refine",
+      "switch": null
+    },
+    {
+      "conditional": true,
+      "dst": "tour_text",
+      "id": "refine->tour_text",
+      "predicate": "wants_deep",
+      "src": "refine",
+      "switch": null
+    },
+    {
+      "conditional": false,
+      "dst": "next_steps",
+      "id": "tour_text->next_steps",
+      "predicate": null,
+      "src": "tour_text",
+      "switch": null
+    }
+  ],
+  "nodes": [
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "read_request"
+      },
+      "id": "read_request",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": true,
+        "name": "scan_tree"
+      },
+      "id": "scan_tree",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "read_key_files"
+      },
+      "id": "read_key_files",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.5,
+        "max_attempts": 2
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 2,
+        "async": true,
+        "name": "choose_depth"
+      },
+      "id": "choose_depth",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 2,
+        "async": false,
+        "name": "plan"
+      },
+      "id": "plan",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 2,
+        "async": false,
+        "name": "fan_out"
+      },
+      "id": "fan_out",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": {
+        "instructions_suffix": "Your dimension is architecture: the main components, what each is responsible for, and how they depend on each other. This is a read-only tour: only read and search the workspace. Never create, edit, move or delete anything, never run a command that changes something, and do not run tests, builds or installers. Cite files as path:line.",
+        "model": null,
+        "profile": "QA"
+      },
+      "callable": null,
+      "id": "architecture",
+      "kind": "agent",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 3
+      },
+      "timeout": null
+    },
+    {
+      "agent": {
+        "instructions_suffix": "Your dimension is entry points: where execution starts (commands, mains, servers, handlers) and the path a typical request or command takes through the code. This is a read-only tour: only read and search the workspace. Never create, edit, move or delete anything, never run a command that changes something, and do not run tests, builds or installers. Cite files as path:line.",
+        "model": null,
+        "profile": "QA"
+      },
+      "callable": null,
+      "id": "entry_points",
+      "kind": "agent",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 3
+      },
+      "timeout": null
+    },
+    {
+      "agent": {
+        "instructions_suffix": "Your dimension is conventions: how the code is organised and named, how it is tested, and the rules a contributor is expected to follow. This is a read-only tour: only read and search the workspace. Never create, edit, move or delete anything, never run a command that changes something, and do not run tests, builds or installers. Cite files as path:line.",
+        "model": null,
+        "profile": "QA"
+      },
+      "callable": null,
+      "id": "conventions",
+      "kind": "agent",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 3
+      },
+      "timeout": 600.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "merge_findings"
+      },
+      "id": "merge_findings",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 2,
+        "async": false,
+        "name": "hand_over"
+      },
+      "id": "hand_over",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": {
+        "instructions_suffix": "Skim the project and note what a newcomer needs first: its purpose, its layout, where execution starts, and how it is tested. Be brief. This is a read-only tour: only read and search the workspace. Never create, edit, move or delete anything, never run a command that changes something, and do not run tests, builds or installers. Cite files as path:line.",
+        "model": null,
+        "profile": "QA"
+      },
+      "callable": null,
+      "id": "quick_scan",
+      "kind": "agent",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 3
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 2,
+        "async": false,
+        "name": "open_round"
+      },
+      "id": "open_round",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": "refine",
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "brief"
+      },
+      "id": "brief",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": "refine",
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": {
+        "instructions_suffix": "You are writing a guided tour of this project for a newcomer. Keep it under 500 words: what the project is, how it is laid out, where execution starts, and what to read first. When asked to revise, return the whole tour again. This is a read-only tour: only read and search the workspace. Never create, edit, move or delete anything, never run a command that changes something, and do not run tests, builds or installers. Cite files as path:line.",
+        "model": null,
+        "profile": "QA"
+      },
+      "callable": null,
+      "id": "write_tour",
+      "kind": "agent",
+      "loop": null,
+      "parent_loop": "refine",
+      "retry": {
+        "backoff": 5,
+        "max_attempts": 2
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 2,
+        "async": true,
+        "name": "review"
+      },
+      "id": "review",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": "refine",
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "keep_round_state"
+      },
+      "id": "join:review",
+      "kind": "join",
+      "loop": null,
+      "parent_loop": "refine",
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": null,
+      "id": "refine",
+      "kind": "loop",
+      "loop": {
+        "body": [
+          "open_round",
+          "brief",
+          "write_tour",
+          "review",
+          "join:review"
+        ],
+        "entry": "open_round",
+        "exit": "review",
+        "max_iterations": 2,
+        "on_exhausted": "continue",
+        "until": "tour_settled"
+      },
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "render_tour"
+      },
+      "id": "render_tour",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "tour_text"
+      },
+      "id": "tour_text",
+      "kind": "python",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": 300.0
+    },
+    {
+      "agent": {
+        "instructions_suffix": "The message is a finished tour of this project. Suggest what the newcomer should do next: up to five files to read, each with a one-line reason, and up to three small, safe first tasks. Only suggest; do not carry out any of it. This is a read-only tour: only read and search the workspace. Never create, edit, move or delete anything, never run a command that changes something, and do not run tests, builds or installers. Cite files as path:line.",
+        "model": null,
+        "profile": "QA"
+      },
+      "callable": null,
+      "id": "next_steps",
+      "kind": "agent",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 3
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": null,
+      "id": "join:merge_findings",
+      "kind": "join",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": null
+    },
+    {
+      "agent": null,
+      "callable": {
+        "arity": 1,
+        "async": false,
+        "name": "carry_state"
+      },
+      "id": "join:refine",
+      "kind": "join",
+      "loop": null,
+      "parent_loop": null,
+      "retry": {
+        "backoff": 0.0,
+        "max_attempts": 1
+      },
+      "timeout": null
+    }
+  ],
+  "outputs": [
+    "render_tour",
+    "next_steps"
+  ],
+  "schema_version": 1,
+  "start": "read_request",
+  "title": "Workflow Demo \u00b7 Project Tour",
+  "warnings": []
+}

@@ -1,0 +1,230 @@
+[project]
+name = "chrys"
+version = "0.26.0"
+description = "A general-purpose extensible agent platform for rapidly building and evolving custom agents."
+requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = [
+    "anthropic==0.107.1",
+    "openai==2.44.0",
+    # Range, not a pin: the otel packages ship as one release train (api/sdk/
+    # exporter on 1.x, instrumentation on the matching 0.NNbM line) and are
+    # bumped together. uv.lock holds the resolved version.
+    "opentelemetry-api>=1.39.0,<2",
+    "python-dotenv==1.2.3",
+    "pyyaml==6.0.3",
+    "charset-normalizer==3.5.1",
+    "mcp==1.28.1",
+    # Ceiling: pillow 12.3.0 dropped manylinux2014 (glibc 2.17) wheels; the
+    # offline binaries advertise a glibc 2.17 floor, enforced at build time by
+    # scripts/build_offline_dist.sh. Raise only together with that floor.
+    "pillow==12.2.0",
+    # Pinned to nudge pip past older pyjwt[crypto] candidates during PyApp
+    # first-run install (mcp pulls pyjwt[crypto]>=2.10.1; pip's resolver can
+    # thrash on the [crypto] extra inside PyApp's isolated env). Floor only —
+    # let mcp's range float so future mcp upgrades don't conflict.
+    "pyjwt[crypto]>=2.13.0,<3",
+    "pathspec==1.1.1",
+    "agent-client-protocol==0.10.1",
+    "setproctitle==1.3.7",
+    "rich==15.0.0",
+    "httpx[socks]==0.28.1",
+    # Web CONNECT identity adapter uses the pinned pool/backend contract.
+    "httpcore==1.0.9",
+    "idna==3.20",
+    "markdownify==1.2.3",
+    "beautifulsoup4==4.15.0",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual==8.2.7",
+    "textual-serve==1.1.3",
+    "psutil==7.2.2",
+    "watchdog==6.0.0",
+    "pywinpty==3.0.5; sys_platform == 'win32'",
+]
+dev = [
+    "babel==2.18.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-xdist==3.8.0",
+    "pytest-timeout==2.4.0",
+    "ruff==0.16.8",
+    "ty==0.0.77",
+]
+doc_converter = ["pypdf==6.19.0", "python-docx==1.2.0", "python-pptx==1.0.2", "openpyxl==3.1.5", "xlrd==2.0.2"]
+observability = [
+    # Same release train as opentelemetry-api above — bump all four together.
+    "opentelemetry-sdk>=1.39.0,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.39.0,<2",
+    "opentelemetry-instrumentation-logging>=0.65b0,<1",
+]
+all = ["chrys[tui,dev,doc_converter,observability]"]
+
+[project.scripts]
+icode = "chrys.app.cli.app:main"
+chrys = "chrys.app.cli.app:main"
+
+[tool.uv.sources]
+#rich = { path = "../rich", editable = true }
+#textual = { path = "../textual", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+# Dev-only, and never published: dependency groups do not reach Requires-Dist,
+# so a range here cannot affect a downstream install. uv.lock still pins them.
+dev = [
+    "pre-commit>=4.6.0",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chrys"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# The /help user guide reads docs/ at runtime; installed builds carry it here
+# (src/chrys/app/tui/screens/guides/index.py::resolve_docs_root).
+"docs" = "chrys/app/tui/screens/guides/_docs"
+
+[tool.hatch.build]
+# Include vendored assets that are gitignored (downloaded at build time)
+artifacts = ["src/chrys/foundation/vendor/ripgrep/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-n 8 --strict-markers"
+# ``build`` is intentionally omitted from pytest's default ``norecursedirs`` so
+# tests/orchestration/engine/build/ (mirroring src/chrys/orchestration/engine/build/) is collected.
+norecursedirs = [".*", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}", "*.egg"]
+# Per-test timeout converts a hung test (e.g. asyncio cancellation that does
+# not unwind on Windows IOCP) into a single failure instead of a wedged xdist
+# worker. ``thread`` method is the only one that works on Windows — but its
+# kill is ``os._exit`` after a dump to pytest's terminal writer, which an
+# xdist worker swallows, so under xdist the hang surfaces only as a silent
+# "worker crashed". The faulthandler timeout below fires first and writes
+# every thread's stack to the real stderr fd, which does reach the CI log
+# from a worker, making the eventual kill attributable.
+timeout = 60
+timeout_method = "thread"
+faulthandler_timeout = 55
+markers = [
+    "integration: marks tests requiring external services (MCP servers, etc.)",
+    "gc_calibration: slow real-App GC-freeze calibration probes; excluded from PR CI, run by the scheduled gc-freeze-calibration workflow",
+    "quarantine(reason, expires): known-flaky, non-blocking pending a fix; requires reason= and expires='YYYY-MM-DD'",
+    "real_config_dir: opts out of the autouse config-dir isolation; the test reads the developer's real config directory on purpose",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+src = ["src", "tests"]
+fix = true
+
+[tool.ruff.per-file-target-version]
+# Workflow SDK and worker host run inside any Python >= 3.9 interpreter (see per-file-ignores below)
+"src/chrys/service/workflows/sdk/*" = "py39"
+"src/chrys/service/workflows/worker_host.py" = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific
+    "ASYNC", # async correctness
+    "S",     # bandit security checks
+    "ISC",   # implicit string concatenation
+    "RET",   # return statement checks
+    "C4",    # flake8-comprehensions
+    "PIE",   # flake8-pie
+    "PERF",  # perflint
+    "T20",   # flake8-print (no stray print statements)
+    "FURB",  # refurb
+    "DTZ",   # flake8-datetimez
+    "PLW",   # pylint warnings
+    "TID",   # flake8-tidy-imports
+]
+ignore = [
+    "E501",     # line length handled by formatter
+    "RET504",   # unnecessary variable before return — often clearer to keep
+    "S101",     # assert is fine for invariant checks
+    "S104",     # binding 0.0.0.0 is supported by the browser-hosted TUI serve command
+    "S105",     # false positives on variable names like token_type
+    "S108",     # hardcoded /tmp path is fine for debug logs
+    "S110",     # try-except-pass is common in TUI for non-critical UI updates
+    "ASYNC109", # asyncio.timeout in async is standard pattern
+    "ASYNC240", # os.path in async is fine for instant fs checks (isdir, exists)
+    "PLW0603", # global statement is intentional for module-level singletons
+    "PLW2901", # loop var overwrite is a common pattern (e.g. strip in loop)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Playground demos — sample content intentionally uses special characters
+"playground/*" = ["RUF001", "RUF012"]
+# Platform utilities — subprocess calls to system tools are safe
+"src/chrys/foundation/platform/__init__.py" = ["S603", "S607", "PLW1510"]
+# Installer CLI — print is correct output, subprocess calls are platform setup
+"src/chrys/app/installer.py" = ["T20", "S603", "S607", "PLW1510"]
+# Shell tool — its entire purpose is running subprocess commands
+"src/chrys/service/tools/builtins/shell.py" = ["S603", "S607"]
+# Workflow SDK and worker host run inside any Python >= 3.9 interpreter: 3.9 syntax only
+"src/chrys/service/workflows/sdk/*" = ["UP", "B905", "RUF007"]
+"src/chrys/service/workflows/worker_host.py" = ["UP", "B905", "RUF007"]
+# Tests — relax security checks, tolerate loop-append pattern
+"tests/**" = ["S", "PERF401"]
+# Golden workflow example: user-facing Chinese prose keeps its full-width punctuation
+"tests/service/workflows/fixtures/*" = ["RUF001"]
+[tool.ruff.lint.isort]
+known-first-party = ["chrys"]
+
+# OTLP HTTP exporters are optional observability dependencies and are imported
+# only after their matching feature gate is enabled.
+[[tool.ty.overrides]]
+include = ["src/chrys/foundation/observability/setup.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
+# Framework workaround shims: monkey-patch bookkeeping (_original etc.) and deliberate
+# reassignment of Textual module callables/constants are the essence of these files.
+# Zone-level rules keep the mirrored code free of suppression comments and stay valid
+# under both stock and locally patched textual installs.
+[[tool.ty.overrides]]
+include = ["src/chrys/foundation/patches/*.py"]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+invalid-assignment = "ignore"
+
+# The tab-selection patch constructs _FormattedLine with parameters the patch itself
+# provides at runtime; stock textual's types cannot see them.
+[[tool.ty.overrides]]
+include = ["src/chrys/foundation/patches/textual_tab_selection.py"]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+unknown-argument = "ignore"
+
+# Null-overlay mirrors pydantic FieldInfo internals.
+[[tool.ty.overrides]]
+include = ["src/chrys/kernel/_null_overlay.py"]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+
+# GC freeze support touches Textual DOMNode private layout caches by design.
+[[tool.ty.overrides]]
+include = ["src/chrys/app/tui/support/gc_freeze.py"]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"

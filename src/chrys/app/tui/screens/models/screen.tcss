@@ -1,0 +1,255 @@
+ModelConfigScreen {
+    align: center middle;
+}
+
+#mc-container {
+    width: 95%;
+    min-width: 60;
+    max-width: 120;
+    height: 85%;
+    max-height: 60;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    background: $surface;
+    padding: 0;
+}
+
+/* Main horizontal layout */
+#mc-main {
+    height: 1fr;
+}
+
+/* Left sidebar */
+#mc-sidebar {
+    width: 28;
+    height: 1fr;
+    border-right: solid $tui-border-foreground 15%;
+}
+
+#mc-list {
+    height: 1fr;
+    border: none;
+    padding: 0 0 0 1;
+    scrollbar-size: 1 1;
+    scrollbar-gutter: stable;
+}
+
+/* Right panel */
+#mc-right {
+    width: 1fr;
+    height: 1fr;
+}
+
+#mc-scroll {
+    height: 1fr;
+    padding: 1 0 1 2;
+    scrollbar-size-vertical: 1;
+    scrollbar-gutter: stable;
+}
+
+.mc-label {
+    margin: 1 2 0 0;
+    color: $text-muted;
+    height: 1;
+}
+
+.mc-label:first-of-type {
+    margin-top: 0;
+}
+
+/* Thin/compact inputs */
+#mc-scroll Input {
+    height: 1;
+    border: none;
+    background: $foreground 8%;
+    padding: 0 1;
+    margin: 0 2 0 0;
+}
+
+#mc-scroll Input:focus {
+    border: none;
+    background: $foreground 12%;
+}
+
+/* Key-value row inputs: share space, smaller right gap */
+#mc-scroll .mc-kv-field {
+    width: 1fr;
+    margin: 0 1 0 0;
+}
+
+/* Select widget compact styling */
+#mc-scroll Select {
+    height: auto;
+    margin: 0 2 0 0;
+}
+
+#mc-scroll SelectCurrent {
+    height: 1;
+    border: none;
+    background: $foreground 8%;
+    padding: 0 1;
+}
+
+#mc-scroll SelectOverlay {
+    height: auto;
+    max-height: 16;
+    border: round $tui-border-primary $border-opacity;
+    background: $surface;
+}
+
+/* Key-value list container */
+.mc-kv-list {
+    height: auto;
+    margin: 0 2 0 0;
+}
+
+/* Editable key-value item rows */
+.mc-kv-item-row {
+    height: auto;
+    background: transparent;
+    padding: 0;
+    margin: 0 0 1 0;
+}
+
+.mc-kv-remove-btn {
+    min-width: 3;
+    height: 1;
+    border: none;
+    background: transparent;
+    color: $error;
+}
+
+/* Add button row for key-value lists */
+.mc-kv-add-row {
+    height: auto;
+    margin: 0;
+}
+
+.mc-kv-add-btn {
+    min-width: 6;
+    height: 1;
+    text-style: bold;
+    padding: 0 1;
+}
+
+/* Checkbox rows stay compact, with the indicator matching agent configuration. */
+#mc-scroll Checkbox {
+    height: 1;
+    padding: 0;
+    border: none;
+    background: transparent;
+    margin: 1 0 0 0;
+}
+
+#mc-scroll Checkbox > .toggle--button {
+    color: $foreground 35%;
+    background: $foreground 6%;
+}
+
+#mc-scroll Checkbox.-on > .toggle--button {
+    color: $success;
+    background: $foreground 6%;
+}
+
+.mc-option-section {
+    height: auto;
+    margin: 1 2 0 0;
+    padding: 1 0 1 2;
+    border: solid $tui-border-foreground 15%;
+    border-title-color: $text-muted;
+}
+
+.mc-option-section .mc-label:first-of-type {
+    margin-top: 0;
+}
+
+#mc-connection-options Checkbox {
+    margin: 0 0 1 0;
+}
+
+#mc-connection-options #mc-bypass-proxy {
+    margin: 0;
+}
+
+.mc-hint {
+    width: 100%;
+    height: auto;
+    margin: 0 2 1 0;
+    padding: 0 0 0 3;
+}
+
+.mc-tls-hint {
+    color: $warning;
+}
+
+/* Footer buttons */
+#mc-footer {
+    dock: bottom;
+    height: 3;
+    padding: 0 1;
+    background: $surface;
+}
+
+#mc-footer.-read-only {
+    height: 4;
+}
+
+#mc-buttons {
+    width: 100%;
+    height: 3;
+    align: left middle;
+    padding: 0;
+    background: $surface;
+}
+
+#mc-buttons Button {
+    min-width: 0;
+    width: auto;
+}
+
+#mc-buttons #mc-new {
+    margin: 0 1 0 0;
+    min-width: 10;
+    width: auto;
+}
+
+#mc-buttons #mc-clone {
+    margin: 0 1 0 0;
+    min-width: 10;
+    width: auto;
+}
+
+#mc-buttons #mc-delete {
+    margin: 0 1 0 0;
+    min-width: 10;
+    width: auto;
+}
+
+#mc-buttons-spacer {
+    width: 1fr;
+    height: 1;
+    background: transparent;
+}
+
+#mc-read-only-notice {
+    width: 100%;
+    height: 1;
+    margin: 0;
+    padding: 0 1;
+    color: $warning;
+    background: $warning 15%;
+}
+
+#mc-buttons #mc-save {
+    margin: 0 1 0 0;
+}
+
+#mc-buttons #mc-save {
+    min-width: 13;
+}
+
+#mc-buttons #mc-cancel {
+    margin: 0;
+    min-width: 13;
+}

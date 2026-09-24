@@ -1,0 +1,41 @@
+WorkflowNodeDialog { align: center middle; background: $background 60%; }
+WorkflowNodeDialog #workflow-node {
+    width: 90%; height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-subtitle-color: $primary;
+    border-subtitle-align: right;
+    background: $surface; padding: 0;
+}
+WorkflowNodeDialog .workflow-value-scroll > Static,
+WorkflowNodeDialog .workflow-value-scroll > WorkflowValueView,
+WorkflowNodeDialog .workflow-value-scroll > .workflow-value-body {
+    height: auto; margin: 0 1 1 0;
+}
+/* Value tabs sit under the pane tabs, so only their underline marks the active one. */
+WorkflowNodeDialog WorkflowValueView .workflow-value-tabs Tab.-active { background: transparent; color: $text-primary; }
+WorkflowNodeDialog #workflow-node-previous {
+    padding: 0 1;
+    border: round $tui-border-foreground 25%;
+    border-title-color: $text-muted;
+}
+WorkflowNodeDialog #workflow-iteration-tabs,
+WorkflowNodeDialog #workflow-attempt-tabs { display: none; height: 2; padding: 0; }
+WorkflowNodeDialog TabbedContent, WorkflowNodeDialog ContentSwitcher,
+WorkflowNodeDialog TabPane, WorkflowNodeDialog #workflow-node-transcript { height: 1fr; }
+WorkflowNodeDialog TabbedContent, WorkflowNodeDialog TabPane { padding: 0; }
+/* Value tab bars span the pane above its scrolling content. Scrollbars sit against the dialog
+   border; the right margin of the scrolled children keeps their gap. */
+WorkflowNodeDialog .workflow-value-scroll,
+WorkflowNodeDialog #workflow-node-transcript { padding: 0 0 0 1; }
+WorkflowNodeDialog .workflow-value-scroll > #workflow-node-errors,
+WorkflowNodeDialog #workflow-node-transcript > Static { margin-right: 1; }
+WorkflowNodeDialog #workflow-node-actions { display: none; height: 3; }
+WorkflowNodeDialog #workflow-node-errors {
+    display: none; height: auto;
+    color: $error; scrollbar-size: 1 1;
+}
+WorkflowNodeDialog #workflow-transcript-tab #workflow-node-errors { max-height: 40%; padding: 0 0 0 1; }
+WorkflowNodeDialog #workflow-transcript-tab #workflow-node-error { margin: 0 1 1 0; }
+WorkflowNodeDialog #workflow-node-diagnostics,
+WorkflowNodeDialog #workflow-node-previous { display: none; }

@@ -1,0 +1,538 @@
+/* Shared TUI styles for all themes. Colors come from the active palette.
+ * ANSI rules depend only on Theme.ansi, never on a theme's name or prefix.
+ * Explicit surface colors keep terminal-default backgrounds usable; their
+ * fallbacks follow each theme's palette and are saved with custom overrides.
+ */
+
+MainScreen {
+    background: $background;
+}
+
+ModalScreen {
+    background: $background 40%;
+}
+
+/* Textual reverses focused button labels. Soften the ink that becomes the
+ * label background, keeping the displayed text color and button fill intact. */
+Button:focus {
+    text-opacity: 70%;
+}
+
+/* Flat button colors come from theme data, including renamed user copies.
+ * Variant labels/fills fall back to Textual semantics; hover and disabled
+ * overrides apply across variants. Focus keeps the existing keyboard marker. */
+Button.-style-flat {
+    color: $tui-button-default-foreground;
+    background: $tui-button-default-background;
+    border: block $tui-border-button-default;
+
+    &:hover {
+        color: $tui-button-default-hover-foreground;
+        background: $tui-button-default-hover-background;
+        border: block $tui-border-button-default-hover;
+    }
+    &.-active {
+        tint: $button-active-tint;
+    }
+    &:disabled {
+        color: $tui-button-default-disabled-foreground;
+        background: $tui-button-default-disabled-background;
+        border: block $tui-border-button-default-disabled;
+    }
+}
+Button.-style-flat.-primary {
+    color: $tui-button-primary-foreground;
+    background: $tui-button-primary-background;
+    border: block $tui-border-button-primary;
+
+    &:hover {
+        color: $tui-button-primary-hover-foreground;
+        background: $tui-button-primary-hover-background;
+        border: block $tui-border-button-primary-hover;
+    }
+    &.-active {
+        tint: $button-active-tint;
+    }
+    &:disabled {
+        color: $tui-button-primary-disabled-foreground;
+        background: $tui-button-primary-disabled-background;
+        border: block $tui-border-button-primary-disabled;
+    }
+}
+Button.-style-flat.-success {
+    color: $tui-button-success-foreground;
+    background: $tui-button-success-background;
+    border: block $tui-border-button-success;
+
+    &:hover {
+        color: $tui-button-success-hover-foreground;
+        background: $tui-button-success-hover-background;
+        border: block $tui-border-button-success-hover;
+    }
+    &.-active {
+        tint: $button-active-tint;
+    }
+    &:disabled {
+        color: $tui-button-success-disabled-foreground;
+        background: $tui-button-success-disabled-background;
+        border: block $tui-border-button-success-disabled;
+    }
+}
+Button.-style-flat.-warning {
+    color: $tui-button-warning-foreground;
+    background: $tui-button-warning-background;
+    border: block $tui-border-button-warning;
+
+    &:hover {
+        color: $tui-button-warning-hover-foreground;
+        background: $tui-button-warning-hover-background;
+        border: block $tui-border-button-warning-hover;
+    }
+    &.-active {
+        tint: $button-active-tint;
+    }
+    &:disabled {
+        color: $tui-button-warning-disabled-foreground;
+        background: $tui-button-warning-disabled-background;
+        border: block $tui-border-button-warning-disabled;
+    }
+}
+Button.-style-flat.-error {
+    color: $tui-button-error-foreground;
+    background: $tui-button-error-background;
+    border: block $tui-border-button-error;
+
+    &:hover {
+        color: $tui-button-error-hover-foreground;
+        background: $tui-button-error-hover-background;
+        border: block $tui-border-button-error-hover;
+    }
+    &.-active {
+        tint: $button-active-tint;
+    }
+    &:disabled {
+        color: $tui-button-error-disabled-foreground;
+        background: $tui-button-error-disabled-background;
+        border: block $tui-border-button-error-disabled;
+    }
+}
+
+#app-header {
+    dock: top;
+    width: 100%;
+    height: 1;
+    background: $panel;
+    color: $foreground;
+    layers: base overlay;
+}
+
+#header-title {
+    layer: base;
+    width: 100%;
+    height: 1;
+    content-align: center middle;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#mode-badge {
+    layer: overlay;
+    dock: left;
+    width: auto;
+    height: 1;
+    text-style: bold;
+    margin-left: 1;
+    pointer: pointer;
+    background: $primary;
+    color: $button-color-foreground;
+}
+#mode-badge:hover, #mode-badge:focus, #mode-badge.-active { background: $foreground; color: $background; }
+App:ansi #mode-badge:hover, App:ansi #mode-badge:focus, App:ansi #mode-badge.-active { color: $button-color-foreground; }
+
+#approval-badge {
+    layer: overlay;
+    dock: right;
+    width: auto;
+    height: 1;
+    text-style: bold;
+    margin-right: 1;
+    pointer: pointer;
+}
+
+#approval-badge.approval-manual {
+    background: $primary;
+    color: $button-color-foreground;
+}
+
+#approval-badge.approval-auto {
+    background: $warning;
+    color: $button-color-foreground;
+}
+
+#approval-badge.approval-bypass {
+    background: $error;
+    color: $button-color-foreground;
+}
+
+#approval-badge:hover,
+#approval-badge:focus,
+#approval-badge.-active {
+    background: $foreground;
+    color: $background;
+}
+
+App:ansi #approval-badge:hover,
+App:ansi #approval-badge:focus,
+App:ansi #approval-badge.-active {
+    color: $button-color-foreground;
+}
+
+.config-add-button {
+    border: solid $tui-border-foreground 20%;
+    background: $foreground 8%;
+    color: $secondary;
+    content-align: center middle;
+    text-align: center;
+}
+
+.config-add-button-compact {
+    border: none;
+}
+
+.config-add-button:hover {
+    background: $foreground;
+    color: $background;
+}
+
+.config-add-button:focus,
+.config-add-button.-active {
+    background: $foreground 8%;
+    color: $secondary;
+}
+
+.config-add-button.config-add-button-compact:focus,
+.config-add-button.config-add-button-compact.-active {
+    border: none;
+}
+
+App:ansi .config-add-button:hover {
+    background: $foreground;
+    color: $button-color-foreground;
+}
+
+App:ansi .config-add-button:focus,
+App:ansi .config-add-button.-active {
+    background: $control-background-muted;
+    color: $secondary;
+}
+
+App:ansi .config-add-button.config-add-button-compact:focus,
+App:ansi .config-add-button.config-add-button-compact.-active {
+    background: $control-background-muted;
+    color: $secondary;
+}
+
+/* Shared control styling */
+
+App Tab {
+    color: $foreground 75%;
+}
+App:ansi Tab {
+    color: $foreground 60%;
+    text-style: none;
+}
+App Tab.-active {
+    color: $foreground;
+    background: $primary 25%;
+    text-style: bold;
+}
+App:ansi Tab.-active {
+    background: $primary 40%;
+}
+App .underline--bar {
+    color: $primary;
+}
+/* Textual's Tabs widget raises the underline bar's background from
+   `$foreground 10%` to `$foreground 30%` on focus. Clicking a tab focuses
+   Tabs, so the bar's brightness jumps at the same time the highlight
+   animates, which reads as a flicker. Pin the background to the same value
+   in both states so only the highlight position changes. */
+App Tabs .underline--bar,
+App Tabs:focus .underline--bar {
+    background: $foreground 15%;
+}
+
+App ModalScreen > #container,
+App ModalScreen > #settings-container,
+App ModalScreen #confirm-inner {
+    background: $surface;
+}
+
+App:ansi ModalScreen {
+    background: transparent;
+}
+
+App:ansi ModalScreen > #container,
+App:ansi ModalScreen > #settings-container,
+App:ansi ModalScreen #confirm-inner {
+    background: transparent;
+}
+
+App FooterKey:hover {
+    text-style: none;
+    background: $control-background;
+}
+App StatusBar .profile-tag {
+    background: $accent 20%;
+    color: $accent;
+}
+App:ansi StatusBar .profile-tag,
+App:ansi StatusBar .model-tag {
+    background: $accent 30%;
+}
+App:ansi StatusBar .selector-label {
+    background: $ansi-background;
+    color: $ansi-foreground;
+}
+App StatusBar .profile-tag:hover,
+App StatusBar .profile-tag:focus,
+App StatusBar .profile-tag.-active {
+    background: $foreground;
+    color: $background;
+}
+
+App:ansi ScrollToBottomButton {
+    background: $control-background;
+    color: $foreground 70%;
+    text-style: not dim;
+}
+App:ansi ScrollToBottomButton:hover {
+    background: $block-hover-background;
+    color: $accent;
+}
+
+App FooterKey.-command-palette {
+    background: $footer-background;
+    border-left: vkey $tui-border-block-hover-background $border-opacity;
+}
+
+App:ansi InputBar > Horizontal > #btn-group > #send-btn:hover,
+App:ansi InputBar > Horizontal > #btn-group > #send-btn:focus,
+App:ansi InputBar > Horizontal > #btn-group > #send-btn.-active,
+App:ansi StatusBar .profile-tag:hover,
+App:ansi StatusBar .profile-tag:focus,
+App:ansi StatusBar .profile-tag.-active,
+App:ansi StatusBar .model-tag:hover,
+App:ansi StatusBar .model-tag:focus,
+App:ansi StatusBar .model-tag.-active,
+App:ansi ErrorMessage > .status-action-row > Button:hover,
+App:ansi ErrorMessage > .status-action-row > Button:focus,
+App:ansi ErrorMessage > .status-action-row > Button.-active,
+App:ansi InterruptedMessage > .status-action-row > Button:hover,
+App:ansi InterruptedMessage > .status-action-row > Button:focus,
+App:ansi InterruptedMessage > .status-action-row > Button.-active {
+    color: $button-color-foreground;
+}
+App:ansi StatusBar .model-tag:hover,
+App:ansi StatusBar .model-tag:focus,
+App:ansi StatusBar .model-tag.-active {
+    background: $foreground;
+}
+App:ansi StatusBar .model-tag.-locked {
+    background: $accent 30%;
+    color: $accent 50%;
+}
+App InputBar > Horizontal > #btn-group > Button.-style-flat {
+    border: none;
+}
+App InputBar > Horizontal > #btn-group > #send-btn:disabled {
+    text-opacity: 90%;
+}
+
+App:ansi InputBar > Horizontal > _ChatTextArea .text-area--placeholder {
+    color: $foreground-muted;
+}
+
+App:ansi #askuser-input .text-area--placeholder,
+App:ansi #approval-reason .text-area--placeholder {
+    color: $foreground-muted;
+}
+
+App:ansi ConversationToc > .toc-empty,
+App:ansi TasksPanel > #tasks-empty,
+App:ansi BuddyPanel .buddy-empty {
+    color: $foreground-muted;
+}
+
+App .code_inline {
+    background: transparent;
+}
+
+App .virtualized-markdown--block-quote {
+    background: $markdown-block-background;
+}
+
+App .virtualized-markdown--fence {
+    background: $markdown-block-background;
+}
+
+App .virtualized-markdown--table {
+    background: transparent;
+}
+
+App ExecuteToolCall > Widget,
+App GrepToolCall > Widget,
+App GlobToolCall > Widget,
+App ReadFileToolCall > Widget,
+App EditFileToolCall > Widget,
+App WriteFileToolCall > Widget {
+    background: transparent;
+}
+
+App DiffView,
+App .diff-group,
+App CodeColumn,
+App GutterColumn {
+    background: transparent;
+}
+
+App DataTable {
+    background: $background;
+    scrollbar-size: 1 1;
+}
+App:ansi DataTable {
+    background: transparent;
+}
+
+/* ANSI card surfaces and checkbox toggles. */
+App:ansi SubAgentCard,
+App:ansi MCPConnectionCard,
+App:ansi SkillDirCard,
+App:ansi MemoryFileCard,
+App:ansi MemoryFolderCard {
+    background: $control-background-muted;
+    border: solid $tui-border-foreground 25%;
+}
+
+App:ansi #ac-sidebar,
+App:ansi #mc-sidebar {
+    border-right: solid $tui-border-foreground 25%;
+}
+
+App:ansi .mc-option-section {
+    border: solid $tui-border-foreground 25%;
+}
+
+/* Explicit control surfaces avoid alpha blending against ansi_default. */
+App:ansi BasicConfigPanel Input,
+App:ansi BasicConfigPanel EnhancedTextArea,
+App:ansi InstructionsConfigPanel EnhancedTextArea,
+App:ansi CompactionConfigPanel Input,
+App:ansi CompactionConfigPanel EnhancedTextArea,
+App:ansi InputBar > Horizontal > _ChatTextArea,
+App:ansi #sa-max-total,
+App:ansi #sk-timeout,
+App:ansi .config-add-button,
+App:ansi #mc-scroll Input {
+    background: $control-background-muted;
+}
+
+App:ansi BasicConfigPanel Input:focus,
+App:ansi BasicConfigPanel EnhancedTextArea:focus,
+App:ansi InstructionsConfigPanel EnhancedTextArea:focus,
+App:ansi CompactionConfigPanel Input:focus,
+App:ansi CompactionConfigPanel EnhancedTextArea:focus,
+App:ansi InputBar > Horizontal > _ChatTextArea:focus,
+App:ansi #sa-max-total:focus,
+App:ansi #sk-timeout:focus,
+App:ansi #mc-scroll Input:focus {
+    background: $control-background;
+}
+
+App:ansi Checkbox > .toggle--button {
+    color: $control-foreground-muted;
+    background: $control-background;
+}
+
+App:ansi Checkbox.-on > .toggle--button {
+    color: $success;
+    background: $control-background;
+}
+
+App:ansi ToolsConfigPanel Checkbox.-on > .toggle--button {
+    color: $success;
+    background: $foreground 14%;
+}
+
+App:ansi #mc-scroll Checkbox > .toggle--button {
+    color: $control-foreground-muted;
+    background: $control-background;
+}
+
+App:ansi #mc-scroll Checkbox.-on > .toggle--button {
+    color: $success;
+    background: $foreground 14%;
+}
+
+App:ansi #mc-scroll .mc-kv-add-row {
+    width: auto;
+    background: $control-background-muted;
+}
+
+/* DataTable headers use the shared block highlight color. */
+App .datatable--header {
+    background: $block-hover-background;
+    color: $foreground;
+}
+
+App .screen--selection {
+    color: $foreground;
+}
+App Tooltip {
+    background: $overlay-background;
+    max-width: 90;
+}
+App Toast {
+    background: $overlay-background;
+}
+
+/* Each Screen owns its own ToastRack (textual/screen.py) and toasts always
+   re-render onto the *active* screen's rack — so a MainScreen-only rule
+   reverts when a modal is pushed.  Apply globally so the position stays
+   consistent regardless of which screen is on top.  The rack sits under the
+   header at the top right; ChrysApp mounts each new toast ahead of the older
+   ones (chrys.app.tui.toasts), so the stack grows downward, newest on top.
+   With the toast's own top margin, the rack's leaves one blank row under the
+   header. */
+#textual-toastrack {
+    dock: top;
+    align: right top;
+    margin-top: 1;
+    margin-bottom: 0;
+}
+
+FooterKey, .profile-tag, .model-tag {
+    transition: background 150ms linear;
+}
+
+/* Keep disabled control colors editable, without dimming the selected colors a
+   second time through Textual's generic disabled-widget opacity. */
+App Input:disabled,
+App:ansi Input:disabled,
+App TextArea:disabled,
+App:ansi TextArea:disabled,
+App Select:disabled {
+    opacity: 1;
+}
+App Input:disabled,
+App:ansi Input:disabled,
+App TextArea:disabled,
+App:ansi TextArea:disabled,
+App Select:disabled > SelectCurrent {
+    color: $text-disabled;
+    background: $control-disabled-background;
+}
+
+App Select:disabled > SelectCurrent > Static {
+    color: $text-disabled;
+}

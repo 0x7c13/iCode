@@ -1,0 +1,410 @@
+name: CD
+run-name: "CD — ${{ github.event_name == 'push' && github.ref_name || inputs.ref || 'main' }} (${{ inputs.platform || 'all' }})"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or commit to build (default: main)'
+        type: string
+        default: main
+      platform:
+        description: 'Platform to build'
+        type: choice
+        default: all
+        options:
+          - all
+          - windows
+          - macos
+          - linux
+
+concurrency:
+  group: cd-${{ inputs.ref || github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYAPP_VERSION: "0.29.0"
+  PYAPP_PYTHON_VERSION: "3.14"
+
+jobs:
+  # ── Run CI checks first ─────────────────────────────────────────────
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      build_ref: ${{ inputs.ref || github.ref }}
+
+  # ── Build Python wheel ──────────────────────────────────────────────
+  build-wheel:
+    name: Build wheel
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+          allow-prereleases: true
+      - name: Fetch ripgrep binaries (all platforms)
+        run: ./scripts/fetch_rg.sh --all
+      - run: uv build --wheel
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  # ── Compute build matrix (filter by platform input) ─────────────────
+  compute-matrix:
+    name: Compute build matrix
+    runs-on: ubuntu-latest
+    needs: build-wheel
+    outputs:
+      matrix: ${{ steps.filter.outputs.matrix }}
+    steps:
+      - id: filter
+        shell: bash
+        run: |
+          platform="${{ inputs.platform || 'all' }}"
+          # The macOS x86_64 leg runs on a native Intel runner rather than
+          # cross-compiling from arm64: the offline flavor has to pip-install
+          # (and occasionally compile) x86_64 wheels for the bundled interpreter.
+          all_targets='[
+            {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","artifact":"icode-linux-x86_64","platform":"linux"},
+            {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","artifact":"icode-linux-aarch64","platform":"linux","glibc_floor":"2.18"},
+            {"target":"aarch64-apple-darwin","os":"macos-latest","artifact":"icode-macos-aarch64","platform":"macos"},
+            {"target":"x86_64-apple-darwin","os":"macos-15-intel","artifact":"icode-macos-x86_64","platform":"macos"},
+            {"target":"x86_64-pc-windows-msvc","os":"windows-latest","artifact":"icode-windows-x86_64.exe","platform":"windows"}
+          ]'
+          if [ "$platform" = "all" ]; then
+            filtered="$all_targets"
+          else
+            filtered=$(echo "$all_targets" | jq -c "[.[] | select(.platform == \"$platform\")]")
+          fi
+          targets=$(echo "$filtered" | jq -c '[.[].target]')
+          # "offline" bundles every dependency into the binary. The "pip" and
+          # "uv" flavors install from PyPI on first run; add them here to build
+          # them alongside, e.g. ["offline","pip"].
+          matrix=$(jq -nc --argjson targets "$targets" --argjson include "$filtered" \
+            '{"installer":["offline"],"target":$targets,"include":$include}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  # ── Build PyApp binaries (5 platforms × 1 flavor = 5 jobs) ──────────
+  build-binaries:
+    name: ${{ matrix.artifact }}-${{ matrix.installer }}
+    needs: compute-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.compute-matrix.outputs.matrix) }}
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Checked out into a subdirectory: PyApp's source is unpacked over the
+      # workspace root below.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          path: repo
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: wheel
+          path: wheel
+
+      - name: Determine version
+        shell: bash
+        run: |
+          ref="${{ inputs.ref || '' }}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "PROJECT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          elif [[ "$ref" == v* ]]; then
+            echo "PROJECT_VERSION=${ref#v}" >> "$GITHUB_ENV"
+          else
+            # Dev build: derive base version from the wheel filename
+            # (e.g. chrys-0.6.6-py3-none-any.whl -> 0.6.6) so dev artifacts
+            # carry a meaningful version like v0.6.6-dev-abc1234. We use '-'
+            # instead of PEP 440's '+' so the version is URL/filename-safe.
+            base=$(ls wheel/*.whl | head -1 | sed -E 's|.*/chrys-([^-]+)-.*|\1|')
+            base="${base:-0.0.0}"
+            echo "PROJECT_VERSION=${base}-dev-$(echo $GITHUB_SHA | cut -c1-7)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl') && !matrix.use-cross
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          # The main line requires `toolchain` explicitly; only the `stable`
+          # branch defaulted it, and that branch is not what we pin to.
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use-cross
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8
+        with:
+          # Same as above: the `cross` branch defaulted this input, the main
+          # line marks it required.
+          tool: cross
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Prepare PyApp source
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/ofek/pyapp/releases/download/v${PYAPP_VERSION}/source.tar.gz" | tar xz
+          mv pyapp-v${PYAPP_VERSION}/* .
+          mv pyapp-v${PYAPP_VERSION}/.* . 2>/dev/null || true
+          cp wheel/*.whl .
+          # Tolerate non-UTF-8 subprocess output (fixes non-English Windows)
+          perl -i -pe '
+            s/let mut output = String::new\(\);/let mut raw = Vec::new();/;
+            s/reader\.read_to_string\(\&mut output\)\?;/reader.read_to_end(\&mut raw)?;/;
+            s/Ok\(\(result\?, output\)\)/let output = String::from_utf8_lossy(\&raw).into_owned();\n    Ok((result?, output))/;
+          ' src/process.rs
+          # Disable PyApp's self-update command. Its default update path runs
+          # `pip install --upgrade <project name>`, and the public PyPI name
+          # `chrys` belongs to a different project.
+          # Verified against PyApp 0.29.0; re-verify these source patches when bumping PYAPP_VERSION.
+          perl -0pi -e '
+            s/\n    Update\(super::update::Cli\),//;
+            s/\n            Commands::Update\(cli\) => cli\.exec\(\),//;
+          ' src/commands/self_cmd/cli.rs
+          perl -0pi -e 's/\npub mod update;//' src/commands/self_cmd/mod.rs
+          perl -0pi -e 's/\npub fn allow_updates\(\) -> bool \{/\n#[allow(dead_code)]\npub fn allow_updates() -> bool {/' src/app.rs
+          if grep -R -E 'Update\(super::update::Cli\)|Commands::Update|pub mod update' src/commands/self_cmd/cli.rs src/commands/self_cmd/mod.rs >/dev/null; then
+            echo "::error::failed to disable PyApp self update"
+            exit 1
+          fi
+          perl -0pi -e '
+            s/\n            Err\(err\) => \{\n                if !err\.use_stderr\(\) \{\n                    err\.exit\(\);\n                \}\n            \}/\n            Err(err) => err.exit(),/;
+          ' src/main.rs
+          if grep -F 'if !err.use_stderr()' src/main.rs >/dev/null; then
+            echo "::error::failed to harden PyApp self command parsing"
+            exit 1
+          fi
+          if [[ "${{ matrix.platform }}" == "windows" || "${{ matrix.platform }}" == "macos" || "${{ matrix.platform }}" == "linux" ]]; then
+            # PyApp launches Chrys by spawning the unpacked Python executable.
+            # On Windows, macOS, and Linux, process-name cleanup tools can
+            # still match that interpreter name, so run Chrys through a
+            # sibling alias.
+            perl -0pi -e '
+              s/pub fn pythonw_path\(\) -> PathBuf \{\n    install_dir\(\)\.join\(installation_pythonw_path\(\)\)\n\}/pub fn pythonw_path() -> PathBuf {\n    install_dir().join(installation_pythonw_path())\n}\n\n#[cfg(windows)]\npub const CHRYS_RUNTIME_EXE: \&str = "chrys-runtime.exe";\n\n#[cfg(any(target_os = "macos", target_os = "linux"))]\npub const CHRYS_RUNTIME_EXE: \&str = "chrys-runtime";\n\n#[cfg(windows)]\npub const CHRYS_RUNTIMEW_EXE: \&str = "chrys-runtimew.exe";\n\n#[cfg(any(windows, target_os = "macos", target_os = "linux"))]\nfn renamed_python_path(original: PathBuf, alias: \&str) -> PathBuf {\n    if let Some(path) = original.parent().map(|parent| parent.join(alias)) {\n        if path.is_file() {\n            return path;\n        }\n        if cfg!(debug_assertions) {\n            eprintln!(\n                "Chrys runtime alias {} is missing; falling back to {}",\n                path.display(),\n                original.display()\n            );\n        }\n    }\n    original\n}\n\n#[cfg(any(windows, target_os = "macos", target_os = "linux"))]\npub fn runtime_python_path() -> PathBuf {\n    renamed_python_path(python_path(), CHRYS_RUNTIME_EXE)\n}\n\n#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]\npub fn runtime_python_path() -> PathBuf {\n    python_path()\n}\n\n#[cfg(windows)]\npub fn runtime_pythonw_path() -> PathBuf {\n    renamed_python_path(pythonw_path(), CHRYS_RUNTIMEW_EXE)\n}/;
+            ' src/app.rs
+            perl -0pi -e '
+              s/\npub fn run_project\(\) -> Result<\(\)> \{\n    let mut command = python_command\(\&app::python_path\(\)\);\n\n    #\[cfg\(windows\)\]\n    \{\n        if app::is_gui\(\) \{\n            command = python_command\(\&app::pythonw_path\(\)\);\n        \}\n    \}/\n#[cfg(any(windows, target_os = "macos", target_os = "linux"))]\nfn link_or_copy_file(source: \&Path, target: \&Path) -> Result<()> {\n    if target.is_file() {\n        return Ok(());\n    }\n    fs::hard_link(source, target)\n        .or_else(|_| fs::copy(source, target).map(|_| ()))\n        .with_context(|| {\n            format!(\n                "unable to create Chrys runtime alias {} from {}",\n                \&target.display(),\n                \&source.display()\n            )\n        })\n}\n\n#[cfg(windows)]\nfn source_pth_path(source: \&Path) -> Option<std::path::PathBuf> {\n    let executable_pth = source.with_extension("_pth");\n    if executable_pth.is_file() {\n        return Some(executable_pth);\n    }\n\n    let python_pth = source.parent()?.join("python._pth");\n    python_pth.is_file().then_some(python_pth)\n}\n\n#[cfg(any(windows, target_os = "macos", target_os = "linux"))]\nfn ensure_runtime_alias(source: \&Path, alias_name: \&str) -> Result<()> {\n    if source.file_name() == Some(OsStr::new(alias_name)) {\n        return Ok(());\n    }\n    let alias = source\n        .parent()\n        .with_context(|| format!("Chrys runtime alias source has no parent: {}", source.display()))?\n        .join(alias_name);\n    link_or_copy_file(source, \&alias)?;\n\n    #[cfg(windows)]\n    {\n        if let Some(source_pth) = source_pth_path(source) {\n            link_or_copy_file(\&source_pth, \&alias.with_extension("_pth"))?;\n        }\n    }\n\n    Ok(())\n}\n\n#[cfg(any(windows, target_os = "macos", target_os = "linux"))]\nfn ensure_runtime_aliases() -> Result<()> {\n    ensure_runtime_alias(\&app::python_path(), app::CHRYS_RUNTIME_EXE)?;\n    #[cfg(windows)]\n    {\n        let pythonw_path = app::pythonw_path();\n        if pythonw_path.is_file() {\n            ensure_runtime_alias(\&pythonw_path, app::CHRYS_RUNTIMEW_EXE)?;\n        }\n    }\n    Ok(())\n}\n\npub fn run_project() -> Result<()> {\n    let mut command = python_command(\&app::runtime_python_path());\n\n    #[cfg(windows)]\n    {\n        if app::is_gui() {\n            command = python_command(\&app::runtime_pythonw_path());\n        }\n    }/;
+              s/\n    FileExt::unlock\(\&lock_file\)/\n    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]\n    ensure_runtime_aliases()?;\n\n    FileExt::unlock(\&lock_file)/;
+            ' src/distribution.rs
+            if ! grep -E 'CHRYS_RUNTIME_EXE|CHRYS_RUNTIMEW_EXE' src/app.rs >/dev/null \
+              || ! grep -E 'target_os = "macos"' src/app.rs >/dev/null \
+              || ! grep -E 'target_os = "linux"' src/app.rs >/dev/null \
+              || ! grep -E 'ensure_runtime_aliases' src/distribution.rs >/dev/null \
+              || ! grep -E 'runtime_python_path' src/distribution.rs >/dev/null \
+              || ! grep -E 'source_pth_path' src/distribution.rs >/dev/null \
+              || ! grep -E 'fs::hard_link' src/distribution.rs >/dev/null \
+              || ! perl -0ne 'exit(/install_project\(\)\?;.*ensure_runtime_aliases\(\)\?;/s ? 0 : 1)' src/distribution.rs \
+              || ! perl -0ne 'exit(/ensure_runtime_aliases\(\)\?;.*FileExt::unlock\(\&lock_file\)/s ? 0 : 1)' src/distribution.rs; then
+              echo "::error::failed to patch PyApp runtime aliases"
+              exit 1
+            fi
+          fi
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # PyApp source (and its Cargo.lock) is fetched in the previous step,
+          # so the cache key reflects the pinned dependency tree. Scope by
+          # target triple so the parallel matrix jobs don't clobber each other.
+          key: ${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: Resolve Python distribution
+        shell: bash
+        run: |
+          # PyApp's build.rs pins one python-build-standalone URL per platform.
+          # Read it back out so the offline distribution is built on exactly the
+          # interpreter the binary ships.
+          #
+          # Linux always takes the glibc build.  The musl Rust target makes the
+          # launcher itself dependency-free, but python-build-standalone's musl
+          # distribution is dynamically linked against musl (PT_INTERP
+          # /lib/ld-musl-x86_64.so.1), so it runs on Alpine and nowhere else;
+          # its statically linked +static variant cannot dlopen extension
+          # modules at all.  The glibc distribution only needs GLIBC_2.17 —
+          # CentOS 7 and Ubuntu 14.04 era.  The "Build offline distribution"
+          # step below enforces the advertised floor (2.17, or the matrix
+          # glibc_floor override) over every ELF object that lands in the
+          # bundle and fails the leg on any excess.
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl)  triple="x86_64-unknown-linux-gnu" ;;
+            aarch64-unknown-linux-musl) triple="aarch64-unknown-linux-gnu" ;;
+            *)                          triple="${{ matrix.target }}" ;;
+          esac
+          url=$(grep -o "https://[^\"]*-${triple}-install_only_stripped[^\"]*" build.rs \
+                | grep "cpython-${PYAPP_PYTHON_VERSION}" | head -1)
+          if [ -z "$url" ]; then
+            echo "::error::no python-build-standalone URL for ${triple} in build.rs"
+            exit 1
+          fi
+          url="${url//%2B/+}"
+          echo "CHRYS_DIST_URL=$url" >> "$GITHUB_ENV"
+          echo "Python distribution: $url"
+          if [ "${{ matrix.installer }}" != "offline" ] && [[ "${{ matrix.target }}" == *-musl ]]; then
+            # Offline builds embed the distribution as a file instead, and
+            # build.rs panics if a path and a source are both set.
+            echo "PYAPP_DISTRIBUTION_SOURCE=$url" >> "$GITHUB_ENV"
+          fi
+
+      - name: Resolve wheel filename
+        id: wheel
+        shell: bash
+        run: echo "filename=$(ls *.whl)" >> "$GITHUB_OUTPUT"
+
+      - name: Build offline distribution
+        if: matrix.installer == 'offline'
+        shell: bash
+        env:
+          # aarch64 carries a 2.18 floor: ripgrep publishes no static musl
+          # build for it and the gnu binary needs GLIBC_2.18.  Unset legs use
+          # the script default (2.17).
+          OFFLINE_GLIBC_FLOOR: ${{ matrix.glibc_floor || '' }}
+        run: |
+          repo/scripts/build_offline_dist.sh \
+            --dist-url "$CHRYS_DIST_URL" \
+            --wheel "$PWD/${{ steps.wheel.outputs.filename }}" \
+            --output "$PWD/chrys-offline-dist.tar.gz"
+          # PYAPP_DISTRIBUTION_PATH embeds the archive as-is and PYAPP_SKIP_INSTALL
+          # reduces the first run to unpacking it.  The interpreter and
+          # site-packages paths are relative to PATH_PREFIX, which build.rs
+          # prepends for us.
+          {
+            echo "PYAPP_DISTRIBUTION_PATH=chrys-offline-dist.tar.gz"
+            echo "PYAPP_DISTRIBUTION_PATH_PREFIX=python"
+            echo "PYAPP_SKIP_INSTALL=true"
+            if [ "${{ matrix.platform }}" = "windows" ]; then
+              echo "PYAPP_DISTRIBUTION_PYTHON_PATH=python.exe"
+              echo "PYAPP_DISTRIBUTION_SITE_PACKAGES_PATH=Lib/site-packages"
+            else
+              echo "PYAPP_DISTRIBUTION_PYTHON_PATH=bin/python3"
+              echo "PYAPP_DISTRIBUTION_SITE_PACKAGES_PATH=lib/python${PYAPP_PYTHON_VERSION}/site-packages"
+            fi
+          } >> "$GITHUB_ENV"
+
+      - name: Determine binary and artifact names
+        id: name
+        shell: bash
+        run: |
+          base="${{ matrix.artifact }}"
+          version="v${PROJECT_VERSION}"
+          if [[ "$base" == *.exe ]]; then
+            echo "binary=icode.exe" >> "$GITHUB_OUTPUT"
+            echo "artifact=${base%.exe}-${version}-${{ matrix.installer }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "binary=icode" >> "$GITHUB_OUTPUT"
+            echo "artifact=${base}-${version}-${{ matrix.installer }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build binary
+        shell: bash
+        env:
+          PYAPP_PROJECT_NAME: chrys
+          PYAPP_PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
+          PYAPP_EXEC_SPEC: "chrys.app.cli.app:pyapp_main"
+          PYAPP_SELF_COMMAND: "self"
+          PYAPP_PASS_LOCATION: "true"
+          # FULL_ISOLATION runs the unpacked interpreter directly instead of
+          # building a virtualenv around it — required for the offline flavor,
+          # where the bundled site-packages is the one that must be used.
+          PYAPP_FULL_ISOLATION: ${{ matrix.installer != 'uv' && 'true' || '' }}
+          # The offline flavor gets its distribution options from the step above.
+          # These embed the wheel and install its dependencies on first run.
+          PYAPP_PROJECT_PATH: ${{ matrix.installer != 'offline' && steps.wheel.outputs.filename || '' }}
+          PYAPP_PROJECT_FEATURES: ${{ matrix.installer != 'offline' && 'tui,observability,doc_converter' || '' }}
+          PYAPP_PIP_ALLOW_CONFIG: ${{ matrix.installer != 'offline' && 'true' || '' }}
+          PYAPP_DISTRIBUTION_EMBED: ${{ matrix.installer != 'offline' && 'true' || '' }}
+          PYAPP_UV_ENABLED: ${{ matrix.installer == 'uv' && 'true' || '' }}
+          PYAPP_DISTRIBUTION_PIP_AVAILABLE: ${{ matrix.installer == 'pip' && 'true' || '' }}
+        run: |
+          if [ "${{ matrix.use-cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package binary
+        shell: bash
+        run: |
+          src="target/${{ matrix.target }}/release/pyapp"
+          [[ "${{ matrix.target }}" == *windows* ]] && src="${src}.exe"
+          cp "$src" "${{ steps.name.outputs.binary }}"
+
+      - name: Smoke test without network
+        if: matrix.installer == 'offline'
+        shell: bash
+        env:
+          # Point every proxy at a closed port: anything that reaches for the
+          # network fails loudly instead of silently working on the runner.
+          HTTP_PROXY: http://127.0.0.1:1
+          HTTPS_PROXY: http://127.0.0.1:1
+          ALL_PROXY: http://127.0.0.1:1
+          NO_PROXY: ""
+        run: |
+          binary="./${{ steps.name.outputs.binary }}"
+          echo "--- first run (unpacks the bundled distribution) ---"
+          time "$binary" --version
+          echo "--- warm run ---"
+          time "$binary" --version
+          "$binary" serve --help > /dev/null
+          "$binary" acp --help > /dev/null
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.name.outputs.artifact }}
+          path: ${{ steps.name.outputs.binary }}
+
+  # ── Create GitHub Release (tag pushes only) ─────────────────────────
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.ref, 'v')
+    needs: [build-wheel, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir release
+          # Archive binaries: tar.gz for Linux/macOS, zip for Windows
+          # Binary inside the archive is "icode" (or "icode.exe");
+          # the archive filename carries the platform/arch/installer info.
+          for dir in artifacts/icode-*/; do
+            [ -d "$dir" ] || continue
+            artifact=$(basename "$dir")
+            if [ -f "$dir/icode.exe" ]; then
+              (cd "$dir" && zip -q "$OLDPWD/release/${artifact}.zip" "icode.exe")
+            elif [ -f "$dir/icode" ]; then
+              tar -czf "release/${artifact}.tar.gz" -C "$dir" "icode"
+            fi
+          done
+          cp artifacts/wheel/*.whl release/
+          cd release && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ inputs.ref || github.ref_name }}
+          generate_release_notes: true
+          files: release/*

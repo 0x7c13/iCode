@@ -1,0 +1,198 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Narrow migration ports for chat transcript collaborators."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any, Protocol, Self
+
+from rich.text import Text
+from textual._arrange import DockArrangeResult
+from textual.geometry import Offset, Region, Size
+from textual.timer import Timer
+from textual.widget import Widget
+
+from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
+from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.foundation.i18n import MessageRef
+
+
+class TranscriptLocalizationPort(Protocol):
+    """Mount-time localization used by live and replay transcript renderers."""
+
+    def render(self, reference: MessageRef) -> str: ...
+
+
+class ChatMountPort(Protocol):
+    """Mounting operations exposed to staged transcript collaborators."""
+
+    async def mount_transcript_widget(self, widget: Widget) -> bool:
+        """Mount one widget and report whether it remained attached."""
+        ...
+
+    async def mount_transcript_widgets(self, widgets: list[Widget]) -> None: ...
+
+    async def remove_transcript_widget(self, widget: Widget) -> None: ...
+
+    def call_after_refresh(self, callback: Callable[..., object], *args: Any, **kwargs: Any) -> bool: ...
+
+
+class TranscriptUiPort(Protocol):
+    """Temporary facade for transcript lifecycle behavior during extraction."""
+
+    async def dismiss_welcome_for_content(self) -> None: ...
+
+    def on_live_user_turn_started(self) -> None: ...
+
+    def on_replay_started(self) -> None: ...
+
+    def scroll_user_message_to_top(self, widget: Widget) -> None: ...
+
+    def on_final_response_started(self) -> None: ...
+
+    def schedule_anchor_sync(self) -> None: ...
+
+    def on_status_message_mounted(self) -> None: ...
+
+    def scroll_inline_prompt_to_top_after_refresh(self, widget: Widget) -> None: ...
+
+    def on_inline_prompt_resized(self, group: ToolGroup | None) -> None: ...
+
+    def after_replay_history_mounted(self) -> None: ...
+
+
+class StatusCleanupPort(Protocol):
+    """Mounted-child status cleanup operations."""
+
+    async def remove_trailing_status(self) -> None: ...
+
+    def failed_turn_status(self) -> Widget | None:
+        """Find a trailing failure past context notices, but never newer user input."""
+        ...
+
+    def preceding_content(self, widget: Widget) -> Widget | None:
+        """Return the adjacent predecessor, skipping chrome but not system notices."""
+        ...
+
+
+class ChatWidgetQueryPort(Protocol):
+    """Read-only mounted widget queries used by chat collaborators."""
+
+    def mounted_tool_groups(self) -> list[ToolGroup]: ...
+
+    def mounted_agent_messages(self) -> list[AgentMessage]: ...
+
+    def mounted_user_messages(self) -> list[UserMessage]: ...
+
+    def direct_children(self) -> list[Widget]: ...
+
+    def transcript_content_children(self) -> list[Widget]: ...
+
+
+class ChatChromeHost(Protocol):
+    """Textual/chrome effects used by future ChatPanelChrome."""
+
+    profile_name: str
+    workspace_cwd: str
+
+    def set_border_title(self, title: Text | None) -> None: ...
+
+    def set_border_subtitle(self, subtitle: Text | None) -> None: ...
+
+    def border_region(self) -> Region: ...
+
+    def has_border_subtitle(self) -> bool: ...
+
+    def is_ask_user_interactive_target(self, target: object) -> bool: ...
+
+    def post_title_clicked(self) -> None: ...
+
+    def post_working_dir_clicked(self) -> None: ...
+
+
+class ChatScrollHost(Protocol):
+    """Textual-private scroll/layout adapter surface."""
+
+    @property
+    def scroll_y(self) -> float: ...
+
+    @scroll_y.setter
+    def scroll_y(self, value: float) -> None: ...
+
+    @property
+    def max_scroll_y(self) -> int: ...
+
+    @property
+    def size(self) -> Size: ...
+
+    @property
+    def virtual_size(self) -> Size: ...
+
+    @property
+    def scrollbar_size_horizontal(self) -> int: ...
+
+    def call_super_arrange(self, size: Size, *, optimal: bool = False) -> DockArrangeResult: ...
+
+    def call_super_scroll_to_region(self, region: Region, **kwargs: Any) -> Offset: ...
+
+    def call_super_size_updated(
+        self,
+        size: Size,
+        virtual_size: Size,
+        container_size: Size,
+        layout: bool,
+    ) -> bool: ...
+
+    def call_super_watch_scroll_y(self, old_value: float, new_value: float) -> None: ...
+
+    def is_anchored(self) -> bool: ...
+
+    def is_anchor_released(self) -> bool: ...
+
+    def set_anchor_released(self, released: bool) -> None: ...
+
+    def anchor(self) -> None: ...
+
+    def set_scroll_y_reactive(self, y: float) -> None: ...
+
+    def set_scroll_target_y_reactive(self, y: float) -> None: ...
+
+    def set_scroll_target_y(self, y: float) -> None: ...
+
+    def get_container_size(self) -> Size: ...
+
+    def set_container_size(self, size: Size) -> None: ...
+
+    def apply_held_shrink_size_update(self, size: Size, container_size: Size) -> bool: ...
+
+    def place_fixed_scroll_button(self, result: DockArrangeResult, size: Size) -> None: ...
+
+    def bottom_spacer(self) -> Widget | None: ...
+
+    def scroll_to_bottom_button(self) -> Widget | None: ...
+
+    def set_screen_scroll_required_and_check_idle(self) -> None: ...
+
+    def scroll_end(self, *, animate: bool = False, immediate: bool = False) -> object: ...
+
+    def scroll_to_widget_top(self, widget: Widget) -> None: ...
+
+    def call_after_refresh(self, callback: Callable[..., object], *args: Any, **kwargs: Any) -> bool: ...
+
+    def refresh(self, *, layout: bool = False) -> Self: ...
+
+    def set_timer(self, delay: float, callback: Callable[[], object]) -> Timer: ...
+
+
+class ChatTranscriptPanelMarker:
+    """Nominal marker base identifying the chat transcript panel.
+
+    Chat helper modules must not import :mod:`chrys.app.tui.widgets.chat.panel`
+    (see ``tests/architecture/test_tui_structure.py``). Helpers that need to
+    recognize the transcript panel among a widget's ancestors — e.g. the
+    selection controller's hot per-mouse-move filter — check this base with a
+    plain ``isinstance`` instead of importing the concrete ``ChatPanel``.
+    """
+
+    __slots__ = ()

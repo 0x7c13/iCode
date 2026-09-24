@@ -1,0 +1,452 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Current-turn drop round execution and cancellation-drained spilling."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
+
+from chrys.foundation.models.turns import is_continuation_message
+from chrys.foundation.trajectory.metadata import read_analytics_item_id
+from chrys.kernel import Message, annotate_token_counts, included_token_count, set_excluded
+from chrys.service.agent_middleware.system_reminder import ManifestEntry
+
+from .breaker import DropBreakerController
+from .events import _REASON_CURRENT_TURN_DROP, CompactionInfo
+from .exclusions import ExclusionLedger
+from .groups import _tool_call_name
+from .last_words import LastWordsSpendBudgetExceeded
+from .scoped import ScopedGroup, build_scoped_group_timeline
+from .spill import SpillBatchResult, SpillManifestItem, SpillQuota, turn_directory_name, write_spill_batch
+from .turns import _resolve_turns
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from chrys.kernel import CompactionCallContext
+
+    from .strategy import LastWordsGeneratorLike, UnifiedContextStrategy
+
+_log = logging.getLogger(__name__)
+
+
+def _consumed_item_ids(groups: Sequence[ScopedGroup]) -> list[str]:
+    """Return the ordered unique stable ids represented by Phase-4 groups."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for group in groups:
+        for message in group.messages:
+            candidates = [
+                read_analytics_item_id(message.additional_properties),
+                *(read_analytics_item_id(content.additional_properties) for content in message.contents),
+            ]
+            for item_id in candidates:
+                if item_id is not None and item_id not in seen:
+                    seen.add(item_id)
+                    ordered.append(item_id)
+    return ordered
+
+
+async def _write_spill_batch_in_worker(
+    session_root: Path | None,
+    quota: SpillQuota | None,
+    groups: Sequence[ScopedGroup],
+    *,
+    record_dir: Path,
+    absolute_turn: int,
+    round_number: int,
+    session_id: str,
+    superseded_note: str | None = None,
+) -> SpillBatchResult:
+    """Run one spill batch without letting cancellation orphan its writes.
+
+    ``asyncio.to_thread`` cannot stop a thread when its awaiting task is
+    cancelled. Drain the owned worker before propagating cancellation so a
+    session reset/restore cannot replace the quota lock or mutate the session
+    directory while the old batch is still running.
+    """
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            write_spill_batch,
+            session_root,
+            quota,
+            groups,
+            record_dir=record_dir,
+            absolute_turn=absolute_turn,
+            round_number=round_number,
+            session_id=session_id,
+            superseded_note=superseded_note,
+        )
+    )
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Repeated interrupts must not detach the same worker. Each shield is
+        # a fresh waiter; the underlying task remains owned until it settles.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled():
+            try:
+                worker.result()
+            except Exception:
+                _log.debug("Spill worker failed while its caller was cancelled", exc_info=True)
+        raise
+
+
+class CurrentTurnDropRound:
+    """Execute the final current-turn drop stage against live strategy state."""
+
+    def __init__(
+        self,
+        strategy: UnifiedContextStrategy,
+        breaker: DropBreakerController,
+        ledger: ExclusionLedger,
+    ) -> None:
+        self._strategy = strategy
+        self._breaker = breaker
+        self._ledger = ledger
+
+    async def _generate_last_words(
+        self,
+        timeline_groups: list[ScopedGroup],
+        previous: str | None,
+        *,
+        degraded_opener: bool,
+        has_continuation_nudges: bool,
+        context: CompactionCallContext | None,
+    ) -> str:
+        # max() folds the retained legacy ``tool_definition_tokens`` spelling.
+        request_overhead_tokens = (
+            max(context.request_overhead_tokens, context.tool_definition_tokens) if context is not None else 0
+        )
+        failure_recorded = False
+        try:
+            new_last_words = await cast("LastWordsGeneratorLike", self._strategy._last_words_generator).generate(
+                timeline_groups,
+                previous,
+                degraded_opener=degraded_opener,
+                has_continuation_nudges=has_continuation_nudges,
+                completer=context.last_words_completer if context is not None else None,
+                tokenizer=self._strategy._tokenizer,
+                system_overhead_tokens=self._strategy._system_overhead,
+                request_overhead_tokens=request_overhead_tokens,
+                calibration_ratio=self._strategy._calibration_ratio,
+                spend_side_call_tokens=self._breaker.spend_side_call_tokens,
+            )
+        except LastWordsSpendBudgetExceeded:
+            breaker = self._breaker.record_no_progress("side_call_budget")
+            if breaker is not None and not breaker.disabled:
+                disabled = replace(breaker, disabled=True)
+                cast("Any", self._strategy._reminder_middleware).set_drop_round_breaker(disabled)
+                self._breaker.emit_context_pressure("side_call_budget", disabled)
+            failure_recorded = True
+            _log.warning("Phase 4 side-call spend budget exhausted; retaining current-turn groups")
+            new_last_words = ""
+        except Exception:
+            self._breaker.record_no_progress("generation_failure")
+            raise
+        if not new_last_words and not failure_recorded:
+            self._breaker.record_no_progress("generation_failure")
+        return new_last_words
+
+    async def _spill_drop_groups(
+        self,
+        drop_groups: list[ScopedGroup],
+        *,
+        absolute_turn: int,
+        round_number: int,
+        previous: str | None,
+    ) -> tuple[SpillBatchResult, bool]:
+        record_dir = self._strategy._spill_record_dir / turn_directory_name(absolute_turn)
+        spill_result = await _write_spill_batch_in_worker(
+            self._strategy._spill_root,
+            self._strategy._spill_quota,
+            drop_groups,
+            record_dir=record_dir,
+            absolute_turn=absolute_turn,
+            round_number=round_number,
+            session_id=self._strategy._spill_session_id,
+            # The merge that authorized this drop replaces
+            # ``previous``; archive that pre-merge original
+            # verbatim alongside the round's group records.
+            superseded_note=previous or None,
+        )
+        spill_permitted = True
+        if spill_result.unexpected_io_failure:
+            spill_permitted = False
+            if self._strategy._persist_recovery_now is not None:
+                try:
+                    spill_permitted = (await self._strategy._persist_recovery_now()) is True
+                except Exception:
+                    _log.warning(
+                        "Phase 4 recovery persistence failed after spill I/O error",
+                        exc_info=True,
+                    )
+            if not spill_permitted:
+                self._breaker.record_no_progress("spill_abort")
+                _log.warning("Phase 4 spill I/O failure was not durably checkpointed; retaining groups")
+        return spill_result, spill_permitted
+
+    async def run(
+        self,
+        messages: list[Message],
+        context: CompactionCallContext | None,
+    ) -> bool:
+        """Run one Phase-4 pipeline stage."""
+        changed = False
+
+        # ---- Phase 4: Drop ALL current-turn tool calls + inline agent text ----
+        # One shot: collect every current-turn group that is still included,
+        # hand them to the LAST_WORDS LLM summariser, exclude them, and set
+        # the updated note on the reminder middleware so it's appended to
+        # the user message on every subsequent LLM call until the turn ends.
+        # Generator failures (SDK error, empty response) are retried inside
+        # the generator against the same LAST_WORDS prompt — we never drop
+        # current-turn work without a note in hand.
+        p4_count = 0
+        p4_tool_names: list[str] = []
+        p4_consumed_item_ids: list[str] = []
+        p4_last_words_generated = False
+        p4_tokens_before = included_token_count(messages)
+
+        if self._strategy._usage_pct(p4_tokens_before) > self._strategy.target_pct:
+            # Resolve fresh at this call site against the post-P3 lists.
+            resolved = _resolve_turns(messages, self._strategy._state)
+            current_span = resolved.current
+            current_turn = (current_span.start, current_span.end) if current_span is not None else (0, len(messages))
+            timeline = build_scoped_group_timeline(
+                messages,
+                span_start=current_turn[0],
+                span_end=current_turn[1],
+                degraded=resolved.degraded,
+            )
+            current_groups = [group.group_id for group in timeline.groups if group.kind not in ("user", "system")]
+
+            # Phase 4 only fires when there is at least one tool-call group
+            # to drop — otherwise there is nothing meaningful to summarise
+            # and dropping plain assistant text alone would lose content
+            # without replacing it.
+            has_tool_call = any(group.kind == "tool_call" for group in timeline.groups)
+
+            if current_groups and has_tool_call:
+                if self._strategy._last_words_generator is None or self._strategy._reminder_middleware is None:
+                    _log.warning(
+                        "Phase 4 SKIPPED drop: fresh-note collaborators unbound "
+                        "(reminder_middleware=%s, last_words_generator=%s)",
+                        "bound" if self._strategy._reminder_middleware is not None else "None",
+                        "bound" if self._strategy._last_words_generator is not None else "None",
+                    )
+                else:
+                    # Step 1: synchronous entry check and attempt count, before
+                    # hooks, preflight, or either side-call path.
+                    breaker_at_entry, trip_reason = self._breaker.enter_round()
+                    if breaker_at_entry is None:
+                        await self._breaker.publish_trip(trip_reason)
+                    else:
+                        entry_usage_pct = self._strategy._usage_pct(p4_tokens_before)
+                        await self._strategy._fire_pre_compact(
+                            "phase4",
+                            usage_pct=entry_usage_pct,
+                            tokens_before=p4_tokens_before,
+                        )
+                        drop_groups = [group for group in timeline.groups if group.kind not in ("user", "system")]
+                        p4_consumed_item_ids = _consumed_item_ids(drop_groups)
+                        for group in drop_groups:
+                            if group.kind == "tool_call":
+                                p4_tool_names.extend(
+                                    tool_name
+                                    for message in group.messages
+                                    for content in message.contents
+                                    if (tool_name := _tool_call_name(content))
+                                )
+
+                        # Step 2: only a non-empty note produced by THIS round
+                        # authorizes the later drop. A stale note is inherited
+                        # input, never authorization for a new delta.
+                        previous = self._strategy._reminder_middleware.get_last_words()
+                        has_continuation_nudges = any(
+                            is_continuation_message(message) for group in timeline.groups for message in group.messages
+                        )
+                        new_last_words = await self._generate_last_words(
+                            list(timeline.groups),
+                            previous,
+                            degraded_opener=timeline.degraded_opener,
+                            has_continuation_nudges=has_continuation_nudges,
+                            context=context,
+                        )
+
+                        if new_last_words:
+                            # Step 3: worker-thread spill, including catalog
+                            # append+flush and catalog-only manifest projection.
+                            absolute_turn = current_span.absolute_number if current_span is not None else 1
+                            spill_result, spill_permitted = await self._spill_drop_groups(
+                                drop_groups,
+                                absolute_turn=absolute_turn,
+                                round_number=breaker_at_entry.attempts,
+                                previous=previous,
+                            )
+
+                            if spill_permitted:
+                                manifest_entries = [self._manifest_entry(item) for item in spill_result.entries]
+
+                                # Steps 4-5: synchronous commit through
+                                # exclusion and the post-round usage sample.
+                                # Do not insert an await anywhere in this block.
+                                self._strategy._reminder_middleware.mark_manifest_records_unavailable(
+                                    spill_result.evicted_relative_paths
+                                )
+                                self._strategy._reminder_middleware.set_last_words(new_last_words)
+                                self._strategy._reminder_middleware.append_manifest(manifest_entries)
+                                p4_last_words_generated = True
+                                self._strategy._reminder_middleware.refresh_last_words_reminder(messages)
+                                annotate_token_counts(
+                                    messages,
+                                    tokenizer=self._strategy._tokenizer,
+                                    force_retokenize=True,
+                                )
+                                changed = True
+
+                                for group in drop_groups:
+                                    any_changed = False
+                                    for message in group.messages:
+                                        any_changed = (
+                                            set_excluded(
+                                                message,
+                                                excluded=True,
+                                                reason=_REASON_CURRENT_TURN_DROP,
+                                            )
+                                            or any_changed
+                                        )
+                                    if any_changed:
+                                        self._ledger._removed_group_ids.add(group.group_id)
+                                        p4_count += 1
+                                post_p4_tokens = included_token_count(messages)
+                                self._breaker.record_progress(
+                                    entry_usage_pct,
+                                    self._strategy._usage_pct(post_p4_tokens),
+                                )
+                                # Anchor/token bookkeeping must also land
+                                # inside the synchronous commit: the awaits
+                                # that follow (committed publish,
+                                # on_compaction) honor cancellation, and an
+                                # interrupt that observed exclusions without
+                                # anchors would resume retaining both the
+                                # original history and the note.
+                                self._strategy._last_included_tokens = post_p4_tokens
+                                self._ledger.snapshot_excluded_anchors(messages)
+                                # The round is now durably applied; tell
+                                # observers that count real compactions
+                                # (the finished-ok signal fired pre-commit
+                                # and can belong to an abandoned round).
+                                try:
+                                    await self._strategy._last_words_generator.publish_committed()
+                                except asyncio.CancelledError:
+                                    # The commit above is durable, but the
+                                    # end-of-pass on_compaction notification
+                                    # (ToolCompacted for the main agent)
+                                    # would be skipped by the cancellation —
+                                    # deliver it on a detached task before
+                                    # propagating, covering the rounds
+                                    # committed so far this pass.
+                                    self._schedule_detached_on_compaction(
+                                        CompactionInfo(
+                                            compacted_groups=p4_count,
+                                            phase="phase4",
+                                            turn_numbers=[current_span.absolute_number]
+                                            if current_span is not None
+                                            else [],
+                                            tool_names=p4_tool_names,
+                                            tokens_before=p4_tokens_before,
+                                            tokens_after=post_p4_tokens,
+                                            last_words_generated=True,
+                                            consumed_item_ids=p4_consumed_item_ids,
+                                        )
+                                    )
+                                    raise
+
+            if p4_count > 0 or p4_last_words_generated:
+                # The rounds this reports are already durably committed, so
+                # the delivery itself must survive cancellation for the
+                # whole await window, not just inside publish_committed
+                # above: run it as an anchored task behind a shield —
+                # cancellation still propagates to the caller, but the
+                # ToolCompacted delivery finishes detached.
+                delivery = self._schedule_detached_on_compaction(
+                    CompactionInfo(
+                        compacted_groups=p4_count,
+                        phase="phase4",
+                        turn_numbers=[current_span.absolute_number] if current_span is not None else [],
+                        tool_names=p4_tool_names,
+                        tokens_before=p4_tokens_before,
+                        tokens_after=included_token_count(messages),
+                        last_words_generated=p4_last_words_generated,
+                        consumed_item_ids=p4_consumed_item_ids,
+                    )
+                )
+                await asyncio.shield(delivery)
+
+        return changed
+
+    @staticmethod
+    def _manifest_entry(item: SpillManifestItem) -> ManifestEntry:
+        return ManifestEntry(
+            record_id=item.record_id,
+            group_id=item.group_id,
+            record_dir=item.record_dir,
+            relative_path=item.relative_path,
+            turn=item.turn,
+            round=item.round,
+            sequence=item.sequence,
+            tool=item.tool,
+            display_argument=item.display_argument,
+            outcome=item.outcome,
+            size_chars=item.size_chars,
+            assistant_text=item.assistant_text,
+            available=item.available,
+            no_record_reason=item.no_record_reason,
+        )
+
+    def _schedule_detached_on_compaction(self, info: CompactionInfo) -> asyncio.Future:
+        """Record the phase now; hand the observer callback to a detached task.
+
+        The pass around this call can close its run before a task started here
+        gets to write — it may not have run at all yet, or be waiting on the
+        ack of the phase's opening line while the pass unwinds — and the phase
+        (or the tail of a segmented one) would land behind the run's own
+        terminal marker. Queued here it cannot.
+        """
+        run = self._strategy._trajectory_run
+        if run is not None:
+            run.phase_finished_soon(
+                phase=info.phase,
+                groups_compacted=info.compacted_groups,
+                turn_numbers=info.turn_numbers,
+                tool_names=info.tool_names,
+                tokens_before=info.tokens_before,
+                tokens_after=info.tokens_after,
+                last_words_generated=info.last_words_generated,
+                consumed_item_ids=info.consumed_item_ids,
+            )
+        # No run: the phase above already carries it, and only the observer
+        # callback is left to deliver.
+        task = asyncio.ensure_future(self._strategy._notify_compaction_for_run(info, None))
+        self._strategy._detached_deliveries.add(task)
+        task.add_done_callback(self._discard_detached_delivery)
+        return task
+
+    def _discard_detached_delivery(self, task: asyncio.Future) -> None:
+        self._strategy._detached_deliveries.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            _log.debug("Detached on_compaction delivery failed", exc_info=exc)

@@ -1,0 +1,87 @@
+SessionsScreen {
+    align: center middle;
+}
+
+SessionsScreen > #container {
+    width: 85%;
+    max-width: 120;
+    height: 80%;
+    background: $surface;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+    overflow-x: hidden;
+}
+
+SessionsScreen > #container.-empty {
+    width: 50%;
+    max-width: 60;
+    height: auto;
+    max-height: 30%;
+}
+
+SessionsScreen > #container > #empty-note {
+    width: 100%;
+    display: none;
+}
+
+SessionsScreen > #container > #sessions-loading-state {
+    width: 100%;
+    height: 1fr;
+    min-height: 3;
+    align: center middle;
+}
+
+SessionsScreen > #container > #sessions-loading-state > #sessions-loading {
+    width: 12;
+    height: 1;
+    color: $primary;
+}
+
+SessionsScreen > #container > DataTable {
+    width: 100%;
+    height: 1fr;
+    min-height: 3;
+    scrollbar-size: 1 1;
+}
+
+SessionsScreen > #container > #footer {
+    height: 3;
+}
+
+SessionsScreen > #container > #footer > #search-box {
+    width: 1fr;
+    height: 3;
+    margin: 0 1 0 1;
+    /* Same themed border as the ask_user answer input. */
+    border: round $tui-border-accent $border-opacity;
+}
+
+SessionsScreen > #container > #footer > #search-box > #search {
+    width: 1fr;
+    padding: 0 1;
+    /* $panel tracks the theme (gray on dark themes, light gray on light
+       themes) — $boost is a translucent overlay that vanished against the
+       dialog surface. */
+    background: $panel;
+}
+
+SessionsScreen > #container > #footer > #search-box > #search:focus {
+    background-tint: $foreground 10%;
+}
+
+SessionsScreen > #container > #footer > #buttons {
+    dock: none;
+    width: auto;
+    align: right top;
+    height: 3;
+    padding: 0 1;
+}
+
+SessionsScreen > #container > #footer > #buttons > Button {
+    margin: 0 1;
+}
+
+SessionsScreen > #container > #footer > #buttons > #cancel {
+    margin-right: 0;
+}

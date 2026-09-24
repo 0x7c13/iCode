@@ -1,0 +1,43 @@
+SessionTitleDialog {
+    align: center middle;
+}
+
+#session-title-container {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    min-height: 10;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+}
+
+#session-title-inner {
+    width: 100%;
+    height: auto;
+    min-height: 7;
+    background: $surface;
+    padding: 1 2 0 2;
+}
+
+#session-title-hint {
+    width: 100%;
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#session-title-input {
+    width: 100%;
+}
+
+#session-title-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1 0 1;
+}
+
+#session-title-buttons > Button {
+    margin: 0 1;
+}

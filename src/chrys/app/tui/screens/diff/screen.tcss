@@ -1,0 +1,104 @@
+/* DiffScreen — full-screen diff viewer layout. */
+
+DiffScreen {
+    layout: vertical;
+    background: $background;
+}
+
+#diff-container {
+    height: 1fr;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-subtitle-color: $primary;
+    background: $surface;
+}
+
+#diff-container > #diff-loading-state {
+    width: 100%;
+    height: 1fr;
+    align: center middle;
+}
+
+#diff-container > #diff-loading-state > #diff-loading {
+    width: 12;
+    height: 1;
+    color: $primary;
+}
+
+#diff-container > .diff-screen-content {
+    width: 100%;
+    height: 1fr;
+}
+
+#diff-container > .diff-screen-content > TabbedContent {
+    height: 1fr;
+}
+
+#diff-load-error {
+    width: 100%;
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+    color: $error;
+    padding: 0 1;
+}
+
+DiffScreen TabPane {
+    height: 1fr;
+    padding: 0;
+}
+
+DiffPeriodPane {
+    height: 1fr;
+}
+
+.diff-body {
+    height: 1fr;
+}
+
+.diff-changelist {
+    width: 1fr;
+    max-width: 25%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary 90%;
+    border-subtitle-color: $primary 90%;
+}
+
+.diff-changelist Tree {
+    scrollbar-size-vertical: 1;
+}
+
+.diff-changelist .workspace-tree {
+    height: 1fr;
+}
+
+.diff-changelist .external-tree {
+    height: auto;
+    max-height: 50%;
+    border-top: solid $tui-border-primary 30%;
+}
+
+.diff-content {
+    width: 3fr;
+    height: 1fr;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary 90%;
+    border-subtitle-color: $primary 90%;
+}
+
+.diff-content DiffView {
+    height: 1fr;
+}
+
+.diff-content .diff-message {
+    width: 1fr;
+    height: 1fr;
+    content-align: center middle;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* Narrow DiffView vertical scrollbar to 1 cell */
+DiffScreen CodeColumn {
+    scrollbar-size: 1 1;
+}

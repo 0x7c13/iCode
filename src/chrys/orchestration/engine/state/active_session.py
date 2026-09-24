@@ -1,0 +1,157 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Active session state and its derived filesystem paths."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
+
+from chrys.foundation.models.workspace import Workspace
+from chrys.orchestration.session_resources import SessionResources
+from chrys.service.approval.policy import ApprovalMode
+from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+
+if TYPE_CHECKING:
+    from chrys.orchestration.engine.build.construction import StagedBuild
+    from chrys.service.mutations.tracker import MutationTracker
+    from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.session.persistence import SessionPersistence
+    from chrys.service.todos.tracker import TodoTracker
+
+
+class ActiveSession(SessionResources[SessionRuntimeMetadata]):
+    """Hold the active session's identity, bookkeeping, and lock ownership."""
+
+    def __init__(
+        self,
+        *,
+        persistence: SessionPersistence,
+        workspace: Workspace | None,
+        approval_mode: ApprovalMode | None,
+    ) -> None:
+        super().__init__(
+            persistence=persistence,
+            runtime_meta=SessionRuntimeMetadata(),
+            workspace=workspace,
+        )
+        # Launch policy survives session resets and is never restored from checkpoints.
+        self.approval_mode = approval_mode or ApprovalMode.MANUAL
+        self.agent_profile: AgentProfile | None = None
+        self.shutting_down: bool = False
+        self.turn_number: int = 0
+        self.todo_tracker: TodoTracker | None = None
+        # Set only by a per-session ACP model switch (SetModelProfile). When True,
+        # SettingsReload keeps the live ``settings.model_profile`` instead of
+        # reverting to the global env default. The TUI never sets this (it persists
+        # CHRYS_MODEL_PROFILE to .env and relies on SettingsReload re-reading env),
+        # so its behavior is unchanged.
+        self.model_profile_pinned: bool = False
+        # Set via ``pin_ask_user_timeout`` when the caller owns
+        # ``ask_user_timeout_seconds`` out-of-band (ACP injects it via
+        # dataclasses.replace at launch, not env). When True, SettingsReload
+        # preserves the live value instead of reverting to the env default; TUI/CLI
+        # leave it False so a changed CHRYS_ASK_USER_TIMEOUT_SECONDS takes effect.
+        self.ask_user_timeout_pinned: bool = False
+        self.recovered_from_sidecar: bool = False
+        # When True, ``_save_current_session`` is a no-op.  Set by the
+        # rollback handler immediately before it calls the session
+        # restore path, which would otherwise call ``shutdown()`` →
+        # ``_save_current_session()`` and clobber the just-swapped
+        # ``session.json`` with the in-memory pre-rollback state.
+        self.suppress_save: bool = False
+        # ``session_end`` fires once per session: normally from ``shutdown()``,
+        # but earlier when the live session is deleted underneath the engine
+        # (clear / delete-current), so hooks still see the id and the files.
+        self.session_end_fired = False
+        # Background outbox-recovery task kicked off in ``start()``.
+        # Held here so it isn't garbage-collected mid-run (asyncio only
+        # weak-refs tasks created via ``create_task``).
+        self.outbox_recovery_task: asyncio.Task[int] | None = None
+
+    def begin(self, *, agent_profile: AgentProfile, workspace: Workspace | None) -> None:
+        """Initialize the identity and defaults for a session start."""
+        self.session_end_fired = False
+        self.agent_profile = agent_profile
+        if self.workspace is None and workspace is None:
+            # A fresh default, not a candidate: with no live workspace there is
+            # nothing a failed build could corrupt, and error paths after such a
+            # failure have always been able to read the ambient root from here.
+            self.workspace = Workspace.from_cwd()
+        if self.session_id is None:
+            from uuid import uuid4
+
+            self.session_id = str(uuid4())
+
+    def install_build(
+        self, staged: StagedBuild, *, mutation_tracker: MutationTracker | None, todo_tracker: TodoTracker | None
+    ) -> None:
+        """Install the session fields belonging to a completed build."""
+        self.agent_profile = staged.agent_profile
+        self.workspace = staged.workspace
+        self.hook_manager = staged.hook_manager
+        self.mutation_coordinator = staged.mutation_coordinator
+        if mutation_tracker is not None:
+            self.mutation_tracker = mutation_tracker
+        if todo_tracker is not None:
+            self.todo_tracker = todo_tracker
+
+    def reset(self, *, session_id: str | None, workspace: Workspace | None) -> None:
+        """Reset session identity and bookkeeping before a fresh start."""
+        self.shutting_down = False
+        self.workspace = workspace or Workspace.from_cwd()
+        self.session_id = session_id
+        self.reset_spill_quota()
+        self.turn_number = 0
+        self.runtime_meta = SessionRuntimeMetadata()
+        self.mutation_tracker = None
+        self.mutation_coordinator = None
+        self.todo_tracker = None
+        self.recovered_from_sidecar = False
+
+    def adopt_restore_identity(self, *, session_id: str, recovered_from_sidecar: bool) -> None:
+        """Adopt the restore identity before hydrating its state."""
+        self.shutting_down = False
+        self.session_id = session_id
+        self.reset_spill_quota()
+        self.recovered_from_sidecar = recovered_from_sidecar
+
+    def restore_position(self, *, runtime_meta: SessionRuntimeMetadata, turn_number: int) -> None:
+        """Restore the saved runtime metadata and turn position together."""
+        self.runtime_meta = runtime_meta
+        self.turn_number = turn_number
+
+    def mark_closing(self) -> None:
+        """Mark entry into session teardown."""
+        self.shutting_down = True
+
+    def mark_session_end_fired(self) -> None:
+        """Record that the session end hooks have fired."""
+        self.session_end_fired = True
+
+    def mark_recovered_from_sidecar(self, recovered: bool) -> None:
+        """Record which persistence source currently wins."""
+        self.recovered_from_sidecar = recovered
+
+    def detach_for_delete(self) -> str | None:
+        """Detach before deletion and return the previous identity."""
+        session_id = self.session_id
+        self.session_id = None
+        return session_id
+
+    def reattach_after_failed_delete(self, session_id: str | None) -> None:
+        """Restore identity and rearm end hooks after an ordinary delete failure."""
+        self.session_id = session_id
+        self.session_end_fired = False
+
+    @contextmanager
+    def saves_suppressed(self) -> Iterator[None]:
+        """Suppress saves within this scope, preserving an enclosing scope."""
+        previous = self.suppress_save
+        self.suppress_save = True
+        try:
+            yield
+        finally:
+            self.suppress_save = previous

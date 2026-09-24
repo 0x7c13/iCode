@@ -1,0 +1,17 @@
+WorkflowConfirmDialog {
+    align: center middle;
+    background: $background 60%;
+}
+WorkflowConfirmDialog #workflow-confirm {
+    width: 90%; height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    background: $surface;
+    padding: 0;
+}
+WorkflowConfirmDialog TabbedContent,
+WorkflowConfirmDialog ContentSwitcher,
+WorkflowConfirmDialog TabPane { height: 1fr; padding: 0; }
+WorkflowConfirmDialog VerticalScroll { padding: 0; scrollbar-size: 1 1; }
+WorkflowConfirmDialog #workflow-confirm-source-scroll { overflow: auto auto; }
+WorkflowConfirmDialog #workflow-confirm-source { width: auto; min-width: 100%; }

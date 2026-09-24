@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+/dist/
+/build/
+*.whl
+
+# Defensive: Cargo output if Rust is ever built in the repository root
+/target/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Testing / coverage
+.coverage
+coverage.json
+htmlcov/
+.pytest_cache/
+
+# Vendored data and binaries (downloaded at build time, not checked in)
+src/chrys/foundation/vendor/ripgrep/rg*
+
+# Ruff
+.ruff_cache/
+
+# mypy
+.mypy_cache/
+
+# AI coding tools
+.claude
+.codex
+.cursor
+.windsurf
+.aider*
+.copilot
