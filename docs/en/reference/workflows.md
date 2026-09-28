@@ -68,6 +68,9 @@ Review the source before confirming trust. Workflow code can read and write file
 | `WorkflowValue` | Text and structured data passed between nodes |
 | `SourceValue` | A source and its result, received by a combine function |
 | `NodeContext` | Progress reporting and user questions for Python nodes |
+| `Question` | A question for `NodeContext.ask`, with optional single- or multi-select options |
+| `Option` | One option of a `Question` |
+| `Answer` | The user's answer to one `Question` |
 | `Retry` | Node retry count and interval |
 
 ### `WorkflowBuilder`
@@ -429,13 +432,94 @@ Send any text message, such as progress or a notice. The TUI shows it on the “
 
 ```python
 async ask(prompt: str) -> str
+async ask(prompt: Question) -> Answer
+async ask(prompt: list[Question] | tuple[Question, ...]) -> tuple[Answer, ...]
 ```
 
-Ask the user a question and return their answer as text. Call it only from an asynchronous node function, using `await ctx.ask(prompt)`.
+Ask the user and wait for the answer. Call it only from an asynchronous node function, using `await ctx.ask(...)`. The return value follows the argument:
 
-The TUI displays the question and accepts the answer. The CLI does not support interaction; the call fails with `ask_unavailable`.
+- A string, which must not be blank, asks one open question and returns the typed answer as text.
+- A [`Question`](#question) can offer options to pick one or several from, and returns one [`Answer`](#answer).
+- A list or tuple of 1 to 5 questions shows them together in one dialog, one tab per question, and returns a tuple of answers in question order. A one-element list also returns a tuple.
+
+Any other argument raises `TypeError`; an empty list or more than five questions raise `ValueError`.
+
+The TUI displays the questions in the same dialog as the agent question tool. The CLI does not support interaction; the call fails with `ask_unavailable`.
 
 Time spent waiting for an answer counts toward the node timeout. `ask()` does not use the agent question tool's timeout setting. To wait indefinitely for the user, set `timeout=None` when registering the Python node to remove its deadline.
+
+The run's `workflows/<run_id>/events.jsonl` under the [session directory](../guides/daily-use/sessions.md#find-the-session-id-and-storage-location) keeps a text summary of the questions and the answers, cut to 512 characters, rather than the full questions.
+
+### `Question`
+
+```python
+Question(
+    question: str,
+    header: str = "",
+    options: list[Option | str] | tuple[Option | str, ...] = (),
+    multi_select: bool = False,
+)
+```
+
+One question for `ctx.ask()`. The field names match the agent question tool.
+
+- `question`: The question text, rendered as Markdown. It must not be blank. Apart from the message size limit it has no length limit, so a question can carry a whole draft for review.
+- `header`: A short label for the question's tab, at most 64 characters. Without one, the tab shows the question number. Tabs, and therefore headers, show only when several questions are asked together.
+- `options`: Up to 8 options. A string is shorthand for `Option(label=...)`. Without options, the question takes a typed answer only.
+- `multi_select`: `True` lets the user pick several options, and needs at least one option.
+
+Option labels have surrounding whitespace removed and must be unique within a question. Every string must be valid Unicode, without unpaired surrogates. Wrong types raise `TypeError` and other violations raise `ValueError`, both when the `Question` or `Option` is created, so the traceback points at your code.
+
+Whether or not a question has options, the user can type an answer of their own, or add a note to a selection.
+
+### `Option`
+
+```python
+Option(label: str, description: str = "")
+```
+
+- `label`: What the user picks, and what comes back in `Answer.selected`. At most 200 characters.
+- `description`: One line shown under the label. At most 500 characters.
+
+### `Answer`
+
+```python
+class Answer:
+    selected: tuple[str, ...] = ()
+    text: str = ""
+    answered: bool       # read-only property
+    choice: str | None   # read-only property
+```
+
+The user's answer to one `Question`.
+
+- `selected`: The offered labels the answer names, in option order. Clicking an option and typing its label exactly (case-sensitive) give the same answer.
+- `text`: Everything else the user typed: an answer of their own that matches no label, or a note given with a selection.
+- `answered`: `False` only when the user skipped the question.
+- `choice`: The one selected label, or `None` when nothing is selected. It raises `ValueError` when several are selected; read `selected` for multi-select questions.
+
+Every answer has one of three shapes:
+
+| `selected` | `text` | Meaning |
+| --- | --- | --- |
+| Not empty | A note, or `""` | Offered labels picked or typed; at most one for a single-select question |
+| `()` | Not empty | An answer of the user's own that matches no label |
+| `()` | `""` | Skipped |
+
+How the dialog behaves:
+
+- With one single-select question, clicking an option submits at once, so type any note before clicking. Text submitted without clicking an option is the whole answer.
+- With several questions, clicking an option of a single-select question moves on to the next unanswered question, or to the “Submit” tab. Multi-select and typed answers move on with “Answer & Next” (“Answer & Review” on the last question). The “Submit” tab lists all answers and sends them with “Submit answers”, or with “Submit anyway” while some questions are unanswered. Submitting with nothing answered needs a second, confirming press.
+- The dialog cannot be dismissed with Esc. The question waits until it is answered, or until its attempt or run ends.
+
+`Answer` is a local result, not a node output: return a string or a `WorkflowValue`. To pass a selection downstream, put it in both `text`, which agent nodes and the default join read, and `data`, for Python nodes:
+
+```python
+async def pick_areas(value: WorkflowValue, ctx: NodeContext) -> WorkflowValue:
+    answer = await ctx.ask(Question("Which areas?", options=["API", "Storage", "UI"], multi_select=True))
+    text = "\n".join(part for part in (", ".join(answer.selected), answer.text) if part)
+    return WorkflowValue(text=text, data={"selected": list(answer.selected), "text": answer.text})
+```
 
 ### `Retry`
 

@@ -23,6 +23,7 @@ from chrys.app.tui.widgets import (
     AskUserSubmitted,
     PromptDraft,
 )
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 
 if TYPE_CHECKING:
@@ -72,7 +73,7 @@ class AskUserDialog(RightClickScreenCopyMixin, InsertClipboardScreenMixin, Modal
     def compose(self) -> ComposeResult:
         with VerticalGroup(id="askuser-container") as container:
             if self._caller_name:
-                container.border_subtitle = Text(self._caller_name)
+                container.border_subtitle = Text(sanitize_legacy_scalar(self._caller_name))
             yield AskUserPrompt(
                 self._request_id,
                 self._questions,

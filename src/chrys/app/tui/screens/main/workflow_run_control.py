@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -14,7 +15,7 @@ from chrys.app.tui.screens.main.recent_dirs import WorkspaceMruRecentDirs
 from chrys.app.tui.widgets.workflow import text
 from chrys.foundation.events import types as events
 from chrys.foundation.events.workflow import WorkflowRunEvent
-from chrys.foundation.models.ask_user import AskUserQuestion
+from chrys.foundation.models.ask_user import validate_ask_user_answers
 from chrys.foundation.models.workflow_session import (
     WorkflowSessionSelection,
 )
@@ -23,6 +24,8 @@ from chrys.orchestration.workflows.preview import PreparedWorkflow
 if TYPE_CHECKING:
     from chrys.app.tui.screens.dialogs.workflow_input import WorkflowInputContext
     from chrys.app.tui.screens.main.workflow_controller import WorkflowController
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,22 +418,28 @@ class WorkflowRunControl:
         request = next((request for key, request in run.questions.items() if key not in self._pending_answers), None)
         if request is None:
             return
-        dialog = AskUserDialog(
-            request.request_id, (AskUserQuestion(request.prompt),), caller_name=request.node_id, allow_inline=False
-        )
+        dialog = AskUserDialog(request.request_id, request.questions, caller_name=request.node_id, allow_inline=False)
         self._question = request, dialog
 
         def answered(result: AskUserDialogResult) -> None:
             self._question = None
+            answers = None
+            if isinstance(result, tuple):
+                # The runner applies this same check to the same questions. Failing it here, before the request
+                # is marked answered, reopens the question instead of stranding an answer the runner would reject.
+                answers = validate_ask_user_answers(result[1], questions=request.questions)
+                if answers is None:
+                    logger.warning("workflow question %s: dropped an answer that does not fit it", request.request_id)
+                    self.host.request_refresh()
+                    return
             self._pending_answers.add(request.request_id)
             live = self.host.session_view.projector.run(request.run_id)
             if (
-                isinstance(result, tuple)
+                answers is not None
                 and live is not None
                 and live.finished is None
                 and request.request_id in live.questions
             ):
-                answer = result[1][0]
                 self.host.spawn(
                     self.host.services.bus.publish(
                         events.WorkflowNodeAnswer(
@@ -438,7 +447,7 @@ class WorkflowRunControl:
                             node_id=request.node_id,
                             activation_id=request.activation_id,
                             request_id=request.request_id,
-                            answer=answer.note or "\n".join(answer.values),
+                            answers=answers,
                         )
                     )
                 )

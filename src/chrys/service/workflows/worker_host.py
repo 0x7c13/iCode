@@ -47,7 +47,7 @@ from collections.abc import Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, ClassVar, Deque, Dict, List, Optional, Set, Tuple, Union
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 METHOD_HELLO = "hello"
 METHOD_LOAD = "load"
@@ -100,9 +100,12 @@ LIMITS = {
 }
 
 SDK_EXPORTS = (
+    "Answer",
     "BuilderScope",
     "NodeContext",
     "NodeHandle",
+    "Option",
+    "Question",
     "Retry",
     "SourceValue",
     "Workflow",
@@ -129,6 +132,17 @@ def _dumps(payload: Any) -> bytes:
 def _clean(text: str) -> str:
     """Diagnostic text (messages, tracebacks) must always fit a UTF-8 frame."""
     return text.encode("utf-8", "replace").decode("utf-8")
+
+
+def _answers_fit(answers: List[Any], count: int) -> bool:
+    """Whether an ask reply's ``answers`` has the shape the SDK builds ``Answer`` objects from."""
+    return len(answers) == count and all(
+        isinstance(answer, dict)
+        and isinstance(answer.get("selected"), list)
+        and all(isinstance(label, str) for label in answer["selected"])
+        and isinstance(answer.get("text"), str)
+        for answer in answers
+    )
 
 
 def _diagnostic(text: str, *, tail: bool = False) -> str:
@@ -799,7 +813,7 @@ class Host:
         value = _value_from_wire(params.get("value"), self.sdk)
         ctx = self.sdk.NodeContext(
             emit=lambda text: self._emit(attempt, text),
-            ask=lambda prompt: self._ask(attempt, prompt),
+            ask=lambda questions: self._ask(attempt, questions),
         )
         args = (value,) if node.fn_arity == 1 else (value, ctx)
         context = contextvars.copy_context()
@@ -1175,7 +1189,8 @@ class Host:
             attempt.last_emit_ordinal = ordinal
             self.outbox.put(data)
 
-    async def _ask(self, attempt: _Attempt, prompt: str) -> str:
+    async def _ask(self, attempt: _Attempt, questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Transport one SDK-serialized ``ctx.ask``; the SDK owns the question schema."""
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -1186,14 +1201,10 @@ class Host:
             raise _AskError(ERROR_ATTEMPT_TERMINATED, "attempt is already terminal.")
         request_id = self.next_id
         self.next_id += 2
-        try:
-            prompt.encode("utf-8")
-        except UnicodeEncodeError:
-            raise ValueError("ctx.ask() prompt is not valid Unicode (lone surrogate).") from None
-        frame = {"id": request_id, "method": METHOD_ASK, "params": {"ref": attempt.ref, "prompt": prompt}}
+        frame = {"id": request_id, "method": METHOD_ASK, "params": {"ref": attempt.ref, "questions": questions}}
         data = _dumps(frame)  # checked before anything is registered or queued
         if len(data) > LIMITS["max_frame_bytes"]:
-            raise _AskError(ERROR_PROTOCOL_LIMIT, "ctx.ask() prompt exceeds max_frame_bytes.")
+            raise _AskError(ERROR_PROTOCOL_LIMIT, "ctx.ask() questions exceed max_frame_bytes.")
         future: asyncio.Future = self.loop.create_future()
         self.pending_asks[request_id] = future
         self.outbox.put(data)
@@ -1205,9 +1216,10 @@ class Host:
         if isinstance(error, dict):
             raise _AskError(str(error.get("code", ERROR_ASK_UNAVAILABLE)), str(error.get("message", "")))
         result = reply.get("result")
-        if not isinstance(result, dict) or not isinstance(result.get("answer"), str):
-            raise _AskError(ERROR_ASK_UNAVAILABLE, "ask reply carried no answer.")
-        return result["answer"]
+        answers = result.get("answers") if isinstance(result, dict) else None
+        if not isinstance(answers, list) or not _answers_fit(answers, len(questions)):
+            raise _AskError(ERROR_ASK_UNAVAILABLE, "ask reply carried no answers.")
+        return answers
 
     # -- bootstrap ------------------------------------------------------------------
 

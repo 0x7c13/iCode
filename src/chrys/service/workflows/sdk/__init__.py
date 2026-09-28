@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Workflow SDK: the eight public names a workflow file imports from ``chrys.workflows``.
+"""Workflow SDK: the eleven public names a workflow file imports from ``chrys.workflows``.
 
 This package is the single source of the SDK. It is pure standard library,
 imports nothing from the rest of chrys, and stays on Python 3.9 syntax and
@@ -10,6 +10,7 @@ injected artifact). Keep it that way: the py39 contract harness compiles and
 imports it under a real 3.9 interpreter.
 """
 
+from ._ask import Answer, Option, Question
 from ._builder import (
     BuilderScope,
     EdgeDefinition,
@@ -25,9 +26,12 @@ from ._builder import (
 from ._values import JsonValue, NodeContext, SourceValue, WorkflowValue
 
 __all__ = [
+    "Answer",
     "BuilderScope",
     "NodeContext",
     "NodeHandle",
+    "Option",
+    "Question",
     "Retry",
     "SourceValue",
     "Workflow",

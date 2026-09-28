@@ -20,6 +20,7 @@ from chrys.foundation.models.ask_user import (
     parse_ask_user_answers,
     parse_ask_user_questions,
     parse_recorded_ask_user_questions,
+    validate_ask_user_answers,
     validate_request_input_params,
     validate_request_input_response,
 )
@@ -209,6 +210,48 @@ def test_response_validator_cancels_without_answers_and_accepts_structured() -> 
         AskUserAnswer(values=("TUI", "ACP")),
         AskUserAnswer(),
     )
+
+
+_EMPTY = AskUserAnswer()
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        pytest.param((AskUserAnswer(values=("tenacity",)),), id="too-few"),
+        pytest.param((_EMPTY,) * 4, id="too-many"),
+        pytest.param("abc", id="not-a-sequence"),
+        pytest.param((AskUserAnswer(values=("tenacity", "custom")), _EMPTY, _EMPTY), id="single-select-two"),
+        pytest.param((_EMPTY, AskUserAnswer(values=("TUI", "CLI")), _EMPTY), id="several-with-a-non-label"),
+        pytest.param((AskUserAnswer(values=("custom", " custom")), _EMPTY, _EMPTY), id="duplicate-after-strip"),
+        pytest.param((AskUserAnswer(values=("  ",)), _EMPTY, _EMPTY), id="blank-value"),
+        pytest.param((_EMPTY, _EMPTY, AskUserAnswer(note="orphan")), id="note-without-values"),
+        pytest.param((AskUserAnswer(values=("own",), note="extra"), _EMPTY, _EMPTY), id="note-on-custom-text"),
+        pytest.param(({"values": ["tenacity"]}, _EMPTY, _EMPTY), id="not-an-answer"),
+        pytest.param((AskUserAnswer(values=["tenacity"]), _EMPTY, _EMPTY), id="values-list"),  # type: ignore[arg-type]
+        pytest.param((AskUserAnswer(values=(1,)), _EMPTY, _EMPTY), id="value-not-str"),  # type: ignore[arg-type]
+        pytest.param((AskUserAnswer(note=None), _EMPTY, _EMPTY), id="note-not-str"),  # type: ignore[arg-type]
+    ],
+)
+def test_answer_validator_refuses_answers_that_break_the_contract(answers: object) -> None:
+    assert validate_ask_user_answers(answers, questions=_questions()) is None  # type: ignore[arg-type]
+
+
+def test_answer_validator_normalizes_every_shape_the_dialog_produces() -> None:
+    questions = _questions()
+    answers = [
+        AskUserAnswer(values=(" tenacity ",), note=" why "),
+        AskUserAnswer(values=("ACP", "TUI")),
+        AskUserAnswer(values=("typed plan",)),
+    ]
+    assert validate_ask_user_answers(answers, questions=questions) == (
+        AskUserAnswer(values=("tenacity",), note="why"),
+        AskUserAnswer(values=("ACP", "TUI")),
+        AskUserAnswer(values=("typed plan",)),
+    )
+    # One custom value on an options question is typed text; an empty answer is a skipped question.
+    skipped = (AskUserAnswer(values=("my own",)), _EMPTY, _EMPTY)
+    assert validate_ask_user_answers(skipped, questions=questions) == skipped
 
 
 def test_parsers_repair_surrogates_so_questions_and_answers_can_cross_a_strict_wire() -> None:

@@ -22,6 +22,7 @@ from chrys.foundation.events.types import (
     WorkflowNodeStateChanged,
     WorkflowRunFinished,
 )
+from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.orchestration.workflows.agent_node import WorkflowAgentShell
 from chrys.orchestration.workflows.runner import MAX_CONCURRENT_AGENT_ATTEMPTS, WorkflowRunner
@@ -144,7 +145,7 @@ async def test_ninth_sync_body_waits_before_its_deadline_and_cancels_without_dis
                     node_id=ask.node_id,
                     activation_id=ask.activation_id,
                     request_id=ask.request_id,
-                    answer="go",
+                    answers=(AskUserAnswer(values=("go",)),),
                     session_id=host.workflow_session_id,
                 )
             )
@@ -189,7 +190,7 @@ async def test_wide_async_fanout_queues_at_the_effective_request_limit(
                 node_id=event.node_id,
                 activation_id=event.activation_id,
                 request_id=event.request_id,
-                answer="go",
+                answers=(AskUserAnswer(values=("go",)),),
                 session_id=host.workflow_session_id,
             )
         )

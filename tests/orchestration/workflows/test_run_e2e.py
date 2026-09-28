@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from chrys.foundation.events.types import (
     SetApprovalMode,
     WorkflowLoopIteration,
     WorkflowNodeAnswer,
+    WorkflowNodeAnswered,
     WorkflowNodeAskUser,
     WorkflowNodeOutput,
     WorkflowNodeRetryRequest,
@@ -27,6 +29,7 @@ from chrys.foundation.events.types import (
     WorkflowRunNotice,
     WorkflowRunStarted,
 )
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
 from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.orchestration.workflows.catalog import WorkflowNotFoundError
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -450,40 +453,87 @@ async def test_a_headless_ask_fails_the_node_and_the_run(tmp_path: Path, monkeyp
         await host.shutdown()
 
 
+STRUCTURED_ASK = python_workflow(
+    "from chrys.workflows import Option, Question\n"
+    "async def fn(value, ctx):\n"
+    "    colour = await ctx.ask('colour?')\n"
+    "    size, extras = await ctx.ask([\n"
+    "        Question('size?', header='Size', options=[Option('S', 'small'), 'M']),\n"
+    "        Question('extras?', header='Extras', options=['cheese', 'olives', 'basil'], multi_select=True),\n"
+    "    ])\n"
+    "    return f'{colour}/{size.choice}/{\",\".join(extras.selected)}/{extras.text}'\n",
+    "fn",
+)
+
+
+def _answer(run_id: str, ask: WorkflowNodeAskUser, answers: tuple[AskUserAnswer, ...]) -> WorkflowNodeAnswer:
+    return WorkflowNodeAnswer(
+        run_id=run_id,
+        node_id=ask.node_id,
+        activation_id=ask.activation_id,
+        request_id=ask.request_id,
+        answers=answers,
+    )
+
+
 async def test_an_interactive_ask_round_trips_through_the_bus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = python_workflow("async def fn(value, ctx):\n    return 'got ' + await ctx.ask('colour?')\n", "fn")
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
     project = make_project(tmp_path)
-    write_workflow(project, "ask", source)
+    write_workflow(project, "ask", STRUCTURED_ASK)
     host = make_host(tmp_path, project=project, allow_user_interaction=True)
+    open_answers = [
+        (AskUserAnswer(values=("blue",)),),
+        (AskUserAnswer(values=("M",)), AskUserAnswer(values=("basil", "cheese"), note="extra")),
+    ]
     try:
         await confirm(host, "ask")
         asks: list[WorkflowNodeAskUser] = []
+        answered: list[WorkflowNodeAnswered] = []
         run_id = ""
         async for event in host.iter_workflow_events(host.workflow_target("ask"), input_text="x"):
             if isinstance(event, WorkflowRunAccepted):
                 run_id = event.run_id
+            if isinstance(event, WorkflowNodeAnswered):
+                answered.append(event)
             if isinstance(event, WorkflowNodeAskUser):
                 asks.append(event)
-                # A stray answer for another activation is ignored; the real one resolves the ask.
+
+                # A stray answer for another activation, and answers that do not fit the question (two
+                # values on a single-select, a count mismatch), leave the ask open; the real one resolves it.
+                stray = replace(_answer(run_id, event, (AskUserAnswer(values=("no",)),)), activation_id="other")
+                await host.event_bus.publish(stray)
                 await host.event_bus.publish(
-                    WorkflowNodeAnswer(
-                        run_id=run_id, node_id="fn", activation_id="other", request_id=event.request_id, answer="no"
-                    )
+                    _answer(run_id, event, (AskUserAnswer(values=("S", "M")), AskUserAnswer()))
                 )
-                await host.event_bus.publish(
-                    WorkflowNodeAnswer(
-                        run_id=run_id,
-                        node_id=event.node_id,
-                        activation_id=event.activation_id,
-                        request_id=event.request_id,
-                        answer="blue",
-                    )
-                )
+                await host.event_bus.publish(_answer(run_id, event, ()))
+                await host.event_bus.publish(_answer(run_id, event, open_answers.pop(0)))
         result = host.engine.workflows.result(run_id)
         assert result is not None
-        assert [(a.node_id, a.prompt) for a in asks] == [("fn", "colour?")]
-        assert [(o.node_id, o.value.text) for o in result.outputs] == [("fn", "got blue")]
+        assert [(a.node_id, a.questions) for a in asks] == [
+            ("fn", (AskUserQuestion(question="colour?"),)),
+            (
+                "fn",
+                (
+                    AskUserQuestion(
+                        question="size?",
+                        header="Size",
+                        options=(AskUserOption(label="S", description="small"), AskUserOption(label="M")),
+                    ),
+                    AskUserQuestion(
+                        question="extras?",
+                        header="Extras",
+                        options=(
+                            AskUserOption(label="cheese"),
+                            AskUserOption(label="olives"),
+                            AskUserOption(label="basil"),
+                        ),
+                        multi_select=True,
+                    ),
+                ),
+            ),
+        ]
+        assert [a.answer for a in answered] == ["blue", "Size: M\nExtras: basil, cheese — extra"]
+        assert [(o.node_id, o.value.text) for o in result.outputs] == [("fn", "blue/M/cheese,basil/extra")]
         session_dir = host.workflow_session_dir
         assert session_dir is not None
         assert read_run_header(run_dir(session_dir, run_id))["mode"] == "interactive"

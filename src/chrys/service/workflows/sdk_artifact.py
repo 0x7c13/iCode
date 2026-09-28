@@ -23,7 +23,7 @@ from chrys.foundation.platform.files import atomic_write_owner_only_bytes
 from chrys.service.workflows import sdk as _sdk_package
 
 SDK_SOURCE_DIR = Path(_sdk_package.__file__).resolve().parent
-SDK_MODULES = ("__init__.py", "_builder.py", "_values.py")
+SDK_MODULES = ("__init__.py", "_ask.py", "_builder.py", "_values.py")
 
 _PACKAGE_INIT = b'"""Injected by chrys: only ``chrys.workflows`` is supported inside a workflow worker."""\n'
 

@@ -159,12 +159,26 @@ ARCHITECTURE_RULES = (
     ),
 )
 
+# The workflow worker host runs as a subprocess (test_protocol loads it by file
+# path) with the SDK copied beside it, and the fake worker is a subprocess too.
+_WORKFLOW_WORKER_HOST = ("src/chrys/service/workflows/worker_host.py", "src/chrys/service/workflows/sdk/**")
+_WORKFLOW_FAKE_WORKER = ("tests/orchestration/workflows/fake_worker.py",)
+
 # Regular tests can also consume repository files without importing them.  Keep
 # those dependency edges explicit: subprocess fixtures, filesystem scanners,
 # and import-every-module checks are invisible to the AST import graph.
 REGULAR_RULES = (
     TestRule("tests/service/acp_client", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/orchestration/sub_agents/test_acp_engine.py", ("tests/support/acp_stub_agent.py",)),
+    TestRule("tests/service/workflows/test_protocol.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/orchestration/workflows/test_worker_client.py", (*_WORKFLOW_WORKER_HOST, *_WORKFLOW_FAKE_WORKER)),
+    TestRule("tests/orchestration/workflows/test_worker_capacity.py", (*_WORKFLOW_WORKER_HOST, *_WORKFLOW_FAKE_WORKER)),
+    TestRule(
+        "tests/orchestration/workflows/test_worker_lifecycle.py", (*_WORKFLOW_WORKER_HOST, *_WORKFLOW_FAKE_WORKER)
+    ),
+    TestRule("tests/orchestration/workflows/test_worker_semantics.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/orchestration/workflows/test_worker_stdout.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/orchestration/workflows/test_worker_values.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/app/tui/behaviors/test_chrys_themes.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/app/tui/i18n/test_bindings.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/app/tui/screens/test_modal_insert_clipboard.py", ("src/chrys/app/tui/screens/**",)),

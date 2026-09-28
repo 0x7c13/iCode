@@ -22,6 +22,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets import (
     ASK_USER_INPUT_MAX_HEIGHT,
     AskUserActiveQuestionChanged,
@@ -111,6 +112,11 @@ def _questions_markdown(questions: tuple[AskUserQuestion, ...]) -> str:
     if len(questions) == 1:
         return questions[0].question
     return "\n".join(f"{index}. {question.question}" for index, question in enumerate(questions, start=1))
+
+
+def _questions_display_markdown(questions: tuple[AskUserQuestion, ...]) -> str:
+    """The card's question block; copy keeps :func:`_questions_markdown`'s raw text."""
+    return sanitize_source_text(_questions_markdown(questions))
 
 
 def _answers_from_result(result: str, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...] | None:
@@ -295,7 +301,7 @@ class AskUserToolCall(BaseToolCard):
         yield ToolCardHeader(self._label_text(), id="ask-label")
 
         panel = VerticalScroll(
-            VirtualizedMarkdown(_questions_markdown(self._questions), id="ask-question"),
+            VirtualizedMarkdown(_questions_display_markdown(self._questions), id="ask-question"),
             id="ask-panel",
             can_focus=False,
         )
@@ -604,7 +610,7 @@ class AskUserToolCall(BaseToolCard):
         of the card (it remains in ``result_text`` for the copy payload).
         """
         questions = _extract_questions(self.args_summary, self.args)
-        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_markdown(questions))
+        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_display_markdown(questions))
         self.add_class("-interrupted")
         self.query_one("#ask-panel").border_subtitle = render_text(widget_localizer(self), TOOL_CARD_INTERRUPTED.bind())
         self.query_one("#ask-answer", Static).update(Text(""))
@@ -612,10 +618,9 @@ class AskUserToolCall(BaseToolCard):
     def _render_completed(self, result: str) -> None:
         questions = _extract_questions(self.args_summary, self.args)
         answers = _answers_from_result(result, questions)
-        question_markdown = _questions_markdown(questions)
-        self.query_one("#ask-question", VirtualizedMarkdown).update(question_markdown)
+        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_display_markdown(questions))
         if answers is None:
-            self.query_one("#ask-answer", Static).update(Text(_answer_from_result(result)))
+            self.query_one("#ask-answer", Static).update(Text(sanitize_source_text(_answer_from_result(result))))
             return
         self.set_class(len(questions) > 1, "-multi")
         unanswered = render_str(widget_localizer(self), ASK_USER_NOT_ANSWERED_REF.bind())
@@ -629,7 +634,7 @@ class AskUserToolCall(BaseToolCard):
             question_style = self.get_component_rich_style("askuser-answer--question", partial=True)
             rows: list[tuple[str, RenderableType]] = []
             for index, (question, answer) in enumerate(zip(questions, answers, strict=True), start=1):
-                rows.append((f"{index}. ", Text(question.question, style=question_style)))
+                rows.append((f"{index}. ", Text(sanitize_source_text(question.question), style=question_style)))
                 rows.append(("", ask_user_hanging_answer(answer, unanswered=unanswered)))
             rendered = ask_user_hanging_grid(rows)
         else:

@@ -25,6 +25,7 @@ from chrys.foundation.events.types import (
     WorkflowRunNotice,
     WorkflowRunStarted,
 )
+from chrys.foundation.models.ask_user import AskUserQuestion
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.writer import FdWriteBackend
 from chrys.service.workflows.journal import SUMMARY_MAX_CHARS, WorkflowJournal, summarize
@@ -126,7 +127,7 @@ async def test_every_lifecycle_record_publishes_its_written_sequence(tmp_path: P
         await journal.run_started()
         await journal.node_state(ref, "running", invocation_id="0123456789ab")
         await journal.node_output(ref, "emit", 1, "progress")
-        await journal.node_ask(ref, "req-1", "continue?")
+        await journal.node_ask(ref, "req-1", (AskUserQuestion(question="continue?"),))
         await journal.loop_iteration(AttemptRef(journal.run_id, "loop", "loop@iter#1", 1), 1, "continue")
         await journal.run_notice("a", "a@iter#1", "data_dropped_at_agent_boundary", "data dropped")
         await journal.retry_key("retry-1", ref)

@@ -31,7 +31,7 @@
 1. 在“工作流”页点击“▶ 开始”，打开“启动工作流”对话框。在其中的“运行设置”区域确认工作目录和默认模型。
 2. 按需填写希望了解的项目内容，例如 `介绍这个项目的入口和主要模块，用中文回答`；也可以留空，使用示例的默认任务。点击对话框中的“▶ 开始”启动。
 
-启动后，示例会询问阅读深度。可以回答 `deep`，体验多个智能体并行分析；希望减少调用量时可回答 `quick`，由一个智能体快速阅读。
+启动后，示例会询问阅读深度。可以选择 `deep`，体验多个智能体并行分析；希望减少调用量时可选择 `quick`，由一个智能体快速阅读。
 
 运行期间，可以观察执行图中哪些节点正在运行、已经完成或被跳过。如需停止工作流，点击“⏹ 取消”并确认。
 
@@ -168,6 +168,24 @@ report = wf.python("report", describe, timeout=None)
 保存修改后，在 TUI 中重新打开该工作流，预览更新后的源码并确认信任，然后启动。运行输入仍填 `apple, banana, pear`。问答窗口出现时输入 `Shopping List`，最终输出应为 `Shopping List: 3 items: apple, banana, pear`。
 
 `ctx.ask()` 向用户提问，等待回答后返回字符串。调用时需要使用 `await`，因此节点函数应使用 `async def` 定义。包含用户问答的工作流需在 TUI 中运行，不支持通过无人值守的 CLI 运行。
+
+问题还可以提供选项，一个对话框也可以同时提出多个问题。此时传入 `Question` 对象而不是字符串。先在文件顶部的 `from chrys.workflows import ...` 一行中加入 `Question`，再次替换 `describe()`：
+
+```python
+async def describe(value: WorkflowValue, ctx: NodeContext) -> str:
+    title, extras = await ctx.ask(
+        [
+            Question("请为这份水果清单起一个标题。", header="标题"),
+            Question("清单上还要加什么？", header="追加", options=["milk", "bread", "eggs"], multi_select=True),
+        ]
+    )
+    items = value.data["items"] + list(extras.selected)
+    return f"{title.text}: {len(items)} items: {', '.join(items)}"
+```
+
+传入问题列表时，按顺序为每个问题返回一个 `Answer`：`selected` 是用户选中的选项标签，`text` 是用户输入的内容。使用相同的输入运行。对话框为每个问题显示一个标签页：在“标题”页输入 `Shopping List` 并点击“回答并继续”，在“追加”页勾选 `milk` 和 `eggs` 并点击“回答并检查”，最后点击“提交回答”。输出应为 `Shopping List: 5 items: apple, banana, pear, milk, eggs`。
+
+单选问题、回答包含的内容以及如何把选择结果传给下游，请参阅[工作流参考：`NodeContext.ask`](../../reference/workflows.md#nodecontextask)。
 
 ## 定义智能体节点
 

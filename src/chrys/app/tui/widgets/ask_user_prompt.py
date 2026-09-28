@@ -20,6 +20,7 @@ from textual.message import Message
 from textual.widgets import Static, TabbedContent, TabPane
 
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.ask_user_controls import (
     AskUserContentResized,
     AskUserDraftChanged,
@@ -34,6 +35,7 @@ from chrys.app.tui.widgets.ask_user_controls import (
     ask_user_hanging_grid,
 )
 from chrys.foundation.i18n import msg
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 
 if TYPE_CHECKING:
@@ -59,6 +61,8 @@ _TITLE_REVIEW = msg("tui.ask_user.title.review", fallback="Question · Review")
 ASK_USER_NOT_ANSWERED_REF = msg("tui.ask_user.answer.not_answered", fallback="(not answered)")
 
 _DISPLAY_HEADER_CELLS = 12
+# A header is one tab-label row: whitespace that would break the row displays as a space.
+_ROW_BREAKS = str.maketrans("\t\n\r", "   ")
 ASK_USER_REVIEW_PANE_ID = "askuser-review"
 
 
@@ -199,7 +203,9 @@ class AskUserQuestionPane(_AskUserPane):
     def compose(self) -> ComposeResult:
         from chrys.app.tui.widgets.ask_user_markdown import AskUserQuestionMarkdown
 
-        yield AskUserQuestionMarkdown(self._question.question, id=f"askuser-q{self._index}-question")
+        yield AskUserQuestionMarkdown(
+            sanitize_source_text(self._question.question), id=f"askuser-q{self._index}-question"
+        )
         if self._question.options:
             yield AskUserOptions(
                 self._request_id,
@@ -264,7 +270,8 @@ class AskUserReviewPane(_AskUserPane):
         # line continues under its own first character, never at the margin.
         rows: list[tuple[str, RenderableType]] = []
         for question, answer in zip(questions, answers, strict=True):
-            rows.append((" • ", Text(question.question, style="" if answer.answered else unanswered_style)))
+            question_text = sanitize_source_text(question.question)
+            rows.append((" • ", Text(question_text, style="" if answer.answered else unanswered_style)))
             rows.append(("", ask_user_hanging_answer(answer, unanswered=unanswered_label, style=answer_style)))
         review = Group(Text(render_str(localizer, ASK_USER_REVIEW_TITLE_REF.bind())), ask_user_hanging_grid(rows))
         unanswered = sum(not answer.answered for answer in answers)
@@ -402,7 +409,7 @@ class AskUserPrompt(VerticalGroup):
     def _display_header(self, index: int) -> str:
         localizer = widget_localizer(self)
         header = self.questions[index].header or render_str(localizer, _TAB_FALLBACK_HEADER.bind(n=index + 1))
-        return _ellipsize_cells(header, _DISPLAY_HEADER_CELLS)
+        return _ellipsize_cells(sanitize_legacy_scalar(header.translate(_ROW_BREAKS)), _DISPLAY_HEADER_CELLS)
 
     def _tab_labels(self, answered: tuple[bool, ...]) -> tuple[tuple[str, Content], ...]:
         labels: list[tuple[str, Content]] = []

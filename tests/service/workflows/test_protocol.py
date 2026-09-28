@@ -11,6 +11,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -75,13 +76,31 @@ def host() -> ModuleType:
             ),
         ),
         (
-            {"id": 2, "method": "ask", "params": {"ref": REF_WIRE, "prompt": "?"}},
+            {
+                "id": 2,
+                "method": "ask",
+                "params": {
+                    "ref": REF_WIRE,
+                    "questions": [
+                        {
+                            "question": "?",
+                            "header": "",
+                            "options": [{"label": "yes", "description": ""}],
+                            "multi_select": False,
+                        }
+                    ],
+                },
+            },
             (
-                b'{"id":2,"method":"ask","params":{"prompt":"?","ref":{"activation_id":"n@iter#1","attempt":2,'
-                b'"node_id":"n","run_id":"r"}}}\n'
+                b'{"id":2,"method":"ask","params":{"questions":[{"header":"","multi_select":false,"options":'
+                b'[{"description":"","label":"yes"}],"question":"?"}],"ref":{"activation_id":"n@iter#1",'
+                b'"attempt":2,"node_id":"n","run_id":"r"}}}\n'
             ),
         ),
-        ({"id": 2, "result": {"answer": "yes"}}, b'{"id":2,"result":{"answer":"yes"}}\n'),
+        (
+            {"id": 2, "result": {"answers": [{"selected": ["yes"], "text": ""}]}},
+            b'{"id":2,"result":{"answers":[{"selected":["yes"],"text":""}]}}\n',
+        ),
         (
             {"id": 5, "error": {"code": "user_exception", "message": "boom", "data": {"last_emit_ordinal": 0}}},
             b'{"error":{"code":"user_exception","data":{"last_emit_ordinal":0},"message":"boom"},"id":5}\n',
@@ -188,6 +207,74 @@ def test_host_mirrors_the_protocol_constants(host: ModuleType) -> None:
     assert host_errors == set(ErrorCode)
     assert asdict(LIMITS) == host.LIMITS
     assert tuple(host.SDK_EXPORTS) == tuple(sdk.__all__)
+
+
+@pytest.mark.parametrize(
+    ("answers", "fits"),
+    [
+        ([{"selected": ["a"], "text": ""}, {"selected": [], "text": "note"}], True),
+        ([{"selected": ["a"], "text": ""}], False),
+        ([{"selected": "a", "text": ""}, {"selected": [], "text": ""}], False),
+        ([{"selected": [1], "text": ""}, {"selected": [], "text": ""}], False),
+        ([{"selected": [], "text": None}, {"selected": [], "text": ""}], False),
+        ([{"selected": []}, {"selected": [], "text": ""}], False),
+        (["a", "b"], False),
+    ],
+    ids=["fits", "short", "selected-str", "selected-int", "text-none", "text-missing", "not-dicts"],
+)
+def test_host_checks_the_ask_reply_shape(host: ModuleType, answers: list[Any], fits: bool) -> None:
+    """The SDK builds Answers from the reply unchecked; the host refuses a reply it could not build them from."""
+    assert host._answers_fit(answers, 2) is fits
+
+
+class _ReplyingOutbox(queue.Queue):
+    """Answers each ask frame with a canned reply the moment the host queues it."""
+
+    def __init__(self, worker: Any, reply: dict[str, Any]) -> None:
+        super().__init__()
+        self.worker = worker
+        self.reply = reply
+
+    def put(self, item: object, block: bool = True, timeout: float | None = None) -> None:
+        super().put(item, block, timeout)
+        assert isinstance(item, bytes)
+        self.worker.pending_asks[decode_frame(item.rstrip(b"\n"))["id"]].set_result(self.reply)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"result": {"answers": [{"selected": [], "text": "x"}]}},
+        {"result": {"answers": []}},
+        {"result": {"answers": [{"selected": "x", "text": ""}]}},
+        {"result": None},
+    ],
+    ids=["fits", "no-answers", "bad-answer", "no-result"],
+)
+def test_the_host_fails_an_ask_whose_reply_does_not_fit_as_unavailable(host: ModuleType, reply: dict[str, Any]) -> None:
+    worker = host.Host(sdk_dir="", input_fd=-1, protocol_fd=-1, diag_fd=-1, native=None)
+    outbox = worker.outbox = _ReplyingOutbox(worker, reply)
+    attempt = host._Attempt("body|" + ref_key(REF), REF_WIRE, ref_key(REF), 7)
+    question = {"question": "q", "header": "", "options": [], "multi_select": False}
+    answers: Any = None
+    error: Any = None
+    try:
+        answers = worker.loop.run_until_complete(worker._ask(attempt, [question]))
+    except host._AskError as exc:
+        error = exc
+    finally:
+        worker.pool.shutdown(wait=False)
+        worker.eval_pool.shutdown(wait=False)
+        worker.loop.close()
+
+    frame = decode_frame(outbox.get_nowait().rstrip(b"\n"))
+    assert (frame["method"], frame["params"]["questions"]) == ("ask", [question])
+    assert worker.pending_asks == {}
+    if reply == {"result": {"answers": [{"selected": [], "text": "x"}]}}:
+        assert (answers, error) == ([{"selected": [], "text": "x"}], None)
+    else:
+        assert answers is None and error is not None
+        assert (error.code, str(error)) == (host.ERROR_ASK_UNAVAILABLE, "ask reply carried no answers.")
 
 
 def test_host_serves_every_forward_method(host: ModuleType) -> None:

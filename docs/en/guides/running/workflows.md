@@ -31,7 +31,7 @@ Agents in a workflow use the same tool approval process as Chat mode. Before run
 1. On the “Workflow” tab, click “▶ Start” to open the “Start Workflow” dialog. Confirm the working directory and default model under “Run Settings”.
 2. Optionally describe what you want to learn about the project, such as `Explain this project's entry points and main modules. Answer in English.` Leave the input empty to use the example's default task. Click “▶ Start” in the dialog.
 
-The example first asks how deeply to read the project. Answer `deep` to try parallel analysis by multiple agents, or `quick` for a quick reading by one agent with fewer calls.
+The example first asks how deeply to read the project. Choose `deep` to try parallel analysis by multiple agents, or `quick` for a quick reading by one agent with fewer calls.
 
 During execution, watch the graph to see which nodes are running, completed, or skipped. To stop the workflow, click “⏹ Cancel” and confirm.
 
@@ -168,6 +168,24 @@ report = wf.python("report", describe, timeout=None)
 Save the changes, reopen the workflow in the TUI, preview the updated source, and confirm trust before starting. Use `apple, banana, pear` as the run input again. When the question dialog appears, enter `Shopping List`. The final output should be `Shopping List: 3 items: apple, banana, pear`.
 
 `ctx.ask()` asks the user a question and returns a string after receiving an answer. It must be called with `await`, so define the node function with `async def`. Workflows that ask the user questions must run in the TUI; unattended CLI execution does not support them.
+
+A question can also offer options, and one dialog can ask several questions. Pass `Question` objects instead of a string. Add `Question` to the `from chrys.workflows import ...` line at the top of the file, then replace `describe()` again:
+
+```python
+async def describe(value: WorkflowValue, ctx: NodeContext) -> str:
+    title, extras = await ctx.ask(
+        [
+            Question("Please give this fruit list a title.", header="Title"),
+            Question("What else goes on the list?", header="Extras", options=["milk", "bread", "eggs"], multi_select=True),
+        ]
+    )
+    items = value.data["items"] + list(extras.selected)
+    return f"{title.text}: {len(items)} items: {', '.join(items)}"
+```
+
+A list of questions returns one `Answer` per question, in order. `selected` holds the option labels the user picked, and `text` holds what they typed. Run it with the same input. The dialog shows one tab per question: enter `Shopping List` on the “Title” tab and click “Answer & Next”, check `milk` and `eggs` on the “Extras” tab and click “Answer & Review”, then click “Submit answers”. The output should be `Shopping List: 5 items: apple, banana, pear, milk, eggs`.
+
+For single-select questions, what an answer contains, and how to pass a selection downstream, see [Workflow reference: `NodeContext.ask`](../../reference/workflows.md#nodecontextask).
 
 ## Define agent nodes
 

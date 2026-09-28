@@ -1792,6 +1792,45 @@ async def test_completed_multi_question_card_hangs_answers_under_questions() -> 
 
 
 @pytest.mark.asyncio
+async def test_completed_card_displays_controls_as_replacement_characters_and_copies_the_raw_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    esc = "\x1b[2J"
+    args = {"questions": [{"question": f"Pick{esc}?\n\tdeep", "options": [{"label": "A"}]}, {"question": "Why?"}]}
+
+    class ToolApp(LocalizedApp):
+        def compose(self) -> ComposeResult:
+            yield AskUserToolCall("c1", "ask_user", args=args)
+
+    async with ToolApp().run_test() as pilot:
+        copied: list[str] = []
+        monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+        tool = pilot.app.query_one(AskUserToolCall)
+        tool.set_complete(
+            json.dumps(
+                {
+                    "responses": [
+                        {"question": "Pick?", "answers": ["A"], "note": f"no{esc}te\tx"},
+                        {"question": "Why?", "answers": [f"own{esc}"]},
+                    ]
+                }
+            ),
+            duration_ms=10,
+        )
+        await pilot.pause()
+
+        assert tool.query_one("#ask-question", VirtualizedMarkdown).source == "1. Pick�[2J?\n    deep\n2. Why?"
+        shown = rich_plain(tool.query_one("#ask-answer", Static).content)
+        assert "\x1b" not in shown and "\t" not in shown
+        assert "1. Pick�[2J?\n       deep\n" in shown
+        assert "no�[2Jte    x" in shown and "own�[2J" in shown
+        tool.copy_tool_execution()
+        await pilot.pause()
+        # Copy starts from the raw text, not the display copy, and escapes controls its own way.
+        assert "1. Pick\\x1b[2J?\n\tdeep\n2. Why?" in copied[-1]
+
+
+@pytest.mark.asyncio
 async def test_completed_card_hangs_wrapped_questions_and_answers_under_their_first_column() -> None:
     long_question = (
         "这个 bug 表现出来是什么。比如某个操作报错、结果不对、崩溃、卡住等。越具体越好、报错信息和现象都要。"

@@ -55,7 +55,7 @@ class _Worker:
             {
                 "method": "hello",
                 "params": {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "python_version": platform.python_version(),
                     "implementation": platform.python_implementation(),
                     "platform": sys.platform,
@@ -164,9 +164,14 @@ class _Worker:
         elif node == "ask":
             reply = self.ask(ref)
             if "result" in reply:
-                _python_result(request_id, "answer=" + reply["result"]["answer"])
+                _python_result(request_id, "answer=" + reply["result"]["answers"][0]["text"])
             else:
                 _send({"id": request_id, "error": {**reply["error"], "data": {"last_emit_ordinal": 0}}})
+        elif node == "malformed_ask":
+            # An option without its description: the client must treat the frame as a protocol error.
+            question = {"question": "q", "header": "", "options": [{"label": "a"}], "multi_select": False}
+            _send({"id": self.next_reverse_id, "method": "ask", "params": {"ref": ref, "questions": [question]}})
+            self.next_reverse_id += 2
         elif node == "ask_then_hang":
             # Hung first, so a cancel that arrives while the ask is open errors this request.
             self.hung[_key(ref)] = request_id
@@ -193,7 +198,8 @@ class _Worker:
         """Send one ask for *ref* and return the client's reply frame (also recorded)."""
         request_id = self.next_reverse_id
         self.next_reverse_id += 2
-        _send({"id": request_id, "method": "ask", "params": {"ref": ref, "prompt": "q"}})
+        question = {"question": "q", "header": "", "options": [], "multi_select": False}
+        _send({"id": request_id, "method": "ask", "params": {"ref": ref, "questions": [question]}})
         while True:
             reply = json.loads(next(sys.stdin.buffer))
             self.received.append(reply)

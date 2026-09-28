@@ -14,6 +14,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from chrys.foundation.events.types import WorkflowNodeAnswer, WorkflowNodeAskUser, WorkflowRunFinished
+from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.layout import run_dir
@@ -66,7 +67,7 @@ async def test_inline_duplicate_answers_are_journaled_once_before_node_resume(
                     node_id=ask.node_id,
                     activation_id=ask.activation_id,
                     request_id=ask.request_id,
-                    answer=response,
+                    answers=(AskUserAnswer(values=(response,)),),
                 )
             )
 

@@ -1418,13 +1418,13 @@ class WorkflowCancelRequest(Event):
 
 @dataclass
 class WorkflowNodeAnswer(Event):
-    """User answers a node's ``ctx.ask`` (frontend → backend)."""
+    """User answers a node's ``ctx.ask`` (frontend → backend): one answer per question, in order."""
 
     run_id: str = ""
     node_id: str = ""
     activation_id: str = ""
     request_id: str = ""
-    answer: str = ""
+    answers: tuple[AskUserAnswer, ...] = ()
 
 
 @dataclass
@@ -1526,7 +1526,11 @@ class WorkflowNodeOutput(Event):
 
 @dataclass
 class WorkflowNodeAskUser(Event):
-    """A python node is waiting on ``ctx.ask``; answer with ``WorkflowNodeAnswer``."""
+    """A python node is waiting on ``ctx.ask``; answer with ``WorkflowNodeAnswer``.
+
+    Live events carry the full questions; a replayed one carries the stored
+    summary as a single open question.
+    """
 
     seq: int = 0
     run_id: str = ""
@@ -1534,12 +1538,12 @@ class WorkflowNodeAskUser(Event):
     activation_id: str = ""
     attempt: int = 0
     request_id: str = ""
-    prompt: str = ""
+    questions: tuple[AskUserQuestion, ...] = ()
 
 
 @dataclass
 class WorkflowNodeAnswered(Event):
-    """An accepted answer, journaled before the waiting attempt resumes."""
+    """An accepted answer, journaled before the waiting attempt resumes; ``answer`` is its summary."""
 
     seq: int = 0
     run_id: str = ""

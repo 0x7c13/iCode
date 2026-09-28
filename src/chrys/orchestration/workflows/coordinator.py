@@ -410,8 +410,8 @@ class WorkflowCoordinator:
         active = self._active
         if active is None or active.runner is None or event.run_id != active.execution.run_id:
             return
-        if not active.runner.answer(event.node_id, event.activation_id, event.request_id, event.answer):
-            logger.info("workflow run %s: no open ask matches answer %s", event.run_id, event.request_id)
+        if not active.runner.answer(event.node_id, event.activation_id, event.request_id, event.answers):
+            logger.info("workflow run %s: no open ask accepts answer %s", event.run_id, event.request_id)
 
     async def on_retry(self, event: WorkflowNodeRetryRequest) -> None:
         active = self._active

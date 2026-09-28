@@ -727,6 +727,47 @@ async def test_hostile_markup_and_cjk_are_plain_in_tabs_options_and_review() -> 
 
 
 @pytest.mark.asyncio
+async def test_control_characters_are_replaced_on_display_while_answers_keep_the_label() -> None:
+    """Workflow and ACP questions come from outside the model: ESC must never reach the terminal.
+
+    Tabs and line breaks are layout, not controls: they display as spaces and new lines, never U+FFFD.
+    """
+    esc = "\x1b[31m"
+    questions = (
+        AskUserQuestion(
+            f"Pick {esc}one?\n\tindented",
+            f"Hd\t{esc}",
+            (AskUserOption(f"lab{esc}el\tx", f"desc{esc}\nmore"), AskUserOption("x")),
+        ),
+        AskUserQuestion(f"Say {esc}why?", "Why"),
+    )
+    async with _PromptApp(questions).run_test(size=(100, 35)) as pilot:
+        from chrys.app.tui.widgets.ask_user_markdown import AskUserQuestionMarkdown
+
+        assert _tab(pilot.app, 0, 2).label.plain == "☐ Hd �[31m"
+        question_source = pilot.app.query_one("#askuser-q0-question", AskUserQuestionMarkdown).source
+        assert question_source == "Pick �[31mone?\n    indented"
+        option_text = _options(pilot.app, 0).get_option_at_index(0).prompt.plain
+        assert "lab�[31mel  x" in option_text and "desc�[31m\nmore" in option_text
+        prompt = pilot.app.query_one(AskUserPrompt)
+        _toggle(pilot.app, 0, 0)
+        await wait_for(lambda: prompt.active_index == 1, pilot=pilot)
+        pilot.app.query_one(_AskUserTextArea).insert(f"typed{esc}")
+        prompt._switch(len(questions))
+        await pilot.pause()
+        review = rich_plain(pilot.app.query_one("#askuser-review-list", Static).content)
+        assert "\x1b" not in review and "\t" not in review
+        assert "Pick �[31mone?" in review and "    indented" in review
+        assert "lab�[31mel  x" in review and "typed�[31m" in review
+        pilot.app.query_one("#askuser-submit", Button).press()
+        await wait_for(lambda: bool(pilot.app.submissions), pilot=pilot)
+    # Only display copies change: the answer names the label exactly as the question offered it.
+    assert pilot.app.submissions == [
+        (AskUserAnswer(values=(f"lab{esc}el\tx",)), AskUserAnswer(values=(f"typed{esc}",)))
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("columns", range(1, 11))
 async def test_option_list_survives_terminals_narrower_than_its_gutter(columns: int) -> None:
     class NarrowPromptApp(_PromptApp):

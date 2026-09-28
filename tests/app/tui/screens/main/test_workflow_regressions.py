@@ -17,6 +17,7 @@ import chrys.app.tui.screens.main.workflow_browser as controller_module
 from chrys.app.tui.screens.dialogs.ask_user import AskUserDialog
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
+from chrys.app.tui.widgets import AskUserOptions, AskUserPrompt
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.text_area import EnhancedTextArea
@@ -24,6 +25,7 @@ from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.selection import WorkflowList
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -344,6 +346,99 @@ workflow = wf.build()
         await host.shutdown()
 
 
+STRUCTURED_ASK_SOURCE = python_workflow(
+    "from chrys.workflows import Option, Question\n"
+    "async def pick(value, ctx):\n"
+    "    branch, areas = await ctx.ask([\n"
+    "        Question('Which branch?', header='Branch', options=[Option('main', 'the trunk'), 'release']),\n"
+    "        Question('Which areas?', header='Areas', options=['API', 'UI'], multi_select=True),\n"
+    "    ])\n"
+    "    return f'{branch.choice}|{\",\".join(areas.selected)}|{areas.text}'\n",
+    "pick",
+)
+
+
+async def test_workflow_structured_questions_resolve_the_node_through_the_dialog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path)
+    monkeypatch.chdir(project)
+    write_workflow(project, "structured", STRUCTURED_ASK_SOURCE)
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    host = make_host(tmp_path, project=project, allow_user_interaction=True)
+    published: list[events.WorkflowNodeAnswer] = []
+
+    async def answered(event: events.WorkflowNodeAnswer) -> None:
+        published.append(event)
+
+    await host.event_bus.subscribe(events.WorkflowNodeAnswer, answered)
+    app = make_chrys_app(tmp_path / "sessions", engine=host.engine, event_bus=host.event_bus)
+    try:
+        async with app.run_test(size=(120, 45)) as pilot:
+            await host.start()
+            main = app._main_screen
+            assert main is not None
+            await wait_for(lambda: not main._agent_loading and app.screen is main, pilot=pilot)
+            await open_workflow(main, pilot, "structured")
+            await start_workflow(pilot)
+            await wait_for(
+                lambda: isinstance(app.screen, AskUserDialog) and app.screen.is_mounted,
+                pilot=pilot,
+                description="the node's questions open in the chat ask dialog",
+                timeout=ENGINE_TURN_TIMEOUT,
+            )
+            rejected = app.screen
+            assert isinstance(rejected, AskUserDialog)
+            prompt = rejected.query_one(AskUserPrompt)
+            assert [(q.header, [o.label for o in q.options], q.multi_select) for q in prompt.questions] == [
+                ("Branch", ["main", "release"], False),
+                ("Areas", ["API", "UI"], True),
+            ]
+            run = main._workflow.session_view.projector.current
+            assert run is not None
+            (request_id,) = run.questions
+            # A result that does not fit the questions (two choices on a single-select) never reaches the
+            # runner, which would refuse it and leave nothing to answer: the questions open again instead.
+            await rejected.dismiss((request_id, (AskUserAnswer(values=("main", "release")), AskUserAnswer())))
+            await wait_for(
+                lambda: isinstance(app.screen, AskUserDialog) and app.screen is not rejected and app.screen.is_mounted,
+                pilot=pilot,
+                description="the rejected questions reopen",
+            )
+            assert not published and not main._workflow.run_control._pending_answers
+            dialog = app.screen
+            assert isinstance(dialog, AskUserDialog)
+            prompt = dialog.query_one(AskUserPrompt)
+            branch = dialog.query_one("#askuser-q0-options", AskUserOptions)
+            await wait_for(lambda: branch.has_focus, pilot=pilot, description="first question option focus")
+            branch.toggle(branch.get_option_at_index(0))  # a single-select choice moves on by itself
+            await wait_for(lambda: prompt.active_index == 1, pilot=pilot)
+            areas = dialog.query_one("#askuser-q1-options", AskUserOptions)
+            areas.toggle(areas.get_option_at_index(1))
+            await pilot.pause()
+            areas.toggle(areas.get_option_at_index(0))
+            dialog.query_one("#askuser-input", EnhancedTextArea).insert("both, please")
+            await pilot.pause()
+            dialog.query_one("#askuser-submit", Button).press()
+            await wait_for(lambda: prompt.active_index == 2, pilot=pilot, description="the review pane")
+            dialog.query_one("#askuser-submit", Button).press()
+            await wait_for(lambda: run.finished is not None, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
+            # The finished event precedes closing the run store; the result is kept once the run task ends.
+            await host.engine.workflows.wait_idle()
+            assert run.finished is not None and run.finished.outcome == "completed"
+            result = host.engine.workflows.result(run.started.run_id)
+            assert result is not None
+            # The dialog hands back click order; the node receives its selection in option order.
+            assert [answer.answers for answer in published] == [
+                (AskUserAnswer(values=("main",)), AskUserAnswer(values=("UI", "API"), note="both, please"))
+            ]
+            assert [output.value.text for output in result.outputs] == ["main|API,UI|both, please"]
+            assert app.screen is main
+    finally:
+        await host.event_bus.unsubscribe(events.WorkflowNodeAnswer, answered)
+        await host.shutdown()
+
+
 @pytest.mark.parametrize("presentation", ["open", "covered", "queued"])
 @pytest.mark.parametrize("state", ["awaiting_retry", "failed", "cancelled", "completed"])
 async def test_workflow_question_expires_with_its_attempt(
@@ -375,7 +470,7 @@ async def test_workflow_question_expires_with_its_attempt(
             activation_id=attempt.activation_id,
             attempt=attempt.attempt,
             request_id="question",
-            prompt="Which target?",
+            questions=(AskUserQuestion("Which target?"),),
         )
         await bus.publish(question)
         run = main._workflow.session_view.projector.current
