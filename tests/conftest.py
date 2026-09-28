@@ -30,11 +30,16 @@ from chrys.foundation import platform as platform_mod
 from chrys.foundation.patches import mdurl_cache as _mdurl_cache
 from chrys.foundation.patches import textual_block_border as _textual_block_border
 from chrys.foundation.patches import textual_dispatch_cache as _textual_dispatch_cache
+from chrys.foundation.patches import textual_lru_acyclic as _textual_lru_acyclic
+from chrys.foundation.patches import textual_node_diet as _textual_node_diet
 from chrys.foundation.patches import textual_one_shot_timer as _textual_one_shot_timer
 from chrys.foundation.patches import textual_pruned_tabs as _textual_pruned_tabs
+from chrys.foundation.patches import textual_reflow_reuse as _textual_reflow_reuse
 from chrys.foundation.patches import textual_removed_screen_callbacks as _textual_removed_screen_callbacks
 from chrys.foundation.patches import textual_selection_extract as _textual_selection_extract
+from chrys.foundation.patches import textual_strip_cycles as _textual_strip_cycles
 from chrys.foundation.patches import textual_tab_selection as _textual_tab_selection
+from chrys.foundation.patches import textual_timer_skip as _textual_timer_skip
 from chrys.foundation.patches import textual_win_sleep as _textual_win_sleep
 from chrys.foundation.patches import watchdog_fsevents as _watchdog_fsevents
 from chrys.foundation.patches import watchdog_windows as _watchdog_windows
@@ -116,6 +121,26 @@ _textual_one_shot_timer.apply_runtime_patch()
 # cache keeps up to 1024 removed widgets' rendered lines alive, and a worker's gen2 collections
 # grow into multi-second pauses.
 _textual_block_border.apply_runtime_patch()
+
+# Screens refresh from a repeating timer exactly as in the app; unpatched, every late frame
+# skips one tick too many and the refresh rate halves under load.
+_textual_timer_skip.apply_runtime_patch()
+
+# Screens lay out through the reusing reflow exactly as in the app; it must be installed before
+# the first widget exists.
+_textual_reflow_reuse.apply_runtime_patch()
+
+# Screens paint strips exactly as in the app; unpatched, every line painted at its own width is
+# a reference cycle that only the cyclic collector frees.
+_textual_strip_cycles.apply_runtime_patch()
+
+# Widgets cache box models, queries and rendered lines exactly as in the app; it must be installed
+# before the first cache exists.
+_textual_lru_acyclic.apply_runtime_patch()
+
+# Widgets keep their unchanged defaults on the class and build pump containers lazily exactly as
+# in the app; it must be installed before the first message pump exists.
+_textual_node_diet.apply_runtime_patch()
 
 
 @pytest.fixture(autouse=True)

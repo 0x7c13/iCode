@@ -394,7 +394,12 @@ async def test_editor_sources_do_not_reference_textual_symbols_added_by_chrys_pa
         if file_patch.package != "textual":
             continue
         old_definitions = set(definition_pattern.findall(file_patch.old_fragment))
-        patch_added_symbols.update(set(definition_pattern.findall(file_patch.new_fragment)) - old_definitions)
+        patch_added_symbols.update(
+            # An added class's dunders are methods every class has, as for the wrapped dunders below.
+            name
+            for name in set(definition_pattern.findall(file_patch.new_fragment)) - old_definitions
+            if not (name.startswith("__") and name.endswith("__"))
+        )
 
     patch_dir = Path(patches_package.__file__).parent
     for patch_source in patch_dir.glob("textual_*.py"):

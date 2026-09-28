@@ -27,8 +27,9 @@ class ThemeStylesheet(Stylesheet):
     def parse(self) -> None:
         # Every parse walks all sources in order through a 64-entry LRU of parsed rules. Past
         # 64 sources, the walk evicts each entry before its next use, so each newly mounted
-        # widget type re-tokenizes the whole app's CSS. A cache that has once filled evicts on
-        # every insert even after grow(), so replace it, doubled to amortize later growth.
+        # widget type re-tokenizes the whole app's CSS. Upstream's cache, once it has evicted,
+        # evicts on every insert even after grow(); the LRU patch lifts that, but a skipped patch
+        # keeps it, so replace the cache, doubled to amortize later growth.
         if len(self.source) > self._parse_cache.maxsize:
             self._parse_cache = LRUCache(2 * len(self.source))
         try:

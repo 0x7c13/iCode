@@ -1696,6 +1696,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _set_shell_mode_flag(self, active: bool) -> None:
         self._shell_mode = active
         self._state.shell.active = active
+        self._sync_sidebar_tab_strip_focus()
 
     def _set_shell_mode_state(self, active: bool) -> None:
         self.shell_mode_state = active
@@ -1703,6 +1704,20 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _set_fullscreen_terminal_flag(self, active: bool) -> None:
         self._fullscreen_terminal = active
         self._state.shell.fullscreen_terminal = active
+        self._sync_sidebar_tab_strip_focus()
+
+    def _sync_sidebar_tab_strip_focus(self) -> None:
+        """Make the sidebar tab strip focusable exactly where sidebar focus is not handed back.
+
+        Asks what ``on_descendant_focus`` asks: workflow mode returns before the shell
+        controller, whose ``keeps_panel_focus`` covers shell mode and the fullscreen terminal.
+        Focus itself moves only with the view switch that follows each mode change
+        (``exit_shell_mode`` returns it to a visible input).
+        """
+        self._sync_shell_state_from_legacy_flags()
+        self.query_one(SidebarPanel).set_tab_strip_focusable(
+            self._workflow.workflow_mode or self._shell_mode_controller.keeps_panel_focus()
+        )
 
     def _sync_shell_state_from_legacy_flags(self) -> None:
         self._state.shell.active = self._shell_mode
@@ -2695,6 +2710,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._workflow.leave()
         self._workflow.workflow_mode = workflow
         self.query_one(SidebarPanel).set_workflow_mode(workflow)
+        self._sync_sidebar_tab_strip_focus()
         self._view_adapter.sync_main_surface()
         self._suggestions.dismiss_suggestions()
         self._sync_workflow_chrome()

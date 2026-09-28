@@ -72,6 +72,7 @@ class SidebarPanel(Widget, can_focus=False):
         self._visibility_suppressors: set[str] = set()
         self._display_before_suppression = True
         self._workflow_mode = False
+        self._tab_strip_focusable = False
         self._chat_tab = "tab-toc"
 
     def compose(self) -> ComposeResult:
@@ -94,7 +95,19 @@ class SidebarPanel(Widget, can_focus=False):
     def on_mount(self) -> None:
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
+        self.query_one(TabbedContent).query_one(Tabs).can_focus = self._tab_strip_focusable
         self.refresh_localization()
+
+    def set_tab_strip_focusable(self, focusable: bool) -> None:
+        """Let the tab strip take focus only where the main screen lets sidebar focus stay.
+
+        Where the main screen hands sidebar focus straight back to the input bar, a
+        focusable strip is focused twice per click (on mouse down, then by ``Tabs``
+        itself) only to be blurred again, restyling it and repainting the screen each time.
+        """
+        self._tab_strip_focusable = focusable
+        if self.is_mounted:
+            self.query_one(TabbedContent).query_one(Tabs).can_focus = focusable
 
     def on_unmount(self) -> None:
         if self._locale_controller is not None:

@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Permanent-generation residue probes for transcript render LRUs."""
+"""Permanent-generation residue probes for transcript render LRUs.
+
+The LRUs hold no reference cycle, so a cache cleared under ``gc.freeze()`` frees its entries at
+once instead of leaving them in the permanent generation until the next unfreeze.
+"""
 
 from __future__ import annotations
 
@@ -129,7 +133,7 @@ async def test_markdown_gc_participant_detaches_and_renews_render_lrus() -> None
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalidation", ["style", "selection-width"])
-async def test_populated_markdown_lru_residue_waits_for_unfreeze(
+async def test_populated_markdown_lru_residue_is_released_without_unfreeze(
     monkeypatch: pytest.MonkeyPatch,
     invalidation: str,
 ) -> None:
@@ -144,6 +148,8 @@ async def test_populated_markdown_lru_residue_waits_for_unfreeze(
         gc.collect()
         gc.freeze()
         try:
+            # The probes are frozen alive, so their release below is the invalidation's doing.
+            assert all(marker_ref() is not None for marker_ref in marker_refs)
             if invalidation == "style":
                 markdown.notify_style_update()
             else:
@@ -166,7 +172,7 @@ async def test_populated_markdown_lru_residue_waits_for_unfreeze(
             assert not markdown._fence_line_strips
             assert not markdown._fence_source_line_strips
             gc.collect()
-            assert all(marker_ref() is not None for marker_ref in marker_refs)
+            assert all(marker_ref() is None for marker_ref in marker_refs)
         finally:
             app.screen.selections = {}
             gc.unfreeze()
@@ -303,7 +309,7 @@ async def test_diff_gc_participants_detach_and_renew_render_lrus() -> None:
 
 
 @pytest.mark.asyncio
-async def test_populated_diff_lru_style_invalidation_waits_for_unfreeze() -> None:
+async def test_populated_diff_lru_style_invalidation_releases_without_unfreeze() -> None:
     app = _DiffCacheApp()
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
@@ -313,6 +319,8 @@ async def test_populated_diff_lru_style_invalidation_waits_for_unfreeze() -> Non
         gc.collect()
         gc.freeze()
         try:
+            # The probes are frozen alive, so their release below is the invalidation's doing.
+            assert all(marker_ref() is not None for marker_ref in marker_refs)
             flat.notify_style_update()
             for code_column in code_columns:
                 code_column.notify_style_update()
@@ -323,7 +331,7 @@ async def test_populated_diff_lru_style_invalidation_waits_for_unfreeze() -> Non
             assert all(not column._strip_cache for column in code_columns)
             assert all(not column._strip_cache for column in gutter_columns)
             gc.collect()
-            assert all(marker_ref() is not None for marker_ref in marker_refs)
+            assert all(marker_ref() is None for marker_ref in marker_refs)
         finally:
             gc.unfreeze()
             gc.collect()
@@ -332,7 +340,7 @@ async def test_populated_diff_lru_style_invalidation_waits_for_unfreeze() -> Non
 
 
 @pytest.mark.asyncio
-async def test_populated_diff_selection_and_width_residue_waits_for_unfreeze(
+async def test_populated_diff_selection_and_width_residue_is_released_without_unfreeze(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = _DiffCacheApp()
@@ -363,7 +371,7 @@ async def test_populated_diff_selection_and_width_residue_waits_for_unfreeze(
             assert all(not column._strip_cache for column in code_columns)
             assert all(not column._strip_cache for column in gutter_columns)
             gc.collect()
-            assert all(marker_ref() is not None for marker_ref in marker_refs)
+            assert all(marker_ref() is None for marker_ref in marker_refs)
         finally:
             app.screen.selections = {}
             gc.unfreeze()

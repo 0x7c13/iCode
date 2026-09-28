@@ -207,14 +207,19 @@ def test_apply_all_isolates_runtime_patch_failures(
         textual_dispatch_cache,
         textual_ime_cursor_anchor,
         textual_kitty_keyboard,
+        textual_lru_acyclic,
         textual_message_pump,
+        textual_node_diet,
         textual_one_shot_timer,
         textual_option_list,
         textual_precompose,
         textual_pruned_tabs,
+        textual_reflow_reuse,
         textual_removed_screen_callbacks,
         textual_selection_extract,
+        textual_strip_cycles,
         textual_tab_selection,
+        textual_timer_skip,
         textual_utf8_decoder,
         textual_win_sleep,
         watchdog_fsevents,
@@ -243,6 +248,11 @@ def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch.setattr(textual_message_pump, "apply_runtime_patch", lambda: calls.append("message_pump"))
     monkeypatch.setattr(textual_dispatch_cache, "apply_runtime_patch", lambda: calls.append("dispatch_cache"))
     monkeypatch.setattr(textual_one_shot_timer, "apply_runtime_patch", lambda: calls.append("one_shot_timer"))
+    monkeypatch.setattr(textual_timer_skip, "apply_runtime_patch", lambda: calls.append("timer_skip"))
+    monkeypatch.setattr(textual_reflow_reuse, "apply_runtime_patch", lambda: calls.append("reflow_reuse"))
+    monkeypatch.setattr(textual_strip_cycles, "apply_runtime_patch", lambda: calls.append("strip_cycles"))
+    monkeypatch.setattr(textual_lru_acyclic, "apply_runtime_patch", lambda: calls.append("lru_acyclic"))
+    monkeypatch.setattr(textual_node_diet, "apply_runtime_patch", lambda: calls.append("node_diet"))
     monkeypatch.setattr(textual_option_list, "apply_runtime_patch", lambda: calls.append("option_list"))
     monkeypatch.setattr(textual_precompose, "apply_runtime_patch", lambda: calls.append("precompose"))
     monkeypatch.setattr(textual_pruned_tabs, "apply_runtime_patch", lambda: calls.append("pruned_tabs"))
@@ -271,6 +281,11 @@ def test_apply_all_isolates_runtime_patch_failures(
         "message_pump",
         "dispatch_cache",
         "one_shot_timer",
+        "timer_skip",
+        "reflow_reuse",
+        "strip_cycles",
+        "lru_acyclic",
+        "node_diet",
         "option_list",
         "precompose",
         "pruned_tabs",
