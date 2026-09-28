@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from dataclasses import replace
 
 import pytest
 
@@ -16,13 +18,20 @@ from chrys.foundation.trajectory.envelope import (
     build_event,
     encode_event_line,
 )
-from chrys.foundation.trajectory.event_types import EventType
+from chrys.foundation.trajectory.event_types import CompactionSkipReason, EventType
 from chrys.foundation.trajectory.ids import is_valid_analytics_id, new_analytics_id
 from chrys.foundation.trajectory.segments import ENCODING_ARRAY_SLICE, reassemble_array_slice
 from chrys.kernel import Message
 from chrys.service.context.compaction.events import CompactionInfo
 from chrys.service.context.compaction.strategy import UnifiedContextStrategy
-from chrys.service.trajectory.compaction import TOKEN_MEASUREMENT_SOURCE, CompactionRunTrace
+from chrys.service.context.manager import ContextManager
+from chrys.service.profiles.agents.schema import CompactionConfig
+from chrys.service.profiles.models.resolver import default_profile
+from chrys.service.trajectory.compaction import (
+    TOKEN_MEASUREMENT_SOURCE,
+    CompactionRunTrace,
+    record_compaction_skipped,
+)
 from chrys.service.trajectory.segmented import emit_segmented, emit_segmented_soon, measure_line, plan_segmented
 from tests.service.trajectory._fakes import SESSION_ID, CancelAckSink, FakeSink, make_context
 
@@ -474,6 +483,157 @@ async def test_a_failing_sink_never_breaks_a_compaction_pass() -> None:
     )
     sink.fail_next = True
     await run.finished(tokens_before=1, tokens_after=1)
+
+    assert sink.drafts == []
+
+
+# ------------------------------------------------------------ skipped passes
+
+# A pass annotates and may exclude the messages it is handed, so each call
+# gets fresh ones.
+
+
+def _no_turn() -> list[Message]:
+    """Past a 500-token trigger, with no user input for a turn to resolve against."""
+    return [Message("assistant", ["world " * 2000])]
+
+
+def _one_turn() -> list[Message]:
+    return [Message("user", ["hello"]), Message("assistant", ["world " * 2000])]
+
+
+def _below_trigger() -> list[Message]:
+    return [Message("user", ["hi"])]
+
+
+def _skip_strategy(*, compaction_enabled: bool = True) -> UnifiedContextStrategy:
+    return UnifiedContextStrategy(
+        max_context_tokens=1000,
+        trigger_pct=0.5,
+        target_pct=0.25,
+        compaction_enabled=compaction_enabled,
+    )
+
+
+@pytest.mark.asyncio
+async def test_usage_past_the_trigger_that_starts_no_pass_says_why_once_per_stretch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    strategy = _skip_strategy()
+    sink = FakeSink()
+
+    with caplog.at_level(logging.WARNING), trajectory_scope(make_context(sink)):
+        await strategy(_no_turn())
+        await strategy(_no_turn())
+        await strategy(_below_trigger())
+        await strategy(_no_turn())
+
+    skipped = sink.of_type(EventType.COMPACTION_SKIPPED)
+    assert len(skipped) == 2  # once per stretch above the trigger
+    assert sink.of_type(EventType.COMPACTION_STARTED) == []
+    payload = skipped[0].payload
+    assert payload["reason_code"] == CompactionSkipReason.TURNS_UNRESOLVED
+    assert payload["trigger_tokens"] == 500
+    assert payload["max_context_tokens"] == 1000
+    assert payload["estimated_input_tokens"] >= payload["trigger_tokens"]
+    assert skipped[0].measurements["/payload/estimated_input_tokens"]["source"] == TOKEN_MEASUREMENT_SOURCE
+    assert [record.levelno for record in caplog.records if "Compaction skipped" in record.getMessage()] == [
+        logging.WARNING
+    ] * 2
+    assert "reason=turns_unresolved" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_session_restored_onto_the_same_strategy_is_told_why_again() -> None:
+    """A restore without a rebuild keeps the strategy; the stretch it was in
+    belongs to the session it left."""
+    strategy = _skip_strategy()
+    first_sink, restored_sink = FakeSink(), FakeSink()
+
+    with trajectory_scope(make_context(first_sink)):
+        await strategy(_no_turn())
+    with trajectory_scope(replace(make_context(restored_sink), session_id="restored-session")):
+        await strategy(_no_turn())
+        await strategy(_no_turn())
+
+    assert len(first_sink.of_type(EventType.COMPACTION_SKIPPED)) == 1
+    assert len(restored_sink.of_type(EventType.COMPACTION_SKIPPED)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_starts_ends_the_stretch_a_skip_was_reported_for() -> None:
+    strategy = _skip_strategy()
+    sink = FakeSink()
+
+    with trajectory_scope(make_context(sink)):
+        await strategy(_no_turn())
+        await strategy(_one_turn())
+        await strategy(_no_turn())
+
+    assert len(sink.of_type(EventType.COMPACTION_STARTED)) == 1
+    assert len(sink.of_type(EventType.COMPACTION_SKIPPED)) == 2
+
+
+@pytest.mark.asyncio
+async def test_disabled_compaction_past_the_trigger_is_recorded_as_a_choice(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    strategy = _skip_strategy(compaction_enabled=False)
+    sink = FakeSink()
+
+    with caplog.at_level(logging.INFO), trajectory_scope(make_context(sink)):
+        await strategy(_below_trigger())
+        await strategy(_one_turn())
+
+    skipped = sink.only(EventType.COMPACTION_SKIPPED)
+    assert skipped.payload["reason_code"] == CompactionSkipReason.DISABLED
+    assert sink.of_type(EventType.COMPACTION_STARTED) == []
+    # The profile asked for this, so it is not a warning.
+    assert [record.levelno for record in caplog.records if "Compaction skipped" in record.getMessage()] == [
+        logging.INFO
+    ]
+
+
+@pytest.mark.parametrize(
+    ("max_context_tokens", "trigger_tokens", "words"),
+    [
+        (200_000, 158_000, 72_900),
+        # trigger_tokens / window as a float, times the window, lands just
+        # above 54,727: rounding up would report 54,728.
+        (91_727, 54_727, 24_900),
+    ],
+)
+@pytest.mark.asyncio
+async def test_disabled_compaction_is_reported_against_the_models_derived_trigger(
+    max_context_tokens: int, trigger_tokens: int, words: int
+) -> None:
+    """With 32k of output a 200k window derives a 158k trigger. A fixed 85%
+    stand-in for the disabled case would stay silent up to 170k and then
+    report 170k as the threshold."""
+    manager = ContextManager(
+        replace(default_profile(), max_context_tokens=max_context_tokens, max_output_tokens=32_000),
+        compaction_config=CompactionConfig(enabled=False),
+    )
+    sink = FakeSink()
+
+    with trajectory_scope(make_context(sink)):
+        await manager.compaction_strategy([Message("user", ["evidence " * words])])
+
+    skipped = sink.only(EventType.COMPACTION_SKIPPED)
+    assert skipped.payload["reason_code"] == CompactionSkipReason.DISABLED
+    assert skipped.payload["trigger_tokens"] == manager.budgets.trigger_tokens == trigger_tokens
+    # Between the derived trigger and where 85% of the window would put it.
+    assert trigger_tokens <= skipped.payload["estimated_input_tokens"] < round(0.85 * max_context_tokens)
+
+
+def test_recording_a_skip_without_a_scope_or_with_a_failing_sink_never_raises() -> None:
+    figures = {"estimated_input_tokens": 9, "trigger_tokens": 5, "max_context_tokens": 10}
+    record_compaction_skipped(reason_code=CompactionSkipReason.DISABLED, **figures)
+
+    sink = FakeSink()
+    sink.fail_next = True
+    with trajectory_scope(make_context(sink)):
+        record_compaction_skipped(reason_code=CompactionSkipReason.DISABLED, **figures)
 
     assert sink.drafts == []
 

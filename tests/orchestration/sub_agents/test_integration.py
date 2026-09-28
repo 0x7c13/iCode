@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -63,6 +64,7 @@ from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_T
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
+from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import (
@@ -77,7 +79,7 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.schema import DEFAULT_MAX_OUTPUT_TOKENS, ModelProfile
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
@@ -186,6 +188,9 @@ async def _make_ctx(
     search_respect_gitignore: bool = True,
     sub_skills: SkillsConfig | None = None,
     sub_responses_store: bool = False,
+    sub_compaction: CompactionConfig | None = None,
+    sub_max_context_tokens: int = 100_000,
+    sub_max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     agent_engine,
 ) -> _SubAgentPipelineCtx:
     """Build a parent+sub-agent engine with independent mock clients.
@@ -237,7 +242,8 @@ async def _make_ctx(
         api_style="responses" if sub_responses_store else "chat_completions",
         model_id="gpt-sub" if sub_responses_store else "mock",
         stream=sub_stream,
-        max_context_tokens=100_000,
+        max_context_tokens=sub_max_context_tokens,
+        max_output_tokens=sub_max_output_tokens,
         chat_options='{"store": true}' if sub_responses_store else "",
     )
     model_registry.register(main_profile)
@@ -268,7 +274,7 @@ async def _make_ctx(
         tools=ToolsConfig(builtins=sub_builtins or []),
         skills=sub_skills or SkillsConfig(auto_load_user_agents_skills=False, auto_load_cwd_agents_skills=False),
         approval=ApprovalConfig(default="auto"),
-        compaction=CompactionConfig(enabled=False),
+        compaction=sub_compaction or CompactionConfig(enabled=False),
         # Pin sub-agent to its own model profile so create_client routes correctly.
         model=ModelConfig(profile_id="sub-mock-profile"),
     )
@@ -930,6 +936,69 @@ async def test_pause_retry_continues_after_completed_sub_agent_tool(
             if (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn") and e.tool_name == "Explore"
         ]
         assert tool_results and "continued after sleep" in tool_results[-1].result
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_pause_retry_from_completed_work_still_compacts_the_child_turn(
+    tmp_path: Path,
+    fast_sub_agent_controller: None,
+    agent_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry that continues from the child's own history sends no new input,
+    so the stored opener is the last user message the reminder middleware
+    rebuilds.  Compaction must still resolve that turn and drop its work
+    instead of silently sending an over-trigger request."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[
+            _sub_tool_call("gather evidence"),
+            MockResponse(text="Parent saw the compacted child finish."),
+        ],
+        sub_outcomes=[
+            MockResponse(tool_calls=[("sleep", "sleep-1", {"seconds": 0, "reason": "evidence " * 30_000})]),
+            MockResponse(text="finished from the note"),
+        ],
+        sub_builtins=["sleep"],
+        sub_compaction=CompactionConfig(),
+        sub_max_context_tokens=30_000,
+        sub_max_output_tokens=3_000,
+        agent_engine=agent_engine,
+    )
+    # The first pass fails before its second request reaches the client, so
+    # compaction first sees the oversized turn on the retry.
+    fail_nested_before_response_on_nth(monkeypatch, 2, main=ctx.engine.current.loaded.bindings._response_validation)
+
+    async def generate(self: LastWordsGenerator, *_args: Any, **_kwargs: Any) -> str:
+        return "Collected the evidence with one sleep call. Next, report the findings."
+
+    generate_call = create_autospec(LastWordsGenerator.generate, side_effect=generate)
+    monkeypatch.setattr(LastWordsGenerator, "generate", generate_call)
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (paused,) = await ctx.wait_for_event(InvocationPaused)
+        assert generate_call.call_count == 0
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=paused.origin.invocation_id))
+        await ctx.wait_for_event(InvocationResumed)
+        await ctx.wait_for_idle()
+
+        assert generate_call.call_count == 1
+        assert ctx.sub_client.call_count == 2
+        retry_messages = ctx.sub_client.call_history[1][0]
+        assert not any(
+            content.call_id == "sleep-1"
+            for message in retry_messages
+            for content in message.contents
+            if content.type in ("function_call", "function_result")
+        )
+        (opener,) = [m for m in retry_messages if m.role == "user"]
+        assert opener.text.startswith("gather evidence")
+        assert "[LAST_WORDS] " in opener.text
+        assert "Collected the evidence with one sleep call." in opener.text
+        assert _explore_result(ctx).result == "finished from the note"
     finally:
         await ctx.cleanup()
 

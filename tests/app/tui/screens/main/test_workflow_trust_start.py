@@ -117,7 +117,7 @@ async def test_starting_worker_can_be_cancelled_before_acceptance(
             assert main._workflow.run_control.start("")
             pending = main._workflow.run_control._pending_run
             assert pending is not None
-            await wait_for(lambda: pid.exists() and bool(pid.read_text()), pilot=pilot)
+            await wait_for(lambda: pid.exists() and bool(pid.read_text()), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
             worker = psutil.Process(int(pid.read_text()))
             assert replies == [] and not main._workflow.session_view.run_ids
             assert host.engine.execution().request_id == pending.request_id

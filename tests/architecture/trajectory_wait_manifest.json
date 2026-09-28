@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "6629dc5a6c8ce8e35def8534a9f56e9ae56cfb0b3d42c665c517ef834e47bfa7",
+  "inventory_sha256": "0533f95129109b300c92bce41ef4438df23daab47567fe99cf63d748c9cfe2f0",
   "nodes": [
     {
       "cases": [
@@ -2298,7 +2298,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient._prepare_messages_for_model_call",
       "source_column": 15,
-      "source_line": 684,
+      "source_line": 761,
       "wrapper_target": "chrys.kernel.compaction.apply_compaction"
     },
     {
@@ -2318,7 +2318,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient._prepare_wire_call",
       "source_column": 19,
-      "source_line": 821,
+      "source_line": 898,
       "wrapper_target": "chrys.kernel.client.BaseChatClient._prepare_messages_for_model_call"
     },
     {
@@ -2338,7 +2338,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient._validate_options",
       "source_column": 15,
-      "source_line": 637,
+      "source_line": 714,
       "wrapper_target": "chrys.kernel._types.validate_chat_options"
     },
     {
@@ -2358,7 +2358,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient.get_response._get_response",
       "source_column": 46,
-      "source_line": 947,
+      "source_line": 1026,
       "wrapper_target": "chrys.kernel.client.BaseChatClient._prepare_wire_call"
     },
     {
@@ -2378,7 +2378,7 @@
       "primitive": "awaitable",
       "qualname": "BaseChatClient.get_response._get_response",
       "source_column": 19,
-      "source_line": 964,
+      "source_line": 1043,
       "wrapper_target": null
     },
     {
@@ -2398,7 +2398,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient.get_response._get_stream",
       "source_column": 50,
-      "source_line": 923,
+      "source_line": 1002,
       "wrapper_target": "chrys.kernel.client.BaseChatClient._prepare_wire_call"
     },
     {
@@ -2418,7 +2418,7 @@
       "primitive": "awaitable",
       "qualname": "BaseChatClient.get_response._get_stream",
       "source_column": 42,
-      "source_line": 939,
+      "source_line": 1018,
       "wrapper_target": null
     },
     {
@@ -2431,14 +2431,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await result.get_final_response()",
+      "expression": "await result.with_transform_hook(_report_side_call_update).get_final_response()",
       "identity": "chrys.kernel.client:_ClientLastWordsCompleter.complete_last_words:1",
       "module": "chrys.kernel.client",
       "ordinal": 1,
       "primitive": "awaitable",
       "qualname": "_ClientLastWordsCompleter.complete_last_words",
       "source_column": 27,
-      "source_line": 584,
+      "source_line": 656,
       "wrapper_target": null
     },
     {
@@ -2458,7 +2458,7 @@
       "primitive": "awaitable",
       "qualname": "_ClientLastWordsCompleter.complete_last_words",
       "source_column": 26,
-      "source_line": 586,
+      "source_line": 658,
       "wrapper_target": null
     },
     {
@@ -2471,14 +2471,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await awaited.get_final_response()",
+      "expression": "await awaited.with_transform_hook(_report_side_call_update).get_final_response()",
       "identity": "chrys.kernel.client:_ClientLastWordsCompleter.complete_last_words:3",
       "module": "chrys.kernel.client",
       "ordinal": 3,
       "primitive": "awaitable",
       "qualname": "_ClientLastWordsCompleter.complete_last_words",
-      "source_column": 27,
-      "source_line": 587,
+      "source_column": 20,
+      "source_line": 660,
       "wrapper_target": null
     },
     {
@@ -2738,7 +2738,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 20,
-      "source_line": 3044,
+      "source_line": 3058,
       "wrapper_target": null
     },
     {
@@ -2758,7 +2758,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 31,
-      "source_line": 3045,
+      "source_line": 3059,
       "wrapper_target": null
     },
     {
@@ -2778,7 +2778,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 20,
-      "source_line": 3070,
+      "source_line": 3084,
       "wrapper_target": null
     },
     {
@@ -2798,7 +2798,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 64,
-      "source_line": 3093,
+      "source_line": 3107,
       "wrapper_target": null
     },
     {
@@ -2818,7 +2818,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 16,
-      "source_line": 3168,
+      "source_line": 3182,
       "wrapper_target": null
     },
     {
@@ -2838,7 +2838,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 27,
-      "source_line": 3169,
+      "source_line": 3183,
       "wrapper_target": null
     },
     {
@@ -2858,7 +2858,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._get_response",
       "source_column": 16,
-      "source_line": 3180,
+      "source_line": 3194,
       "wrapper_target": null
     },
     {
@@ -2878,7 +2878,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._guarded_get_response",
       "source_column": 27,
-      "source_line": 3213,
+      "source_line": 3227,
       "wrapper_target": null
     },
     {
@@ -2898,7 +2898,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._guarded_get_response",
       "source_column": 20,
-      "source_line": 3224,
+      "source_line": 3238,
       "wrapper_target": null
     },
     {
@@ -3038,7 +3038,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 20,
-      "source_line": 3268,
+      "source_line": 3282,
       "wrapper_target": null
     },
     {
@@ -3058,7 +3058,7 @@
       "primitive": "async_iteration",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 20,
-      "source_line": 3289,
+      "source_line": 3303,
       "wrapper_target": null
     },
     {
@@ -3078,7 +3078,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 31,
-      "source_line": 3294,
+      "source_line": 3308,
       "wrapper_target": null
     },
     {
@@ -3098,7 +3098,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 20,
-      "source_line": 3323,
+      "source_line": 3337,
       "wrapper_target": null
     },
     {
@@ -3118,7 +3118,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 64,
-      "source_line": 3349,
+      "source_line": 3363,
       "wrapper_target": null
     },
     {
@@ -3138,7 +3138,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 16,
-      "source_line": 3453,
+      "source_line": 3467,
       "wrapper_target": null
     },
     {
@@ -3158,7 +3158,7 @@
       "primitive": "async_iteration",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 16,
-      "source_line": 3460,
+      "source_line": 3474,
       "wrapper_target": null
     },
     {
@@ -3178,7 +3178,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 33,
-      "source_line": 3481,
+      "source_line": 3495,
       "wrapper_target": null
     },
     {
@@ -3198,7 +3198,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 16,
-      "source_line": 3487,
+      "source_line": 3501,
       "wrapper_target": null
     },
     {
@@ -3218,7 +3218,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._stream",
       "source_column": 16,
-      "source_line": 3560,
+      "source_line": 3574,
       "wrapper_target": null
     },
     {
@@ -3238,7 +3238,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 41,
-      "source_line": 2867,
+      "source_line": 2881,
       "wrapper_target": null
     },
     {
@@ -3258,7 +3258,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 45,
-      "source_line": 2881,
+      "source_line": 2895,
       "wrapper_target": null
     },
     {
@@ -3278,7 +3278,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 39,
-      "source_line": 2897,
+      "source_line": 2911,
       "wrapper_target": null
     },
     {
@@ -3298,7 +3298,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 28,
-      "source_line": 2914,
+      "source_line": 2928,
       "wrapper_target": null
     },
     {
@@ -3318,7 +3318,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 28,
-      "source_line": 2918,
+      "source_line": 2932,
       "wrapper_target": null
     },
     {
@@ -3338,7 +3338,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 32,
-      "source_line": 2929,
+      "source_line": 2943,
       "wrapper_target": null
     },
     {
@@ -3358,7 +3358,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 32,
-      "source_line": 2951,
+      "source_line": 2965,
       "wrapper_target": null
     },
     {
@@ -3378,7 +3378,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 49,
-      "source_line": 2962,
+      "source_line": 2976,
       "wrapper_target": null
     },
     {
@@ -3398,7 +3398,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 28,
-      "source_line": 2968,
+      "source_line": 2982,
       "wrapper_target": null
     },
     {
@@ -3418,7 +3418,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._streaming_response_with_retry._updates",
       "source_column": 24,
-      "source_line": 2981,
+      "source_line": 2995,
       "wrapper_target": null
     },
     {
@@ -3578,7 +3578,7 @@
       "primitive": "awaitable",
       "qualname": "ToolLoopLayer.get_response._watchdog_await",
       "source_column": 23,
-      "source_line": 2830,
+      "source_line": 2833,
       "wrapper_target": null
     },
     {
@@ -3591,14 +3591,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.wait((task,), timeout=timeout)",
+      "expression": "await asyncio.wait((task,), timeout=idle_budget)",
       "identity": "chrys.kernel.loop:ToolLoopLayer.get_response._watchdog_await:2",
       "module": "chrys.kernel.loop",
       "ordinal": 2,
       "primitive": "multi_wait",
       "qualname": "ToolLoopLayer.get_response._watchdog_await",
-      "source_column": 26,
-      "source_line": 2833,
+      "source_column": 20,
+      "source_line": 2847,
       "wrapper_target": null
     },
     {
@@ -3618,7 +3618,7 @@
       "primitive": "gather",
       "qualname": "ToolLoopLayer.get_response._watchdog_await",
       "source_column": 16,
-      "source_line": 2839,
+      "source_line": 2853,
       "wrapper_target": null
     },
     {
@@ -3638,7 +3638,7 @@
       "primitive": "gather",
       "qualname": "ToolLoopLayer.get_response._watchdog_await",
       "source_column": 12,
-      "source_line": 2844,
+      "source_line": 2858,
       "wrapper_target": null
     },
     {
@@ -3678,7 +3678,7 @@
       "primitive": "wrapper",
       "qualname": "ToolLoopLayer.get_response.execute_batch",
       "source_column": 19,
-      "source_line": 3007,
+      "source_line": 3021,
       "wrapper_target": "chrys.kernel.loop._execute_function_calls"
     },
     {
@@ -3958,7 +3958,7 @@
       "primitive": "awaitable",
       "qualname": "_resolve_response",
       "source_column": 15,
-      "source_line": 3598,
+      "source_line": 3612,
       "wrapper_target": null
     },
     {
@@ -19298,7 +19298,7 @@
       "primitive": "async_context",
       "qualname": "AttemptRunner._stream_single_attempt",
       "source_column": 19,
-      "source_line": 949,
+      "source_line": 975,
       "wrapper_target": null
     },
     {
@@ -19318,7 +19318,7 @@
       "primitive": "future",
       "qualname": "AttemptRunner._stream_single_attempt",
       "source_column": 23,
-      "source_line": 952,
+      "source_line": 978,
       "wrapper_target": null
     },
     {
@@ -19338,7 +19338,7 @@
       "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 37,
-      "source_line": 874,
+      "source_line": 903,
       "wrapper_target": null
     },
     {
@@ -19351,14 +19351,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.wait_for(aiter.__anext__(), timeout=self._stream_timeout())",
+      "expression": "await _watched(aiter.__anext__())",
       "identity": "chrys.orchestration.invoker.attempts:AttemptRunner._stream_single_attempt._iterate_and_finalize:2",
       "module": "chrys.orchestration.invoker.attempts",
       "ordinal": 2,
-      "primitive": "timeout",
+      "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 37,
-      "source_line": 876,
+      "source_line": 905,
       "wrapper_target": null
     },
     {
@@ -19378,7 +19378,7 @@
       "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 28,
-      "source_line": 886,
+      "source_line": 912,
       "wrapper_target": null
     },
     {
@@ -19398,7 +19398,7 @@
       "primitive": "sleep",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 20,
-      "source_line": 907,
+      "source_line": 933,
       "wrapper_target": null
     },
     {
@@ -19418,7 +19418,7 @@
       "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 20,
-      "source_line": 910,
+      "source_line": 936,
       "wrapper_target": null
     },
     {
@@ -19438,7 +19438,7 @@
       "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 27,
-      "source_line": 917,
+      "source_line": 943,
       "wrapper_target": null
     },
     {
@@ -19451,14 +19451,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.wait_for(stream.get_final_response(), timeout=self._stream_timeout())",
+      "expression": "await _watched(stream.get_final_response())",
       "identity": "chrys.orchestration.invoker.attempts:AttemptRunner._stream_single_attempt._iterate_and_finalize:7",
       "module": "chrys.orchestration.invoker.attempts",
       "ordinal": 7,
-      "primitive": "timeout",
+      "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 23,
-      "source_line": 918,
+      "source_line": 944,
       "wrapper_target": null
     },
     {
@@ -19478,7 +19478,67 @@
       "primitive": "awaitable",
       "qualname": "AttemptRunner._stream_single_attempt._iterate_and_finalize",
       "source_column": 20,
-      "source_line": 939,
+      "source_line": 965,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.wait_for(awaitable, timeout=timeout)",
+      "identity": "chrys.orchestration.invoker.attempts:AttemptRunner._stream_single_attempt._watched:1",
+      "module": "chrys.orchestration.invoker.attempts",
+      "ordinal": 1,
+      "primitive": "timeout",
+      "qualname": "AttemptRunner._stream_single_attempt._watched",
+      "source_column": 23,
+      "source_line": 846,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async with asyncio.timeout(timeout)",
+      "identity": "chrys.orchestration.invoker.attempts:AttemptRunner._stream_single_attempt._watched:2",
+      "module": "chrys.orchestration.invoker.attempts",
+      "ordinal": 2,
+      "primitive": "timeout",
+      "qualname": "AttemptRunner._stream_single_attempt._watched",
+      "source_column": 23,
+      "source_line": 849,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await awaitable",
+      "identity": "chrys.orchestration.invoker.attempts:AttemptRunner._stream_single_attempt._watched:3",
+      "module": "chrys.orchestration.invoker.attempts",
+      "ordinal": 3,
+      "primitive": "awaitable",
+      "qualname": "AttemptRunner._stream_single_attempt._watched",
+      "source_column": 31,
+      "source_line": 861,
       "wrapper_target": null
     },
     {
@@ -37598,7 +37658,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate",
       "source_column": 29,
-      "source_line": 948,
+      "source_line": 955,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_completer"
     },
     {
@@ -37618,7 +37678,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate",
       "source_column": 15,
-      "source_line": 963,
+      "source_line": 970,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_fallback"
     },
     {
@@ -37638,7 +37698,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_once",
       "source_column": 23,
-      "source_line": 1609,
+      "source_line": 1617,
       "wrapper_target": "chrys.service.llm.responses.get_final_response"
     },
     {
@@ -37658,7 +37718,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1365,
+      "source_line": 1372,
       "wrapper_target": null
     },
     {
@@ -37678,7 +37738,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 16,
-      "source_line": 1412,
+      "source_line": 1419,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -37698,7 +37758,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 16,
-      "source_line": 1418,
+      "source_line": 1425,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -37718,7 +37778,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1480,
+      "source_line": 1487,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -37738,7 +37798,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1486,
+      "source_line": 1493,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -37758,7 +37818,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 12,
-      "source_line": 1521,
+      "source_line": 1528,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -37778,7 +37838,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 12,
-      "source_line": 1522,
+      "source_line": 1529,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -37798,7 +37858,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 30,
-      "source_line": 1080,
+      "source_line": 1087,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_once"
     },
     {
@@ -37818,7 +37878,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 16,
-      "source_line": 1128,
+      "source_line": 1135,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -37838,7 +37898,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 16,
-      "source_line": 1135,
+      "source_line": 1142,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -37858,7 +37918,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 20,
-      "source_line": 1188,
+      "source_line": 1195,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -37878,7 +37938,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 20,
-      "source_line": 1195,
+      "source_line": 1202,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -37898,7 +37958,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 12,
-      "source_line": 1275,
+      "source_line": 1282,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -37918,7 +37978,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 12,
-      "source_line": 1282,
+      "source_line": 1289,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -37938,7 +37998,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._publish_retry_attempt",
       "source_column": 12,
-      "source_line": 1554,
+      "source_line": 1561,
       "wrapper_target": null
     },
     {
@@ -37958,7 +38018,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._publish_status_cancellable",
       "source_column": 12,
-      "source_line": 875,
+      "source_line": 882,
       "wrapper_target": null
     },
     {
@@ -37978,7 +38038,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 12,
-      "source_line": 1571,
+      "source_line": 1578,
       "wrapper_target": null
     },
     {
@@ -37998,7 +38058,7 @@
       "primitive": "sleep",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 8,
-      "source_line": 1572,
+      "source_line": 1579,
       "wrapper_target": null
     },
     {
@@ -38018,7 +38078,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 12,
-      "source_line": 1574,
+      "source_line": 1581,
       "wrapper_target": null
     },
     {
@@ -38038,7 +38098,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 12,
-      "source_line": 813,
+      "source_line": 820,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38058,7 +38118,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 24,
-      "source_line": 814,
+      "source_line": 821,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"
     },
     {
@@ -38078,7 +38138,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 16,
-      "source_line": 848,
+      "source_line": 855,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38098,7 +38158,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.publish_breaker_trip",
       "source_column": 8,
-      "source_line": 920,
+      "source_line": 927,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38118,7 +38178,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.publish_breaker_trip",
       "source_column": 8,
-      "source_line": 921,
+      "source_line": 928,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38138,7 +38198,7 @@
       "primitive": "shield",
       "qualname": "LastWordsGenerator.publish_committed",
       "source_column": 8,
-      "source_line": 904,
+      "source_line": 911,
       "wrapper_target": null
     },
     {
@@ -38158,7 +38218,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 33,
-      "source_line": 667,
+      "source_line": 676,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_queued_compressions"
     },
     {
@@ -38178,7 +38238,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 16,
-      "source_line": 701,
+      "source_line": 713,
       "wrapper_target": null
     },
     {
@@ -38198,7 +38258,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 22,
-      "source_line": 702,
+      "source_line": 714,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase1"
     },
     {
@@ -38218,7 +38278,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 23,
-      "source_line": 708,
+      "source_line": 720,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase2"
     },
     {
@@ -38238,7 +38298,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 23,
-      "source_line": 709,
+      "source_line": 721,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase3"
     },
     {
@@ -38258,7 +38318,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 23,
-      "source_line": 710,
+      "source_line": 722,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase4"
     },
     {
@@ -38278,7 +38338,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy.__call__",
       "source_column": 12,
-      "source_line": 723,
+      "source_line": 735,
       "wrapper_target": null
     },
     {
@@ -38298,7 +38358,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._emergency_compress_oldest_turn",
       "source_column": 15,
-      "source_line": 969,
+      "source_line": 1010,
       "wrapper_target": null
     },
     {
@@ -38318,7 +38378,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._fire_pre_compact",
       "source_column": 8,
-      "source_line": 439,
+      "source_line": 448,
       "wrapper_target": null
     },
     {
@@ -38338,7 +38398,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._notify_compaction",
       "source_column": 8,
-      "source_line": 374,
+      "source_line": 383,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._notify_compaction_for_run"
     },
     {
@@ -38358,7 +38418,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._notify_compaction_for_run",
       "source_column": 12,
-      "source_line": 384,
+      "source_line": 393,
       "wrapper_target": null
     },
     {
@@ -38378,7 +38438,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._notify_compaction_for_run",
       "source_column": 12,
-      "source_line": 395,
+      "source_line": 404,
       "wrapper_target": null
     },
     {
@@ -38398,7 +38458,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._notify_compress",
       "source_column": 12,
-      "source_line": 414,
+      "source_line": 423,
       "wrapper_target": null
     },
     {
@@ -38418,7 +38478,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._notify_compress",
       "source_column": 12,
-      "source_line": 425,
+      "source_line": 434,
       "wrapper_target": "chrys.service.trajectory.compaction.CompactionRunTrace.record_compression"
     },
     {
@@ -38438,7 +38498,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._notify_compress",
       "source_column": 12,
-      "source_line": 434,
+      "source_line": 443,
       "wrapper_target": null
     },
     {
@@ -38458,7 +38518,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._run_phase1",
       "source_column": 12,
-      "source_line": 795,
+      "source_line": 836,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._fire_pre_compact"
     },
     {
@@ -38478,7 +38538,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._run_phase1",
       "source_column": 12,
-      "source_line": 834,
+      "source_line": 875,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._notify_compaction"
     },
     {
@@ -38498,7 +38558,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._run_phase2",
       "source_column": 16,
-      "source_line": 860,
+      "source_line": 901,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._fire_pre_compact"
     },
     {
@@ -38518,7 +38578,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._run_phase2",
       "source_column": 16,
-      "source_line": 895,
+      "source_line": 936,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._notify_compaction"
     },
     {
@@ -38538,7 +38598,7 @@
       "primitive": "wrapper",
       "qualname": "UnifiedContextStrategy._run_phase3",
       "source_column": 41,
-      "source_line": 922,
+      "source_line": 963,
       "wrapper_target": "chrys.service.context.compaction.strategy.UnifiedContextStrategy._emergency_compress_oldest_turn"
     },
     {
@@ -38558,7 +38618,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._run_phase4",
       "source_column": 15,
-      "source_line": 944,
+      "source_line": 985,
       "wrapper_target": null
     },
     {
@@ -38578,7 +38638,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy._run_queued_compressions",
       "source_column": 15,
-      "source_line": 727,
+      "source_line": 768,
       "wrapper_target": null
     },
     {
@@ -38598,7 +38658,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy.flush_pending_compressions",
       "source_column": 15,
-      "source_line": 577,
+      "source_line": 586,
       "wrapper_target": null
     },
     {
@@ -38618,7 +38678,7 @@
       "primitive": "awaitable",
       "qualname": "UnifiedContextStrategy.force_compress",
       "source_column": 15,
-      "source_line": 485,
+      "source_line": 494,
       "wrapper_target": null
     },
     {
@@ -39878,7 +39938,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._get_response",
       "source_column": 40,
-      "source_line": 761,
+      "source_line": 764,
       "wrapper_target": null
     },
     {
@@ -39898,7 +39958,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._get_response",
       "source_column": 31,
-      "source_line": 766,
+      "source_line": 769,
       "wrapper_target": null
     },
     {
@@ -39918,7 +39978,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 44,
-      "source_line": 680,
+      "source_line": 683,
       "wrapper_target": null
     },
     {
@@ -39938,7 +39998,7 @@
       "primitive": "wrapper",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 33,
-      "source_line": 683,
+      "source_line": 686,
       "wrapper_target": "chrys.service.llm._chat_stream_validation._validate_chat_completion_stream_response"
     },
     {
@@ -39958,7 +40018,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 37,
-      "source_line": 686,
+      "source_line": 689,
       "wrapper_target": null
     },
     {
@@ -39978,7 +40038,7 @@
       "primitive": "async_iteration",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 20,
-      "source_line": 688,
+      "source_line": 691,
       "wrapper_target": null
     },
     {
@@ -39998,7 +40058,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 36,
-      "source_line": 748,
+      "source_line": 751,
       "wrapper_target": null
     },
     {
@@ -40578,7 +40638,7 @@
       "primitive": "awaitable",
       "qualname": "_await_with_timeout",
       "source_column": 15,
-      "source_line": 22,
+      "source_line": 24,
       "wrapper_target": null
     },
     {
@@ -40598,7 +40658,7 @@
       "primitive": "timeout",
       "qualname": "_await_with_timeout",
       "source_column": 15,
-      "source_line": 24,
+      "source_line": 26,
       "wrapper_target": null
     },
     {
@@ -40618,7 +40678,7 @@
       "primitive": "awaitable",
       "qualname": "cleanup_response_stream",
       "source_column": 8,
-      "source_line": 42,
+      "source_line": 44,
       "wrapper_target": null
     },
     {
@@ -40638,7 +40698,7 @@
       "primitive": "awaitable",
       "qualname": "get_final_response",
       "source_column": 15,
-      "source_line": 56,
+      "source_line": 58,
       "wrapper_target": null
     },
     {
@@ -40658,7 +40718,7 @@
       "primitive": "wrapper",
       "qualname": "get_final_response",
       "source_column": 13,
-      "source_line": 58,
+      "source_line": 60,
       "wrapper_target": "chrys.service.llm.responses._await_with_timeout"
     },
     {
@@ -40678,7 +40738,7 @@
       "primitive": "wrapper",
       "qualname": "get_final_response",
       "source_column": 16,
-      "source_line": 68,
+      "source_line": 70,
       "wrapper_target": "chrys.service.llm.responses._await_with_timeout"
     },
     {
@@ -40698,7 +40758,7 @@
       "primitive": "wrapper",
       "qualname": "get_final_response",
       "source_column": 15,
-      "source_line": 71,
+      "source_line": 76,
       "wrapper_target": "chrys.service.llm.responses._await_with_timeout"
     },
     {
@@ -40718,7 +40778,7 @@
       "primitive": "wrapper",
       "qualname": "get_final_response",
       "source_column": 12,
-      "source_line": 74,
+      "source_line": 79,
       "wrapper_target": "chrys.service.llm.responses.cleanup_response_stream"
     },
     {
@@ -47938,7 +47998,7 @@
       "primitive": "awaitable",
       "qualname": "CompactionRunTrace.finished",
       "source_column": 12,
-      "source_line": 350,
+      "source_line": 382,
       "wrapper_target": null
     },
     {
@@ -47958,7 +48018,7 @@
       "primitive": "wrapper",
       "qualname": "CompactionRunTrace.phase_finished",
       "source_column": 8,
-      "source_line": 253,
+      "source_line": 285,
       "wrapper_target": "chrys.service.trajectory.segmented.emit_segmented"
     },
     {
@@ -47978,7 +48038,7 @@
       "primitive": "awaitable",
       "qualname": "CompactionRunTrace.record_compression",
       "source_column": 12,
-      "source_line": 135,
+      "source_line": 167,
       "wrapper_target": null
     },
     {
@@ -47998,7 +48058,7 @@
       "primitive": "awaitable",
       "qualname": "CompactionRunTrace.record_compression",
       "source_column": 12,
-      "source_line": 136,
+      "source_line": 168,
       "wrapper_target": null
     },
     {
@@ -48018,7 +48078,7 @@
       "primitive": "awaitable",
       "qualname": "CompactionRunTrace.started",
       "source_column": 12,
-      "source_line": 164,
+      "source_line": 196,
       "wrapper_target": null
     },
     {

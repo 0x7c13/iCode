@@ -39,7 +39,7 @@ from tests.orchestration.workflows._hosting import (
     write_workflow,
 )
 from tests.support.event_capture import capture_event_sequence
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
@@ -126,7 +126,11 @@ async def test_run_terminal_waits_for_session_checkpoint(
             caller = asyncio.create_task(
                 host.run_workflow_until_final(host.workflow_target("write"), input_text="write the file")
             )
-            await wait_for(lambda: checkpoint_entered.is_set() or caller.done(), description="final checkpoint started")
+            await wait_for(
+                lambda: checkpoint_entered.is_set() or caller.done(),
+                description="final checkpoint started",
+                timeout=ENGINE_TURN_TIMEOUT,
+            )
             if caller.done():
                 await caller
             assert checkpoint_entered.is_set()

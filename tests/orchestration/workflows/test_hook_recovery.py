@@ -65,7 +65,9 @@ async def test_workflow_only_recovers_pending_hook_once_across_runs(
         await confirm(host, "review")
         await run(host, "review")
         done_path = hooks_dir / "outbox" / "done" / f"{job.job_id}.json"
-        await wait_for(done_path.exists, description="crash-leftover durable hook completed")
+        await wait_for(
+            done_path.exists, description="crash-leftover durable hook completed", timeout=ENGINE_TURN_TIMEOUT
+        )
         completed = json.loads(done_path.read_text())
         assert completed["payload"] == job.payload and completed["retries"] == 1
         assert not (hooks_dir / "outbox" / "pending" / f"{job.job_id}.json").exists()

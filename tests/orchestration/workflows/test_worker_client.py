@@ -34,7 +34,7 @@ from chrys.service.workflows.sdk import WorkflowValue
 from chrys.service.workflows.sdk_artifact import SdkArtifact
 from chrys.service.workflows.values import canonical_json
 from tests.orchestration.workflows.conftest import FAKE_WORKER, Launcher, prepared_environment
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import create_venv, python_workflow
 
 FIXTURE = Path(__file__).resolve().parents[2] / "service" / "workflows" / "fixtures" / "code-review.py"
@@ -296,6 +296,7 @@ async def test_cancelled_launch_reaps_the_worker_it_spawned(sdk: SdkArtifact, wo
     await wait_for(
         lambda: launching.done() or bool(pid_file.exists() and pid_file.read_text(encoding="utf-8")),
         description="sleepy host wrote its pid",
+        timeout=ENGINE_TURN_TIMEOUT,
     )
     if launching.done():
         await launching

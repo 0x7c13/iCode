@@ -457,6 +457,52 @@ async def test_sub_agent_card_status_follows_structured_failure_metadata(
         assert not tool.has_class("-error" if expected_status == "complete" else "-complete")
 
 
+@pytest.mark.parametrize(
+    ("result_text", "expected"),
+    [
+        pytest.param(
+            "Error: sub-agent 'Explore' failed — Streaming response produced no progress for 300s",
+            "Errored: Streaming response produced no progress for 300s",
+            id="policy-failure-shows-its-cause",
+        ),
+        pytest.param(
+            "Error: sub-agent 'Explore' aborted by user after failure — Error code: 400",
+            "Errored: aborted by user after failure — Error code: 400",
+            id="user-abort-keeps-the-abort",
+        ),
+        pytest.param("Error: sub-agent 'Explore' failed — ", "Errored", id="no-cause-falls-back"),
+        pytest.param("Error: cancelled (global interrupt)", "Errored: cancelled (global interrupt)", id="other-error"),
+    ],
+)
+async def test_sub_agent_error_line_names_the_failure_reason(result_text: str, expected: str) -> None:
+    """A failed card says why on its one-line summary instead of a bare "Errored"."""
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "investigate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+
+        tool.set_complete(result_text, 25, metadata={TOOL_FAILED_METADATA_KEY: True})
+        await pilot.pause()
+
+        assert tool.status == "error"
+        assert tool.query_one("#sa-activity-text", Static).render().plain == expected
+        assert tool.result_text == result_text
+
+
+async def test_sub_agent_error_line_is_one_sanitized_line() -> None:
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "investigate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+
+        tool.set_error("Error: provider said\n\x1b[31mno")
+        await pilot.pause()
+
+        line = tool.query_one("#sa-activity-text", Static).render().plain
+        assert line.startswith("Errored: provider said ")
+        assert "\n" not in line and "\x1b" not in line
+
+
 async def test_sub_agent_update_args_refreshes_task_prompt() -> None:
     async with LocalizedWidgetApp(
         lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "old prompt"})

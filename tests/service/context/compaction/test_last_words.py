@@ -237,6 +237,45 @@ async def test_last_words_generator_retries_transient_failure_and_succeeds(tmp_p
     assert scheduled.payload["retry_mode"] == started.payload["retry_mode"] == RetryMode.COMPACTION
 
 
+async def test_fallback_attempts_report_wire_progress_before_each_dispatch(tmp_path, monkeypatch):
+    """Each reconstruction attempt restarts the waiting pull's stall watchdog,
+    so a retried note gets a full idle window per attempt."""
+    from chrys.kernel.client import start_with_wire_progress
+    from chrys.service.context.compaction.last_words import LastWordsGenerator
+    from chrys.service.profiles.models.resolver import default_profile
+
+    monkeypatch.setattr(LastWordsGenerator, "_MAX_RETRIES", 2)
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0, 0))
+    reports = 0
+
+    def _on_progress() -> None:
+        nonlocal reports
+        reports += 1
+
+    class _Response:
+        usage_details = None
+        raw_text = structured_note()
+
+    at_dispatch: list[int] = []
+
+    class _FlakyClient:
+        async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            at_dispatch.append(reports)
+            if len(at_dispatch) == 1:
+                raise ConnectionError("connection dropped")
+            return _Response()
+
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    gen._client = _FlakyClient()  # type: ignore[assignment]
+
+    out = await start_with_wire_progress(
+        generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[]), _on_progress
+    )
+
+    assert out == structured_note()
+    assert at_dispatch == [1, 2]
+
+
 async def test_injected_zero_transient_budget_disables_fallback_transport_retry(tmp_path):
     from chrys.service.context.compaction.last_words import LastWordsGenerator
     from chrys.service.profiles.models.resolver import default_profile

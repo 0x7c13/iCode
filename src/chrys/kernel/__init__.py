@@ -20,8 +20,10 @@ from .client import (
     BaseChatClient,
     StorageModeResolution,
     collect_conversation_handles,
+    report_wire_progress,
     resolve_storage_mode_and_handles,
     strip_invalidated_conversation_handles,
+    wire_progress_scope,
 )
 from .compaction import (
     EXCLUDE_REASON_KEY,
@@ -229,6 +231,7 @@ __all__ = [
     "normalize_tools",
     "prepend_instructions_to_messages",
     "project_included_messages",
+    "report_wire_progress",
     "resolve_storage_mode_and_handles",
     "set_excluded",
     "split_middleware",
@@ -236,4 +239,5 @@ __all__ = [
     "tool",
     "validate_chat_options",
     "validate_tool_mode",
+    "wire_progress_scope",
 ]

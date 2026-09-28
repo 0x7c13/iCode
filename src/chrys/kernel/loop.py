@@ -115,7 +115,7 @@ from ._types import (
     Message,
     ResponseStream,
 )
-from .client import _wire_message_view, resolve_storage_mode_and_handles
+from .client import _wire_message_view, resolve_storage_mode_and_handles, start_with_wire_progress
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
 from .instrumentation import (
@@ -2826,11 +2826,25 @@ class ToolLoopLayer:
                     )
 
         async def _watchdog_await(awaitable: Awaitable[Any], timeout: float | None, label: str) -> Any:
+            # Idle timing: a pull whose first byte waits on compaction (and
+            # its LAST_WORDS side call) stays alive while that work reports
+            # progress, and stalls after *timeout* without any.
             if timeout is None:
                 return await awaitable
-            task = asyncio.ensure_future(awaitable)
+            event_loop = asyncio.get_running_loop()
+            last_progress = event_loop.time()
+
+            def _on_progress() -> None:
+                nonlocal last_progress
+                last_progress = event_loop.time()
+
+            task = start_with_wire_progress(awaitable, _on_progress)
             try:
-                done, _ = await asyncio.wait((task,), timeout=timeout)
+                while not task.done():
+                    idle_budget = last_progress + timeout - event_loop.time()
+                    if idle_budget <= 0:
+                        break
+                    await asyncio.wait((task,), timeout=idle_budget)
             except asyncio.CancelledError:
                 # The pull task may still be running INSIDE the stream's
                 # generator; closing that stream before the task settles
@@ -2838,7 +2852,7 @@ class ToolLoopLayer:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 raise
-            if task in done:
+            if task.done():
                 return task.result()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

@@ -69,7 +69,7 @@ from tests.orchestration.workflows._hosting import (
     run,
     write_workflow,
 )
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import CONDITIONAL_LOOP_WORKFLOW, python_workflow
 
 TITLE = "Workflow Demo · Project Tour"
@@ -794,6 +794,7 @@ async def test_trust_preview_timeout_kills_a_blocked_worker_without_confirming(
         await wait_for(
             lambda: (marker.exists() and marker.stat().st_size > 0) or caller.done(),
             description="trust preview entered module loading",
+            timeout=ENGINE_TURN_TIMEOUT,
         )
         if caller.done():
             await caller
@@ -837,12 +838,13 @@ async def test_trust_preview_consumes_the_same_deadline_budget_as_the_run(
     events = create_autospec(host.iter_workflow_events, side_effect=host.iter_workflow_events)
     monkeypatch.setattr(host, "iter_workflow_events", events)
     clock = create_autospec(time, spec_set=True)
-    clock.monotonic.side_effect = [0.0, 1.0, 2.5, 4.0]  # preview consumes 1.5 seconds of the original five
+    clock.monotonic.side_effect = [0.0, 1.0, 2.5, 4.0]  # preview consumes 1.5 seconds of the original 25
     monkeypatch.setattr(workflow_cli, "time", clock)
-    args = workflow_cli.build_parser().parse_args(["run", "chain", "--trust", "--timeout", "5"])
+    # The real preview and run still start workers under these deadlines: keep both well above a cold start.
+    args = workflow_cli.build_parser().parse_args(["run", "chain", "--trust", "--timeout", "25"])
     try:
         assert await workflow_cli._run_command(args) == 0
-        assert events.call_args.kwargs["timeout"] == 3.5
+        assert events.call_args.kwargs["timeout"] == 23.5
     finally:
         await host.shutdown()
 

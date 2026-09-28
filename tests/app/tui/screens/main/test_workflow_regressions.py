@@ -41,7 +41,7 @@ from tests.support.event_capture import capture_event_sequence
 from tests.support.platform_fakes import platform_with_config_dir
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 
 from ._workflow_support import (
@@ -316,6 +316,7 @@ workflow = wf.build()
                 lambda: isinstance(app.screen, AskUserDialog) and app.screen.is_mounted,
                 pilot=pilot,
                 description="workflow agent question dialog and its children are mounted",
+                timeout=ENGINE_TURN_TIMEOUT,
             )
             dialog = app.screen
             assert isinstance(dialog, AskUserDialog)

@@ -905,6 +905,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.tool_card.sub_agent.compactions",
     "tui.tool_card.sub_agent.ctx_tokens",
     "tui.tool_card.sub_agent.diagnostics",
+    "tui.tool_card.sub_agent.errored_with_reason",
     "tui.tool_card.sub_agent.duration",
     "tui.tool_card.sub_agent.paused",
     "tui.tool_card.sub_agent.reason.acp_interrupted",

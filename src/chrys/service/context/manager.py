@@ -101,8 +101,10 @@ class ContextManager:
         compaction_enabled = cfg.enabled
         compaction_strategy = UnifiedContextStrategy(
             max_context_tokens=profile.max_context_tokens,
-            trigger_pct=budgets.trigger_pct if compaction_enabled else 0.85,
-            target_pct=budgets.target_pct if compaction_enabled else 0.50,
+            # Derived even when disabled: a skip past the trigger is still
+            # reported against the model's real threshold.
+            trigger_pct=budgets.trigger_pct,
+            target_pct=budgets.target_pct,
             on_compaction=on_compaction,
             on_pre_compact=on_pre_compact,
             on_compress=on_compress,

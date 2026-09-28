@@ -117,7 +117,7 @@ async def test_workspace_preview_shows_loading_after_trust_and_keeps_cancel_avai
             )
             assert not entered.is_set()  # Even an environment-only change asks before loading the module.
             await click_when_settled(pilot, "#workflow-confirm-yes")
-            await wait_for(lambda: entered.is_set() and app.screen is dialog, pilot=pilot)
+            await wait_for(lambda: entered.is_set() and app.screen is dialog, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
             progress = dialog.query_one("#workflow-input-directory-loading", Static)
             assert progress.display and str(progress.content)
             assert dialog.query_one("#workflow-input-start", Button).disabled
@@ -129,7 +129,11 @@ async def test_workspace_preview_shows_loading_after_trust_and_keeps_cancel_avai
                 assert main._workflow.browser.loaded.preview is original_preview
             else:
                 release.set()
-                await wait_for(lambda: not dialog.query_one("#workflow-input-start", Button).disabled, pilot=pilot)
+                await wait_for(
+                    lambda: not dialog.query_one("#workflow-input-start", Button).disabled,
+                    pilot=pilot,
+                    timeout=ENGINE_TURN_TIMEOUT,
+                )
                 # A second Trust prompt would leave the input dialog blocked instead of completing.
                 assert app.screen is dialog and not progress.display
                 assert str(dialog.query_one("#workflow-input-directory", Static).content) == str(other)
@@ -249,6 +253,7 @@ async def test_directory_change_updates_preview_outer_path_and_submitted_workspa
                     and Text.from_markup(str(main._workflow_panel.border_subtitle)).plain == str(other)
                 ),
                 pilot=pilot,
+                timeout=ENGINE_TURN_TIMEOUT,
             )
             assert main._workflow_panel.preview is not old_preview
             assert main._workflow.browser.loaded.catalog is main._workflow.browser.catalog

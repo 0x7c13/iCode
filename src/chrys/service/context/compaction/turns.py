@@ -90,7 +90,14 @@ def _state_correspondence(messages: list[Message], state_messages: list[Message]
     exact to the same degree: content objects live in exactly one message
     (the transcript's no-duplicate invariant), and a view carries the state
     original's objects.  Empty-contents messages carry no identity evidence
-    and skip the tier.  The ``message_id`` fallback serves only wire
+    and skip the tier.  The third tier matches wrappers REBUILT with fresh
+    contents but the original's ``additional_properties`` dict — the
+    sanctioned write-through channel, kept by the reminder middleware's
+    enriched last user message and the LAST_WORDS refresh.  Without it a
+    stored opener that is also the last user message (a child continuing
+    from its own history) drops out of the history segment and the turn
+    resolves to nothing.  The dict must belong to exactly one state message
+    and the roles must agree.  The ``message_id`` fallback serves only wire
     messages with no identity hit anywhere in state (streaming finalizers
     rebuild current-turn messages into fresh objects, contents included)
     and is guarded: built EXCLUDING excluded and marker state messages and
@@ -103,15 +110,27 @@ def _state_correspondence(messages: list[Message], state_messages: list[Message]
     """
     by_identity = {id(m): i for i, m in enumerate(state_messages)}
     by_content_identity: dict[tuple[int, ...], int] = {}
+    by_properties_identity: dict[int, int] = {}
+    shared_properties: set[int] = set()
     for s, m in enumerate(state_messages):
         if m.contents:
             by_content_identity[tuple(id(c) for c in m.contents)] = s
+        properties_key = id(m.additional_properties)
+        if properties_key in by_properties_identity:
+            shared_properties.add(properties_key)
+        by_properties_identity[properties_key] = s
+    for properties_key in shared_properties:
+        del by_properties_identity[properties_key]
     mapping: dict[int, int] = {}
     unmatched: list[int] = []
     for w, msg in enumerate(messages):
         s = by_identity.get(id(msg))
         if s is None and msg.contents:
             s = by_content_identity.get(tuple(id(c) for c in msg.contents))
+        if s is None:
+            s = by_properties_identity.get(id(msg.additional_properties))
+            if s is not None and state_messages[s].role != msg.role:
+                s = None
         if s is None:
             unmatched.append(w)
         else:

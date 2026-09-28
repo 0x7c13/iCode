@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -95,6 +96,7 @@ _SUB_AGENT_AFTER_RETRIES = msg(
     plural_fallback="(after {count} auto-retry attempts)",
 )
 _SUB_AGENT_DIAGNOSTICS = msg("tui.tool_card.sub_agent.diagnostics", fallback="Diagnostics: {path}")
+_SUB_AGENT_ERRORED_WITH_REASON = msg("tui.tool_card.sub_agent.errored_with_reason", fallback="Errored: {reason}")
 _SUB_AGENT_PAUSED = msg(
     "tui.tool_card.sub_agent.paused",
     fallback="Paused — awaiting user",
@@ -117,6 +119,23 @@ _SUB_AGENT_REASON_MESSAGES: dict[str, MessageDef] = {
 
 _COMPACTION_ENTRY_KIND = "compaction"
 """Synthetic ``tool_kind`` for the Phase-4 compaction progress line."""
+
+# The failure results the sub-agent policies write name the card's own agent
+# ("sub-agent 'X' failed — <cause>"); the card line keeps only what the card
+# does not already say.
+_OWN_AGENT_PREFIX = re.compile(r"sub-agent '[^']*' (?:failed —\s*)?")
+# Far wider than any card: the activity line ellipsizes to its own width.
+_ERROR_REASON_MAX_CHARS = 400
+
+
+def _error_reason(result: str) -> str:
+    """One display line naming why the sub-agent call failed, or ``""``."""
+    text = result.strip().removeprefix("Error:").lstrip()
+    text = _OWN_AGENT_PREFIX.sub("", text, count=1) if text.startswith("sub-agent '") else text
+    reason = sanitize_legacy_scalar(surrogate_safe_text(" ".join(text.split())))
+    if len(reason) > _ERROR_REASON_MAX_CHARS:
+        reason = reason[: _ERROR_REASON_MAX_CHARS - 1] + "…"
+    return reason
 
 
 @dataclass
@@ -1083,7 +1102,8 @@ class SubAgentToolCall(BaseToolCard):
             "rejected": TOOL_CARD_REJECTED,
             "interrupted": TOOL_CARD_INTERRUPTED,
         }[status]
-        self._remember_activity(status_message.bind())
+        reason = _error_reason(result) if status == "error" else ""
+        self._remember_activity(_SUB_AGENT_ERRORED_WITH_REASON.bind(reason=reason) if reason else status_message.bind())
 
     def _drop_inner_call_tracking(self) -> None:
         """Free per-call id bookkeeping once the parent call is terminal.

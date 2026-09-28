@@ -19,7 +19,7 @@ from chrys.service.llm.mock import MockChatClient
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.store import RunRecord, WorkflowRunStore, read_run_events, read_run_output
 from tests.orchestration.workflows._hosting import confirm, make_host, make_project, patch_runtime, run, write_workflow
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 
 
@@ -115,7 +115,11 @@ async def test_cancel_drains_thread_write_before_terminal_and_release(
     try:
         await confirm(host, "write")
         caller = asyncio.create_task(run(host, "write"))
-        await wait_for(lambda: entered.is_set() or caller.done(), description="node record thread entered")
+        await wait_for(
+            lambda: entered.is_set() or caller.done(),
+            description="node record thread entered",
+            timeout=ENGINE_TURN_TIMEOUT,
+        )
         if caller.done():
             await caller
         assert entered.is_set()

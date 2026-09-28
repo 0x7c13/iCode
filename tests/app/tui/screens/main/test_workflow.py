@@ -378,7 +378,7 @@ async def test_shadowed_sources_warnings_and_preview_errors(tmp_path: Path, monk
             timeout=ENGINE_TURN_TIMEOUT,
         )
         await click_when_settled(pilot, "#workflow-confirm-yes")
-        await wait_for(lambda: "broken preview" in workflow_notice_text(main), pilot=pilot)
+        await wait_for(lambda: "broken preview" in workflow_notice_text(main), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
         assert "Traceback" in workflow_notice_text(main) and "load output" in workflow_notice_text(main)
         await dismiss_workflow_notice(main, pilot, "broken preview")
         assert workflow_selecting(main)
@@ -501,7 +501,7 @@ async def test_preview_deadline_and_confirmation_cancel_stay_in_selection(
             timeout=ENGINE_TURN_TIMEOUT,
         )
         await click_when_settled(pilot, "#workflow-confirm-yes")
-        await wait_for(lambda: "timed out" in workflow_notice_text(main), pilot=pilot)
+        await wait_for(lambda: "timed out" in workflow_notice_text(main), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
         await dismiss_workflow_notice(main, pilot, "timed out")
         assert workflow_selecting(main) and panel.preview is None
         write_workflow(project, "slow", python_workflow("def fn(value):\n    return value\n", "fn"))

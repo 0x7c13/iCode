@@ -160,7 +160,7 @@ async def test_posix_last_words_outlive_a_master_that_failed_while_nobody_was_re
     monkeypatch.setattr(pty_process_module, "PtyOutputProtocol", master)
     process = await run_python("print('last words', end='|')")
 
-    await wait_for(master_ended.is_set, description="the master to end")
+    await wait_for(master_ended.is_set, description="the master to end", timeout=_READ_DEADLINE)
 
     assert await _read_through(process, "|") == "last words|"
     async with asyncio.timeout(_READ_DEADLINE):

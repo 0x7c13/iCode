@@ -10920,6 +10920,12 @@ msgstr "诊断：{path}"
 msgid "tui.tool_card.sub_agent.duration"
 msgstr "时长：{duration}"
 
+#. English: Errored: {reason}
+#. chrys-meta={"fingerprint":"6bcdf1454b867972274949b98e2cd7eaf7d4f33b4edfffd0bf3d33478f20faed","multiline":false,"placeholders":["reason"]}
+#: src/chrys/app/tui/widgets/chat/renderers/sub_agent.py
+msgid "tui.tool_card.sub_agent.errored_with_reason"
+msgstr "出错：{reason}"
+
 #. English: Paused — awaiting user
 #. chrys-meta={"fingerprint":"ce5fc6a0f41b8ce2fbfca81224f23ffaa4917e678b8e927d866b0bc4b4e9668c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/renderers/sub_agent.py

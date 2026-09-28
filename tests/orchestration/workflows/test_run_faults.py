@@ -86,7 +86,7 @@ from tests.orchestration.workflows._hosting import (
     write_workflow,
 )
 from tests.support.event_capture import capture_event_sequence
-from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, with_wait_deadline
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, wait_for, with_wait_deadline
 from tests.support.workflow_workers import python_workflow
 
 pytestmark = pytest.mark.asyncio
@@ -204,7 +204,9 @@ async def test_duplicate_request_ids_replay_the_reply_and_start_nothing(
             await bus.publish(
                 WorkflowRunRequest(target=host.workflow_target("chain", new_session=True), request_id="r1")
             )
-            await wait_for(lambda: of_type(events, WorkflowRunAccepted), description="r1 accepted")
+            await wait_for(
+                lambda: of_type(events, WorkflowRunAccepted), description="r1 accepted", timeout=ENGINE_TURN_TIMEOUT
+            )
             await host.engine.workflows.wait_idle()
             first = of_type(events, WorkflowRunAccepted)[0]
             assert first.request_id == "r1"
@@ -450,7 +452,9 @@ async def _start_on_the_bus(host: Any, workflow_id: str, request_id: str, events
     await host.event_bus.publish(
         WorkflowRunRequest(target=host.workflow_target(workflow_id, new_session=True), request_id=request_id)
     )
-    await wait_for(lambda: of_type(events, WorkflowRunStarted), description="the run started")
+    await wait_for(
+        lambda: of_type(events, WorkflowRunStarted), description="the run started", timeout=ENGINE_TURN_TIMEOUT
+    )
     started = of_type(events, WorkflowRunStarted)[0]
     await host.load_workflow_session(started.session_id)
     return started.run_id
@@ -928,7 +932,11 @@ async def test_cancelling_a_stalled_load_drains_the_worker_and_replies_once(
             caller = asyncio.create_task(
                 host.run_workflow_until_final(host.workflow_target("blocked"), timeout=3600 if deadline else 0)
             )
-            await wait_for(lambda: marker.exists() or caller.done(), description="the worker entered module loading")
+            await wait_for(
+                lambda: marker.exists() or caller.done(),
+                description="the worker entered module loading",
+                timeout=ENGINE_TURN_TIMEOUT,
+            )
             if caller.done():
                 await caller
             assert marker.exists()
@@ -1092,7 +1100,11 @@ async def test_a_prompt_that_finishes_preparing_under_a_held_run_is_refused(
             await host.event_bus.publish(
                 WorkflowRunRequest(target=host.workflow_target("sleeper", new_session=True), request_id="wf")
             )
-            await wait_for(lambda: of_type(events, WorkflowRunAccepted), description="the run was accepted")
+            await wait_for(
+                lambda: of_type(events, WorkflowRunAccepted),
+                description="the run was accepted",
+                timeout=ENGINE_TEST_WAIT_TIMEOUT,
+            )
             release.set()  # the prompt registers its preparation and reaches admission under the held run
             await prompt
             assert lease.workflow is not None
@@ -1462,6 +1474,7 @@ async def test_a_caller_cancelled_while_its_request_is_still_being_published_giv
             await wait_for(
                 lambda: any(event.state == "running" for event in of_type(events, WorkflowNodeStateChanged)),
                 description="the node is running",
+                timeout=ENGINE_TEST_WAIT_TIMEOUT,
             )
             run_id = host.engine.workflows.active_run_id
             assert run_id is not None

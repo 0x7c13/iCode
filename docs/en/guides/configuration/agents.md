@@ -161,7 +161,7 @@ These settings work as follows:
 
 During a task, the agent uses each sub-agent's tool name and description to decide whether to delegate work to it. You can also request a specific sub-agent in the input field, for example: `Call <tool name> to complete <task>`. A successful result from the corresponding sub-agent tool confirms that the configuration has taken effect.
 
-A sub-agent returns its final reply to the agent that called it. Text it writes between tool calls appears on its card but is not returned. If the final reply has no text, all the text the sub-agent wrote is returned, in order. An external ACP agent returns what its **Result** setting selects; see [Set the result and timeouts](../extensions/external-acp-agents.md#set-the-result-and-timeouts).
+A sub-agent returns its final reply to the agent that called it. Text it writes between tool calls appears on its card but is not returned. If the final reply has no text, all the text the sub-agent wrote is returned, in order. If the sub-agent fails, its card shows the reason. An external ACP agent returns what its **Result** setting selects; see [Set the result and timeouts](../extensions/external-acp-agents.md#set-the-result-and-timeouts).
 
 **Notes:**
 

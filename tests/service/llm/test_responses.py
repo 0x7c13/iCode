@@ -8,7 +8,8 @@ import asyncio
 
 import pytest
 
-from chrys.kernel import Message
+from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
+from chrys.kernel.client import start_with_wire_progress
 from chrys.service.llm.responses import get_final_response
 
 
@@ -80,3 +81,34 @@ async def test_get_final_response_times_out_hung_stream_and_runs_cleanup() -> No
         )
 
     assert client.stream.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_streamed_final_response_reports_each_chunk_to_the_enclosing_wire_watchdog() -> None:
+    """A compaction side call drained here keeps the waiting pull's stall
+    watchdog alive chunk by chunk."""
+    reports = 0
+
+    def _on_progress() -> None:
+        nonlocal reports
+        reports += 1
+
+    at_chunk: list[int] = []
+
+    async def _updates():
+        for text in ("a", "b", "c"):
+            at_chunk.append(reports)
+            yield ChatResponseUpdate(contents=[Content.from_text(text)], role="assistant")
+
+    class _Client:
+        async def get_response(self, _messages, *, stream=False, **_kwargs):
+            assert stream is True
+            return ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
+
+    response = await start_with_wire_progress(
+        get_final_response(_Client(), [Message("user", ["hi"])], stream=True, timeout=5), _on_progress
+    )
+
+    assert response.text == "abc"
+    assert at_chunk == [0, 1, 2]
+    assert reports == 3

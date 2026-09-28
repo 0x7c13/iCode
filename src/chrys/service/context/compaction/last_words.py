@@ -54,7 +54,14 @@ from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
 from chrys.foundation.trajectory.event_types import RetryMode, RetryReason
-from chrys.kernel import TOOL_CALL_CONTENT_TYPES, Content, LastWordsToolCallError, Message, TokenizerProtocol
+from chrys.kernel import (
+    TOOL_CALL_CONTENT_TYPES,
+    Content,
+    LastWordsToolCallError,
+    Message,
+    TokenizerProtocol,
+    report_wire_progress,
+)
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
 from chrys.service.llm.responses import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
@@ -1605,6 +1612,7 @@ class LastWordsGenerator:
         profile_options = self._profile_chat_options()
         options = {key: value for key, value in profile_options.items() if key in _FALLBACK_ALLOWED_OPTION_KEYS}
         options["max_tokens"] = max_tokens
+        report_wire_progress()
         with side_call_scope(ActorRole.COMPACTION):
             response = await get_final_response(
                 client,
