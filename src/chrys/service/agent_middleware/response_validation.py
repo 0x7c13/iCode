@@ -74,6 +74,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from chrys.foundation.errors import ContinuationVerdictError
 from chrys.foundation.hosted_tools import (
     HostedRetrySafety,
     HostedToolPhase,
@@ -150,7 +151,7 @@ class ValidationRetryExemption:
     delay_seconds: int
 
 
-class RetryableResponseValidationError(ResponseValidationError, ConnectionError):
+class RetryableResponseValidationError(ResponseValidationError, ConnectionError, ContinuationVerdictError):
     """A stored response failed validation and must retry at the outer boundary.
 
     ``hosted_commits`` names the provider-hosted tool calls (hosted MCP,
@@ -162,10 +163,10 @@ class RetryableResponseValidationError(ResponseValidationError, ConnectionError)
     effects a second time.
     """
 
-    # Cross-layer duck contract read by the kernel's retry wrappers: this
-    # failure judged a TERMINAL response, so a live continuation token now
-    # refers to a completed (immutable) response — a retry must issue a
-    # fresh request, never re-poll the same invalid completion.
+    # Read by the kernel's retry wrappers through the classifier: this failure
+    # judged a TERMINAL response, so a live continuation token now refers to a
+    # completed (immutable) response — a retry must issue a fresh request,
+    # never re-poll the same invalid completion.
     invalidates_continuation_token = True
 
     def __init__(

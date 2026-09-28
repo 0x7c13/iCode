@@ -18,6 +18,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -101,7 +102,7 @@ async def test_interrupt_preserves_user_message(tmp_path: Path, agent_engine, mo
 
     mock_clients: list[MockChatClient] = []
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         client = MockChatClient(
             responses=[
                 # Phase 1: fast response
@@ -189,7 +190,9 @@ async def test_interrupt_during_rollback_snapshot_never_starts_executor(
         await bus.subscribe(cls, lambda event, _events=events: collect_events(_events, event))
 
     mock_client = MockChatClient(responses=[MockResponse(text="must not run")])
-    monkeypatch.setattr(builder_module, "create_client", lambda *_args, **_kwargs: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(
         bus,
         settings=Settings(workspace_change_notice=False),
@@ -253,7 +256,9 @@ async def test_interrupt_during_post_run_save_does_not_cancel_next_turn(
         await bus.subscribe(cls, lambda event, _events=events: collect_events(_events, event))
 
     mock_client = MockChatClient(responses=[MockResponse(text="first complete"), MockResponse(text="second must run")])
-    monkeypatch.setattr(builder_module, "create_client", lambda *_args, **_kwargs: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(
         bus,
         settings=Settings(workspace_change_notice=False),
@@ -320,7 +325,7 @@ async def test_chat_works_after_interrupt(tmp_path: Path, agent_engine, monkeypa
 
     mock_clients: list[MockChatClient] = []
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         client = MockChatClient(
             responses=[
                 # Message 1: will be interrupted
@@ -392,7 +397,7 @@ async def test_interrupt_no_effect_when_idle(tmp_path: Path, agent_engine, monke
     state_store = JsonFileStateStore(tmp_path)
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(
             responses=[MockResponse(text="Hello!"), MockResponse(text="Still responsive after idle Stop.")]
         )

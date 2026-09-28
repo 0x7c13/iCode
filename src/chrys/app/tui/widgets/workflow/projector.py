@@ -267,14 +267,20 @@ def transcript_operation(event: events.InvocationEvent) -> AgentTranscriptOp | N
             event.compaction_id, event.outcome, event.duration_ms, event.format_violation, event.failure_reason
         )
     if isinstance(event, events.InvocationRetryAttempt):
+        if event.scope == "compaction":
+            return TranscriptRetryOp(
+                event.detail or event.message,
+                event.attempt,
+                event.max_attempts,
+                event.delay_seconds,
+                compaction=True,
+            )
         return TranscriptRetryOp(
-            (event.detail or event.message)
-            if event.scope == "compaction"
-            else (event.display_message or event.message),
+            event.message if event.display_message is None else event.display_message,
             event.attempt,
             event.max_attempts,
             event.delay_seconds,
-            compaction=event.scope == "compaction",
+            hint=None if event.display_message is None else event.display_hint,
         )
     if isinstance(event, events.InvocationPaused):
         return TranscriptErrorOp(event.last_error or text.AWAITING_RETRY.bind())

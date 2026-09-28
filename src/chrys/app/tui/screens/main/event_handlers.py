@@ -54,6 +54,7 @@ from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_THINKING,
 )
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
+from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadFinished,
@@ -308,6 +309,13 @@ class BackendEventHandler:
     def _render_display(self, reference: MessageRef) -> str:
         controller = self._locale_controller
         return format_message(reference) if controller is None else render_str(controller.localizer, reference)
+
+    def _render_display_with_hint(self, message: MessageRef, hint: MessageRef | None) -> str:
+        """Render an error's display message and its hint in the current locale, joined as that locale joins them."""
+        rendered = self._render_display(message)
+        if hint is None:
+            return rendered
+        return self._render_display(DISPLAY_WITH_HINT.bind(message=rendered, hint=self._render_display(hint)))
 
     def _gateway(self) -> UiGateway:
         """Return the Textual dialog gateway."""
@@ -794,7 +802,14 @@ class BackendEventHandler:
             with contextlib.suppress(Exception):
                 s.update_subtitle()
 
-        self._agent_load().on_failed(event)
+        if event.display_message is None:
+            self._agent_load().on_failed(event)
+        else:
+            self._agent_load().on_failed(
+                event,
+                display=self._render_display_with_hint(event.display_message, event.display_hint),
+                summary=self._render_display(event.display_message),
+            )
         self._callbacks.refresh_model_indicator()
         if event.operation != "startup":
             self._callbacks.post_gc_message(GcReclaimRequested(GcReclaimReason.AGENT_REBUILD_FAILED, prompt=False))
@@ -1396,9 +1411,14 @@ class BackendEventHandler:
         """Render an auto-retry banner inside the owning sub-agent card."""
         if not _chat_sub_agent(event.origin):
             return
+        message = (
+            event.message
+            if event.display_message is None
+            else self._render_display_with_hint(event.display_message, event.display_hint)
+        )
         self._ui().sub_agent_retry_attempt(
             event.origin.invocation_id,
-            event.message,
+            message,
             event.attempt,
             event.max_attempts,
             event.delay_seconds,
@@ -1434,6 +1454,11 @@ class BackendEventHandler:
             event.last_error,
             event.retry_attempts,
             event.diagnostic_path,
+            last_error_display=(
+                None
+                if event.last_error_display is None
+                else self._render_display_with_hint(event.last_error_display, event.last_error_hint)
+            ),
         )
 
     async def on_sub_agent_resumed_after_pause(self, event: InvocationResumed) -> None:
@@ -1816,7 +1841,11 @@ class BackendEventHandler:
         )
         # UI surfaces show the localized display when the producer attached
         # one; ``full_msg`` keeps the raw protocol text for debug lines.
-        display_full = full_msg if event.display_message is None else self._render_display(event.display_message)
+        display_full = (
+            full_msg
+            if event.display_message is None
+            else self._render_display_with_hint(event.display_message, event.display_hint)
+        )
         if event.code == "session_in_use":
             if s.agent_loading:
                 self.cancel_agent_load()
@@ -1848,16 +1877,24 @@ class BackendEventHandler:
         if s.pending_user_message_render_active:
             s.defer_error(event)
             return
+        # A classified failure shows what went wrong, then the service's own
+        # words as evidence; other producers' display is their message in
+        # the current locale, so it stands alone.
+        with_raw = event.code == "executor_error" and event.display_message is not None and bool(raw_msg)
         if s.agent_loading:
-            self._agent_load().fail(display_full)
+            self._agent_load().fail(f"{display_full}\n{raw_msg}" if with_raw else display_full)
         terminal_request = GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True) if was_live else None
-        # Build a short version for the status bar (strip JSON payload)
-        short_msg = display_full
+        # Build a short version for the status bar (strip JSON payload); its
+        # one line has no room for the hint.
+        short_msg = full_msg if event.display_message is None else self._render_display(event.display_message)
         if "- {" in short_msg:
             short_msg = short_msg[: short_msg.index("- {")].strip()
         # Build a readable version for the chat panel: extract 'message'
         # from the JSON payload if present, otherwise use full text.
-        chat_msg = self._extract_error_detail(display_full)
+        if with_raw:
+            chat_msg = f"{display_full}\n{self._extract_error_detail(raw_msg)}"
+        else:
+            chat_msg = self._extract_error_detail(display_full)
         terminal_owned = not was_live
         try:
             ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
@@ -1962,6 +1999,10 @@ class BackendEventHandler:
         # the open intermediate assistant message would otherwise act as
         # stale attach points for the re-run's tool calls, causing new
         # sub-agent cards to appear under the old assistant block.
-        retry_msg = event.message if event.display_message is None else self._render_display(event.display_message)
+        retry_msg = (
+            event.message
+            if event.display_message is None
+            else self._render_display_with_hint(event.display_message, event.display_hint)
+        )
         await self._ui().show_retry_attempt(retry_msg, event.attempt, event.max_attempts, event.delay_seconds)
         s.debug("Retry", f"{event.message} ({event.attempt}/{event.max_attempts})")

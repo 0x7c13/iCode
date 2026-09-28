@@ -21,7 +21,6 @@ from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.context.manager import ContextManager
 from chrys.service.vision import image_stub_middleware_for_model
 
-from .contracts import PreparedClosed
 from .resources import Conversation
 
 if TYPE_CHECKING:
@@ -209,7 +208,9 @@ def create_runtime(
     ctx.compaction_strategy.set_reminder_middleware(reminder)
     if isinstance(recipe, MainRecipe) and recipe.persist_recovery is not None:
         ctx.compaction_strategy.set_recovery_persistence_callback(recipe.persist_recovery)
-    ctx.compaction_strategy.set_last_words_generator(LastWordsGenerator(**recipe.last_words))
+    last_words = LastWordsGenerator(**recipe.last_words)
+    owner.own(last_words.aclose)
+    ctx.compaction_strategy.set_last_words_generator(last_words)
     validation = recipe.validation(owner) if isinstance(recipe, MainRecipe) else None
     if isinstance(recipe, MainRecipe):
         injection = owner.retain(recipe.injection() if injection is None else injection)
@@ -244,11 +245,7 @@ def create_runtime(
 
 async def create_approval(owner: Conversation, inputs: ApprovalInputs) -> ApprovalMiddleware:
     approval = ApprovalMiddleware(**inputs)
-    try:
-        owner.own(approval.close)
-    except PreparedClosed:
-        await approval.close()
-        raise
+    await owner.own_or_release(approval.close)
     return approval
 
 

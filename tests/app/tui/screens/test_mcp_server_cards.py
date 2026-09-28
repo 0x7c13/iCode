@@ -292,17 +292,19 @@ async def test_mcp_server_delete_dirties_the_agent_draft_only_once_confirmed() -
         )
 
         await press_and_answer_confirm(pilot, card.query_one("#mcp-delete-btn-0", Button))
+        # The screen marks the draft dirty at once and re-reads its profile
+        # only after the next refresh: wait for the profile itself.
         await wait_for(
             lambda: (
                 not panel.query(MCPConnectionCard)
                 and not save.disabled
                 and screen._drafts[screen._selected_draft_key].dirty
+                and screen._drafts[screen._selected_draft_key].profile.tools.mcp == []
             ),
             pilot=pilot,
             timeout=_DEFAULT_WAIT_TIMEOUT,
-            description="confirmed delete removes the server and enables Save",
+            description="confirmed delete removes the server from the draft and enables Save",
         )
-        assert screen._drafts[screen._selected_draft_key].profile.tools.mcp == []
 
 
 async def test_save_unfolds_the_cards_that_fail_validation() -> None:

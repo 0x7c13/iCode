@@ -725,9 +725,18 @@ class AgentLoadDialogController:
                 dialog.set_result(False, message or _LOAD_FAILED.bind(), allow_esc=True)
         self._port.set_agent_loading(False)
 
-    def on_failed(self, event: AgentLoadFailed) -> None:
-        self.fail(event.display_message or event.message or _LOAD_FAILED.bind())
-        self._port.flash_agent_load_failed(event.message)
+    def on_failed(self, event: AgentLoadFailed, *, display: str | None = None, summary: str | None = None) -> None:
+        """Fail the load; *display* is the event's rendered display message and hint, shown above the raw text.
+
+        The status bar has room for one line: *summary*, the rendered message
+        without its hint (*display* when not given).
+        """
+        if display is None:
+            self.fail(event.display_message or event.message or _LOAD_FAILED.bind())
+            self._port.flash_agent_load_failed(event.message)
+        else:
+            self.fail(f"{display}\n{event.message}" if event.message else display)
+            self._port.flash_agent_load_failed(display if summary is None else summary)
         self._port.debug("AgentLoadFailed", event.message[:80])
 
 

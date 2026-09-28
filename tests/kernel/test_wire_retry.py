@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.retry import StreamStall
 from chrys.kernel import (
@@ -1401,6 +1402,38 @@ async def test_invalid_terminal_completion_clears_token_before_outer_retry(strea
 
     # The completed response is immutable; the retry owner must issue a
     # fresh request instead of re-polling the same invalid completion.
+    assert observed == [token, None]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_wrapped_invalidating_error_clears_token_before_retry(stream: bool) -> None:
+    token = {"response_id": "pending-wrapped"}
+    observed: list[Any] = []
+    if stream:
+        pending = [_text_update("not-terminal", continuation_token=token)]
+    else:
+        pending = _text_response("not-terminal", continuation_token=token)
+    inner = ProviderResponseError(
+        "stream_truncated", "stream ended early", retryable=True, invalidates_continuation_token=True
+    )
+    try:
+        raise ChatClientException("service failed to complete the prompt", inner_exception=inner) from inner
+    except ChatClientException as exc:
+        wrapped = exc
+    wire = _ScriptedWire([pending, wrapped])
+
+    result = _layer(wire).get_response(
+        [_user()], stream=stream, client_kwargs={"continuation_token_observer": observed.append}
+    )
+    with pytest.raises(ChatClientException):
+        if stream:
+            async for _ in result:
+                pass
+        else:
+            await result
+
+    # The flag sits on the wrapped provider error, not on the wrapper.
     assert observed == [token, None]
 
 

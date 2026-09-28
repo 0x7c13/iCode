@@ -348,7 +348,7 @@ async def test_chrys_acp_sub_agent_bridges_card_permission_question_result_and_u
         ]
     )
 
-    def create_parent_client(_profile: Any = None, **kwargs: Any) -> MockChatClient:
+    async def create_parent_client(_profile: Any = None, **kwargs: Any) -> MockChatClient:
         parent_client._on_intermediate_text_async = kwargs.get("on_intermediate_text_async")
         parent_client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
         return parent_client

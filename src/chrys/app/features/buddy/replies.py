@@ -66,7 +66,7 @@ async def _ask_model(buddy: Buddy) -> str:
     from chrys.foundation.config.settings_store import load_settings
     from chrys.kernel import Message
     from chrys.orchestration.engine.engine import get_current_engine
-    from chrys.service.llm.clients import create_client
+    from chrys.service.llm.clients import scoped_client
     from chrys.service.llm.responses import get_final_response
     from chrys.service.llm.route_sessions import derive_llm_route_session_id
     from chrys.service.profiles.models.resolver import resolve_active_profile
@@ -93,7 +93,11 @@ async def _ask_model(buddy: Buddy) -> str:
         # The swapped-in model's cap is in the profiles on disk, read off-thread like the settings.
         registry = await asyncio.to_thread(_profiles_on_disk)
 
-    client = create_client(
+    request = "You have just been petted."
+    conversation = _recent_conversation(engine)
+    if conversation:
+        request = f"The conversation so far:\n{conversation}\n\n{request}"
+    async with scoped_client(
         profile,
         session_id=(
             derive_llm_route_session_id(session_id, route_kind="buddy-reply", model_profile=profile)
@@ -102,27 +106,25 @@ async def _ask_model(buddy: Buddy) -> str:
         ),
         parent_session_id=session_id,
         session_dir=session_dir,
-    )
-    request = "You have just been petted."
-    conversation = _recent_conversation(engine)
-    if conversation:
-        request = f"The conversation so far:\n{conversation}\n\n{request}"
-    response = await get_final_response(
-        client,
-        [
-            Message(
-                role="system",
-                contents=[
-                    # The prompt is English throughout; the persona line stays English inside it.
-                    _PROMPT.format(name=buddy.name, species=buddy.species.value, persona=format_message(buddy.persona))
-                ],
-            ),
-            Message(role="user", contents=[request]),
-        ],
-        stream=profile.stream,
-        options=_call_options(profile, model_id, registry),
-        timeout=profile.http_read_timeout,
-    )
+    ) as client:
+        response = await get_final_response(
+            client,
+            [
+                Message(
+                    role="system",
+                    contents=[
+                        # The prompt is English throughout; the persona line stays English inside it.
+                        _PROMPT.format(
+                            name=buddy.name, species=buddy.species.value, persona=format_message(buddy.persona)
+                        )
+                    ],
+                ),
+                Message(role="user", contents=[request]),
+            ],
+            stream=profile.stream,
+            options=_call_options(profile, model_id, registry),
+            timeout=profile.http_read_timeout,
+        )
     return (response.text or "").strip()
 
 

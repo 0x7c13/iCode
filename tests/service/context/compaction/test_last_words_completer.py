@@ -30,6 +30,7 @@ from tests.service.context.compaction._last_words_helpers import (
     structured_note,
     user,
 )
+from tests.support.provider_errors import anthropic_status, openai_status
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
 
@@ -324,6 +325,91 @@ async def test_completer_failure_demotes_to_fallback(
 
     assert out == structured_note()
     assert len(completer.calls) == expected_completer_calls
+    assert fallback.calls == 1
+
+
+async def test_last_words_backs_off_on_429_too_many_tokens(tmp_path, monkeypatch) -> None:
+    """A 429 that mentions tokens is throttling: back off and retry, never demote."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0, 0))
+    retry_events, publish_retry = retry_collector()
+    gen = make_generator(tmp_path, publish_retry=publish_retry)
+    fallback = FallbackClient()
+    gen._client = fallback  # type: ignore[assignment]
+    throttled = await openai_status(
+        429,
+        {
+            "error": {
+                "type": "tokens",
+                "code": "rate_limit_exceeded",
+                "message": "Too many tokens, please wait before trying again.",
+            }
+        },
+    )
+    completer = FakeCompleter([throttled, structured_note()])
+
+    out = await generate(
+        gen,
+        user_request="do X",
+        previous_last_words=None,
+        dropped_messages=[],
+        completer=completer,
+    )
+
+    assert out == structured_note()
+    assert len(completer.calls) == 2
+    assert fallback.calls == 0
+    assert len(retry_events) == 1
+
+
+async def test_last_words_demotes_on_prompt_too_long(tmp_path, monkeypatch) -> None:
+    """A provider context-window rejection demotes to the fallback without retrying."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    gen = make_generator(tmp_path)
+    fallback = FallbackClient()
+    gen._client = fallback  # type: ignore[assignment]
+    rejected = await anthropic_status(
+        400,
+        {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": "prompt is too long: 210000 tokens > 200000 maximum"},
+        },
+    )
+    completer = FakeCompleter([rejected])
+
+    out = await generate(
+        gen,
+        user_request="do X",
+        previous_last_words=None,
+        dropped_messages=[],
+        completer=completer,
+    )
+
+    assert out == structured_note()
+    assert len(completer.calls) == 1
+    assert fallback.calls == 1
+
+
+async def test_last_words_demotes_on_a_server_error_naming_the_context_window(tmp_path, monkeypatch) -> None:
+    """A gateway may wrap an overflow in a 5xx: demote at once rather than resend the same snapshot."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    gen = make_generator(tmp_path)
+    fallback = FallbackClient()
+    gen._client = fallback  # type: ignore[assignment]
+    rejected = await openai_status(
+        500, {"error": {"type": "server_error", "message": "This model's maximum context length is 128000 tokens."}}
+    )
+    completer = FakeCompleter([rejected])
+
+    out = await generate(
+        gen,
+        user_request="do X",
+        previous_last_words=None,
+        dropped_messages=[],
+        completer=completer,
+    )
+
+    assert out == structured_note()
+    assert len(completer.calls) == 1
     assert fallback.calls == 1
 
 

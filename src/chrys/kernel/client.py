@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeGuard, TypeIs, cast, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeGuard, TypeIs, cast, overload
 
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace, side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
@@ -675,6 +675,12 @@ class _ClientLastWordsCompleter:
         return response.raw_text
 
 
+class SupportsAclose(Protocol):
+    """A chat client stack's one close entry; each layer forwards it inward."""
+
+    async def aclose(self) -> None: ...
+
+
 class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
     """Abstract base class for loop-free chat clients."""
 
@@ -701,6 +707,9 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
         self.compaction_strategy = compaction_strategy
         self.tokenizer = tokenizer
         super().__init__()
+
+    async def aclose(self) -> None:
+        """Release provider resources; clients that own none keep this no-op."""
 
     def to_dict(self, *, exclude: set[str] | None = None, exclude_none: bool = True) -> dict[str, Any]:
         """Serialize the client, lifting additional properties to the root."""

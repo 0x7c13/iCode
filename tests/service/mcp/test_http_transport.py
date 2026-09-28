@@ -826,8 +826,9 @@ async def test_http_connect_to_stopped_server_fails_without_hanging() -> None:
             request_timeout=1,
         )
 
-        # Keep the port reserved but deliberately not listening: connection
-        # attempts are refused while no concurrent worker can claim it.
+        # Keep the port reserved but not listening, so the connection fails
+        # while no concurrent worker can claim it. Whether it is refused or
+        # its SYN is dropped depends on the OS (macOS drops it).
         tools = await asyncio.wait_for(adapter.connect_all([config]), timeout=10)
 
     assert tools == []

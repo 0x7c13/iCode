@@ -167,7 +167,7 @@ async def _run_pause(handler: BackendEventHandler, *, parent: InvocationOrigin |
 def test_on_sub_agent_paused_forwards_when_running() -> None:
     handler, calls = _make_pause_handler(agent_running=True)
     asyncio.run(_run_pause(handler))
-    assert calls == [("inv-1", "stream_stall", "boom", 3, "/session/approvals/acp.log")]
+    assert calls == [("inv-1", "stream_stall", "boom", 3, "/session/approvals/acp.log", None)]
 
 
 def test_on_sub_agent_paused_gated_after_interrupt() -> None:
@@ -583,10 +583,10 @@ def test_on_retry_attempt_compaction_scope_uses_detail_without_parsing_message()
 def test_retry_attempt_display_message_localizes_banner_and_keeps_english_bytes() -> None:
     """The transcript retry banner prefers the producer's display reference;
     the compaction card keeps the raw separated detail regardless."""
+    from chrys.foundation.errors.display import _STREAM_STALLED
     from chrys.foundation.events.types import InvocationRetryAttempt
     from chrys.foundation.i18n import DisplayBlock
     from chrys.orchestration.engine.build.builder import _RETRY_LAST_WORDS_COMPACTION
-    from chrys.orchestration.engine.run.bindings import _RETRY_STREAM_STALLED
 
     def _make(locale_controller: LocaleController | None) -> tuple[object, list[str], list[str]]:
         banners: list[str] = []
@@ -624,7 +624,7 @@ def test_retry_attempt_display_message_localizes_banner_and_keeps_english_bytes(
         attempt=1,
         max_attempts=5,
         delay_seconds=3,
-        display_message=_RETRY_STREAM_STALLED.bind(),
+        display_message=_STREAM_STALLED.bind(),
         origin=InvocationOrigin("turn", "", "turn-test", None),
     )
 

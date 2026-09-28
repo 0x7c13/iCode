@@ -59,9 +59,9 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
 
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.util.once_close import finish_close
 
 from .acp_protocol import AcpPermissionBroker, AcpUpdateTranslator, drain_acp_task, preview_text
-from .resources import finish_close
 
 logger = logging.getLogger(__name__)
 _BACKOFF = (3, 7, 15, 30, 60)

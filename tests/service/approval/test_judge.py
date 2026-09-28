@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
@@ -185,15 +185,36 @@ def _make_judge(client: _FakeClient) -> ApprovalJudge:
     return judge
 
 
-def test_approval_judge_passes_session_id_to_client() -> None:
+async def test_approval_judge_passes_session_id_to_client() -> None:
     judge = ApprovalJudge(default_profile(), session_id="sess-judge", parent_session_id="parent-judge")
 
     with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
-        judge._get_client()
+        await judge._get_client()
 
     create_client.assert_called_once()
     assert create_client.call_args.kwargs["session_id"] == "sess-judge"
     assert create_client.call_args.kwargs["parent_session_id"] == "parent-judge"
+
+
+async def test_closing_the_judge_closes_its_client_and_refuses_a_new_one() -> None:
+    """The judge's owner closes it; an evaluation racing that close must not reopen a client."""
+    from chrys.service.llm import clients as clients_mod
+
+    class _Client:
+        closes = 0
+
+        async def aclose(self) -> None:
+            self.closes += 1
+
+    client = _Client()
+    judge = ApprovalJudge(default_profile())
+    with patch.object(clients_mod, "create_client", create_autospec(clients_mod.create_client, return_value=client)):
+        assert await judge._get_client() is client
+        await judge.aclose()
+        await judge.aclose()
+        assert client.closes == 1
+        with pytest.raises(RuntimeError, match="closed"):
+            await judge._get_client()
 
 
 # ─── evaluate() retry behaviour ────────────────────────────────────

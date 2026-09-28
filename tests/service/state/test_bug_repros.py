@@ -8,6 +8,7 @@ import json
 import os
 import time
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -189,7 +190,11 @@ async def test_session_restore_persists_awaiting_marker_cleanup_before_replay(
         state_store=store,
     )
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: MockChatClient())
+    monkeypatch.setattr(
+        builder_module,
+        "create_client",
+        create_autospec(builder_module.create_client, side_effect=lambda s=None, **kw: MockChatClient()),
+    )
     try:
         await engine.on_session_restore(SessionRestore(session_id="paused"))
 
@@ -240,7 +245,11 @@ async def test_session_restore_saves_current_session_before_switching_cwd(
     )
 
     original_cwd = os.getcwd()
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: MockChatClient())
+    monkeypatch.setattr(
+        builder_module,
+        "create_client",
+        create_autospec(builder_module.create_client, side_effect=lambda s=None, **kw: MockChatClient()),
+    )
     try:
         os.chdir(folder_a)
         await engine.start(profile)
@@ -298,7 +307,11 @@ async def test_session_restore_does_not_chdir_to_target_workspace(
     )
 
     original_cwd = os.getcwd()
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: MockChatClient())
+    monkeypatch.setattr(
+        builder_module,
+        "create_client",
+        create_autospec(builder_module.create_client, side_effect=lambda s=None, **kw: MockChatClient()),
+    )
     try:
         os.chdir(folder_a)
         await engine.start(profile)

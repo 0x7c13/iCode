@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -440,6 +441,8 @@ class ApprovalJudge:
         self._parent_session_id = parent_session_id
         self._session_dir = session_dir
         self._client: Any = None
+        self._client_lock = asyncio.Lock()
+        self._closed = False
         self._chat_options: dict[str, Any] | None = None
 
     @property
@@ -447,20 +450,31 @@ class ApprovalJudge:
         """The model profile this judge was bound to."""
         return self._profile
 
-    def _get_client(self) -> Any:
+    async def _get_client(self) -> Any:
         """Lazily create and cache the Chrys chat client."""
-        if self._client is None:
-            from chrys.service.llm.clients import create_client
-            from chrys.service.profiles.models.options import effective_chat_options
+        async with self._client_lock:
+            if self._closed:
+                raise RuntimeError("approval judge is closed")
+            if self._client is None:
+                from chrys.service.llm.clients import create_client
+                from chrys.service.profiles.models.options import effective_chat_options
 
-            self._client = create_client(
-                self._profile,
-                session_id=self._session_id,
-                parent_session_id=self._parent_session_id,
-                session_dir=self._session_dir,
-            )
-            self._chat_options = effective_chat_options(self._profile)
-        return self._client
+                self._client = await create_client(
+                    self._profile,
+                    session_id=self._session_id,
+                    parent_session_id=self._parent_session_id,
+                    session_dir=self._session_dir,
+                )
+                self._chat_options = effective_chat_options(self._profile)
+            return self._client
+
+    async def aclose(self) -> None:
+        """Close the judge's client, if one was created; later evaluations are refused."""
+        self._closed = True
+        async with self._client_lock:
+            client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
 
     async def evaluate(
         self,
@@ -482,7 +496,7 @@ class ApprovalJudge:
         If *log_dir* is provided, raw input/output for each LLM round is
         appended to ``{log_dir}/{request_id}.jsonl``.
         """
-        client = self._get_client()
+        client = await self._get_client()
         user_prompt = _build_user_prompt(user_message, tool_name, tool_kind, args, workspace_roots, user_messages)
 
         messages: list[Message] = [

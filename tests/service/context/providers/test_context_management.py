@@ -305,6 +305,9 @@ class TestRecallContext:
             async def get_response(self, _messages: list[Any], **_kwargs: Any) -> _Response:
                 return _Response()
 
+            async def aclose(self) -> None:
+                pass
+
         provider = ContextManagementProvider(
             default_profile(),
             strategy=UnifiedContextStrategy(),
@@ -323,6 +326,36 @@ class TestRecallContext:
         create_client.assert_called_once()
         assert create_client.call_args.kwargs["session_id"] == "sess-recall"
         assert create_client.call_args.kwargs["parent_session_id"] == "parent-recall"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answers", [True, False])
+    async def test_recall_closes_its_client_on_success_and_failure(self, answers: bool) -> None:
+        class _Response:
+            text = "remembered"
+
+        class _Client:
+            closes = 0
+
+            async def get_response(self, _messages: list[Any], **_kwargs: Any) -> _Response:
+                if not answers:
+                    raise ConnectionError("offline")
+                return _Response()
+
+            async def aclose(self) -> None:
+                self.closes += 1
+
+        provider = ContextManagementProvider(default_profile(), strategy=UnifiedContextStrategy())
+        state = _build_state(2)
+        _bind_session(provider, state)
+        CompressibleHistoryProvider.compress(state, "turn_1", "Summary")
+        ctx_id = state["compressed_msgs"][0].compressed_context_id
+        client = _Client()
+
+        with patch("chrys.service.llm.clients.create_client", return_value=client):
+            result = await provider._recall_context(compressed_context_id=ctx_id, question="what happened?")
+
+        assert (result == "remembered") is answers
+        assert client.closes == 1
 
 
 # ---------------------------------------------------------------------------

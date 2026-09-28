@@ -33,6 +33,7 @@ from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG, TrajectoryContext, workflow_node_actor
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
+from chrys.foundation.util.once_close import finish_close
 from chrys.kernel import AgentResponse, Message
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
@@ -56,7 +57,7 @@ from chrys.orchestration.invoker.contracts import (
 from chrys.orchestration.invoker.evidence import Completeness, Count, InvocationEvidence
 from chrys.orchestration.invoker.kernel import KernelConversation
 from chrys.orchestration.invoker.origin import BoundEmitter
-from chrys.orchestration.invoker.resources import Conversation, PassResources, PreparedAgent, finish_close
+from chrys.orchestration.invoker.resources import Conversation, PassResources, PreparedAgent
 from chrys.orchestration.workflows.agent_archive import CoalescedCheckpoint
 from chrys.orchestration.workflows.agent_node_build import (
     AcpNodeParts,

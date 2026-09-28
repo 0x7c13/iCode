@@ -67,7 +67,7 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT
 if TYPE_CHECKING:
     from tests.support.notifications import RecordingNotificationDriver
 
-pytest_plugins = ("tests.support.engines", "pytester")
+pytest_plugins = ("tests.support.engines", "tests.support.llm_http_clients", "pytester")
 
 warnings.filterwarnings("ignore", message=r"\[SKILLS\].*")
 warnings.filterwarnings("ignore", message=r"\[HARNESS\].*")
@@ -355,6 +355,20 @@ def _uninstalled_process_settings() -> Iterator[None]:
     reset_process_settings()
     _reset_process_env_snapshot_for_tests()
     _reset_model_pointer_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_reached_first_hops() -> Iterator[None]:
+    """Start every test with no LLM first hop marked reached.
+
+    The set is process-wide on purpose (a hop once reached makes a later
+    NONAME retryable); across tests it would make DNS verdicts order-dependent.
+    """
+    from chrys.service.llm.route_facts import reset_reached_first_hops
+
+    reset_reached_first_hops()
+    yield
+    reset_reached_first_hops()
 
 
 @pytest.fixture(autouse=True)
@@ -667,6 +681,16 @@ def clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
             monkeypatch.delenv(key, raising=False)
 
     return _clear
+
+
+@pytest.fixture
+def direct_route(monkeypatch: pytest.MonkeyPatch, clear_proxy_env: Callable[[], None]) -> None:
+    """Send HTTP straight to its host, as a loopback stub or an injected fault needs.
+
+    With no proxy env at all, httpx falls back to the macOS/Windows system proxy.
+    """
+    clear_proxy_env()
+    monkeypatch.setenv("NO_PROXY", "*")
 
 
 @pytest.fixture

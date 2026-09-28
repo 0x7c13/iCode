@@ -74,7 +74,7 @@ def _child_profile() -> AgentProfile:
 def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClient) -> None:
     """The node's sub-agent registration creates the child's client through the sub-agent module."""
 
-    def create_client(
+    async def create_client(
         model_profile: Any,
         *,
         on_intermediate_text_async: Callable[[str], Awaitable[None]],

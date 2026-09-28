@@ -282,8 +282,9 @@ class _FakeSubAgentWidget:
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
-        self.events.append(("paused", reason, last_error, retry_attempts, diagnostic_path))
+        self.events.append(("paused", reason, last_error, retry_attempts, diagnostic_path, last_error_display))
 
     def set_resumed_after_pause(self) -> None:
         self.events.append(("resumed",))
@@ -433,14 +434,14 @@ def test_tool_registry_routes_sub_agent_progress_retry_and_pause() -> None:
 
     registry.update_sub_agent_progress("inv-b", 3, 120, 145, 1)
     registry.sub_agent_retry_attempt("inv-b", "rate limited", 2, 4, 8)
-    registry.sub_agent_paused("inv-b", "retry exhausted", "timeout", 4)
+    registry.sub_agent_paused("inv-b", "retry exhausted", "timeout", 4, None, "Timed out waiting.")
     registry.sub_agent_paused("missing", "ignored", "ignored", 0)
 
     assert first.events == []
     assert second.events == [
         ("progress", 3, 120, 145, 1),
         ("retry", "rate limited", 2, 4, 8),
-        ("paused", "retry exhausted", "timeout", 4, None),
+        ("paused", "retry exhausted", "timeout", 4, None, "Timed out waiting."),
     ]
     assert group.collapsed is False
     assert group.collapse_locked is True

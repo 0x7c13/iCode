@@ -34,8 +34,8 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion, validate_ask_user_answers
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.invoker.contracts import AbortCause
-from chrys.orchestration.invoker.resources import finish_close
 from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
 from chrys.orchestration.workflows.agent_node import WorkflowAgentShell
 from chrys.orchestration.workflows.agent_node_build import AgentNodeResources

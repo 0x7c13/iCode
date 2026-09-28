@@ -45,6 +45,7 @@ from chrys.foundation.hosted_tools import (
     normalize_hosted_tool_status,
 )
 from chrys.foundation.tool_kinds import KIND_SHELL as SHELL_TOOL_KIND_VALUE
+from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import (
     OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY,
     Annotation,
@@ -700,6 +701,7 @@ class RawOpenAIChatClient(BaseChatClient):
         if async_client is None:
             raise ValueError("RawOpenAIChatClient requires a pre-configured async_client.")
         self.client = async_client
+        self._close_sdk = OnceClose(self._close_sdk_client)
         self.model = model or ""
         self.org_id = None
         self.base_url = str(getattr(async_client, "base_url", "") or "") or None
@@ -712,6 +714,13 @@ class RawOpenAIChatClient(BaseChatClient):
             tokenizer=tokenizer,
             additional_properties=additional_properties,
         )
+
+    async def aclose(self) -> None:
+        """Close the provider SDK client and its HTTP pool; concurrent callers share one close."""
+        await self._close_sdk()
+
+    async def _close_sdk_client(self) -> None:
+        await self.client.close()
 
     # region Inner Methods
 

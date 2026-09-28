@@ -1,0 +1,151 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Context-window overflow: explicit provider evidence only."""
+
+from __future__ import annotations
+
+from typing import NoReturn
+
+import httpx
+import pytest
+
+from chrys.foundation.errors import ErrorKind, classify_error, is_context_overflow, may_be_context_overflow
+from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
+from chrys.service.agent_middleware.validators import OUTPUT_TRUNCATED_REASON
+from tests.support.provider_errors import openai_status, raised_while_handling
+
+# Provider phrasings, after pi-mono's overflow patterns.
+_OVERFLOW_MESSAGES = [
+    "prompt is too long: 213462 tokens > 200000 maximum",
+    "input is too long for requested model",
+    "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+    "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575).",
+    "This model's maximum prompt length is 131072 but the request contains 537812 tokens.",
+    "Please reduce the length of the messages or completion.",
+    "the request exceeds the available context size, try increasing it",
+    "The number of tokens to keep from the initial prompt is greater than the context length",
+    "invalid params, context window exceeds limit",
+    "Your request exceeded model token limit: 262144 (requested: 291351)",
+]
+
+_NOT_OVERFLOW = [
+    (400, "Too many tokens, please wait before trying again."),
+    (429, "Too many tokens, please wait before trying again."),
+    (429, "Rate limit reached for gpt-4o on tokens per min (TPM): Limit 30000, Requested 50000."),
+    (400, "Throttling: too many tokens in flight"),
+    (400, "Invalid 'messages[0].content': string too long."),
+    (503, "maximum context length is temporarily reduced"),
+    (429, "Too many tokens per minute. Retry shortly."),
+    (400, "Too many tokens: this key's daily quota is used up."),
+]
+# Text a plain exception carries with no provider signal: the text alone must veto overflow.
+_NOT_OVERFLOW_TEXT = [
+    "Too many tokens, please wait before trying again.",
+    "Throttling: too many tokens in flight",
+    "Too many tokens per minute. Retry shortly.",
+    "Too many tokens: this key's daily quota is used up.",
+    "Rate limit reached: context window tokens per day exhausted.",
+]
+# (status, code, message, may_be_context_overflow): none is an overflow for retry policy.
+_SERVER_ERRORS = [
+    (
+        500,
+        None,
+        "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+        True,
+    ),
+    (503, None, "maximum context length is temporarily reduced", True),
+    # Every 5xx, not only the statuses the legacy retry table lists.
+    (507, None, "maximum context length is temporarily reduced", True),
+    (520, None, "maximum context length is temporarily reduced", True),
+    (524, None, "maximum context length is temporarily reduced", True),
+    (502, None, "Upstream error: prompt is too long: 213462 tokens > 200000 maximum", True),
+    (500, None, "Too many tokens, please wait before trying again.", False),
+    (500, None, "Internal server error.", False),
+    # The code outranks wording that alone reads as throttling.
+    (500, "context_length_exceeded", "Upstream busy, please wait.", True),
+    (500, "request_too_large", "This model's maximum context length is 128000 tokens.", False),
+    (429, None, "This model's maximum context length is 128000 tokens.", False),
+    (413, None, "This model's maximum context length is 128000 tokens.", False),
+]
+
+
+def _error_body(message: str, code: str | None = None) -> dict[str, object]:
+    return {"error": {"type": "invalid_request_error", "code": code, "message": message}}
+
+
+@pytest.mark.parametrize("message", _OVERFLOW_MESSAGES)
+async def test_provider_overflow_phrasings_are_overflow(message: str) -> None:
+    exc = await openai_status(400, _error_body(message))
+
+    assert is_context_overflow(exc) is True
+    assert may_be_context_overflow(exc) is True
+    assert classify_error(exc).retryable is False
+
+
+@pytest.mark.parametrize("message", _OVERFLOW_MESSAGES)
+def test_plain_exception_carrying_provider_text_is_overflow(message: str) -> None:
+    assert is_context_overflow(RuntimeError(f"400: {message}")) is True
+
+
+@pytest.mark.parametrize("message", _NOT_OVERFLOW_TEXT)
+def test_plain_exception_carrying_throttling_text_is_not_overflow(message: str) -> None:
+    assert is_context_overflow(RuntimeError(f"503: {message}")) is False
+    assert may_be_context_overflow(RuntimeError(f"503: {message}")) is False
+
+
+@pytest.mark.parametrize(("status", "message"), _NOT_OVERFLOW)
+async def test_throttling_and_unrelated_rejections_are_not_overflow(status: int, message: str) -> None:
+    exc = await openai_status(status, _error_body(message))
+
+    assert is_context_overflow(exc) is False
+
+
+@pytest.mark.parametrize(("status", "code", "message", "may_be"), _SERVER_ERRORS)
+async def test_only_a_caller_that_shrinks_reads_a_server_error_naming_the_context_window(
+    status: int, code: str | None, message: str, may_be: bool
+) -> None:
+    exc = await openai_status(status, _error_body(message, code))
+
+    assert is_context_overflow(exc) is False
+    # An oversized payload is final; every other one stays a retry for the main turn.
+    assert classify_error(exc).retryable is (status != 413 and code != "request_too_large")
+    assert may_be_context_overflow(exc) is may_be
+
+
+async def test_overflow_code_counts_without_a_known_phrase() -> None:
+    exc = await openai_status(400, _error_body("Request rejected.", code="context_length_exceeded"))
+
+    assert is_context_overflow(exc) is True
+
+
+async def test_request_too_large_is_a_payload_problem_not_overflow() -> None:
+    exc = await openai_status(
+        413, _error_body("Request too large: maximum context length is 32 MB", "request_too_large")
+    )
+
+    result = classify_error(exc)
+    assert is_context_overflow(exc) is False
+    assert result.kind is ErrorKind.PAYLOAD_TOO_LARGE
+    assert result.retryable is False
+
+
+async def test_overflow_text_only_in_implicit_context_is_not_overflow() -> None:
+    stale = await openai_status(400, _error_body(_OVERFLOW_MESSAGES[0]))
+
+    def raise_fresh() -> NoReturn:
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    fresh = raised_while_handling(stale, raise_fresh)
+
+    assert is_context_overflow(fresh) is False
+    assert classify_error(fresh).retryable is True
+
+
+def test_chrys_validation_verdict_mentioning_the_context_window_is_not_overflow() -> None:
+    exc = TerminalResponseValidationError(OUTPUT_TRUNCATED_REASON)
+
+    assert "context window" in str(exc)
+    assert is_context_overflow(exc) is False
+    assert classify_error(exc).kind is ErrorKind.INVALID_RESPONSE

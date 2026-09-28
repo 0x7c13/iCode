@@ -190,7 +190,7 @@ def _install_client(
     """
     captured: list[MockChatClient] = []
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         client = client_type(responses=list(responses))
         captured.append(client)
         return client

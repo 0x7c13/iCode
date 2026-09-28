@@ -17,6 +17,7 @@ import asyncio
 import gc
 import weakref
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -153,7 +154,9 @@ def _patch_client(mock_client: MockChatClient):
     import chrys.orchestration.engine.build.builder as builder_module
 
     patcher = pytest.MonkeyPatch()
-    patcher.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    patcher.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
 
     class _Ctx:
         def __enter__(self):

@@ -95,7 +95,7 @@ def patch_create_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[MockCh
     """Replace the build-time client factory with a fresh MockChatClient per build."""
     clients: list[MockChatClient] = []
 
-    def _factory(_settings=None, **_kwargs):
+    async def _factory(_settings=None, **_kwargs):
         client = MockChatClient(responses=[MockResponse(text=f"reply-{len(clients)}") for _ in range(20)])
         clients.append(client)
         return client

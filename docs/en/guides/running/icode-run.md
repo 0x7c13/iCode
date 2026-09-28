@@ -26,7 +26,7 @@ Run the command in your project directory and specify an agent with `-a` or `--a
 icode run "Summarize this project's directory structure and main modules" --agent QA
 ```
 
-When the task finishes, the terminal displays the agent's final response. If the task fails, the error message is written to standard error (`stderr`), and the command exits with a nonzero status.
+When the task finishes, the terminal displays the agent's final response. If the task fails, the error message is written to standard error (`stderr`), and the command exits with a nonzero status. When iCode can tell why a model request failed, the message says so, and a `detail:` line below it shows the original error text.
 
 Use `Code` when you need the agent to modify or verify code:
 

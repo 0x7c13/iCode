@@ -1388,6 +1388,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
         """Dispatch a pause transition to the correct card."""
         self._tool_registry.sub_agent_paused(
@@ -1396,6 +1397,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             last_error,
             retry_attempts,
             diagnostic_path,
+            last_error_display,
         )
 
     def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:

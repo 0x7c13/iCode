@@ -515,7 +515,7 @@ async def test_started_then_failed_sequence_settles_per_operation_kind(
             return
 
         monkeypatch.setattr(screen._events._agent_load_controller, "on_started", ignore_started)
-        monkeypatch.setattr(screen._events._agent_load_controller, "on_failed", lambda _event: None)
+        monkeypatch.setattr(screen._events._agent_load_controller, "on_failed", lambda _event, *, display=None: None)
 
         screen._state.runtime.details = _runtime_details("Confirmed Old Model")
         screen._state.runtime.details_confirmed = True
@@ -550,7 +550,7 @@ async def test_startup_load_failure_keeps_unconfirmed_action_tag_hidden(
                 visible=True,
             )
         )
-        monkeypatch.setattr(screen._events._agent_load_controller, "on_failed", lambda _event: None)
+        monkeypatch.setattr(screen._events._agent_load_controller, "on_failed", lambda _event, *, display=None: None)
 
         await screen._events.on_agent_load_failed(AgentLoadFailed(operation="startup", agent_profile="Code"))
         await pilot.pause()

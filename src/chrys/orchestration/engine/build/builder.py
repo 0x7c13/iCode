@@ -497,7 +497,7 @@ async def build_agent(
                 )
             )
 
-        client = create_client(
+        client = await create_client(
             active_profile,
             on_intermediate_text_async=_publish_intermediate,
             on_intermediate_text_sync=on_intermediate_sync,
@@ -505,6 +505,7 @@ async def build_agent(
             session_dir=effective_session_dir,
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
         )
+        await prepared.own_or_release(client.aclose)
 
         # Build tools from profile's builtin categories
         from chrys.service.tools.builtins.web.build import assemble_web_tools
@@ -944,7 +945,7 @@ async def build_agent(
         await agent.__aenter__()
         # Register agent cleanup BEFORE anything below can fail — an un-exited
         # Agent leaks its transport/session.
-        prepared.own(partial(agent.__aexit__, None, None, None))
+        await prepared.own_or_release(partial(agent.__aexit__, None, None, None))
 
         # Create executor
         session = agent.create_session()

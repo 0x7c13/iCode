@@ -1340,6 +1340,49 @@ def test_semantic_headless_error_stays_english_across_locales(
     }
 
 
+@pytest.mark.parametrize(
+    ("code", "detail_line"),
+    [
+        pytest.param("executor_error", "  detail: Connection error.\n", id="turn-failure"),
+        pytest.param("boom", "", id="other"),
+    ],
+)
+def test_classified_headless_error_says_what_went_wrong_with_the_raw_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    code: str,
+    detail_line: str,
+) -> None:
+    from chrys.foundation.branding import APP_DISPLAY_NAME
+    from chrys.foundation.errors.display import _DNS_FAILED, _MAYBE_OFFLINE
+
+    def _failure() -> HeadlessRunError:
+        event = Error(
+            code=code,
+            message="Connection error.",
+            session_id="session-1",
+            display_message=_DNS_FAILED.bind(host="api.example.com"),
+            display_hint=_MAYBE_OFFLINE.bind(app=APP_DISPLAY_NAME),
+        )
+        return HeadlessRunError(event, [event])
+
+    _patch_runtime(monkeypatch)
+    _patch_failure_host(monkeypatch, _failure)
+
+    human = _run_in_locales(monkeypatch, capsys, ["hello", "--agent", "Headless"])
+    machine = _run_in_locales(monkeypatch, capsys, ["hello", "--agent", "Headless", "--json"])
+
+    english = (
+        "Can't resolve api.example.com. Check your network connection and DNS; "
+        "if the address is wrong, fix the base URL in the model profile. "
+        "The device running iCode doesn't seem to have a network connection. Check it first."
+    )
+    assert human["en"] == human["zh-Hans"] == (1, "", f"Error: {english}\n{detail_line}")
+    # Machine output keeps the raw text alone.
+    assert machine["en"][2] == machine["zh-Hans"][2]
+    assert json.loads(machine["en"][2]) == {"error": "Connection error.", "code": code, "session_id": "session-1"}
+
+
 def test_legacy_headless_error_stays_english_and_sanitizes_detail_across_locales(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

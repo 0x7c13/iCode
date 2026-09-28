@@ -192,7 +192,7 @@ async def build_kernel_node(
         raise RuntimeError("A kernel workflow node requires a model binding.")
     profile = binding.agent
     chat_options = effective_chat_options(model)
-    client = create_client(
+    client = await create_client(
         model,
         on_intermediate_text_async=callbacks.publish_intermediate,
         on_intermediate_text_sync=intermediate_buffer.store,
@@ -206,6 +206,7 @@ async def build_kernel_node(
         session_dir=res.session_dir,
         tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
     )
+    await conversation.own_or_release(client.aclose)
     environment = SessionEnvironment.capture(session_id=res.session_id, workspace=res.workspace)
     registry = ToolRegistry(vision_enabled=model.vision)
     builtin_categories = list(profile.tools.builtins or [])
@@ -358,7 +359,7 @@ async def build_kernel_node(
     )
     agent = runtime.agent
     await agent.__aenter__()
-    conversation.own(lambda: agent.__aexit__(None, None, None))
+    await conversation.own_or_release(lambda: agent.__aexit__(None, None, None))
     runtime.reminder.prepare_turn()
     ctx = runtime.context
 

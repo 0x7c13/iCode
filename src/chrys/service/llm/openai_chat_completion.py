@@ -28,6 +28,7 @@ from openai.types.chat.completion_create_params import WebSearchOptions
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import (
     TOOL_CALL_CONTENT_TYPES,
     BaseChatClient,
@@ -532,6 +533,7 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
         if async_client is None:
             raise ValueError("RawOpenAIChatCompletionClient requires a pre-configured async_client.")
         self.client = async_client
+        self._close_sdk = OnceClose(self._close_sdk_client)
         self.model = model or ""
         self.org_id = None
         self.base_url = str(getattr(async_client, "base_url", "") or "") or None
@@ -544,6 +546,13 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             tokenizer=tokenizer,
             additional_properties=additional_properties,
         )
+
+    async def aclose(self) -> None:
+        """Close the provider SDK client and its HTTP pool; concurrent callers share one close."""
+        await self._close_sdk()
+
+    async def _close_sdk_client(self) -> None:
+        await self.client.close()
 
     # region Hosted Tool Factory Methods
 

@@ -23,7 +23,8 @@ from chrys.foundation.models.workflow_session import (
     WorkspaceSnapshot,
 )
 from chrys.foundation.trajectory.event_types import RuntimeFinishReason
-from chrys.orchestration.invoker.resources import ResourceScope, finish_close
+from chrys.foundation.util.once_close import finish_close
+from chrys.orchestration.invoker.resources import ResourceScope
 from chrys.orchestration.session_resources import SessionResources
 from chrys.orchestration.session_usage import SessionUsagePublisher
 from chrys.service.approval.judge import ApprovalJudge
@@ -258,12 +259,14 @@ class WorkflowSessionOwner:
         profile = self._judge_model(node_model)
         judge = self._judges.get(profile.id)
         if judge is None:
-            judge = self._judges[profile.id] = ApprovalJudge(
+            judge = ApprovalJudge(
                 profile,
                 session_id=derive_llm_route_session_id(session_id, route_kind="approval-judge", model_profile=profile),
                 parent_session_id=session_id,
                 session_dir=session.session_dir,
             )
+            self._resources.own(judge.aclose)
+            self._judges[profile.id] = judge
         return judge
 
     async def checkpoint(self) -> None:

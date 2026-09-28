@@ -4,7 +4,7 @@
 
 Run `icode serve --help` to view startup options.
 
-This guide calls the computer running the browser the “local computer” and the machine running the iCode service the “server.” The server can be the local computer or a remote server accessed over a network.
+This guide calls the device running the browser the “local device” and the machine running the iCode service the “server.” The server can be the local device or a remote server accessed over a network.
 
 Before you begin, [install iCode](../../start/getting-started.md#1-install-icode) on the server. The browser provides the interface; iCode uses the server's configuration and reads and modifies files and runs commands with the permissions of the system user who started the service. All these operations take place on the server. All visitors share its configuration, files, and sessions; they do not receive separate accounts.
 
@@ -15,14 +15,14 @@ Choose the section that matches the server's location and how you want to access
 | Scenario | Instructions |
 | --- | --- |
 | Run and access iCode locally | [Start iCode locally](#start-icode-locally) |
-| Access iCode on a remote server over SSH | [Access remote iCode from your local computer](#access-remote-icode-from-your-local-computer) |
+| Access iCode on a remote server over SSH | [Access remote iCode from your local device](#access-remote-icode-from-your-local-device) |
 | Access iCode through a fixed HTTPS domain | [Access iCode through a fixed HTTPS domain](#access-icode-through-a-fixed-https-domain) |
 
 ## Start iCode locally
 
 ### 1. Start the service
 
-In a terminal on your local computer, change to your working directory and start the service:
+In a terminal on your local device, change to your working directory and start the service:
 
 ```shell
 icode serve --auth-required
@@ -34,7 +34,7 @@ The service is running when the terminal displays `Serving iCode TUI on ...` and
 
 ### 2. Log in through the browser
 
-Open `http://localhost:7777` in your local browser and enter the password you set at startup. `localhost` refers to your local computer, and `7777` is the service port.
+Open `http://localhost:7777` in your local browser and enter the password you set at startup. `localhost` refers to your local device, and `7777` is the service port.
 
 The iCode interface should appear after login, using any existing model configuration on the server. Once a model is configured, send “Hello” and check that you receive a reply.
 
@@ -48,9 +48,9 @@ Each time you open a page and establish a connection, the server starts a separa
 
 Browser logins remain valid for 12 hours, and you must log in again after the service restarts. Five consecutive incorrect passwords from the same client address lock out that address. Only restarting the service clears the lockout. Restarting disconnects all connected pages.
 
-## Access remote iCode from your local computer
+## Access remote iCode from your local device
 
-If you can already log in to the remote server over SSH, you can create an SSH tunnel to forward your local browser's connection to remote iCode over an encrypted channel, without configuring a domain. The following steps require two terminal windows on your local computer.
+If you can already log in to the remote server over SSH, you can create an SSH tunnel to forward your local browser's connection to remote iCode over an encrypted channel, without configuring a domain. The following steps require two terminal windows on your local device.
 
 ### 1. Log in to the remote server and start iCode in the first terminal
 
@@ -70,7 +70,7 @@ Set a browser login password, confirm that the terminal displays the service URL
 
 ### 2. Create a tunnel in the second terminal
 
-Open a second terminal on your local computer and run:
+Open a second terminal on your local device and run:
 
 ```shell
 ssh -N -o ExitOnForwardFailure=yes -L 7777:localhost:7777 <user>@<server>
@@ -160,9 +160,9 @@ On the server, change to your working directory, replace `192.168.1.20` with the
 icode serve --host 0.0.0.0 --public-url http://192.168.1.20:7777 --auth-required --allow-insecure-auth
 ```
 
-`--host 0.0.0.0` allows other computers to connect to iCode. `--allow-insecure-auth` explicitly allows plain text password login over the network. Without this option, iCode refuses to start in this example.
+`--host 0.0.0.0` allows other devices to connect to iCode. `--allow-insecure-auth` explicitly allows plain text password login over the network. Without this option, iCode refuses to start in this example.
 
-In your local browser, visit the server's actual LAN IP address, such as `http://192.168.1.20:7777`, and log in. If you cannot connect, check that your local computer can reach the server and that the server's firewall allows the client to access TCP port `7777`.
+In your local browser, visit the server's actual LAN IP address, such as `http://192.168.1.20:7777`, and log in. If you cannot connect, check that your local device can reach the server and that the server's firewall allows the client to access TCP port `7777`.
 
 ## Troubleshooting
 
@@ -186,7 +186,7 @@ Then visit `http://localhost:8888`.
 
 ### The SSH tunnel reports that the local port is in use
 
-Change the first port after `-L` to an available local port, keeping the last port set to the port remote iCode is listening on. For example, if remote iCode uses `7777` and local port `8888` is available, run this on your local computer:
+Change the first port after `-L` to an available local port, keeping the last port set to the port remote iCode is listening on. For example, if remote iCode uses `7777` and local port `8888` is available, run this on your local device:
 
 ```shell
 ssh -N -o ExitOnForwardFailure=yes -L 8888:localhost:7777 <user>@<server>
@@ -198,7 +198,7 @@ Replace `<user>` and `<server>` with the SSH username and server address. Also r
 icode serve --public-url http://localhost:8888 --auth-required
 ```
 
-Then visit `http://localhost:8888` on your local computer.
+Then visit `http://localhost:8888` on your local device.
 
 ### The browser cannot connect
 

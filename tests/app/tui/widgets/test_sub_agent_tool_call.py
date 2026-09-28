@@ -305,6 +305,23 @@ async def test_sub_agent_acp_transport_pause_shows_ui_only_diagnostic_banner() -
         assert "Diagnostics: /workspace/.chrys/sessions/s1/approvals/acp.log" in rendered
 
 
+async def test_sub_agent_pause_shows_what_went_wrong_above_the_raw_error() -> None:
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "delegate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+        tool.set_paused("framework_exc", "Connection error.", 0, None, "Can't resolve api.example.com.")
+        pause_info = tool.query_one("#sa-pause-info", Static)
+        await wait_for(
+            lambda: "Connection error." in pause_info.render().plain,
+            pilot=pilot,
+            description="pause info with the display line",
+        )
+
+        lines = pause_info.render().plain.splitlines()
+        assert lines.index("Can't resolve api.example.com.") + 1 == lines.index("Connection error.")
+
+
 async def test_sub_agent_pause_diagnostic_path_display_copy_is_surrogate_safe() -> None:
     from chrys.foundation.platform.files import surrogate_safe_text
 

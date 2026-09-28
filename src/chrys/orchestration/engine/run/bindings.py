@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     AgentThinking,
     Error,
@@ -27,7 +28,6 @@ from chrys.foundation.events.types import (
     ProvisionalPresentation,
 )
 from chrys.foundation.hosted_tools import HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY, HostedToolStatus
-from chrys.foundation.i18n import msg
 from chrys.foundation.retry import (
     StreamStall,
 )
@@ -114,11 +114,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-_RETRY_STREAM_STALLED = msg(
-    "retry.stream_stalled",
-    fallback="Stream stalled",
-)
 
 
 class _AssistantMessageEventKwargs(TypedDict, total=False):
@@ -712,8 +707,16 @@ class TurnBindings:
         logger.error("Turn error: %s", err_msg)
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected(err_msg)
+        display_message, display_hint = display_fields(e)
         await self._emitter.publish(
-            Error(code="executor_error", message=err_msg, recoverable=True, session_id=self._session_id)
+            Error(
+                code="executor_error",
+                message=err_msg,
+                recoverable=True,
+                session_id=self._session_id,
+                display_message=display_message,
+                display_hint=display_hint,
+            )
         )
         logger.debug("Turn traceback:\n%s", tb)
 
@@ -806,6 +809,7 @@ class TurnBindings:
     ) -> None:
         if self._hosted_bridge is not None and self.inputs.pending_continuation_token is None:
             await self._hosted_bridge.attempt_rejected(message)
+        display_message, display_hint = display_fields(exc, retry_notice=True)
         await self._emitter.publish(
             InvocationRetryAttempt(
                 origin=self._emitter.origin,
@@ -815,7 +819,8 @@ class TurnBindings:
                 max_attempts=max_attempts,
                 delay_seconds=delay_seconds,
                 session_id=self._session_id,
-                display_message=_RETRY_STREAM_STALLED.bind() if isinstance(exc, StreamStall) else None,
+                display_message=display_message,
+                display_hint=display_hint,
             )
         )
 

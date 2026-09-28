@@ -67,10 +67,10 @@ def patch_runtime(
         client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
         return client
 
-    def _main_client(*_args: Any, **kwargs: Any) -> MockChatClient:
+    async def _main_client(*_args: Any, **kwargs: Any) -> MockChatClient:
         return _configure(main_client, kwargs)
 
-    def _create_client(*_args: Any, **kwargs: Any) -> MockChatClient:
+    async def _create_client(*_args: Any, **kwargs: Any) -> MockChatClient:
         return _configure(clients.pop(0), kwargs)
 
     def _load_builtins(self: ToolRegistry, _categories: Any, **_kwargs: Any) -> list[FunctionTool]:

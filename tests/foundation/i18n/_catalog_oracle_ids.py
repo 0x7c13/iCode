@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
+from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
 from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_IDS
@@ -1973,5 +1974,10 @@ _message_ids.update(
 )
 
 EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
-    frozenset(_message_ids) | BUDDY_MESSAGE_IDS | WORKFLOW_MESSAGE_IDS | HELP_MESSAGE_IDS | WEB_MESSAGE_IDS
+    frozenset(_message_ids)
+    | BUDDY_MESSAGE_IDS
+    | WORKFLOW_MESSAGE_IDS
+    | HELP_MESSAGE_IDS
+    | WEB_MESSAGE_IDS
+    | ERROR_MESSAGE_IDS
 )

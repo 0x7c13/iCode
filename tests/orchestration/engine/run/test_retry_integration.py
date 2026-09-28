@@ -129,7 +129,7 @@ async def started_retry_engine(
 
     clients: list[MockChatClient] = []
 
-    def _create_client(s=None, **kw):
+    async def _create_client(s=None, **kw):
         client = client_factory()
         clients.append(client)
         return client

@@ -285,7 +285,7 @@ async def _make_ctx(
     main_client = ErrorMockChatClient(outcomes=main_outcomes)
     sub_client = ErrorMockChatClient(outcomes=sub_outcomes)
 
-    def _patched_create_client(p: Any = None, **kw: Any) -> MockChatClient:
+    async def _patched_create_client(p: Any = None, **kw: Any) -> MockChatClient:
         # Route by resolved ModelProfile id.  Both clients get the
         # intermediate-text callbacks installed so streaming callbacks
         # behave identically to the real path (main is non-streaming in

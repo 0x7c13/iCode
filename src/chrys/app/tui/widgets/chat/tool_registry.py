@@ -723,11 +723,12 @@ class ToolGroupRegistry:
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
         """Dispatch a pause transition to the correct card."""
         widget = self._sub_agent_widgets.get(invocation_id)
         if widget is not None:
-            widget.set_paused(reason, last_error, retry_attempts, diagnostic_path)
+            widget.set_paused(reason, last_error, retry_attempts, diagnostic_path, last_error_display)
             self._set_sub_agent_action_required(widget, required=True)
 
     def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:

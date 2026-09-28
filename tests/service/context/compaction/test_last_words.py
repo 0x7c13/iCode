@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
@@ -700,7 +700,7 @@ async def test_last_words_generator_uses_model_profile_stream_setting(tmp_path):
     assert client.streams == [True]
 
 
-def test_last_words_generator_passes_session_ids_to_client(tmp_path):
+async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
     """Phase 4 LAST_WORDS calls should carry the active session header."""
     from chrys.service.context.compaction.last_words import LastWordsGenerator
     from chrys.service.profiles.models.resolver import default_profile
@@ -713,11 +713,38 @@ def test_last_words_generator_passes_session_ids_to_client(tmp_path):
     )
 
     with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
-        gen._get_client()
+        await gen._get_client()
 
     create_client.assert_called_once()
     assert create_client.call_args.kwargs["session_id"] == "sess-phase4"
     assert create_client.call_args.kwargs["parent_session_id"] == "parent-phase4"
+
+
+async def test_closing_the_generator_closes_its_client_and_refuses_a_new_one(tmp_path):
+    """The runtime that owns the generator closes it; a late fallback call must not reopen a client."""
+    from chrys.service.context.compaction.last_words import LastWordsGenerationError, LastWordsGenerator
+    from chrys.service.llm import clients as clients_mod
+    from chrys.service.profiles.models.resolver import default_profile
+
+    class _Client:
+        closes = 0
+
+        async def aclose(self) -> None:
+            self.closes += 1
+
+    client = _Client()
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    await gen.aclose()  # nothing created yet: a no-op
+
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    with patch.object(clients_mod, "create_client", create_autospec(clients_mod.create_client, return_value=client)):
+        assert await gen._get_client() is client
+        assert await gen._get_client() is client
+        await gen.aclose()
+        await gen.aclose()
+        assert client.closes == 1
+        with pytest.raises(LastWordsGenerationError, match="closed"):
+            await gen._get_client()
 
 
 async def test_last_words_generator_renders_only_scoped_timeline(tmp_path):

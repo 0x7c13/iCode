@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import RuntimeFinishReason
-from chrys.orchestration.invoker.resources import finish_close
+from chrys.foundation.util.once_close import finish_close
 from chrys.service.hooks.events import HookEvent
 from chrys.service.trajectory.session import SessionStartInfo, SessionTrajectory
 

@@ -26,6 +26,7 @@ from chrys.kernel import Content, Message
 from chrys.kernel.compaction import EXCLUDED_KEY
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -527,6 +528,14 @@ async def test_conversation_text_under_token_budget_keeps_full_transcript() -> N
     assert _conversation_text(engine, max_tokens=10_000) == _conversation_text(engine)
 
 
+class _ClosingClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 async def test_generate_title_rebuilds_client_on_profile_config_change(tmp_path: Path, monkeypatch) -> None:
     """The route id omits connection config (API key, headers, proxy/SSL,
     timeouts), so a live profile edit must invalidate the cached client —
@@ -546,10 +555,12 @@ async def test_generate_title_rebuilds_client_on_profile_config_change(tmp_path:
     engine.session_dir = None
 
     created: list[str] = []
+    clients: list[_ClosingClient] = []
 
-    def fake_create_client(profile, **kwargs):
+    async def fake_create_client(profile, **kwargs):
         created.append(profile.api_key)
-        return object()
+        clients.append(_ClosingClient())
+        return clients[-1]
 
     async def fake_get_final_response(client, messages, **kwargs):
         return SimpleNamespace(text=" <existing-title>\nFix login bug\n</existing-title>\n")
@@ -586,6 +597,224 @@ async def test_generate_title_rebuilds_client_on_profile_config_change(tmp_path:
         engine, "sess1", "User: hi", title_profile(), existing_title="Login bug", trajectory=None
     )
     assert created == ["old", "new", "newer"]
+    # A replaced client with no call in flight closes at once; the current one stays open.
+    assert [client.closed for client in clients] == [True, True, False]
+
+
+# ─── client lease ───────────────────────────────────────────────────
+
+
+class _TitleCall:
+    """One title call: answered when the test says so; once cancelled, cleans up until released."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.cleaning = asyncio.Event()
+        self.cleanup_release = asyncio.Event()
+        self.answer = asyncio.Event()
+        self.cancels = 0
+
+
+class _LeaseClient:
+    """A title client that records its calls and closes."""
+
+    def __init__(self) -> None:
+        self.calls: list[_TitleCall] = []
+        self.closes = 0
+
+    @property
+    def closed(self) -> bool:
+        return self.closes > 0
+
+    async def get_response(self) -> str:
+        call = _TitleCall()
+        self.calls.append(call)
+        call.entered.set()
+        try:
+            await call.answer.wait()
+        except asyncio.CancelledError:
+            call.cancels += 1
+            call.cleaning.set()
+            while not call.cleanup_release.is_set():
+                try:
+                    await call.cleanup_release.wait()
+                except asyncio.CancelledError:
+                    call.cancels += 1
+            raise
+        return "Leased title"
+
+    async def aclose(self) -> None:
+        self.closes += 1
+
+
+def _lease_updater(
+    store: JsonFileStateStore, engine: _FakeEngine, monkeypatch, clients: list[_LeaseClient]
+) -> SessionTitleUpdater:
+    from types import SimpleNamespace
+    from unittest.mock import create_autospec
+
+    from chrys.service.llm import clients as clients_mod
+    from chrys.service.llm import responses as responses_mod
+
+    async def get_final_response(
+        client: _LeaseClient, messages: list[Message], *, stream: bool, options: dict, timeout: float
+    ) -> SimpleNamespace:
+        return SimpleNamespace(text=await client.get_response())
+
+    monkeypatch.setattr(
+        clients_mod, "create_client", create_autospec(clients_mod.create_client, side_effect=list(clients))
+    )
+    monkeypatch.setattr(
+        responses_mod,
+        "get_final_response",
+        create_autospec(responses_mod.get_final_response, side_effect=get_final_response),
+    )
+    return SessionTitleUpdater(EventBus(), store, engine_getter=lambda: engine)
+
+
+def _start_title_task(updater: SessionTitleUpdater) -> asyncio.Task[None]:
+    updater.on_turn_finished()
+    task = updater._task
+    assert task is not None
+    return task
+
+
+def _change_title_profile(engine: _FakeEngine) -> None:
+    engine.active_model_profile = replace(engine.active_model_profile, api_key="rotated")
+
+
+async def _entered(client: _LeaseClient, index: int, task: asyncio.Task[None]) -> _TitleCall:
+    await wait_for(
+        lambda: len(client.calls) > index or task.done(), timeout=ENGINE_TURN_TIMEOUT, description="title call"
+    )
+    if task.done():
+        await task
+    return client.calls[index]
+
+
+async def test_replacing_the_client_waits_for_the_old_call_to_drain(tmp_path: Path, monkeypatch) -> None:
+    engine = _FakeEngine()
+    old, new = _LeaseClient(), _LeaseClient()
+    updater = _lease_updater(await _saved_store(tmp_path), engine, monkeypatch, [old, new])
+    first = _start_title_task(updater)
+    old_call = await _entered(old, 0, first)
+
+    _change_title_profile(engine)
+    second = _start_title_task(updater)
+    new_call = await _entered(new, 0, second)
+    try:
+        assert old_call.cleaning.is_set()
+        assert not first.done()
+        assert not old.closed
+
+        old_call.cleanup_release.set()
+        await asyncio.wait_for(asyncio.gather(first, return_exceptions=True), ENGINE_TURN_TIMEOUT)
+        assert old.closes == 1
+        assert not new.closed
+        assert not second.done()
+    finally:
+        old_call.cleanup_release.set()
+        new_call.cleanup_release.set()
+        new_call.answer.set()
+        await updater.shutdown()
+    assert new.closes == 1
+
+
+async def test_shutdown_drains_every_unfinished_task_before_closing(tmp_path: Path, monkeypatch) -> None:
+    engine = _FakeEngine()
+    old, new = _LeaseClient(), _LeaseClient()
+    updater = _lease_updater(await _saved_store(tmp_path), engine, monkeypatch, [old, new])
+    first = _start_title_task(updater)
+    old_call = await _entered(old, 0, first)
+    _change_title_profile(engine)
+    second = _start_title_task(updater)
+    new_call = await _entered(new, 0, second)
+
+    shutting_down = asyncio.create_task(updater.shutdown())
+    try:
+        await wait_for(new_call.cleaning.is_set, timeout=ENGINE_TURN_TIMEOUT, description="second call cancelled")
+        assert not await wait_until(lambda: shutting_down.done() or old.closed or new.closed, timeout=0.2)
+
+        old_call.cleanup_release.set()
+        new_call.cleanup_release.set()
+        await asyncio.wait_for(shutting_down, ENGINE_TURN_TIMEOUT)
+        assert first.done() and second.done()
+        assert (old.closes, new.closes) == (1, 1)
+    finally:
+        old_call.cleanup_release.set()
+        new_call.cleanup_release.set()
+        await asyncio.gather(shutting_down, return_exceptions=True)
+
+
+async def test_shutdown_after_cancel_only_waits_for_cleanup(tmp_path: Path, monkeypatch) -> None:
+    client = _LeaseClient()
+    updater = _lease_updater(await _saved_store(tmp_path), _FakeEngine(), monkeypatch, [client])
+    first = _start_title_task(updater)
+    first_call = await _entered(client, 0, first)
+    second = _start_title_task(updater)
+    second_call = await _entered(client, 1, second)
+    assert first_call.cleaning.is_set()
+
+    shutting_down = asyncio.create_task(updater.shutdown())
+    try:
+        await wait_for(second_call.cleaning.is_set, timeout=ENGINE_TURN_TIMEOUT, description="second call cancelled")
+        assert not await wait_until(lambda: shutting_down.done() or client.closed, timeout=0.2)
+        assert first_call.cancels == 1
+
+        first_call.cleanup_release.set()
+        second_call.cleanup_release.set()
+        await asyncio.wait_for(shutting_down, ENGINE_TURN_TIMEOUT)
+        assert (first_call.cancels, second_call.cancels) == (1, 1)
+        assert client.closes == 1
+    finally:
+        first_call.cleanup_release.set()
+        second_call.cleanup_release.set()
+        await asyncio.gather(shutting_down, return_exceptions=True)
+
+
+async def test_cancelled_shutdown_waiter_does_not_interrupt_drain(tmp_path: Path, monkeypatch) -> None:
+    client = _LeaseClient()
+    updater = _lease_updater(await _saved_store(tmp_path), _FakeEngine(), monkeypatch, [client])
+    task = _start_title_task(updater)
+    call = await _entered(client, 0, task)
+
+    waiter = asyncio.create_task(updater.shutdown())
+    try:
+        await wait_for(call.cleaning.is_set, timeout=ENGINE_TURN_TIMEOUT, description="title call cancelled")
+        shutdown_task = updater._shutdown_task
+        assert shutdown_task is not None
+        waiter.cancel()
+        # The waiter stays until the shared shutdown finishes; only then does its cancellation surface.
+        assert not await wait_until(lambda: waiter.done() or task.done() or client.closed, timeout=0.2)
+        assert call.cancels == 1
+
+        call.cleanup_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(waiter, ENGINE_TURN_TIMEOUT)
+        assert shutdown_task.done() and not shutdown_task.cancelled()
+        assert task.done()
+        assert client.closes == 1
+
+        await updater.shutdown()
+        assert updater._shutdown_task is shutdown_task
+        assert client.closes == 1
+    finally:
+        call.cleanup_release.set()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+async def test_same_client_reuse_across_turns_is_not_closed(tmp_path: Path, monkeypatch) -> None:
+    client = _LeaseClient()
+    updater = _lease_updater(await _saved_store(tmp_path), _FakeEngine(), monkeypatch, [client])
+    for index in range(2):
+        task = _start_title_task(updater)
+        call = await _entered(client, index, task)
+        call.answer.set()
+        await asyncio.wait_for(task, ENGINE_TURN_TIMEOUT)
+        assert not client.closed
+
+    await updater.shutdown()
+    assert client.closes == 1
 
 
 # ─── sanitizer ──────────────────────────────────────────────────────

@@ -208,7 +208,7 @@ def test_nonstartup_agent_load_failure_requests_conservative_idle_reclaim(
     gc_messages: list[object] = []
     screen = SimpleNamespace(_gc_messages=gc_messages, _profile="Code", _debug=lambda *_args: None)
     handler = make_backend_handler(screen)
-    monkeypatch.setattr(handler._agent_load(), "on_failed", lambda _event: None)
+    monkeypatch.setattr(handler._agent_load(), "on_failed", lambda _event, *, display=None: None)
 
     asyncio.run(handler.on_agent_load_failed(AgentLoadFailed(operation="startup", agent_profile="Code")))
     assert gc_messages == []

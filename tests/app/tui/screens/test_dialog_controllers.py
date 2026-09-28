@@ -9,6 +9,8 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from chrys.app.tui.screens.main.dialog_controllers import (
     _APPROVAL_AUTO_APPROVED_JUDGE,
     _APPROVAL_FLAGGED,
@@ -455,6 +457,7 @@ class _LoadPort:
         self.dialogs: list[_FakeLoadDialog] = []
         self.status_messages: list[str] = []
         self.loading_states: list[bool] = []
+        self.flashed: list[str] = []
         self.pushed = 0
 
     def create_agent_load_dialog(self, *, title: MessageRef | str, subtitle: str) -> _FakeLoadDialog:
@@ -481,8 +484,8 @@ class _LoadPort:
     def render_status_message(self, message: MessageRef | str) -> str:
         return _display_message(message)
 
-    def flash_agent_load_failed(self, _message: str) -> None:
-        return
+    def flash_agent_load_failed(self, message: str) -> None:
+        self.flashed.append(message)
 
     def debug(self, _key: str, _message: str = "") -> None:
         return
@@ -581,6 +584,47 @@ def test_agent_load_controller_surfaces_mcp_tool_collision_message() -> None:
 
     assert dialog.result == (False, message, True)
     assert controller.dialog is None
+    assert port.flashed == [message]
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        pytest.param("Connection error.", "Can't resolve api.example.com.\nConnection error.", id="with-raw-text"),
+        pytest.param("", "Can't resolve api.example.com.", id="without-raw-text"),
+    ],
+)
+def test_agent_load_controller_shows_the_display_above_the_raw_text(raw: str, shown: str) -> None:
+    port = _LoadPort()
+    controller = AgentLoadDialogController(port)
+    dialog = _FakeLoadDialog(title="Loading Agent", subtitle="Code")
+    controller.dialog = dialog
+
+    controller.on_failed(
+        AgentLoadFailed(operation="switch", agent_profile="Code", message=raw),
+        display="Can't resolve api.example.com.",
+    )
+
+    assert dialog.result == (False, shown, True)
+    # The status bar has room for one line: the display alone.
+    assert port.flashed == ["Can't resolve api.example.com."]
+
+
+def test_agent_load_controller_flashes_the_summary_without_the_hint() -> None:
+    port = _LoadPort()
+    controller = AgentLoadDialogController(port)
+    dialog = _FakeLoadDialog(title="Loading Agent", subtitle="Code")
+    controller.dialog = dialog
+    display = "Can't resolve api.example.com. Check your network connection first."
+
+    controller.on_failed(
+        AgentLoadFailed(operation="switch", agent_profile="Code", message="Connection error."),
+        display=display,
+        summary="Can't resolve api.example.com.",
+    )
+
+    assert dialog.result == (False, f"{display}\nConnection error.", True)
+    assert port.flashed == ["Can't resolve api.example.com."]
 
 
 def test_agent_load_controller_cancel_requests_stack_safe_dismissal() -> None:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from types import MethodType, SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -275,13 +276,15 @@ async def test_fork_prelude_keeps_identity_captured_before_reload(tmp_path, monk
 
     from chrys.foundation.trajectory.event_types import EventType
     from chrys.foundation.trajectory.reader import read_trajectory
+    from chrys.service.llm.clients import create_client
     from chrys.service.llm.mock import MockChatClient
     from chrys.service.profiles.agents.schema import AgentProfile, CompactionConfig, ToolsConfig
     from chrys.service.trajectory import fork as fork_module
     from chrys.service.trajectory.session import trajectory_events_path
 
     monkeypatch.setattr(
-        "chrys.orchestration.engine.build.builder.create_client", lambda *args, **kwargs: MockChatClient()
+        "chrys.orchestration.engine.build.builder.create_client",
+        create_autospec(create_client, side_effect=lambda *args, **kwargs: MockChatClient()),
     )
     bus = EventBus()
     store = JsonFileStateStore(tmp_path)

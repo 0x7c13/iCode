@@ -138,7 +138,10 @@ def configure_logging() -> None:
     logging.basicConfig(handlers=[logging.NullHandler()])
 
 
-def write_error(message: str, *, as_json: bool, code: str = "error", session_id: str | None = None) -> None:
+def write_error(
+    message: str, *, as_json: bool, code: str = "error", session_id: str | None = None, detail: str | None = None
+) -> None:
+    """Write one error to stderr; text mode puts *detail* (the raw error text) on an indented line below."""
     if as_json:
         payload = {"error": message, "code": code}
         if session_id:
@@ -150,6 +153,8 @@ def write_error(message: str, *, as_json: bool, code: str = "error", session_id:
         sys.stderr.write("\n")
         return
     sys.stderr.write(f"Error: {sanitize_legacy_scalar(message)}\n")
+    if detail:
+        sys.stderr.write(f"  detail: {sanitize_legacy_scalar(detail)}\n")
 
 
 def write_warning(message: str, *, as_json: bool, code: str = "warning") -> None:

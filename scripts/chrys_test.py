@@ -126,6 +126,7 @@ ARCHITECTURE_RULES = (
         "tests/architecture/test_hygiene_i18n_messages.py",
         ("src/chrys/app/tui/**", "src/chrys/foundation/i18n/**"),
     ),
+    TestRule("tests/architecture/test_hygiene_llm_client_owners.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_optional_imports.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_source_asserts.py"),
     TestRule("tests/architecture/test_hygiene_subprocess_stdin.py"),

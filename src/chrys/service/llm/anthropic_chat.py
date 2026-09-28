@@ -41,6 +41,7 @@ from chrys.foundation.hosted_tools import (
     HostedToolPhase,
 )
 from chrys.foundation.tool_kinds import KIND_SHELL as SHELL_TOOL_KIND_VALUE
+from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import (
     Annotation,
     BaseChatClient,
@@ -305,9 +306,17 @@ class RawAnthropicClient(BaseChatClient):
             additional_properties=additional_properties,
         )
         self.anthropic_client = anthropic_client
+        self._close_sdk = OnceClose(self._close_sdk_client)
         self.additional_beta_flags = additional_beta_flags or []
         self.model = model or ""
         self._tool_name_aliases: dict[str, str] = {}
+
+    async def aclose(self) -> None:
+        """Close the provider SDK client and its HTTP pool; concurrent callers share one close."""
+        await self._close_sdk()
+
+    async def _close_sdk_client(self) -> None:
+        await self.anthropic_client.close()
 
     # region Static factory methods for hosted tools
 

@@ -29,6 +29,7 @@ from chrys.app.tui.widgets.chat.messages import (
 from chrys.app.tui.widgets.chat.scroll_controller import ManualScrollGcGuard
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.events.types import ProvisionalPresentation
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.patches.textual_precompose import precompose_tree
@@ -180,6 +181,8 @@ class TranscriptRetryOp:
     max_attempts: int
     delay_seconds: int
     compaction: bool = False
+    # Shown after a display ``message`` (e.g. "seems offline"); never without one.
+    hint: MessageRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,6 +698,11 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
             await self.remove_trailing_status()
         elif isinstance(operation, TranscriptRetryOp):
             message = self._render_message(operation.message)
+            if operation.hint is not None:
+                message = render_str(
+                    widget_localizer(self),
+                    DISPLAY_WITH_HINT.bind(message=message, hint=self._render_message(operation.hint)),
+                )
             if operation.compaction:
                 self._live.show_compaction_retry(
                     message, operation.attempt, operation.max_attempts, operation.delay_seconds

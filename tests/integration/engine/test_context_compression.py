@@ -14,6 +14,7 @@ Tests the full CompressibleHistoryProvider pipeline:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -353,7 +354,9 @@ async def test_engine_inserts_turn_markers(agent_engine, monkeypatch: pytest.Mon
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 
@@ -421,7 +424,9 @@ async def test_engine_multi_turn_then_compress(agent_engine, monkeypatch: pytest
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 
@@ -491,7 +496,9 @@ async def test_engine_stacking_compressions(agent_engine, monkeypatch: pytest.Mo
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 
@@ -562,7 +569,9 @@ async def test_engine_session_save_restore_with_compressed(
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings, state_store=store)
     await engine.start(profile)
     session_id = engine.session.session_id
@@ -650,7 +659,9 @@ async def test_engine_crash_after_compress_preserves_state(agent_engine, monkeyp
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 

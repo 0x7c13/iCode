@@ -8,7 +8,7 @@ This guide explains how to connect an external agent that supports the Agent Cli
 
 Before configuring an external agent, confirm that it:
 
-- Is installed on the computer running iCode.
+- Is installed on the device running iCode.
 - Supports running an ACP server over standard input and output (stdio).
 - Has completed any required login or authentication, or has the environment variables needed for authentication ready.
 - Can start in ACP mode using an executable and arguments.

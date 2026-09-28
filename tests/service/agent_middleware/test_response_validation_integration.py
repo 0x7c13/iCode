@@ -1183,7 +1183,7 @@ async def _make_sub_agent_ctx(
     main_client = MockChatClient(responses=main_responses)
     sub_client = MockChatClient(responses=sub_responses)
 
-    def _patched_create(p: Any = None, **kw: Any) -> MockChatClient:
+    async def _patched_create(p: Any = None, **kw: Any) -> MockChatClient:
         profile_id = getattr(p, "id", "") or ""
         client = sub_client if profile_id == "sub-mock" else main_client
         client._on_intermediate_text_async = kw.get("on_intermediate_text_async")

@@ -337,6 +337,9 @@ async def build_agent(
             turn_context=turn_context,
             allow_user_interaction=allow_user_interaction,
         )
+        # The judge creates its client on first evaluation, never during the
+        # build, so the build's own rollback has nothing of it to close.
+        result.prepared.own(approval_judge.aclose)
         settings = settings_handle.prepare(staged.loaded)
         result.loop_recorder.on_pre_wire_barrier = checkpoints.persist_barrier
         result.loop_recorder.on_result_checkpoint = checkpoints.save_checkpoint

@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
 
 from pydantic import BaseModel, ValidationError
 
-from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors import clean_error_message, invalidates_continuation_token
 from chrys.foundation.observability.gate import TELEMETRY_GATE
 from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.retry import StreamStall
@@ -144,7 +144,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterable, Awaitable, Callable, Container, Coroutine
 
     from ._content import UsageDetails
-    from .middleware import ChatMiddleware, FunctionInvocationContext, FunctionMiddleware
+    from .middleware import ChatMiddleware, ChatMiddlewareLayer, FunctionInvocationContext, FunctionMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -2373,7 +2373,7 @@ class ToolLoopLayer:
 
     def __init__(
         self,
-        inner: Any,
+        inner: ChatMiddlewareLayer,
         *,
         middleware: FunctionMiddleware | Sequence[FunctionMiddleware] | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
@@ -2400,6 +2400,9 @@ class ToolLoopLayer:
         if name == "inner":
             raise AttributeError(name)
         return getattr(self.inner, name)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
 
     def get_response(
         self,
@@ -2894,7 +2897,7 @@ class ToolLoopLayer:
                     raise
                 except Exception as exc:
                     _trajectory_close_exchange(ExchangeOutcome.ERROR, exc=exc)
-                    if getattr(exc, "invalidates_continuation_token", False):
+                    if invalidates_continuation_token(exc):
                         # The failure judged a terminal response: a retry must
                         # issue a fresh request, never re-poll the completed
                         # (immutable) one.
@@ -3036,7 +3039,7 @@ class ToolLoopLayer:
                                 await inner_stream.aclose()
                             except Exception:
                                 logger.debug("Failed to close abandoned provider stream", exc_info=True)
-                        if getattr(exc, "invalidates_continuation_token", False):
+                        if invalidates_continuation_token(exc):
                             # The failure judged a terminal response: a retry
                             # must issue a fresh request, never re-poll the
                             # completed (immutable) one.

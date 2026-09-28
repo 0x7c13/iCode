@@ -9,7 +9,6 @@ network I/O or requiring valid API keys.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import ssl
 import sys
@@ -132,7 +131,7 @@ def test_effective_model_base_url_rejects_unknown_provider() -> None:
         ("glm-openai", "ZAI_API_KEY"),
     ],
 )
-def test_create_client_missing_api_key_template_raises_before_provider_fallback(
+async def test_create_client_missing_api_key_template_raises_before_provider_fallback(
     provider: str,
     fallback_env: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -141,7 +140,7 @@ def test_create_client_missing_api_key_template_raises_before_provider_fallback(
     monkeypatch.delenv("CHRYS_MISSING_PROFILE_API_KEY", raising=False)
 
     with pytest.raises(EnvVarResolutionError) as info:
-        create_client(_profile(provider=provider, api_key="{{CHRYS_MISSING_PROFILE_API_KEY}}"))
+        await create_client(_profile(provider=provider, api_key="{{CHRYS_MISSING_PROFILE_API_KEY}}"))
 
     message = str(info.value)
     assert "CHRYS_MISSING_PROFILE_API_KEY" in message
@@ -151,9 +150,9 @@ def test_create_client_missing_api_key_template_raises_before_provider_fallback(
 # ───────────────────────── wire-charset validation ────────────────────
 
 
-def test_create_client_rejects_non_ascii_profile_api_key() -> None:
+async def test_create_client_rejects_non_ascii_profile_api_key() -> None:
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="openai", api_key="sk-abc▼def"))
+        await create_client(_profile(provider="openai", api_key="sk-abc▼def"))
 
     message = str(info.value)
     assert "Model profile 'p'" in message
@@ -163,11 +162,11 @@ def test_create_client_rejects_non_ascii_profile_api_key() -> None:
     assert "▼" not in message
 
 
-def test_create_client_rejects_non_ascii_api_key_from_env_template(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_rejects_non_ascii_api_key_from_env_template(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHRYS_PROFILE_API_KEY", "sk-abc密钥")
 
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="openai", api_key="{{CHRYS_PROFILE_API_KEY}}"))
+        await create_client(_profile(provider="openai", api_key="{{CHRYS_PROFILE_API_KEY}}"))
 
     message = str(info.value)
     assert "API key" in message
@@ -184,7 +183,7 @@ def test_create_client_rejects_non_ascii_api_key_from_env_template(monkeypatch: 
         ("glm-openai", "ZAI_API_KEY"),
     ],
 )
-def test_create_client_rejects_non_ascii_provider_fallback_key(
+async def test_create_client_rejects_non_ascii_provider_fallback_key(
     provider: str,
     fallback_env: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -192,19 +191,19 @@ def test_create_client_rejects_non_ascii_provider_fallback_key(
     monkeypatch.setenv(fallback_env, "sk-fallback▼")
 
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider=provider))
+        await create_client(_profile(provider=provider))
 
     message = str(info.value)
     assert "API key" in message
     assert "sk-fallback" not in message
 
 
-def test_create_client_rejects_outer_space_provider_fallback_key(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_rejects_outer_space_provider_fallback_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fallback env key with a trailing space fails h11 locally; reject it up front."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fallback ")
 
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="openai"))
+        await create_client(_profile(provider="openai"))
 
     message = str(info.value)
     assert "API key" in message
@@ -212,9 +211,9 @@ def test_create_client_rejects_outer_space_provider_fallback_key(monkeypatch: py
     assert "sk-fallback" not in message
 
 
-def test_create_client_rejects_non_ascii_model_id() -> None:
+async def test_create_client_rejects_non_ascii_model_id() -> None:
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="openai", api_key="sk-ok", model_id="gpt▼4o"))
+        await create_client(_profile(provider="openai", api_key="sk-ok", model_id="gpt▼4o"))
 
     message = str(info.value)
     assert "Model ID" in message
@@ -224,18 +223,18 @@ def test_create_client_rejects_non_ascii_model_id() -> None:
     assert MODEL_ID_HEADER not in message
 
 
-def test_create_client_rejects_empty_model_id() -> None:
+async def test_create_client_rejects_empty_model_id() -> None:
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="openai", api_key="sk-ok", model_id=""))
+        await create_client(_profile(provider="openai", api_key="sk-ok", model_id=""))
 
     assert "Model ID is empty" in str(info.value)
 
 
-def test_create_client_rejects_non_ascii_http_header_value() -> None:
+async def test_create_client_rejects_non_ascii_http_header_value() -> None:
     profile = _profile(provider="openai", api_key="sk-ok", http_headers='{"X-Custom-Auth": "secret▼value"}')
 
     with pytest.raises(ValueError) as info:
-        create_client(profile)
+        await create_client(profile)
 
     message = str(info.value)
     assert "'X-Custom-Auth'" in message
@@ -244,7 +243,7 @@ def test_create_client_rejects_non_ascii_http_header_value() -> None:
     assert "▼" not in message
 
 
-def test_create_client_rejects_non_ascii_header_value_from_env_template(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_rejects_non_ascii_header_value_from_env_template(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHRYS_TEST_HEADER_VALUE", "值")
     profile = _profile(
         provider="openai",
@@ -253,29 +252,29 @@ def test_create_client_rejects_non_ascii_header_value_from_env_template(monkeypa
     )
 
     with pytest.raises(ValueError) as info:
-        create_client(profile)
+        await create_client(profile)
 
     message = str(info.value)
     assert "'X-Custom-Auth'" in message
     assert "值" not in message
 
 
-def test_create_client_rejects_invalid_http_header_name() -> None:
+async def test_create_client_rejects_invalid_http_header_name() -> None:
     profile = _profile(provider="openai", api_key="sk-ok", http_headers='{"X Custom": "v"}')
 
     with pytest.raises(ValueError) as info:
-        create_client(profile)
+        await create_client(profile)
 
     assert "Header name" in str(info.value)
 
 
-def test_create_client_rejects_non_ascii_anthropic_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_rejects_non_ascii_anthropic_auth_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """The Anthropic SDK reads its bearer token after Chrys builds profile headers."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token▼")
 
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="anthropic"))
+        await create_client(_profile(provider="anthropic"))
 
     message = str(info.value)
     assert "'Authorization'" in message
@@ -293,7 +292,7 @@ def test_create_client_rejects_non_ascii_anthropic_auth_token(monkeypatch: pytes
         ("glm-openai", "OPENAI_CUSTOM_HEADERS"),
     ],
 )
-def test_create_client_rejects_non_ascii_sdk_custom_header(
+async def test_create_client_rejects_non_ascii_sdk_custom_header(
     provider: str,
     custom_headers_env: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -301,7 +300,7 @@ def test_create_client_rejects_non_ascii_sdk_custom_header(
     monkeypatch.setenv(custom_headers_env, "X-Sdk-Secret: secret值")
 
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider=provider, api_key="sk-ok"))
+        await create_client(_profile(provider=provider, api_key="sk-ok"))
 
     message = str(info.value)
     assert "'X-Sdk-Secret'" in message
@@ -317,7 +316,7 @@ def test_create_client_rejects_non_ascii_sdk_custom_header(
         ("OPENAI_PROJECT_ID", "OpenAI-Project"),
     ],
 )
-def test_create_client_rejects_non_ascii_openai_identity_header(
+async def test_create_client_rejects_non_ascii_openai_identity_header(
     env_name: str,
     header_name: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -325,7 +324,7 @@ def test_create_client_rejects_non_ascii_openai_identity_header(
     monkeypatch.setenv(env_name, "identity▼")
 
     with pytest.raises(ValueError) as info:
-        create_client(_profile(provider="openai", api_key="sk-ok"))
+        await create_client(_profile(provider="openai", api_key="sk-ok"))
 
     message = str(info.value)
     assert repr(header_name) in message
@@ -334,16 +333,16 @@ def test_create_client_rejects_non_ascii_openai_identity_header(
     assert "▼" not in message
 
 
-def test_create_client_mock_skips_wire_charset_validation() -> None:
+async def test_create_client_mock_skips_wire_charset_validation() -> None:
     from chrys.service.llm.mock import MockChatClient
 
-    client = create_client(_profile(provider="mock", api_key="▼", model_id="模型"))
+    client = await create_client(_profile(provider="mock", api_key="▼", model_id="模型"))
 
     assert isinstance(client, MockChatClient)
 
 
-def test_create_client_threads_tool_result_ceiling_to_mock_loop() -> None:
-    client = create_client(
+async def test_create_client_threads_tool_result_ceiling_to_mock_loop() -> None:
+    client = await create_client(
         _profile(provider="mock"),
         tool_result_ceiling_tokens=4_000,
     )
@@ -352,6 +351,13 @@ def test_create_client_threads_tool_result_ceiling_to_mock_loop() -> None:
 
 
 # ───────────────────────── spy classes ────────────────────────────────
+
+
+class _OwnedHttpClient:
+    """Stands in for the profile-owned ``httpx.AsyncClient``."""
+
+    async def aclose(self) -> None:
+        pass
 
 
 class _Spy:
@@ -363,10 +369,13 @@ class _Spy:
         self.auth_headers: dict[str, str] = {}
         self.default_headers = kwargs.get("default_headers") or {}
 
+    async def aclose(self) -> None:
+        pass
 
-def _assert_empty_api_key_provider(value: Any) -> None:
+
+async def _assert_empty_api_key_provider(value: Any) -> None:
     assert callable(value)
-    assert asyncio.run(value()) == ""
+    assert await value() == ""
 
 
 # ───────────────────────── _create_anthropic_async_client ─────────────
@@ -475,7 +484,7 @@ def test_openai_async_client_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) 
     assert client.kwargs["base_url"] == "https://env.example.com"
 
 
-def test_openai_async_client_passes_empty_key_when_profile_and_env_missing(
+async def test_openai_async_client_passes_empty_key_when_profile_and_env_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty profile api_key and no env must still pass an explicit api_key provider."""
@@ -493,7 +502,7 @@ def test_openai_async_client_passes_empty_key_when_profile_and_env_missing(
         default_headers=None,
     )
 
-    _assert_empty_api_key_provider(client.kwargs["api_key"])
+    await _assert_empty_api_key_provider(client.kwargs["api_key"])
 
 
 def test_openai_async_client_omits_base_url_when_neither_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -796,8 +805,15 @@ async def test_provider_status_retry_ignores_deterministic_error_from_outer_cont
 
 # ───────────────────────── profile httpx client ──────────────────────
 
+_ROUTE_HOOKS = {"request": ["build_route_hooks.<locals>.stamp"], "response": ["build_route_hooks.<locals>.record"]}
 
-def test_profile_http_client_default_skips_prebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def _pop_hook_names(kwargs: dict[str, Any]) -> dict[str, list[str]]:
+    """Remove the client's event hooks from *kwargs* and return their qualified names."""
+    return {event: [hook.__qualname__ for hook in hooks] for event, hooks in kwargs.pop("event_hooks").items()}
+
+
+def test_profile_http_client_default_profile_builds_the_sdk_default_client(monkeypatch: pytest.MonkeyPatch) -> None:
     import openai
 
     calls: list[dict[str, Any]] = []
@@ -813,8 +829,9 @@ def test_profile_http_client_default_skips_prebuild(monkeypatch: pytest.MonkeyPa
 
     client = _build_profile_http_client(_profile(), timeout)
 
-    assert client is None
-    assert calls == []
+    assert isinstance(client, _Spy)
+    assert _pop_hook_names(calls[0]) == _ROUTE_HOOKS
+    assert calls == [{"verify": True, "timeout": timeout, "follow_redirects": True}]
 
 
 def test_profile_http_client_raw_http_logging_prebuilds_with_event_hooks(
@@ -845,7 +862,10 @@ def test_profile_http_client_raw_http_logging_prebuilds_with_event_hooks(
     assert calls[0]["verify"] is True
     assert calls[0]["timeout"] is timeout
     assert calls[0]["follow_redirects"] is True
-    assert set(calls[0]["event_hooks"]) == {"request", "response"}
+    assert _pop_hook_names(calls[0]) == {
+        "request": [*_ROUTE_HOOKS["request"], "build_raw_http_event_hooks.<locals>._request_hook"],
+        "response": [*_ROUTE_HOOKS["response"], "build_raw_http_event_hooks.<locals>._response_hook"],
+    }
 
 
 def test_profile_http_client_verify_false_prebuilds_with_transport_settings(
@@ -867,6 +887,7 @@ def test_profile_http_client_verify_false_prebuilds_with_transport_settings(
     client = _build_profile_http_client(_profile(verify_ssl=False), timeout)
 
     assert isinstance(client, _Spy)
+    assert _pop_hook_names(calls[0]) == _ROUTE_HOOKS
     assert calls == [
         {
             "verify": False,
@@ -925,6 +946,7 @@ def test_profile_http_client_bypass_proxy_combines_with_verify_false(
     client = _build_profile_http_client(_profile(verify_ssl=False, bypass_proxy=True), timeout)
 
     assert isinstance(client, _Spy)
+    assert _pop_hook_names(calls[0]) == _ROUTE_HOOKS
     assert calls == [
         {
             "verify": False,
@@ -1028,10 +1050,10 @@ def _patch_sdks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(openai, "AsyncOpenAI", _Spy)
 
 
-def test_create_client_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
 
-    client = create_client(_profile(provider="anthropic", api_key="k", model_id="claude-X"))
+    client = await create_client(_profile(provider="anthropic", api_key="k", model_id="claude-X"))
     raw_client = client.inner.inner
 
     assert isinstance(client, ToolLoopLayer)
@@ -1043,26 +1065,26 @@ def test_create_client_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.max_consecutive_errors == 10
 
 
-def test_create_client_anthropic_threads_owned_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_anthropic_threads_owned_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
 
     import anthropic
 
-    owned_http_client = object()
+    owned_http_client = _OwnedHttpClient()
     monkeypatch.setattr(anthropic, "DefaultAsyncHttpxClient", lambda **_kwargs: owned_http_client)
 
-    client = create_client(_profile(provider="anthropic", api_key="k", verify_ssl=False))
+    client = await create_client(_profile(provider="anthropic", api_key="k", verify_ssl=False))
     inner = client.inner.inner.anthropic_client
 
     assert inner.kwargs["http_client"] is owned_http_client
 
 
-def test_create_client_openai(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-anything")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    client = create_client(_profile(provider="openai", model_id="gpt-X"))
+    client = await create_client(_profile(provider="openai", model_id="gpt-X"))
     raw_client = client.inner.inner
 
     assert isinstance(client, ToolLoopLayer)
@@ -1071,7 +1093,7 @@ def test_create_client_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(raw_client.client, _Spy)
 
 
-def test_create_client_openai_responses_uses_responses_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_openai_responses_uses_responses_factory(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-anything")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -1087,7 +1109,7 @@ def test_create_client_openai_responses_uses_responses_factory(monkeypatch: pyte
         _fake_factory,
     )
 
-    result = create_client(_profile(provider="openai", api_style="responses", model_id="gpt-X"))
+    result = await create_client(_profile(provider="openai", api_style="responses", model_id="gpt-X"))
 
     assert result == "<instrumented-responses>"
     assert captured["model_id"] == "gpt-X"
@@ -1096,7 +1118,7 @@ def test_create_client_openai_responses_uses_responses_factory(monkeypatch: pyte
     assert captured["max_consecutive_errors"] == 10
 
 
-def test_create_client_raw_http_logging_uses_session_dir(
+async def test_create_client_raw_http_logging_uses_session_dir(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1115,7 +1137,9 @@ def test_create_client_raw_http_logging_uses_session_dir(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-anything")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    client = create_client(_profile(provider="openai", model_id="gpt-X"), session_id="sess-raw", session_dir=tmp_path)
+    client = await create_client(
+        _profile(provider="openai", model_id="gpt-X"), session_id="sess-raw", session_dir=tmp_path
+    )
 
     inner = client.inner.inner.client
     assert isinstance(inner.kwargs["http_client"], _Spy)
@@ -1123,7 +1147,7 @@ def test_create_client_raw_http_logging_uses_session_dir(
 
 
 @pytest.mark.parametrize("provider", ["openai", "deepseek-openai", "glm-openai"])
-def test_create_client_openai_like_threads_owned_http_client(
+async def test_create_client_openai_like_threads_owned_http_client(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
 ) -> None:
@@ -1131,7 +1155,7 @@ def test_create_client_openai_like_threads_owned_http_client(
 
     import openai
 
-    owned_http_client = object()
+    owned_http_client = _OwnedHttpClient()
     captured: dict[str, Any] = {}
 
     def _fake_factory(**kwargs: Any) -> str:
@@ -1147,18 +1171,18 @@ def test_create_client_openai_like_threads_owned_http_client(
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.delenv("ZAI_BASE_URL", raising=False)
 
-    result = create_client(_profile(provider=provider, api_key="sk-fake", verify_ssl=False))
+    result = await create_client(_profile(provider=provider, api_key="sk-fake", verify_ssl=False))
 
     assert result == "<instrumented>"
     assert captured["client"].kwargs["http_client"] is owned_http_client
 
 
-def test_create_client_openai_responses_threads_owned_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_openai_responses_threads_owned_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
 
     import openai
 
-    owned_http_client = object()
+    owned_http_client = _OwnedHttpClient()
     captured: dict[str, Any] = {}
 
     def _fake_factory(**kwargs: Any) -> str:
@@ -1172,13 +1196,15 @@ def test_create_client_openai_responses_threads_owned_http_client(monkeypatch: p
     )
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    result = create_client(_profile(provider="openai", api_style="responses", api_key="sk-fake", verify_ssl=False))
+    result = await create_client(
+        _profile(provider="openai", api_style="responses", api_key="sk-fake", verify_ssl=False)
+    )
 
     assert result == "<instrumented-responses>"
     assert captured["client"].kwargs["http_client"] is owned_http_client
 
 
-def test_create_client_openai_without_callbacks_uses_guarded_subclass(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_openai_without_callbacks_uses_guarded_subclass(monkeypatch: pytest.MonkeyPatch) -> None:
     """``create_client`` for OpenAI must always return the instrumented subclass
     so the gateway-error guard runs on every path (judges, last-words, sub-agents,
     recall/compression), not only when intermediate-text callbacks are wired."""
@@ -1188,7 +1214,7 @@ def test_create_client_openai_without_callbacks_uses_guarded_subclass(monkeypatc
     from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
 
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    client = create_client(_profile(provider="openai", api_key="sk-fake", model_id="gpt-X"))
+    client = await create_client(_profile(provider="openai", api_key="sk-fake", model_id="gpt-X"))
 
     cls = type(client.inner.inner)
     # The override lives on the subclass itself, not inherited from the raw base.
@@ -1214,7 +1240,7 @@ def test_create_client_openai_without_callbacks_uses_guarded_subclass(monkeypatc
     assert "gateway oops" in str(exc_info.value)
 
 
-def test_create_client_openai_with_deepseek_base_url_does_not_route_through_deepseek(
+async def test_create_client_openai_with_deepseek_base_url_does_not_route_through_deepseek(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Provider type — not URL/model-id sniffing — selects the client class.
@@ -1226,7 +1252,7 @@ def test_create_client_openai_with_deepseek_base_url_does_not_route_through_deep
     from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
 
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    client = create_client(
+    client = await create_client(
         _profile(
             provider="openai",
             api_key="sk-fake",
@@ -1238,12 +1264,12 @@ def test_create_client_openai_with_deepseek_base_url_does_not_route_through_deep
     assert DeepSeekChatCompletionClient not in type(client.inner.inner).__mro__
 
 
-def test_create_client_deepseek_uses_deepseek_chat_completion_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_uses_deepseek_chat_completion_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """``provider: deepseek-openai`` opts into reasoning_content replay compatibility."""
     from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
 
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
-    client = create_client(
+    client = await create_client(
         _profile(
             provider="deepseek-openai",
             api_key="sk-fake",
@@ -1254,11 +1280,11 @@ def test_create_client_deepseek_uses_deepseek_chat_completion_client(monkeypatch
     assert DeepSeekChatCompletionClient in type(client.inner.inner).__mro__
 
 
-def test_create_client_deepseek_responses_uses_deepseek_responses_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_responses_uses_deepseek_responses_client(monkeypatch: pytest.MonkeyPatch) -> None:
     from chrys.service.llm.deepseek import DeepSeekResponsesClient
 
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
-    client = create_client(
+    client = await create_client(
         _profile(
             provider="deepseek-openai",
             api_style="responses",
@@ -1271,12 +1297,12 @@ def test_create_client_deepseek_responses_uses_deepseek_responses_client(monkeyp
     assert client.FORCES_STATELESS is True
 
 
-def test_create_client_glm_uses_glm_chat_completion_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_glm_uses_glm_chat_completion_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """``provider: glm-openai`` opts into GLM preserved-thinking replay compatibility."""
     from chrys.service.llm.glm import GLMChatCompletionClient
 
     monkeypatch.delenv("ZAI_BASE_URL", raising=False)
-    client = create_client(
+    client = await create_client(
         _profile(
             provider="glm-openai",
             api_key="sk-fake",
@@ -1287,7 +1313,7 @@ def test_create_client_glm_uses_glm_chat_completion_client(monkeypatch: pytest.M
     assert GLMChatCompletionClient in type(client.inner.inner).__mro__
 
 
-def test_create_client_glm_defaults_base_url_when_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_glm_defaults_base_url_when_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``glm-openai`` profile with no base_url falls back to the public GLM API."""
     captured: dict[str, Any] = {}
 
@@ -1303,7 +1329,7 @@ def test_create_client_glm_defaults_base_url_when_not_set(monkeypatch: pytest.Mo
 
     from chrys.service.llm.glm import GLM_DEFAULT_BASE_URL
 
-    create_client(_profile(provider="glm-openai", api_key="sk-glm", model_id="glm-5.2"))
+    await create_client(_profile(provider="glm-openai", api_key="sk-glm", model_id="glm-5.2"))
 
     assert captured["api_key"] == "sk-glm"
     assert captured["api_key_env"] == "ZAI_API_KEY"
@@ -1311,7 +1337,7 @@ def test_create_client_glm_defaults_base_url_when_not_set(monkeypatch: pytest.Mo
     assert captured["default_base_url"] == GLM_DEFAULT_BASE_URL
 
 
-def test_create_client_deepseek_defaults_base_url_when_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_defaults_base_url_when_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``deepseek-openai`` profile with no base_url falls back to the public DeepSeek API.
 
     This is the primary user-facing reason to add a dedicated provider:
@@ -1330,7 +1356,7 @@ def test_create_client_deepseek_defaults_base_url_when_not_set(monkeypatch: pyte
 
     from chrys.service.llm.deepseek import DEEPSEEK_DEFAULT_BASE_URL
 
-    create_client(_profile(provider="deepseek-openai", api_key="sk-ds", model_id="deepseek-chat"))
+    await create_client(_profile(provider="deepseek-openai", api_key="sk-ds", model_id="deepseek-chat"))
 
     assert captured["api_key"] == "sk-ds"
     assert captured["api_key_env"] == "DEEPSEEK_API_KEY"
@@ -1377,7 +1403,7 @@ def test_create_client_deepseek_falls_back_to_deepseek_env(monkeypatch: pytest.M
         ("glm-openai", "ZAI_API_KEY", "ZAI_BASE_URL"),
     ],
 )
-def test_create_client_openai_like_passes_empty_key_when_profile_and_env_missing(
+async def test_create_client_openai_like_passes_empty_key_when_profile_and_env_missing(
     provider: str,
     api_key_env: str,
     base_url_env: str,
@@ -1410,13 +1436,13 @@ def test_create_client_openai_like_passes_empty_key_when_profile_and_env_missing
     monkeypatch.delenv("ZAI_API_KEY", raising=False)
     monkeypatch.delenv("ZAI_BASE_URL", raising=False)
 
-    inner = create_client(_profile(provider=provider, api_key=""))
+    inner = await create_client(_profile(provider=provider, api_key=""))
 
     assert isinstance(inner, _StrictAsyncOpenAI)
-    _assert_empty_api_key_provider(inner.kwargs["api_key"])
+    await _assert_empty_api_key_provider(inner.kwargs["api_key"])
 
 
-def test_create_client_openai_responses_passes_empty_key_when_profile_and_env_missing(
+async def test_create_client_openai_responses_passes_empty_key_when_profile_and_env_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import openai
@@ -1439,20 +1465,20 @@ def test_create_client_openai_responses_passes_empty_key_when_profile_and_env_mi
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    inner = create_client(_profile(provider="openai", api_style="responses", api_key=""))
+    inner = await create_client(_profile(provider="openai", api_style="responses", api_key=""))
 
     assert isinstance(inner, _StrictAsyncOpenAI)
-    _assert_empty_api_key_provider(inner.kwargs["api_key"])
+    await _assert_empty_api_key_provider(inner.kwargs["api_key"])
 
 
-def test_create_client_mock() -> None:
+async def test_create_client_mock() -> None:
     from chrys.service.llm.mock import MockChatClient
 
-    client = create_client(_profile(provider="mock"))
+    client = await create_client(_profile(provider="mock"))
     assert isinstance(client, MockChatClient)
 
 
-def test_create_client_mock_passes_intermediate_callbacks() -> None:
+async def test_create_client_mock_passes_intermediate_callbacks() -> None:
     from chrys.service.llm.mock import MockChatClient
 
     async def _acb(_text: str) -> None:
@@ -1461,7 +1487,7 @@ def test_create_client_mock_passes_intermediate_callbacks() -> None:
     def _scb(_text: str) -> None:
         pass
 
-    client = create_client(
+    client = await create_client(
         _profile(provider="mock"),
         on_intermediate_text_async=_acb,
         on_intermediate_text_sync=_scb,
@@ -1469,26 +1495,26 @@ def test_create_client_mock_passes_intermediate_callbacks() -> None:
     assert isinstance(client, MockChatClient)
 
 
-def test_create_client_unknown_provider_raises() -> None:
+async def test_create_client_unknown_provider_raises() -> None:
     with pytest.raises(ValueError, match="Unknown provider"):
-        create_client(_profile(provider="azure"))
+        await create_client(_profile(provider="azure"))
 
 
-def test_create_client_unknown_provider_message_lists_all_providers() -> None:
+async def test_create_client_unknown_provider_message_lists_all_providers() -> None:
     """The error message should advertise every OpenAI-compatible provider id."""
     with pytest.raises(ValueError) as exc_info:
-        create_client(_profile(provider="azure"))
+        await create_client(_profile(provider="azure"))
     assert "deepseek-openai" in str(exc_info.value)
     assert "glm-openai" in str(exc_info.value)
     assert "openai" in str(exc_info.value)
     assert "anthropic" in str(exc_info.value)
 
 
-def test_create_client_passes_session_id_into_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_passes_session_id_into_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Session ID flows through default headers."""
     _patch_sdks(monkeypatch)
 
-    client = create_client(
+    client = await create_client(
         _profile(provider="anthropic", api_key="k"),
         session_id="sess-42",
         parent_session_id="parent-42",
@@ -1502,14 +1528,14 @@ def test_create_client_passes_session_id_into_headers(monkeypatch: pytest.Monkey
     assert inner_anthropic_spy.kwargs["default_headers"][PARENT_SESSION_ID_HEADER] == "parent-42"
 
 
-def test_create_client_anthropic_passes_model_id_header(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_anthropic_passes_model_id_header(monkeypatch: pytest.MonkeyPatch) -> None:
     import anthropic
 
     from chrys import __version__
 
     _patch_sdks(monkeypatch)
 
-    client = create_client(_profile(provider="anthropic", api_key="k", model_id="claude-header"))
+    client = await create_client(_profile(provider="anthropic", api_key="k", model_id="claude-header"))
 
     inner = client.inner.inner.anthropic_client
     assert inner.kwargs["default_headers"][MODEL_ID_HEADER] == "claude-header"
@@ -1522,7 +1548,7 @@ def test_create_client_anthropic_passes_model_id_header(monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("provider", ["openai", "deepseek-openai", "glm-openai"])
-def test_create_client_openai_like_passes_model_id_header(
+async def test_create_client_openai_like_passes_model_id_header(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
 ) -> None:
@@ -1540,7 +1566,7 @@ def test_create_client_openai_like_passes_model_id_header(
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.delenv("ZAI_BASE_URL", raising=False)
 
-    inner = create_client(_profile(provider=provider, api_key="sk-fake", model_id=f"{provider}-header"))
+    inner = await create_client(_profile(provider=provider, api_key="sk-fake", model_id=f"{provider}-header"))
 
     assert inner.kwargs["default_headers"][MODEL_ID_HEADER] == f"{provider}-header"
     runtime = sys.version_info
@@ -1554,7 +1580,7 @@ def test_create_client_openai_like_passes_model_id_header(
 # ───────────────────────── instrumented variants ──────────────────────
 
 
-def test_create_client_anthropic_instrumented(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_anthropic_instrumented(monkeypatch: pytest.MonkeyPatch) -> None:
     """When an intermediate-text callback is provided, routes through instrumented factory."""
     _patch_sdks(monkeypatch)
 
@@ -1572,7 +1598,7 @@ def test_create_client_anthropic_instrumented(monkeypatch: pytest.MonkeyPatch) -
     async def _acb(_text: str) -> None:
         pass
 
-    result = create_client(
+    result = await create_client(
         _profile(provider="anthropic", api_key="k", model_id="claude-Y"),
         on_intermediate_text_async=_acb,
     )
@@ -1582,7 +1608,7 @@ def test_create_client_anthropic_instrumented(monkeypatch: pytest.MonkeyPatch) -
     assert captured["on_intermediate_text_sync"] is None
 
 
-def test_create_client_openai_forwards_sync_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_openai_forwards_sync_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAI provider routes through the instrumented factory; sync
     callbacks are forwarded without DeepSeek compatibility by default."""
     _patch_sdks(monkeypatch)
@@ -1603,7 +1629,7 @@ def test_create_client_openai_forwards_sync_callback(monkeypatch: pytest.MonkeyP
     def _scb(_text: str) -> None:
         pass
 
-    result = create_client(
+    result = await create_client(
         _profile(provider="openai", model_id="gpt-Y"),
         on_intermediate_text_sync=_scb,
         use_route_session_context=True,
@@ -1616,7 +1642,7 @@ def test_create_client_openai_forwards_sync_callback(monkeypatch: pytest.MonkeyP
     assert captured["chat_client_cls"] is None
 
 
-def test_create_client_deepseek_forwards_deepseek_chat_client_cls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_forwards_deepseek_chat_client_cls(monkeypatch: pytest.MonkeyPatch) -> None:
     """``provider: deepseek-openai`` passes ``DeepSeekChatCompletionClient`` to the factory."""
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
@@ -1632,7 +1658,7 @@ def test_create_client_deepseek_forwards_deepseek_chat_client_cls(monkeypatch: p
         _fake_factory,
     )
 
-    result = create_client(
+    result = await create_client(
         _profile(provider="deepseek-openai", model_id="deepseek-chat"),
     )
 
@@ -1641,7 +1667,7 @@ def test_create_client_deepseek_forwards_deepseek_chat_client_cls(monkeypatch: p
     assert captured["model_id"] == "deepseek-chat"
 
 
-def test_create_client_deepseek_forwards_deepseek_responses_client_cls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_forwards_deepseek_responses_client_cls(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
     monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek-responses.test/v1")
@@ -1656,7 +1682,7 @@ def test_create_client_deepseek_forwards_deepseek_responses_client_cls(monkeypat
         _fake_factory,
     )
 
-    result = create_client(
+    result = await create_client(
         _profile(
             provider="deepseek-openai",
             api_style="responses",
@@ -1674,15 +1700,15 @@ def test_create_client_deepseek_forwards_deepseek_responses_client_cls(monkeypat
     assert captured["parent_session_id"] == "parent-1"
 
 
-def test_create_client_deepseek_rejects_unknown_api_style(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_rejects_unknown_api_style(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
 
     with pytest.raises(ValueError, match="Unknown DeepSeek api_style"):
-        create_client(_profile(provider="deepseek-openai", api_style="future"))
+        await create_client(_profile(provider="deepseek-openai", api_style="future"))
 
 
-def test_create_client_glm_forwards_glm_chat_client_cls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_glm_forwards_glm_chat_client_cls(monkeypatch: pytest.MonkeyPatch) -> None:
     """``provider: glm-openai`` passes ``GLMChatCompletionClient`` to the factory."""
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("ZAI_API_KEY", "sk-glm")
@@ -1698,7 +1724,7 @@ def test_create_client_glm_forwards_glm_chat_client_cls(monkeypatch: pytest.Monk
         _fake_factory,
     )
 
-    result = create_client(
+    result = await create_client(
         _profile(provider="glm-openai", model_id="glm-5.2"),
     )
 
@@ -1707,7 +1733,7 @@ def test_create_client_glm_forwards_glm_chat_client_cls(monkeypatch: pytest.Monk
     assert captured["model_id"] == "glm-5.2"
 
 
-def test_create_client_deepseek_forwards_intermediate_text_callbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_deepseek_forwards_intermediate_text_callbacks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stream + non-stream intermediate-text callbacks must reach the deepseek branch.
 
     This is one of the chrys touch surfaces that needs parity across all
@@ -1733,7 +1759,7 @@ def test_create_client_deepseek_forwards_intermediate_text_callbacks(monkeypatch
     def _scb(_text: str) -> None:
         pass
 
-    create_client(
+    await create_client(
         _profile(provider="deepseek-openai", model_id="deepseek-chat"),
         on_intermediate_text_async=_acb,
         on_intermediate_text_sync=_scb,
@@ -1746,7 +1772,7 @@ def test_create_client_deepseek_forwards_intermediate_text_callbacks(monkeypatch
 # ───────────────────────── httpx.Timeout wiring ───────────────────────
 
 
-def test_timeout_and_max_retries_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_timeout_and_max_retries_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Profile's http_* fields flow into the httpx.Timeout passed to the SDK."""
     _patch_sdks(monkeypatch)
 
@@ -1760,7 +1786,7 @@ def test_timeout_and_max_retries_forwarded(monkeypatch: pytest.MonkeyPatch) -> N
         http_read_timeout=42.0,
         http_max_retries=9,
     )
-    client = create_client(profile)
+    client = await create_client(profile)
     inner = client.inner.inner.anthropic_client
     assert inner.kwargs["max_retries"] == 9
 

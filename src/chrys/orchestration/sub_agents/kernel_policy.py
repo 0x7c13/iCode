@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
 
 from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     InvocationPaused,
     InvocationRetryAttempt,
@@ -73,6 +74,7 @@ from chrys.service.trajectory.retries import RetryBackoffTrace
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from chrys.foundation.i18n import MessageRef
     from chrys.kernel import Agent, AgentSession
     from chrys.service.agent_middleware.control.sleep import SleepMiddleware
     from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
@@ -217,6 +219,8 @@ class KernelSubAgentPolicy:
         self._service_retry_trace: RetryBackoffTrace | None = None
 
         self._last_error: str = ""
+        self._last_error_display: MessageRef | None = None
+        self._last_error_hint: MessageRef | None = None
         self._failure_reason: SubAgentFailureReason | None = None
         self._retry_attempts_total: int = 0
         # The answer of the pass that completed the invocation, if any.
@@ -312,6 +316,7 @@ class KernelSubAgentPolicy:
         await self._shell.cascade_abort()
 
     def _record_failure(self, exc: Exception) -> None:
+        self._last_error_display, self._last_error_hint = display_fields(exc)
         if isinstance(exc, StreamStallExhausted):
             # Keep the original stall message (chained via __cause__)
             # so the pause banner shows the underlying reason instead
@@ -417,7 +422,7 @@ class KernelSubAgentPolicy:
         attempt: int,
         max_attempts: int,
         delay_seconds: int,
-        _exc: BaseException,
+        exc: BaseException,
         *,
         scope: Literal["wire", "run"] = "run",
     ) -> None:
@@ -426,6 +431,7 @@ class KernelSubAgentPolicy:
             await self._tool_event_middleware.reject_hosted_attempt(message)
         if self._bus is None:
             return
+        display_message, display_hint = display_fields(exc, retry_notice=True)
         await self._emitter.publish(
             InvocationRetryAttempt(
                 origin=self.origin,
@@ -436,6 +442,8 @@ class KernelSubAgentPolicy:
                 max_attempts=max_attempts,
                 delay_seconds=delay_seconds,
                 session_id=self._session_id,
+                display_message=display_message,
+                display_hint=display_hint,
             )
         )
 
@@ -743,6 +751,8 @@ class KernelSubAgentPolicy:
             tool_name=self._tool_name,
             reason=self._failure_reason.value if self._failure_reason else "",
             last_error=self._last_error,
+            last_error_display=self._last_error_display,
+            last_error_hint=self._last_error_hint,
             retry_attempts=self._retry_attempts_total,
             session_id=self._session_id,
         )

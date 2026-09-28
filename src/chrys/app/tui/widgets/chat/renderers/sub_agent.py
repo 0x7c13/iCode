@@ -1254,12 +1254,15 @@ class SubAgentToolCall(BaseToolCard):
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
         """Transition the card to a paused state with Retry/Abort buttons.
 
         Called when :class:`InvocationPaused` arrives. Auto-retry (if any
         happened first) is now finished; the banner is replaced with the
         pause-info block and the action row is revealed.
+        ``last_error_display`` is the rendered meaning of ``last_error``,
+        shown above the raw text.
         """
         self.status = "paused"
         # Paused supersedes the retrying banner — the retry run completed
@@ -1278,6 +1281,8 @@ class SubAgentToolCall(BaseToolCard):
         info_lines = [reason_label]
         if retry_attempts:
             info_lines.append(self._render_message(_SUB_AGENT_AFTER_RETRIES.bind(count=retry_attempts)))
+        if last_error_display:
+            info_lines.append(last_error_display)
         if last_error:
             info_lines.append(last_error)
         if diagnostic_path:

@@ -1111,6 +1111,7 @@ class MainScreenViewAdapter:
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
         self._screen.query_one(ChatPanel).sub_agent_paused(
             invocation_id,
@@ -1118,6 +1119,7 @@ class MainScreenViewAdapter:
             last_error,
             retry_attempts,
             diagnostic_path,
+            last_error_display,
         )
 
     def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:

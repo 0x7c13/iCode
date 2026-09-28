@@ -1,0 +1,349 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Provider signals: what the model service itself said about a failure.
+
+A signal is read from ONE explicit node — the first SDK-shaped exception in
+walk order — so its status, code, type and message never combine evidence
+from different nodes.  An SDK-shaped node is a :class:`ProviderResponseError`,
+a node with an integer ``status_code``, or a node with both a ``body`` and a
+``code`` attribute (the bare ``openai.APIError`` an in-band stream error
+raises).  ``code`` alone doesn't count: ``SystemExit.code`` would match.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from ._text import _clean_exception_text
+from .kinds import ErrorKind
+
+# Account quota or billing exhaustion: retrying the same request cannot
+# succeed until the account changes.  Broad types such as
+# ``invalid_request_error`` are deliberately absent.
+NON_RETRYABLE_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "insufficient_quota",
+        "billing_hard_limit_reached",
+        "exceeded_current_quota_error",
+        "usage_not_included",
+    }
+)
+# Zhipu GLM's balance-exhausted code; it means quota only on a 429.
+_GLM_QUOTA_CODE = "1113"
+_PAYMENT_REQUIRED = 402
+
+_PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
+    "rate_limit_exceeded": ErrorKind.RATE_LIMITED,
+    "rate_limit_error": ErrorKind.RATE_LIMITED,
+    "overloaded_error": ErrorKind.OVERLOADED,
+    "server_is_overloaded": ErrorKind.OVERLOADED,
+    "slow_down": ErrorKind.OVERLOADED,
+    "api_error": ErrorKind.SERVER_ERROR,
+    "server_error": ErrorKind.SERVER_ERROR,
+    "request_too_large": ErrorKind.PAYLOAD_TOO_LARGE,
+    "authentication_error": ErrorKind.AUTH_FAILED,
+    "permission_error": ErrorKind.AUTH_FAILED,
+    "invalid_request_error": ErrorKind.REQUEST_REJECTED,
+    "not_found_error": ErrorKind.REQUEST_REJECTED,
+    "content_filter": ErrorKind.CONTENT_FILTERED,
+    "billing_error": ErrorKind.QUOTA_EXHAUSTED,
+    "stream_truncated": ErrorKind.STREAM_TRUNCATED,
+}
+
+_CONTEXT_OVERFLOW_CODES = frozenset({"context_length_exceeded", "model_context_window_exceeded"})
+# Only phrasings that name the context window or the model's token limit.
+_CONTEXT_OVERFLOW_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"context_length_exceeded",
+        r"context window",  # OpenAI "exceeds the context window", MiniMax
+        r"maximum context length",  # OpenAI, DeepSeek, OpenRouter
+        r"prompt is too long",  # Anthropic
+        r"input is too long",  # Amazon Bedrock
+        r"too many tokens",
+        r"input token count.*exceeds the maximum",  # Google Gemini
+        r"maximum prompt length is \d+",  # xAI
+        r"reduce the length of the messages",  # Groq
+        r"exceeds the available context size",  # llama.cpp
+        r"greater than the context length",  # LM Studio
+        r"exceeded model token limit",  # Kimi
+    )
+)
+# Throttling that happens to mention tokens ("Too many tokens, please wait",
+# "too many tokens per minute", a daily token quota) is a rate limit, not an
+# oversized request.  Without a provider signal the text is the only
+# evidence, so any rate-window wording vetoes it.
+_NON_OVERFLOW_PHRASES = (
+    "throttl",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "please wait",
+    "per sec",
+    "per min",
+    "per hour",
+    "per day",
+    "quota",
+)
+# 429 is throttling.  413 / ``request_too_large`` is an oversized payload (an
+# image, an attachment), which compaction cannot fix.  Every 5xx is vetoed too
+# (:func:`_is_server_error`): the server failed, and overflow wording there may
+# name a temporary limit, so it stays a retry.
+_NON_OVERFLOW_STATUS_CODES = frozenset({413, 429})
+_NON_OVERFLOW_CODES = frozenset({"request_too_large"})
+
+# Error types an Anthropic stream reports after its 200 that a retry of the
+# same request cannot fix; every other type (overloaded, api, rate limit,
+# timeout, unknown) is transient.
+_NON_RETRYABLE_STREAM_ERROR_TYPES = frozenset(
+    {
+        "invalid_request_error",
+        "authentication_error",
+        "permission_error",
+        "not_found_error",
+        "request_too_large",
+        "billing_error",
+    }
+)
+
+
+def _code_kind(code: str) -> ErrorKind:
+    if code in _CONTEXT_OVERFLOW_CODES:
+        return ErrorKind.CONTEXT_OVERFLOW
+    if code in NON_RETRYABLE_PROVIDER_ERROR_CODES:
+        return ErrorKind.QUOTA_EXHAUSTED
+    return _PROVIDER_CODE_KINDS.get(code, ErrorKind.UNKNOWN)
+
+
+class ContinuationVerdictError(Exception):
+    """A failure that states whether it judged the response terminal.
+
+    True means a live continuation token now names a completed, immutable
+    response: a retry must issue a fresh request, never re-poll it.  Raisers
+    in higher tiers subclass this so the classifier reads a typed field.
+    """
+
+    invalidates_continuation_token: bool = False
+
+
+class ProviderResponseError(ContinuationVerdictError):
+    """A provider failure an adapter found in a response the SDK accepted.
+
+    Adapters raise it for failures the SDK does not raise itself — a stream
+    that ended without its terminal event, an error-typed finish reason — and
+    state the retry decision explicitly.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        provider_message: str,
+        *,
+        retryable: bool,
+        retry_after: float | None = None,
+        invalidates_continuation_token: bool = False,
+        kind: ErrorKind | None = None,
+    ) -> None:
+        super().__init__(f"{code}: {provider_message}")
+        self.code = code
+        self.provider_message = provider_message
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.invalidates_continuation_token = invalidates_continuation_token
+        self.kind = kind if kind is not None else _code_kind(code)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSignal:
+    """The provider's own statement about a failure, read from one node."""
+
+    # Every field below was read from this one exception.
+    source: BaseException
+    # None for a bare ``APIError`` raised from an in-band stream event.
+    status_code: int | None
+    code: str | None
+    # ``body.error.type`` or the node's ``.type``.
+    error_type: str | None
+    message: str | None
+    # Seconds from the response's ``retry-after`` header.
+    retry_after: float | None
+    # Set only by :class:`ProviderResponseError`.
+    explicit_retryable: bool | None = None
+
+
+def _text(value: object) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    return value if isinstance(value, str) and value else None
+
+
+def _error_object(body: object) -> Mapping[str, Any]:
+    """Return the error object of a provider body (a dict or its JSON text)."""
+    if isinstance(body, str | bytes):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            return {}
+    if not isinstance(body, Mapping):
+        return {}
+    error = body.get("error")
+    return error if isinstance(error, Mapping) else body
+
+
+def _retry_after(node: BaseException) -> float | None:
+    response = getattr(node, "response", None)
+    headers = getattr(response, "headers", None)
+    if not isinstance(headers, Mapping):
+        return None
+    raw = headers.get("retry-after")
+    try:
+        seconds = float(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    return seconds if seconds is not None and math.isfinite(seconds) and seconds >= 0 else None
+
+
+def _status(node: BaseException) -> int | None:
+    status = getattr(node, "status_code", None)
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
+
+
+def provider_signal(explicit: Iterable[BaseException]) -> ProviderSignal | None:
+    """Return the signal of the first SDK-shaped node in *explicit*, if any."""
+    for node in explicit:
+        if isinstance(node, ProviderResponseError):
+            return ProviderSignal(
+                source=node,
+                status_code=None,
+                code=node.code,
+                error_type=None,
+                message=node.provider_message,
+                retry_after=node.retry_after,
+                explicit_retryable=node.retryable,
+            )
+        status = _status(node)
+        body = getattr(node, "body", None)
+        if status is None and (body is None or not hasattr(node, "code")):
+            continue
+        error = _error_object(body)
+        return ProviderSignal(
+            source=node,
+            status_code=status,
+            code=_text(getattr(node, "code", None)) or _text(error.get("code")),
+            error_type=_text(getattr(node, "type", None)) or _text(error.get("type")),
+            message=_text(error.get("message")) or _text(getattr(node, "message", None)),
+            retry_after=_retry_after(node),
+        )
+    return None
+
+
+def _is_server_error(status: int | None) -> bool:
+    return status is not None and 500 <= status < 600
+
+
+def status_kind(status: int) -> ErrorKind:
+    """Map an HTTP error status to its coarse kind."""
+    if status == 429:
+        return ErrorKind.RATE_LIMITED
+    if status in (401, 403):
+        return ErrorKind.AUTH_FAILED
+    if status == 413:
+        return ErrorKind.PAYLOAD_TOO_LARGE
+    if status == _PAYMENT_REQUIRED:
+        return ErrorKind.QUOTA_EXHAUSTED
+    if status == 529:
+        return ErrorKind.OVERLOADED
+    if _is_server_error(status):
+        return ErrorKind.SERVER_ERROR
+    if 400 <= status < 500:
+        return ErrorKind.REQUEST_REJECTED
+    return ErrorKind.UNKNOWN
+
+
+def _is_quota(signal: ProviderSignal) -> bool:
+    if signal.code in NON_RETRYABLE_PROVIDER_ERROR_CODES or signal.error_type in NON_RETRYABLE_PROVIDER_ERROR_CODES:
+        return True
+    if signal.code == _GLM_QUOTA_CODE and signal.status_code == 429:
+        return True
+    return signal.status_code == _PAYMENT_REQUIRED
+
+
+def signal_kind(signal: ProviderSignal) -> tuple[ErrorKind, str]:
+    """Return the kind *signal* names and the evidence for it."""
+    source = signal.source
+    if isinstance(source, ProviderResponseError):
+        return source.kind, f"provider {source.code}"
+    evidence = f"{type(source).__name__} http {signal.status_code}"
+    if _is_quota(signal):
+        return ErrorKind.QUOTA_EXHAUSTED, f"{evidence} {signal.code or signal.error_type or ''}".rstrip()
+    if signal.code is not None and (kind := _PROVIDER_CODE_KINDS.get(signal.code)) is not None:
+        return kind, f"{evidence} {signal.code}"
+    # An error status outranks the error type, which can be broad
+    # (OpenAI answers a bad key with 401 ``invalid_request_error``); the type
+    # decides only for errors reported without one, e.g. inside a 2xx stream.
+    if signal.status_code is not None and (kind := status_kind(signal.status_code)) is not ErrorKind.UNKNOWN:
+        return kind, evidence
+    if signal.error_type is not None and (kind := _PROVIDER_CODE_KINDS.get(signal.error_type)) is not None:
+        return kind, f"{evidence} {signal.error_type}"
+    return ErrorKind.UNKNOWN, evidence
+
+
+def _names_overflow(texts: Iterable[str]) -> bool:
+    texts = [text.casefold() for text in texts if text]
+    if any(phrase in text for text in texts for phrase in _NON_OVERFLOW_PHRASES):
+        return False
+    return any(pattern.search(text) for text in texts for pattern in _CONTEXT_OVERFLOW_PATTERNS)
+
+
+def names_context_overflow(signal: ProviderSignal | None, unstructured_texts: Iterable[str]) -> bool:
+    """Return whether explicit evidence says the request overflowed the context window.
+
+    With a provider signal only its own status, code and text count.  Without
+    one (a plain exception carrying the provider's text), *unstructured_texts*
+    — the explicit nodes' texts, minus nodes Chrys's own policies raised — are
+    read instead.
+    """
+    if signal is None:
+        return _names_overflow(unstructured_texts)
+    source = signal.source
+    if isinstance(source, ProviderResponseError):
+        return source.kind is ErrorKind.CONTEXT_OVERFLOW
+    status = signal.status_code
+    if status in _NON_OVERFLOW_STATUS_CODES or _is_server_error(status) or signal.code in _NON_OVERFLOW_CODES:
+        return False
+    if signal.code in _CONTEXT_OVERFLOW_CODES:
+        return True
+    return _names_overflow((signal.message or "", _clean_exception_text(source)))
+
+
+def names_server_error_overflow(signal: ProviderSignal) -> bool:
+    """Return whether a 5xx names the context window, which :func:`names_context_overflow` vetoes.
+
+    The veto stands for retry policy: a 5xx may name a temporary limit ("maximum
+    context length is temporarily reduced").  A gateway may also wrap a real
+    overflow in one, though.  Rate-window wording still vetoes it, and a
+    :class:`ProviderResponseError` names its own kind.
+    """
+    if not _is_server_error(signal.status_code) or isinstance(signal.source, ProviderResponseError):
+        return False
+    if signal.code in _NON_OVERFLOW_CODES:
+        return False
+    if signal.code in _CONTEXT_OVERFLOW_CODES:
+        return True
+    return _names_overflow((signal.message or "", _clean_exception_text(signal.source)))
+
+
+def stream_error_retryable(signal: ProviderSignal) -> bool:
+    """Retry decision for an error a stream reported after its 2xx response."""
+    return signal.error_type not in _NON_RETRYABLE_STREAM_ERROR_TYPES
+
+
+def is_2xx(status: int | None) -> bool:
+    return status is not None and 200 <= status < 300

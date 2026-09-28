@@ -16,6 +16,7 @@ from chrys.foundation.util.chrys_headers import (
     X_SESSION_ID_HEADER,
 )
 from chrys.kernel import ChatClientException, ChatResponse, ChatResponseUpdate, FunctionTool, Message
+from chrys.kernel.exceptions import ChatClientInvalidResponseException
 from chrys.service.llm.instrumented import _set_chrys_request_headers
 from chrys.service.llm.route_sessions import llm_parent_session_id, llm_route_session_id
 from tests.service.llm._instrumented_clients import make_chat_client, make_responses_chat_client
@@ -343,7 +344,8 @@ def test_integration_choices_none_raises_with_gateway_error_body() -> None:
     with pytest.raises(ChatClientException) as exc_info:
         chat_client._parse_response_from_openai(bad, {})
 
-    msg = str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, ChatClientInvalidResponseException)
+    msg = str(exc_info.value.__cause__)
     assert "missing the required 'choices' array" in msg
     assert "rate limit exceeded" in msg
     assert "429" in msg
