@@ -29,6 +29,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.hosted_tools import HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY, HostedToolStatus
 from chrys.foundation.retry import (
+    TRANSIENT_RETRY_BACKOFF_SECONDS,
     StreamStall,
 )
 from chrys.foundation.trajectory.envelope import Link, LinkRelation
@@ -145,7 +146,7 @@ class TurnBindings:
     # and the loop lives in :mod:`chrys.foundation.retry` so sub-agents share
     # the same policy without reaching back into this class.
     _MAX_RETRIES = 5
-    _BACKOFF_SCHEDULE = (3, 7, 15, 30, 60)
+    _BACKOFF_SCHEDULE = TRANSIENT_RETRY_BACKOFF_SECONDS
     # Fallback when no per-run stream_attempt_timeout is supplied (e.g. tests).
     # Production callers pass ModelProfile.http_read_timeout so stall detection
     # matches the HTTP client's read timeout.

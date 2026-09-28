@@ -849,7 +849,7 @@ async def test_trust_preview_consumes_the_same_deadline_budget_as_the_run(
         await host.shutdown()
 
 
-@pytest.mark.parametrize("raw,expected", [(None, 15), ("bad", 15), ("23", 23), ("999", 50)])
+@pytest.mark.parametrize("raw,expected", [(None, 18), ("bad", 18), ("23", 23), ("999", 50)])
 @pytest.mark.parametrize("restoring", [False, True])
 def test_workflow_command_uses_headless_retry_policy(
     monkeypatch: pytest.MonkeyPatch,
@@ -872,7 +872,7 @@ def test_workflow_command_uses_headless_retry_policy(
     fake_host.result = _result(RunOutcome.COMPLETED)
     assert workflow_cli.main(["run", "chain", "--json", *(["--session", "old"] if restoring else [])]) == 0
     loaded = fake_host.instances[0].kwargs["loaded_settings"]
-    assert loaded.settings.frontend_default_max_transient_retries == 15
+    assert loaded.settings.frontend_default_max_transient_retries == 18
     assert loaded.settings.effective_max_transient_retries() == expected
     assert bootstrap.call_args.kwargs["project_root"] == (None if restoring else Path.cwd())
     captured = capsys.readouterr()

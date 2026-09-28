@@ -503,7 +503,7 @@ async def test_the_buddy_model_is_picked_from_the_registered_model_ids() -> None
 
         # A blank retry cap shows the frontend default it falls back to.
         retries = _rows(dialog)["llm.retry.max_transient"].query_one(Input)
-        assert retries.value == "" and retries.placeholder == "7"
+        assert retries.value == "" and retries.placeholder == "10"
 
 
 @pytest.mark.asyncio

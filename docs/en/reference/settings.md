@@ -50,7 +50,7 @@ Model role keys take the ID or unique name of an existing model profile. Buddy d
 | `model.role.approval_judge` | `CHRYS_MODEL_PROFILE_APPROVAL_JUDGE` | Unset | String; the model profile used for automatic approval. Uses the current model when unset |
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | Unset | String; the model profile used to generate session titles automatically. Uses the current model when unset |
 | `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | Unset | String; the model used by Buddy, using the current model profile's connection. Uses the current model when unset |
-| `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `7` for the TUI (including `icode serve`) and `icode acp`, or `15` for `icode run` and `icode workflow run`. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
+| `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `10` for the TUI (including `icode serve`) and `icode acp`, or `18` for `icode run` and `icode workflow run`. The wait before each retry grows, up to 10 minutes. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
 
 Transient error retries handle recoverable errors such as temporary network failures, request timeouts, and rate limits. Raising the count also increases the wait and number of requests before a final failure. This number is not the total number of model requests for the entire task.
 

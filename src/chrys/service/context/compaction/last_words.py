@@ -49,7 +49,7 @@ from uuid import uuid4
 
 from chrys.foundation.errors import clean_error_message, is_retryable, may_be_context_overflow
 from chrys.foundation.models.turns import is_continuation_message
-from chrys.foundation.retry import RetryAttemptInfo
+from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, RetryAttemptInfo
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
@@ -583,7 +583,7 @@ class LastWordsGenerator:
 
     _MAX_RETRIES: int = 5
     _MAX_CORRECTIVE_RETRIES: int = 5
-    _BACKOFF_SCHEDULE: tuple[float, ...] = (3, 7, 15, 30, 60)
+    _BACKOFF_SCHEDULE: tuple[float, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS
     # A LAST_WORDS note replaces an entire amputated turn, and Phase 4 only
     # fires on a near-full context — there is always substantial work to
     # record, so a fragmentary note is worse than a retry.  Observed live

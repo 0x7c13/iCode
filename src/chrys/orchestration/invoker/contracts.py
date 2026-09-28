@@ -96,12 +96,13 @@ class FailureCategory(Enum):
     UNCLASSIFIED = "unclassified"
     """The backend adds nothing: the shared error classifier judges the exception."""
     TRANSPORT = "transport"
-    """The agent could not be reached, or the connection ended before an answer: a connect failure,
-    an idle timeout, a disconnect, an unexpected exit or an unexpected cancel."""
+    """The connection ended before an answer: an idle timeout, a disconnect, an unexpected exit or an
+    unexpected cancel."""
     REMOTE_ERROR = "remote_error"
     """The remote agent reported a failure without saying whether a repeat can succeed."""
     DEFINITIVE = "definitive"
-    """Configuration, launch, authentication, refusal, truncation or empty output: a repeat ends the same way."""
+    """Configuration, launch (including an agent the connect retries could not reach), authentication,
+    refusal, truncation or empty output: a repeat ends the same way."""
 
 
 class AbortResult(Enum):

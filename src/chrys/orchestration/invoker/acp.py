@@ -15,6 +15,7 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
 )
 from chrys.foundation.models.invocations import InvocationOrigin, PassHandle
+from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.foundation.trajectory.event_types import RetryMode, RetryReason
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -66,11 +67,6 @@ from chrys.foundation.util.once_close import finish_close
 from .acp_protocol import AcpPermissionBroker, AcpUpdateTranslator, drain_acp_task, preview_text
 
 logger = logging.getLogger(__name__)
-_BACKOFF = (3, 7, 15, 30, 60)
-
-
-# Terminal verdicts a new transport session can still overturn: the connect budget ran out.
-_TRANSPORT_FAILURE_KINDS = frozenset({"sub_agent_acp_setup"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,12 +83,6 @@ class AcpExecutionResult:
         safe = surrogate_safe_text(message)
         text = safe if safe.startswith("Error:") else f"Error: {safe}"
         return cls(text, succeeded=False, error_kind=kind, exception=exception)
-
-    @property
-    def category(self) -> FailureCategory:
-        if self.error_kind in _TRANSPORT_FAILURE_KINDS:
-            return FailureCategory.TRANSPORT
-        return FailureCategory.DEFINITIVE
 
 
 @dataclass(slots=True)
@@ -133,7 +123,7 @@ class AcpConversation:
         translator_callback: Callable[[AcpUpdateTranslator], Awaitable[None]] | None = None,
         counters: AcpInvocationCounters | None = None,
         max_connect_retries: int = 5,
-        backoff_schedule: tuple[int, ...] = _BACKOFF,
+        backoff_schedule: tuple[int, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS,
         trajectory_context: TrajectoryContext | None = None,
         trajectory_boundary_operation_id: str | None = None,
     ) -> None:
@@ -170,7 +160,8 @@ class AcpConversation:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._last_error = ""
         self._last_exception: Exception | None = None
-        self._last_category = FailureCategory.TRANSPORT
+        # Each retryable exit names its category; an exit that names none is not retried.
+        self._last_category = FailureCategory.DEFINITIVE
         self._diagnostic_path: str | None = None
         self._stop_reason = ""
         self._transcript_final_text: str | None = None
@@ -659,7 +650,7 @@ class AcpConversation:
         self._pass_origin = request.origin
         self._emitter = BoundEmitter(self._bus, request.origin)
         self._last_exception = None
-        self._last_category = FailureCategory.TRANSPORT
+        self._last_category = FailureCategory.DEFINITIVE
         self._prompt = "\n".join(message.text for message in request.messages)
         before = (
             self._counters.input_spend,
@@ -718,7 +709,9 @@ class AcpConversation:
                     error=self._last_error if result is None else result.text,
                     disposition=FailureDisposition.CALLER_DECISION if result is None else FailureDisposition.TERMINAL,
                     exception=self._last_exception if result is None else result.exception,
-                    category=self._last_category if result is None else result.category,
+                    # A terminal verdict ends the same way on a repeat, and so does a connection
+                    # the pass's own connect retries could not make: the agent's launch is broken.
+                    category=self._last_category if result is None else FailureCategory.DEFINITIVE,
                 )
             return Ok(
                 handle=handle,

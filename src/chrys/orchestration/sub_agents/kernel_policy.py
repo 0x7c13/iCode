@@ -21,6 +21,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.hosted_tools import HostedToolStatus
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.retry import (
+    TRANSIENT_RETRY_BACKOFF_SECONDS,
     StreamStall,
     StreamStallExhausted,
 )
@@ -101,7 +102,6 @@ def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, Any]]:
 # feels the same between main-agent and sub-agent failures. The sub-agent
 # retry loop uses the same schedule and cap.
 _DEFAULT_MAX_RETRIES = 5
-_DEFAULT_BACKOFF_SCHEDULE = (3, 7, 15, 30, 60)
 _DEFAULT_STREAM_ATTEMPT_TIMEOUT = 300.0
 
 # Decisions resolved into the ``pending_decision`` future. Kept as string
@@ -154,7 +154,7 @@ class KernelSubAgentPolicy:
         parent_event_call_id: str = "",
         sub_agent_log_file: str = "",
         max_retries: int = _DEFAULT_MAX_RETRIES,
-        backoff_schedule: tuple[int, ...] = _DEFAULT_BACKOFF_SCHEDULE,
+        backoff_schedule: tuple[int, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS,
         persist_dir: Path | None = None,
         log_writer: SubAgentSessionLogWriter | None = None,
         log_stats: SubAgentLogStats | None = None,

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterable, Iterable
 from pathlib import Path
 from types import ModuleType
@@ -26,7 +27,10 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.hosted_tools import HostedToolStatus
 from chrys.kernel import ChatResponseUpdate, Content, FinishReason, FinishReasonLiteral, FunctionTool, Message
+from chrys.orchestration.invoker.resources import PreparedAgent
+from chrys.service.acp_client import AcpAgentClient, AcpConnectError
 from chrys.service.llm.mock import MockChatClient, MockResponse
+from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile
 from chrys.service.tools.registry import ToolRegistry
 from tests.orchestration.workflows._hosting import (
     PROFILE,
@@ -39,6 +43,7 @@ from tests.orchestration.workflows._hosting import (
     run,
     write_workflow,
 )
+from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.event_capture import capture_event_sequence
 from tests.support.provider_errors import openai_status
 from tests.support.scripted_clients import HostedMockChatClient, HostedMockResponse
@@ -52,14 +57,26 @@ _NODE_TIMEOUT = 3600.0
 _SERVICE_SIDE_STORAGE = '{"store": true}'
 
 
-def _workflow(*, max_attempts: int, timeout: float | None = None) -> bytes:
+def _workflow(*, max_attempts: int, timeout: float | None = None, profile: str = PROFILE) -> bytes:
     timeout_arg = f", timeout={timeout!r}" if timeout is not None else ""
     return (
         "from chrys.workflows import Retry, WorkflowBuilder\n"
         "wf = WorkflowBuilder('retry')\n"
-        f"review = wf.agent('review', profile={PROFILE!r}{timeout_arg}, retry=Retry(max_attempts={max_attempts}))\n"
+        f"review = wf.agent('review', profile={profile!r}{timeout_arg}, retry=Retry(max_attempts={max_attempts}))\n"
         "wf.start(review)\nwf.output(review)\nworkflow = wf.build()\n"
     ).encode()
+
+
+def _acp_profile(scenario: str) -> AgentProfile:
+    return AgentProfile(
+        name="External",
+        acp=AcpAgentConfig(
+            command=sys.executable,
+            args=[str(STUB_SCRIPT)],
+            env={"CHRYS_ACP_STUB_SCENARIO": scenario},
+            idle_timeout_seconds=0,
+        ),
+    )
 
 
 def _hold_node_deadline(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
@@ -684,5 +701,120 @@ async def test_a_failed_poll_of_a_background_response_never_creates_its_hosted_w
         (hosted_start,) = of_type(events, InvocationToolCallStart)
         assert (hosted_start.provider_hosted, hosted_start.origin.attempt) == (True, 1)
         assert [event.origin.attempt for event in of_type(events, InvocationResumed)] == [2]
+    finally:
+        await host.shutdown()
+
+
+async def test_an_acp_agent_that_cannot_reopen_for_a_retry_fails_the_node_rather_than_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expire = _hold_node_deadline(monkeypatch)
+    real_build = agent_node_module.build_acp_node
+    builds = 0
+
+    def build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal builds
+        builds += 1
+        if builds == 2:
+            raise RuntimeError("agent command vanished")
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(agent_node_module, "build_acp_node", create_autospec(real_build, side_effect=build))
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=3, timeout=_NODE_TIMEOUT, profile="External"))
+    host = make_host(tmp_path, project=project, profiles=[make_profile(), _acp_profile("idle_stall")])
+
+    async def expire_while_running(event: WorkflowNodeStateChanged) -> None:
+        if event.state == "running":
+            expire.set()
+
+    await host.event_bus.subscribe(WorkflowNodeStateChanged, expire_while_running)
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged) as events:
+            result, _stream = await run(host, "review", input_text="x")
+        # The timed-out attempt retired its agent; the retry's new one could not be built, which is a
+        # launch failure: the node fails without a further automatic attempt, and the run is not cancelled.
+        assert (result.outcome.value, result.node_id) == ("node_failed", "review")
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_timeout"),
+            ("running", 2, ""),
+            ("failed", 2, "agent_non_transient"),
+        ]
+        assert "RuntimeError: agent command vanished" in of_type(events, WorkflowNodeStateChanged)[-1].error
+        assert builds == 2
+    finally:
+        await host.event_bus.unsubscribe(WorkflowNodeStateChanged, expire_while_running)
+        await host.shutdown()
+
+
+async def test_a_retired_acp_agent_that_fails_to_close_leaves_the_timeout_to_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expire = _hold_node_deadline(monkeypatch)
+    teardown_failures = [RuntimeError("teardown failed")]
+
+    class _TeardownFailsOnce(PreparedAgent):
+        async def aclose(self) -> None:
+            await super().aclose()
+            if teardown_failures:
+                raise teardown_failures.pop()
+
+    monkeypatch.setattr(agent_node_module, "PreparedAgent", _TeardownFailsOnce)
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT, profile="External"))
+    host = make_host(tmp_path, project=project, profiles=[make_profile(), _acp_profile("idle_stall")])
+
+    async def expire_while_running(event: WorkflowNodeStateChanged) -> None:
+        if event.state == "running":
+            expire.set()
+
+    await host.event_bus.subscribe(WorkflowNodeStateChanged, expire_while_running)
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged) as events:
+            result, _stream = await run(host, "review", input_text="x")
+        assert (result.outcome.value, result.node_id) == ("node_failed", "review")
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_timeout"),
+            ("running", 2, ""),
+            ("failed", 2, "agent_timeout"),
+        ]
+        # The first attempt's timeout retired its agent, whose close failed; the failure stayed out of the result.
+        assert teardown_failures == []
+    finally:
+        await host.event_bus.unsubscribe(WorkflowNodeStateChanged, expire_while_running)
+        await host.shutdown()
+
+
+async def test_an_acp_agent_its_connection_retries_cannot_reach_is_not_retried_by_the_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
+    real_connect = AcpAgentClient.connect
+    connects = 0
+
+    async def connect(client: AcpAgentClient) -> None:
+        nonlocal connects
+        connects += 1
+        raise AcpConnectError("injected handshake failure")
+
+    monkeypatch.setattr(AcpAgentClient, "connect", create_autospec(real_connect, side_effect=connect))
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=2, profile="External"))
+    host = make_host(tmp_path, project=project, profiles=[make_profile(), _acp_profile("happy")])
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged) as events:
+            result, _stream = await run(host, "review", input_text="x")
+        assert (result.outcome.value, result.node_id) == ("node_failed", "review")
+        # The attempt's own connection retries already ran; the launch is broken, as a chat sub-agent treats it.
+        assert _node_states(events) == [("running", 1, ""), ("failed", 1, "agent_non_transient")]
+        assert connects == 6
     finally:
         await host.shutdown()

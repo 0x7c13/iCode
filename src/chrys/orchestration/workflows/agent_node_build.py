@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_env import SessionEnvironment
-from chrys.foundation.retry import StreamStall
+from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
 from chrys.foundation.tool_kinds import KIND_ASK_USER, KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
 from chrys.kernel import LoopRecorder, StallExhaustedAction
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
@@ -108,8 +108,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RETRY_BACKOFF_SCHEDULE = (3, 7, 15, 30, 60)
-"""Seconds between a node's in-pass request retries, as the chat agent waits."""
+RETRY_BACKOFF_SCHEDULE = TRANSIENT_RETRY_BACKOFF_SECONDS
+"""Seconds between a node's in-pass request and ACP connection retries, as the chat agent waits."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -676,6 +676,7 @@ def build_acp_node(
         usage_callback=callbacks.acp_usage,
         translator_callback=callbacks.adopt_translator,
         counters=callbacks.acp_counters,
+        backoff_schedule=RETRY_BACKOFF_SCHEDULE,
     )
     conversation.own(backend.aclose)
     return AcpNodeParts(backend)

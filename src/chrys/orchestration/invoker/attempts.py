@@ -88,7 +88,14 @@ def has_live_continuation_token(run_kwargs: Mapping[str, object] | None) -> bool
     if run_kwargs is None:
         return False
     options = run_kwargs.get("options")
-    return isinstance(options, dict) and options.get("continuation_token") is not None
+    return is_string_keyed_dict(options) and options.get("continuation_token") is not None
+
+
+def drop_continuation_token(run_kwargs: AgentRunKwargs) -> None:
+    """Forget the retry-owned options' background response, so the next request starts a new one."""
+    options = run_kwargs.get("options")
+    if is_string_keyed_dict(options):
+        options.pop("continuation_token", None)
 
 
 def continuation_token_observer_for(run_kwargs: AgentRunKwargs) -> Callable[[Any], None]:
@@ -103,12 +110,11 @@ def continuation_token_observer_for(run_kwargs: AgentRunKwargs) -> Callable[[Any
     """
 
     def _observe(token: Any) -> None:
+        if token is None:
+            drop_continuation_token(run_kwargs)
+            return
         raw_options = run_kwargs.get("options")
         options = raw_options if is_string_keyed_dict(raw_options) else None
-        if token is None:
-            if options is not None:
-                options.pop("continuation_token", None)
-            return
         if options is None:
             options = {}
             run_kwargs["options"] = options

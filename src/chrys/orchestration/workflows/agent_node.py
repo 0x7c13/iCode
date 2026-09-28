@@ -50,6 +50,7 @@ from chrys.foundation.util.once_close import finish_close
 from chrys.kernel import AgentResponse, Message
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
+from chrys.orchestration.invoker.attempts import drop_continuation_token, has_live_continuation_token
 from chrys.orchestration.invoker.child_history import active_input_message
 from chrys.orchestration.invoker.contracts import (
     AbortCause,
@@ -86,6 +87,7 @@ from chrys.service.agent_middleware.response_validation import hosted_commits_fr
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
 from chrys.service.session.sub_agent_logs import SubAgentLogStats
 from chrys.service.workflows.scheduler import ErrorClass, FailureReport
+from chrys.service.workflows.store import WorkflowStorageFailed
 
 if TYPE_CHECKING:
     from chrys.foundation.retry import RetryAttemptInfo
@@ -217,16 +219,36 @@ class WorkflowAgentShell:
         conversation = await self._prepared.open(self._open_conversation)
         self._unbind = conversation.bind_operation(self)
 
+    async def _reopen_backend(self) -> FailureReport | None:
+        """Open a backend for a retry after the last one was retired; a failure fails only this attempt."""
+        try:
+            await self._open_backend()
+        except WorkflowStorageFailed:
+            raise
+        except Exception as exc:
+            logger.warning("workflow node %s: agent could not reopen", self._node_id, exc_info=True)
+            # A partial open may have left parts over a rolled-back conversation; the next attempt reopens.
+            await self._retire_backend()
+            return FailureReport(ErrorClass.AGENT_NON_TRANSIENT, f"{type(exc).__name__}: {exc}")
+        return None
+
     async def _retire_backend(self) -> None:
-        """End a backend lifetime without ending the activation or its accounting."""
+        """End a backend lifetime without ending the activation or its accounting.
+
+        A teardown failure is only logged: the attempt's own result stands, and the next attempt opens anew.
+        """
         unbind, self._unbind = self._unbind, None
         if unbind is not None:
             unbind()
-        await self._prepared.aclose()
-        self._prepared = PreparedAgent()
-        self._parts = None
-        self._ticket = None
-        self._resume = False
+        try:
+            await self._prepared.aclose()
+        except Exception:
+            logger.warning("workflow node %s: retired agent did not close cleanly", self._node_id, exc_info=True)
+        finally:
+            self._prepared = PreparedAgent()
+            self._parts = None
+            self._ticket = None
+            self._resume = False
 
     async def close(self) -> None:
         """Release the conversation, then drain the session's usage tail (including other publishers).
@@ -273,8 +295,9 @@ class WorkflowAgentShell:
         result: AgentAttemptResult | None = None
         error = ""
         try:
-            if self._backend is None:
-                await self._open_backend()
+            if self._backend is None and (failure := await self._reopen_backend()) is not None:
+                result = AgentAttemptResult("failed", failure=failure)
+                return result
             result = await self._run(prompt, timeout=timeout, trajectory_context=trajectory_context)
             return result
         except asyncio.CancelledError:
@@ -659,14 +682,11 @@ class WorkflowAgentShell:
         return bool(parts.hosted_unkept(parts.history.messages()[self._pass_start_index :]))
 
     def _has_live_continuation_token(self) -> bool:
-        options = self._parts.run_kwargs.get("options") if isinstance(self._parts, KernelNodeParts) else None
-        return isinstance(options, Mapping) and options.get("continuation_token") is not None
+        return isinstance(self._parts, KernelNodeParts) and has_live_continuation_token(self._parts.run_kwargs)
 
     def _drop_continuation_token(self) -> None:
         if isinstance(self._parts, KernelNodeParts):
-            options = self._parts.run_kwargs.get("options")
-            if isinstance(options, dict):
-                options.pop("continuation_token", None)
+            drop_continuation_token(self._parts.run_kwargs)
 
     async def _interruptible_sleep(self, seconds: int) -> bool:
         for _ in range(max(0, seconds)):

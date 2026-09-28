@@ -778,7 +778,7 @@ async def test_reload_and_profile_switch_rebuilds_thread_updated_transient_budge
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
     engine = agent_engine(bus, settings=settings, agent_registry=registry)
     await engine.start(_CODE)
-    assert engine.current.loaded.bindings._max_retries_override == 7
+    assert engine.current.loaded.bindings._max_retries_override == 10
 
     monkeypatch.setenv("CHRYS_MAX_TRANSIENT_RETRIES", "9")
     pre_reload = engine.current.loaded.bindings

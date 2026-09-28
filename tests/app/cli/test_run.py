@@ -442,8 +442,8 @@ def test_prepare_runtime_applies_headless_retry_default(monkeypatch: pytest.Monk
 
     settings = headless.prepare_runtime().settings
 
-    assert settings.frontend_default_max_transient_retries == 15
-    assert settings.effective_max_transient_retries() == 15
+    assert settings.frontend_default_max_transient_retries == 18
+    assert settings.effective_max_transient_retries() == 18
 
 
 def test_prepare_runtime_bootstraps_project_free_for_a_session_restore(
@@ -612,7 +612,7 @@ def test_prepare_runtime_explicit_retry_env_wins_over_headless_default(
 
     settings = headless.prepare_runtime().settings
 
-    assert settings.frontend_default_max_transient_retries == 15
+    assert settings.frontend_default_max_transient_retries == 18
     assert settings.effective_max_transient_retries() == expected
 
 
@@ -706,8 +706,8 @@ def test_run_command_passes_headless_retry_default_to_session_host(
 
     assert capsys.readouterr().out == "final text\n"
     settings = FakeHost.instances[0].kwargs["loaded_settings"].settings
-    assert settings.frontend_default_max_transient_retries == 15
-    assert settings.effective_max_transient_retries() == 15
+    assert settings.frontend_default_max_transient_retries == 18
+    assert settings.effective_max_transient_retries() == 18
 
 
 def test_run_command_bootstrap_warning_json_mode(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
