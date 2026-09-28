@@ -84,9 +84,9 @@ async def test_full_workspace_reaches_agents_and_restores_from_another_host(
     observed: list[Workspace] = []
     real_open = WorkflowAgentShell.open
 
-    async def open_shell(shell: WorkflowAgentShell, prompt: str) -> None:
+    async def open_shell(shell: WorkflowAgentShell, prompt: str, *, attempt: int = 1) -> None:
         observed.append(deepcopy(shell._resources.workspace))
-        await real_open(shell, prompt)
+        await real_open(shell, prompt, attempt=attempt)
 
     monkeypatch.setattr(WorkflowAgentShell, "open", create_autospec(real_open, side_effect=open_shell))
     host = make_host(tmp_path, project=project, workspace=workspace)

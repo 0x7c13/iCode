@@ -572,7 +572,7 @@ class WorkflowRunner:
         shell = self._shell_for(ref)
         if not shell.is_prepared:
             try:
-                await shell.open(value.text)
+                await shell.open(value.text, attempt=ref.attempt)
             except WorkflowStorageFailed as exc:
                 self._storage_failed(str(exc))
                 return

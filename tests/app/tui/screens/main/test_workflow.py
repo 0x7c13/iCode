@@ -224,7 +224,7 @@ async def test_start_latch_reply_correlation_covered_projection_and_transcripts(
                 invocation_id="child",
             )
         )
-        origin = InvocationOrigin("workflow_node", "", "child", None)
+        origin = InvocationOrigin("workflow_node", "", "child", None, attempt=1)
         await bus.publish(events.InvocationMessage(origin=origin, text="workflow transcript only"))
         await bus.publish(
             events.InvocationToolCallStart(origin=origin, call_id="tool", tool_name="check", tool_kind="shell")
@@ -241,7 +241,7 @@ async def test_start_latch_reply_correlation_covered_projection_and_transcripts(
         assert restyle.call_count == 0
         run = main._workflow.session_view.projector.current
         assert run is not None
-        first, last = run.journals["child"].operations[0], run.journals["child"].operations[-1]
+        first, last = run.journals["child", 1].operations[0], run.journals["child", 1].operations[-1]
         assert isinstance(first, TranscriptAssistantOp) and first.text == "workflow transcript only"
         assert isinstance(last, TranscriptToolResultOp) and last.canonical_status == "failed"
         assert not main.query_one(ChatPanel).query("AgentMessage")

@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast
 
 from chrys.foundation.errors import clean_error_message
 from chrys.foundation.errors.display import display_fields
@@ -44,6 +44,7 @@ from chrys.orchestration.invoker.attempts import (
     KeepAndRaise,
     ModelRunTrace,
     RetryBoundaryPolicy,
+    has_live_continuation_token,
 )
 from chrys.orchestration.invoker.child_compaction import CompactionRollback
 from chrys.orchestration.invoker.child_history import ChildHistory, service_storage_side
@@ -83,6 +84,12 @@ if TYPE_CHECKING:
 from .shell import SubAgentToolShell
 
 logger = logging.getLogger(__name__)
+
+
+class HostedBaselineHook(Protocol):
+    """Starts a pass's hosted-work baseline, as ``ResponseValidationMiddleware.begin_pass_hosted_baseline`` does."""
+
+    def __call__(self, *, resumes_background_response: bool) -> None: ...
 
 
 def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, Any]]:
@@ -159,6 +166,7 @@ class KernelSubAgentPolicy:
         sleep_middleware: SleepMiddleware | None = None,
         pass_start_hooks: Sequence[Callable[[], None]] = (),
         hosted_commits_probe: Callable[[], tuple[str, ...]] | None = None,
+        begin_hosted_baseline: HostedBaselineHook | None = None,
         trajectory_context: TrajectoryContext | None = None,
         trajectory_boundary_operation_id: str | None = None,
     ) -> None:
@@ -205,12 +213,15 @@ class KernelSubAgentPolicy:
             stream_attempt_timeout if stream_attempt_timeout is not None else _DEFAULT_STREAM_ATTEMPT_TIMEOUT
         )
         self._sleep_middleware = sleep_middleware
+        # The hosted baseline reads this policy's own request options, not the caller's run_kwargs: a
+        # whole-run retry replaces them, so only these say whether the pass polls a background response.
+        self._begin_hosted_baseline_hook = begin_hosted_baseline
         # Fired at the start of every pass (initial run, or a user Retry
         # decision after a pause).  Components carrying state across a pass's
         # whole-run retry attempts — the validation middleware's retry budget —
         # register here so an aborted pass cannot leak state into the next
         # one; mirrors the main executor's run_cycle_start_hooks.
-        self._pass_start_hooks = tuple(pass_start_hooks)
+        self._pass_start_hooks = (*pass_start_hooks, self._begin_hosted_baseline)
         # Validation-middleware probe for provider-hosted tool executions the
         # loop recorder cannot see; consulted by the whole-run retry gate.
         self._hosted_commits_probe = hosted_commits_probe
@@ -511,8 +522,11 @@ class KernelSubAgentPolicy:
         options["continuation_token"] = token
 
     def _has_live_continuation_token(self) -> bool:
-        options = self._run_kwargs.get("options")
-        return isinstance(options, dict) and options.get("continuation_token") is not None
+        return has_live_continuation_token(self._run_kwargs)
+
+    def _begin_hosted_baseline(self) -> None:
+        if self._begin_hosted_baseline_hook is not None:
+            self._begin_hosted_baseline_hook(resumes_background_response=self._has_live_continuation_token())
 
     async def _write_log(
         self,

@@ -133,6 +133,11 @@ def _request_auth_methods(error: RequestError) -> tuple[str, ...]:
     return tuple(names)
 
 
+def is_remote_error(error: AcpClientError) -> bool:
+    """Return whether the remote agent itself answered with the JSON-RPC error behind *error*."""
+    return isinstance(error.cause, RequestError)
+
+
 def is_deterministic_request_error(error: RequestError) -> bool:
     """Return whether retrying the same request cannot change its rejection."""
     return type(error.code) is int and error.code in _DETERMINISTIC_REQUEST_CODES

@@ -56,7 +56,7 @@ async def test_agent_failure_uses_chat_error_and_retry_recovers_the_surface(
             state="running",
             invocation_id="review",
         )
-        origin = InvocationOrigin("workflow_node", "", "review", None)
+        origin = InvocationOrigin("workflow_node", "", "review", None, attempt=1)
         await bus.publish(running)
         if detail_open:
             # Details can mount while the agent is still being prepared.
@@ -92,10 +92,12 @@ async def test_agent_failure_uses_chat_error_and_retry_recovers_the_surface(
         await wait_for(lambda: bool(app.screen.query(ErrorMessage)), pilot=pilot)
         assert [message._text for message in app.screen.query(UserMessage)] == ["Review [this] change."]
         if state != "failed":
-            # Real workflow retries preserve the invocation id across attempts.
+            # Real workflow retries preserve the invocation id across attempts; one that starts over shows
+            # its own transcript from the prompt.
             await bus.publish(replace(running, attempt=2))
             await wait_for(lambda: not app.screen.query(ErrorMessage), pilot=pilot)
-            await bus.publish(events.InvocationMessage(origin=origin, text="Recovered", is_final=True))
+            retried = InvocationOrigin("workflow_node", "", "review", None, attempt=2)
+            await bus.publish(events.InvocationMessage(origin=retried, text="Recovered", is_final=True))
             await bus.publish(replace(running, attempt=2, state="completed"))
             # The terminal node update can leave unrelated Textual timers active.
             # Observe the message without requiring Pilot's whole-screen idle barrier.
@@ -127,7 +129,7 @@ async def test_retry_compaction_pressure_and_progress_are_scoped_to_the_node(
                 invocation_id="review",
             )
         )
-        origin = InvocationOrigin("workflow_node", "", "review", None)
+        origin = InvocationOrigin("workflow_node", "", "review", None, attempt=1)
         main._workflow.session_view.open_node("architecture")
         await wait_for(lambda: bool(app.screen.query(AgentTranscriptSurface)), pilot=pilot)
         surface = app.screen.query_one(AgentTranscriptSurface)

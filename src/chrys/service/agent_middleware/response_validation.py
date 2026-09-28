@@ -91,7 +91,18 @@ from chrys.kernel import (
     normalize_stream_usage,
     resolve_storage_mode_and_handles,
 )
-from chrys.kernel.exchanges import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES
+from chrys.kernel.exchanges import (
+    TOOL_CALL_CONTENT_TYPES,
+    TOOL_RESULT_CONTENT_TYPES,
+    EmptyIdPolicy,
+    LiveAccessor,
+    NoneIdPolicy,
+    PairingKey,
+    PairingPolicy,
+    iter_exchanges,
+    namespaced_pairing_key,
+    pair_results,
+)
 from chrys.kernel.middleware import ChatMiddleware
 from chrys.service.agent_middleware.events.hosted_tools import (
     HostedToolArgsOp,
@@ -203,6 +214,9 @@ class ResponseValidationObservationHook(Protocol):
     async def attempt_accepted(self, messages: Sequence[Message]) -> None: ...
 
 
+_LIVE_ACCESSOR = LiveAccessor()
+
+
 def _hosted_commit_labels(response: ChatResponse) -> tuple[str, ...]:
     """Deduplicated display names of side-effectful hosted calls in *response*."""
     labels = _hosted_commit_labels_from_plan(ResponsePresentationPlan.from_messages(response.messages or []))
@@ -217,7 +231,19 @@ def _hosted_commit_labels_from_contents(
     candidates: Iterable[Any],
     call_labels: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
-    """Deduplicated display names of side-effectful hosted calls in *candidates*.
+    """Deduplicated display names of side-effectful hosted calls in *candidates*."""
+    labels: list[str] = []
+    for label, _key in _hosted_commits_from_contents(candidates, call_labels):
+        if label not in labels:
+            labels.append(label)
+    return tuple(labels)
+
+
+def _hosted_commits_from_contents(
+    candidates: Iterable[Any],
+    call_labels: Mapping[str, str] | None = None,
+) -> list[tuple[str, PairingKey | None]]:
+    """Display name and pairing key of each side-effectful hosted call content in *candidates*.
 
     Result contents carry no tool name of their own, so each is labelled
     via its paired call when one is present in the same batch.
@@ -231,7 +257,7 @@ def _hosted_commit_labels_from_contents(
             if content.type in TOOL_CALL_CONTENT_TYPES and content.call_id and content.tool_name
         }
     )
-    labels: list[str] = []
+    commits: list[tuple[str, PairingKey | None]] = []
     for content in contents:
         if content.type in TOOL_CALL_CONTENT_TYPES:
             view = adapt_hosted_tool(content)
@@ -244,9 +270,36 @@ def _hosted_commit_labels_from_contents(
         label = view.tool_name
         if content.type in TOOL_RESULT_CONTENT_TYPES:
             label = names_by_call.get(content.call_id) or content.tool_name or content.type
-        if label not in labels:
-            labels.append(label)
-    return tuple(labels)
+        commits.append((label, namespaced_pairing_key(content.type, _LIVE_ACCESSOR.raw_id(content))))
+    return commits
+
+
+# Recoverable hosted work: a call counts once a result with its id answers it; an id-less occurrence
+# answers nothing, so its call is never counted as kept.
+_KEPT_HOSTED_PAIRING_POLICY = PairingPolicy(
+    call_types=TOOL_CALL_CONTENT_TYPES,
+    include_informational_calls=True,
+    result_types=TOOL_RESULT_CONTENT_TYPES,
+    none_id=NoneIdPolicy.IGNORE,
+    empty_id=EmptyIdPolicy.IGNORE,
+    malformed_id="treat_as_none",
+)
+
+
+def _landed_exchange_answered_keys(messages: Sequence[Message], landed: Sequence[Message]) -> set[PairingKey]:
+    """Pairing keys answered by the exchange of *messages* whose response holds *landed*'s Content objects.
+
+    Identity, not ids, finds the exchange: an earlier exchange reusing the same call id is other work.
+    """
+    landed_contents = {id(content) for message in landed for content in message.contents}
+    for exchange in reversed(list(iter_exchanges(messages, _LIVE_ACCESSOR))):
+        if any(
+            id(content) in landed_contents
+            for index in exchange.response_indices
+            for content in messages[index].contents
+        ):
+            return pair_results(messages, exchange, _LIVE_ACCESSOR, _KEPT_HOSTED_PAIRING_POLICY).answered_keys
+    return set()
 
 
 def _view_is_hosted_commit(view: Any) -> bool:
@@ -369,9 +422,12 @@ class ResponseValidationMiddleware(ChatMiddleware):
         # pre-run history, so ANY hosted work this run would re-execute); the
         # wire-attempt scope backs the kernel's per-wire replay veto (an
         # in-place replay only re-sends the current request, so only hosted
-        # work from the aborted attempt itself is at risk).
+        # work from the aborted attempt itself is at risk). The attempt's
+        # commits also keep their pairing keys, so a pass resumed from
+        # repaired history can tell which ones that history already answers.
         self._hosted_commits_seen: list[str] = []
         self._hosted_commits_in_flight: list[str] = []
+        self._hosted_commit_keys_in_flight: list[tuple[str, PairingKey | None]] = []
         self._hosted_call_labels_in_flight: dict[str, str] = {}
 
     def set_observation_hook(self, hook: ResponseValidationObservationHook | None) -> None:
@@ -390,14 +446,43 @@ class ResponseValidationMiddleware(ChatMiddleware):
         """Hosted tool calls executed within the current wire attempt."""
         return tuple(self._hosted_commits_in_flight)
 
+    def hosted_commits_in_flight_unkept(
+        self, kept: Sequence[Message], landed: Sequence[Message] | None
+    ) -> tuple[str, ...]:
+        """Hosted tool calls of the current wire attempt that *kept* does not answer.
+
+        *kept* is the history a resumed pass sends; *landed* is the attempt's response as the tool loop
+        landed it, ``None`` while the request is still in flight. Only the exchange holding that response
+        counts: its answered hosted calls show the model their results instead of running again. A call
+        without a pairing id never counts as kept.
+        """
+        answered = set() if landed is None else _landed_exchange_answered_keys(kept, landed)
+        labels: list[str] = []
+        for label, key in self._hosted_commit_keys_in_flight:
+            if (key is None or key not in answered) and label not in labels:
+                labels.append(label)
+        return tuple(labels)
+
     def reset_hosted_commit_observations(self) -> None:
         """Forget observed hosted work — fired when the retry baseline resets."""
         self._hosted_commits_seen.clear()
         self._hosted_commits_in_flight.clear()
+        self._hosted_commit_keys_in_flight.clear()
         self._hosted_call_labels_in_flight.clear()
+
+    def begin_pass_hosted_baseline(self, *, resumes_background_response: bool) -> None:
+        """Start a pass's hosted-work baseline.
+
+        A pass that polls a background response an earlier pass left running keeps the observations: that
+        response's hosted calls may already have run, and if the poll ends without the response, a fresh
+        request would run them again.
+        """
+        if not resumes_background_response:
+            self.reset_hosted_commit_observations()
 
     def _begin_wire_attempt(self) -> None:
         self._hosted_commits_in_flight.clear()
+        self._hosted_commit_keys_in_flight.clear()
         self._hosted_call_labels_in_flight.clear()
 
     def _observe_hosted_contents(self, contents: Iterable[Any]) -> None:
@@ -412,11 +497,14 @@ class ResponseValidationMiddleware(ChatMiddleware):
                 and content.tool_name
             }
         )
-        for label in _hosted_commit_labels_from_contents(observed, self._hosted_call_labels_in_flight):
+        for commit in _hosted_commits_from_contents(observed, self._hosted_call_labels_in_flight):
+            label = commit[0]
             if label not in self._hosted_commits_seen:
                 self._hosted_commits_seen.append(label)
             if label not in self._hosted_commits_in_flight:
                 self._hosted_commits_in_flight.append(label)
+            if commit not in self._hosted_commit_keys_in_flight:
+                self._hosted_commit_keys_in_flight.append(commit)
 
     async def _notify_contents_observed(self, contents: Sequence[Any], *, is_final: bool) -> None:
         if self._observation_hook is None or in_internal_side_call():

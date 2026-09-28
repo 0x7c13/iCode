@@ -23,6 +23,7 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.node_view import NodeView
+from chrys.app.tui.widgets.workflow.projector import WorkflowProjector
 from chrys.app.tui.widgets.workflow.values import ShownValue, ValueDocument, ValueTab, WorkflowValueView
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
@@ -505,6 +506,58 @@ async def test_reselecting_an_attempt_while_its_transcript_is_removed_shows_it_a
         assert isinstance(surface, AgentTranscriptSurface) and surface is not first
 
 
+async def test_each_attempt_shows_its_own_transcript(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retry that started over follows its own live journal; the earlier attempt shows its archived one."""
+    archived = NodeTranscript(PersistedSubAgentTranscript(), "failed", "no response within 30s", NodeUsage(), 0)
+    reader = create_autospec(read_node_transcript, return_value=archived)
+    monkeypatch.setattr(workflow_node, "read_node_transcript", reader)
+
+    def origin(attempt: int) -> InvocationOrigin:
+        return InvocationOrigin("workflow_node", "", "node1", None, attempt=attempt)
+
+    def state(attempt: int, name: str) -> events.WorkflowNodeStateChanged:
+        return events.WorkflowNodeStateChanged(
+            run_id="run", node_id="node1", activation_id="node1", attempt=attempt, state=name, invocation_id="node1"
+        )
+
+    projector = WorkflowProjector()
+    projector.record(events.WorkflowRunStarted(run_id="run", manifest={"nodes": []}))
+    projector.record(state(1, "running"))
+    projector.record_invocation(events.InvocationToolCallStart(origin=origin(1), call_id="a", tool_name="read"))
+    first, second = state(1, "retrying"), state(2, "running")
+    projector.record(first)
+    projector.record(second)
+    projector.record_invocation(events.InvocationToolCallStart(origin=origin(2), call_id="b", tool_name="read"))
+    run = projector.current
+    assert run is not None
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(120, 45)) as pilot:
+        dialog = WorkflowNodeDialog(
+            {"id": "node1", "kind": "agent", "agent": {"profile": "Code", "model": "review-model"}},
+            run=run,
+            directory=tmp_path,
+            history=list,
+            retry=lambda _: False,
+            retry_pending=lambda _: False,
+        )
+        await app.push_screen(dialog)
+        dialog.attempts = [first, second]
+        container = dialog.query_one("#workflow-node-transcript", Vertical)
+        dialog.select_attempt(1)
+        await wait_for(lambda: bool(container.query(AgentTranscriptSurface)), pilot=pilot)
+        live = container.query_one(AgentTranscriptSurface)
+        assert live._journal is run.journals["node1", 2]
+        assert reader.call_count == 0
+        dialog.select_attempt(0)
+        await wait_for(
+            lambda: not live.is_attached and bool(container.query(AgentTranscriptSurface)),
+            pilot=pilot,
+            description="the first attempt's archived transcript replaces the live one",
+        )
+        reader.assert_called_once_with(tmp_path, "node1", 1)
+        assert container.query_one(AgentTranscriptSurface)._journal is not run.journals["node1", 2]
+
+
 async def test_large_graph_list_uses_same_keyboard_and_click_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -722,7 +775,7 @@ async def test_node_records_attempts_previous_output_and_transcript(
                 await wait_for(lambda: bool(dialog.query(AgentTranscriptSurface)), pilot=pilot)
                 await bus.publish(
                     events.InvocationMessage(
-                        origin=InvocationOrigin("workflow_node", "", "child", None),
+                        origin=InvocationOrigin("workflow_node", "", "child", None, attempt=1),
                         text="live child [message]",
                         is_final=True,
                     )

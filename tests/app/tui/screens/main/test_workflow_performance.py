@@ -141,7 +141,6 @@ async def test_twelve_thousand_events_coalesce_without_main_layout_or_footer_rec
         monkeypatch.setattr(main, "update_node_styles", main_styles)
         monkeypatch.setattr(footer, "recompose", recompose)
         diagram, geometry, scroll = graph.diagram, graph.geometry, graph.scroll_offset
-        origin = InvocationOrigin("workflow_node", "", "child", None)
         # Inline bus subscribers cannot yield a visual frame during this deterministic burst.
         # Every semantic fact still reaches its owner; only the visual callback is coalesced.
         for ordinal in range(2000):
@@ -153,10 +152,13 @@ async def test_twelve_thousand_events_coalesce_without_main_layout_or_footer_rec
                 state="retrying" if ordinal % 2 else "running",
                 invocation_id="child",
             )
-            # Each attempt starts before its tools and fails after their results.
-            # Events arriving after failure are deliberately excluded from the UI journal.
+            origin = InvocationOrigin("workflow_node", "", "child", None, attempt=state.attempt)
+            # Each attempt starts before its tools and fails after their results; every retry resumes the
+            # attempt before it, so its transcript carries the earlier ones on.
             if state.state == "running":
                 await bus.publish(state, raise_handler_errors=True)
+                if state.attempt > 1:
+                    await bus.publish(events.InvocationResumed(origin=origin), raise_handler_errors=True)
             await bus.publish(
                 events.InvocationToolCallStart(
                     origin=origin,
@@ -205,7 +207,9 @@ async def test_twelve_thousand_events_coalesce_without_main_layout_or_footer_rec
         assert len(run.facts) == 200
         assert run.usage["child"].tool_calls == 2000
         assert run.usage["child"].usage_tokens == 199900
-        assert Counter(type(operation) for operation in run.journals["child"].operations) == {
+        # Earlier attempts show their archives: only the live attempt's transcript is retained.
+        assert list(run.journals) == [("child", 1000)]
+        assert Counter(type(operation) for operation in run.journals["child", 1000].operations) == {
             TranscriptToolStartOp: 2000,
             TranscriptToolResultOp: 2000,
             TranscriptAssistantOp: 2000,

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -40,7 +41,8 @@ class CompactionRollback:
 
 @dataclass(frozen=True, slots=True)
 class ChildCompactionEvents:
-    emitter: BoundEmitter
+    emitter: Callable[[], BoundEmitter]
+    """The publisher of the pass in flight, read once per report: a retried pass may publish as another attempt."""
     name: str
     tool_name: str
     profile: str
@@ -54,7 +56,7 @@ class ChildCompactionEvents:
         await hooks.fire(
             HookEvent.PRE_COMPACT,
             {
-                "session_id": self.emitter.origin.session_id,
+                "session_id": self.emitter().origin.session_id,
                 "profile": self.profile,
                 "cwd": self.workspace_cwd,
                 "trigger": info.trigger,
@@ -66,61 +68,64 @@ class ChildCompactionEvents:
         )
 
     async def context_pressure(self, reason: str, breaker: DropRoundBreakerState, budget: int) -> None:
-        await self.emitter.publish(
+        emitter = self.emitter()
+        await emitter.publish(
             InvocationContextPressure(
-                origin=self.emitter.origin,
+                origin=emitter.origin,
                 reason=reason,
                 attempts=breaker.attempts,
                 side_call_tokens=breaker.side_call_tokens,
                 side_call_token_budget=budget,
-                source=self.emitter.origin.kind,
-                session_id=self.emitter.origin.session_id,
+                source=emitter.origin.kind,
+                session_id=emitter.origin.session_id,
             )
         )
 
     async def retry(self, info: RetryAttemptInfo) -> None:
-        await self.emitter.publish(
+        emitter = self.emitter()
+        await emitter.publish(
             InvocationRetryAttempt(
                 scope="compaction",
-                origin=self.emitter.origin,
+                origin=emitter.origin,
                 agent_name=self.name,
                 message=f"LAST_WORDS compaction: {info.reason}",
                 attempt=info.attempt,
                 max_attempts=info.max_attempts,
                 delay_seconds=int(info.delay_seconds),
-                session_id=self.emitter.origin.session_id,
+                session_id=emitter.origin.session_id,
             )
         )
 
     async def status(self, status: CompactionStatus) -> None:
+        emitter = self.emitter()
         if status.stage == "started":
-            await self.emitter.publish(
+            await emitter.publish(
                 InvocationCompactionStarted(
-                    origin=self.emitter.origin,
+                    origin=emitter.origin,
                     agent_name=self.name,
                     compaction_id=status.compaction_id,
-                    session_id=self.emitter.origin.session_id,
+                    session_id=emitter.origin.session_id,
                 )
             )
         elif status.stage == "committed":
-            await self.emitter.publish(
+            await emitter.publish(
                 InvocationCompactionCommitted(
-                    origin=self.emitter.origin,
+                    origin=emitter.origin,
                     agent_name=self.name,
                     compaction_id=status.compaction_id,
-                    session_id=self.emitter.origin.session_id,
+                    session_id=emitter.origin.session_id,
                 )
             )
         else:
-            await self.emitter.publish(
+            await emitter.publish(
                 InvocationCompactionFinished(
-                    origin=self.emitter.origin,
+                    origin=emitter.origin,
                     agent_name=self.name,
                     compaction_id=status.compaction_id,
                     outcome=status.outcome,
                     duration_ms=status.duration_ms,
                     format_violation=status.format_violation,
                     failure_reason=status.failure_reason,
-                    session_id=self.emitter.origin.session_id,
+                    session_id=emitter.origin.session_id,
                 )
             )

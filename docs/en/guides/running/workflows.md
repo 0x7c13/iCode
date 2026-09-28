@@ -295,7 +295,7 @@ Each attempt is limited to 120 seconds, with at most three attempts including th
 
 Set `timeout=None` for no execution deadline. Time spent waiting for user answers or tool approval counts toward the timeout, which is why the earlier question example uses `timeout=None`.
 
-Retrying may repeat model calls, tool calls, or file writes. Operations that have already occurred are not automatically undone. Not every error is retried automatically; see [Workflow reference: Timeouts and retries](../../reference/workflows.md#timeouts-and-retries).
+Retrying may repeat model calls, file writes, or an external ACP agent's tool calls. When a non-ACP agent's attempt fails or times out, the retry continues its conversation, so tool calls that already finished do not run again. Operations that have already occurred are not automatically undone. Not every error is retried automatically; see [Workflow reference: Timeouts and retries](../../reference/workflows.md#timeouts-and-retries).
 
 ## Define conditional branches
 

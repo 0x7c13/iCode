@@ -42,6 +42,8 @@ from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig, CompactionConfig, ToolsConfig
+from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.engine.run._engine_run_helpers import (
     _PROFILE,
@@ -53,13 +55,13 @@ from tests.orchestration.engine.run._engine_run_helpers import (
 )
 from tests.support.event_capture import collect_events
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
+from tests.support.scripted_clients import HostedMockChatClient, HostedMockResponse
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for, wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
-    from chrys.service.profiles.models.registry import ModelProfileRegistry
 
 # ---------------------------------------------------------------------------
 # Engine bootstrap
@@ -783,3 +785,55 @@ async def test_multiple_interrupt_retry_notes_stay_in_single_turn(
         if (getattr(m, "additional_properties", None) or {}).get(HistoryMarkerKind.KEY) == HistoryMarkerKind.INTERRUPTED
     ]
     assert len(interrupted) == 0
+
+
+async def test_retry_that_polls_an_empty_background_response_never_creates_its_hosted_work_again(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry polls the response the failed turn left running; when the poll comes back empty, a new request would
+    run the response's hosted call again, so the turn fails instead."""
+    model_registry = ModelProfileRegistry()
+    model_registry.register(
+        ModelProfile(
+            id="mock-profile",
+            name="mock",
+            provider="mock",
+            model_id="mock",
+            stream=True,
+            # Stored responses can keep running in the background after the connection drops.
+            chat_options='{"store": true}',
+        )
+    )
+    started = await started_retry_engine(
+        agent_engine,
+        tmp_path,
+        monkeypatch,
+        client_factory=lambda: HostedMockChatClient(
+            responses=[
+                HostedMockResponse(
+                    hosted=[Content.from_mcp_server_tool_call("mc1", "create_issue")],
+                    continuation_token={"response_id": "resp_1"},
+                    error_after_hosted=ConnectionResetError("connection reset by peer"),
+                ),
+                MockResponse(text=""),
+                MockResponse(text="created again"),
+            ]
+        ),
+        settings=Settings(model_profile="mock-profile", workspace_change_notice=False, max_transient_retries=0),
+        model_registry=model_registry,
+    )
+    bus, engine, (client,) = started.bus, started.engine, started.clients
+
+    await bus.publish(UserMessage(text="File the issue"))
+    await _wait_for_call_count(client, 1)
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+    assert engine.state is EngineState.FAILED
+
+    await bus.publish(UserRetry())
+    await _wait_for_call_count(client, 2)
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+
+    assert engine.state is EngineState.FAILED
+    assert client.call_count == 2
+    _messages, poll_options = client.call_history[1]
+    assert poll_options["continuation_token"] == {"response_id": "resp_1"}

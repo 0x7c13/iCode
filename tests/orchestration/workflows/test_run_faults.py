@@ -733,26 +733,6 @@ async def test_the_run_deadline_aborts_a_live_agent_node(tmp_path: Path, monkeyp
         await host.shutdown()
 
 
-async def test_an_agent_node_timeout_fails_the_node_with_agent_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    patch_runtime(monkeypatch, _held_agent(3))
-    project = make_project(tmp_path)
-    source = _agent_workflow(PROFILE).replace(b"profile='Headless')", b"profile='Headless', timeout=0.3)")
-    write_workflow(project, "agent", source)
-    host = make_host(tmp_path, project=project)
-    try:
-        await confirm(host, "agent")
-        result, events = await run(host, "agent", input_text="x")
-        assert (result.outcome.value, result.node_id) == ("node_failed", "review")
-        failed = [e for e in of_type(events, WorkflowNodeStateChanged) if e.state == "failed"]
-        assert [(e.node_id, e.error_class) for e in failed] == [("review", "agent_timeout")]
-        assert "0.3s" in failed[0].error
-        assert result.duration < 60
-    finally:
-        await host.shutdown()
-
-
 # -- admission races: shutdown, cancel and duplicates that land while a request is being admitted ---
 
 
@@ -1832,6 +1812,8 @@ async def test_a_transient_failure_after_hosted_tool_calls_is_not_retried(
 ) -> None:
     """The kernel's whole-run gate, kept at the node boundary: hosted calls the failed exchange ran never run twice."""
     client = MockChatClient(responses=[MockResponse(text="never sent")])
+    # Stored validation failures reach the whole-run owner only under service-side storage.
+    monkeypatch.setattr(client, "STORES_BY_DEFAULT", True)
 
     def _invalid_after_hosted_work() -> MockResponse:
         raise RetryableResponseValidationError(

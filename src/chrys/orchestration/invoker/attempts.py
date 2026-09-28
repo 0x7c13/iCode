@@ -83,7 +83,7 @@ def _validation_retry_exemption(exc: BaseException) -> RetryAttemptInfo | None:
     )
 
 
-def _has_live_continuation_token(run_kwargs: Mapping[str, object] | None) -> bool:
+def has_live_continuation_token(run_kwargs: Mapping[str, object] | None) -> bool:
     """True when the retry-owned options still reference a live background response."""
     if run_kwargs is None:
         return False
@@ -648,7 +648,7 @@ class AttemptRunner:
         hosted = hosted_commits_from_error(exc)
         if not hosted:
             hosted = self._hosted_commits_probe()
-        if hosted and not _has_live_continuation_token(run_kwargs):
+        if hosted and not has_live_continuation_token(run_kwargs):
             logger.warning(
                 "Not retrying failed attempt: provider-hosted tool call(s) already executed (%s)",
                 ", ".join(hosted),

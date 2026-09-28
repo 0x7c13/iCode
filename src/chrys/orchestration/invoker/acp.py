@@ -26,6 +26,7 @@ from chrys.orchestration.invoker.contracts import (
     ContinuationCapability,
     ContinuationTicket,
     Failed,
+    FailureCategory,
     FailureDisposition,
     InvocationOutcome,
     Ok,
@@ -49,6 +50,7 @@ from chrys.service.acp_client.errors import (
     AcpRefusalError,
     AcpSpawnError,
     AcpTransportError,
+    is_remote_error,
 )
 from chrys.service.acp_client.spec import AcpAgentSpec, AcpPromptUsage
 from chrys.service.trajectory.retries import RetryBackoffTrace
@@ -67,6 +69,10 @@ logger = logging.getLogger(__name__)
 _BACKOFF = (3, 7, 15, 30, 60)
 
 
+# Terminal verdicts a new transport session can still overturn: the connect budget ran out.
+_TRANSPORT_FAILURE_KINDS = frozenset({"sub_agent_acp_setup"})
+
+
 @dataclass(frozen=True, slots=True)
 class AcpExecutionResult:
     """Explicit transport verdict; the caller owns its terminal projection."""
@@ -74,12 +80,19 @@ class AcpExecutionResult:
     text: str
     succeeded: bool
     error_kind: str = ""
+    exception: Exception | None = None
 
     @classmethod
-    def failure(cls, kind: str, message: str) -> AcpExecutionResult:
+    def failure(cls, kind: str, message: str, exception: Exception | None = None) -> AcpExecutionResult:
         safe = surrogate_safe_text(message)
         text = safe if safe.startswith("Error:") else f"Error: {safe}"
-        return cls(text, succeeded=False, error_kind=kind)
+        return cls(text, succeeded=False, error_kind=kind, exception=exception)
+
+    @property
+    def category(self) -> FailureCategory:
+        if self.error_kind in _TRANSPORT_FAILURE_KINDS:
+            return FailureCategory.TRANSPORT
+        return FailureCategory.DEFINITIVE
 
 
 @dataclass(slots=True)
@@ -127,6 +140,8 @@ class AcpConversation:
         self._counters = counters if counters is not None else AcpInvocationCounters()
         self._invocation_id = origin.invocation_id
         self.origin = origin
+        # The admitted request's origin: a later workflow attempt of this invocation publishes as itself.
+        self._pass_origin = origin
         self._emitter = BoundEmitter(event_bus, self.origin)
         self._conversation_id = new_analytics_id()
         self._state_generation = 0
@@ -154,6 +169,8 @@ class AcpConversation:
         self._cancel_watchdog: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._last_error = ""
+        self._last_exception: Exception | None = None
+        self._last_category = FailureCategory.TRANSPORT
         self._diagnostic_path: str | None = None
         self._stop_reason = ""
         self._transcript_final_text: str | None = None
@@ -357,7 +374,7 @@ class AcpConversation:
                 raise asyncio.CancelledError
             self._counters.transport_ordinal += 1
             translator = AcpUpdateTranslator(
-                origin=self.origin,
+                origin=self._pass_origin,
                 event_bus=self._bus,
                 session_id=self._session_id,
                 agent_name=self._agent_name,
@@ -381,7 +398,7 @@ class AcpConversation:
                 spec = self._spec_factory(self._counters.transport_ordinal)
             except (AcpConfigError, ValueError, TypeError) as exc:
                 detail = exc.detail if isinstance(exc, AcpConfigError) else preview_text(exc, limit=500)
-                return self._terminal(AcpExecutionResult.failure("sub_agent_acp_config", detail))
+                return self._terminal(AcpExecutionResult.failure("sub_agent_acp_config", detail, exc))
             self._last_spec = spec
             self._diagnostic_path = str(spec.stderr_log_path)
             client = AcpAgentClient(spec, self._broker, update_sink=translator, wait_controller=self._broker)
@@ -428,6 +445,8 @@ class AcpConversation:
                     return self._terminal(AcpExecutionResult(text, succeeded=True))
                 if outcome.stop_reason == "cancelled":
                     self._last_error = "The ACP agent cancelled the prompt unexpectedly."
+                    self._last_exception = AcpTransportError(self._last_error)
+                    self._last_category = FailureCategory.TRANSPORT
                     return None
                 if outcome.stop_reason == "refusal":
                     return self._terminal(
@@ -448,18 +467,20 @@ class AcpConversation:
                 # provably side-effect-free respawn.
                 if client.stateful_phase_started:
                     self._last_error = connect_failure
+                    self._last_exception = exc
+                    self._last_category = FailureCategory.TRANSPORT
                     await translator.flush_interrupted()
                     self._counters.completed_calls = translator.completed_count
                     return None
                 if connect_index >= self._max_connect_retries:
-                    return self._terminal(AcpExecutionResult.failure("sub_agent_acp_setup", connect_failure))
+                    return self._terminal(AcpExecutionResult.failure("sub_agent_acp_setup", connect_failure, exc))
                 retry_delay = self._backoff[min(connect_index, len(self._backoff) - 1)]
                 self._counters.retry_attempts_total += 1
                 if self._bus is not None:
                     await self._emitter.publish(
                         InvocationRetryAttempt(
                             scope="connection",
-                            origin=self.origin,
+                            origin=self._pass_origin,
                             agent_name=self._agent_name,
                             message=connect_failure,
                             attempt=connect_index + 1,
@@ -469,7 +490,7 @@ class AcpConversation:
                         )
                     )
             except AcpSpawnError as exc:
-                return self._terminal(AcpExecutionResult.failure("sub_agent_acp_spawn", exc.detail))
+                return self._terminal(AcpExecutionResult.failure("sub_agent_acp_spawn", exc.detail, exc))
             except AcpConfigError as exc:
                 # Terminal-flush invariant: any exit that had a translator must
                 # finalize started-but-unresolved tool calls, or a tool update
@@ -478,7 +499,7 @@ class AcpConversation:
                 # a no-op when nothing started (the pre-prompt config/auth cases).
                 await translator.flush_interrupted()
                 self._counters.completed_calls = translator.completed_count
-                return self._terminal(AcpExecutionResult.failure("sub_agent_acp_config", exc.detail))
+                return self._terminal(AcpExecutionResult.failure("sub_agent_acp_config", exc.detail, exc))
             except AcpAuthRequiredError as exc:
                 await translator.flush_interrupted()
                 self._counters.completed_calls = translator.completed_count
@@ -488,15 +509,18 @@ class AcpConversation:
                     AcpExecutionResult.failure(
                         "sub_agent_acp_auth",
                         f"{exc.detail}{suffix} Authenticate via the agent's own CLI.",
+                        exc,
                     )
                 )
             except AcpRefusalError as exc:
                 await translator.flush_interrupted()
                 self._counters.completed_calls = translator.completed_count
-                return self._terminal(AcpExecutionResult.failure("sub_agent_refusal", exc.detail))
+                return self._terminal(AcpExecutionResult.failure("sub_agent_refusal", exc.detail, exc))
             except AcpIdleTimeoutError as exc:
                 usage = exc.usage
                 self._last_error = exc.detail
+                self._last_exception = exc
+                self._last_category = FailureCategory.TRANSPORT
                 if prompt_started:
                     await self._account_usage(self._counters.transport_ordinal, usage, translator)
                 await translator.flush_interrupted()
@@ -507,6 +531,10 @@ class AcpConversation:
             except AcpTransportError as exc:
                 usage = exc.usage
                 self._last_error = exc.detail
+                self._last_exception = exc
+                self._last_category = (
+                    FailureCategory.REMOTE_ERROR if is_remote_error(exc) else FailureCategory.TRANSPORT
+                )
                 if prompt_started:
                     await self._account_usage(self._counters.transport_ordinal, usage, translator)
                 await translator.flush_interrupted()
@@ -613,7 +641,7 @@ class AcpConversation:
         if self._active_handle is not None:
             raise OverlappingRun("ACP operation already has an active pass")
         validate_request(request, ContinuationCapability.FRESH_SESSION)
-        if request.origin != self.origin:
+        if not self.origin.same_invocation(request.origin):
             if request.continuation is not None:
                 raise StaleContinuation("Request belongs to another caller operation")
             raise UnsupportedRequest("Request belongs to another caller operation")
@@ -628,6 +656,10 @@ class AcpConversation:
         self._pass_done = done
         self._pass_stateful = False
         self._pass_cause = None
+        self._pass_origin = request.origin
+        self._emitter = BoundEmitter(self._bus, request.origin)
+        self._last_exception = None
+        self._last_category = FailureCategory.TRANSPORT
         self._prompt = "\n".join(message.text for message in request.messages)
         before = (
             self._counters.input_spend,
@@ -685,6 +717,8 @@ class AcpConversation:
                     continuation=self._ticket,
                     error=self._last_error if result is None else result.text,
                     disposition=FailureDisposition.CALLER_DECISION if result is None else FailureDisposition.TERMINAL,
+                    exception=self._last_exception if result is None else result.exception,
+                    category=self._last_category if result is None else result.category,
                 )
             return Ok(
                 handle=handle,

@@ -11,7 +11,7 @@ import pytest
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
-from chrys.kernel import Content, LoopRecorder, Message
+from chrys.kernel import ChatResponse, Content, LoopRecorder, Message
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
 from chrys.service.acp_client import AcpPromptUsage
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
@@ -68,6 +68,28 @@ def test_cancel_placeholder_does_not_erase_commits_or_count_as_an_answer() -> No
     ]
 
 
+async def test_landed_response_names_only_the_newest_request_once_it_landed() -> None:
+    recorder = LoopRecorder()
+    prompt = [Message("user", [Content.from_text("go")])]
+    assert recorder.landed_response is None
+    before = recorder.snapshot()
+    await recorder.record_pre_call(prompt)
+    assert recorder.landed_response is None
+    landed = Message("assistant", [Content.from_text("one")])
+    recorder.record_response(ChatResponse(messages=[landed]))
+    assert recorder.landed_response is not None
+    assert recorder.landed_response[0].contents[0] is landed.contents[0]
+    # The next request is in flight until its own response lands.
+    await recorder.record_pre_call([*prompt, landed])
+    assert recorder.landed_response is None
+    recorder.record_response(ChatResponse(messages=[landed]))
+    recorder.restore(before)
+    assert recorder.landed_response is None
+    recorder.record_response(ChatResponse(messages=[landed]))
+    recorder.reset()
+    assert recorder.landed_response is None
+
+
 @pytest.mark.parametrize("stream", [False, True])
 async def test_one_hosted_shell_has_two_labels_but_only_one_observed_lower_bound(stream: bool) -> None:
     response = _assistant(
@@ -93,6 +115,46 @@ async def test_one_hosted_shell_has_two_labels_but_only_one_observed_lower_bound
     assert middleware.hosted_commits_in_flight() == ()
     assert middleware.hosted_commits_observed() == labels
     assert fake.call_count == 2
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_in_flight_hosted_work_is_kept_only_by_the_exchange_holding_the_landed_response(stream: bool) -> None:
+    call = Content.from_shell_tool_call(call_id="sh1", commands=["touch output"])
+    result = Content.from_shell_tool_result(call_id="sh1", outputs=[])
+    local_call = Content.from_function_call("c1", "hold", arguments={})
+    context = _make_context(stream=stream)
+    fake = _FakeCallNext([_assistant([call, result, local_call])], stream=stream)
+    fake.bind(context)
+    middleware = ResponseValidationMiddleware(backoff_schedule=[0.0])
+    await middleware.process(context, fake)
+    await _final_response(context, stream=stream)
+    labels = middleware.hosted_commits_in_flight()
+    assert labels == ("shell", "shell_tool_result")
+    prompt = Message("user", [Content.from_text("go")])
+    landed = Message("assistant", [call, result, local_call])
+    interrupted = Message("tool", [Content.from_function_result("c1", result="Error: Tool execution was interrupted.")])
+    assert middleware.hosted_commits_in_flight_unkept([prompt, landed, interrupted], [landed]) == ()
+    # The request is still in flight: whatever the history holds, its response did not land.
+    assert middleware.hosted_commits_in_flight_unkept([prompt, landed, interrupted], None) == labels
+    # The response landed but the kept history ends before it.
+    assert middleware.hosted_commits_in_flight_unkept([prompt], [landed]) == labels
+    # The kept response carries the call without its result.
+    call_only = Message("assistant", [call, local_call])
+    assert middleware.hosted_commits_in_flight_unkept([prompt, call_only, interrupted], [landed]) == labels
+    # An earlier exchange answering an equal call id is other work.
+    earlier = Message(
+        "assistant",
+        [
+            Content.from_shell_tool_call(call_id="sh1", commands=["touch output"]),
+            Content.from_shell_tool_result(call_id="sh1", outputs=[]),
+            Content.from_function_call("c0", "hold", arguments={}),
+        ],
+    )
+    answered_earlier = Message("tool", [Content.from_function_result("c0", result="done")])
+    assert middleware.hosted_commits_in_flight_unkept([prompt, earlier, answered_earlier], [landed]) == labels
+    assert (
+        middleware.hosted_commits_in_flight_unkept([prompt, earlier, answered_earlier, call_only], [landed]) == labels
+    )
 
 
 @pytest.mark.parametrize("second_reported", [False, True])

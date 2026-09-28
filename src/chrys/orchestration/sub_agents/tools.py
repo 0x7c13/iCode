@@ -1806,9 +1806,9 @@ class SubAgentTools:
                         *((begin_web_pass,) if begin_web_pass is not None else ()),
                         _begin_hosted_pass,
                         validation_middleware.reset_service_retry_state,
-                        validation_middleware.reset_hosted_commit_observations,
                     ),
                     hosted_commits_probe=validation_middleware.hosted_commits_observed,
+                    begin_hosted_baseline=validation_middleware.begin_pass_hosted_baseline,
                     trajectory_context=sub_agent_trace.child_context if sub_agent_trace is not None else None,
                     trajectory_boundary_operation_id=(
                         sub_agent_trace.operation_id if sub_agent_trace is not None else None

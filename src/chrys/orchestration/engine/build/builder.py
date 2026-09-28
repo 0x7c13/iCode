@@ -1011,7 +1011,6 @@ async def build_agent(
             run_cycle_start_hooks=(
                 web_tools.begin_pass,
                 validation_middleware.reset_service_retry_state,
-                validation_middleware.reset_hosted_commit_observations,
             ),
             hosted_commits_probe=validation_middleware.hosted_commits_observed,
             hosted_commits_in_flight_probe=validation_middleware.hosted_commits_in_flight,

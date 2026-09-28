@@ -9,6 +9,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalResponse,
@@ -84,7 +85,13 @@ async def test_approvals_keep_the_original_request_across_retries_and_replace_it
     monkeypatch.setattr(ApprovalJudge, "evaluate", evaluate)
     project = make_project(tmp_path)
     write_workflow(project, "review", _workflow())
-    host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.read"])])
+    # No in-place request retry: the timeout fails the pass, and the node's next attempt resumes it.
+    host = make_host(
+        tmp_path,
+        project=project,
+        profiles=[make_profile(builtins=["filesystem.read"])],
+        settings=Settings(model_profile="mock-profile", max_transient_retries=0),
+    )
     requests: list[ApprovalRequest] = []
 
     async def approve(event: ApprovalRequest) -> None:

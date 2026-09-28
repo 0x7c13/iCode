@@ -270,12 +270,12 @@ async def test_agent_gate_covers_construction_and_cancellation_does_not_open_a_q
     opened: list[WorkflowAgentShell] = []
     original = WorkflowAgentShell.open
 
-    async def open_shell(self: WorkflowAgentShell, prompt: str) -> None:
+    async def open_shell(self: WorkflowAgentShell, prompt: str, *, attempt: int = 1) -> None:
         opened.append(self)
         if len(opened) == MAX_CONCURRENT_AGENT_ATTEMPTS:
             occupied.set()
         await release.wait()
-        await original(self, prompt)
+        await original(self, prompt, attempt=attempt)
 
     monkeypatch.setattr(WorkflowAgentShell, "open", create_autospec(original, side_effect=open_shell))
     task = None

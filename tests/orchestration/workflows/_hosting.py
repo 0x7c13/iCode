@@ -101,18 +101,24 @@ def make_host(
     session_id: str | None = None,
     profile_name: str = PROFILE,
     stream: bool = False,
+    chat_options: str = "",
     workspace: Workspace | None = None,
     loaded_settings: LoadedSettings | None = None,
+    settings: Settings | None = None,
     approval_mode: ApprovalMode | None = ApprovalMode.BYPASS,
 ) -> ChrysSessionHost:
     models = ModelProfileRegistry()
-    models.register(ModelProfile(id="mock-profile", name="mock", provider="mock", model_id="mock", stream=stream))
+    models.register(
+        ModelProfile(
+            id="mock-profile", name="mock", provider="mock", model_id="mock", stream=stream, chat_options=chat_options
+        )
+    )
     agents = AgentProfileRegistry()
     for profile in profiles or (make_profile(),):
         agents.register(profile)
     return ChrysSessionHost(
         profile_name=profile_name,
-        settings=None if loaded_settings is not None else Settings(model_profile="mock-profile"),
+        settings=None if loaded_settings is not None else settings or Settings(model_profile="mock-profile"),
         loaded_settings=loaded_settings,
         approval_mode=approval_mode,
         agent_registry=agents,

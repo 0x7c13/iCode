@@ -61,6 +61,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.tool_kinds import KIND_SKILL
 from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
+from chrys.kernel import Content
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
@@ -84,7 +85,7 @@ from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom, HostedMockResponse, hosted_image_result
-from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, await_run_task_chain
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1261,6 +1262,114 @@ async def test_store_true_repeated_pause_retry_clears_each_stale_conversation(
             if (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn") and e.tool_name == "Explore"
         ]
         assert tool_results and "continued after both stored sleeps" in tool_results[-1].result
+    finally:
+        await ctx.cleanup()
+
+
+def _retried_pass_settled(ctx: _SubAgentPipelineCtx) -> list[Event]:
+    """Pauses and the parent's Explore result, in order: a retried pass ends in one or the other."""
+    return [
+        e
+        for e in ctx.events
+        if isinstance(e, InvocationPaused)
+        or (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn" and e.tool_name == "Explore")
+    ]
+
+
+def _options_tokens(ctx: _SubAgentPipelineCtx) -> list[object]:
+    return [options.get("continuation_token") for _messages, options in ctx.sub_client.call_history]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_automatic_retry", [False, True], ids=["first-request", "after-automatic-retry"])
+async def test_retry_that_polls_an_empty_background_response_never_creates_its_hosted_work_again(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, after_automatic_retry: bool
+) -> None:
+    """Retry polls the response the failed pass left running; when the poll comes back empty, a new request would
+    run the response's hosted call again, so the sub-agent pauses again instead. An automatic retry before the
+    response started replaces the request options, and the poll still counts as resuming that response."""
+    leading: list[MockResponse | BaseException] = (
+        [ConnectionResetError("connection reset by peer")] if after_automatic_retry else []
+    )
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("file the issue"), MockResponse(text="Parent saw the failure.")],
+        sub_outcomes=[
+            *leading,
+            HostedMockResponse(
+                hosted=[Content.from_mcp_server_tool_call("mc1", "create_issue")],
+                continuation_token={"response_id": "resp_sub_1"},
+                error_after_hosted=FrameworkBoom("stream dropped"),
+            ),
+            MockResponse(text=""),
+            MockResponse(text="created again"),
+        ],
+        sub_stream=True,
+        sub_responses_store=True,
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (first_pause,) = await ctx.wait_for_event(InvocationPaused)
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=first_pause.origin.invocation_id))
+        await wait_for(
+            lambda: len(_retried_pass_settled(ctx)) >= 2,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the retried pass settled",
+        )
+        second_pause = _retried_pass_settled(ctx)[1]
+        assert isinstance(second_pause, InvocationPaused)
+        assert _options_tokens(ctx) == [*([None] if after_automatic_retry else []), None, {"response_id": "resp_sub_1"}]
+
+        await ctx.bus.publish(InvocationAbortRequested(invocation_id=second_pause.origin.invocation_id))
+        await ctx.wait_for_event(InvocationAborted)
+        await ctx.wait_for_idle()
+        assert ctx.sub_client.call_count == len(leading) + 2
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_an_ended_background_response_keeps_its_transient_retries(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    """The poll that ended the background response settled its hosted work: the user's Retry sends a new request,
+    and a connection failure before any new hosted work is retried as usual."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("file the issue"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            HostedMockResponse(
+                hosted=[Content.from_mcp_server_tool_call("mc1", "create_issue")],
+                continuation_token={"response_id": "resp_sub_1"},
+                error_after_hosted=ConnectionResetError("connection reset by peer"),
+            ),
+            # The automatic retry polls the response, which ends empty: the pass pauses.
+            MockResponse(text=""),
+            ConnectionResetError("connection reset by peer"),
+            MockResponse(text="Filed the issue."),
+        ],
+        sub_stream=True,
+        sub_responses_store=True,
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (first_pause,) = await ctx.wait_for_event(InvocationPaused)
+        assert _options_tokens(ctx) == [None, {"response_id": "resp_sub_1"}]
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=first_pause.origin.invocation_id))
+        await wait_for(
+            lambda: len(_retried_pass_settled(ctx)) >= 2,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the retried pass settled",
+        )
+        assert not isinstance(_retried_pass_settled(ctx)[1], InvocationPaused)
+        await ctx.wait_for_idle()
+
+        assert _explore_result(ctx).result == "Filed the issue."
+        assert _options_tokens(ctx) == [None, {"response_id": "resp_sub_1"}, None, None]
     finally:
         await ctx.cleanup()
 

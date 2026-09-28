@@ -87,6 +87,23 @@ class FailureDisposition(Enum):
     CALLER_DECISION = "caller_decision"
 
 
+class FailureCategory(Enum):
+    """What a backend knows about a failure beyond its exception, for callers that retry by themselves.
+
+    Disposition says who decides what happens next; the category says whether repeating can help.
+    """
+
+    UNCLASSIFIED = "unclassified"
+    """The backend adds nothing: the shared error classifier judges the exception."""
+    TRANSPORT = "transport"
+    """The agent could not be reached, or the connection ended before an answer: a connect failure,
+    an idle timeout, a disconnect, an unexpected exit or an unexpected cancel."""
+    REMOTE_ERROR = "remote_error"
+    """The remote agent reported a failure without saying whether a repeat can succeed."""
+    DEFINITIVE = "definitive"
+    """Configuration, launch, authentication, refusal, truncation or empty output: a repeat ends the same way."""
+
+
 class AbortResult(Enum):
     REQUESTED = "requested"
     ALREADY_CONVERGED = "already_converged"
@@ -208,6 +225,7 @@ class Failed(Outcome):
     disposition: FailureDisposition
     error: str
     exception: Exception | None = None
+    category: FailureCategory = FailureCategory.UNCLASSIFIED
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

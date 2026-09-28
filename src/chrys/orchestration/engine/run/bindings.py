@@ -298,7 +298,7 @@ class TurnBindings:
             compaction_strategy=compaction_strategy,
             recorder=loop_recorder,
             hosted_observed=hosted_commits_probe,
-            start_hooks=tuple(run_cycle_start_hooks),
+            start_hooks=(*run_cycle_start_hooks, self._begin_hosted_baseline),
             failure_disposition=FailureDisposition.CALLER_DECISION,
         )
 
@@ -343,6 +343,12 @@ class TurnBindings:
         # reaching their normal reset paths.
         self.inputs.pending_continuation_token = None
         self._interrupt.reset()
+
+    def _begin_hosted_baseline(self) -> None:
+        if self._response_validation is not None:
+            self._response_validation.begin_pass_hosted_baseline(
+                resumes_background_response=self.inputs.pending_continuation_token is not None
+            )
 
     def _resolve_service_storage(self) -> bool:
         """Return whether the first request uses provider-side history."""

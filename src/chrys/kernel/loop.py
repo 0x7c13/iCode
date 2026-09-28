@@ -493,6 +493,7 @@ class LoopRecorder:
         self._last_checkpoint_key: tuple[int, str] | None = None
         self._sealed_exchanges: list[_SealedExchange] = []
         self._pending_exchange: _PendingExchange | None = None
+        self._landed_response: tuple[Message, ...] | None = None
         self._committed_count = 0
         self._barrier_degraded = False
         self._barrier_unconfigured = False
@@ -506,6 +507,7 @@ class LoopRecorder:
         self._last_checkpoint_key = None
         self._sealed_exchanges = []
         self._pending_exchange = None
+        self._landed_response = None
         self._committed_count = 0
         self._barrier_degraded = False
         self._barrier_warned = False
@@ -525,6 +527,8 @@ class LoopRecorder:
         self._captured = None if snapshot.captured is None else list(snapshot.captured)
         self._service_loop_messages = list(snapshot.service_loop_messages)
         self._last_checkpoint_key = snapshot.last_checkpoint_key
+        # The retried attempt sends its request again.
+        self._landed_response = None
         pending = self._pending_exchange
         if pending is not None and not any(slot.fill_kind in ("raw", "final") for slot in pending.slots):
             self._pending_exchange = None
@@ -576,6 +580,15 @@ class LoopRecorder:
         return None if self._captured is None else len(self._captured)
 
     @property
+    def landed_response(self) -> tuple[Message, ...] | None:
+        """The newest request's response messages as the loop landed them; ``None`` while it is in flight.
+
+        Their Content objects are the ones history keeps, so they tell that request's own exchange apart
+        from earlier ones reusing its call ids.
+        """
+        return self._landed_response
+
+    @property
     def loop_messages(self) -> list[Message] | None:
         """Messages from completed tool loop iterations, or ``None``.
 
@@ -625,6 +638,7 @@ class LoopRecorder:
 
     async def record_pre_call(self, messages: list[Message]) -> None:
         """Snapshot the prepped message list before a wire call."""
+        self._landed_response = None
         if self._initial_count is None:
             self._initial_count = len(messages)
         prev_len = len(self._captured) if self._captured else 0
@@ -664,6 +678,7 @@ class LoopRecorder:
         The loop owns the parsed ``ChatResponse`` for both stream modes, so the
         stream ``result_hook`` side channel of the middleware era is gone.
         """
+        self._landed_response = tuple(response.messages)
         if not self._capture_service_loop_messages:
             return
         for msg in response.messages:

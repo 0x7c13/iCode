@@ -259,6 +259,22 @@ class AgentTranscriptJournal:
         for subscriber in tuple(self._subscribers):
             subscriber.enqueue(operation)
 
+    def continue_from(self, earlier: AgentTranscriptJournal) -> None:
+        """Take *earlier*'s retained transcript as this one's beginning: an attempt resuming another.
+
+        Called on an empty journal before its first operation; live subscribers receive the carried
+        operations in order.
+        """
+        operations = earlier.operations
+        self._operations.extend(operations)
+        self._progress_positions = {
+            call_id: position + len(self._operations) - len(operations)
+            for call_id, position in earlier._progress_positions.items()
+        }
+        for subscriber in tuple(self._subscribers):
+            for operation in operations:
+                subscriber.enqueue(operation)
+
     def finalize_retention(self, *, durable_replay_available: bool) -> None:
         """Seal terminal history, releasing or bounding retained operations.
 

@@ -16,6 +16,7 @@ import pytest
 import chrys.service.acp_client.client as acp_client_module
 import chrys.service.mcp._connection as mcp_connection_module
 from chrys.foundation.events.types import (
+    InvocationResumed,
     InvocationStarted,
     InvocationToolCallResult,
     WorkflowNodeRetryRequest,
@@ -44,6 +45,7 @@ from tests.orchestration.workflows._hosting import (
 )
 from tests.service.mcp.test_cache import _FakeMCPTool
 from tests.support.acp_fixtures import STUB_SCRIPT
+from tests.support.event_capture import capture_event_sequence
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
@@ -154,7 +156,7 @@ async def test_cancellation_while_mcp_shell_opens_disconnects_partial_acquisitio
 @pytest.mark.parametrize(
     "scenario", ["happy", "idle_stall", "deadline", "override", "retry_reused_tool_usage", "timeout_reused_tool_usage"]
 )
-async def test_acp_workflow_completion_cancel_and_manual_retry_reap_processes(
+async def test_acp_workflow_completion_cancel_and_automatic_retry_reap_processes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
     patch_runtime(monkeypatch, [MockChatClient(responses=[])])
@@ -228,10 +230,12 @@ async def test_acp_workflow_completion_cancel_and_manual_retry_reap_processes(
         if event.origin.kind == "workflow_node":
             opening_prompts.append(event.opening_prompt)
 
+    awaiting: list[WorkflowNodeStateChanged] = []
+
     async def retry(event: WorkflowNodeStateChanged) -> None:
+        # A timeout or a remote error retries on its own; a stop for a decision is recorded, then answered.
         if event.state == "awaiting_retry":
-            assert scenario in {"retry_reused_tool_usage", "timeout_reused_tool_usage"}
-            assert all(not process.is_running() for process in processes)
+            awaiting.append(event)
             await host.event_bus.publish(
                 WorkflowNodeRetryRequest(
                     run_id=event.run_id,
@@ -270,6 +274,7 @@ async def test_acp_workflow_completion_cancel_and_manual_retry_reap_processes(
             assert specs[0].model_id == "mock"
             assert prompts == ["Review the input\n\nBe terse."]
         if scenario in {"retry_reused_tool_usage", "timeout_reused_tool_usage"}:
+            assert awaiting == []
             records = [json.loads(line) for line in trace.read_text().splitlines()]
             assert len(records) == len(processes) == 2
             assert records[0]["pid"] != records[1]["pid"]
@@ -397,5 +402,73 @@ async def test_acp_node_value_has_the_extent_the_profile_configured(
         result, _ = await run(host, "external")
         assert result.outcome.value == "completed"
         assert [item.value.text for item in result.outputs] == [expected]
+    finally:
+        await host.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "states"),
+    [
+        (
+            "idle_stall",
+            [
+                ("running", 1, ""),
+                ("retrying", 1, "agent_transient"),
+                ("running", 2, ""),
+                ("failed", 2, "agent_transient"),
+            ],
+        ),
+        ("auth_required", [("running", 1, ""), ("failed", 1, "agent_non_transient")]),
+    ],
+)
+async def test_an_acp_node_retries_a_silent_agent_in_a_fresh_session_but_not_a_login_it_cannot_perform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, states: list[tuple[str, int, str]]
+) -> None:
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    profile = AgentProfile(
+        name="External",
+        acp=AcpAgentConfig(
+            command=sys.executable,
+            args=[str(STUB_SCRIPT)],
+            env={"CHRYS_ACP_STUB_SCENARIO": scenario},
+            idle_timeout_seconds=0.5,
+        ),
+    )
+    processes: list[psutil.Process] = []
+    earlier_alive_at_spawn: list[bool] = []
+    original_spawn = acp_client_module.spawn_acp_process
+
+    async def spawn(spec: AcpAgentSpec) -> AcpSpawnResult:
+        earlier_alive_at_spawn.append(any(process.is_running() for process in processes))
+        result = await original_spawn(spec)
+        processes.append(psutil.Process(result.process.pid))
+        return result
+
+    monkeypatch.setattr(acp_client_module, "spawn_acp_process", create_autospec(original_spawn, side_effect=spawn))
+    project = make_project(tmp_path)
+    write_workflow(
+        project,
+        "external",
+        (
+            b"from chrys.workflows import Retry, WorkflowBuilder\nwf = WorkflowBuilder('agent')\n"
+            b"node = wf.agent('node', profile='External', retry=Retry(max_attempts=2))\n"
+            b"wf.start(node)\nwf.output(node)\nworkflow = wf.build()\n"
+        ),
+    )
+    host = make_host(tmp_path, project=project, profiles=[make_profile(), profile])
+    try:
+        await confirm(host, "external")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged, InvocationResumed) as events:
+            result, _stream = await run(host, "external", input_text="Review the input")
+        assert result.outcome.value == "node_failed"
+        node_states = [event for event in events if isinstance(event, WorkflowNodeStateChanged)]
+        assert [(event.state, event.attempt, event.error_class) for event in node_states] == states
+        attempts = states[-1][1]
+        # Every attempt opens its own session in its own process; none carries an earlier one on.
+        assert len(processes) == len({process.pid for process in processes}) == attempts
+        # A retry spawns its agent only after the failed attempt's process was reaped.
+        assert earlier_alive_at_spawn == [False] * attempts
+        assert all(not process.is_running() for process in processes)
+        assert not [event for event in events if isinstance(event, InvocationResumed)]
     finally:
         await host.shutdown()

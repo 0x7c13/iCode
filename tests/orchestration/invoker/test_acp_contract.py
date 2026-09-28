@@ -15,6 +15,7 @@ from chrys.kernel import Content, Message
 from chrys.orchestration.invoker.contracts import (
     ContinuationCapability,
     Failed,
+    FailureCategory,
     FailureDisposition,
     Ok,
     RunIntent,
@@ -26,6 +27,7 @@ from chrys.orchestration.invoker.contracts import (
     UsageDelta,
 )
 from chrys.orchestration.invoker.evidence import UNKNOWN_COUNT
+from chrys.service.acp_client.errors import AcpTransportError
 from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.orchestration.sub_agents._acp_fakes import make_controller
 from tests.service.acp_client.helpers import make_spec
@@ -83,7 +85,8 @@ async def test_real_acp_remote_cancel_requires_caller_decision(tmp_path: Path) -
         assert isinstance(outcome, Failed)
         assert outcome.disposition is FailureDisposition.CALLER_DECISION
         assert outcome.stop is StopCause.FAILED
-        assert outcome.exception is None
+        assert isinstance(outcome.exception, AcpTransportError)
+        assert outcome.category is FailureCategory.TRANSPORT
         assert outcome.error == "The ACP agent cancelled the prompt unexpectedly."
         assert outcome.continuation is not None
         assert outcome.continuation.capability is ContinuationCapability.FRESH_SESSION
