@@ -6342,6 +6342,24 @@ msgstr ""
 msgid "tui.mcp.command"
 msgstr ""
 
+#. English: Delete
+#. chrys-meta={"fingerprint":"b97a11a66ef7ce18c7aba25e143ede41f2f0eac80ae1529f01c9ff8938188cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.confirm"
+msgstr ""
+
+#. English: Delete MCP server "{name}"?
+#. chrys-meta={"fingerprint":"b6b12e13bb994cc8e4c833fd3c190de4e288d08563e68db40ddfcaa85ba493f9","multiline":true,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.message"
+msgstr ""
+
+#. English: Delete MCP Server
+#. chrys-meta={"fingerprint":"e4cc5c3046e2e04a100b3b4f12f8f416623e7ff96b7e2361522c16c796142dbe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.title"
+msgstr ""
+
 #. English: *The server supports prompt templates, but none are available.*
 #. chrys-meta={"fingerprint":"998c4faa4e70a155c142199f14c6a9384abd54830bd04c119c59811f3da1d998","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
@@ -6709,12 +6727,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"c03c55a22533889c241f1889c3074e0283ca2ea96435810d81782bd105e9a023","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
 msgid "tui.mcp.selected_tool_names"
-msgstr ""
-
-#. English: MCP Server
-#. chrys-meta={"fingerprint":"b4842c56fa280ad58067fad7da77fe4a286afbb89a3a25fcca0fa2b33a9de15f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/mcp.py
-msgid "tui.mcp.server"
 msgstr ""
 
 #. English: Server Name

@@ -34,7 +34,7 @@ from chrys.foundation.trajectory.context import current_tool_operation_id
 from chrys.foundation.trajectory.event_types import WaitCategory
 from chrys.kernel import ChatOptions, Content, Message, normalize_tools
 from chrys.kernel._tool_expansion import _set_tool_expander
-from chrys.kernel.exceptions import ToolException, ToolExecutionException
+from chrys.kernel.exceptions import ModelVisibleToolError, ToolException, ToolExecutionException
 from chrys.kernel.instrumentation import OtelAttr, create_mcp_client_span, set_mcp_span_error
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.tools import FunctionTool
@@ -85,6 +85,10 @@ MCP_DEFAULT_SSE_READ_TIMEOUT = 60 * 5
 _DEFAULT_SAMPLING_MAX_TOKENS = 4096
 _DEFAULT_SAMPLING_MAX_REQUESTS = 25
 SamplingApprovalCallback = Callable[[Any], bool | Awaitable[bool]]
+# ``ErrorData.data`` of the JSON-RPC errors the HTTP transport makes up when its
+# own request fails. Their message is local httpx detail — the configured URL,
+# which can carry credentials, included — not an answer from the server.
+LOCAL_HTTP_FAILURE_ERROR_DATA = "chrys.local_http_failure"
 
 LOG_LEVEL_MAPPING: dict[types.LoggingLevel, int] = {
     "debug": logging.DEBUG,
@@ -188,6 +192,35 @@ def _url_origin(url: Any) -> tuple[str, str, int | None]:
     if port is None:
         port = 443 if url.scheme == "https" else 80 if url.scheme == "http" else None
     return (url.scheme, url.host or "", port)
+
+
+def _server_error(message: str, subject: str, *, inner_exception: Exception | None = None) -> ModelVisibleToolError:
+    """Return the error the model reads for the server's answer to a call: *message*, already bounded.
+
+    A blank message (or one that is only ``Error:``) says so, naming *subject*
+    (``MCP tool 'x'``), rather than leave the model the generic fixed line.
+    """
+    error = ModelVisibleToolError(message, inner_exception=inner_exception)
+    if error.result_text is None:
+        error = ModelVisibleToolError(
+            f"{subject} reported an error without an error message.", inner_exception=inner_exception
+        )
+    return error
+
+
+def _mcp_error_exception(error: Exception, message: str, subject: str) -> ToolExecutionException:
+    """Choose what to raise for a request that ended in *error*, whose bounded text is *message*.
+
+    A JSON-RPC error the server sent back (``-32602 Invalid params``, say) is
+    its answer to this call, and the MCP SDK's own errors (timeout, connection
+    closed) are fixed text, so the model reads either one. The HTTP
+    transport's made-up errors carry local detail and reach only the user.
+    """
+    from mcp.shared.exceptions import McpError
+
+    if isinstance(error, McpError) and error.error.data != LOCAL_HTTP_FAILURE_ERROR_DATA:
+        return _server_error(message, subject, inner_exception=error)
+    return ToolExecutionException(message, inner_exception=error)
 
 
 def _should_propagate_cancelled_error(ex: BaseException) -> bool:
@@ -1099,7 +1132,8 @@ class MCPTool:
                             result=self._parse_content_from_mcp(item.content)
                             if item.content
                             else item.structuredContent,
-                            exception=str(Exception()) if item.isError else None,
+                            # Non-empty: readers take an empty record as no failure.
+                            exception="The MCP tool result is marked isError." if item.isError else None,
                             raw_representation=item,
                         )
                     )
@@ -1208,7 +1242,7 @@ class MCPTool:
             )
 
         if self._tool_task_support_by_name.get(tool_name) == "required":
-            raise ToolExecutionException(
+            raise ModelVisibleToolError(
                 f"MCP tool '{tool_name}' requires long-running task support, which {APP_DISPLAY_NAME} does not implement yet."
             )
 
@@ -1238,16 +1272,22 @@ class MCPTool:
                     await session.call_tool(tool_name, arguments=filtered_kwargs, meta=meta)
                 )
                 if result.isError:
-                    parsed = parser(result)
+                    # With neither content nor structuredContent, skip the parser and its "null"
+                    # placeholder. A structured-only error still parses: the transports' parsers
+                    # turn structuredContent into text when content is empty.
+                    has_payload = bool(result.content) or result.structuredContent is not None
+                    parsed = parser(result) if has_payload else ""
                     text = (
                         "\n".join(c.text for c in parsed if c.type == "text" and c.text)
                         if isinstance(parsed, list)
-                        else str(parsed)
+                        else parsed
                     )
-                    error_text = truncate_mcp_error(text or str(parsed))
+                    # The server's execution error is written for the model to correct its call. With no
+                    # text (only media, links and binary resources, or nothing at all) it says so.
+                    error = _server_error(truncate_mcp_error(text), f"MCP tool '{tool_name}'")
                     if span.is_recording():
-                        set_mcp_span_error(span, "tool_error", error_text)
-                    raise ToolExecutionException(error_text)
+                        set_mcp_span_error(span, "tool_error", error.model_message)
+                    raise error
                 return parser(result)
             except ToolExecutionException:
                 raise
@@ -1262,7 +1302,7 @@ class MCPTool:
                     )
                     if span.is_recording():
                         set_mcp_span_error(span, type(call_ex).__name__, message)
-                    raise ToolExecutionException(message, inner_exception=call_ex) from call_ex
+                    raise _mcp_error_exception(call_ex, message, f"MCP tool '{tool_name}'") from call_ex
 
                 if attempt == 0:
                     try:
@@ -1318,7 +1358,7 @@ class MCPTool:
                 except McpError as mcp_exc:
                     message = truncate_mcp_error(mcp_exc.error.message)
                     set_mcp_span_error(span, type(mcp_exc).__name__, message)
-                    raise ToolExecutionException(message, inner_exception=mcp_exc) from mcp_exc
+                    raise _mcp_error_exception(mcp_exc, message, f"MCP prompt '{prompt_name}'") from mcp_exc
                 except Exception as ex:
                     set_mcp_span_error(span, type(ex).__name__, str(ex))
                     raise ToolExecutionException(f"Failed to call prompt '{prompt_name}'.", inner_exception=ex) from ex

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 from chrys.app.tui.terminal._pty_backend import IS_WINDOWS
+from chrys.foundation.platform.command_line import split_windows_command_line
 
 _POSIX_REPORTS = r"""
 __chrys_b64() { printf "%s" "$1" | base64 | tr -d "\n"; }
@@ -169,7 +170,7 @@ def _split_command(command: str) -> list[str]:
         # A path, spaces and all (C:\Program Files\...), not a command line.
         return [command]
     try:
-        argv = shlex.split(command, posix=not IS_WINDOWS)
+        argv = split_windows_command_line(command) if IS_WINDOWS else shlex.split(command)
     except ValueError:
         argv = []
     return argv or [command]

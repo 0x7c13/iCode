@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from chrys.foundation.errors import clean_error_message
 from chrys.foundation.events.types import (
     InvocationMessage,
     InvocationToolCallProgress,
@@ -63,6 +62,7 @@ from chrys.service.agent_middleware.events.result_persistence import (
     RESULT_SUB_AGENT_LOG_FILE_METADATA_KEY,
     write_result_carriage,
 )
+from chrys.service.agent_middleware.events.tool_error_text import tool_card_error_text
 from chrys.service.mutations.pipeline import (
     abort_mutation_tracking,
     finalize_mutation_tracking,
@@ -504,8 +504,7 @@ class ToolEventMiddleware(FunctionMiddleware):
         except Exception as exc:
             errored = True
             raised_error_kind = type(exc).__name__
-            message = clean_error_message(exc)
-            error_text = message if message.startswith("Error: ") else f"Error: {message}"
+            error_text = tool_card_error_text(exc)
             raise
         except BaseException:
             # CancelledError (BaseException) — the agent task was cancelled by

@@ -19,7 +19,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.tool_call_context import get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, get_tool_kind, set_tool_kind
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, FunctionTool, Message, ResponseStream
-from chrys.kernel.exceptions import ToolExecutionException
+from chrys.kernel.exceptions import ModelVisibleToolError, ToolExecutionException
 from chrys.kernel.middleware import ChatMiddlewareLayer, FunctionInvocationContext
 from chrys.kernel.sessions import SessionContext
 from chrys.service.approval.policy import ApprovalPolicy
@@ -432,12 +432,38 @@ async def test_foreign_same_name_is_not_loaded_or_removed_by_progressive_control
     assert owned not in live
     assert foreign in live
 
-    with pytest.raises(ToolExecutionException, match="Duplicate tool name 'remote'"):
+    # The model reads which name clashed, not a bare "Function failed".
+    with pytest.raises(ModelVisibleToolError) as info:
         await load_tool.func(
             FunctionInvocationContext(function=load_tool, arguments={}, tools=live),
             tool="remote",
         )
+    assert info.value.model_message == (
+        "Cannot load 'remote': another tool already has that name, so none of the requested MCP tools were loaded."
+    )
     assert [tool for tool in live if tool.name == "remote"] == [foreign]
+
+    await adapter.disconnect_all()
+
+
+async def test_load_clash_with_a_function_tool_mapping_names_the_tool() -> None:
+    remote = _function("remote")
+    adapter, _fake, initial = await _connected(remote)
+    _list_tool, load_tool, _unload_tool = initial
+    # add_tools also rejects a name a provider-style function-tool mapping declares.
+    declared = {"type": "function", "function": {"name": "remote", "parameters": {"type": "object"}}}
+    live = [*initial, declared]
+
+    with pytest.raises(ModelVisibleToolError) as info:
+        await load_tool.func(
+            FunctionInvocationContext(function=load_tool, arguments={}, tools=live),
+            tool="remote",
+        )
+
+    assert info.value.model_message == (
+        "Cannot load 'remote': another tool already has that name, so none of the requested MCP tools were loaded."
+    )
+    assert live == [*initial, declared]
 
     await adapter.disconnect_all()
 

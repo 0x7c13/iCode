@@ -5,8 +5,11 @@
 ``ToolLoopLayer`` owns per-run middleware pipelines, dispatch, result assembly,
 continuation state and interrupt-recovery recording. Approval middleware
 controls tool admission; ``MiddlewareTermination`` stops execution.
-Execution exceptions return short messages, while argument-validation errors
-include safe schema guidance without echoing the full argument payload.
+A tool that raises answers the model with a fixed ``Error: Function failed.``
+unless it raised ``ModelVisibleToolError``, whose message the model reads;
+argument-validation errors include safe schema guidance without echoing the
+full argument payload. Every failed result also records the exception tree in
+its ``exception`` field, which never goes on the wire.
 
 The loop owns invocation logs and per-tool spans. Raw arguments and results
 are logged only when ``TELEMETRY_GATE.sensitive_data`` is set; spans require
@@ -116,6 +119,7 @@ from ._types import (
     ResponseStream,
 )
 from .client import _wire_message_view, resolve_storage_mode_and_handles, start_with_wire_progress
+from .exceptions import ChrysException, tool_error_result_text
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
 from .instrumentation import (
@@ -1548,6 +1552,91 @@ def _stamp_call_provenance(function_call: Content, tool: FunctionTool) -> None:
         props[TOOL_CALL_CONTEXT_METADATA_KEY] = dict(static)
 
 
+# The failure record is saved with the session and exported to telemetry: a long
+# cause chain, a large exception group or a message that embeds a response body
+# must not bloat either. Each message is clipped before the record is joined, the
+# exception cap also bounds the record's recursion, and the total cap is the backstop.
+_FAILURE_RECORD_MAX_EXCEPTIONS = 16
+_FAILURE_RECORD_MAX_MESSAGE_CHARS = 1000
+_FAILURE_RECORD_MAX_CHARS = 4000
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
+def _exception_message(exc: BaseException) -> str:
+    """Return *exc*'s own message, clipped for the failure record.
+
+    ``str()`` of a ChrysException built with an ``inner_exception`` is the repr
+    of its args tuple, and a KeyError's is quoted; both hold the message itself
+    as their first argument. A ``__str__`` that raises must not stop the call
+    from becoming a failed result, so it records what a traceback would.
+    """
+    if isinstance(exc, ChrysException | KeyError) and exc.args and isinstance(exc.args[0], str):
+        message = exc.args[0]
+    else:
+        try:
+            message = str(exc)
+        except Exception:
+            message = "<exception str() failed>"
+    return _clip(message.strip(), _FAILURE_RECORD_MAX_MESSAGE_CHARS)
+
+
+def _exception_causes(exc: BaseException) -> list[BaseException]:
+    """Return what *exc* was explicitly raised from and, when it differs, the ``inner_exception`` a ChrysException wraps."""
+    causes = [] if exc.__cause__ is None else [exc.__cause__]
+    if isinstance(exc, ChrysException) and len(exc.args) > 1:
+        inner = exc.args[1]
+        if isinstance(inner, BaseException) and inner is not exc.__cause__:
+            causes.append(inner)
+    return causes
+
+
+def _failure_record_text(exc: BaseException) -> str:
+    """Return the ``exception`` a failed result records: ``Type: message`` for *exc* and everything it came from.
+
+    The record is a tree, ``Type: message [member; …] (caused by cause; …)``:
+    an exception group lists its members in brackets (its ``str()`` only
+    counts them), and the causes are ``raise … from`` plus a ChrysException's
+    ``inner_exception`` when that is a different exception. It follows only
+    these explicit links, never the implicit ``__context__`` of whatever was
+    being handled when the tool raised — unlike ``foundation.errors``' linear
+    chain walk, which reads that context to classify retryable errors.
+
+    The record is for people reading a saved session, never for the model. It
+    is never empty: readers take a non-empty record to mean the call failed.
+    """
+    seen: set[int] = set()
+
+    def describe(current: BaseException) -> str:
+        seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            message = _clip(current.message.strip(), _FAILURE_RECORD_MAX_MESSAGE_CHARS)
+            members = describe_each(current.exceptions)
+        else:
+            message = _exception_message(current)
+            members = ""
+        text = f"{type(current).__name__}: {message}" if message else type(current).__name__
+        if members:
+            text = f"{text} [{members}]"
+        causes = describe_each(_exception_causes(current))
+        return f"{text} (caused by {causes})" if causes else text
+
+    def describe_each(exceptions: Sequence[BaseException]) -> str:
+        parts: list[str] = []
+        for member in exceptions:
+            if id(member) in seen:
+                continue
+            if len(seen) >= _FAILURE_RECORD_MAX_EXCEPTIONS:
+                parts.append("…")
+                break
+            parts.append(describe(member))
+        return "; ".join(parts)
+
+    return _clip(describe(exc), _FAILURE_RECORD_MAX_CHARS)
+
+
 def _result_additional_properties(
     function_call: Content,
     invocation_context: FunctionInvocationContext | None = None,
@@ -1729,8 +1818,10 @@ async def _invoke_function_call(
 ) -> Content:
     """Invoke one model-requested function call through the middleware pipeline.
 
-    Execution exceptions use short messages. Argument-validation failures
-    include safe schema guidance so the model can repair its next call.
+    A raised exception answers the model with ``tool_error_result_text``: a
+    fixed line, or a ``ModelVisibleToolError``'s own message. Argument-validation
+    failures include safe schema guidance so the model can repair its next call.
+    Each failed result records ``_failure_record_text`` as its ``exception``.
     """
     from .middleware import FunctionInvocationContext
 
@@ -1749,7 +1840,7 @@ async def _invoke_function_call(
         result = Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
             result=f"Error: {message}",
-            exception=str(exc),
+            exception=_failure_record_text(exc),
             additional_properties=additional,
         )
         await _record_unexecuted_tool_operation(
@@ -1855,7 +1946,7 @@ async def _invoke_function_call(
         result = Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
             result=f"Error: {message}",
-            exception=str(exc),
+            exception=_failure_record_text(exc),
             additional_properties=additional,
         )
         await _record_unexecuted_tool_operation(
@@ -2067,8 +2158,10 @@ async def _invoke_function_call(
         )
         return Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
-            result="Error: Function failed.",
-            exception=str(exc),
+            result=tool_error_result_text(exc),
+            # Never None: it marks the result failed for the consecutive-error
+            # count and the providers' error flag, whatever the model reads.
+            exception=_failure_record_text(exc),
             additional_properties=_result_additional_properties(function_call, context),
         )
     finally:

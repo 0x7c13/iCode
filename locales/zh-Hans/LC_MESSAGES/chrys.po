@@ -6521,6 +6521,26 @@ msgstr "绕过代理"
 msgid "tui.mcp.command"
 msgstr "命令"
 
+#. English: Delete
+#. chrys-meta={"fingerprint":"b97a11a66ef7ce18c7aba25e143ede41f2f0eac80ae1529f01c9ff8938188cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.confirm"
+msgstr "删除"
+
+#. English: Delete MCP server "{name}"?
+#. chrys-meta={"fingerprint":"b6b12e13bb994cc8e4c833fd3c190de4e288d08563e68db40ddfcaa85ba493f9","multiline":true,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.message"
+msgstr ""
+"删除 MCP 服务器\n"
+"“{name}”？"
+
+#. English: Delete MCP Server
+#. chrys-meta={"fingerprint":"e4cc5c3046e2e04a100b3b4f12f8f416623e7ff96b7e2361522c16c796142dbe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.title"
+msgstr "删除 MCP 服务器"
+
 #. English: *The server supports prompt templates, but none are available.*
 #. chrys-meta={"fingerprint":"998c4faa4e70a155c142199f14c6a9384abd54830bd04c119c59811f3da1d998","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
@@ -6893,12 +6913,6 @@ msgstr "MCP 请求超时（秒）"
 #: src/chrys/app/tui/screens/agents/validation_messages.py
 msgid "tui.mcp.selected_tool_names"
 msgstr "所选工具名称"
-
-#. English: MCP Server
-#. chrys-meta={"fingerprint":"b4842c56fa280ad58067fad7da77fe4a286afbb89a3a25fcca0fa2b33a9de15f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/mcp.py
-msgid "tui.mcp.server"
-msgstr "MCP 服务器"
 
 #. English: Server Name
 #. chrys-meta={"fingerprint":"6855b8e392abfe36947b1dd02f989aaa25df98b7f41950b1ab13c4c9412ba14b","multiline":false,"placeholders":[]}

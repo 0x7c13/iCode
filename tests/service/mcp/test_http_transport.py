@@ -23,7 +23,7 @@ from chrys.service.mcp._http_transport import (
     _HTTPMCPTool,
 )
 from chrys.service.mcp.adapter import MCPAdapter
-from chrys.service.mcp.owned import MCPStreamableHTTPTool, _mcp_call_headers
+from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool, _mcp_call_headers
 from chrys.service.profiles.agents.schema import MCPServerConfig
 from tests.service.mcp._helpers import block_import
 
@@ -122,6 +122,8 @@ async def test_streamable_http_post_failure_wakes_pending_request() -> None:
     assert error.id == 7
     assert error.error.code == CONNECTION_CLOSED
     assert "post exploded" in error.error.message
+    # Marked local, so the tool loop never hands this detail to the model.
+    assert error.error.data == LOCAL_HTTP_FAILURE_ERROR_DATA
     assert terminated == [("sess-1", client)]
 
 

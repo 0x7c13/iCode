@@ -13,6 +13,7 @@ doubles in ``_fakes.py``.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import TYPE_CHECKING, Annotated
 
 import pytest
@@ -32,6 +33,7 @@ from chrys.foundation.trajectory.metadata import (
 )
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from chrys.kernel import AgentSession, FunctionTool, tool
+from chrys.kernel.exceptions import ModelVisibleToolError, ToolExecutionException
 from chrys.kernel.loop import (
     DEFAULT_MAX_CONSECUTIVE_ERRORS,
     DEFAULT_MAX_ITERATIONS,
@@ -185,6 +187,25 @@ class TestStackAndDelegation:
 # ---------------------------------------------------------------------------
 # Non-streaming loop
 # ---------------------------------------------------------------------------
+
+
+def _raised_from(exc: BaseException, cause: BaseException) -> BaseException:
+    """Return *exc* as ``raise exc from cause`` leaves it."""
+    exc.__cause__ = cause
+    return exc
+
+
+def _wrapping(message: str, inner: Exception) -> BaseException:
+    """Return what ``raise ToolExecutionException(message, inner_exception=inner) from inner`` raises."""
+    return _raised_from(ToolExecutionException(message, inner_exception=inner), inner)
+
+
+def _cause_chain(depth: int) -> BaseException:
+    """Return ``RuntimeError: <depth - 1>``, each raised from the next lower number down to ``OSError: 0``."""
+    exc: BaseException = OSError("0")
+    for number in range(1, depth):
+        exc = _raised_from(RuntimeError(str(number)), exc)
+    return exc
 
 
 class TestNonStreamingLoop:
@@ -440,6 +461,230 @@ class TestNonStreamingLoop:
         # The error result is still submitted before the final turn.
         assert "Error: Function failed." in str(_result_contents(response)[0].result)
         assert response.messages[-1].contents[0].text == "recovered"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("message", "model_reads"),
+        [
+            (
+                "ENOENT: 'a.txt' not found. Did you mean 'b.txt'?",
+                "Error: ENOENT: 'a.txt' not found. Did you mean 'b.txt'?",
+            ),
+            ("Error: field 'owner' is required", "Error: field 'owner' is required"),
+            ("Error:field 'owner' is required", "Error: field 'owner' is required"),
+            ("Errors: 2 fields are required", "Error: Errors: 2 fields are required"),
+            ("  bad name \udcff\n", "Error: bad name \\udcff"),
+            (" \n", "Error: Function failed."),
+            ("Error: ", "Error: Function failed."),
+        ],
+        ids=[
+            "message",
+            "already-prefixed",
+            "prefixed-without-space",
+            "starts-with-another-word",
+            "stripped-and-surrogate-safe",
+            "blank-falls-back",
+            "bare-prefix-falls-back",
+        ],
+    )
+    async def test_model_visible_tool_error_hands_its_message_to_the_model(
+        self, message: str, model_reads: str
+    ) -> None:
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise ModelVisibleToolError(message, inner_exception=RuntimeError("/home/me/.secret"))
+
+        layer, wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        (result,) = _result_contents(response)
+        assert result.result == model_reads
+        # The inner exception reaches telemetry, never the model.
+        assert result.exception is not None and "/home/me/.secret" in result.exception
+        (sent,) = [c for m in wire.calls[1]["messages"] for c in m.contents if c.type == "function_result"]
+        assert sent.result == model_reads
+
+    @pytest.mark.asyncio
+    async def test_model_visible_tool_error_counts_toward_the_consecutive_error_cap(self) -> None:
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise ModelVisibleToolError("owner is required")
+
+        layer, wire = _stack(
+            [_call_response(("c1", "boom", {"text": "x"})), _text_response("recovered")],
+            max_consecutive_errors=1,
+        )
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        assert wire.calls[1]["options"].get("tool_choice") == "none"
+        assert _result_contents(response)[0].result == "Error: owner is required"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raised", "record"),
+        [
+            (RuntimeError("kaput"), "RuntimeError: kaput"),
+            (RuntimeError(), "RuntimeError"),
+            (KeyError("missing"), "KeyError: missing"),
+            (
+                ToolExecutionException("Failed to reconnect.", inner_exception=OSError("refused")),
+                "ToolExecutionException: Failed to reconnect. (caused by OSError: refused)",
+            ),
+            (
+                _wrapping("Failed to call tool 'remote'.", _raised_from(ValueError("bad frame"), OSError("closed"))),
+                (
+                    "ToolExecutionException: Failed to call tool 'remote'. "
+                    "(caused by ValueError: bad frame (caused by OSError: closed))"
+                ),
+            ),
+            (
+                # MCP's reconnect: raised from the ping failure, wrapping the reconnect failure.
+                _raised_from(
+                    ToolExecutionException(
+                        "Failed to establish MCP connection.",
+                        inner_exception=PermissionError("reconnect authentication denied"),
+                    ),
+                    ConnectionError("ping failed"),
+                ),
+                (
+                    "ToolExecutionException: Failed to establish MCP connection. "
+                    "(caused by ConnectionError: ping failed; PermissionError: reconnect authentication denied)"
+                ),
+            ),
+            (
+                # str() of a group only counts its members: the record lists each one.
+                ExceptionGroup(
+                    "unhandled errors in a TaskGroup",
+                    [ValueError("bad protocol bytes"), _raised_from(RuntimeError("closed"), OSError("reset"))],
+                ),
+                (
+                    "ExceptionGroup: unhandled errors in a TaskGroup "
+                    "[ValueError: bad protocol bytes; RuntimeError: closed (caused by OSError: reset)]"
+                ),
+            ),
+            (
+                ToolExecutionException(
+                    "Failed to call tool 'remote'.",
+                    inner_exception=ExceptionGroup("outer", [ExceptionGroup("inner", [KeyError("k")])]),
+                ),
+                (
+                    "ToolExecutionException: Failed to call tool 'remote'. "
+                    "(caused by ExceptionGroup: outer [ExceptionGroup: inner [KeyError: k]])"
+                ),
+            ),
+        ],
+        ids=[
+            "message",
+            "empty-message",
+            "key-error-unquoted",
+            "inner-exception",
+            "cause-chain",
+            "cause-and-inner-exception-differ",
+            "exception-group-members",
+            "nested-exception-groups",
+        ],
+    )
+    async def test_failed_call_records_type_and_message_of_each_cause(self, raised: Exception, record: str) -> None:
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise raised
+
+        layer, _wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        (result,) = _result_contents(response)
+        assert result.exception == record
+        assert result.result == "Error: Function failed."
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raised", "record"),
+        [
+            (
+                ExceptionGroup("many", [ValueError(str(number)) for number in range(40)]),
+                "ExceptionGroup: many [{}; …]".format("; ".join(f"ValueError: {number}" for number in range(15))),
+            ),
+            (
+                # Deeper than the recursion limit: the exception cap also bounds the walk.
+                _cause_chain(2000),
+                functools.reduce(
+                    lambda cause, number: f"RuntimeError: {number} (caused by {cause})", range(1984, 2000), "…"
+                ),
+            ),
+            (RuntimeError("x" * 10_000), f"RuntimeError: {'x' * 999}…"),
+            (
+                # Each message is clipped on its own, so a huge first one can't crowd out its causes.
+                _raised_from(RuntimeError("a" * 10_000), _raised_from(ValueError("b" * 10_000), OSError("c" * 10_000))),
+                f"RuntimeError: {'a' * 999}… (caused by ValueError: {'b' * 999}… (caused by OSError: {'c' * 999}…))",
+            ),
+            (
+                ExceptionGroup("g" * 10_000, [KeyError("k")]),
+                f"ExceptionGroup: {'g' * 999}… [KeyError: k]",
+            ),
+        ],
+        ids=["many-group-members", "deep-cause-chain", "long-message", "each-message-clipped", "long-group-message"],
+    )
+    async def test_failure_record_is_bounded(self, raised: Exception, record: str) -> None:
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise raised
+
+        layer, _wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        assert _result_contents(response)[0].exception == record
+
+    @pytest.mark.asyncio
+    async def test_failure_record_is_capped_as_a_whole(self) -> None:
+        # Fifteen clipped messages still add up to more than the whole-record cap.
+        group = ExceptionGroup("many long", [ValueError(f"{number} " + "v" * 2000) for number in range(20)])
+
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise group
+
+        layer, _wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        record = _result_contents(response)[0].exception
+        assert record is not None
+        assert len(record) == 4000
+        assert record.startswith(f"ExceptionGroup: many long [ValueError: 0 {'v' * 997}…; ValueError: 1 ")
+        assert record.endswith("…")
+
+    @pytest.mark.asyncio
+    async def test_cause_whose_str_raises_still_yields_a_failed_result(self) -> None:
+        class _Unprintable(Exception):
+            def __str__(self) -> str:
+                raise RuntimeError("no text")
+
+        @tool(name="boom")
+        async def boom(text: str) -> str:
+            raise _wrapping("Failed to call tool 'remote'.", _Unprintable())
+
+        layer, _wire = _stack([_call_response(("c1", "boom", {"text": "x"})), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [boom]})
+
+        (result,) = _result_contents(response)
+        assert result.result == "Error: Function failed."
+        assert result.exception == (
+            "ToolExecutionException: Failed to call tool 'remote'. (caused by _Unprintable: <exception str() failed>)"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("call", "record"),
+        [
+            (("c1", "ghost", {}), 'KeyError: Function "ghost" not found.'),
+            (("c1", "echo", {"wrong_arg": 1}), "TypeError: Unexpected argument(s) for 'echo'."),
+        ],
+        ids=["unknown-tool", "unexpected-argument"],
+    )
+    async def test_rejected_call_records_why(self, call: tuple[str, str, dict[str, int]], record: str) -> None:
+        layer, _wire = _stack([_call_response(call), _text_response()])
+        response = await layer.get_response([_user()], options={"tools": [_make_tool()]})
+
+        assert _result_contents(response)[0].exception == record
 
     @pytest.mark.asyncio
     async def test_ceiling_preserves_unknown_tool_failure_for_consecutive_error_cap(self) -> None:

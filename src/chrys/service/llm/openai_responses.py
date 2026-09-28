@@ -2428,10 +2428,10 @@ class RawOpenAIChatClient(BaseChatClient):
             payload = {
                 "stdout": "" if content.result is None else str(content.result),
             }
-        if content.exception is not None and "stderr" not in payload:
-            payload["stderr"] = str(content.exception)
+        # A failed call's ``exception`` is a record for people, never for the
+        # model: stdout already carries the error result the model reads.
         if "exit_code" not in payload:
-            payload["exit_code"] = 1 if content.exception else 0
+            payload["exit_code"] = 1 if content.exception is not None else 0
         return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod
@@ -2444,15 +2444,14 @@ class RawOpenAIChatClient(BaseChatClient):
             payload = {
                 "stdout": "" if content.result is None else str(content.result),
             }
-        if content.exception is not None and "stderr" not in payload:
-            payload["stderr"] = str(content.exception)
-
         # Pass through native payload shape when tool already returns shell output entries.
         direct_output = payload.get("output")
         if isinstance(direct_output, list) and all(isinstance(item, Mapping) for item in direct_output):  # type: ignore[reportUnknownMemberType]
             return [dict(item) for item in direct_output]  # type: ignore[reportUnknownMemberType]
 
         stdout = str(payload.get("stdout", ""))
+        # Only what the tool returned: a failed call's ``exception`` is a record
+        # for people, never for the model, whose error result is in stdout.
         stderr = str(payload.get("stderr", ""))
         timed_out = bool(payload.get("timed_out", False))
         if timed_out:
@@ -2460,9 +2459,11 @@ class RawOpenAIChatClient(BaseChatClient):
         else:
             exit_code_raw = payload.get("exit_code")
             try:
-                exit_code = int(exit_code_raw) if exit_code_raw is not None else (1 if content.exception else 0)
+                exit_code = (
+                    int(exit_code_raw) if exit_code_raw is not None else (1 if content.exception is not None else 0)
+                )
             except TypeError, ValueError:
-                exit_code = 1 if content.exception else 0
+                exit_code = 1 if content.exception is not None else 0
             outcome = {"type": "exit", "exit_code": exit_code}
         return [
             {

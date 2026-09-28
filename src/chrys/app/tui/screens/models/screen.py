@@ -25,7 +25,7 @@ from textual.widgets import Button, Label, OptionList, Static
 from textual.widgets.option_list import Option, OptionDoesNotExist
 
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
-from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
@@ -1545,7 +1545,7 @@ class ModelConfigScreen(BaseDialog[str]):
             message=_DELETE_PROFILE_MESSAGE.bind(display=display),
             confirm_label=_DELETE.bind(),
             confirm_variant="error",
-            locale_controller=getattr(self.app, "locale_controller", None),
+            locale_controller=widget_locale_controller(self),
         )
 
         async def _on_confirmed(confirmed: bool | None) -> None:

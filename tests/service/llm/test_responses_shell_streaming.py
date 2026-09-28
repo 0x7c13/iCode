@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
+from openai.types.responses import ResponseFunctionShellToolCall, ResponseOutputItemDoneEvent
+from openai.types.responses.response_function_shell_tool_call import Action as ShellCallAction
+from openai.types.responses.response_output_item import LocalShellCall, LocalShellCallAction
 
 from chrys.kernel import Content, Message
 from chrys.service.llm.openai_responses import RawOpenAIChatClient
@@ -122,6 +126,58 @@ def test_streaming_local_shell_result_serializes_as_local_shell_output(
     assert prepared[0]["type"] == "local_shell_call_output"
     assert prepared[0]["id"] == "call_1"
     assert prepared[0]["output"] == '{"stdout": "ok", "exit_code": 0}'
+
+
+@pytest.mark.parametrize(
+    ("item", "output"),
+    [
+        (
+            LocalShellCall(
+                type="local_shell_call",
+                id="lsc_1",
+                call_id="call_1",
+                action=LocalShellCallAction(type="exec", command=["echo", "hi"], env={}, timeout_ms=1000),
+                status="completed",
+            ),
+            '{"stdout": "Error: Function failed.", "exit_code": 1}',
+        ),
+        (
+            ResponseFunctionShellToolCall(
+                type="shell_call",
+                id="sh_1",
+                call_id="call_1",
+                action=ShellCallAction(commands=["echo hi"], timeout_ms=1000, max_output_length=None),
+                status="completed",
+            ),
+            [{"stdout": "Error: Function failed.", "stderr": "", "outcome": {"type": "exit", "exit_code": 1}}],
+        ),
+    ],
+    ids=["local_shell_call", "shell_call"],
+)
+def test_failed_local_shell_result_keeps_its_exception_record_off_the_wire(
+    item: LocalShellCall | ResponseFunctionShellToolCall, output: object
+) -> None:
+    async def run_shell(command: str) -> str:
+        return f"ran {command}"
+
+    client = _client()
+    tool = RawOpenAIChatClient.get_shell_tool(func=run_shell, name="bash")
+    done = ResponseOutputItemDoneEvent(type="response.output_item.done", item=item, output_index=0, sequence_number=0)
+    update = client._parse_chunk_from_openai(done, {"tools": [tool]}, {})
+    call = update.contents[0]
+    result = Content.from_function_result(
+        call_id=call.call_id,
+        result="Error: Function failed.",
+        exception="ToolExecutionException: Failed. (caused by OSError: /home/me/.secret)",
+        additional_properties=call.additional_properties,
+    )
+
+    prepared = client._prepare_messages_for_openai(
+        [Message(role="tool", contents=[result])], request_uses_service_side_storage=False
+    )
+
+    assert prepared[0]["output"] == output
+    assert "/home/me/.secret" not in json.dumps(prepared)
 
 
 async def test_stored_local_shell_result_keeps_request_input() -> None:
