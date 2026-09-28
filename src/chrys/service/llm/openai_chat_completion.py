@@ -71,6 +71,7 @@ from chrys.service.llm._structured_outputs import (
 )
 from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
+from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
 from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
 
 logger = logging.getLogger(__name__)
@@ -511,7 +512,7 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
 
     INJECTABLE: ClassVar[set[str]] = {"client"}
 
-    TOKEN_LIMIT_PARAM: ClassVar[str] = "max_completion_tokens"
+    TOKEN_LIMIT_PARAM: ClassVar[str] = CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS["openai"]
     """Wire name of the output-token cap.
 
     Real OpenAI hard-rejects the legacy ``max_tokens`` spelling on current

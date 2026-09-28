@@ -45,6 +45,8 @@ class WorkflowController:
         self.closed = False
         self.generation = 0
         self._refresh_pending = False
+        # refresh() found the panel displayed but not yet placed on the screen.
+        self._refresh_after_layout = False
         self._tasks: set[asyncio.Task] = set()
         self.feedback = WorkflowFeedback(
             panel=panel,
@@ -124,6 +126,7 @@ class WorkflowController:
 
     def leave(self) -> None:
         self.generation += 1
+        self._refresh_after_layout = False
         self.browser.leave()
         self.run_control.leave()
         self.session_view.leave()
@@ -201,7 +204,11 @@ class WorkflowController:
             self.feedback.present_notice(over=self.browser.picker)
             return
         if not is_widget_shown_on_active_screen(panel):
+            # A panel shown from a dialog callback is displayed before the
+            # layout that places it; that layout finishes this refresh.
+            self._refresh_after_layout = True
             return
+        self._refresh_after_layout = False
         if self.feedback.present_pending():
             return
         execution = self.execution()
@@ -217,6 +224,12 @@ class WorkflowController:
         panel.show_status(run)
         self.session_view.content.project(run)
         self.feedback.present_notice(over=self.browser.picker)
+
+    def screen_layout_refreshed(self) -> None:
+        """Finish a refresh that ran before a screen layout placed the panel."""
+        if self._refresh_after_layout and is_widget_shown_on_active_screen(self.panel):
+            self._refresh_after_layout = False
+            self.request_refresh()
 
     def shown(self) -> None:
         self.browser.check_preview(force=True)

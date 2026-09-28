@@ -8,7 +8,6 @@ each message type: user, agent, tool calls, context folds, errors, etc.
 
 from __future__ import annotations
 
-import asyncio
 import itertools
 import logging
 from collections.abc import Awaitable, Callable
@@ -23,7 +22,7 @@ from textual.dom import NoScreen
 from textual.geometry import Offset, Region, Size
 from textual.message import Message
 from textual.reactive import reactive
-from textual.scrollbar import ScrollTo
+from textual.scrollbar import ScrollBar, ScrollDown, ScrollTo, ScrollUp
 from textual.timer import Timer
 from textual.widget import Widget
 
@@ -63,6 +62,7 @@ from chrys.app.tui.widgets.chat.ports import ChatTranscriptPanelMarker, Transcri
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineResized, AskUserToolCall
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.replay import HistoryReplayRenderer
+from chrys.app.tui.widgets.chat.replay_mount import ReplayMountController
 from chrys.app.tui.widgets.chat.scroll_controller import ChatScrollController
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
@@ -81,7 +81,6 @@ _ScrollToBottomButton = ScrollToBottomButton
 # geometry for widgets outside the viewport. A process-wide counter keeps
 # stamps monotonic across session resets and multiple panels.
 _transcript_seq_counter = itertools.count(1)
-_REPLAY_MOUNT_BATCH_SIZE = 32
 _REPLAY_PLACEHOLDER_CLASS = "-replay-placeholder"
 
 
@@ -165,6 +164,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             tool_widget_configurator=self._configure_tool_widget,
         )
         self._transcript_reader = TranscriptReader(self)
+        self._replay_mount = ReplayMountController(self)
         if cwd:
             self.workspace_cwd = cwd
 
@@ -433,6 +433,12 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         mounted through this panel."""
         return self._transcript_seqs.get(widget)
 
+    def stamp_transcript_order(self, widgets: list[Widget]) -> None:
+        """Stamp document order up front for entries mounted newest first."""
+        for widget in widgets:
+            if widget not in self._transcript_seqs:
+                self._transcript_seqs[widget] = next(_transcript_seq_counter)
+
     def on_mount(self) -> None:
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
@@ -448,6 +454,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def _on_scrollbar_grabbed_changed(self, grabbed: object) -> None:
         """Map scrollbar grab state onto the gesture-scoped GC pause."""
         if grabbed is not None:
+            self.note_user_scroll()
             self._scroll_controller.on_scrollbar_grab()
         else:
             self._scroll_controller.on_scrollbar_release()
@@ -455,6 +462,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def on_unmount(self) -> None:
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
+        self._replay_mount.abandon()
         self._scroll_controller.stop()
 
     def refresh_localization(self) -> None:
@@ -521,7 +529,16 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def jump_to_bottom(self) -> None:
         """Scroll to the current bottom and resume bottom-follow."""
+        self.note_user_scroll()
         self._scroll_controller.jump_to_bottom()
+
+    def note_user_scroll(self) -> None:
+        """A scroll the user asked for supersedes a TOC jump still waiting for its turn to mount.
+
+        Hooked on user intents (wheel, scrollbar, keys), never on ``scroll_y``:
+        the prepend itself moves ``scroll_y`` to keep the view steady.
+        """
+        self._replay_mount.forget_jump()
 
     def on_resize(self, _event: object | None = None) -> None:
         """Refresh the bottom-jump affordance when viewport height changes."""
@@ -582,19 +599,54 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Pause cyclic GC before Textual mutates scroll state for wheel input."""
         # Do not call super(): Textual will dispatch Widget._on_mouse_scroll_up
         # later in the same MRO handler walk, and a manual super() scrolls twice.
+        self.note_user_scroll()
         self._scroll_controller.pause_gc_for_manual_scroll()
 
     def _on_mouse_scroll_down(self, event: textual_events.MouseScrollDown) -> None:
         """Pause cyclic GC before Textual mutates scroll state for wheel input."""
         # Do not call super(): Textual will dispatch Widget._on_mouse_scroll_down
         # later in the same MRO handler walk, and a manual super() scrolls twice.
+        self.note_user_scroll()
         self._scroll_controller.pause_gc_for_manual_scroll()
 
     def _on_scroll_to(self, message: ScrollTo) -> None:
         """Pause cyclic GC before scrollbar thumb drags update scroll state."""
         # Do not call super(): Textual will dispatch Widget._on_scroll_to
         # later in the same MRO handler walk, restarting the drag scroll work.
+        self.note_user_scroll()
         self._scroll_controller.pause_gc_for_manual_scroll()
+
+    def _on_scroll_up(self, event: ScrollUp) -> None:
+        # Scrollbar track click; Widget._on_scroll_up pages later in the same MRO walk.
+        self.note_user_scroll()
+
+    def _on_scroll_down(self, event: ScrollDown) -> None:
+        # Scrollbar track click; Widget._on_scroll_down pages later in the same MRO walk.
+        self.note_user_scroll()
+
+    def action_scroll_up(self) -> None:
+        self.note_user_scroll()
+        super().action_scroll_up()
+
+    def action_scroll_down(self) -> None:
+        self.note_user_scroll()
+        super().action_scroll_down()
+
+    def action_page_up(self) -> None:
+        self.note_user_scroll()
+        super().action_page_up()
+
+    def action_page_down(self) -> None:
+        self.note_user_scroll()
+        super().action_page_down()
+
+    def action_scroll_home(self) -> None:
+        self.note_user_scroll()
+        super().action_scroll_home()
+
+    def action_scroll_end(self) -> None:
+        self.note_user_scroll()
+        super().action_scroll_end()
 
     def _sync_scroll_to_bottom_button(self) -> None:
         """Show the bottom-jump affordance only when there is unseen content below."""
@@ -686,41 +738,86 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         )
 
     async def mount_transcript_widgets(self, widgets: list[Widget]) -> None:
-        """Mount replay in large batches while yielding between registrations."""
-        total = len(widgets)
-        self._report_replay_progress(0, total)
-        await asyncio.sleep(0)
-        for start in range(0, len(widgets), _REPLAY_MOUNT_BATCH_SIZE):
-            batch = widgets[start : start + _REPLAY_MOUNT_BATCH_SIZE]
-            for widget in batch:
-                widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
-            precompose_tree(batch)
-            try:
+        """Mount replayed entries, newest first, and return once the view is filled.
+
+        Entries beyond the first few viewports are prepended above by a
+        panel-owned task after this returns (see ``replay_mount``);
+        :meth:`wait_replay_complete` waits for them.
+        """
+        await self._replay_mount.mount(widgets)
+
+    @property
+    def replay_in_progress(self) -> bool:
+        """Whether older replayed entries are still being prepended."""
+        return self._replay_mount.in_progress
+
+    async def wait_replay_complete(self) -> None:
+        """Wait until every replayed entry is mounted (or the prepend stopped)."""
+        await self._replay_mount.wait_complete()
+
+    async def mount_replay_batch(self, batch: list[Widget], *, before: Widget | None) -> None:
+        """Mount one bounded replay batch, hatched until its descendants are ready."""
+        for widget in batch:
+            widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
+        precompose_tree(batch)
+        try:
+            if before is None:
                 await self.mount(*batch)
-                # AwaitMount only covers the roots passed to ``mount``. The
-                # precomposed descendants run their own async Mount handlers;
-                # in particular, VirtualizedMarkdown parses and lays out its
-                # document there. Keep the hatch visible and progress at the
-                # prior batch boundary until every descendant is actually
-                # ready to paint.
-                descendants = [descendant for widget in batch for descendant in widget.walk_children()]
-                for descendant in descendants:
-                    await descendant._mounted_event.wait()
-            finally:
-                attached: list[Widget] = []
-                for widget in batch:
-                    widget.remove_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
-                    if widget.is_attached:
-                        attached.append(widget)
-                if attached:
-                    # Re-evaluate only these batch roots. Hatch is repaint-only,
-                    # so this never invalidates MainScreen's transcript layout.
-                    self.app.stylesheet.update_nodes(attached)
-            self._report_replay_progress(min(start + len(batch), total), total)
-            # Each batch is still large enough to retain the recursive-register
-            # speedup, while this yield lets the loading overlay and input timers
-            # paint instead of sitting behind the entire transcript lifecycle.
-            await asyncio.sleep(0)
+            else:
+                self._scroll_controller.prepare_insertion_above()
+                await self.mount(*batch, before=before)
+            # AwaitMount only covers the roots passed to ``mount``. The
+            # precomposed descendants run their own async Mount handlers;
+            # in particular, VirtualizedMarkdown parses and lays out its
+            # document there. Keep the hatch visible and progress at the
+            # prior batch boundary until every descendant is actually
+            # ready to paint.
+            descendants = [descendant for widget in batch for descendant in widget.walk_children()]
+            for descendant in descendants:
+                await descendant._mounted_event.wait()
+        finally:
+            attached: list[Widget] = []
+            for widget in batch:
+                widget.remove_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
+                if widget.is_attached:
+                    attached.append(widget)
+            if attached:
+                # Re-evaluate only these batch roots. Hatch is repaint-only,
+                # so this never invalidates MainScreen's transcript layout.
+                self.app.stylesheet.update_nodes(attached)
+
+    def transcript_entry_after(self, widget: Widget) -> Widget | None:
+        """Return the oldest mounted entry stamped after ``widget``: where ``widget`` mounts above.
+
+        Entries mounted before a replay (a restore warning) are stamped before
+        every replayed entry, so older history lands below them.
+        """
+        seq = self._transcript_seqs[widget]
+        for child in self.children:
+            child_seq = self._transcript_seqs.get(child)
+            if child_seq is not None and child_seq > seq and not self._chrome.is_infrastructure(child):
+                return child
+        return None
+
+    def can_mount_replay(self) -> bool:
+        """Whether a deferred replay batch may still mount into this panel."""
+        return (
+            self.is_attached
+            and not self._closing
+            and not self._pruning
+            and self.app.is_running
+            and not self.app._closing
+        )
+
+    def report_replay_progress(self, current: int, total: int) -> None:
+        """Forward replay mount progress to the screen-owned sink."""
+        self._report_replay_progress(current, total)
+
+    def begin_view_hold(self) -> None:
+        self._scroll_controller.begin_view_hold()
+
+    def end_view_hold(self) -> None:
+        self._scroll_controller.end_view_hold()
 
     def set_replay_progress_callback(self, callback: Callable[[int, int], None] | None) -> None:
         """Set the screen-owned sink for persisted replay progress."""
@@ -816,6 +913,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Return direct children excluding persistent chat chrome infrastructure."""
         return [child for child in self.children if not self._chrome.is_infrastructure(child)]
 
+    def pending_transcript_widgets(self) -> list[Widget]:
+        """Return replayed entries still waiting to be prepended, in document order."""
+        return self._replay_mount.pending_widgets()
+
     def set_border_title(self, title: Text | None) -> None:
         self.border_title = title
 
@@ -875,6 +976,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def set_scroll_target_y(self, y: float) -> None:
         self.scroll_target_y = y
 
+    def set_vertical_scrollbar_position(self, y: float) -> None:
+        # Like the compositor's own anchor pin: move the thumb without watchers.
+        self.vertical_scrollbar.set_reactive(ScrollBar.position, y)
+
     def get_container_size(self) -> Size:
         return self._container_size
 
@@ -917,6 +1022,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         await finish_shielded(self._clear_and_rebuild())
 
     async def _clear_and_rebuild(self) -> None:
+        # A prepend ends at a batch boundary first: never remove children
+        # around a mount that is still registering.
+        await self._replay_mount.stop()
         self._scroll_controller.reset_for_clear()
         if self.is_attached:
             self.screen.clear_selection()
@@ -955,13 +1063,16 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         expands all.  Returns the new collapsed state.
         """
         tool_groups = [group for group in self.query(ToolGroup) if not group.collapse_locked]
+        # Groups still waiting to be prepended take the choice as they mount.
+        pending_collapsed = self._replay_mount.pending_tool_groups_collapsed()
 
-        if not tool_groups:
+        if not tool_groups and pending_collapsed is None:
             return False
 
-        any_expanded = any(not group.collapsed for group in tool_groups)
+        any_expanded = any(not group.collapsed for group in tool_groups) or pending_collapsed is False
         for group in tool_groups:
             group.collapsed = any_expanded
+        self._replay_mount.set_fold_state(any_expanded)
         return any_expanded
 
     def get_agent_responses(self) -> list[tuple[str, str]]:
@@ -1639,6 +1750,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         return self._toc.items()
 
     def scroll_to_turn(self, turn_id: str) -> None:
+        # A turn older than the replayed tail, or in a batch not laid out yet, is jumped to once it lays out.
+        if self._replay_mount.jump_when_laid_out(turn_id):
+            return
         for child in self.children:
             if isinstance(child, UserMessage) and child.id == turn_id:
                 for c in self.query(UserMessage):
@@ -1647,7 +1761,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
                 if self._agent_running:
                     self._auto_scroll_paused_by_user = True
                 self.scroll_to_widget(child, animate=False, top=True, immediate=True)
+                # After the scroll: its geometry read can run the layout that queues a settle re-pin.
+                self._scroll_controller.note_toc_jump()
                 # Bypass the async widget → UpdateScroll → screen idle chain
                 # that can lose the race against the next render frame.
                 self.set_screen_scroll_required_and_check_idle()
-                break
+                return

@@ -315,7 +315,7 @@ async def test_chat_panel_replay_awaiting_status(structured_ids: dict[str, objec
         await panel.replay_history(raw_messages)
         await pilot.pause()
 
-        assert panel.query_one(AgentMessage)._text == expected_text
+        assert panel.query_one(AgentMessage).text == expected_text
         assert raw_messages[0]["contents"][0]["text"] == "Awaiting 99 sub-agent(s)"
 
 
@@ -800,7 +800,7 @@ async def test_chat_panel_context_fold_breaks_stale_stream_cursor() -> None:
         transcript = chat_content_children(cp)
         agent_messages = list(cp.query(AgentMessage))
         fold = cp.query_one(ContextFoldWidget)
-        assert [message._text for message in agent_messages] == ["failed partial", "retry recovered"]
+        assert [message.text for message in agent_messages] == ["failed partial", "retry recovered"]
         assert [message._is_final for message in agent_messages] == [True, True]
         assert [len(list(message.query(".agent-cursor"))) for message in agent_messages] == [0, 0]
         assert transcript.index(agent_messages[0]) < transcript.index(fold) < transcript.index(agent_messages[1])
@@ -843,7 +843,7 @@ async def test_chat_panel_compaction_after_partial_stream_leaves_no_stale_cursor
         transcript = chat_content_children(cp)
         agent_messages = list(cp.query(AgentMessage))
         card = cp.query_one(CompactionCard)
-        assert [message._text for message in agent_messages] == ["failed partial", "retry recovered"]
+        assert [message.text for message in agent_messages] == ["failed partial", "retry recovered"]
         assert [message._is_final for message in agent_messages] == [True, True]
         assert [len(list(message.query(".agent-cursor"))) for message in agent_messages] == [0, 0]
         assert transcript.index(agent_messages[0]) < transcript.index(card) < transcript.index(agent_messages[1])
@@ -864,7 +864,7 @@ async def test_chat_panel_tool_group_open_finalizes_failed_partial_stream() -> N
         transcript = chat_content_children(cp)
         agent_messages = list(cp.query(AgentMessage))
         group = cp.query_one(ToolGroup)
-        assert [message._text for message in agent_messages] == ["failed partial", "retry recovered"]
+        assert [message.text for message in agent_messages] == ["failed partial", "retry recovered"]
         assert [message._is_final for message in agent_messages] == [True, True]
         assert [len(list(message.query(".agent-cursor"))) for message in agent_messages] == [0, 0]
         assert transcript.index(agent_messages[0]) < transcript.index(group) < transcript.index(agent_messages[1])
@@ -885,7 +885,7 @@ async def test_chat_panel_new_user_finalizes_failed_partial_stream() -> None:
         transcript = chat_content_children(cp)
         agent_messages = list(cp.query(AgentMessage))
         replacement = list(cp.query(UserMessage))[-1]
-        assert [message._text for message in agent_messages] == ["failed partial", "replacement response"]
+        assert [message.text for message in agent_messages] == ["failed partial", "replacement response"]
         assert [message._is_final for message in agent_messages] == [True, True]
         assert [len(list(message.query(".agent-cursor"))) for message in agent_messages] == [0, 0]
         assert transcript.index(agent_messages[0]) < transcript.index(replacement) < transcript.index(agent_messages[1])
@@ -902,7 +902,7 @@ async def test_chat_panel_intermediate_message_finalizes_prior_stream() -> None:
         await pilot.pause()
 
         agent_messages = list(cp.query(AgentMessage))
-        assert [message._text for message in agent_messages] == ["prior partial", "Checking the tools.", "finished"]
+        assert [message.text for message in agent_messages] == ["prior partial", "Checking the tools.", "finished"]
         assert [message._is_final for message in agent_messages] == [True, True, True]
         assert [len(list(message.query(".agent-cursor"))) for message in agent_messages] == [0, 0, 0]
 
@@ -919,7 +919,7 @@ async def test_chat_panel_retry_output_removes_error_across_system_message() -> 
 
         assert not list(cp.query(ErrorMessage))
         assert len(list(cp.query(SystemMessage))) == 1
-        assert cp.query_one(AgentMessage)._text == "retry recovered"
+        assert cp.query_one(AgentMessage).text == "retry recovered"
 
 
 async def test_chat_panel_removes_status_before_retry_note_on_agent_recovery() -> None:

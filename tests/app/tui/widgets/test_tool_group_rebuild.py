@@ -8,14 +8,17 @@ import asyncio
 import logging
 
 import pytest
+from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Static
 
+from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
     GcReclaimReason,
     GcReclaimRequested,
+    GcRemovedContent,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
@@ -43,6 +46,18 @@ from tests.support.waiting import wait_for
 
 # Tests here call register_kind_renderer(KIND_SUB_AGENT, ...) directly; undo it per test.
 pytestmark = pytest.mark.usefixtures("restore_kind_renderer_registry")
+
+
+def _model_coordinator_freeze(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advance the GC freeze epoch as a coordinator freeze would, without freezing the process."""
+    monkeypatch.setattr(gc_freeze, "_freeze_epoch", gc_freeze.current_gc_freeze_epoch() + 1)
+
+
+async def _prune_drained(group: ToolGroup, pilot: Pilot[None]) -> None:
+    await wait_for(lambda: not group._content_mounted, pilot=pilot, description="completed subtree pruned")
+    release_drained = asyncio.Event()
+    assert group.call_later(release_drained.set)
+    await wait_for(release_drained.is_set, pilot=pilot, description="prune callbacks drain")
 
 
 async def _start_release_with_held_removal(
@@ -144,6 +159,67 @@ async def test_completed_tool_subtree_posts_idle_reclaim_after_awaited_removal()
         await group._release_completed_tool_widgets()
         await pilot.pause()
         assert len(app.gc_messages) == 1
+
+
+@pytest.mark.parametrize("frozen_after_build", [False, True], ids=["young", "frozen"])
+async def test_completed_tool_subtree_removal_names_its_nodes_only_while_no_freeze_captured_them(
+    monkeypatch: pytest.MonkeyPatch, frozen_after_build: bool
+) -> None:
+    app = GcMessageChatPanelApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(ChatPanel)
+        await panel.add_user_message("tools")
+        built_at_epoch = gc_freeze.current_gc_freeze_epoch()
+        await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
+        await panel.add_tool_result("tool1", "plain_tool", "done", 10)
+        group = panel.query_one(ToolGroup)
+        tool = group.get_tool("tool1")
+        assert tool is not None
+        subtree = tool.walk_children(with_self=True)
+        if frozen_after_build:
+            _model_coordinator_freeze(monkeypatch)
+        await panel.add_agent_message("done", is_final=True)
+
+        await _prune_drained(group, pilot)
+
+        assert len(app.gc_messages) == 1
+        message = app.gc_messages[0]
+        assert isinstance(message, GcReclaimRequested)
+        assert message.reason is GcReclaimReason.STABLE_CONTENT_REMOVED
+        assert message.prompt is False
+        if frozen_after_build:
+            assert message.removed is None
+        else:
+            assert isinstance(message.removed, GcRemovedContent)
+            assert message.removed.built_at_epoch == built_at_epoch
+            assert [node() for node in message.removed.nodes] == subtree
+
+
+async def test_restored_tool_subtree_removal_names_its_nodes_only_while_no_freeze_captured_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = GcMessageChatPanelApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(ChatPanel)
+        await panel.add_user_message("tools")
+        await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
+        await panel.add_tool_result("tool1", "plain_tool", "done", 10)
+        await panel.add_agent_message("done", is_final=True)
+        group = panel.query_one(ToolGroup)
+        await _prune_drained(group, pilot)
+
+        for frozen_after_restore in (False, True):
+            app.gc_messages.clear()
+            group.collapsed = False
+            await wait_for(lambda: group._content_mounted, pilot=pilot, description="subtree restored")
+            if frozen_after_restore:
+                _model_coordinator_freeze(monkeypatch)
+            group.collapsed = True
+            await _prune_drained(group, pilot)
+
+            removals = [message for message in app.gc_messages if isinstance(message, GcReclaimRequested)]
+            assert len(removals) == 1
+            assert (removals[0].removed is None) is frozen_after_restore
 
 
 async def test_plain_restored_tool_subtree_posts_stable_content_absorb() -> None:

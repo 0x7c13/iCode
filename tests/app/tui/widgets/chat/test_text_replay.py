@@ -49,7 +49,7 @@ async def test_old_fragmented_history_matches_live_and_suppresses_sidecar(
         await panel.replay_history([saved, result.to_dict()])
         await pilot.pause()
 
-        assert [message._text for message in panel.query(AgentMessage)] == [expected]
+        assert [message.text for message in panel.query(AgentMessage)] == [expected]
         assert len(panel.query(ToolGroup)) == 1
 
 
@@ -86,7 +86,7 @@ async def test_replay_preserves_distinct_output_item_boundaries(
         await panel.replay_history([message.to_dict()])
         await pilot.pause()
 
-        assert [widget._text for widget in panel.query(AgentMessage)] == [expected]
+        assert [widget.text for widget in panel.query(AgentMessage)] == [expected]
 
 
 async def test_replay_keeps_tool_calls_between_text_segments() -> None:
@@ -111,4 +111,4 @@ async def test_replay_keeps_tool_calls_between_text_segments() -> None:
 
         widgets = list(panel.query("AgentMessage, ToolGroup"))
         assert [type(widget) for widget in widgets] == [AgentMessage, ToolGroup, AgentMessage]
-        assert [widget._text for widget in widgets if isinstance(widget, AgentMessage)] == ["回退", "核对完毕"]
+        assert [widget.text for widget in widgets if isinstance(widget, AgentMessage)] == ["回退", "核对完毕"]

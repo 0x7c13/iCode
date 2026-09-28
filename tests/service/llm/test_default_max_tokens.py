@@ -17,6 +17,7 @@ from chrys.service.llm.glm import GLMChatCompletionClient
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
 from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
 
 
 class _UnusedCompletions:
@@ -115,6 +116,27 @@ def test_glm_omits_default_max_tokens_and_uses_glm_request_field() -> None:
     openai_native_options = client._prepare_options(_messages(), {"max_completion_tokens": 8192})
     assert openai_native_options["max_tokens"] == 8192
     assert "max_completion_tokens" not in openai_native_options
+
+
+@pytest.mark.parametrize(
+    ("provider", "client_type"),
+    [
+        ("openai", RawOpenAIChatCompletionClient),
+        ("deepseek-openai", DeepSeekChatCompletionClient),
+        ("glm-openai", GLMChatCompletionClient),
+    ],
+)
+def test_chat_completions_clients_send_the_token_limit_param_of_their_provider(
+    provider: str, client_type: type[RawOpenAIChatCompletionClient]
+) -> None:
+    """Each client sends the output cap under the parameter the Models screen names in its label."""
+    client = client_type(model="model-test", async_client=_UnusedAsyncOpenAI())
+
+    options = client._prepare_options(_messages(), {"max_tokens": 4096})
+
+    assert {key: value for key, value in options.items() if value == 4096} == {
+        CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS[provider]: 4096
+    }
 
 
 def test_instrumented_subclass_preserves_provider_token_limit_param() -> None:

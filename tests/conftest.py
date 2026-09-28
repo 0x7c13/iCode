@@ -35,6 +35,7 @@ from chrys.foundation.patches import textual_node_diet as _textual_node_diet
 from chrys.foundation.patches import textual_one_shot_timer as _textual_one_shot_timer
 from chrys.foundation.patches import textual_pruned_tabs as _textual_pruned_tabs
 from chrys.foundation.patches import textual_reflow_reuse as _textual_reflow_reuse
+from chrys.foundation.patches import textual_removed_node_caches as _textual_removed_node_caches
 from chrys.foundation.patches import textual_removed_screen_callbacks as _textual_removed_screen_callbacks
 from chrys.foundation.patches import textual_selection_extract as _textual_selection_extract
 from chrys.foundation.patches import textual_strip_cycles as _textual_strip_cycles
@@ -112,6 +113,10 @@ _textual_pruned_tabs.apply_runtime_patch()
 # Loading dialogs open and close over the main screen exactly as in the app; unpatched, work
 # a widget under one scheduled after a refresh can be dropped with the dialog.
 _textual_removed_screen_callbacks.apply_runtime_patch()
+
+# Widgets are removed exactly as in the app; unpatched, a parent that looked a removed child up
+# keeps its whole subtree alive, and GC freeze captures it.
+_textual_removed_node_caches.apply_runtime_patch()
 
 # Tab bars move their underline from a one-shot timer exactly as in the app; unpatched, a
 # collection or descheduling right after that timer starts means it never fires.

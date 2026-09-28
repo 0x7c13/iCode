@@ -12,6 +12,8 @@ from chrys.service.session.checkpoint import build_recovery_state
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
+from chrys.service.trajectory.preparation import PreparationScope, PreparationTrace
+from tests.service.trajectory._fakes import make_context
 
 
 class _MutationTracker:
@@ -392,6 +394,39 @@ def test_checkpoint_recorder_dedup_preserves_consumed_injection_timestamp() -> N
     notes = [message for message in recovered["messages"] if message.text == "note"]
     assert len(notes) == 1
     assert notes[0].additional_properties[MESSAGE_CREATED_AT_KEY] == "2026-07-14T13:46:00.000000+00:00"
+
+
+def test_checkpoint_replays_injection_that_carries_its_live_preparation_trace() -> None:
+    """Replay reads a consumed injection and never copies it: the preparation
+    trace it carries holds live trajectory state (a lock, settlement tasks)
+    that cannot be deep-copied, so copying it would fail every checkpoint."""
+    opener = Message("user", ["task"])
+    live_state = {"messages": [opener], "compressed_msgs": [], "turn_counter": 0}
+    trace = PreparationTrace.open(scope=PreparationScope.PRE_TURN, phase="input_admission", context=make_context())
+    assert trace is not None
+    injection = ConsumedInjection(
+        text="note",
+        anchor=InjectionAnchor.from_message(opener),
+        consumption_id="inj-1",
+        preparation=trace,
+    )
+
+    recovered = build_recovery_state(
+        live_state,
+        _recorder(opener),
+        mutation_tracker=None,
+        runtime_meta=SessionRuntimeMetadata(),
+        user_text=None,
+        user_contents=None,
+        user_created_at=None,
+        consumed_injections=[injection],
+    )
+
+    assert recovered is not None
+    notes = [message for message in recovered["messages"] if message.text == "note"]
+    assert len(notes) == 1
+    assert notes[0].additional_properties[HistoryMarkerKind.INJECTION_ID_KEY] == "inj-1"
+    assert injection.preparation is trace
 
 
 def test_checkpoint_guided_retry_recovers_guidance_flagged_injected() -> None:

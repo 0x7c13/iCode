@@ -23,6 +23,8 @@ from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.source_text import sanitize_source_text
+from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.tool_call import (
     TOOL_CARD_COMPLETED,
     TOOL_CARD_ERRORED,
@@ -244,7 +246,7 @@ class ExecuteToolCall(BaseToolCard):
 
         # Output panel — a single bordered Static: streamed progress tail
         # while running, the final output once done.
-        panel = Static("", id="exec-panel")
+        panel = Static(self._progress_text() if self._progress_lines else "", id="exec-panel")
         panel.border_title = render_text(widget_localizer(self), _EXECUTE_OUTPUT.bind())
         panel.border_subtitle = self._spinner_title()
         yield panel
@@ -268,12 +270,14 @@ class ExecuteToolCall(BaseToolCard):
     def _spin(self) -> None:
         if self.status == "running":
             self._spin_idx = (self._spin_idx + 1) % len(self._SPINNERS)
+            # Only a shown card repaints (see ``ToolCall._spin``). A skipped tick leaves
+            # ``_last_elapsed_sec`` alone, so the first tick after the card shows repaints the
+            # elapsed label too.
+            if not is_widget_shown_on_active_screen(self):
+                return
             with suppress(Exception):
                 self.query_one("#exec-panel", Static).border_subtitle = self._spinner_title()
-            # Update progress lines inside the panel
-            if self._progress_lines:
-                with suppress(Exception):
-                    self.query_one("#exec-panel", Static).update(self._progress_text())
+            # The progress tail changes only in update_progress, which paints it at once.
             # Update label with elapsed time (only when the displayed second changes)
             elapsed = int(time.monotonic() - self._start_time)
             if elapsed != self._last_elapsed_sec:
@@ -296,9 +300,12 @@ class ExecuteToolCall(BaseToolCard):
             self._progress_lines.append(line)
         if len(self._progress_lines) > _PROGRESS_MAX_LINES:
             self._progress_lines = self._progress_lines[-_PROGRESS_MAX_LINES:]
-        # Immediate display update so lines appear without waiting for next spin tick
+        self._paint_progress_tail()
+
+    def _paint_progress_tail(self) -> None:
+        """Show the streamed tail now; a full rolling tail keeps the panel's height."""
         with suppress(Exception):
-            self.query_one("#exec-panel", Static).update(self._progress_text())
+            update_static_in_place(self.query_one("#exec-panel", Static), self._progress_text())
 
     def compact_display_state(self) -> dict[str, Any] | None:
         """Return the streamed output tail needed to rebuild the visible card."""
@@ -318,6 +325,8 @@ class ExecuteToolCall(BaseToolCard):
                 line = line[:_PROGRESS_MAX_CHARS] + "…"
             lines.append(line)
         self._progress_lines = lines[-_PROGRESS_MAX_LINES:]
+        if self.status == "running" and self._progress_lines:
+            self._paint_progress_tail()
 
     def _tool_view_input_widgets(self) -> list[Widget]:
         """Show the shell command plus any remaining tool input fields.

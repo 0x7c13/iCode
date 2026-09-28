@@ -1210,7 +1210,7 @@ async def test_live_renderer_derives_checkmark_for_successful_structured_only_ou
 
     messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(messages) == 1
-    assert messages[0]._text == "✓"
+    assert messages[0].text == "✓"
     assert messages[0]._is_structured_completion is True
 
 
@@ -1232,7 +1232,7 @@ async def test_live_renderer_normalizes_whitespace_structured_completion_to_chec
 
     messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(messages) == 1
-    assert messages[0]._text == "✓"
+    assert messages[0].text == "✓"
     assert messages[0]._is_structured_completion is True
 
 
@@ -1618,7 +1618,7 @@ async def test_replay_derives_checkmark_for_turn_ending_structured_only_output()
 
     agent_messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(agent_messages) == 1
-    assert agent_messages[0]._text == "✓"
+    assert agent_messages[0].text == "✓"
     assert agent_messages[0]._is_structured_completion is True
 
 

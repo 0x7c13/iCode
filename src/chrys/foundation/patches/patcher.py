@@ -226,6 +226,7 @@ def apply_all() -> list[PatchResult]:
     import chrys.foundation.patches.textual_precompose as textual_precompose
     import chrys.foundation.patches.textual_pruned_tabs as textual_pruned_tabs
     import chrys.foundation.patches.textual_reflow_reuse as textual_reflow_reuse
+    import chrys.foundation.patches.textual_removed_node_caches as textual_removed_node_caches
     import chrys.foundation.patches.textual_removed_screen_callbacks as textual_removed_screen_callbacks
     import chrys.foundation.patches.textual_selection_extract as textual_selection_extract
     import chrys.foundation.patches.textual_strip_cycles as textual_strip_cycles
@@ -275,6 +276,7 @@ def apply_all() -> list[PatchResult]:
             ("textual_option_list", textual_option_list.apply_runtime_patch),
             ("textual_precompose", textual_precompose.apply_runtime_patch),
             ("textual_pruned_tabs", textual_pruned_tabs.apply_runtime_patch),
+            ("textual_removed_node_caches", textual_removed_node_caches.apply_runtime_patch),
             ("textual_removed_screen_callbacks", textual_removed_screen_callbacks.apply_runtime_patch),
             ("textual_selection_extract", textual_selection_extract.apply_runtime_patch),
             ("textual_tab_selection", textual_tab_selection.apply_runtime_patch),

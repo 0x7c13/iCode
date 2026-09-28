@@ -483,6 +483,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             reason=event.reason,
             prompt=event.prompt,
             requested_at=event.time,
+            removed=event.removed,
         )
 
     def on_diagram_open_requested(self, event: DiagramOpenRequested) -> None:

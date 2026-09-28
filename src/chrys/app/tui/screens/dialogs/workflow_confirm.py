@@ -17,7 +17,7 @@ from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets import DialogButtonRow, DialogButtonSpec
 from chrys.app.tui.widgets.workflow import text
 from chrys.app.tui.widgets.workflow.info import INFO_TAB, WorkflowInfo, WorkflowInfoData
-from chrys.app.tui.widgets.workflow.source import workflow_source_syntax
+from chrys.app.tui.widgets.workflow.source import WorkflowSourceSyntax
 from chrys.foundation.i18n import MessageDef
 from chrys.orchestration.workflows.preview import WorkflowInspection, WorkflowPreview
 
@@ -65,7 +65,7 @@ class WorkflowConfirmDialog(BaseDialog[bool]):
                     VerticalScroll(id="workflow-confirm-source-scroll"),
                 ):
                     yield Static(
-                        workflow_source_syntax(self.preview.source.source),
+                        WorkflowSourceSyntax(self.preview.source.source),
                         id="workflow-confirm-source",
                         expand=True,
                     )

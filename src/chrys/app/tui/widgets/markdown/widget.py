@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -188,6 +188,30 @@ class _DiagramLayout:
     @property
     def total_height(self) -> int:
         return self.preview_height + 1
+
+
+class _PendingParse:
+    """The parse that ``update()``/``append()`` scheduled and that has not read the source yet.
+
+    Requests made before it takes the widget's lock join it rather than
+    scheduling a parse of their own: it parses whatever source is current once
+    it holds the lock, so it installs text at least as new as every joined
+    request's.
+    """
+
+    __slots__ = ("announce_contents", "task")
+
+    def __init__(
+        self,
+        run: Callable[[_PendingParse], Coroutine[Any, Any, None]],
+        *,
+        announce_contents: bool,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        self.announce_contents = announce_contents
+        """Post ``TableOfContentsUpdated`` even without headings: an ``update()`` joined."""
+        self.task: asyncio.Task[None] = loop.create_task(run(self))
+        """The parse; awaiters get it shielded, so no single caller can cancel it for the others."""
 
 
 class VirtualizedMarkdown(ScrollView, can_focus=True):
@@ -395,6 +419,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._table_of_contents: TableOfContentsType | None = None
         self._open_links = open_links
         self._last_parsed_line = 0
+        self._pending_parse: _PendingParse | None = None
+        """The scheduled parse that has not read ``_markdown`` yet; new requests join it."""
 
         # Virtualization state
         self._blocks: list[MarkdownBlock] = []
@@ -1282,9 +1308,19 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
 
         line_starts: list[int] = []
         current_line = 0
+        # ``Content.get_height`` wraps each line at the content width minus
+        # both line pads and splits only past it, so a tab-free line whose
+        # cells fit is exactly one row. Every character is at most two cells
+        # wide, which lets short lines skip even the cell count; only tabbed
+        # or possibly overlong lines pay for building Content and wrapping it.
+        wrap_width = content_width - render_rules.get("line_pad", 0) * 2
         for start, end in line_ranges:
             line_starts.append(current_line)
-            line = Content(text[start:end], strip_control_codes=False)
+            source = text[start:end]
+            if "\t" not in source and (2 * (end - start) <= wrap_width or cell_len(source) <= wrap_width):
+                current_line += 1
+                continue
+            line = Content(source, strip_control_codes=False)
             height = max(1, line.get_height(render_rules, content_width))
             current_line += height
 
@@ -1596,50 +1632,55 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
     def update(self, markdown: str) -> AwaitComplete:
         """Update the document with new Markdown.
 
+        Updates coalesce: until the scheduled parse starts, further
+        ``update()``/``append()`` calls join it, and it parses the source as it
+        stands when it starts. A burst of cumulative streamed updates therefore
+        costs one parse and one layout, not one per call.
+
         Args:
             markdown: A string containing Markdown.
 
         Returns:
-            An optionally awaitable object.
+            An optionally awaitable object that resolves once this markdown, or
+            newer, is installed. Cancelling one awaiter leaves the shared parse
+            running for the others.
         """
         self._markdown = markdown
-        self._table_of_contents = None
-        self._line_cache.clear()
-        self._table_layouts.clear()
-        self._table_strips.clear()
-        self._fence_layouts.clear()
-        self._fence_line_strips.clear()
-        self._fence_source_line_strips.clear()
-        self._block_strips.clear()
-        self._block_style_cache.clear()
-        self._plain_selection_cache = None
-        self._lines_cache_result = None
-
-        async def await_update() -> None:
-            async with self.lock:
-                blocks = await asyncio.get_running_loop().run_in_executor(None, self._build_blocks, markdown)
-                self._install_blocks(blocks)
-
-                lines = markdown.splitlines()
-                self._last_parsed_line = len(lines) - (1 if lines and lines[-1] else 0)
-                self.refresh()
-                self.post_message(
-                    VirtualizedMarkdown.TableOfContentsUpdated(self, self.table_of_contents).set_sender(self)
-                )
-
-        return AwaitComplete(await_update())
+        return self._request_parse(announce_contents=True)
 
     def append(self, markdown: str) -> AwaitComplete:
         """Append markdown to the document.
+
+        Coalesces with pending updates as ``update()`` does.
 
         Args:
             markdown: A fragment of markdown to be appended.
 
         Returns:
-            An optionally awaitable object.
+            An optionally awaitable object that resolves once the document with
+            this fragment, or newer, is installed.
         """
         self._markdown = self.source + markdown
+        return self._request_parse(announce_contents=False)
+
+    def _request_parse(self, *, announce_contents: bool) -> AwaitComplete:
+        """Join the pending parse of ``_markdown``, or schedule one.
+
+        ``TableOfContentsUpdated`` follows the parse when any joined request
+        set ``announce_contents`` (every ``update()`` does) or when the parsed
+        document has headings, so a group of ``append()`` calls announces only
+        what one of them alone would have.
+        """
         self._table_of_contents = None
+        pending = self._pending_parse
+        # A pending task is done here only when it was cancelled before it read
+        # the source (loop shutdown); it can no longer parse, so it is not joinable.
+        if pending is not None and not pending.task.done():
+            pending.announce_contents = pending.announce_contents or announce_contents
+            return AwaitComplete(asyncio.shield(pending.task))
+
+        # Drop the old document's render caches once per parse; installing the
+        # new blocks clears them again.
         self._line_cache.clear()
         self._table_layouts.clear()
         self._table_strips.clear()
@@ -1650,23 +1691,28 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._block_style_cache.clear()
         self._plain_selection_cache = None
         self._lines_cache_result = None
+        pending = _PendingParse(self._run_parse, announce_contents=announce_contents)
+        self._pending_parse = pending
+        return AwaitComplete(asyncio.shield(pending.task))
 
-        async def await_append() -> None:
-            async with self.lock:
-                blocks = await asyncio.get_running_loop().run_in_executor(None, self._build_blocks, self._markdown)
-                self._install_blocks(blocks)
+    async def _run_parse(self, request: _PendingParse) -> None:
+        """Parse and install the current source once the lock is free."""
+        async with self.lock:
+            # Reading the source ends the join window: a later request is
+            # newer than this parse's text and schedules a parse of its own.
+            if self._pending_parse is request:
+                self._pending_parse = None
+            markdown = self._markdown
+            blocks = await asyncio.get_running_loop().run_in_executor(None, self._build_blocks, markdown)
+            self._install_blocks(blocks)
 
-                lines = self._markdown.splitlines()
-                self._last_parsed_line = len(lines) - (1 if lines and lines[-1] else 0)
-                self.refresh()
-
-                any_headers = any(block.block_type == "heading" for block in blocks)
-                if any_headers:
-                    self.post_message(
-                        VirtualizedMarkdown.TableOfContentsUpdated(self, self.table_of_contents).set_sender(self)
-                    )
-
-        return AwaitComplete(await_append())
+            lines = markdown.splitlines()
+            self._last_parsed_line = len(lines) - (1 if lines and lines[-1] else 0)
+            self.refresh()
+            if request.announce_contents or any(block.block_type == "heading" for block in blocks):
+                self.post_message(
+                    VirtualizedMarkdown.TableOfContentsUpdated(self, self.table_of_contents).set_sender(self)
+                )
 
     def _install_blocks(self, blocks: list[MarkdownBlock]) -> None:
         """Commit freshly parsed blocks and lay them out.
@@ -1675,10 +1721,39 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         earlier update still holding the lock rebuilds it from its own blocks
         after this update's start cleared it, and ``_layout_blocks`` does not
         touch it.
+
+        A widget that has never been arranged (just mounted, or mounted inside
+        a hidden container) has no content width yet. Laying out now would use
+        the placeholder width that the first arrange immediately lays out
+        again, so the layout waits for the real width instead:
+        ``get_content_height`` supplies it on the first arrange, and
+        ``on_resize`` and ``render_line`` converge on it otherwise. Those skip
+        a widget without blocks, so an empty document, zero lines at any
+        width, is laid out at once.
         """
         self._blocks = blocks
         self._table_of_contents = None
+        if blocks and self.scrollable_content_region.width <= 0:
+            self._defer_layout_until_arranged()
+            return
         self._layout_blocks()
+
+    def _defer_layout_until_arranged(self) -> None:
+        """Drop the layout of replaced blocks and request a measuring pass.
+
+        Everything cleared here indexes blocks by position, so none of it may
+        outlive the blocks it was computed from. ``virtual_size`` keeps its
+        last value (the constructor's line estimate for a fresh widget), so
+        the parent never measures a zero-height transcript row meanwhile.
+        """
+        self._width_at_last_layout = 0
+        self._total_lines = 0
+        self._block_line_info.clear()
+        self._diagram_action_lines.clear()
+        self._diagram_action_widths.clear()
+        self._plain_selection_cache = None
+        self._lines_cache_result = None
+        self.refresh(layout=True)
 
     def scroll_to_block_id(self, block_id: str) -> None:
         """Scroll to a block by its ID.

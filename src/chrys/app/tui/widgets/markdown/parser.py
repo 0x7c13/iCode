@@ -20,7 +20,7 @@ from markdown_it.token import Token
 from textual._cells import cell_len
 from textual._slug import slug_for_tcss_id
 from textual.content import Content, Span
-from textual.highlight import highlight
+from textual.highlight import guess_language, highlight
 from textual.style import Style
 
 from chrys.app.tui.widgets.markdown.blocks import BULLETS, MarkdownBlock
@@ -490,6 +490,25 @@ def _token_to_content(
     return content
 
 
+_FENCE_GUESS_SAMPLE_CHARS = 2048
+"""An unlabeled code block guesses its language from at most this much leading code.
+
+Pygments' ``guess_lexer`` scores every lexer's ``analyse_text`` over its whole
+input: on a long bare fence (a log, command output) that is hundreds of
+milliseconds of GIL-held time on every parse of the message. The deciding
+signals (shebangs, doctypes, leading keywords) sit at the top, and a block
+that fits in the sample is guessed exactly as before.
+"""
+
+
+def _guess_code_language(code: str) -> str:
+    """Return the lexer name for an unlabeled code block, guessed from a line-aligned prefix."""
+    if len(code) > _FENCE_GUESS_SAMPLE_CHARS:
+        cut = code.rfind("\n", 0, _FENCE_GUESS_SAMPLE_CHARS)
+        code = code[: cut if cut > 0 else _FENCE_GUESS_SAMPLE_CHARS]
+    return guess_language(code, None)
+
+
 def _get_list_indent(stack: list[dict]) -> int:
     """Get the indent from the nearest list_item in the stack."""
     for parent in reversed(stack):
@@ -831,7 +850,7 @@ def _parse_tokens(
                     )
                     continue
 
-            highlighted = highlight(code, language=language or None, theme=NoErrorHighlightTheme)
+            highlighted = highlight(code, language=language or _guess_code_language(code), theme=NoErrorHighlightTheme)
 
             indent = 0
             prefix = ""

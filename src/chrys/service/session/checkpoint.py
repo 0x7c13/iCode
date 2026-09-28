@@ -77,14 +77,24 @@ def build_recovery_state(
     catalog_pointer_record_count: int | None = None,
     todos: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """Return a deep-copied, interrupted-shaped recovery state for the current turn."""
+    """Return an interrupted-shaped recovery state for the current turn.
+
+    The result goes to a writer thread while the turn keeps changing live
+    state, so it shares no mutable object with any input. That holds with one
+    whole-history copy: ``live_state`` is deep-copied once, every value merged
+    over that copy is deep-copied on its own, ``_DetachedLoopRecorder`` copies
+    the recorder's loop messages, and shaping adds only objects it mints
+    (markers, replayed injection messages). A new merged input needs its own
+    copy; ``tests/architecture/test_copy_freshness.py`` walks the result for
+    objects shared with the inputs.
+    """
     if live_state is None:
         return None
 
     copied = copy.deepcopy(live_state)
     if mutation_tracker is not None:
-        copied["chrys_mutations"] = mutation_tracker.serialize()
-    copied.update(runtime_meta.to_state_dict())
+        copied["chrys_mutations"] = copy.deepcopy(mutation_tracker.serialize())
+    copied.update(copy.deepcopy(runtime_meta.to_state_dict()))
     # The Phase 4 LAST_WORDS note replaces the dropped tool-call history of
     # the in-flight turn — recovering without it would resume from an
     # amputated transcript.
@@ -107,7 +117,7 @@ def build_recovery_state(
     else:
         copied.pop(CATALOG_POINTER_RECORD_COUNT_STATE_KEY, None)
     if todos:
-        copied["chrys_todos"] = todos
+        copied["chrys_todos"] = copy.deepcopy(todos)
     else:
         copied.pop("chrys_todos", None)
 
@@ -115,15 +125,18 @@ def build_recovery_state(
     stamp_history_item_ids(copied)
     manager.bind(copied)
     if user_text or user_contents:
+        # The recorded prompt contents are the live turn's objects.
         manager.ensure_user_message(
             user_text or "",
             created_at=user_created_at,
-            contents=user_contents,
+            contents=copy.deepcopy(user_contents),
             kind=user_kind,
         )
     # Consumed injections reach history only at finalization, so a mid-run
     # checkpoint must replay them or a hard crash loses them. Replay belongs
-    # after recorder merge but before trimming and terminal markers.
+    # after recorder merge but before trimming and terminal markers. They need
+    # no copy: replay reads their immutable text, ids and timestamps into
+    # messages it mints, and never merges an injection object itself.
     shape_checkpoint_interruption(
         manager,
         loop_recorder,
@@ -131,4 +144,4 @@ def build_recovery_state(
         consumed_injections=consumed_injections,
         insert_index=insert_index,
     )
-    return copy.deepcopy(copied)
+    return copied

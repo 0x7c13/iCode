@@ -151,3 +151,34 @@ async def test_loading_indicator_mounted_hidden_parks_its_timer_until_shown() ->
 
         container.display = True
         await wait_for(timer._active.is_set, pilot=pilot, description="Show starts the animation")
+
+
+async def test_loading_indicator_resumed_spinner_animates_after_a_geometry_read_maps_it() -> None:
+    """A full map rebuilt lazily between the owner's display flip and the reflow must not hide the spinner's Show.
+
+    Any ``find_widget``/``region`` read in that window rebuilds the map with the
+    spinner already in it. Compared with that map, the reflow would announce
+    nothing and the timer would stay parked on a visible spinner; the reflow
+    reuse patch compares with the map the previous reflow produced instead.
+    """
+
+    def owner_hidden_spinner() -> Container:
+        indicator = ChrysLoadingIndicator()
+        indicator.display = False
+        return Container(indicator)
+
+    async with WidgetApp(owner_hidden_spinner).run_test(size=(40, 10)) as pilot:
+        indicator = pilot.app.query_one(ChrysLoadingIndicator)
+        timer = indicator._auto_refresh_timer
+        assert timer is not None
+        await wait_for(lambda: not timer._active.is_set(), pilot=pilot, description="the hidden spinner parks itself")
+
+        # The owner's sequence (ToolGroup, sub-agent card): flip display, then resume.
+        indicator.display = True
+        indicator.resume_animation()
+        compositor = pilot.app.screen._compositor
+        compositor._full_map_invalidated = True
+        assert indicator in compositor.full_map, "the lazy rebuild must already map the spinner"
+
+        await wait_for(timer._active.is_set, pilot=pilot, description="the shown spinner animates")
+        assert indicator._composited

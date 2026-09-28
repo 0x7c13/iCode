@@ -50,6 +50,7 @@ from tests.kernel._fakes import (
     _user,
 )
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
+from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -419,6 +420,75 @@ class TestLoopRecorder:
             )
             == 1
         )
+
+    @pytest.mark.asyncio
+    async def test_persisted_barrier_replaces_the_pre_call_checkpoint(self) -> None:
+        """A persisted barrier already holds the pre-call state, so no best-effort
+        checkpoint rebuilds it; the prefix still counts as checkpointed."""
+        outcomes = [
+            RecoveryPersistOutcome.PERSISTED,
+            RecoveryPersistOutcome.FAILED,
+            RecoveryPersistOutcome.FAILED,
+        ]
+        barrier_calls = 0
+        checkpoint_calls = 0
+
+        async def barrier() -> RecoveryPersistOutcome:
+            nonlocal barrier_calls
+            outcome = outcomes[barrier_calls]
+            barrier_calls += 1
+            return outcome
+
+        async def checkpoint() -> None:
+            nonlocal checkpoint_calls
+            checkpoint_calls += 1
+
+        capture = LoopRecorder(on_pre_wire_barrier=barrier, on_result_checkpoint=checkpoint)
+        call = _stamped_call(0)
+        commit = capture.stage_exchange([Message("assistant", [call])], [call], result_carrier_item_id="a" * 32)[0]
+        commit.commit_final(Content.from_function_result(call.call_id, result="done"))
+        await wait_for(lambda: checkpoint_calls == 1, description="the slot-fill checkpoint kick ran")
+        prefix = [Message("user", ["continue"])]
+
+        await capture.record_pre_call(prefix)
+        assert (barrier_calls, checkpoint_calls) == (1, 1)
+
+        # Same request again, now with a barrier that fails twice and degrades:
+        # the persisted barrier recorded this prefix, so it stays suppressed.
+        await capture.record_pre_call(list(prefix))
+        assert (barrier_calls, checkpoint_calls) == (3, 1)
+
+        # A changed prefix under the degraded barrier checkpoints best-effort.
+        await capture.record_pre_call([*prefix, Message("user", ["more"])])
+        assert (barrier_calls, checkpoint_calls) == (3, 2)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "outcome",
+        [RecoveryPersistOutcome.NOTHING_TO_PERSIST, RecoveryPersistOutcome.UNCONFIGURED],
+    )
+    async def test_non_persisted_barrier_outcomes_keep_the_pre_call_checkpoint(
+        self,
+        outcome: RecoveryPersistOutcome,
+    ) -> None:
+        checkpoint_calls = 0
+
+        async def barrier() -> RecoveryPersistOutcome:
+            return outcome
+
+        async def checkpoint() -> None:
+            nonlocal checkpoint_calls
+            checkpoint_calls += 1
+
+        capture = LoopRecorder(on_pre_wire_barrier=barrier, on_result_checkpoint=checkpoint)
+        call = _stamped_call(0)
+        commit = capture.stage_exchange([Message("assistant", [call])], [call], result_carrier_item_id="a" * 32)[0]
+        commit.commit_final(Content.from_function_result(call.call_id, result="done"))
+        await wait_for(lambda: checkpoint_calls == 1, description="the slot-fill checkpoint kick ran")
+
+        await capture.record_pre_call([Message("user", ["continue"])])
+
+        assert checkpoint_calls == 2
 
     @pytest.mark.asyncio
     async def test_unconfigured_barrier_becomes_a_silent_permanent_noop(self) -> None:

@@ -20,7 +20,7 @@ from textual.widgets._toast import Toast
 from chrys.app.tui.screens.main import MainScreen
 from chrys.app.tui.screens.themes.editor import ResettableThemeEditor
 from chrys.app.tui.screens.themes.picker import ThemesScreen
-from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcReclaimReason
+from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcReclaimReason, GcRemovedContent
 from chrys.app.tui.theme import CHRYS_LEGACY_THEME
 from chrys.app.tui.themes.document import copy_theme
 from chrys.app.tui.themes.store import UserThemeStore
@@ -142,14 +142,22 @@ async def test_close_reclaims_frozen_editor_only_after_removal(tmp_path: Path, d
 
             request_reclaim = coordinator.request_reclaim
 
-            def reclaimed(*, reason: GcReclaimReason, prompt: bool, requested_at: float | None = None) -> None:
+            def reclaimed(
+                *,
+                reason: GcReclaimReason,
+                prompt: bool,
+                requested_at: float | None = None,
+                removed: GcRemovedContent | None = None,
+            ) -> None:
                 if reason is GcReclaimReason.STABLE_CONTENT_REMOVED:
                     assert not prompt
+                    # Closing the frozen dock keeps the idle full reclaim: it offers no young content to watch.
+                    assert removed is None
                     assert app.theme_preview is None
                     for reference in references:
                         widget = reference()
                         assert widget is None or (not widget.is_attached and not widget.is_running)
-                request_reclaim(reason=reason, prompt=prompt, requested_at=requested_at)
+                request_reclaim(reason=reason, prompt=prompt, requested_at=requested_at, removed=removed)
 
             with patch.object(coordinator, "request_reclaim", autospec=True, side_effect=reclaimed) as reclaim:
                 await click_when_settled(pilot, "#theme-close")

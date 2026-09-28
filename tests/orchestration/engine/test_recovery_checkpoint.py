@@ -33,7 +33,7 @@ from tests.orchestration.engine._recovery_helpers import (
     _seed_recovery_sidecar,
 )
 from tests.support.loaded_agents import install_loaded_agent
-from tests.support.waiting import wait_until
+from tests.support.waiting import wait_for, wait_until
 
 
 async def test_recovery_checkpoint_write_is_backgrounded_then_flushed(tmp_path: Path) -> None:
@@ -110,6 +110,52 @@ async def test_typed_recovery_barrier_persists_committed_journal_exchange(tmp_pa
         ("committed-call-1", "written-1"),
         ("committed-call-2", "written-2"),
     ]
+
+
+async def test_persisted_pre_wire_barrier_is_the_only_pre_call_snapshot(tmp_path: Path) -> None:
+    """After committed tool work the strict barrier's snapshot is the one build
+    and write of the pre-call state; a best-effort checkpoint of that same
+    state would only repeat it."""
+    store = JsonFileStateStore(tmp_path)
+    engine = assemble_agent_engine(EventBus(), settings=Settings(), state_store=store)
+    engine.session.session_id = "single-barrier"
+    user = Message("user", ["do work"])
+
+    install_loaded_agent(
+        engine,
+        bindings=_HistoryStateExecutor(  # type: ignore[assignment]
+            {"messages": [user], "compressed_msgs": [], "turn_counter": 1}
+        ),
+    )
+    recorder = LoopRecorder(
+        on_pre_wire_barrier=engine.writer.persist_barrier,
+        on_result_checkpoint=engine.writer.save_checkpoint,
+    )
+    install_loaded_agent(engine, loop_recorder=recorder)
+    engine.turns.turn_state.set_current_input("do work", None, None)
+    call = Content.from_function_call("barrier-call", "write_file", arguments={})
+    call.additional_properties[TOOL_INVOCATION_ORDER_KEY] = 0
+    commit = recorder.stage_exchange([Message("assistant", [call])], [call], result_carrier_item_id="a" * 32)[0]
+    result = Content.from_function_result("barrier-call", result="written")
+    commit.commit_final(result)
+    recorder.seal_exchange(Message("tool", [result]))
+    await wait_for(lambda: engine.writer.snapshot_seq == 1, description="the slot-fill checkpoint kick built")
+    await engine.writer.flush()
+    assert engine.writer.persisted_seq == 1
+
+    await recorder.record_pre_call([user])
+
+    assert engine.writer.snapshot_seq == 2
+    assert engine.writer.persisted_seq == 2
+    assert engine.writer.pending is None
+    restored = await store.load_recovery_session("single-barrier")
+    assert restored is not None
+    assert [
+        (content.call_id, content.result)
+        for message in restored["messages"]
+        for content in message.contents
+        if content.type == "function_result"
+    ] == [("barrier-call", "written")]
 
 
 async def test_stale_background_checkpoint_cannot_downgrade_barrier_snapshot(tmp_path: Path) -> None:

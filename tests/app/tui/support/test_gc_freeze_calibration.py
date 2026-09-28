@@ -10,11 +10,13 @@ import pytest
 from scripts.gc_freeze_calibration_math import (
     aggregate_dead_cyclic_fraction,
     dead_cyclic_fraction,
+    latency_in_unfrozen_collects,
     minimum_deferred_diff_surfaces,
     validated_absorb_points,
 )
 from textual.widgets import Static
 
+from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
 from tests.support.paths import REPO_ROOT
 from tests.support.waiting import wait_until
@@ -45,6 +47,12 @@ def test_absorb_points_must_not_exceed_soft_reclaim_threshold() -> None:
     assert validated_absorb_points([12, 0, 4, 4], max_absorbs=12) == (0, 4, 12)
     with pytest.raises(ValueError, match=r"\[0, 12\]"):
         validated_absorb_points([0, 13], max_absorbs=12)
+
+
+def test_action_latency_is_counted_in_bare_unfrozen_collects() -> None:
+    assert latency_in_unfrozen_collects(300.0, unfrozen_collect_ms=120.0) == pytest.approx(2.5)
+    with pytest.raises(ValueError, match="positive"):
+        latency_in_unfrozen_collects(300.0, unfrozen_collect_ms=0.0)
 
 
 def test_dead_cyclic_fraction_uses_inclusive_freeze_delta() -> None:
@@ -95,6 +103,8 @@ async def test_action_latency_includes_deferred_full_layout_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calibration = _calibration_module(monkeypatch)
+    # Only the cyclic-cache fallback renews the screen's caches and so schedules a full layout.
+    monkeypatch.setattr(gc_freeze, "textual_screen_caches_acyclic", lambda: False)
     app, _updater = calibration._build_app(tmp_path, enabled=True)
     async with app.run_test(size=(120, 36)) as pilot:
         await calibration._wait_for_initial_freeze(app=app, pilot=pilot)

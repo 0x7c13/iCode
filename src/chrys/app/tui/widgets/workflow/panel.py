@@ -32,7 +32,7 @@ from chrys.app.tui.widgets.workflow.info import INFO_TAB, WorkflowInfo, Workflow
 from chrys.app.tui.widgets.workflow.node_view import NodeView, RetryTarget
 from chrys.app.tui.widgets.workflow.output import WorkflowOutputText, WorkflowOutputView, WorkflowStatusOutput
 from chrys.app.tui.widgets.workflow.scrollbar import WorkflowScrollBar
-from chrys.app.tui.widgets.workflow.source import workflow_source_syntax
+from chrys.app.tui.widgets.workflow.source import WorkflowSourceSyntax
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.service.workflows.graph import AgentSpec, manifest_warnings
 
@@ -530,7 +530,11 @@ class WorkflowPanel(Vertical):
 
     def show_code(self, source: bytes, *, differs: bool) -> None:
         self.code_differs = differs
-        self.query_one("#workflow-code-source", Static).update(workflow_source_syntax(source))
+        view = self.query_one("#workflow-code-source", Static)
+        # Every Code tab visit re-reads the source; a view already showing these
+        # bytes keeps its rendering and layout instead of re-highlighting them.
+        if not (isinstance(view.content, WorkflowSourceSyntax) and view.content.source == source):
+            view.update(WorkflowSourceSyntax(source))
 
     @on(TabbedContent.TabActivated, "#workflow-run")
     def view_changed(self, event: TabbedContent.TabActivated) -> None:

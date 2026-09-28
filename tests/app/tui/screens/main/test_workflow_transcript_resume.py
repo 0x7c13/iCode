@@ -135,7 +135,7 @@ async def test_resume_replays_node_progress_without_live_state_or_workflow_sourc
             assert [
                 type(widget) for widget in surface.direct_children() if isinstance(widget, AgentMessage | ToolGroup)
             ][:4] == [AgentMessage, ToolGroup, AgentMessage, ToolGroup]
-            assert [message._text for message in surface.query(AgentMessage)][:2] == [
+            assert [message.text for message in surface.query(AgentMessage)][:2] == [
                 "First inspection.",
                 "Second inspection.",
             ]
@@ -146,7 +146,7 @@ async def test_resume_replays_node_progress_without_live_state_or_workflow_sourc
                 await wait_for(lambda: bool(surface.query(InterruptedMessage)), pilot=pilot)
             else:
                 await wait_for(lambda: len(surface.query(AgentMessage)) == 3, pilot=pilot)
-                assert surface.query(AgentMessage).last()._text == "Done"
+                assert surface.query(AgentMessage).last().text == "Done"
                 assert not surface.query(ErrorMessage) and not surface.query(InterruptedMessage)
             if outcome == "retried":
                 # The same invocation owns both attempts. Switching the visible

@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 import textual._compositor as compositor_module
-from textual._compositor import Compositor
+from textual import events
+from textual._compositor import Compositor, ReflowResult
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.scalar import Scalar
@@ -159,6 +160,51 @@ async def test_a_reflow_replays_the_placements_of_unchanged_subtrees(verify_reus
         assert all(after[line] is before[line] for line in lines)
 
 
+async def test_a_resync_after_a_raw_rule_write_replays_the_unchanged_subtrees(verify_reuse: list[Compositor]) -> None:
+    """Chrome widgets write a rule and resynchronize the compositor outside a layout pass."""
+    app = _Layout()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        compositor = screen._compositor
+        before = dict(compositor._full_map)
+        lines = list(app.query_one("#log").query(Static))
+        side = app.query_one("#side-1", Static)
+        verify_reuse.clear()
+
+        # Driven synchronously, so no layout pass runs between the write and the resync.
+        side.styles.set_rule("visibility", "hidden")
+        hidden, _shown, _resized = textual_reflow_reuse.reflow_reusing_records(compositor, screen, screen.outer_size)
+
+        assert side in hidden
+        # Checked against a from-scratch arrangement, which the untouched log did not need.
+        assert verify_reuse == [compositor]
+        after = compositor._full_map
+        assert all(after[line] is before[line] for line in lines)
+
+
+class _StockCompositor(Compositor):
+    """A compositor whose reflow keeps Textual's own signature, as it does without the installed patch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reflowed: list[tuple[Widget, Size]] = []
+
+    def reflow(self, parent: Widget, size: Size) -> ReflowResult:
+        self.reflowed.append((parent, size))
+        return ReflowResult(set(), set(), set())
+
+
+def test_a_resync_without_the_installed_patch_runs_the_stock_reflow() -> None:
+    compositor = _StockCompositor()
+    root = Widget()
+
+    result = textual_reflow_reuse.reflow_reusing_records(compositor, root, Size(80, 24))
+
+    assert compositor.reflowed == [(root, Size(80, 24))]
+    assert result == ReflowResult(set(), set(), set())
+
+
 async def test_a_widget_shown_after_a_reflow_reports_its_region_before_the_next_layout(
     verify_reuse: list[Compositor],
 ) -> None:
@@ -187,6 +233,63 @@ async def test_a_widget_shown_after_a_reflow_reports_its_region_before_the_next_
         assert side.region == shown
         # The lookup rebuilt the full map from records, checked against a from-scratch arrangement.
         assert verify_reuse, "the lookup did not rebuild the full map"
+
+
+class _Announced(Static):
+    """Records the Show, Hide and Resize events it gets."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name, id=name)
+        self.events: list[str] = []
+
+    def on_show(self) -> None:
+        self.events.append("show")
+
+    def on_hide(self) -> None:
+        self.events.append("hide")
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.events.append(f"resize {event.size.width}x{event.size.height}")
+
+
+class _Announcing(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _Announced("flipped")
+        yield _Announced("steady")
+
+
+async def test_a_widget_shown_between_reflows_gets_show_after_a_lookup_mapped_it(
+    verify_reuse: list[Compositor],
+) -> None:
+    """Show goes to widgets the previous reflow did not place, not to those the full map lacks.
+
+    A geometry lookup between a display flip and the next reflow rebuilds the full map with the
+    widget already in it. Compared with that map, the reflow would find nothing new: the widget
+    would get neither Show nor the Resize a shown widget gets, and a timer it resumes on Show
+    would stay parked.
+    """
+    app = _Announcing()
+    async with app.run_test(size=(80, 24)) as pilot:
+        flipped = app.query_one("#flipped", _Announced)
+        steady = app.query_one("#steady", _Announced)
+        flipped.display = False
+        await wait_for(lambda: flipped.events[-1:] == ["hide"], pilot=pilot, description="the flip hid the widget")
+        flipped.events.clear()
+        steady.events.clear()
+        screen = app.screen
+        compositor = screen._compositor
+
+        # Driven synchronously, so no layout pass runs between the steps. A repaint outside the
+        # visible map leaves the full map stale, and the lookup after the flip rebuilds it.
+        compositor.update_widgets({flipped})
+        flipped.display = True
+        assert flipped.region.width == 80
+        screen._refresh_layout()
+
+        await wait_for(lambda: "show" in flipped.events, pilot=pilot, description="the shown widget got Show")
+        assert "resize 80x1" in flipped.events
+        # The widget that stayed shown is not announced again.
+        assert steady.events == []
 
 
 class _Watched(ScrollView):

@@ -74,6 +74,31 @@ async def test_a_bar_dropped_before_its_tabs_mount_leaves_the_app_running(bar: s
     await _mount_then_drop(_BARS[bar], turns, exit_app=exit_app)
 
 
+async def _mount_then_exit(bar: Callable[[], Widget], turns: int) -> App[None]:
+    """Mount a bar that opens on a later tab, and exit the app ``turns`` loop turns later.
+
+    From ``App.exit()`` on, a compose mounts nothing, but the bar still gets ``Mount``.
+    """
+    app = _Host()
+    async with app.run_test():
+        app.query_one("#host", Container).mount(bar())
+        for _ in range(turns):
+            await asyncio.sleep(0)
+        app.exit()
+    # Leaving run_test re-raises what took the App down, such as "No Tab with id ...".
+    return app
+
+
+@pytest.mark.parametrize("turns", range(6))
+@pytest.mark.parametrize("bar", list(_BARS))
+async def test_a_bar_mounting_after_exit_lets_the_app_exit_cleanly(bar: str, turns: int) -> None:
+    apply_runtime_patch()
+
+    app = await _mount_then_exit(_BARS[bar], turns)
+
+    assert app.return_code == 0
+
+
 async def test_a_live_bar_still_rejects_an_unknown_tab() -> None:
     apply_runtime_patch()
     app = _Host()

@@ -21,6 +21,7 @@ from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.invocation_progress import invocation_progress_parts
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptSurface,
@@ -558,8 +559,16 @@ class SubAgentToolCall(BaseToolCard):
     def _spin(self) -> None:
         if self.status == "running":
             self._spin_idx = (self._spin_idx + 1) % len(self._SPINNERS)
+            # Only a shown card repaints (see ``ToolCall._spin``); the first tick after it shows paints it.
+            if not is_widget_shown_on_active_screen(self):
+                return
             with suppress(Exception):
-                self.query_one("#sa-label", Static).update(self._running_label_text())
+                # The label shows whole seconds: most ticks leave it as it is, and
+                # rewriting an equal label would only repaint the header.
+                label = self._running_label_text()
+                header = self.query_one("#sa-label", ToolCardHeader)
+                if header.content != label:
+                    header.update(label)
                 self._update_title()
 
     def _update_title(self) -> None:

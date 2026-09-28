@@ -664,7 +664,7 @@ async def test_sub_agent_final_result_is_tool_copy_only_not_inline_selection_cop
 
         assert is_tool_copy_excluded(inner_feed)
         assert final_result in card.format_tool_execution_copy()
-        assert all(message._text != final_result for message in inner_feed.query(AgentMessage))
+        assert all(message.text != final_result for message in inner_feed.query(AgentMessage))
 
 
 @pytest.mark.asyncio

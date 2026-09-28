@@ -6,20 +6,28 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import weakref
 from pathlib import Path
 
 import pytest
+from textual.geometry import Size
+from textual.pilot import Pilot
 from textual.screen import Screen
+from textual.widget import Widget
 
 from chrys.app.tui import app as chrys_app
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Warning
+from chrys.foundation.tool_kinds import KIND_SHELL
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.paths import SRC_ROOT
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import EmptyAgentRegistry, ShutdownOnlyEngine, make_chrys_app
-from tests.support.waiting import wait_for, wait_until
+from tests.support.waiting import wait_for, wait_until, wait_until_quiet
 
 _CHRYS_CSS = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
 
@@ -186,10 +194,11 @@ async def test_gc_freeze_after_failure_normalizes_mid_screen_renewal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A mid-screen renewal failure must normalize all caches before fail-open returns."""
+    """With cyclic Textual caches, a mid-screen renewal failure must normalize all caches before fail-open returns."""
     from chrys.app.tui.support import gc_freeze
     from chrys.app.tui.support.gc_freeze import DetachedFifoCache, DetachedLruCache, GcAbsorbReason
 
+    monkeypatch.setattr(gc_freeze, "textual_screen_caches_acyclic", lambda: False)
     app = make_chrys_app(tmp_path, gc_freeze_enabled=True)
 
     async with app.run_test() as pilot:
@@ -229,6 +238,131 @@ async def test_gc_freeze_after_failure_normalizes_mid_screen_renewal(
             widget._query_one_cache.clear()
             widget._arrangement_cache.clear()
         await pilot.pause()
+
+
+async def _add_tool_turn(panel: ChatPanel, call_id: str) -> tuple[ToolGroup, weakref.ReferenceType[Widget]]:
+    """Add one completed shell-tool turn; return its group and a weakref to the pruned tool card."""
+    await panel.add_user_message(f"Run the {call_id} check\nand explain the output")
+    await panel.add_tool_start(call_id, "shell", KIND_SHELL, args={"command": f"echo {call_id}"})
+    await panel.add_tool_result(call_id, "shell", "\n".join(f"{call_id} line {line}" for line in range(20)), 40)
+    group = panel._tool_groups_by_call_id[call_id]
+    tool = _tool_widget_ref(group, call_id)
+    await panel.add_agent_message(
+        f"## {call_id}\n\nThe check passed; `echo` printed twenty lines.\n\n- first point\n- second point",
+        is_final=True,
+    )
+    return group, tool
+
+
+def _tool_widget_ref(group: ToolGroup, call_id: str) -> weakref.ReferenceType[Widget]:
+    """Build a weakref without retaining the widget in an async test frame."""
+    tool = group.get_tool(call_id)
+    if tool is None:
+        raise AssertionError(f"{call_id} has no mounted tool widget")
+    return weakref.ref(tool)
+
+
+def _all_unreachable(references: list[weakref.ReferenceType[Widget]]) -> bool:
+    """Collect young garbage, then report whether every referenced widget is gone."""
+    gc.collect()
+    return all(reference() is None for reference in references)
+
+
+async def _settle(app: ChrysApp, screen: Screen, pilot: Pilot[None]) -> None:
+    await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot, description="MainScreen settles")
+    await wait_until_quiet(lambda: screen_is_settled(app, screen), pilot=pilot, description="MainScreen stays settled")
+    assert screen_is_settled(app, screen)
+
+
+async def _run_turn_end_absorb(app: ChrysApp, screen: Screen, pilot: Pilot[None]) -> str:
+    """Post the turn-terminal absorb request and settle every layout it scheduled."""
+    from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
+
+    previous_metrics = app._gc_freeze.last_action_metrics
+    screen.post_message(GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True))
+    await wait_for(
+        lambda: app._gc_freeze.last_action_metrics is not previous_metrics,
+        pilot=pilot,
+        description="turn-end GC action completes",
+    )
+    metrics = app._gc_freeze.last_action_metrics
+    assert metrics is not None
+    await _settle(app, screen, pilot)
+    return metrics.action
+
+
+async def test_populated_turn_end_absorb_keeps_layout_and_needs_no_reclaim_for_a_young_tool_prune(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A turn-end absorb over a populated transcript neither reflows MainScreen nor queues a full reclaim.
+
+    Textual's acyclic caches stay installed across the action, so nothing forces a layout, and a
+    tool turn built and pruned since the last freeze leaves no frozen garbage to reclaim. The
+    turns are built behind a freeze gate, as a live backend turn holds one. Forcing the
+    cyclic-cache fallback afterwards proves the layout spy.
+    """
+    from chrys.app.tui.support import gc_freeze
+    from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason, GcReclaimReason
+
+    app = make_chrys_app(tmp_path, gc_freeze_enabled=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await wait_for(lambda: app._gc_freeze.frozen, pilot=pilot, description="initial GC freeze")
+        main_screen = app._main_screen
+        assert main_screen is not None
+        panel = main_screen.query_one(ChatPanel)
+
+        with monkeypatch.context() as turn_gate:
+            turn_gate.setattr(main_screen, "gc_freeze_block_reason", lambda: GcFreezeBlockReason.AGENT_RUNNING)
+            history_tools = [(await _add_tool_turn(panel, f"history-{index}"))[1] for index in range(12)]
+            await wait_for(
+                lambda: _all_unreachable(history_tools),
+                pilot=pilot,
+                description="pruned history tool cards become unreachable",
+            )
+        previous_metrics = app._gc_freeze.last_action_metrics
+        app._gc_freeze.request_reclaim(reason=GcReclaimReason.SESSION_READY, prompt=True)
+        await wait_for(
+            lambda: app._gc_freeze.last_action_metrics is not previous_metrics,
+            pilot=pilot,
+            description="populated transcript is frozen",
+        )
+        assert app._gc_freeze.last_action_metrics is not None
+        assert app._gc_freeze.last_action_metrics.action == "full"
+        assert app._gc_freeze._idle_reclaim_pending is False
+        assert len(panel.walk_children()) > 100
+
+        layout_refreshes: list[None] = []
+        refresh_layout = main_screen._refresh_layout
+
+        def _record_layout(size: Size | None = None, scroll: bool = False) -> None:
+            layout_refreshes.append(None)
+            refresh_layout(size, scroll)
+
+        with monkeypatch.context() as turn_gate:
+            turn_gate.setattr(main_screen, "gc_freeze_block_reason", lambda: GcFreezeBlockReason.AGENT_RUNNING)
+            live_group, live_tool = await _add_tool_turn(panel, "live")
+            await wait_for(lambda: not live_group._content_mounted, pilot=pilot, description="live tool turn pruned")
+            # The card's cancelled spinner interval keeps it reachable from the event loop
+            # until its deadline; a real turn spends far longer on the final answer.
+            await wait_for(
+                lambda: _all_unreachable([live_tool]),
+                pilot=pilot,
+                description="pruned live tool card becomes unreachable",
+            )
+            await _settle(app, main_screen, pilot)
+            assert app._gc_freeze._idle_reclaim_pending is False
+            monkeypatch.setattr(main_screen, "_refresh_layout", _record_layout)
+
+        assert await _run_turn_end_absorb(app, main_screen, pilot) == "absorb"
+        assert layout_refreshes == []
+        assert app._gc_freeze._idle_reclaim_pending is False
+        assert app._gc_freeze._idle_reclaim_reasons == set()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(gc_freeze, "textual_screen_caches_acyclic", lambda: False)
+            assert await _run_turn_end_absorb(app, main_screen, pilot) == "absorb"
+        assert layout_refreshes
 
 
 async def test_foreign_freeze_degradation_publishes_user_visible_startup_warning(

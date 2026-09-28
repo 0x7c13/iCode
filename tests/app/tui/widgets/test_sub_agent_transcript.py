@@ -116,7 +116,7 @@ async def test_sub_agent_final_result_is_detail_only_and_detail_stays_live() -> 
             pilot=pilot,
             description="live detail terminal update",
         )
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "I will inspect the tests.",
             final_result,
         ]
@@ -148,7 +148,7 @@ async def test_sub_agent_transcript_result_records_only_unpublished_final_segmen
             description="deduplicated ACP transcript result",
         )
 
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "First published segment.",
             "Final unpublished segment.",
         ]
@@ -179,7 +179,7 @@ async def test_sub_agent_transcript_result_does_not_repeat_when_no_final_segment
             description="ACP transcript without duplicate terminal segment",
         )
 
-        assert [message._text for message in detail.query(AgentMessage)] == ["Already published segment."]
+        assert [message.text for message in detail.query(AgentMessage)] == ["Already published segment."]
         assert card.result_text == "Already published segment."
 
 
@@ -219,7 +219,7 @@ async def test_sub_agent_empty_override_keeps_parent_fallback_when_durable_repla
             description="parent fallback after unavailable durable ACP replay",
         )
 
-        assert [message._text for message in detail.query(AgentMessage)] == ["Already published segment."]
+        assert [message.text for message in detail.query(AgentMessage)] == ["Already published segment."]
 
 
 async def test_sub_agent_persisted_acp_uses_only_successful_attempt_for_parent_result(tmp_path) -> None:
@@ -312,7 +312,7 @@ async def test_sub_agent_persisted_acp_uses_only_successful_attempt_for_parent_r
             description="persisted ACP transcript without duplicate parent fallback",
         )
 
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "Old failed attempt.",
             "New first.",
             "New second.",
@@ -419,13 +419,13 @@ async def test_sub_agent_surface_preserves_message_tool_boundaries_and_retracts_
             presentation=ProvisionalPresentation("attempt-1", "segment-1"),
         )
         await wait_for(
-            lambda: any(message._text == "Discard me" for message in surface.query(AgentMessage)),
+            lambda: any(message.text == "Discard me" for message in surface.query(AgentMessage)),
             pilot=pilot,
             description="provisional sub-agent message",
         )
         card.reject_presentation_attempt("attempt-1")
         await wait_for(
-            lambda: not any(message._text == "Discard me" for message in surface.query(AgentMessage)),
+            lambda: not any(message.text == "Discard me" for message in surface.query(AgentMessage)),
             pilot=pilot,
             description="retracted sub-agent message",
         )
@@ -554,7 +554,7 @@ async def test_sub_agent_detail_replays_persisted_transcript_without_duplicate_f
         )
 
         assert loaded == ["Explore_a1b2c3d4e5f6.json"]
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "I will inspect.",
             "Persisted final.",
         ]
@@ -638,7 +638,7 @@ async def test_sub_agent_detail_keeps_parent_result_when_acp_replay_tail_is_trun
             description="authoritative parent result after truncated ACP replay",
         )
 
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "answer tail",
             "Authoritative beginning and answer tail",
         ]
@@ -672,13 +672,13 @@ async def test_sub_agent_detail_does_not_load_incomplete_audit_snapshot() -> Non
         assert isinstance(detail, AgentTranscriptSurface)
         await pilot.app.mount(detail)
         await wait_for(
-            lambda: any(message._text == "Authoritative parent result." for message in detail.query(AgentMessage)),
+            lambda: any(message.text == "Authoritative parent result." for message in detail.query(AgentMessage)),
             pilot=pilot,
             description="authoritative parent fallback rendered",
         )
 
         assert loaded == ["Explore_incomplete.json"]
-        assert [message._text for message in detail.query(AgentMessage)] == ["Authoritative parent result."]
+        assert [message.text for message in detail.query(AgentMessage)] == ["Authoritative parent result."]
 
 
 async def test_running_sub_agent_detail_stays_live_when_terminal_audit_is_already_readable() -> None:
@@ -712,7 +712,7 @@ async def test_running_sub_agent_detail_stays_live_when_terminal_audit_is_alread
         )
 
         assert loaded == []
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "Live work after opening.",
             "Error: failed after the detail modal opened",
         ]
@@ -745,7 +745,7 @@ async def test_running_sub_agent_detail_captures_completion_before_surface_mount
             description="pre-mount sub-agent completion drained",
         )
 
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "Completed before the detail surface mounted."
         ]
 
@@ -771,7 +771,7 @@ async def test_terminal_sub_agent_keeps_bounded_fallback_with_display_name() -> 
         )
 
         messages = list(detail.query(AgentMessage))
-        assert [message._text for message in messages] == ["working", "final answer"]
+        assert [message.text for message in messages] == ["working", "final answer"]
         assert {message._profile_name for message in messages} == {"Explore Agent"}
         assert [item._text for item in detail.query(UserMessage)] == ["investigate"]
 
@@ -830,7 +830,7 @@ async def test_terminal_audit_from_invocation_start_lazily_releases_cancelled_ca
 
         assert loaded == ["Explore_terminal.json"]
         assert card._transcript_journal.operations == ()
-        assert [message._text for message in detail.query(AgentMessage)] == [
+        assert [message.text for message in detail.query(AgentMessage)] == [
             "Persisted work.",
             "Error: cancelled (global interrupt)",
         ]

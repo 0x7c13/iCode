@@ -1028,11 +1028,12 @@ class _MainStreamObserver:
     response start has released, then checks the batch once more after
     iteration as a safety net for a last tool response with no following
     update. It emits the final
-    response's remaining text progressively by line as cumulative
-    ``InvocationMessage(is_final=False)`` events, including one last emission for
-    an unterminated tail, before ``_publish_response_text`` emits
-    ``is_final=True``. When the hosted bridge owns the text, this observer
-    discards its buffer and emits no text; interruption also suppresses emission.
+    response's remaining text as one cumulative ``InvocationMessage(is_final=False)``
+    snapshot before ``_publish_response_text`` emits ``is_final=True``. The text
+    was buffered whole, so replaying it line by line only fakes streaming: every
+    line would publish the whole text so far through the bus and every subscriber.
+    When the hosted bridge owns the text, this observer discards its buffer and
+    emits no text; interruption also suppresses emission.
     """
 
     def __init__(self, executor: TurnBindings) -> None:
@@ -1075,14 +1076,8 @@ class _MainStreamObserver:
         # without one releases it here.
         await executor.tool_events.release_intermediate_text()
         if self._buffer and not self._bridge_owns_text and not executor._interrupt.is_interrupted:
-            lines = self._buffer.splitlines(keepends=True)
-            emitted = ""
-            for i, line in enumerate(lines):
-                emitted += line
-                is_last = i == len(lines) - 1
-                if (line and line[-1] in ("\n", "\r")) or is_last:
-                    await self._emitter.publish(
-                        InvocationMessage(
-                            origin=self._emitter.origin, text=emitted, is_final=False, session_id=executor._session_id
-                        )
-                    )
+            await self._emitter.publish(
+                InvocationMessage(
+                    origin=self._emitter.origin, text=self._buffer, is_final=False, session_id=executor._session_id
+                )
+            )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
@@ -22,6 +23,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
+from chrys.app.tui.util.removal import finish_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets import (
     ASK_USER_INPUT_MAX_HEIGHT,
@@ -65,6 +67,7 @@ _ASK_USER_WAITING = msg("tui.tool_card.ask_user.waiting", fallback="waiting")
 if TYPE_CHECKING:
     from rich.console import RenderableType
     from textual.app import ComposeResult
+    from textual.await_remove import AwaitRemove
 
 _USER_RESPONSE_PREFIX = "User response:"
 _INLINE_PANEL_FRAME_ROWS = 2
@@ -288,6 +291,8 @@ class AskUserToolCall(BaseToolCard):
         self._chat_viewport_height = 0
         self._inline_resize_generation = 0
         self._inline_scheduled_sync_generation: int | None = None
+        self._inline_mount_generation = 0
+        """Advanced by every show and clear; a prompt waiting for its predecessor to go mounts only if still current."""
 
     def _label_text(self, duration_ms: int = 0) -> Text:
         t = Text()
@@ -374,11 +379,28 @@ class AskUserToolCall(BaseToolCard):
         self._question = questions[0].question if questions else ""
         self._inline_request_id = request_id
         self._inline_submitted = False
+        self._inline_mount_generation += 1
         try:
             panel = self.query_one("#ask-panel")
-            with suppress(Exception):
-                self.query_one("#ask-inline").remove()
-            panel.mount(prompt)
+            # A previous prompt keeps its id until its removal completes, even
+            # one removed already: this one mounts once it is gone.
+            previous = list(panel.query_children("#ask-inline"))
+            if previous:
+                # A partial, not a coroutine: a later show can cancel this worker
+                # before it starts, and a coroutine never awaited warns.
+                self.run_worker(
+                    partial(
+                        self._mount_inline_prompt_after,
+                        panel.remove_children(previous),
+                        panel,
+                        prompt,
+                        self._inline_mount_generation,
+                    ),
+                    group="ask-inline-mount",
+                    exclusive=True,
+                )
+            else:
+                panel.mount(prompt)
         except Exception:
             self._inline_request_id = ""
             return False
@@ -395,11 +417,23 @@ class AskUserToolCall(BaseToolCard):
         self._update_active_question(prompt.active_index)
         return True
 
+    async def _mount_inline_prompt_after(
+        self, removal: AwaitRemove, panel: Widget, prompt: AskUserPrompt, generation: int
+    ) -> None:
+        await finish_shielded(removal)
+        # A later show or clear took over meanwhile, or the card is going.
+        if generation != self._inline_mount_generation or not panel.is_attached or panel._pruning:
+            return
+        panel.mount(prompt)
+        self._schedule_inline_layout_sync()
+        self._update_active_question(prompt.active_index)
+
     def clear_inline_prompt(self) -> None:
         """Remove any active inline answer controls."""
         self.remove_class("-inline")
         self._inline_request_id = ""
         self._inline_submitted = False
+        self._inline_mount_generation += 1
         self._inline_last_width = 0
         self._inline_resize_generation += 1
         self._inline_scheduled_sync_generation = None

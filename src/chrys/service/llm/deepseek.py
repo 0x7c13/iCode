@@ -67,6 +67,7 @@ from chrys.service.llm.openai_chat_completion import (
     REASONING_FORMAT_KEY as REASONING_FORMAT_KEY,
 )
 from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
 
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 DeepSeekResponsesReasoningReplayMode = Literal["encrypted", "plaintext-replay", "plaintext-valid-drop"]
@@ -94,7 +95,7 @@ class DeepSeekChatCompletionClient(RawOpenAIChatCompletionClient):
     ``chrys.service.llm.instrumented``.
     """
 
-    TOKEN_LIMIT_PARAM: ClassVar[str] = "max_tokens"
+    TOKEN_LIMIT_PARAM: ClassVar[str] = CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS["deepseek-openai"]
 
     def _parse_usage_from_openai(self, usage: Any) -> Any:
         """Inject DeepSeek's non-standard ``prompt_cache_hit_tokens`` field.

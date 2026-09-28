@@ -564,7 +564,7 @@ async def test_sub_agent_terminal_header_view_opens_full_transcript() -> None:
             pilot=pilot,
             description="terminal sub-agent full transcript",
         )
-        assert [message._text for message in surface.query(AgentMessage)] == [
+        assert [message.text for message in surface.query(AgentMessage)] == [
             "I will inspect the file.",
             "Inspection complete.",
         ]

@@ -17,6 +17,7 @@ from textual.widgets import Static
 from chrys.app.tui.clipboard import OSC52_COPY_MAX_BYTES, copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.widgets.chat.tool_call import (
     TOOL_COPY_EXCLUDED_CLASS,
     ToolCopyButton,
@@ -199,7 +200,7 @@ class CompactionCard(Vertical):
         if self.status != "running":
             return
         with suppress(Exception):
-            self.query_one("#compaction-label", Static).update(self._running_label_text())
+            update_static_in_place(self.query_one("#compaction-label", Static), self._running_label_text())
 
     def _running_label_text(self) -> Content:
         # Accent title (widget CSS) with a dim elapsed trail — matching the

@@ -30,10 +30,15 @@ match.
 Replayed placements are the recorded objects, so the reflow diff settles most widgets by
 identity.
 
-Only a reflow from ``Screen._refresh_layout`` and ``full_map`` reuse records; ``_arrange_root``
-keeps its signature and takes that choice from ``_reuse_next_arrangement``. As upstream's, a
-reflow leaves a pending full-map rebuild pending: a repaint outside the visible map requests one,
-and a widget shown after the reflow then reports the region its next layout gives it. Tests set
+Only a reflow from ``Screen._refresh_layout``, ``full_map`` or ``reflow_reusing_records`` reuses
+records. The last serves code that writes raw style rules outside a layout pass (chrome visibility
+and width flips) and then resynchronizes the compositor: the rule writes stamp their widgets, so
+only those widgets' ancestor paths are arranged again. ``_arrange_root`` keeps its signature and
+takes the choice from ``_reuse_next_arrangement``. As upstream's, a reflow leaves a pending
+full-map rebuild pending: a repaint outside the visible map requests one, and a widget shown after
+the reflow then reports the region its next layout gives it. That rebuild must not decide which
+widgets are new, though: a reflow reports Show against the map the previous reflow produced, so a
+widget shown in between still gets Show and its first Resize after a lookup mapped it. Tests set
 ``textual._compositor._VERIFY_REUSE`` to check every reusing arrangement against a from-scratch
 one that starts from the same scroll and anchor state: anchoring and ``arrange`` overrides such
 as the chat panel's write that state, so arranging twice in a row can differ. The check compares
@@ -53,9 +58,15 @@ hide the values an existing instance keeps in its ``__dict__``.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Protocol, TypeGuard
 
 from chrys.foundation.patches.patcher import FilePatch
 from chrys.foundation.patches.staged_members import StagedSourceDriftError, members_installed, stage_members
+
+if TYPE_CHECKING:
+    from textual._compositor import Compositor, ReflowResult
+    from textual.geometry import Size
+    from textual.widget import Widget
 
 _RUNTIME_PATCH_MARKER = "_chrys_reflow_reuse"
 _RUNTIME_PATCH_TEXTUAL_VERSION = "8.2.7"
@@ -153,6 +164,8 @@ _REFLOW_3_NEW = """\
         self._arrange_records_root: Widget | None = None
         # Set by a caller for the next `_arrange_root` call, which consumes it
         self._reuse_next_arrangement = False
+        # The map the last reflow produced, which Show is reported against
+        self._reflowed_map: CompositorMap = {}
 
     def clear(self) -> None:
         \"\"\"Remove all references to widgets (used when the screen closes).\"\"\""""
@@ -169,6 +182,7 @@ _REFLOW_4_NEW = """\
         self._layers_visible = None
         self._arrange_records = {}
         self._arrange_records_root = None
+        self._reflowed_map = {}
 
     @classmethod"""
 
@@ -211,7 +225,11 @@ _REFLOW_7_OLD = """\
 
         map, widgets = self._arrange_root(parent, size, visible_only=False)
 
-        new_widgets = map.keys()"""
+        new_widgets = map.keys()
+
+        # Newly visible widgets
+        shown_widgets = new_widgets - old_widgets
+"""
 
 _REFLOW_7_NEW = """\
         old_widgets = old_map.keys()
@@ -222,7 +240,14 @@ _REFLOW_7_NEW = """\
         if state is not None:
             self._verify_reuse(parent, size, map, widgets, state)
 
-        new_widgets = map.keys()"""
+        new_widgets = map.keys()
+
+        # Newly visible widgets: those the last reflow did not place. A geometry lookup since
+        # then may have rebuilt the full map with them already in it, and compared with that
+        # map they would never get Show, or the Resize a shown widget gets.
+        shown_widgets = new_widgets - self._reflowed_map.keys()
+        self._reflowed_map = map
+"""
 
 # _compositor.py: Compositor.reflow
 _REFLOW_8_OLD = """\
@@ -1696,6 +1721,30 @@ def apply_runtime_patch() -> None:
     compositor_globals.setdefault("_VERIFY_REUSE", False)
     for members in staged:
         members.install(_RUNTIME_PATCH_MARKER)
+
+
+def reflow_reusing_records(compositor: Compositor, root: Widget, size: Size) -> ReflowResult:
+    """``compositor.reflow(root, size)`` that replays every subtree unchanged since the last full arrangement.
+
+    For a caller that resynchronizes the compositor outside a layout pass after changes that stamp
+    their widgets (a raw style-rule write does): only the stamped widgets' ancestor paths are
+    arranged again, instead of every displayed widget. Without the installed patch (another
+    Textual version) this is the stock reflow, which arranges the whole tree.
+    """
+    if _reflow_reuses_records(compositor):
+        return compositor.reflow(root, size, reuse=True)
+    return compositor.reflow(root, size)
+
+
+class _ReusingCompositor(Protocol):
+    """A compositor whose ``reflow`` is the installed one, which Textual's own signature does not describe."""
+
+    def reflow(self, parent: Widget, size: Size, reuse: bool = False) -> ReflowResult: ...
+
+
+def _reflow_reuses_records(compositor: Compositor) -> TypeGuard[_ReusingCompositor]:
+    """Whether ``compositor.reflow`` is the installed reusing reflow, which takes ``reuse``."""
+    return bool(vars(type(compositor).reflow).get(_RUNTIME_PATCH_MARKER, False))
 
 
 def _module_name(patch: FilePatch) -> str:

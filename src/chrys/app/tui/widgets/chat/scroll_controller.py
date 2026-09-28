@@ -26,7 +26,7 @@ def scroll_gc_paused() -> bool:
 
 
 def _claim_scroll_gc_pause() -> None:
-    """Disable cyclic GC while at least one chat panel is actively scrolling."""
+    """Disable cyclic GC while at least one chat panel scrolls or replays."""
     global _SCROLL_GC_PAUSE_OWNERS, _SCROLL_GC_WAS_ENABLED
     if _SCROLL_GC_PAUSE_OWNERS == 0:
         _SCROLL_GC_WAS_ENABLED = gc.isenabled()
@@ -35,17 +35,64 @@ def _claim_scroll_gc_pause() -> None:
     _SCROLL_GC_PAUSE_OWNERS += 1
 
 
-def _release_scroll_gc_pause() -> None:
-    """Restore cyclic GC when the last chat-panel scroll pause ends."""
+def _release_scroll_gc_pause(*, collect_first: bool = False) -> None:
+    """Restore cyclic GC when the last chat-panel pause ends.
+
+    ``collect_first`` runs one full collection before this owner lets go, but
+    only when the pause is hiding an enabled collector. An owner that
+    allocated a whole transcript would otherwise hand that backlog to the
+    first automatic passes after the pause (or to another owner's resume),
+    and the survivors would be traversed again by later gen1/gen2 passes; one
+    full pass moves them to the oldest generation at once.
+    """
     global _SCROLL_GC_PAUSE_OWNERS, _SCROLL_GC_WAS_ENABLED
     if _SCROLL_GC_PAUSE_OWNERS <= 0:
         return
+    if collect_first and _SCROLL_GC_WAS_ENABLED:
+        gc.collect()
     _SCROLL_GC_PAUSE_OWNERS -= 1
     if _SCROLL_GC_PAUSE_OWNERS == 0:
         was_enabled = _SCROLL_GC_WAS_ENABLED
         _SCROLL_GC_WAS_ENABLED = False
         if was_enabled:
             gc.enable()
+
+
+class ChatGcPauseClaim:
+    """One owner's idempotent hold on the shared chat-panel GC pause."""
+
+    __slots__ = ("_held",)
+
+    def __init__(self) -> None:
+        self._held = False
+
+    @property
+    def held(self) -> bool:
+        return self._held
+
+    def claim(self) -> None:
+        """Join the shared pause; a claim already held stays one owner."""
+        if not self._held:
+            _claim_scroll_gc_pause()
+            self._held = True
+
+    def collect_young(self) -> None:
+        """Free the cycles allocated since the last pass, keeping older objects.
+
+        Only while this claim hides an enabled collector. A long pause would
+        otherwise keep every cycle it allocates: the heap grows by that
+        garbage, and the survivors stay scattered between its blocks once it
+        is freed, which slows every later full pass. A young pass costs only
+        what was allocated since the previous one.
+        """
+        if self._held and _SCROLL_GC_WAS_ENABLED:
+            gc.collect(0)
+
+    def release(self, *, collect_first: bool = False) -> None:
+        """Leave the shared pause once, however many exit paths call this."""
+        if self._held:
+            self._held = False
+            _release_scroll_gc_pause(collect_first=collect_first)
 
 
 class ManualScrollGcGuard:
@@ -117,6 +164,11 @@ class ChatScrollController:
         self.programmatic_scroll: bool = False
         self.anchor_sync_scheduled: bool = False
         self.agent_running: bool = False
+        self.view_hold_active: bool = False
+        self._view_hold_child: tuple[Widget, int] | None = None
+        self._view_hold_arrangement: DockArrangeResult | None = None
+        self._settle_reanchor_generation = 0
+        """Advanced by a TOC jump; a settle re-pin queued before it leaves the view where the jump put it."""
 
     def set_agent_running(self, running: bool) -> None:
         """Mirror current run state and reset the final gate only on run start."""
@@ -208,8 +260,85 @@ class ChatScrollController:
             and not self._host.is_anchor_released()
         ):
             self._host.set_anchor_released(True)
-            self._host.call_after_refresh(self.reanchor_after_settle)
+            self._host.call_after_refresh(self._reanchor_after_settle_unless_jumped, self._settle_reanchor_generation)
+        if not optimal and (self.view_hold_active or self._view_hold_child is not None):
+            self._hold_view(result)
         return result
+
+    def begin_view_hold(self) -> None:
+        """Keep a scrolled-up view on its content while entries land above it."""
+        self.view_hold_active = True
+
+    def end_view_hold(self) -> None:
+        """Stop tracking after the next arrange applies the last pending shift."""
+        self.view_hold_active = False
+        self._view_hold_arrangement = None
+
+    def prepare_insertion_above(self) -> None:
+        """Pick the tracked child from the last layout before content lands above it.
+
+        A scroll since the last arrange has not re-picked yet; the child that
+        layout shows first at the current offset is still the one to keep.
+        """
+        arrangement = self._view_hold_arrangement
+        if (
+            self.view_hold_active
+            and self._view_hold_child is None
+            and arrangement is not None
+            and self._host.is_anchored()
+            and self._host.is_anchor_released()
+        ):
+            self._view_hold_child = self._first_visible_child(arrangement, self._host.scroll_y)
+
+    def _hold_view(self, result: DockArrangeResult) -> None:
+        """Shift a released view by the height that landed above its first child.
+
+        Textual keeps ``scroll_y`` numeric, so rows inserted above the viewport
+        push the content being read down and out of view. Track the child at
+        the top of the viewport by its arranged y and, when an arrange moves it,
+        move ``scroll_y`` by the same amount before the compositor reads the
+        offset (the compositor's own anchor pin writes it the same way). A
+        bottom-following view needs nothing: the compositor re-pins it.
+        """
+        host = self._host
+        if not (host.is_anchored() and host.is_anchor_released()):
+            self._view_hold_child = None
+            self._view_hold_arrangement = result if self.view_hold_active else None
+            return
+        scroll_y = host.scroll_y
+        tracked = self._view_hold_child
+        if tracked is not None:
+            child, old_y = tracked
+            for placement in result.placements:
+                if placement.widget is child:
+                    delta = placement.region.y - old_y
+                    if delta:
+                        scroll_y = max(0.0, scroll_y + delta)
+                        host.set_scroll_y_reactive(scroll_y)
+                        host.set_scroll_target_y_reactive(scroll_y)
+                        host.set_vertical_scrollbar_position(scroll_y)
+                    break
+        if not self.view_hold_active:
+            self._view_hold_child = None
+            self._view_hold_arrangement = None
+            return
+        self._view_hold_arrangement = result
+        self._view_hold_child = self._first_visible_child(result, scroll_y)
+
+    @staticmethod
+    def _first_visible_child(result: DockArrangeResult, scroll_y: float) -> tuple[Widget, int] | None:
+        for placement in result.placements:
+            if not placement.fixed and placement.region.bottom > scroll_y:
+                return placement.widget, placement.region.y
+        return None
+
+    def note_toc_jump(self) -> None:
+        """A TOC jump moved the view; a settle re-pin already queued must not pull it back to the bottom."""
+        self._settle_reanchor_generation += 1
+
+    def _reanchor_after_settle_unless_jumped(self, generation: int) -> None:
+        if generation == self._settle_reanchor_generation:
+            self.reanchor_after_settle()
 
     def reanchor_after_settle(self) -> None:
         """Re-engage the anchor and pin to settled ``max_scroll_y``."""
@@ -255,7 +384,14 @@ class ChatScrollController:
             self._host.call_after_refresh(self.release_size_hold)
             return changed
         self.held_shrink_height = -1
-        return self._host.call_super_size_updated(size, virtual_size, container_size, layout)
+        # Textual clamps the scroll offset to the new size in this call: content
+        # that shrank moved the view, not the user.
+        programmatic = self.programmatic_scroll
+        self.programmatic_scroll = True
+        try:
+            return self._host.call_super_size_updated(size, virtual_size, container_size, layout)
+        finally:
+            self.programmatic_scroll = programmatic
 
     def release_size_hold(self) -> None:
         """Force a layout pass that either recovers or accepts the held shrink."""
@@ -431,6 +567,9 @@ class ChatScrollController:
         self.final_response_started = False
         self.programmatic_scroll = False
         self.anchor_sync_scheduled = False
+        self.view_hold_active = False
+        self._view_hold_child = None
+        self._view_hold_arrangement = None
         self._host.anchor()
 
     def stop(self) -> None:
@@ -440,3 +579,5 @@ class ChatScrollController:
             self.manual_scroll_gc_timer = None
         self.scrollbar_grabbed = False
         self.resume_gc_after_manual_scroll(schedule_collect=False)
+        self.end_view_hold()
+        self._view_hold_child = None

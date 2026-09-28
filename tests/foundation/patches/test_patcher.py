@@ -215,6 +215,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         textual_precompose,
         textual_pruned_tabs,
         textual_reflow_reuse,
+        textual_removed_node_caches,
         textual_removed_screen_callbacks,
         textual_selection_extract,
         textual_strip_cycles,
@@ -256,6 +257,7 @@ def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch.setattr(textual_option_list, "apply_runtime_patch", lambda: calls.append("option_list"))
     monkeypatch.setattr(textual_precompose, "apply_runtime_patch", lambda: calls.append("precompose"))
     monkeypatch.setattr(textual_pruned_tabs, "apply_runtime_patch", lambda: calls.append("pruned_tabs"))
+    monkeypatch.setattr(textual_removed_node_caches, "apply_runtime_patch", lambda: calls.append("removed_node_caches"))
     monkeypatch.setattr(
         textual_removed_screen_callbacks,
         "apply_runtime_patch",
@@ -289,6 +291,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         "option_list",
         "precompose",
         "pruned_tabs",
+        "removed_node_caches",
         "removed_screen_callbacks",
         "selection_extract",
         "tab_selection",

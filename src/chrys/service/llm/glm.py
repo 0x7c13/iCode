@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
+from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
 
 GLM_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 
@@ -36,4 +37,4 @@ class GLMChatCompletionClient(RawOpenAIChatCompletionClient):
     base client unchanged.
     """
 
-    TOKEN_LIMIT_PARAM: ClassVar[str] = "max_tokens"
+    TOKEN_LIMIT_PARAM: ClassVar[str] = CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS["glm-openai"]

@@ -13,8 +13,12 @@ terminal output, a populated file-suggestion index, and frozen ToolGroup
 removal. Optional repeated theme invalidation is a separate policy stress. The
 script emits one JSON report and exits nonzero when any whole-App, retained-byte,
 dead-object, removal-recovery, or ratio-based latency gate fails.
-Action latency includes the deferred full-screen layouts scheduled by cache
-renewal, not only the coordinator's synchronous GC/hook duration.
+Action latency includes any deferred full-screen layout an action schedules
+(the cyclic-cache fallback's cache renewal), not only the coordinator's
+synchronous GC/hook duration. The absorb and full-reclaim gates express it in
+bare full collections of a matched unfrozen heap, a basis that no overhead of
+the freeze design can inflate; the ratios against the unfrozen scan run through
+the participant hooks are reported alongside for comparison.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from gc_freeze_calibration_math import (
 )
 from gc_freeze_calibration_math import (
     dead_cyclic_fraction,
+    latency_in_unfrozen_collects,
     minimum_deferred_diff_surfaces,
     validated_absorb_points,
 )
@@ -84,8 +89,13 @@ _MEASUREMENT_NOISE_BYTES = 64 * 1024
 _DEAD_CYCLIC_FRACTION_LIMIT = 0.25
 _LATENCY_SAMPLE_COUNT = 4
 _FROZEN_COLLECT_RATIO_LIMIT = 0.25
+# The absorb and full-reclaim limits count bare unfrozen full collections
+# (``latency_in_unfrozen_collects``). At --turns 12, with Textual's caches left
+# installed, an absorb measured about 0.2 of them and a full reclaim about 2.2. The
+# cyclic-cache fallback, whose cache renewal reflows the whole screen, measured about
+# 2.2 and 3.9, so it fails both limits.
 _ABSORB_TO_UNFROZEN_RATIO_LIMIT = 1.25
-_FULL_TO_UNFROZEN_RATIO_LIMIT = 2.0
+_FULL_TO_UNFROZEN_RATIO_LIMIT = 3.0
 _POPULATED_CACHE_FULL_RATIO_LIMIT = 2.0
 _ABSORB_TRANSCRIPT_SCALING_LIMIT = 3.0
 _ACTION_WAIT_TIMEOUT_SECONDS = 5.0
@@ -162,7 +172,11 @@ class _LayoutMeasurementTarget:
 
 @dataclass(frozen=True, slots=True)
 class LatencyResult:
-    """Ratio-based latency gates that remain comparable across CI hosts."""
+    """Ratio-based latency gates that remain comparable across CI hosts.
+
+    The ``*_prepared_ratio`` fields divide by the unfrozen scan run through the participant
+    hooks (and any layout they schedule) instead; they are reported for comparison only.
+    """
 
     unfrozen_full_collect_ms: tuple[float, ...]
     unfrozen_full_collect_reference_ms: float
@@ -176,6 +190,8 @@ class LatencyResult:
     absorb_to_unfrozen_ratio_limit: float
     full_to_unfrozen_ratio: float
     full_to_unfrozen_ratio_limit: float
+    absorb_to_unfrozen_prepared_ratio: float
+    full_to_unfrozen_prepared_ratio: float
     populated_cache_full_ratio: float
     populated_cache_full_ratio_limit: float
     small_transcript_turns: int
@@ -1248,14 +1264,20 @@ async def calibrate(
             unfrozen_action_reference = unfrozen.prepared_action_ms
             max_gated_absorb_ms = max([*large_absorb_samples, *absorb_samples])
             frozen_collect_ratio = max(large_frozen_collect_samples) / unfrozen_reference
-            absorb_to_unfrozen_ratio = max_gated_absorb_ms / unfrozen_action_reference
+            absorb_to_unfrozen_ratio = latency_in_unfrozen_collects(
+                max_gated_absorb_ms,
+                unfrozen_collect_ms=unfrozen_reference,
+            )
             full_with_file_ms = max(interval.full_reclaim_ms for interval in intervals)
             representative_full_ms = max(
                 baseline.full_reclaim_ms,
                 collapse.reclaim_ms,
                 statistics.median(interval.full_reclaim_ms for interval in intervals),
             )
-            full_to_unfrozen_ratio = representative_full_ms / unfrozen_action_reference
+            full_to_unfrozen_ratio = latency_in_unfrozen_collects(
+                representative_full_ms,
+                unfrozen_collect_ms=unfrozen_reference,
+            )
             populated_cache_full_ratio = full_with_file_ms / max(baseline.full_reclaim_ms, 0.001)
             transcript_scaling_ratio = statistics.median(large_absorb_samples) / max(
                 statistics.median(small_absorb_samples),
@@ -1281,6 +1303,8 @@ async def calibrate(
                 absorb_to_unfrozen_ratio_limit=_ABSORB_TO_UNFROZEN_RATIO_LIMIT,
                 full_to_unfrozen_ratio=full_to_unfrozen_ratio,
                 full_to_unfrozen_ratio_limit=_FULL_TO_UNFROZEN_RATIO_LIMIT,
+                absorb_to_unfrozen_prepared_ratio=max_gated_absorb_ms / unfrozen_action_reference,
+                full_to_unfrozen_prepared_ratio=representative_full_ms / unfrozen_action_reference,
                 populated_cache_full_ratio=populated_cache_full_ratio,
                 populated_cache_full_ratio_limit=_POPULATED_CACHE_FULL_RATIO_LIMIT,
                 small_transcript_turns=small_turns,

@@ -104,7 +104,7 @@ async def test_sub_agent_renders_task_prompt_as_markdown_in_dedicated_panel() ->
         nested = matched[0]
         assert isinstance(nested, BaseToolCard)
         assert nested.tool_name == "read_file"
-        assert prompt not in [message._text for message in surface.query(AgentMessage)]
+        assert prompt not in [message.text for message in surface.query(AgentMessage)]
 
 
 def test_sub_agent_renderer_uses_base_tool_card_contract() -> None:

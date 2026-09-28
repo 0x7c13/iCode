@@ -647,9 +647,16 @@ class LoopRecorder:
             len(self._captured),
             len(self._captured) - self._initial_count,
         )
-        await self._run_pre_wire_barrier()
-        if self._on_result_checkpoint is not None and not self._should_suppress_checkpoint():
-            await self._on_result_checkpoint()
+        barrier_persisted = await self._run_pre_wire_barrier()
+        if self._on_result_checkpoint is None:
+            return
+        # A persisted barrier already made this pre-call state durable; the
+        # best-effort checkpoint would only build and write it again. Suppression
+        # still runs first: it records this prefix as checkpointed, so a retry of
+        # the same request stays suppressed after a later barrier failure.
+        if self._should_suppress_checkpoint() or barrier_persisted:
+            return
+        await self._on_result_checkpoint()
 
     def record_response(self, response: ChatResponse) -> None:
         """Record assistant function-call messages from a parsed response.
@@ -791,23 +798,24 @@ class LoopRecorder:
         )
         self._fill_slot(exchange, slot, result, fill_kind="interrupted")
 
-    async def _run_pre_wire_barrier(self) -> None:
+    async def _run_pre_wire_barrier(self) -> bool:
+        """Strictly persist committed tool work; True only when the barrier reports it persisted."""
         if self._committed_count == 0 or self._barrier_degraded or self._barrier_unconfigured:
-            return
+            return False
         callback = self._on_pre_wire_barrier
         if callback is None:
             self._barrier_unconfigured = True
-            return
+            return False
         for _attempt in range(2):
             try:
                 outcome = await callback()
             except Exception:
                 outcome = RecoveryPersistOutcome.FAILED
             if outcome is RecoveryPersistOutcome.PERSISTED:
-                return
+                return True
             if outcome is RecoveryPersistOutcome.UNCONFIGURED:
                 self._barrier_unconfigured = True
-                return
+                return False
         self._barrier_degraded = True
         if not self._barrier_warned:
             self._barrier_warned = True
@@ -815,6 +823,7 @@ class LoopRecorder:
                 "Recovery sidecar persistence failed twice after committed tool work; "
                 "continuing with the in-memory journal."
             )
+        return False
 
     def _kick_result_checkpoint(self) -> None:
         callback = self._on_result_checkpoint

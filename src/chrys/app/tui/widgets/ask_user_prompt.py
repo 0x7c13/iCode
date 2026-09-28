@@ -348,6 +348,10 @@ class AskUserPrompt(VerticalGroup):
         )
 
     def on_mount(self) -> None:
+        # Removed before it mounted (answered, cancelled or replaced at once):
+        # its children are pruned already, and there is nothing to show.
+        if self._pruning:
+            return
         self._apply_active(initial=True)
 
     @property
@@ -473,7 +477,7 @@ class AskUserPrompt(VerticalGroup):
     def _focus_active(self) -> None:
         self._focus_pending = False
         # A workflow can finish and dismiss its question before this frame callback runs.
-        if not self.is_attached or self.screen is not self.app.screen:
+        if not self.is_attached or self._pruning or self.screen is not self.app.screen:
             return
         footer = self.query_one(AskUserResponseFooter)
         if self._active == len(self.questions):

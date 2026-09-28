@@ -181,9 +181,19 @@ class SettingRow(Vertical):
         raise NotImplementedError
 
     def on_mount(self) -> None:
+        if self._pruning or not self.is_attached or not self.app.is_running:
+            # Removed while mounting, or the App quit mid-mount: Textual never
+            # started the controls but still sends Mount, and there is nothing
+            # to project into. ``projected`` stays False, so nothing commits.
+            return
         self.project()
 
     # ── projection ─────────────────────────────────────────────────
+    @property
+    def projected(self) -> bool:
+        """Whether the controls show the ports' value; until then there is nothing to commit."""
+        return self._projected
+
     def project(self) -> None:
         """Re-read the projected value and provenance and paint them."""
         loaded = self._ports.loaded

@@ -351,6 +351,11 @@ class UserMessage(Widget):
             yield _UserImagePreview(self._image_previews, is_injection=self._is_injection)
 
     @property
+    def text(self) -> str:
+        """The message as the user wrote it."""
+        return self._text
+
+    @property
     def is_injection(self) -> bool:
         """Whether this user message is a mid-turn injection."""
         return self._is_injection
@@ -503,7 +508,13 @@ class AgentMessage(Widget):
         duration_ms: int | None = None,
     ) -> None:
         self._source_text = text
-        self._text = process_think_tags(text, intermediate=is_intermediate)
+        self._processed_text = process_think_tags(text, intermediate=is_intermediate)
+        self._processed_text_stale = False
+        """``_source_text`` changed since ``_processed_text`` was derived; ``text`` re-derives it."""
+        self._body_stale = False
+        """The markdown body has not been handed the latest streamed text."""
+        self._body_sync_scheduled = False
+        """A callback that brings the markdown body up to date is queued on this widget."""
         self._is_final = is_final
         self._profile_name = profile_name
         self._is_intermediate = is_intermediate
@@ -523,6 +534,14 @@ class AgentMessage(Widget):
             cls = "--structured-completion"
         super().__init__(classes=cls)
 
+    @property
+    def text(self) -> str:
+        """The response text with think blocks processed, as of the latest ``stream_update()``."""
+        if self._processed_text_stale:
+            self._processed_text = process_think_tags(self._source_text)
+            self._processed_text_stale = False
+        return self._processed_text
+
     def _header_text(self) -> Text:
         label = self._copy_label()
         arrow = "\u25b6" if self.collapsed else "\u25c7"
@@ -541,11 +560,12 @@ class AgentMessage(Widget):
 
     def compose(self) -> ComposeResult:
         if self._is_intermediate:
-            self._text = process_think_tags(
+            self._processed_text = process_think_tags(
                 self._source_text,
                 intermediate=True,
                 render_message=self._render_message,
             )
+            self._processed_text_stale = False
         with AgentHeaderRow():
             yield _AgentHeader(self._copy_label(), self._header_text())
             copy_button = AgentCopyButton(
@@ -554,7 +574,9 @@ class AgentMessage(Widget):
             )
             copy_button.display = self._should_show_copy_button()
             yield copy_button
-        self._md_widget = VirtualizedMarkdown(self._text)
+        self._md_widget = VirtualizedMarkdown(self.text)
+        # The body starts from the current text, so a queued sync has nothing to hand it.
+        self._body_stale = False
         yield self._md_widget
         if not self._is_final:
             yield Static(Text(" \u258d", style="bold green"), classes="agent-cursor")
@@ -656,7 +678,7 @@ class AgentMessage(Widget):
 
     def format_agent_response_copy(self) -> str:
         """Return the raw response text copied by the inline button."""
-        return self._text
+        return self.text
 
     def copy_agent_response(self) -> None:
         """Copy this finalized agent response to the available clipboards."""
@@ -680,22 +702,46 @@ class AgentMessage(Widget):
         self.copy_agent_response()
 
     def stream_update(self, text: str, is_final: bool = False, *, timestamp: str = "") -> None:
-        """Update the message text (for streaming)."""
+        """Update the message text (for streaming).
+
+        The main turn replays its buffered answer as a synchronous burst of
+        cumulative updates, one per line. A non-final update only records the
+        newest text: the markdown body catches up once per message-loop turn,
+        so a burst costs one think-tag pass and one markdown update instead of
+        one per line, while ``text`` always reads the newest text. A final
+        update hands the body its text before the cursor and copy button change.
+        """
         self._source_text = text
-        text = process_think_tags(text)
-        self._text = text
+        self._processed_text_stale = True
+        self._body_stale = True
         self._is_final = is_final
         if timestamp:
             self.set_timestamp(timestamp)
-        if self._md_widget is not None:
-            self._md_widget.update(text)
         if is_final:
+            self._sync_body()
             try:
                 cursor = self.query_one(".agent-cursor")
                 cursor.remove()
             except Exception:
                 pass
             self._show_copy_button_if_ready()
+        elif not self._body_sync_scheduled:
+            self._body_sync_scheduled = self.call_later(self._run_scheduled_body_sync)
+            if not self._body_sync_scheduled:
+                # The message pump is closing and refused the callback.
+                self._sync_body()
+
+    def _run_scheduled_body_sync(self) -> None:
+        self._body_sync_scheduled = False
+        self._sync_body()
+
+    def _sync_body(self) -> None:
+        """Hand the markdown body the current text if it has not seen it yet."""
+        if not self._body_stale:
+            return
+        self._body_stale = False
+        if self._md_widget is not None:
+            self._md_widget.update(self.text)
 
 
 class SystemMessage(Static):

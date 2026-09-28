@@ -12,12 +12,17 @@ from typing import Any
 from textual.app import App
 
 from chrys.app.tui.notifications.settings import NotificationSettings
-from chrys.app.tui.screens.settings import Suggestions
+from chrys.app.tui.screens.settings import NOTIFICATIONS_TAB_ID, TABS, SettingsDialog, Suggestions
+from chrys.app.tui.screens.settings.panes.notifications import NotificationsPane
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, SettingsWarning
 from chrys.foundation.config.spec import ChoiceProvider, SettingOrigin, Source, field_names_by_key
 from chrys.foundation.i18n import MessageRef
+from tests.support.waiting import wait_for
+
+ROW_COUNT = sum(len(section.rows) for tab in TABS if tab.id != NOTIFICATIONS_TAB_ID for section in tab.sections)
+"""Setting rows across every tab; the notifications tab is a pane of its own."""
 
 
 class StubNotificationPorts:
@@ -175,4 +180,23 @@ def env_origin() -> SettingOrigin:
     return SettingOrigin(layer=Source.ENV)
 
 
-__all__ = ["Host", "StubNotificationPorts", "StubPorts", "StubSessionStorage", "env_origin"]
+def every_tab_projected(dialog: SettingsDialog) -> bool:
+    """Every row and the notifications pane show their values, the later tabs included."""
+    return len(dialog.rows()) == ROW_COUNT and any(pane.projected for pane in dialog.query(NotificationsPane))
+
+
+async def wait_for_every_tab(dialog: SettingsDialog, pilot: Any) -> None:
+    """Wait for the tabs the dialog mounts after it opens."""
+    await wait_for(lambda: every_tab_projected(dialog), pilot=pilot, description="every settings tab mounted")
+
+
+__all__ = [
+    "ROW_COUNT",
+    "Host",
+    "StubNotificationPorts",
+    "StubPorts",
+    "StubSessionStorage",
+    "env_origin",
+    "every_tab_projected",
+    "wait_for_every_tab",
+]

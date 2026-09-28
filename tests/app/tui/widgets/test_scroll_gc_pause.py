@@ -13,8 +13,8 @@ from textual.scrollbar import ScrollTo
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
-from tests.support.tui_helpers import ChatPanelApp
-from tests.support.waiting import wait_for
+from tests.support.tui_helpers import ChatPanelApp, chat_content_children
+from tests.support.waiting import wait_for, wait_until_quiet
 
 
 async def _wait_for_chat_panel_gc_resume(pilot: object, panel: ChatPanel) -> None:
@@ -23,6 +23,20 @@ async def _wait_for_chat_panel_gc_resume(pilot: object, panel: ChatPanel) -> Non
         lambda: not panel._manual_scroll_gc_paused,
         pilot=pilot,
         description="scroll-GC pause released by the resume debounce",
+    )
+
+
+def _turns(count: int) -> list[dict[str, object]]:
+    messages: list[dict[str, object]] = []
+    for index in range(count):
+        messages.append({"role": "user", "contents": [{"type": "text", "text": f"question {index}"}]})
+        messages.append({"role": "assistant", "contents": [{"type": "text", "text": f"answer {index}\n\nmore"}]})
+    return messages
+
+
+async def _settle(pilot: object, panel: ChatPanel) -> None:
+    await wait_until_quiet(
+        lambda: (panel.virtual_size.height, panel.scroll_y), description="chat layout settled", pilot=pilot
     )
 
 
@@ -68,6 +82,35 @@ def test_scroll_gc_paused_uses_shared_owner_count(monkeypatch: pytest.MonkeyPatc
     scroll_controller_module._release_scroll_gc_pause()
     assert scroll_controller_module.scroll_gc_paused() is False
     assert _FakeGC.enable_calls == 1
+
+
+def test_gc_pause_claim_collects_only_while_hiding_an_enabled_collector(monkeypatch: pytest.MonkeyPatch) -> None:
+    scroll_controller_module, fake_gc = install_fake_chat_panel_gc(monkeypatch)
+    claim = scroll_controller_module.ChatGcPauseClaim()
+
+    claim.collect_young()
+    assert fake_gc.collect_generations == []
+
+    claim.claim()
+    claim.claim()
+    assert fake_gc.disable_calls == 1
+    claim.collect_young()
+    assert fake_gc.collect_generations == [0]
+
+    claim.release(collect_first=True)
+    claim.release(collect_first=True)
+    assert fake_gc.collect_generations == [0, 2]
+    assert fake_gc.enabled is True
+    assert fake_gc.enable_calls == 1
+
+    # A collector someone else disabled stays untouched.
+    fake_gc.enabled = False
+    other = scroll_controller_module.ChatGcPauseClaim()
+    other.claim()
+    other.collect_young()
+    other.release(collect_first=True)
+    assert fake_gc.collect_generations == [0, 2]
+    assert fake_gc.enabled is False
 
 
 async def test_chat_panel_resume_collects_gen0_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,3 +359,35 @@ async def test_chat_panel_clear_mid_grab_releases_gesture_hold(monkeypatch: pyte
         assert cp._manual_scroll_gc_paused is False
         assert _FakeGC.enabled is True
         assert _FakeGC.collect_generations == []
+
+
+@pytest.mark.parametrize("shrink", ["clear", "entries_removed"])
+async def test_chat_panel_offset_clamped_by_shrinking_content_is_no_manual_scroll(
+    monkeypatch: pytest.MonkeyPatch, shrink: str
+) -> None:
+    """Content that shrinks under the view pulls the offset in: layout moved it, not the user."""
+    _, _FakeGC = install_fake_chat_panel_gc(monkeypatch)
+
+    async with ChatPanelApp().run_test(size=(80, 24)) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.replay_history(_turns(8))
+        await _settle(pilot, cp)
+        # Replay ends with its own scroll to the end; start once that pause resumed.
+        await _wait_for_chat_panel_gc_resume(pilot, cp)
+        before = cp.scroll_y
+        disable_calls = _FakeGC.disable_calls
+
+        if shrink == "clear":
+            await cp.clear()
+        else:
+            entries = chat_content_children(cp)
+            await cp.remove_children(entries[len(entries) // 2 :])
+        await _settle(pilot, cp)
+
+        assert cp.scroll_y < before
+        assert cp._manual_scroll_gc_paused is False
+        assert _FakeGC.disable_calls == disable_calls
+        assert cp._programmatic_scroll is False
+        if shrink == "entries_removed":
+            cp.scroll_y = 0
+            assert cp._manual_scroll_gc_paused is True

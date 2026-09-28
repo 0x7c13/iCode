@@ -64,8 +64,15 @@ class NotificationsPane(VerticalGroup):
         super().__init__(id="notifications-content")
         self._ports = ports
         self._auto_save_ready = False
+        self._composed_locale: str | None = None
+
+    @property
+    def projected(self) -> bool:
+        """Whether the checkboxes show the ports' settings; until then there is nothing to repaint."""
+        return self._auto_save_ready
 
     def compose(self) -> ComposeResult:
+        self._composed_locale = widget_localizer(self).effective_locale
         settings = self._ports.current()
         with VerticalGroup(classes="settings-section") as general:
             general.border_title = Text(self._render_message(_GENERAL.bind()))
@@ -118,7 +125,16 @@ class NotificationsPane(VerticalGroup):
             )
 
     def on_mount(self) -> None:
-        self._sync_enabled_sections()
+        if self._pruning or not self.is_attached or not self.app.is_running:
+            # Removed while mounting, or the App quit mid-mount: Textual never
+            # started the checkboxes but still sends Mount, and there is
+            # nothing to sync.
+            return
+        # The dialog repaints only panes that have mounted: catch up with a
+        # locale switch or a settings change that landed while this one mounted.
+        if widget_localizer(self).effective_locale != self._composed_locale:
+            self.refresh_localization()
+        self.project()
         self._auto_save_ready = True
 
     def _sync_enabled_sections(self) -> None:

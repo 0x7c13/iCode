@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from textual import events
 from textual.dom import NoScreen
 
+from chrys.foundation.patches.textual_reflow_reuse import reflow_reusing_records
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -22,8 +24,8 @@ def set_widget_visibility_without_layout(widget: Widget, visible: bool) -> bool:
     setter as layout-affecting anyway: every toggle invalidates ancestor
     arrangement caches, recomputes layout math, and storms Resize events.
     Writing the local rule directly keeps those caches warm; the compositor is
-    then resynchronized with one cache-hot arrange (see
-    ``_sync_compositor_after_visibility_change``).
+    then resynchronized with one reflow that arranges only the flipped
+    widget's ancestor path (see ``_sync_compositor_after_visibility_change``).
 
     Returns whether the local visibility rule changed.
     """
@@ -64,7 +66,9 @@ def resync_compositor_regions(widget: Widget) -> None:
 
     For callers that mutate raw style rules (``styles.set_rule``) and clear
     the affected arrangement caches themselves: runs the same guarded
-    cache-hot reflow the visibility flips use, so the new placements paint.
+    reflow the visibility flips use, so the new placements paint. The rule
+    writes stamp the changed widgets, which is what makes that reflow arrange
+    them again rather than replay their recorded placements.
     """
     _sync_compositor_after_visibility_change(widget)
     widget.refresh()
@@ -95,14 +99,17 @@ def _sync_compositor_after_visibility_change(widget: Widget) -> None:
     stays in the stale map and keeps repainting, a newly shown widget is
     absent from the map and never renders.
 
-    Run one stock ``reflow`` and mirror ``Screen._refresh_layout``'s
-    Hide/Show/Resize protocol. Because the visibility rule was written
-    without touching ``_nodes._updates``, every arrangement cache is still
-    valid: the reflow is a pure map-building walk with no layout math — the
-    same cost class as the full-map rebuild any ``find_widget`` call performs
-    after a scroll tick. Deferring it instead (leaving the map invalidated)
-    would run the identical arrange at the next ``widget.region`` read,
-    outside the anchor guard below.
+    Run one reflow and mirror ``Screen._refresh_layout``'s Hide/Show/Resize
+    protocol. A from-scratch reflow places every displayed widget again,
+    which grows with the transcript, and chrome widgets flip dozens of times
+    per turn. With the reflow-reuse patch installed the reflow replays the
+    recorded placements of every subtree unchanged since the last full
+    arrangement: the raw rule writes (``Styles.set_rule``/``clear_rule``)
+    stamped the flipped widgets and their ancestors, so only those paths are
+    arranged again (see ``reflow_reusing_records``). Without the patch this
+    is the stock reflow. Deferring it instead (leaving the map invalidated)
+    would run the arrangement at the next ``widget.region`` read, outside
+    the anchor guard below.
     """
     try:
         screen = widget.screen
@@ -121,7 +128,9 @@ def _sync_compositor_after_visibility_change(widget: Widget) -> None:
     # programmatic sub-bottom scroll positions (the streaming settle dance)
     # must survive it — so hold the anchors released while arranging. Only
     # already-mapped widgets can be in that state; scanning map keys is a
-    # plain attribute sweep, not an arrange.
+    # plain attribute sweep, not an arrange. Releasing an anchor stamps its
+    # scrollable, so the reflow arranges that scrollable again but still
+    # replays its unchanged children.
     anchored = [
         node
         for node_map in (compositor._full_map, compositor._visible_map or {})
@@ -131,7 +140,7 @@ def _sync_compositor_after_visibility_change(widget: Widget) -> None:
     for node in anchored:
         node._anchor_released = True
     try:
-        hidden, shown, resized = compositor.reflow(screen, size)
+        hidden, shown, resized = reflow_reusing_records(compositor, screen, size)
         # reflow() leaves any pre-armed full-map invalidation armed; consume
         # it here so the rebuild it implies also runs under the anchor guard.
         full_map = compositor.full_map

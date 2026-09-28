@@ -7,9 +7,12 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
 import pytest
+from rich.syntax import Syntax
+from textual.widgets import Static
 
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
@@ -32,7 +35,13 @@ from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 
-from ._workflow_support import WorkflowEngine, open_workflow
+from ._workflow_support import WorkflowEngine, open_workflow, select_workflow_view
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from rich.console import Console, ConsoleOptions
+    from rich.segment import Segment
 
 
 async def test_execution_transitions_invalidate_workflow_bindings_without_focus_changes(
@@ -208,3 +217,61 @@ async def test_twelve_thousand_events_coalesce_without_main_layout_or_footer_rec
             await pilot.press("escape")
             await wait_for(lambda: app.screen is main and styles.call_count == 1, pilot=pilot)
             assert graph._views["write_tour"].state == "retrying"
+
+
+async def test_code_tab_lexes_each_width_once_and_a_revisit_keeps_the_rendered_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(make_project(tmp_path))
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(140, 50)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        chat = main.query_one(ChatPanel)
+        cards = [ToolCall(f"chat-{index}", "read_file", args={"path": f"file-{index}.py"}) for index in range(30)]
+        await chat.mount(*cards)
+        for card in cards:
+            card.set_complete("File contents\n" * 20)
+        await wait_for(lambda: chat.virtual_size.height > chat.size.height, pilot=pilot)
+        await open_workflow(main, pilot, "demo-workflow")
+        panel, controller = main._workflow_panel, main._workflow
+        source = panel.query_one("#workflow-code-source", Static)
+        show_code = create_autospec(panel.show_code, side_effect=panel.show_code)
+        monkeypatch.setattr(panel, "show_code", show_code)
+        lexed_widths: list[int] = []
+        get_syntax = Syntax._get_syntax
+
+        def recording_get_syntax(self: Syntax, console: Console, options: ConsoleOptions) -> Iterable[Segment]:
+            if self is source.content:
+                lexed_widths.append(options.max_width)
+            return get_syntax(self, console, options)
+
+        monkeypatch.setattr(Syntax, "_get_syntax", recording_get_syntax)
+
+        async def visit_code(visit: int) -> None:
+            await select_workflow_view(main, pilot, "code")
+            # Each visit re-reads the source; wait until it reached the view and was painted.
+            await wait_for(
+                lambda: (
+                    show_code.call_count == visit
+                    and not controller._tasks
+                    and not controller._refresh_pending
+                    and screen_is_settled(app, main)
+                ),
+                pilot=pilot,
+                description=f"Code tab visit {visit} is laid out",
+            )
+            painted = asyncio.Event()
+            assert main.call_after_refresh(painted.set)
+            await wait_for(painted.is_set, pilot=pilot, description=f"Code tab visit {visit} is painted")
+
+        await visit_code(1)
+        shown = source.content
+        assert isinstance(shown, Syntax) and lexed_widths
+        # Height queries and paints at the widths with and without the scrollbar replay one rendering each.
+        assert len(lexed_widths) == len(set(lexed_widths)), lexed_widths
+        await select_workflow_view(main, pilot, "info")
+        lexed_widths.clear()
+        await visit_code(2)
+        assert source.content is shown
+        assert lexed_widths == []

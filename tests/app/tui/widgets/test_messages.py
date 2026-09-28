@@ -380,7 +380,7 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
 
         assert agent._copy_label() == agent_label
         assert agent._header_text().plain == f"◇ {agent_label}"
-        assert agent._text == think_text
+        assert agent.text == think_text
         copy_button = agent.query_one(AgentCopyButton)
         assert copy_button.render().plain == button_text
         assert copy_button.tooltip == tooltip
@@ -405,13 +405,13 @@ def test_agent_message_render_lines_unattached_returns_blank() -> None:
 async def test_agent_message_streaming() -> None:
     async with WidgetApp(lambda: AgentMessage("partial", is_final=False)).run_test() as pilot:
         msg = pilot.app.query_one(AgentMessage)
-        assert msg._text == "partial"
+        assert msg.text == "partial"
         assert msg._is_final is False
         # Streaming cursor widget should be present
         assert msg.query(".agent-cursor")
 
         msg.stream_update("full response", is_final=True)
-        assert msg._text == "full response"
+        assert msg.text == "full response"
         assert msg._is_final is True
 
 
