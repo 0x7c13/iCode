@@ -17,7 +17,7 @@ from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     UserMessage,
-    _UserMessageText,
+    _UserHeader,
     format_message_created_at,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
@@ -173,7 +173,7 @@ async def test_replay_user_hides_zero_duration_event_suffix() -> None:
         await panel.replay_history(messages)
         await pilot.pause()
 
-        header = panel.query_one(_UserMessageText).render().plain.splitlines()[0]
+        header = str(panel.query_one(_UserHeader).content)
         assert "(0ms)" not in header
         assert " - " in header
 

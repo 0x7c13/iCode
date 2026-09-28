@@ -44,7 +44,11 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     adapt_hosted_tool,
     hosted_replay_status,
 )
-from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY, persisted_tool_call_kind
+from chrys.service.session.message_metadata import (
+    TOOL_RESULT_METADATA_KEY,
+    is_compaction_tool_summary,
+    persisted_tool_call_kind,
+)
 from chrys.service.state.store import StateStore
 
 from .bridge import acp_tool_kind, with_hosted_metadata
@@ -148,6 +152,11 @@ async def replay_session_history(
     raw_messages = await state_store.load_session_raw(session_id, prefer_recovery=prefer_recovery)
     if not raw_messages:
         return
+    # Compaction tool summaries are the model's context, not the client's; as
+    # in the TUI session transcript, neither a summary nor the messages it
+    # replaced replay. Drop them before pairing so coordinates and replay ids
+    # ignore them.
+    raw_messages = [message for message in raw_messages if not is_compaction_tool_summary(message)]
     pairing_index = _paired_result_coordinates(raw_messages)
     replay_id_by_call: dict[tuple[int, int], str] = {}
     replay_id_by_standalone_result: dict[tuple[int, int], str] = {}

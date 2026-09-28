@@ -100,6 +100,8 @@ DELETE_PROJECT = msg(
 DELETE_GLOBAL = msg("tui.workflow.delete_global", fallback="Global files cannot be recovered. Run history stays.")
 DELETE_ACTIVE = msg("tui.workflow.delete_active", fallback="Stop this workflow before deleting its source.")
 INPUT = msg("tui.workflow.node.input", fallback="Input")
+COPY_RUN_INPUT = msg("tui.workflow.copy_run_input_tooltip", fallback="Copy raw run input")
+RUN_INPUT_COPIED = msg("tui.workflow.run_input_copied", fallback="Copied run input")
 OUTPUT = msg("tui.workflow.node.output", fallback="Output")
 TRANSCRIPT = msg("tui.workflow.node.transcript", fallback="Transcript")
 PREVIOUS_RUN = msg("tui.workflow.node.previous_run", fallback="Previous run")

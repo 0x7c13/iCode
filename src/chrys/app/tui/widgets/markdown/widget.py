@@ -50,6 +50,7 @@ from chrys.app.tui.widgets.markdown.diagram.model import CompiledDiagram
 from chrys.app.tui.widgets.markdown.links import external_link_target
 from chrys.app.tui.widgets.markdown.parser import (
     _cell_min_width,
+    _cell_natural_width,
     _cell_prefix_length,
     _cell_wrapped_height,
     _configure_markdown_parser,
@@ -1103,14 +1104,12 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         # sequence, etc.) needs at least 2 cells when space allows.  ASCII-only
         # columns may shrink to 1 because they can wrap between characters.
         for header in headers:
-            header_width = cell_len(header.plain)
-            nat_widths.append(max(header_width, 1))
+            nat_widths.append(max(_cell_natural_width(header.plain), 1))
             min_widths.append(_cell_min_width(header.plain))
         for row in rows:
             for i, cell_content in enumerate(row):
                 if i < col_count:
-                    cell_width = cell_len(cell_content.plain)
-                    nat_widths[i] = max(nat_widths[i], cell_width)
+                    nat_widths[i] = max(nat_widths[i], _cell_natural_width(cell_content.plain))
                     min_widths[i] = max(min_widths[i], _cell_min_width(cell_content.plain))
 
         total_nat = sum(nat_widths)

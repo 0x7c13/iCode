@@ -22,7 +22,14 @@ from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.foundation.events.types import ProvisionalPresentation
 from chrys.foundation.models.ask_user import AskUserOption, AskUserQuestion
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.kernel import Content, Message
+from chrys.kernel import (
+    GROUP_ANNOTATION_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    Content,
+    Message,
+    set_excluded,
+)
 from chrys.service.context.providers.history import CompressedBlock
 
 
@@ -1577,6 +1584,73 @@ async def test_replay_compressed_block_keeps_local_tools_hidden() -> None:
         compressed_blocks={"ctx-local-tool": block},
     )
 
+    assert not any(isinstance(widget, ToolGroup) for widget in mount.widgets)
+
+
+@pytest.mark.asyncio
+async def test_replay_compressed_block_skips_tool_summary_but_keeps_archived_originals() -> None:
+    """A compressed block archives its turns as they were, including a
+    compaction tool summary beside the excluded originals it replaced.
+
+    Unlike the session transcript, which loads without excluded messages,
+    the block renders those originals by its own rules: their narration
+    shows and local tool cards stay hidden. Only the summary is skipped; a
+    real answer that reads exactly like it still renders.
+    """
+    calls: list[str] = []
+    mount = _FakeMount(calls)
+    renderer = HistoryReplayRenderer(
+        mount,
+        _FakeUi(calls),
+        TurnTocModel(),
+        lambda _name: "",
+        default_profile=lambda: "Code",
+    )
+    summary_text = '[Tool call: read_file(path="a.py") → contents]'
+    summary = Message(
+        "assistant",
+        [Content.from_text(summary_text)],
+        additional_properties={
+            GROUP_ANNOTATION_KEY: {
+                "id": "group_1",
+                "kind": "assistant_text",
+                SUMMARY_OF_MESSAGE_IDS_KEY: ["msg_1", "msg_2"],
+                SUMMARY_OF_GROUP_IDS_KEY: ["group_1"],
+            }
+        },
+    )
+    originals = [
+        Message(
+            "assistant",
+            [
+                Content.from_text("Reading a.py first."),
+                Content.from_function_call("c1", "read_file", arguments={"path": "a.py"}),
+            ],
+        ),
+        Message("tool", [Content.from_function_result("c1", result="contents")]),
+    ]
+    for original in originals:
+        set_excluded(original, excluded=True, reason="budget_tool_compaction")
+    block = CompressedBlock(
+        compressed_context_id="ctx-summary",
+        messages=[
+            _block_user("inspect"),
+            summary,
+            *originals,
+            Message("assistant", [Content.from_text(summary_text)]),
+        ],
+    )
+
+    await renderer.replay_history(
+        [_compressed_fold_message("ctx-summary")],
+        compressed_blocks={"ctx-summary": block},
+    )
+
+    assert [widget._text for widget in mount.widgets if isinstance(widget, UserMessage)] == ["inspect"]
+    assert [widget.text for widget in mount.widgets if isinstance(widget, AgentMessage)] == [
+        "Reading a.py first.",
+        summary_text,
+    ]
     assert not any(isinstance(widget, ToolGroup) for widget in mount.widgets)
 
 

@@ -14,7 +14,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.widgets.chat.messages import (
-    AgentCopyButton,
+    MessageCopyButton,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.tool_call import (
@@ -46,7 +46,7 @@ async def test_click_affordance_buttons_prevent_widget_default_action() -> None:
             yield ToolViewButton()
             yield ToolCopyButton()
             yield ToolGroupTitle("tools")
-            yield AgentCopyButton()
+            yield MessageCopyButton(tooltip="copy")
             yield _ScrollToBottomButton()
 
         def on_tool_view_button_clicked(self, _event: object) -> None:
@@ -58,8 +58,8 @@ async def test_click_affordance_buttons_prevent_widget_default_action() -> None:
         def on_tool_group_title_clicked(self, _event: object) -> None:
             seen.append("tool-group-title")
 
-        def on_agent_copy_button_clicked(self, _event: object) -> None:
-            seen.append("agent-copy")
+        def on_message_copy_button_clicked(self, _event: object) -> None:
+            seen.append("message-copy")
 
         def on_scroll_to_bottom_requested(self, _event: object) -> None:
             seen.append("scroll-bottom")
@@ -71,7 +71,7 @@ async def test_click_affordance_buttons_prevent_widget_default_action() -> None:
             ("tool-view", pilot.app.query_one(ToolViewButton)),
             ("tool-copy", pilot.app.query_one(ToolCopyButton)),
             ("tool-group-title", pilot.app.query_one(ToolGroupTitle)),
-            ("agent-copy", pilot.app.query_one(AgentCopyButton)),
+            ("message-copy", pilot.app.query_one(MessageCopyButton)),
             ("scroll-bottom", pilot.app.query_one(_ScrollToBottomButton)),
         ]
         for _name, widget in widgets:
@@ -81,7 +81,7 @@ async def test_click_affordance_buttons_prevent_widget_default_action() -> None:
 
         await pilot.pause()
 
-    assert set(seen) == {"tool-view", "tool-copy", "tool-group-title", "agent-copy", "scroll-bottom"}
+    assert set(seen) == {"tool-view", "tool-copy", "tool-group-title", "message-copy", "scroll-bottom"}
     assert len(seen) == 5
 
 

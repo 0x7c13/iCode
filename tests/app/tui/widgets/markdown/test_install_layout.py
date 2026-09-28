@@ -144,7 +144,8 @@ async def test_replayed_transcript_lays_markdown_out_only_at_real_widths(monkeyp
         await panel.replay_history(messages)
         await panel.wait_replay_complete()
         markdowns = list(panel.query(VirtualizedMarkdown))
-        assert len(markdowns) == 12
+        # Every turn renders its question and its answer as markdown.
+        assert len(markdowns) == 24
         assert all(markdown._blocks for markdown in markdowns)
         assert layouts == []
 

@@ -14,8 +14,7 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Group
 from rich.text import Text
 from textual.containers import Horizontal
-from textual.css.query import NoMatches
-from textual.geometry import Offset, Region
+from textual.geometry import Region
 from textual.message import Message
 from textual.reactive import reactive
 from textual.selection import Selection
@@ -26,9 +25,11 @@ from textual.widgets import Button, Static
 from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
+from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.util.time import parse_created_at
@@ -69,9 +70,11 @@ _AGENT_RESPONSE_COPIED = msg("tui.copy.agent_response", fallback="Copied agent r
 _THINK_PREFIX = msg("tui.chat.think_prefix", fallback="Think: {body}", multiline=True)
 _AGENT_RESPONSE_COPY_TOOLTIP = msg(
     "tui.chat.copy_agent_response_tooltip",
-    fallback="Copy agent response",
+    fallback="Copy raw agent response",
 )
-_AGENT_RESPONSE_COPY_BUTTON = msg("tui.chat.copy_agent_response_button", fallback="copy")
+COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="copy")
+_USER_MESSAGE_COPIED = msg("tui.copy.user_message", fallback="Copied your message")
+_USER_MESSAGE_COPY_TOOLTIP = msg("tui.chat.copy_user_message_tooltip", fallback="Copy your raw message")
 _AGENT_FALLBACK_LABEL = msg("tui.chat.agent_fallback_label", fallback="Agent")
 _RETRY_MESSAGE = msg(
     "tui.chat.retry_message",
@@ -171,83 +174,27 @@ def format_chat_copy_payload(messages: list[tuple[str, str]]) -> str:
     return "\n\n".join(f"[{name}]\n{text}" for name, text in messages)
 
 
-def _user_message_text(
-    text: str,
-    *,
-    timestamp: str,
-    is_injection: bool,
-) -> Text:
-    """Build the selectable text portion of a user message."""
-    rendered = Text()
+def _user_header_text(*, timestamp: str, is_injection: bool) -> Text:
+    """The user message header: the ``You`` label and its timestamp."""
+    header = Text()
     if is_injection:
-        rendered.append("\u2514 ", style="dim")
-    rendered.append("\u276f You", style="bold cyan")
+        header.append("└ ", style="dim")
+    header.append("\u276f You", style="bold cyan")
     if timestamp:
-        rendered.append(f" {timestamp}", style="dim")
-    rendered.append("\n")
-    if is_injection:
-        rendered.append("  ")
-    rendered.append(text)
-    return rendered
+        header.append(f" {timestamp}", style="dim")
+    return header
 
 
-def _user_message_selection(text: str, is_injection: bool, selection: Selection) -> tuple[str, str] | None:
-    """Return transcript-friendly selected text from the selectable text portion."""
-    include_label = selection.start is None or selection.start.y == 0
+class _UserHeader(Static):
+    """Header of a user message."""
 
-    # Selection entirely within the header line → copy just the transcript label.
-    end_in_header = selection.end is not None and selection.end.y == 0
-    if include_label and end_in_header:
-        return "[You]", "\n"
-
-    indent = 2 if is_injection else 0
-
-    def to_body(offset: Offset | None) -> Offset | None:
-        if offset is None:
-            return None
-        if offset.y == 0:
-            # Any point in the header maps to the start of the body.
-            return Offset(0, 0)
-        return Offset(max(0, offset.x - indent), offset.y - 1)
-
-    shifted = Selection(to_body(selection.start), to_body(selection.end))
-    body = shifted.extract(text)
-    if include_label:
-        return f"[You]\n{body}" if body else "[You]", "\n"
-    return body, "\n"
-
-
-class _UserMessageText(Static):
-    """Selectable text renderer for a user message."""
-
-    DEFAULT_CSS = """
-    _UserMessageText {
-        height: auto;
-        background: transparent;
-    }
-    """
-
-    def __init__(
-        self,
-        text: str,
-        *,
-        timestamp: str,
-        is_injection: bool,
-    ) -> None:
-        self._text = text
-        self._ts = timestamp
-        self._is_injection = is_injection
-        super().__init__()
-
-    def render(self) -> Text:
-        return _user_message_text(
-            self._text,
-            timestamp=self._ts,
-            is_injection=self._is_injection,
-        )
+    def __init__(self, content: Text) -> None:
+        super().__init__(content, classes="message-header")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        return _user_message_selection(self._text, self._is_injection, selection)
+        """Copy the user header as a transcript label, not decorative chrome."""
+        _ = selection
+        return "[You]", "\n"
 
 
 class _UserImagePreview(Static):
@@ -296,8 +243,65 @@ class _UserImagePreview(Static):
         return None
 
 
+class MessageHeaderRow(Horizontal):
+    """Header row of a chat message: its label, then inline actions."""
+
+    ALLOW_SELECT = False
+
+    DEFAULT_CSS = """
+    MessageHeaderRow {
+        width: 100%;
+        height: 1;
+    }
+    MessageHeaderRow > .message-header {
+        width: auto;
+        height: 1;
+        padding: 0 1 0 0;
+    }
+    MessageHeaderRow > MessageCopyButton {
+        display: none;
+        width: auto;
+        height: 1;
+        padding: 0 0 0 1;
+        color: $text-muted;
+        text-style: dim not bold;
+        pointer: pointer;
+    }
+    MessageHeaderRow > MessageCopyButton:hover {
+        color: $accent;
+        text-style: underline;
+    }
+    """
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        _ = selection
+        return None
+
+
+class MessageCopyButton(ClickAffordance):
+    """Clickable copy affordance in a chat message header; copies the raw text."""
+
+    ALLOW_SELECT = False
+
+    class Clicked(Message):
+        """Posted when the copy affordance is clicked."""
+
+    CLICK_MESSAGE = Clicked
+
+    def __init__(self, *, tooltip: str, text: str | None = None) -> None:
+        super().__init__(Text(text or format_message(COPY_MESSAGE_BUTTON.bind())))
+        self.tooltip = tooltip
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        _ = selection
+        return None
+
+
 class UserMessage(Widget):
-    """User message block with cyan accent."""
+    """User message block with cyan accent, rendered as markdown.
+
+    Newlines stay line breaks and HTML tags stay text, as the user typed them.
+    """
 
     DEFAULT_CSS = """
     UserMessage {
@@ -315,10 +319,22 @@ class UserMessage(Widget):
         border-left: thick $tui-border-neutral-160 $border-opacity;
         color: $text-muted;
     }
+    UserMessage.-compressed > VirtualizedMarkdown {
+        color: $text-muted;
+    }
     UserMessage.-injection {
         margin-left: 2;
         margin-top: 0;
         border-left: none;
+    }
+    UserMessage > VirtualizedMarkdown {
+        padding: 0;
+        height: auto;
+        min-height: 1;
+        background: transparent;
+    }
+    UserMessage.-injection > VirtualizedMarkdown {
+        padding: 0 0 0 2;
     }
     """
 
@@ -342,10 +358,17 @@ class UserMessage(Widget):
             self.add_class("-injection")
 
     def compose(self) -> ComposeResult:
-        yield _UserMessageText(
-            self._text,
-            timestamp=self._ts,
-            is_injection=self._is_injection,
+        with MessageHeaderRow():
+            yield _UserHeader(_user_header_text(timestamp=self._ts, is_injection=self._is_injection))
+            copy_button = MessageCopyButton(
+                tooltip=self._render_message(_USER_MESSAGE_COPY_TOOLTIP.bind()),
+                text=self._render_message(COPY_MESSAGE_BUTTON.bind()),
+            )
+            copy_button.display = self._should_show_copy_button()
+            yield copy_button
+        yield VirtualizedMarkdown(
+            sanitize_source_text(self._text),
+            parser_factory=create_user_text_markdown_parser,
         )
         if self._image_previews:
             yield _UserImagePreview(self._image_previews, is_injection=self._is_injection)
@@ -361,18 +384,36 @@ class UserMessage(Widget):
         return self._is_injection
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Return transcript text when Textual records selection on the parent.
+        """User message content is copied by its header/body children."""
+        _ = selection
+        return None
 
-        Drag selection usually lands on ``_UserMessageText``, but Textual can
-        still record the container itself for select-all and cross-widget spans.
-        If both parent and child are selected, the child has the precise range,
-        so let it provide the copy text and avoid duplicating the message.
-        """
-        if self.is_attached:
-            with contextlib.suppress(NoMatches):
-                if self.query_one(_UserMessageText) in self.screen.selections:
-                    return None
-        return _user_message_selection(self._text, self._is_injection, selection)
+    def _render_message(self, reference: MessageRef) -> str:
+        return render_str(widget_localizer(self), reference)
+
+    def _should_show_copy_button(self) -> bool:
+        """Offer copy for text outside compressed history, as agent responses do."""
+        return not self._compressed and bool(self._text.strip())
+
+    def copy_user_message(self) -> None:
+        """Copy the message as the user wrote it to the available clipboards."""
+        if not self._text.strip():
+            return
+        copy_text_to_clipboards(self.app, self._text)
+        localizer = widget_localizer(self)
+        self.notify(
+            render_str(localizer, _USER_MESSAGE_COPIED.bind()),
+            title=render_str(localizer, COPIED_TITLE.bind()),
+            timeout=2,
+            markup=False,
+        )
+
+    def on_message_copy_button_clicked(self, event: MessageCopyButton.Clicked) -> None:
+        """Handle clicks from the header copy affordance."""
+        event.stop()
+        if not self._should_show_copy_button():
+            return
+        self.copy_user_message()
 
 
 class _AgentHeader(Static):
@@ -383,7 +424,7 @@ class _AgentHeader(Static):
 
     def __init__(self, label: str, content: Text) -> None:
         self._copy_label = label
-        super().__init__(content, classes="agent-header")
+        super().__init__(content, classes="agent-header message-header")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Copy the agent header as a transcript label, not decorative chrome."""
@@ -391,63 +432,6 @@ class _AgentHeader(Static):
 
     def on_click(self) -> None:
         self.post_message(self.Clicked())
-
-
-class AgentHeaderRow(Horizontal):
-    """Header row for agent messages, including finalized-message actions."""
-
-    ALLOW_SELECT = False
-
-    DEFAULT_CSS = """
-    AgentHeaderRow {
-        width: 100%;
-        height: 1;
-    }
-    AgentHeaderRow > _AgentHeader {
-        width: auto;
-        height: 1;
-        padding: 0 1 0 0;
-    }
-    AgentHeaderRow > AgentCopyButton {
-        display: none;
-        width: auto;
-        height: 1;
-        padding: 0 0 0 1;
-        color: $text-muted;
-        text-style: dim not bold;
-        pointer: pointer;
-    }
-    AgentHeaderRow > AgentCopyButton:hover {
-        color: $accent;
-        text-style: underline;
-    }
-    """
-
-    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        _ = selection
-        return None
-
-
-class AgentCopyButton(ClickAffordance):
-    """Clickable copy affordance for finalized agent responses."""
-
-    ALLOW_SELECT = False
-
-    class Clicked(Message):
-        """Posted when the copy affordance is clicked."""
-
-    CLICK_MESSAGE = Clicked
-
-    def __init__(self, tooltip: str | None = None, text: str | None = None) -> None:
-        super().__init__(
-            Text(text or format_message(_AGENT_RESPONSE_COPY_BUTTON.bind())),
-            classes="agent-copy-btn",
-        )
-        self.tooltip = tooltip or format_message(_AGENT_RESPONSE_COPY_TOOLTIP.bind())
-
-    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        _ = selection
-        return None
 
 
 class AgentMessage(Widget):
@@ -566,11 +550,11 @@ class AgentMessage(Widget):
                 render_message=self._render_message,
             )
             self._processed_text_stale = False
-        with AgentHeaderRow():
+        with MessageHeaderRow():
             yield _AgentHeader(self._copy_label(), self._header_text())
-            copy_button = AgentCopyButton(
+            copy_button = MessageCopyButton(
                 tooltip=self._render_message(_AGENT_RESPONSE_COPY_TOOLTIP.bind()),
-                text=self._render_message(_AGENT_RESPONSE_COPY_BUTTON.bind()),
+                text=self._render_message(COPY_MESSAGE_BUTTON.bind()),
             )
             copy_button.display = self._should_show_copy_button()
             yield copy_button
@@ -674,7 +658,7 @@ class AgentMessage(Widget):
         if not self._should_show_copy_button():
             return
         with contextlib.suppress(Exception):
-            self.query_one(AgentCopyButton).display = True
+            self.query_one(MessageCopyButton).display = True
 
     def format_agent_response_copy(self) -> str:
         """Return the raw response text copied by the inline button."""
@@ -694,7 +678,7 @@ class AgentMessage(Widget):
             markup=False,
         )
 
-    def on_agent_copy_button_clicked(self, event: AgentCopyButton.Clicked) -> None:
+    def on_message_copy_button_clicked(self, event: MessageCopyButton.Clicked) -> None:
         """Handle clicks from the finalized-response copy affordance."""
         event.stop()
         if not self._should_show_copy_button():

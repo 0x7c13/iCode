@@ -11,7 +11,10 @@ These tests pin the row-level cache behavior so neither regression returns.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
+from markdown_it import MarkdownIt
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.content import Content, Span
@@ -21,7 +24,11 @@ from textual.strip import Strip
 
 from chrys.app.tui.widgets.markdown import widget as widget_module
 from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock
-from chrys.app.tui.widgets.markdown.parser import _FENCE_CLOSED_META, _create_markdown_parser
+from chrys.app.tui.widgets.markdown.parser import (
+    _FENCE_CLOSED_META,
+    _create_markdown_parser,
+    create_line_break_markdown_parser,
+)
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown, _content_slice, _line_ranges
 
 
@@ -61,6 +68,23 @@ def test_fence_tokens_record_whether_the_source_closed(source: str, closed: bool
     token = next(token for token in _create_markdown_parser().parse(source) if token.type == "fence")
 
     assert token.meta[_FENCE_CLOSED_META] is closed
+
+
+@pytest.mark.parametrize("parser_factory", [_create_markdown_parser, create_line_break_markdown_parser])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Here is the code:\n```py\nprint(1)\n```",
+        "> quoted line\n> ```py\n> print(1)\n> ```",
+        "- item line\n  ```py\n  print(1)\n  ```",
+    ],
+)
+def test_fence_right_after_a_line_of_text_starts_a_code_block(
+    source: str, parser_factory: Callable[[], MarkdownIt]
+) -> None:
+    fences = [token for token in parser_factory().parse(source) if token.type == "fence"]
+
+    assert [(token.info, token.content) for token in fences] == [("py", "print(1)\n")]
 
 
 def test_content_slice_preserves_overlapping_unsorted_spans() -> None:

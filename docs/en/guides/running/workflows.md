@@ -21,7 +21,7 @@ After selecting the example, explore these tabs:
 - **Workflow**: Shows the execution graph, including nodes, connections, and execution states. When the graph is larger than the panel, drag it with the mouse to move around. After a run starts, click a node to view its input and output. Tabs under each one switch between “Markdown” (the default), “Plain text” (the text unformatted), “Data” (structured data as fields) and “Progress messages” (what the node reported while it ran); only the tabs with content appear. Agent nodes also have a “Transcript” tab for model responses and tool calls.
 - **Info**: Shows the workflow name, description, script location, execution environment, and node configuration, including agents and models.
 - **Source**: Shows the Python code that defines the workflow. Both “Workflow” and “Source” are read-only; to change a workflow, edit its Python source file.
-- **Input**: Shows the input submitted for the run after it starts.
+- **Input**: Shows the input submitted for the run after it starts, with Markdown formatting. Click “copy” to copy the input exactly as it was submitted.
 - **Output**: Updates node states and progress messages during execution, and shows the final output.
 
 ### Run and observe the workflow

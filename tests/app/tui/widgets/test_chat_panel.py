@@ -23,7 +23,7 @@ from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
     SystemMessage,
     UserMessage,
-    _UserMessageText,
+    _UserHeader,
     format_message_created_at,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ScrollToBottomButton
@@ -162,7 +162,7 @@ async def test_chat_panel_replay_uses_created_at_metadata() -> None:
         user = panel.query_one(UserMessage)
         agent = panel.query_one(AgentMessage)
         assert user._ts == expected
-        assert "(0ms)" not in user.query_one(_UserMessageText).render().plain
+        assert "(0ms)" not in str(user.query_one(_UserHeader).content)
         assert agent._ts == expected
         assert agent._duration_ms == 2345
         assert agent._header_text().plain == f"\u25c7 Code Agent {expected} (2s)"

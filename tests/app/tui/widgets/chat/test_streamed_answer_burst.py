@@ -18,7 +18,7 @@ from textual.await_complete import AwaitComplete
 from textual.geometry import Size
 
 from chrys.app.tui.widgets.chat import messages as messages_module
-from chrys.app.tui.widgets.chat.messages import AgentCopyButton, AgentMessage
+from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
@@ -121,7 +121,7 @@ async def test_a_streamed_burst_processes_and_hands_the_body_its_text_once(monke
         # The final update reaches the body before the cursor and copy button change.
         assert handed == [real_process(answer), real_process(final)]
         await wait_for(
-            lambda: not message.query(".agent-cursor") and message.query_one(AgentCopyButton).display,
+            lambda: not message.query(".agent-cursor") and message.query_one(MessageCopyButton).display,
             pilot=pilot,
             description="cursor removed and copy button shown",
         )

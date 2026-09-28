@@ -16,6 +16,7 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.color import Color as TextualColor
 from textual.geometry import Offset, Region
+from textual.pilot import Pilot
 from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Button, Static
 
@@ -24,16 +25,17 @@ from chrys.app.tui.theme import CHRYS_THEME, TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.chat import image_preview as image_preview_module
 from chrys.app.tui.widgets.chat.image_preview import ImagePreviewGrid, extract_image_previews
 from chrys.app.tui.widgets.chat.messages import (
-    AgentCopyButton,
     AgentMessage,
     ConversationStatusAction,
     ErrorMessage,
     InterruptedMessage,
+    MessageCopyButton,
     RetryMessage,
     SystemMessage,
     UserMessage,
+    _user_header_text,
+    _UserHeader,
     _UserImagePreview,
-    _UserMessageText,
     format_message_created_at,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
@@ -41,8 +43,8 @@ from chrys.app.tui.widgets.chat.tool_call import (
     ToolCall,
     ToolGroup,
 )
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.patches.textual_tab_selection import apply_runtime_patch
 from chrys.kernel import Content
 from tests.support.tui_helpers import (
     ChatPanelApp,
@@ -52,11 +54,43 @@ from tests.support.tui_helpers import (
 from tests.support.waiting import wait_for
 
 
-async def test_user_message_renders() -> None:
-    async with WidgetApp(lambda: UserMessage("hello world")).run_test() as pilot:
+async def _rendered_body(pilot: Pilot[None], message: UserMessage) -> str:
+    body = message.query_one(VirtualizedMarkdown)
+    await wait_for(
+        lambda: body.get_selection(SELECT_ALL) is not None,
+        pilot=pilot,
+        description="the user message body has rendered",
+    )
+    selected = body.get_selection(SELECT_ALL)
+    assert selected is not None
+    return selected[0]
+
+
+async def test_user_message_renders_markdown_below_its_header() -> None:
+    text = "Fix `List<String>` in <file>\nsecond **line**\n```py\nprint(1)\n```"
+
+    async with WidgetApp(lambda: UserMessage(text, timestamp="- 4:32 AM")).run_test() as pilot:
         msg = pilot.app.query_one(UserMessage)
-        rendered = msg.query_one(_UserMessageText).render()
-        assert "hello world" in rendered.plain
+        body = await _rendered_body(pilot, msg)
+
+        assert str(msg.query_one(_UserHeader).content) == "\u276f You - 4:32 AM"
+        assert msg.query_one(VirtualizedMarkdown).source == text
+        # Newlines stay line breaks and HTML-looking text stays as typed.
+        assert body.splitlines()[:2] == ["Fix List<String> in <file>", "second line"]
+        assert "print(1)" in body
+        assert "```" not in body
+
+
+async def test_user_message_body_shows_control_characters_as_text() -> None:
+    text = "red \x1b[31malert\x1b[0m\r\nnext"
+
+    async with WidgetApp(lambda: UserMessage(text)).run_test() as pilot:
+        msg = pilot.app.query_one(UserMessage)
+        body = await _rendered_body(pilot, msg)
+
+        assert "\x1b" not in body
+        assert body.splitlines()[1] == "next"
+        assert msg.text == text
 
 
 def test_user_message_renders_embedded_image_preview() -> None:
@@ -67,11 +101,9 @@ def test_user_message_renders_embedded_image_preview() -> None:
     msg = UserMessage("look at @shot.png", contents=contents)
 
     console = Console(width=80, record=True, force_terminal=True, color_system="truecolor")
-    console.print(_UserMessageText(msg._text, timestamp="", is_injection=False).render())
     console.print(_UserImagePreview(msg._image_previews, is_injection=False).render())
     rendered = console.export_text(styles=False)
 
-    assert "look at @shot.png" in rendered
     assert "\u2580" in rendered
     assert len(msg._image_previews) == 1
 
@@ -84,64 +116,77 @@ async def test_user_message_with_embedded_image_keeps_text_selectable() -> None:
     ]
 
     async with WidgetApp(lambda: UserMessage(text, contents=contents)).run_test(size=(80, 20)) as pilot:
-        await pilot.pause()
         msg = pilot.app.query_one(UserMessage)
-        text_widget = msg.query_one(_UserMessageText)
+        assert await _rendered_body(pilot, msg) == text
+        text_widget = msg.query_one(VirtualizedMarkdown)
         image_widget = msg.query_one(_UserImagePreview)
-        widget, offset = pilot.app.screen.get_widget_and_offset_at(text_widget.region.x + 6, text_widget.region.y + 1)
+        widget, offset = pilot.app.screen.get_widget_and_offset_at(text_widget.region.x + 6, text_widget.region.y)
         image_hit, image_offset = pilot.app.screen.get_widget_and_offset_at(
             image_widget.region.x, image_widget.region.y
         )
 
         assert widget is text_widget
-        assert offset == Offset(6, 1)
-        assert text_widget.get_selection(Selection(Offset(0, 1), Offset(len(text), 1))) == (text, "\n")
+        assert offset == Offset(6, 0)
+        assert text_widget.get_selection(Selection(Offset(0, 0), Offset(len(text), 0))) == (text, "\n")
         assert image_hit is image_widget
         assert image_offset is None
         assert image_widget.allow_select is False
         assert image_widget.get_selection(Selection(None, None)) is None
 
 
-async def test_user_message_tab_selection_uses_source_offsets() -> None:
-    apply_runtime_patch()
-
-    async with WidgetApp(lambda: UserMessage("A\tB")).run_test(size=(80, 20)) as pilot:
-        await pilot.pause()
-        text_widget = pilot.app.query_one(_UserMessageText)
-        origin = text_widget.region.offset
-
-        widget, offset = pilot.app.screen.get_widget_and_offset_at(origin.x + 8, origin.y + 1)
-
-        assert widget is text_widget
-        assert offset == Offset(2, 1)
-        assert text_widget.get_selection(Selection(Offset(2, 1), Offset(3, 1))) == ("B", "\n")
-
-
-async def test_user_message_parent_selection_falls_back_to_text() -> None:
-    text = "parent-selected text"
+async def test_user_message_copies_through_its_header_and_body() -> None:
+    text = "selected **text**"
 
     async with WidgetApp(lambda: UserMessage(text)).run_test() as pilot:
-        await pilot.pause()
         msg = pilot.app.query_one(UserMessage)
-
-        assert msg.get_selection(Selection(Offset(0, 1), Offset(len(text), 1))) == (text, "\n")
-        assert msg.get_selection(SELECT_ALL) == (f"[You]\n{text}", "\n")
-
-
-async def test_user_message_parent_selection_defers_to_selected_text_child() -> None:
-    text = "child-selected text"
-
-    async with WidgetApp(lambda: UserMessage(text)).run_test() as pilot:
-        await pilot.pause()
-        msg = pilot.app.query_one(UserMessage)
-        text_widget = msg.query_one(_UserMessageText)
+        await _rendered_body(pilot, msg)
+        header = msg.query_one(_UserHeader)
+        body = msg.query_one(VirtualizedMarkdown)
         pilot.app.screen.selections = {
             msg: SELECT_ALL,
-            text_widget: Selection(Offset(0, 1), Offset(len(text), 1)),
+            header: SELECT_ALL,
+            body: SELECT_ALL,
         }
 
         assert msg.get_selection(SELECT_ALL) is None
-        assert text_widget.get_selection(Selection(Offset(0, 1), Offset(len(text), 1))) == (text, "\n")
+        assert header.get_selection(SELECT_ALL) == ("[You]", "\n")
+        assert pilot.app.screen.get_selected_text() == "[You]\nselected text"
+
+
+async def test_injected_user_message_indents_its_body_under_the_header() -> None:
+    async with WidgetApp(lambda: UserMessage("note", is_injection=True)).run_test() as pilot:
+        msg = pilot.app.query_one(UserMessage)
+        await _rendered_body(pilot, msg)
+        header = msg.query_one(_UserHeader)
+        body = msg.query_one(VirtualizedMarkdown)
+
+        assert str(header.content) == "\u2514 \u276f You"
+        assert body.content_region.x == header.region.x + 2
+
+
+async def test_user_copy_button_shows_only_for_text_outside_compressed_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contents = [Content.from_data(data=png_bytes((240, 80, 80)), media_type="image/png")]
+    typed = UserMessage("typed")
+    injected = UserMessage("injected", is_injection=True)
+    compressed = UserMessage("archived", compressed=True)
+    image_only = UserMessage("", contents=contents)
+
+    async with WidgetApp(lambda: [typed, injected, compressed, image_only]).run_test() as pilot:
+        copied: list[str] = []
+        monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+        pilot.app.copy_to_clipboard("existing")
+        await pilot.pause()
+
+        assert typed.query_one(MessageCopyButton).display is True
+        assert injected.query_one(MessageCopyButton).display is True
+        assert compressed.query_one(MessageCopyButton).display is False
+        assert image_only.query_one(MessageCopyButton).display is False
+
+        image_only.copy_user_message()
+        assert pilot.app.clipboard == "existing"
+        assert copied == []
 
 
 def test_image_preview_extracts_bounded_display_copy() -> None:
@@ -320,24 +365,25 @@ def test_format_message_created_at_uses_local_time() -> None:
 
 
 def test_message_headers_include_dim_timestamp_when_present() -> None:
-    user = _UserMessageText("hello", timestamp="- 10:16 PM", is_injection=False)
+    user = _user_header_text(timestamp="- 10:16 PM", is_injection=False)
     agent = AgentMessage("hi", profile_name="Code Agent", timestamp="- 10:17 PM", duration_ms=2345)
     instant_agent = AgentMessage("hi", profile_name="Code Agent", duration_ms=0)
 
-    assert user.render().plain.splitlines()[0] == "\u276f You - 10:16 PM"
+    assert user.plain == "\u276f You - 10:16 PM"
     assert agent._header_text().plain == "\u25c7 Code Agent - 10:17 PM (2s)"
     assert instant_agent._header_text().plain == "\u25c7 Code Agent (0ms)"
 
 
 @pytest.mark.parametrize(
-    ("locale", "agent_label", "think_text", "button_text", "tooltip", "retry_text", "error_text"),
+    ("locale", "agent_label", "think_text", "button_text", "tooltip", "user_tooltip", "retry_text", "error_text"),
     [
         (
             "en",
             "Agent",
             "Think: *one*\n\n*two*",
             "copy",
-            "Copy agent response",
+            "Copy raw agent response",
+            "Copy your raw message",
             "✗ Error\ntemporary failure Retrying in 7s (2/4)...",
             "✗ Error\nsomething broke",
         ),
@@ -346,7 +392,8 @@ def test_message_headers_include_dim_timestamp_when_present() -> None:
             "智能体",
             "思考：*one*\n\n*two*",  # noqa: RUF001
             "复制",
-            "复制智能体回复",
+            "复制原始智能体回复",
+            "复制你的原始消息",
             "✗ 错误\ntemporary failure 正在重试，等待 7 秒（2/4）...",  # noqa: RUF001
             "✗ 错误\nsomething broke",
         ),
@@ -358,9 +405,11 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
     think_text: str,
     button_text: str,
     tooltip: str,
+    user_tooltip: str,
     retry_text: str,
     error_text: str,
 ) -> None:
+    user = UserMessage("hello")
     agent = AgentMessage("<think>one\n\ntwo</think>", is_intermediate=True)
     retry = RetryMessage("temporary failure", attempt=2, max_attempts=4, delay_seconds=7)
     error = ErrorMessage("something broke")
@@ -371,6 +420,7 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
             super().__init__()
 
         def compose(self) -> ComposeResult:
+            yield user
             yield agent
             yield retry
             yield error
@@ -381,9 +431,12 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
         assert agent._copy_label() == agent_label
         assert agent._header_text().plain == f"◇ {agent_label}"
         assert agent.text == think_text
-        copy_button = agent.query_one(AgentCopyButton)
+        copy_button = agent.query_one(MessageCopyButton)
         assert copy_button.render().plain == button_text
         assert copy_button.tooltip == tooltip
+        user_copy_button = user.query_one(MessageCopyButton)
+        assert user_copy_button.render().plain == button_text
+        assert user_copy_button.tooltip == user_tooltip
         assert retry.render().plain == retry_text
         assert error._render_text().plain == error_text
 
@@ -415,6 +468,26 @@ async def test_agent_message_streaming() -> None:
         assert msg._is_final is True
 
 
+async def test_agent_message_shows_html_looking_text_as_written() -> None:
+    text = "Fix List<String> in <file>.\n\n<Widget>\nbody\n</Widget>\n\n| a |\n|---|\n| one<br>two |"
+
+    async with WidgetApp(lambda: AgentMessage(text)).run_test(size=(80, 20)) as pilot:
+        body = pilot.app.query_one(AgentMessage).query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: body.get_selection(SELECT_ALL) is not None,
+            pilot=pilot,
+            description="the agent message body has rendered",
+        )
+        selected = body.get_selection(SELECT_ALL)
+        assert selected is not None
+        rendered = selected[0]
+
+        assert "Fix List<String> in <file>." in rendered
+        assert "<Widget> body </Widget>" in rendered
+        assert "│ one │" in rendered
+        assert "│ two │" in rendered
+
+
 async def test_agent_copy_button_sits_next_to_header_timestamp() -> None:
     async with WidgetApp(
         lambda: AgentMessage("hello", profile_name="Code Agent", timestamp="- 1:23 PM")
@@ -422,7 +495,7 @@ async def test_agent_copy_button_sits_next_to_header_timestamp() -> None:
         await pilot.pause()
         msg = pilot.app.query_one(AgentMessage)
         header = msg.query_one(".agent-header", Static)
-        copy_button = msg.query_one(AgentCopyButton)
+        copy_button = msg.query_one(MessageCopyButton)
 
         assert copy_button.display is True
         assert copy_button.region.x == header.region.right
@@ -438,7 +511,7 @@ async def test_empty_agent_message_hides_copy_button(monkeypatch: pytest.MonkeyP
         await pilot.pause()
 
         msg = pilot.app.query_one(AgentMessage)
-        copy_button = msg.query_one(AgentCopyButton)
+        copy_button = msg.query_one(MessageCopyButton)
 
         assert copy_button.display is False
 
@@ -455,7 +528,7 @@ async def test_structured_completion_checkmark_is_styled_and_not_copyable() -> N
         msg = pilot.app.query_one(AgentMessage)
 
         assert msg.has_class("--structured-completion")
-        assert msg.query_one(AgentCopyButton).display is False
+        assert msg.query_one(MessageCopyButton).display is False
 
 
 async def test_agent_message_chrome_render_cache_reuses_rows_and_tracks_theme() -> None:

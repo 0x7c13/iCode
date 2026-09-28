@@ -406,6 +406,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.copy.invalid_argument",
     "tui.copy.title.action",
     "tui.copy.title.success",
+    "tui.copy.user_message",
     "tui.debug.copy.event_stream",
     "tui.diff.no_file_changes",
     "tui.diff.title",
@@ -1501,8 +1502,9 @@ _message_ids.update(
 _message_ids.update(
     {
         "tui.chat.agent_fallback_label",
-        "tui.chat.copy_agent_response_button",
         "tui.chat.copy_agent_response_tooltip",
+        "tui.chat.copy_message_button",
+        "tui.chat.copy_user_message_tooltip",
         "tui.chat.retry_message",
         "tui.chat.think_prefix",
         "tui.app.quit_help",

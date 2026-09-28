@@ -415,6 +415,18 @@ async def test_emoji_table_columns_stay_aligned_across_widths() -> None:
         assert "👍🏽" in rendered
 
 
+async def test_br_splits_a_table_cell_into_lines_sized_by_the_widest() -> None:
+    """``<br>`` in a cell stacks its parts; the column fits the widest part, not all of them in a row."""
+    markdown = "| Command | Use |\n|---|---|\n| `/copy`<br>`/copy all` | copy |\n"
+    width = 40
+    rows = await _render_all_rows(markdown, width=width, height=12)
+    _assert_table_columns_aligned(rows, col_count=2, width=width)
+    commands = [row.split("│")[1].strip() for row in rows if row.count("│") == 3]
+    assert commands == ["Command", "/copy", "/copy all"]
+    top = next(row for row in rows if row.startswith("┌"))
+    assert top.split("┬")[0] == "┌" + "─" * (len("/copy all") + 2)
+
+
 async def test_block_style_cached_matches_uncached_render() -> None:
     """The block-style cache must produce the same render as a fresh lookup.
 

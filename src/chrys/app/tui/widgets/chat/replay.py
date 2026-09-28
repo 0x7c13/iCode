@@ -42,12 +42,7 @@ from chrys.foundation.text.images import is_image_media_type
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY
 from chrys.foundation.trajectory_timing import trajectory_timing_from_metadata
 from chrys.foundation.util.time import parse_created_at
-from chrys.kernel import (
-    GROUP_ANNOTATION_KEY,
-    SUMMARY_OF_GROUP_IDS_KEY,
-    Content,
-    Message,
-)
+from chrys.kernel import Content, Message
 from chrys.kernel.exchanges import (
     LEGACY_CALL_CONTENT_TYPE,
     TOOL_CALL_CONTENT_TYPES,
@@ -74,6 +69,7 @@ from chrys.service.mutations.tool_names import _FILE_TOOLS
 from chrys.service.session.message_metadata import (
     MESSAGE_CREATED_AT_KEY,
     TOOL_RESULT_METADATA_KEY,
+    is_compaction_tool_summary,
     persisted_tool_call_kind,
 )
 from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
@@ -260,6 +256,10 @@ class HistoryReplayPlanner:
         file_snapshots: dict[str, list[Any]] | None = None,
         suppress_marker_text: bool = False,
     ) -> ReplayPlan:
+        # Compaction tool summaries are the model's context and never render.
+        # Drop them before pairing and merging, so a hidden summary cannot
+        # split or join the tool groups around it.
+        messages = [message for message in messages if not is_compaction_tool_summary(message)]
         pairings, standalone_hosted_results, annotations = self._pair_tool_calls(
             messages,
             file_snapshots=file_snapshots,
@@ -1043,18 +1043,7 @@ class HistoryReplayRenderer:
     ) -> str:
         """Render a compressed block through the canonical replay planner."""
         replay_widgets = widgets if widgets is not None else []
-        serialized_messages: list[dict[str, Any]] = []
-        for message in block.messages:
-            serialized = message.to_dict()
-            group = _message_extra(serialized).get(GROUP_ANNOTATION_KEY) or {}
-            if (
-                serialized.get("role") == "assistant"
-                and isinstance(group, dict)
-                and group.get(SUMMARY_OF_GROUP_IDS_KEY)
-            ):
-                continue
-            serialized_messages.append(serialized)
-
+        serialized_messages = [message.to_dict() for message in block.messages]
         plan = self._planner.build_plan(serialized_messages, suppress_marker_text=True)
         plan.apply_compatibility_annotations()
         seen_user_in_turn = False

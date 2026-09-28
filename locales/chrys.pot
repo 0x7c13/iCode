@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.27.0\n"
+"Project-Id-Version: Chrys 0.27.1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -4259,16 +4259,22 @@ msgstr ""
 msgid "tui.chat.agent_fallback_label"
 msgstr ""
 
+#. English: Copy raw agent response
+#. chrys-meta={"fingerprint":"debb1b468d0766e3761ee82b35ba67d8d81dc969f1f43827bfeff59c91210835","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.copy_agent_response_tooltip"
+msgstr ""
+
 #. English: copy
 #. chrys-meta={"fingerprint":"d8ed75600cd5a4fe4cf55a8d4be1b83db63d707a7e7797cc9513e395f47ac02f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
-msgid "tui.chat.copy_agent_response_button"
+msgid "tui.chat.copy_message_button"
 msgstr ""
 
-#. English: Copy agent response
-#. chrys-meta={"fingerprint":"e251bcbcf132abba4b00203194028e459101642d9c3f12231f3a7009a3332ee2","multiline":false,"placeholders":[]}
+#. English: Copy your raw message
+#. chrys-meta={"fingerprint":"66835a466af55ca99d94bb2b2bb5edf3d61d36fe3af871e1746ab7030f479dfb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
-msgid "tui.chat.copy_agent_response_tooltip"
+msgid "tui.chat.copy_user_message_tooltip"
 msgstr ""
 
 #. English: {message} Retrying in {delay_seconds}s
@@ -5002,6 +5008,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4a068fafe2f821ca3df6d4e47c847e729f3dc8b1cd9c4fb7f38daa768ad36086","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/copy_messages.py
 msgid "tui.copy.title.success"
+msgstr ""
+
+#. English: Copied your message
+#. chrys-meta={"fingerprint":"6a756827d52fc3395264d20d432f831876692e5dc0adb6eaa9c60e37e4d457ae","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.copy.user_message"
 msgstr ""
 
 #. English: Event stream copied
@@ -12767,6 +12779,12 @@ msgstr ""
 msgid "tui.workflow.confirm.warnings"
 msgstr ""
 
+#. English: Copy raw run input
+#. chrys-meta={"fingerprint":"a9e650e3b6777b4f47a88e39cd2fadbc9486151237cd62aae2330a191083c1ba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.copy_run_input_tooltip"
+msgstr ""
+
 #. English: default model
 #. chrys-meta={"fingerprint":"2f129c2610c4edf89f3849b2602dac2e7b361b6ee428c5d0790de5af50c1a847","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
@@ -13181,6 +13199,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"da2a10131684dd1413e30fd877b7c7da374dc3dee6714f0fc8fe1e520b9e5c5d","multiline":false,"placeholders":["run_id"]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.restore.fallback"
+msgstr ""
+
+#. English: Copied run input
+#. chrys-meta={"fingerprint":"9238ceb7d6f01f800a8fe73398a4e754623c9a6e256b0c2ebdc68fa541981a7b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.run_input_copied"
 msgstr ""
 
 #. English: Run Settings
