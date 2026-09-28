@@ -279,6 +279,12 @@ class AgentLoadDialog(BaseDialog[None]):
         else:
             self._apply_progress()
 
+    @property
+    def _live(self) -> bool:
+        # Owners may still report after removal starts, which prunes the children before this
+        # dialog unmounts. Buffer those updates as before mount; nothing will render them.
+        return self._mounted and not self._pruning and not self._closing
+
     def update_progress(
         self,
         message: AgentLoadMessage,
@@ -303,7 +309,7 @@ class AgentLoadDialog(BaseDialog[None]):
         )
         if subtitle:
             self._subtitle = subtitle
-        if not self._mounted or self._resolved:
+        if not self._live or self._resolved:
             return completed
         self._apply_progress()
         return completed
@@ -312,14 +318,14 @@ class AgentLoadDialog(BaseDialog[None]):
         """Update the operation title after its display name has been read."""
         self._title_message = title
         self._title = self._render_message(title)
-        if self._mounted:
+        if self._live:
             self.query_one("#agent-load-container").border_title = Text(self._title)
 
     def update_finish_progress(self, message: AgentLoadMessage) -> None:
         """Show the final post-build step, which will be replaced by the result."""
         self._message = self._render_message(message)
         self._record_finish_message(message, status="active")
-        if not self._mounted or self._resolved:
+        if not self._live or self._resolved:
             return
         self._apply_progress()
 
@@ -717,7 +723,7 @@ class AgentLoadDialog(BaseDialog[None]):
             self._record_finish_message(message, status="done")
         else:
             self._mark_finish_message_done()
-        if not self._mounted:
+        if not self._live:
             self._dismiss_pending = True
             return
         self._apply_finish_state()
@@ -783,7 +789,7 @@ class AgentLoadDialog(BaseDialog[None]):
             return
         self._resolved = True
 
-        if not self._mounted:
+        if not self._live:
             self._pending_result = (success, message, allow_esc)
             return
 

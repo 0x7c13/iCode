@@ -266,6 +266,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         locale_controller: LocaleController | None = None,
         on_editor_keymap_changed: Callable[[str], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
+        approval_mode: ApprovalMode = ApprovalMode.MANUAL,
     ) -> None:
         self._services = MainScreenServices(
             bus=event_bus,
@@ -328,8 +329,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.theme_editor: ThemeEditorPanel | None = None
         self._theme_editor_opening = False
         self._shell_requested_after_editor = False
-        self._approval_mode = ApprovalMode.MANUAL
-        self._state.runtime.approval_mode = self._approval_mode
+        # Seeded with the engine's launch mode: the startup ApprovalModeUpdated
+        # sync then confirms what the header already shows, instead of
+        # flipping a placeholder and toasting a change nobody made.
+        self._approval_mode = approval_mode
+        self._state.runtime.approval_mode = approval_mode
         # Relies on EventBus.publish awaiting handlers sequentially so
         # synchronous backend rejections can mark submits as blocked.
         self._submit_state = self._state.submit
@@ -343,6 +347,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._git_branch_retry_cwd_on_display_sync: str | None = None
         self._git_branch_closed = False
         super().__init__()
+        self.set_reactive(MainScreen.header_approval_mode, approval_mode)
         self._reactive_state_initialized = True
         # Track profile switch system message so we can de-duplicate consecutive
         # switches (A→B, B→C becomes A→C) and clear it when the pattern breaks.

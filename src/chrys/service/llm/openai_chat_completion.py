@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from chrys.kernel import (
+    TOOL_CALL_CONTENT_TYPES,
     BaseChatClient,
     ChatOptions,
     ChatResponse,
@@ -69,10 +70,12 @@ from chrys.service.llm._structured_outputs import (
 )
 from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
+from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
 
 logger = logging.getLogger(__name__)
 
 _PENDING_IMAGE_PARTS_KEY = "_chrys_pending_image_parts"
+_HOSTED_CONTEXT_SUMMARY_KEY = "_chrys_hosted_context_summary"
 
 # OpenAI validates the message ``name`` field as ``^[^\s<|\\/>]+$`` (max 64
 # chars) — CJK and hyphens are allowed, so strip only the characters the rule
@@ -955,6 +958,9 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             if choice.finish_reason:
                 finish_reason = FinishReason(choice.finish_reason)
             contents: list[Content] = []
+            # Keep the historical text/tool/reasoning order for complete
+            # responses. Unlike streamed deltas, these fields have no chunk
+            # boundary that can split visible text; its reconstruction is unchanged.
             contents.extend(self._parse_text_contents_from_openai(choice))
             if parsed_tool_calls := list(self._parse_tool_calls_from_openai(choice)):
                 contents.extend(parsed_tool_calls)
@@ -1034,13 +1040,17 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
                 elif plain_reasoning is not None:
                     choice_state.saw_nonempty_reasoning = True
                 _accumulate_openai_tool_calls(choice, stream_state)
-            contents.extend(self._parse_text_contents_from_openai(choice))
+            # These fields carry no relative order. Interpret a mixed delta as
+            # the conventional end-of-reasoning / start-of-answer boundary,
+            # so chunking alone cannot insert reasoning into the answer text.
+            # Across deltas, preserve the provider's original order.
             contents.extend(
                 self._parse_reasoning_from_choice_delta(
                     choice,
                     include_plain_reasoning=include_plain_reasoning,
                 )
             )
+            contents.extend(self._parse_text_contents_from_openai(choice))
         return ChatResponseUpdate(
             created_at=openai_created_at_iso(chunk.created),
             contents=contents,
@@ -1217,7 +1227,8 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
         an informational hosted call becomes a dangling ``tool_calls`` entry
         with no tool response — strict endpoints reject both. Rewriting the
         messages before serialization covers every prep path, including the
-        reasoning-coalescer delegation, without per-content threading.
+        reasoning-coalescer delegation. Request-local summaries retain a
+        private text boundary marker that is removed during serialization.
         """
         # Chat Completions dialects host no tools, so every provider-marked
         # hosted content in history is foreign to this wire.
@@ -1233,7 +1244,9 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             for content in message.contents:
                 if id(content) in degradations:
                     if summary := degradations[id(content)]:
-                        contents.append(Content.from_text(text=summary))
+                        contents.append(
+                            Content.from_text(text=summary, additional_properties={_HOSTED_CONTEXT_SUMMARY_KEY: True})
+                        )
                     continue
                 contents.append(content)
             prepared.append(
@@ -1457,6 +1470,9 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
         aggregate. Tool results end the current run and stay standalone
         ``role: "tool"`` records in source order (the only valid wire shape
         for a ``tool_call_id`` record), preserving call→result adjacency.
+        Within each run, tool calls separate text reconstruction segments;
+        degraded hosted summaries occupy their own segments and reasoning
+        does not split text. These segments share the same wire aggregate.
         Reasoning ownership is per run: each run's contributions ride that
         run's aggregate, next to the tool calls that thinking produced, and
         are never reassigned backward across a result boundary. A run holding
@@ -1467,23 +1483,29 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
         no content supplied.
         """
         all_messages: list[dict[str, Any]] = []
-        text_parts: list[str] = []
+        text_segments: list[list[tuple[str, str | None]]] = []
         tool_calls: list[dict[str, Any]] = []
         run_reasoning: dict[str, Any] = {}
         content_fields: set[str] = set()
 
+        def end_text_segment() -> None:
+            if text_segments and text_segments[-1]:
+                text_segments.append([])
+
         def flush_run(*, force_reasoning_carrier: bool = False) -> None:
-            if not text_parts and not tool_calls and not (force_reasoning_carrier and run_reasoning):
+            if not text_segments and not tool_calls and not (force_reasoning_carrier and run_reasoning):
                 return
             aggregate: dict[str, Any] = {"role": message.role}
             if author_name := _sanitize_author_name(message.author_name):
                 aggregate["name"] = author_name
-            aggregate["content"] = "\n".join(text_parts)
+            aggregate["content"] = join_text_blocks(
+                block for segment in text_segments for block in reconstruct_text_blocks(segment)
+            )
             aggregate.update(run_reasoning)
             if tool_calls:
                 aggregate["tool_calls"] = list(tool_calls)
             all_messages.append(aggregate)
-            text_parts.clear()
+            text_segments.clear()
             tool_calls.clear()
             run_reasoning.clear()
 
@@ -1498,9 +1520,17 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
                     content_fields.add(field)
                 case "function_call":
                     tool_calls.append(self._prepare_content_for_openai(content))
+                    end_text_segment()
                 case "text":
                     if content.text is not None:
-                        text_parts.append(content.text)
+                        is_hosted_summary = content.additional_properties.get(_HOSTED_CONTEXT_SUMMARY_KEY) is True
+                        if is_hosted_summary:
+                            end_text_segment()
+                        if not text_segments:
+                            text_segments.append([])
+                        text_segments[-1].append((content.text, text_block_id(content.additional_properties)))
+                        if is_hosted_summary:
+                            end_text_segment()
                 case "function_result":
                     # A reasoning-only run does NOT flush here: it defers past
                     # the result block and joins the next run instead.
@@ -1511,6 +1541,8 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
                         result_args[_PENDING_IMAGE_PARTS_KEY] = pending_image_parts
                     all_messages.append(result_args)
                 case _:
+                    if content.type in TOOL_CALL_CONTENT_TYPES:
+                        end_text_segment()
                     excluded_args: dict[str, Any] = {"role": message.role}
                     if author_name := _sanitize_author_name(message.author_name):
                         excluded_args["name"] = author_name
@@ -1683,6 +1715,17 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
     def _prepare_content_for_openai(self, content: Content) -> dict[str, Any]:
         """Prepare content for OpenAI."""
         match content.type:
+            case "text" if _HOSTED_CONTEXT_SUMMARY_KEY in content.additional_properties:
+                # Multimodal messages can retain text-part metadata on the wire.
+                # Remove only the request-local marker, without changing history.
+                prepared = content.to_dict(exclude_none=True)
+                properties = dict(prepared["additional_properties"])
+                properties.pop(_HOSTED_CONTEXT_SUMMARY_KEY)
+                if properties:
+                    prepared["additional_properties"] = properties
+                else:
+                    prepared.pop("additional_properties")
+                return prepared
             case "function_call":
                 args = json.dumps(content.arguments) if isinstance(content.arguments, Mapping) else content.arguments
                 return {

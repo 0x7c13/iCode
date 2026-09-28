@@ -12,7 +12,12 @@ from textual.widgets import Static
 from textual.widgets._toast import Toast, ToastRack
 
 from chrys.app.tui import toasts
-from tests.support.tui_app_harness import make_chrys_app
+from chrys.app.tui.widgets.chrome.app_header import AppHeader
+from chrys.foundation.config.settings import Settings
+from chrys.foundation.events.bus import EventBus
+from chrys.foundation.events.types import ApprovalModeUpdated
+from chrys.service.approval.policy import ApprovalMode
+from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -97,3 +102,24 @@ async def test_more_toasts_than_fit_keep_the_newest_under_the_header(tmp_path: P
 
         await wait_for(lambda: newest.region.y == header.region.bottom + 1, pilot=pilot, description="newest on top")
         assert oldest.region.y >= app.size.height
+
+
+class _AutoLaunchEngine(ShutdownOnlyEngine):
+    approval_mode = ApprovalMode.AUTO
+
+
+async def test_the_startup_approval_sync_of_a_non_manual_launch_does_not_toast(tmp_path: Path) -> None:
+    """The engine confirming its launch mode at session start is not a mode change."""
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, settings=Settings(locale="en"), engine=_AutoLaunchEngine(), event_bus=bus)
+    async with app.run_test(size=(120, 30), notifications=True) as pilot:
+        main = app._main_screen
+        assert main is not None
+        # The badge shows the launch mode before the engine confirms it, not a MANUAL placeholder.
+        assert main.query_one(AppHeader).approval_mode is ApprovalMode.AUTO
+        main.chat_session_id = "chat"
+        await bus.publish(ApprovalModeUpdated(mode="auto", session_id="chat"))
+        # A genuine change still toasts, and it is the only toast racked.
+        await bus.publish(ApprovalModeUpdated(mode="bypass", session_id="chat"))
+        await wait_for(lambda: bool(_racked(main)), pilot=pilot, description="the mode-change toast is racked")
+        assert _racked(main) == ["Approval mode: BYPASS"]

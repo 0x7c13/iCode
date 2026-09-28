@@ -41,9 +41,9 @@ import tempfile
 import threading
 import uuid
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
-from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from chrys.service.mutations.coordination import canonical_key, fold_case
 
 if TYPE_CHECKING:
@@ -136,11 +136,6 @@ def _self_test(binary: str) -> bool:
                 "-c",
                 f"open({target!r}, 'w').write('chrys fsatrace probe')",
             ]
-            kwargs: dict = {}
-            if get_platform().is_windows:
-                # python -c needs no console; avoid a window flash.
-                subprocess_module = cast(Any, subprocess)
-                kwargs["creationflags"] = subprocess_module.CREATE_NO_WINDOW
             proc = subprocess.run(  # noqa: S603 — probe of an operator-supplied tracer binary
                 argv,
                 # Non-interactive probe: the process stdin (the ACP protocol
@@ -149,7 +144,9 @@ def _self_test(binary: str) -> bool:
                 capture_output=True,
                 timeout=_PROBE_TIMEOUT_SECONDS,
                 check=False,
-                **kwargs,
+                # A hidden console of its own: CREATE_NO_WINDOW would let the
+                # probe share, and reset the modes of, the TUI's console.
+                **windows_hidden_subprocess_kwargs(),
             )
             if proc.returncode != 0:
                 return False

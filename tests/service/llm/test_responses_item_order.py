@@ -370,7 +370,8 @@ def test_streamed_output_message_replays_the_done_envelope_verbatim() -> None:
     ]
 
 
-def test_consecutive_streamed_output_messages_replay_as_distinct_items() -> None:
+@pytest.mark.parametrize("persisted", [False, True], ids=["in_memory", "persisted"])
+def test_consecutive_streamed_output_messages_replay_as_distinct_items(persisted: bool) -> None:
     client = _client()
     output_message_envelopes: dict[int, dict[str, str]] = {}
     output_message_contents: dict[int, list[Content]] = {}
@@ -419,6 +420,8 @@ def test_consecutive_streamed_output_messages_replay_as_distinct_items() -> None
     ]
 
     response = ChatResponse.from_updates(updates)
+    if persisted:
+        response = ChatResponse.from_dict(response.to_dict())
     prepared = client._prepare_messages_for_openai(response.messages)
 
     assert prepared == [

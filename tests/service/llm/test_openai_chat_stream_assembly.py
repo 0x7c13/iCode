@@ -129,6 +129,45 @@ def _function_calls(response: ChatResponse) -> list[Content]:
     return [content for message in response.messages for content in message.contents if content.type == "function_call"]
 
 
+@pytest.mark.parametrize("reasoning_field", ["reasoning", "reasoning_content"])
+@pytest.mark.parametrize(("first_text", "last_text"), [("基线\n", "核对完毕"), ("回", "退\n把代码核对完毕")])
+async def test_mixed_reasoning_tail_and_text_matches_sequential_chunks(
+    reasoning_field: str, first_text: str, last_text: str
+) -> None:
+    prefix = _chunk(ChunkChoiceDelta.model_construct(role="assistant", **{reasoning_field: "read lines 810"}))
+    tail = {reasoning_field: "-830."}
+    suffix = [
+        _chunk(ChunkChoiceDelta.model_construct(content=last_text)),
+        _tool_chunk(_tool_delta(call_id="call_1", name="read_file", arguments="{}")),
+        _chunk(ChunkChoiceDelta.model_construct(), finish_reason="tool_calls"),
+    ]
+
+    _, mixed = await _raw_stream_response(
+        [prefix, _chunk(ChunkChoiceDelta.model_construct(content=first_text, **tail)), *suffix]
+    )
+    _, sequential = await _raw_stream_response(
+        [
+            prefix,
+            _chunk(ChunkChoiceDelta.model_construct(**tail)),
+            _chunk(ChunkChoiceDelta.model_construct(content=first_text)),
+            *suffix,
+        ]
+    )
+
+    for response in (mixed, sequential):
+        restored = ChatResponse.from_dict(response.to_dict())
+        contents = restored.messages[0].contents
+        assert [(content.type, content.text) for content in contents[:2]] == [
+            ("text_reasoning", "read lines 810-830."),
+            ("text", first_text + last_text),
+        ]
+        assert len(contents) == 3
+        assert contents[0].additional_properties["openai_reasoning_format"] == reasoning_field
+        assert contents[2].type == "function_call"
+        assert contents[2].call_id == "call_1"
+        assert instrumented_module._extract_intermediate_text(restored) == first_text + last_text
+
+
 @pytest.mark.asyncio
 async def test_instrumented_glm_stream_assembles_tool_and_preserves_markdown(
     monkeypatch: pytest.MonkeyPatch,

@@ -85,6 +85,7 @@ def _assert_clean_wire(prepared: list[dict[str, Any]]) -> None:
     wire = json.dumps(prepared)
     assert "search_tool_call" not in wire
     assert "mcp_server_tool_call" not in wire
+    assert "_chrys_hosted_context_summary" not in wire
     assert all("tool_calls" not in message for message in prepared)
 
 
@@ -170,16 +171,62 @@ def test_reasoning_delegation_path_sees_degraded_contents() -> None:
     final = Content.from_text(text="Here's what I found.")
     message = Message(
         "assistant",
-        [call, result, final],
+        [Content.from_text("Let me look."), call, result, final],
         additional_properties={"reasoning_content": "thinking"},
     )
+    original = message.to_dict()
     prepared = _base()._prepare_messages_for_openai([message])
 
     _assert_clean_wire(prepared)
     assert len(prepared) == 1
     assert prepared[0]["reasoning_content"] == "thinking"
-    assert "[Provider-hosted tool context]" in prepared[0]["content"]
-    assert "Here's what I found." in prepared[0]["content"]
+    assert prepared[0]["content"].startswith("Let me look.\n[Provider-hosted tool context]\n")
+    assert prepared[0]["content"].endswith("\nHere's what I found.")
+    assert prepared[0]["content"].count("[Provider-hosted tool context]") == 1
+    assert message.to_dict() == original
+
+
+@pytest.mark.parametrize("client_factory", _CLIENTS)
+def test_degraded_summary_marker_does_not_leak_in_mixed_content(client_factory: Any) -> None:
+    call, result = _mcp_pair("anthropic")
+    message = Message(
+        "assistant",
+        [
+            Content.from_text("Before."),
+            call,
+            result,
+            Content.from_text("After."),
+            Content.from_uri(uri="https://example.test/image.png", media_type="image/png"),
+        ],
+    )
+    original = message.to_dict()
+
+    prepared = client_factory()._prepare_messages_for_openai([message])
+
+    # DeepSeek keeps text and images in one content array, so its text parts
+    # must shed the private marker even when they are not flattened to strings.
+    _assert_clean_wire(prepared)
+    wire = json.dumps(prepared)
+    assert wire.count("[Provider-hosted tool context]") == 1
+    assert "image_url" in wire
+    assert "https://example.test/image.png" in wire
+    assert message.to_dict() == original
+
+
+@pytest.mark.parametrize("other_properties", [{}, {"custom": {"value": "keep"}}])
+def test_text_serializer_removes_only_request_local_summary_marker(other_properties: dict[str, Any]) -> None:
+    content = Content.from_text(
+        "summary", additional_properties={"_chrys_hosted_context_summary": True, **other_properties}
+    )
+    original = content.to_dict()
+
+    prepared = _base()._prepare_content_for_openai(content)
+
+    expected: dict[str, Any] = {"type": "text", "text": "summary"}
+    if other_properties:
+        expected["additional_properties"] = other_properties
+    assert prepared == expected
+    assert content.to_dict() == original
 
 
 @pytest.mark.parametrize("client_factory", _CLIENTS)

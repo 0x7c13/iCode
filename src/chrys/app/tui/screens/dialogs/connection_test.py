@@ -127,7 +127,9 @@ class ConnectionTestDialog(BaseDialog[None]):
             return
         self._resolved = True
 
-        if not self._mounted:
+        # Owners may still report after removal starts, which prunes the children before this
+        # dialog unmounts. Buffer as before mount; nothing will render it.
+        if not self._mounted or self._pruning or self._closing:
             self._pending_result = (success, message, allow_esc, markdown)
             return
 

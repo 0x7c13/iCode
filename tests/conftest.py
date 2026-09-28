@@ -28,6 +28,7 @@ import pytest
 
 from chrys.foundation import platform as platform_mod
 from chrys.foundation.patches import mdurl_cache as _mdurl_cache
+from chrys.foundation.patches import textual_block_border as _textual_block_border
 from chrys.foundation.patches import textual_dispatch_cache as _textual_dispatch_cache
 from chrys.foundation.patches import textual_one_shot_timer as _textual_one_shot_timer
 from chrys.foundation.patches import textual_pruned_tabs as _textual_pruned_tabs
@@ -110,6 +111,11 @@ _textual_removed_screen_callbacks.apply_runtime_patch()
 # Tab bars move their underline from a one-shot timer exactly as in the app; unpatched, a
 # collection or descheduling right after that timer starts means it never fires.
 _textual_one_shot_timer.apply_runtime_patch()
+
+# Every rendered line reads its colors through the same cache as in the app; unpatched, that
+# cache keeps up to 1024 removed widgets' rendered lines alive, and a worker's gen2 collections
+# grow into multi-second pauses.
+_textual_block_border.apply_runtime_patch()
 
 
 @pytest.fixture(autouse=True)

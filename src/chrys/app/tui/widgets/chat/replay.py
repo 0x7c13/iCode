@@ -76,6 +76,7 @@ from chrys.service.session.message_metadata import (
     TOOL_RESULT_METADATA_KEY,
     persisted_tool_call_kind,
 )
+from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
 
 if TYPE_CHECKING:
     from textual.widget import Widget
@@ -1143,12 +1144,12 @@ class HistoryReplayRenderer:
     ) -> None:
         """Replay a single assistant message, preserving text/tool-call order."""
         replay_widgets = widgets if widgets is not None else []
-        pending_text: list[str] = []
+        pending_text: list[tuple[str, str | None]] = []
         pending_tools: list[ReplayToolCall | dict[str, Any]] = []
         timestamp = "" if is_intermediate else format_message_created_at(created_at)
 
         async def flush_text() -> None:
-            text = "\n".join(pending_text).strip()
+            text = join_text_blocks(reconstruct_text_blocks(pending_text)).strip()
             pending_text.clear()
             if text and process_think_tags(text, intermediate=is_intermediate):
                 replay_widgets.append(
@@ -1279,10 +1280,12 @@ class HistoryReplayRenderer:
                     await flush_tools()
                 if isinstance(content, dict) and content.get("type") == "text":
                     text = content.get("text", "")
-                    if text:
-                        pending_text.append(text)
+                    block_id = text_block_id(content.get("additional_properties"))
+                    # Even an empty fragment can separate different item IDs.
+                    # Suppress empty blocks only after reconstruction.
+                    pending_text.append((text or "", block_id))
                 elif isinstance(content, str):
-                    pending_text.append(content)
+                    pending_text.append((content, None))
 
         await flush_tools()
         await flush_text()
@@ -1564,9 +1567,9 @@ def _visible_text_variants(contents: list[Any]) -> list[str]:
     variants: list[str] = []
     all_parts: list[str] = []
     segment_parts: list[str] = []
-    # Replay renders visible text parts with newlines, but the session writer
-    # suppresses duplicate _intermediate_text by comparing parts joined without
-    # separators. Keep both forms so replay and persistence share the contract.
+    # Legacy replay inserted newlines between every fragment, while live text
+    # and session sidecar suppression concatenated without separators. Recognize
+    # both historical forms for backward-compatible _intermediate_text matching.
     for content in contents:
         if isinstance(content, dict) and content.get("type") == "text":
             text = str(content.get("text", ""))
