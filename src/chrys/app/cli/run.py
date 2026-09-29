@@ -21,7 +21,7 @@ from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_terminal_block
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
@@ -152,8 +152,10 @@ def _write_result(result: HeadlessRunResult, *, as_json: bool, duration: float) 
         }
         headless.write_json(payload)
         return
-    sys.stdout.write(result.text)
-    if not result.text.endswith("\n"):
+    # Redirected output is data for another program and stays byte-for-byte.
+    text = sanitize_terminal_block(result.text) if sys.stdout.isatty() else result.text
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
         sys.stdout.write("\n")
 
 

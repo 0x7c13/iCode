@@ -44,6 +44,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     get_tool_invocation_order,
 )
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
+from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
@@ -455,117 +456,117 @@ class ApprovalMiddleware(FunctionMiddleware):
         # arrival order.
         self._decisions.append(decision)
 
-        # Prepare future + handler BEFORE publishing (for synchronous auto-approve).
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[tuple[bool, str, dict[str, Any] | None]] = loop.create_future()
-        user_decided = False
-
-        async def _handler(event: ApprovalResponse) -> None:
-            nonlocal user_decided
-            if event.request_id == request_id and not future.done():
-                user_decided = True
-                future.set_result((event.approved, event.reason, event.modified_args))
-
-        await self._bus.subscribe(ApprovalResponse, _handler)
-
-        judging = (
-            self._approval_mode == ApprovalMode.AUTO and self._approval_judge is not None and not dev_sub_agent_review
-        )
-        if judging:
-            # Frontends may synchronously block auto-fulfilment while handling
-            # ApprovalRequest, so install the shared arbitration subscription
-            # before publishing the request.
-            await self._ensure_auto_fulfill_block_subscription()
-
-        approval_trace = ApprovalTrace.open(context.metadata)
-
-        await self._bus.publish(
-            ApprovalRequest(
-                request_id=request_id,
-                call_id=call_id,
-                tool_name=tool_name,
-                tool_kind=tool_kind,
-                args=parsed_args,
-                # intent_summary stays empty: the middleware has no real intent
-                # to report, and a fabricated "Execute {tool_name}" placeholder
-                # would win over the informative title fallbacks downstream
-                # (the ACP server titles shell calls by their command).
-                session_id=self._session_id,
-                caller_name=self._caller_name,
-                user_message=self._user_message,
-                workspace_roots=list(self._workspace_roots),
-                workspace_cwd=self._workspace_cwd or "",
-                judging=judging,
-            )
-        )
-
         judge_task: asyncio.Task[None] | None = None
-        if judging:
-            # The judge's model call is a side call of this session: rebind
-            # the ambient trajectory actor so its exchange is attributed to
-            # the judge, never to the main agent.
-            with side_call_scope(ActorRole.APPROVAL_JUDGE):
-                judge_task = asyncio.create_task(
-                    self._approval_arbiter.judge(
-                        request_id=request_id,
-                        judge=self._approval_judge,
-                        judge_input=ApprovalJudgeInput(
-                            user_message=self._turn_context.user_message,
-                            user_messages=self._turn_context.user_messages,
+        approval_trace = None
+        try:
+            # Subscribe BEFORE publishing (a frontend may answer synchronously)
+            # and hold the subscription until the decision is in, whatever
+            # interrupts the wait.
+            async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id) as correlation:
+                future = correlation.future
+                try:
+                    judging = (
+                        self._approval_mode == ApprovalMode.AUTO
+                        and self._approval_judge is not None
+                        and not dev_sub_agent_review
+                    )
+                    if judging:
+                        # Frontends may synchronously block auto-fulfilment while handling
+                        # ApprovalRequest, so install the shared arbitration subscription
+                        # before publishing the request.
+                        await self._ensure_auto_fulfill_block_subscription()
+
+                    approval_trace = ApprovalTrace.open(context.metadata)
+
+                    await self._bus.publish(
+                        ApprovalRequest(
+                            request_id=request_id,
+                            call_id=call_id,
                             tool_name=tool_name,
                             tool_kind=tool_kind,
                             args=parsed_args,
+                            # intent_summary stays empty: the middleware has no real intent
+                            # to report, and a fabricated "Execute {tool_name}" placeholder
+                            # would win over the informative title fallbacks downstream
+                            # (the ACP server titles shell calls by their command).
+                            session_id=self._session_id,
+                            caller_name=self._caller_name,
+                            user_message=self._user_message,
                             workspace_roots=list(self._workspace_roots),
-                        ),
-                        decision_future=future,
-                        approved_value=(True, "", None),
-                        log_dir=self._approval_log_dir,
+                            workspace_cwd=self._workspace_cwd or "",
+                            judging=judging,
+                        )
                     )
-                )
 
-        try:
-            try:
-                # Inside the block that lets the request go: the marker awaits
-                # its write ack, and an interrupt landing there would otherwise
-                # leave this request's handler subscribed and its judge still
-                # calling the model. The judge task cannot run before this
-                # either, so its own events still follow the request.
-                if approval_trace is not None:
-                    await approval_trace.requested(
+                    if judging:
+                        # The judge's model call is a side call of this session: rebind
+                        # the ambient trajectory actor so its exchange is attributed to
+                        # the judge, never to the main agent.
+                        with side_call_scope(ActorRole.APPROVAL_JUDGE):
+                            judge_task = asyncio.create_task(
+                                self._approval_arbiter.judge(
+                                    request_id=request_id,
+                                    judge=self._approval_judge,
+                                    judge_input=ApprovalJudgeInput(
+                                        user_message=self._turn_context.user_message,
+                                        user_messages=self._turn_context.user_messages,
+                                        tool_name=tool_name,
+                                        tool_kind=tool_kind,
+                                        args=parsed_args,
+                                        workspace_roots=list(self._workspace_roots),
+                                    ),
+                                    decision_future=future,
+                                    approved_value=ApprovalResponse(
+                                        request_id=request_id,
+                                        approved=True,
+                                        session_id=self._session_id,
+                                    ),
+                                    log_dir=self._approval_log_dir,
+                                )
+                            )
+
+                    # Inside the block that lets the request go: the marker awaits
+                    # its write ack, and an interrupt landing there would otherwise
+                    # leave this request's handler subscribed and its judge still
+                    # calling the model. The judge task cannot run before this
+                    # either, so its own events still follow the request.
+                    if approval_trace is not None:
+                        await approval_trace.requested(
+                            tool_name=tool_name,
+                            approval_mode=self._approval_mode.value,
+                            approval_level=_approval_level(
+                                policy=policy_requires_approval,
+                                dev_sub_agent_review=dev_sub_agent_review,
+                                sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write,
+                            ),
+                        )
+                    response = await await_approval_with_hooks(
+                        future=future,
+                        judge_task=judge_task,
+                        manager=self._hook_manager,
+                        session_id=self._session_id,
+                        profile_name=self._profile_name,
+                        workspace_cwd=self._workspace_cwd or "",
+                        caller_name=self._caller_name,
+                        request_id=request_id,
                         tool_name=tool_name,
-                        approval_mode=self._approval_mode.value,
-                        approval_level=_approval_level(
-                            policy=policy_requires_approval,
-                            dev_sub_agent_review=dev_sub_agent_review,
-                            sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write,
-                        ),
+                        tool_kind=tool_kind,
+                        call_id=call_id,
+                        args=parsed_args,
+                        target_operation_id=approval_trace.request_id if approval_trace is not None else None,
                     )
-                approved, reason, modified_args = await await_approval_with_hooks(
-                    future=future,
-                    judge_task=judge_task,
-                    manager=self._hook_manager,
-                    session_id=self._session_id,
-                    profile_name=self._profile_name,
-                    workspace_cwd=self._workspace_cwd or "",
-                    caller_name=self._caller_name,
-                    request_id=request_id,
-                    tool_name=tool_name,
-                    tool_kind=tool_kind,
-                    call_id=call_id,
-                    args=parsed_args,
-                    target_operation_id=approval_trace.request_id if approval_trace is not None else None,
-                )
-                reason = reason.strip()
-            finally:
-                await self._bus.unsubscribe(ApprovalResponse, _handler)
-                # Cancel the judge if the user decided first (or reason is in — the
-                # judge still may have published a verdict that raced in; the dialog
-                # is already dismissed by then so the TUI drops it).
-                if judge_task is not None and not judge_task.done():
-                    judge_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await judge_task
+                finally:
+                    # Cancel the judge if the user decided first (or reason is in — the
+                    # judge still may have published a verdict that raced in; the dialog
+                    # is already dismissed by then so the TUI drops it).
+                    if judge_task is not None and not judge_task.done():
+                        judge_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await judge_task
 
+            approved = response.approved
+            reason = response.reason.strip()
+            modified_args = response.modified_args
             status = "user_approved" if approved else "user_rejected"
             decision["status"] = status
             if reason:
@@ -575,7 +576,7 @@ class ApprovalMiddleware(FunctionMiddleware):
             if approval_trace is not None:
                 await approval_trace.resolved(
                     approved=approved,
-                    decider=ApprovalDecider.USER if user_decided else ApprovalDecider.JUDGE,
+                    decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE,
                     reason_code="user_reason" if reason else "",
                     arguments_modified=bool(modified_args),
                 )

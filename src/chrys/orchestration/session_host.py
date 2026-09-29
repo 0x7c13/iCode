@@ -186,7 +186,7 @@ def allows_headless_event(event: Event) -> bool:
 
 @dataclass(frozen=True)
 class HeadlessRunResult:
-    """Final response and events from one headless agent turn."""
+    """Final response from one headless agent turn; ``events`` stays empty unless the caller asked to keep them."""
 
     text: str
     session_id: str
@@ -196,9 +196,8 @@ class HeadlessRunResult:
 class HeadlessRunError(RuntimeError):
     """Raised when a headless agent turn ends with an engine error."""
 
-    def __init__(self, event: Error, events: list[Event]) -> None:
+    def __init__(self, event: Error) -> None:
         self.event = event
-        self.events = events
         super().__init__(event.message or event.code or "Headless agent run failed")
 
 
@@ -417,7 +416,7 @@ class ChrysSessionHost:
 
         async def _on_error(event: Error) -> None:
             if event.session_id == target_session_id and not restored.done():
-                restored.set_exception(HeadlessRunError(event, [event]))
+                restored.set_exception(HeadlessRunError(event))
 
         await self._bus.subscribe(SessionRestored, _on_restored)
         await self._bus.subscribe(Error, _on_error)
@@ -478,7 +477,6 @@ class ChrysSessionHost:
         raise_for_outcome: bool,
     ) -> AsyncIterator[Event]:
         """Run one user turn while the host run lock is held."""
-        events: list[Event] = []
         final: InvocationMessage | None = None
         error: Error | None = None
         question: QuestionToUser | None = None
@@ -488,7 +486,8 @@ class ChrysSessionHost:
 
         def _record_event(event: Event) -> None:
             nonlocal final, error, question
-            events.append(event)
+            # Only the terminal state is kept: a caller that wants the turn's
+            # events reads them from this iterator as they stream.
             if (
                 isinstance(event, InvocationMessage)
                 and event.origin.kind == "turn"
@@ -566,7 +565,7 @@ class ChrysSessionHost:
                         outcome = self._resolve_run_outcome(final=final, error=error, question=question)
                         self._last_turn_outcome = outcome
                         if raise_for_outcome:
-                            self._raise_for_run_outcome(events, outcome=outcome)
+                            self._raise_for_run_outcome(outcome)
                         return
             finally:
                 if start_task is not None:
@@ -591,14 +590,25 @@ class ChrysSessionHost:
                     with contextlib.suppress(asyncio.CancelledError):
                         await next_event_task
 
-    async def run_until_final(self, message: str | UserMessage, *, timeout: float | None = None) -> HeadlessRunResult:
-        """Run one user turn and return the final assistant response."""
+    async def run_until_final(
+        self,
+        message: str | UserMessage,
+        *,
+        timeout: float | None = None,
+        keep_events: bool = False,
+    ) -> HeadlessRunResult:
+        """Run one user turn and return the final assistant response.
+
+        The turn's streamed events are retained in ``HeadlessRunResult.events``
+        only with *keep_events*: a long turn streams many deltas nobody reads.
+        """
 
         async def _run() -> HeadlessRunResult:
             events: list[Event] = []
             final: InvocationMessage | None = None
             async for event in self.iter_run_events(message):
-                events.append(event)
+                if keep_events:
+                    events.append(event)
                 if (
                     isinstance(event, InvocationMessage)
                     and event.origin.kind == "turn"
@@ -918,14 +928,9 @@ class ChrysSessionHost:
             return
         task.add_done_callback(cls._observe_task_exception)
 
-    def _raise_for_run_outcome(
-        self,
-        events: list[Event],
-        *,
-        outcome: TurnOutcome,
-    ) -> None:
+    def _raise_for_run_outcome(self, outcome: TurnOutcome) -> None:
         if isinstance(outcome, Errored):
-            raise HeadlessRunError(outcome.error, events)
+            raise HeadlessRunError(outcome.error)
         if isinstance(outcome, Cancelled):
             error_message = outcome.reason or "Agent run was cancelled."
             raise RuntimeError(error_message)

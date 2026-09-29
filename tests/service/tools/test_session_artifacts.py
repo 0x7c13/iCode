@@ -13,6 +13,7 @@ import pytest
 
 from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR
 from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import secure_open_owner_only_binary
 from chrys.service.tools.session_artifacts import (
     DocumentImageArtifactLimitError,
     iter_document_image_artifacts,
@@ -23,6 +24,7 @@ from chrys.service.tools.session_artifacts import (
     resolve_document_markdown_artifact_handle,
     resolve_tool_session_dir,
 )
+from tests.support.symlinks import symlink_or_skip
 
 
 def test_document_handle_is_readable_and_resolves_exact_filename(tmp_path) -> None:
@@ -184,6 +186,31 @@ def test_reharden_document_images_republishes_copied_windows_artifacts(tmp_path)
     read_source.assert_called_once_with(source_image)
     republish.assert_called_once_with(destination_image, b"copied-image")
     assert destination_markdown.read_text(encoding="utf-8") == "not an image"
+
+
+def test_reharden_document_images_imports_legacy_sources_behind_a_parent_alias(tmp_path) -> None:
+    import chrys.service.tools.session_artifacts as session_artifacts
+
+    real = tmp_path / "real"
+    source_image = real / "source" / "doc_converter" / "image-copied.png"
+    source_image.parent.mkdir(parents=True)
+    # An older release's image, deliberately not an owner-only publish: on an
+    # elevated Windows runner its owner is the Administrators group.
+    source_image.write_bytes(b"copied-image")
+    alias = tmp_path / "alias"
+    symlink_or_skip(alias, real, target_is_directory=True)
+    source_session_dir = alias / "source"
+    destination_session_dir = tmp_path / "destination"
+    shutil.copytree(source_session_dir, destination_session_dir)
+
+    with patch.object(session_artifacts, "get_platform", return_value=SimpleNamespace(is_windows=True)):
+        # Fork's owner-verified read of the user's own session still refuses it.
+        with pytest.raises(OSError):
+            reharden_document_image_artifacts(source_session_dir, destination_session_dir)
+        reharden_document_image_artifacts(source_session_dir, destination_session_dir, legacy_import=True)
+
+    with secure_open_owner_only_binary(destination_session_dir / "doc_converter" / source_image.name) as copied:
+        assert copied.read() == b"copied-image"
 
 
 def test_reharden_document_images_finishes_enumeration_before_republishing(tmp_path) -> None:

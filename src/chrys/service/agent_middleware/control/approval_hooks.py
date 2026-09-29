@@ -10,14 +10,13 @@ from typing import TYPE_CHECKING, Any
 from chrys.service.hooks.events import HookEvent
 
 if TYPE_CHECKING:
+    from chrys.foundation.events.types import ApprovalResponse
     from chrys.service.hooks.manager import HookManager
-
-type ApprovalResult = tuple[bool, str, dict[str, Any] | None]
 
 
 async def await_approval_with_hooks(
     *,
-    future: asyncio.Future[ApprovalResult],
+    future: asyncio.Future[ApprovalResponse],
     judge_task: asyncio.Task[None] | None,
     manager: HookManager | None,
     session_id: str | None,
@@ -30,7 +29,7 @@ async def await_approval_with_hooks(
     call_id: str,
     args: dict[str, Any],
     target_operation_id: str | None,
-) -> ApprovalResult:
+) -> ApprovalResponse:
     """Wait for the existing decision future, notifying only actual human waits."""
     if manager is None or not (
         manager.has_hooks_for(HookEvent.APPROVAL_REQUESTED) or manager.has_hooks_for(HookEvent.APPROVAL_RESOLVED)
@@ -57,7 +56,7 @@ async def await_approval_with_hooks(
     result = await future
     await manager.fire(
         HookEvent.APPROVAL_RESOLVED,
-        {**payload, "approved": result[0]},
+        {**payload, "approved": result.approved},
         target_operation_id=target_operation_id,
     )
     return result

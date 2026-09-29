@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -299,6 +300,41 @@ def fake_host(monkeypatch: pytest.MonkeyPatch) -> type[FakeHost]:
     FakeHost.result = None
     monkeypatch.setattr(workflow_cli, "ChrysSessionHost", FakeHost)
     return FakeHost
+
+
+class _Stdout(io.StringIO):
+    def __init__(self, *, tty: bool) -> None:
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+@pytest.mark.parametrize("tty", [True, False])
+def test_run_neutralizes_terminal_controls_in_outputs_only_on_a_terminal(
+    fake_host: type[FakeHost], monkeypatch: pytest.MonkeyPatch, tty: bool
+) -> None:
+    text = "all:\n\tgo build\x1b[2J\x07\r\n"
+    fake_host.result = WorkflowRunResult(
+        run_id="run-1",
+        outcome=RunOutcome.COMPLETED,
+        outputs=(RunOutput("report", "act-1", WorkflowValue(text=text, data=None)),),
+        node_id="",
+        error="",
+        reason="",
+        duration=0.5,
+    )
+    stdout = _Stdout(tty=tty)
+    monkeypatch.setattr(workflow_cli.sys, "stdout", stdout)
+
+    assert workflow_cli.main(["run", "chain"]) == 0
+
+    if tty:
+        assert stdout.getvalue() == "all:\n\tgo build�[2J�\n"
+    else:
+        # Redirected output is data for another program: byte-for-byte.
+        assert stdout.getvalue() == text
 
 
 def test_run_passes_the_request_through_and_prints_outputs(

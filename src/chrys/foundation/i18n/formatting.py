@@ -109,11 +109,11 @@ def _reject_markup_bracket_pairs(template: str) -> None:
         backslash_run = 0
 
 
-def _sanitize_controls(text: str, *, keep_lf: bool) -> str:
+def _sanitize_controls(text: str, *, keep_lf: bool, keep_tab: bool = False) -> str:
     sanitized: list[str] = []
     for character in text:
         codepoint = ord(character)
-        if character == "\n" and keep_lf:
+        if (character == "\n" and keep_lf) or (character == "\t" and keep_tab):
             sanitized.append(character)
         elif codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
             sanitized.append(_REPLACEMENT_CHARACTER)
@@ -134,6 +134,18 @@ def sanitize_legacy_block(text: str) -> str:
     if type(text) is not str:
         raise TypeError("Legacy display text must be a string.")
     return _sanitize_controls(text, keep_lf=True)
+
+
+def sanitize_terminal_block(text: str) -> str:
+    """Sanitize literal text for a terminal while keeping its layout.
+
+    LF and TAB survive; CR and CRLF become LF, so a bare carriage return cannot
+    overwrite a printed line; every other C0/C1 control and DEL is replaced.
+    """
+    if type(text) is not str:
+        raise TypeError("Legacy display text must be a string.")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _sanitize_controls(normalized, keep_lf=True, keep_tab=True)
 
 
 def format_template(template: str, parameters: Mapping[str, str], *, multiline: bool = False) -> str:

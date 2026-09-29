@@ -242,7 +242,7 @@ async def test_session_host_defaults_to_bypass_approval(monkeypatch: pytest.Monk
     )
 
     try:
-        result = await host.run_until_final("run the tool", timeout=45)
+        result = await host.run_until_final("run the tool", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -276,7 +276,7 @@ async def test_session_host_auto_start_streams_load_before_final_message(
     )
 
     try:
-        result = await host.run_until_final("prompt", timeout=45)
+        result = await host.run_until_final("prompt", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -555,7 +555,7 @@ async def test_session_host_restores_existing_session(monkeypatch: pytest.Monkey
 
     await second._bus.subscribe(SessionRestore, collect_restore_request)
     try:
-        second_result = await second.run_until_final("second prompt", timeout=45)
+        second_result = await second.run_until_final("second prompt", timeout=45, keep_events=True)
     finally:
         await second.shutdown()
 
@@ -1631,7 +1631,7 @@ async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
     )
 
     try:
-        result = await host.run_until_final("delegate this task", timeout=45)
+        result = await host.run_until_final("delegate this task", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -1761,7 +1761,7 @@ async def test_session_host_interactive_ask_user_completes_turn(monkeypatch: pyt
     )
 
     try:
-        result = await host.run_until_final("ask me something", timeout=45)
+        result = await host.run_until_final("ask me something", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -1840,7 +1840,7 @@ async def test_session_host_ignores_sessionless_run_events(monkeypatch: pytest.M
     )
 
     try:
-        result = await host.run_until_final("prompt", timeout=45)
+        result = await host.run_until_final("prompt", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 

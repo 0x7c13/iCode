@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AskUserResponse, AskUserTimedOut, QuestionToUser
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
+from chrys.foundation.tool_kinds import KIND_ASK_USER, set_tool_kind
 from chrys.foundation.tool_result_metadata import (
     TOOL_ERROR_DETAILS_METADATA_KEY,
     TOOL_ERROR_KIND_METADATA_KEY,
@@ -20,12 +21,14 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_FAILED_METADATA_KEY,
 )
 from chrys.kernel import ChatResponse, Content, Message
-from chrys.kernel.middleware import ChatMiddlewareLayer
+from chrys.kernel.middleware import ChatMiddlewareLayer, FunctionInvocationContext
+from chrys.kernel.tools import FunctionTool
 from chrys.service.agent_middleware import AskUserMiddleware
 from chrys.service.tools.builtins.ask_user import AskUserQuestionParam, ask_user
 from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.support.cpu_guard import cpu_bounded
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
+from tests.support.waiting import wait_for
 
 
 class _ScriptedAskUserClient:
@@ -900,3 +903,36 @@ async def test_middleware_structured_response_padding_and_cancellation() -> None
         TOOL_ERROR_MESSAGE_METADATA_KEY: "user did not provide a response.",
         TOOL_ERROR_RETRYABLE_METADATA_KEY: True,
     }
+
+
+@pytest.mark.asyncio
+async def test_ask_user_cancelled_during_question_publication_unsubscribes() -> None:
+    bus = EventBus()
+    publishing = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def block_question(_event: QuestionToUser) -> None:
+        publishing.set()
+        await blocked.wait()
+
+    await bus.subscribe(QuestionToUser, block_question)
+    middleware = AskUserMiddleware(bus, session_id="test", timeout_seconds=None)
+    function = FunctionTool(name="ask_user")
+    set_tool_kind(function, KIND_ASK_USER)
+    context = FunctionInvocationContext(function, {"questions": [{"question": "Pick?"}]})
+
+    async def call_next() -> None:
+        raise AssertionError("ask_user is answered by the middleware, never by the tool body")
+
+    task = asyncio.create_task(middleware.process(context, call_next))
+    try:
+        await wait_for(lambda: publishing.is_set() or task.done(), description="question publication or early exit")
+        if task.done():
+            await task  # Surface an early failure instead of a publication timeout.
+        assert publishing.is_set()
+        assert len(bus._handlers[AskUserResponse]) == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert bus._handlers[AskUserResponse] == []

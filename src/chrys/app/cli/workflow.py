@@ -31,7 +31,7 @@ from chrys.foundation.events.types import (
     WorkflowRunAccepted,
     WorkflowRunNotice,
 )
-from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.orchestration.session_host import (
@@ -302,6 +302,10 @@ def _report(
         )
     else:
         text = "\n\n".join(output.value.text for output in result.outputs)
+        # Node output can carry model text: neutralize terminal control
+        # sequences on a terminal, keep redirected output byte-for-byte.
+        if sys.stdout.isatty():
+            text = sanitize_terminal_block(text)
         if text:
             sys.stdout.write(text if text.endswith("\n") else f"{text}\n")
     if not as_json and diagnostics:

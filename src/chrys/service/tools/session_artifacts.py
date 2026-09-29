@@ -15,6 +15,7 @@ from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import (
     atomic_write_owner_only_bytes,
     secure_open_owner_verified_binary,
+    secure_open_regular_binary,
 )
 from chrys.foundation.util.session_ids import session_short_id
 
@@ -72,8 +73,17 @@ def _verified_document_artifact_root(session_dir: Path) -> Path | None:
     return artifact_root
 
 
-def reharden_document_image_artifacts(source_session_dir: Path, destination_session_dir: Path) -> None:
-    """Re-publish copied document images with a protected owner-only Windows DACL."""
+def reharden_document_image_artifacts(
+    source_session_dir: Path, destination_session_dir: Path, *, legacy_import: bool = False
+) -> None:
+    """Re-publish copied document images with a protected owner-only Windows DACL.
+
+    Sources are read owner-verified, as fork reads the user's own session.
+    ``legacy_import`` (session migration) reads them as the legacy reader
+    does instead: an older release running elevated owned its images by the
+    Administrators group, and the chosen legacy folder may sit behind a parent
+    alias such as a mapped drive.
+    """
     if not get_platform().is_windows:
         return
 
@@ -87,9 +97,10 @@ def reharden_document_image_artifacts(source_session_dir: Path, destination_sess
     if destination_root is None:
         raise OSError("session document-image artifact root is missing from the copy")
 
+    read_source = secure_open_regular_binary if legacy_import else secure_open_owner_verified_binary
     for destination_path, expected_size in list(iter_document_image_artifacts(destination_root)):
         source_path = source_root / destination_path.name
-        with secure_open_owner_verified_binary(source_path) as source:
+        with read_source(source_path) as source:
             payload = source.read(DOCUMENT_IMAGE_ARTIFACT_MAX_FILE_BYTES + 1)
         if len(payload) != expected_size:
             raise OSError("session document-image artifact changed while being copied")

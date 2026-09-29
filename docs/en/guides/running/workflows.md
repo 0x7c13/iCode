@@ -579,7 +579,7 @@ After creating or changing a workflow file, `--trust` confirms trust in the curr
 
 ### Save text results
 
-By default, the CLI outputs each output node's `text`, with a blank line between results. Final results go to stdout (standard output); node states and progress messages sent by `ctx.emit()` go to stderr (standard error). Redirect the final results to a file with `>`:
+By default, the CLI outputs each output node's `text`, with a blank line between results. Final results go to stdout (standard output); node states and progress messages sent by `ctx.emit()` go to stderr (standard error). On a terminal, control characters in the results are shown as `�`. Redirect the final results to a file with `>` to keep them exactly as written:
 
 ```shell
 icode workflow run WORKFLOW_ID --input "Input text" > result.txt

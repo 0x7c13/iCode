@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -742,7 +743,7 @@ def test_run_command_reports_headless_error(monkeypatch: pytest.MonkeyPatch, cap
             self.prompt = prompt
             self.timeout = timeout
             event = Error(code="boom", message="failed", session_id="session-1")
-            raise HeadlessRunError(event, [event])
+            raise HeadlessRunError(event)
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", ErrorHost)
@@ -761,7 +762,7 @@ def test_run_command_reports_headless_error_as_json(monkeypatch: pytest.MonkeyPa
             self.prompt = prompt
             self.timeout = timeout
             event = Error(code="boom", message='quote "and" newline\n', session_id="session-1")
-            raise HeadlessRunError(event, [event])
+            raise HeadlessRunError(event)
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", ErrorHost)
@@ -786,7 +787,7 @@ def test_run_command_json_error_omits_session_id_when_absent(monkeypatch: pytest
             self.prompt = prompt
             self.timeout = timeout
             event = Error(code="boom", message="failed early", session_id=None)
-            raise HeadlessRunError(event, [event])
+            raise HeadlessRunError(event)
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(run_cli, "ChrysSessionHost", NoSessionErrorHost)
@@ -1323,7 +1324,7 @@ def test_semantic_headless_error_stays_english_across_locales(
             session_id="session-1",
             display_message=display_message,
         )
-        return HeadlessRunError(event, [event])
+        return HeadlessRunError(event)
 
     _patch_runtime(monkeypatch)
     _patch_failure_host(monkeypatch, _failure)
@@ -1364,7 +1365,7 @@ def test_classified_headless_error_says_what_went_wrong_with_the_raw_detail(
             display_message=_DNS_FAILED.bind(host="api.example.com"),
             display_hint=_MAYBE_OFFLINE.bind(app=APP_DISPLAY_NAME),
         )
-        return HeadlessRunError(event, [event])
+        return HeadlessRunError(event)
 
     _patch_runtime(monkeypatch)
     _patch_failure_host(monkeypatch, _failure)
@@ -1391,7 +1392,7 @@ def test_legacy_headless_error_stays_english_and_sanitizes_detail_across_locales
 
     def _failure() -> HeadlessRunError:
         event = Error(code="boom", message=detail, session_id="session-1")
-        return HeadlessRunError(event, [event])
+        return HeadlessRunError(event)
 
     _patch_runtime(monkeypatch)
     _patch_failure_host(monkeypatch, _failure)
@@ -1613,3 +1614,29 @@ def test_missing_model_selection_without_available_profiles_binds_short_display_
     assert headless.exception_message(excinfo.value) == "Model profile not found: Missing"
     assert excinfo.value.display_message is not None
     assert excinfo.value.display_message.definition is run_cli._MODEL_PROFILE_NOT_FOUND
+
+
+class _Stdout(io.StringIO):
+    def __init__(self, *, tty: bool) -> None:
+        super().__init__()
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+@pytest.mark.parametrize("tty", [True, False])
+def test_write_result_neutralizes_terminal_controls_but_keeps_layout(
+    monkeypatch: pytest.MonkeyPatch, tty: bool
+) -> None:
+    stdout = _Stdout(tty=tty)
+    monkeypatch.setattr(run_cli.sys, "stdout", stdout)
+    text = "all:\n\tgo build\r\n\x1b]52;c;cGF5bG9hZA==\x07done\rspoof"
+
+    run_cli._write_result(HeadlessRunResult(text=text, session_id="s"), as_json=False, duration=0.0)
+
+    if tty:
+        assert stdout.getvalue() == "all:\n\tgo build\n�]52;c;cGF5bG9hZA==�done\nspoof\n"
+    else:
+        # Redirected output is data for another program: byte-for-byte.
+        assert stdout.getvalue() == text + "\n"

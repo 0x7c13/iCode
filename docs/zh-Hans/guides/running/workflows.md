@@ -579,7 +579,7 @@ icode workflow run WORKFLOW_ID --input "输入文本" --trust
 
 ### 保存文本结果
 
-默认输出各输出节点的 `text`，多份结果之间以空行分隔。最终结果写入 stdout（标准输出），节点状态和 `ctx.emit()` 发送的进度消息写入 stderr（标准错误），因此可以通过 `>` 将最终结果保存到文件：
+默认输出各输出节点的 `text`，多份结果之间以空行分隔。最终结果写入 stdout（标准输出），节点状态和 `ctx.emit()` 发送的进度消息写入 stderr（标准错误），因此可以通过 `>` 将最终结果保存到文件。在终端中，结果里的控制字符会显示为 `�`；保存到文件的结果保持原样：
 
 ```shell
 icode workflow run WORKFLOW_ID --input "输入文本" > result.txt

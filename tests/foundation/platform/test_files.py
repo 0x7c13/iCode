@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -45,11 +48,12 @@ def test_atomic_write_owner_only_bytes_can_refuse_to_create_a_missing_parent(tmp
     assert not missing.parent.exists()
 
 
-def test_secure_open_owner_verified_binary_reports_an_absent_file_or_parent_as_enoent(tmp_path) -> None:
+@pytest.mark.parametrize("reader", [files.secure_open_owner_verified_binary, files.secure_open_regular_binary])
+def test_secure_binary_readers_report_an_absent_file_or_parent_as_enoent(tmp_path, reader) -> None:
     """Callers treat ENOENT as "nothing there yet" on every platform, a missing parent directory included."""
     for missing in (tmp_path / "absent.bin", tmp_path / "no-such-dir" / "absent.bin"):
         with pytest.raises(OSError) as raised:
-            files.secure_open_owner_verified_binary(missing)
+            reader(missing)
         assert raised.value.errno == errno.ENOENT
 
 
@@ -220,6 +224,181 @@ def test_secure_open_rejects_a_planted_fifo_without_blocking(tmp_path) -> None:
         files.secure_open_owner_only(target, write=True)
     with pytest.raises(files.SecureFileError):
         files.secure_open_owner_only(target, read=True)
+    with pytest.raises(files.SecureFileError, match="not a regular file"):
+        files.secure_open_regular_binary(target)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fcntl flags and directory search permission are POSIX-only")
+def test_secure_open_regular_binary_needs_only_search_permission_on_parents(tmp_path) -> None:
+    import fcntl
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    ancestor = tmp_path / "enter-only"
+    target = ancestor / "legacy" / "payload.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"legacy")
+    ancestor.chmod(0o111)
+    try:
+        with pytest.raises(PermissionError):
+            files.secure_open_owner_verified_binary(target)
+        with files.secure_open_regular_binary(target) as handle:
+            assert fcntl.fcntl(handle.fileno(), fcntl.F_GETFL) & os.O_NONBLOCK == 0
+            assert handle.read() == b"legacy"
+    finally:
+        ancestor.chmod(0o755)
+
+
+def test_secure_open_regular_binary_reports_open_failures_as_the_system_does(tmp_path) -> None:
+    """Migration shows the failure as the reason a file stayed behind, so it keeps the cause and path."""
+    target = tmp_path / "held.bin"
+    target.write_bytes(b"legacy")
+    if os.name == "nt":
+        import _winapi
+
+        # An exclusive holder makes every other open fail: ERROR_SHARING_VIOLATION.
+        holder = _winapi.CreateFile(str(target), _winapi.GENERIC_READ, 0, 0, _winapi.OPEN_EXISTING, 0, 0)
+        try:
+            with pytest.raises(PermissionError) as raised:
+                files.secure_open_regular_binary(target)
+        finally:
+            _winapi.CloseHandle(holder)
+        assert os.path.normcase(raised.value.filename) == os.path.normcase(str(target.parent.resolve() / target.name))
+        assert raised.value.winerror == 32
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root ignores file permissions")
+        target.chmod(0)
+        try:
+            with pytest.raises(PermissionError) as raised:
+                files.secure_open_regular_binary(target)
+        finally:
+            target.chmod(0o600)
+        assert raised.value.filename == str(target)
+        assert raised.value.strerror == os.strerror(errno.EACCES)
+
+
+def _windows_wof_state(path: Path) -> tuple[bool, str]:
+    """Whether WOF backs *path*, and what Windows reported about it.
+
+    WOF hides its reparse point from applications (``FileAttributeTagInfo``
+    reports no tag even through ``FILE_FLAG_OPEN_REPARSE_POINT``), so ask the
+    WOF driver itself, as ``WofIsExternalFile`` does (``wofapi.dll`` is absent
+    from Windows Server), with the compressed size as a second witness.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    windows_ctypes: Any = ctypes
+    kernel32 = windows_ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.DeviceIoControl.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.GetCompressedFileSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetCompressedFileSizeW.restype = wintypes.DWORD
+
+    # FILE_READ_ATTRIBUTES, share all, OPEN_EXISTING
+    handle = kernel32.CreateFileW(str(path), 0x80, 0x7, None, 3, 0, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise windows_ctypes.WinError(windows_ctypes.get_last_error())
+    try:
+        # WOF_EXTERNAL_INFO (version, provider) and the provider's own info.
+        info = (wintypes.ULONG * 16)()
+        returned = wintypes.DWORD()
+        backing_error = 0
+        # FSCTL_GET_EXTERNAL_BACKING
+        if not kernel32.DeviceIoControl(
+            handle, 0x90310, None, 0, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(returned), None
+        ):
+            backing_error = windows_ctypes.get_last_error()
+    finally:
+        kernel32.CloseHandle(handle)
+    high = wintypes.DWORD()
+    low = kernel32.GetCompressedFileSizeW(str(path), ctypes.byref(high))
+    stored = (high.value << 32) | low
+    size = path.stat().st_size
+    backed = (not backing_error and info[1] == 2) or stored < size  # WOF_PROVIDER_FILE
+    backing = f"error {backing_error}" if backing_error else f"provider {info[1]}"
+    return backed, f"external backing {backing}; {stored} of {size} bytes stored"
+
+
+def _wof_compress(directory: Path, payload: bytes) -> tuple[Path | None, str]:
+    """Write *payload* to a WOF-compressed file in *directory*, or say why that failed."""
+    from tests.support.waiting import ENGINE_TURN_TIMEOUT
+
+    target = directory / "compressed.bin"
+    target.write_bytes(payload)
+    compacted = subprocess.run(
+        ["compact", "/C", "/EXE:XPRESS4K", str(target)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+        timeout=ENGINE_TURN_TIMEOUT,
+    )
+    backed, state = _windows_wof_state(target)
+    if backed:
+        return target, ""
+    output = f"{compacted.stdout!r} {compacted.stderr!r}"
+    return None, f"{directory}: compact exited {compacted.returncode}: {output}; {state}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="WOF compression is Windows-only")
+def test_secure_open_regular_binary_reads_a_compressed_file_through_its_filter(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    payload = b"legacy session data " * 16384
+    target, diagnostics = _wof_compress(tmp_path, payload)
+    local_temp = Path(os.environ.get("LOCALAPPDATA", ""), "Temp")
+    if target is None and local_temp.is_absolute() and local_temp.is_dir():
+        # CI moves TEMP to a scratch volume that cannot compress; the profile's
+        # own temporary folder stays on the system volume, which can.
+        fallback = Path(tempfile.mkdtemp(dir=local_temp))
+        request.addfinalizer(lambda: shutil.rmtree(fallback, ignore_errors=True))
+        target, fallback_diagnostics = _wof_compress(fallback, payload)
+        diagnostics = f"{diagnostics}; {fallback_diagnostics}"
+    if target is None:
+        if os.environ.get("CI"):
+            pytest.fail(f"the CI runner should WOF-compress files: {diagnostics}")
+        pytest.skip(f"no volume here can WOF-compress files: {diagnostics}")
+
+    with files.secure_open_regular_binary(target) as handle:
+        assert handle.read() == payload
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the reopen check guards the Windows no-follow open")
+def test_windows_reopen_refuses_a_name_that_now_leads_to_another_file(tmp_path) -> None:
+    target = tmp_path / "legacy.json"
+    target.write_bytes(b"legacy")
+    decoy = tmp_path / "decoy.json"
+    decoy.write_bytes(b"decoy")
+    pinned = os.open(target, os.O_RDONLY)
+    try:
+        with pytest.raises(files.SecureFileError, match="replaced"):
+            files._windows_reopen_same_file(decoy, pinned)
+        with os.fdopen(files._windows_reopen_same_file(target, pinned), "rb") as handle:
+            assert handle.read() == b"legacy"
+    finally:
+        os.close(pinned)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fcntl flags are POSIX-only")
@@ -484,6 +663,42 @@ def test_darwin_created_secure_files_strip_inherited_acls(tmp_path) -> None:
     files.atomic_write_owner_only_bytes(published, b"{}")
     fd = files.secure_open_owner_only(published, read=True)
     os.close(fd)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS extended-ACL semantics")
+def test_darwin_strip_inherited_acl_helpers_leave_nothing_to_inherit(tmp_path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o700)
+    subprocess.run(
+        ["/bin/chmod", "+a", "everyone allow read,list,search,file_inherit,directory_inherit", str(shared)],
+        stdin=subprocess.DEVNULL,
+        check=True,
+    )
+
+    def has_acl(path: Path) -> bool:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            files._verify_darwin_no_acl(fd)
+        except files.SecureFileError:
+            return True
+        finally:
+            os.close(fd)
+        return False
+
+    stripped = shared / "stripped"
+    stripped.mkdir(mode=0o700)
+    assert has_acl(stripped)
+    files.strip_inherited_directory_acl(stripped)
+    assert not has_acl(stripped)
+    (stripped / "nested").mkdir()
+    (stripped / "nested" / "data.json").write_text("{}", encoding="utf-8")
+    assert not has_acl(stripped / "nested")
+    assert not has_acl(stripped / "nested" / "data.json")
+
+    with open(shared / "legacy.json", "wb") as out:
+        assert has_acl(shared / "legacy.json")
+        files.strip_inherited_acl(out.fileno())
+    assert not has_acl(shared / "legacy.json")
 
 
 @pytest.mark.parametrize(
