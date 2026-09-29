@@ -162,9 +162,11 @@ class StallSampler(threading.Thread):
         gc.callbacks.append(self._on_gc)
         super().start()
 
-    def begin_phase(self, nodeid: str) -> None:
+    def begin_phase(self, nodeid: str) -> PhaseRecord:
+        """Open a phase; the sampler thread fills in the returned record until :meth:`end_phase`."""
         with self._lock:
-            self._phase = PhaseRecord(nodeid, _monotonic(), self._interval)
+            self._phase = phase = PhaseRecord(nodeid, _monotonic(), self._interval)
+        return phase
 
     def sampled(self) -> tuple[int, int]:
         """(samples, idle samples) of the open phase so far; a lock-free read for tests that wait on the count."""
@@ -197,9 +199,7 @@ class StallSampler(threading.Thread):
     def run(self) -> None:
         last = _monotonic()
         while not self._stop.wait(self._interval):
-            now = _monotonic()
-            gap, last = now - last, now
-            self._sample(now, gap)
+            last = self._sample(last)
 
     def _on_gc(self, phase: str, info: dict[str, int]) -> None:
         if phase == "start":
@@ -213,11 +213,17 @@ class StallSampler(threading.Thread):
             self._gc_pauses.append((started, info["generation"], seconds))
             del self._gc_pauses[:-_GC_PAUSES_KEPT]
 
-    def _sample(self, now: float, gap: float) -> None:
+    def _sample(self, last: float) -> float:
+        """Take one sample and return its time, read under the lock the phase opens and closes under.
+
+        A time read before the lock could predate the phase the sample joins.
+        """
         with self._lock:
+            now = _monotonic()
+            gap = now - last
             phase = self._phase
             if phase is None:
-                return
+                return now
             frames = sys._current_frames()
             try:
                 phase.samples += 1
@@ -234,6 +240,7 @@ class StallSampler(threading.Thread):
                 self._sample_executor(phase, frames)
             finally:
                 del frames
+        return now
 
     @staticmethod
     def _note_busy(phase: PhaseRecord, signature: str, now: float) -> None:

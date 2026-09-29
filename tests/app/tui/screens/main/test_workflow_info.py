@@ -24,7 +24,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.service.workflows.layout import SPEC_FILE
 from tests.orchestration.workflows._hosting import make_project, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled, rich_plain
+from tests.support.tui_helpers import click_when_settled, resize_when_settled, rich_plain
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_history import record_workflow_run
 from tests.support.workflow_workers import python_workflow
@@ -93,7 +93,8 @@ async def test_loaded_info_reuses_metadata_and_preserves_reading_position(
         await wait_for(
             lambda: bool(info.query("#workflow-info-nodes")) and "model [literal]" in _nodes(info), pilot=pilot
         )
-        await pilot.resize_terminal(size[0], 24)
+        # Tall content may overflow at the old height too: scroll only once laid out at the new one.
+        await resize_when_settled(pilot, size[0], 24)
         await wait_for(lambda: scroll.max_scroll_y > 0, pilot=pilot)
         scroll.scroll_end(animate=False)
         await wait_for(lambda: scroll.scroll_y > 0, pilot=pilot)

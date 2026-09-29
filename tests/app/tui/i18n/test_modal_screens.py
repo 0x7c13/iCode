@@ -30,7 +30,7 @@ from chrys.foundation.events.types import AgentRuntimeDetails, RollbackResult, R
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.tool_kinds import KIND_SHELL
-from tests.app.tui.screens._sessions_support import FakeSessionStore
+from tests.support.sessions_browser import FakeSessionStore
 
 
 def _controller(locale: str = "zh-Hans") -> LocaleController:

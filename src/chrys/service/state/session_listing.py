@@ -49,16 +49,6 @@ class SessionListing:
         """Pages of the filtered listing; an empty listing still has one (empty) page."""
         return max(1, -(-len(self.filtered(surfaces)) // _checked_page_size(page_size)))
 
-    def page_of(
-        self, session_id: str, surfaces: Collection[SessionSurface], *, page_size: int = SESSION_PAGE_SIZE
-    ) -> int | None:
-        """The 1-based page that lists *session_id* under *surfaces*, if any does."""
-        size = _checked_page_size(page_size)
-        for index, entry in enumerate(self.filtered(surfaces)):
-            if entry.session_id == session_id:
-                return index // size + 1
-        return None
-
     def without(self, session_id: str) -> SessionListing:
         """The same snapshot minus a deleted session."""
         return SessionListing(self.kind, tuple(entry for entry in self.entries if entry.session_id != session_id))

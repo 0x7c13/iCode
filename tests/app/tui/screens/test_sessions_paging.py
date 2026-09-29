@@ -11,10 +11,7 @@ from chrys.app.tui.screens.sessions.screen import SessionsScreen, _SessionTable
 from chrys.app.tui.widgets import Checkbox, HatchedEmptyState, PageNavigator
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.service.state.session_listing import SESSION_PAGE_SIZE
-from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import wait_for
-
-from ._sessions_support import (
+from tests.support.sessions_browser import (
     FakeSessionStore,
     GatedPageStore,
     SessionsHostApp,
@@ -22,6 +19,8 @@ from ._sessions_support import (
     wait_for_blocked_loads,
     wait_for_load_idle,
 )
+from tests.support.tui_helpers import click_when_settled
+from tests.support.waiting import wait_for, wait_until
 
 TUI, CLI, ACP = SessionSurface.TUI, SessionSurface.CLI, SessionSurface.ACP
 
@@ -246,6 +245,58 @@ async def test_turning_to_the_last_page_under_a_search_that_emptied_the_table_le
 
 
 @pytest.mark.asyncio
+async def test_a_page_the_search_empties_takes_focus_off_the_hidden_table() -> None:
+    store = FakeSessionStore(SESSION_PAGE_SIZE + 1)
+    store.sessions[0].title = "needle on page one"
+    screen = SessionsScreen(store)
+
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
+        await pilot.app.push_screen(screen)
+        await wait_for_load_idle(screen, pilot)
+        table = screen.query_one("#sessions", _SessionTable)
+        screen.query_one("#search", Input).value = "needle"
+        await wait_for(lambda: screen._session_ids == ["session-0"], pilot=pilot, description="page one matches")
+
+        next_page = screen.query_one("#session-pages #next-page", Button)
+        next_page.focus()
+        await wait_for(lambda: next_page.has_focus, pilot=pilot, description="Next has focus")
+        await pilot.press("enter")
+        await _wait_for_page(screen, pilot, 2)
+        assert not table.display
+        # A hidden table still takes focus; keys would go nowhere visible.
+        assert pilot.app.focused is screen.query_one("#search")
+
+
+@pytest.mark.parametrize("key", ["enter", "escape"])
+@pytest.mark.asyncio
+async def test_the_search_box_keeps_focus_while_no_table_shows(key: str) -> None:
+    store = FakeSessionStore(3, surfaces=[CLI] * 3)
+    screen = SessionsScreen(store)
+
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
+        await pilot.app.push_screen(screen)
+        await wait_for_load_idle(screen, pilot)
+        assert _note(screen) == "No sessions match the selected filters."
+        search = screen.query_one("#search", Input)
+        search.focus()
+        await wait_for(lambda: search.has_focus, pilot=pilot, description="the search box has focus")
+
+        await pilot.press(key)
+        assert not screen.query_one("#sessions").display
+        assert pilot.app.focused is search
+
+        # With the table shown, both keys hand it focus.
+        await click_when_settled(pilot, "#surface-cli")
+        await wait_for(lambda: len(screen._session_ids) == 3, pilot=pilot, description="CLI sessions are listed")
+        search.focus()
+        await wait_for(lambda: search.has_focus, pilot=pilot, description="the search box has focus again")
+        await pilot.press(key)
+        await wait_for(
+            lambda: pilot.app.focused is screen.query_one("#sessions"), pilot=pilot, description="the table has focus"
+        )
+
+
+@pytest.mark.asyncio
 async def test_pager_walks_the_pages_and_hands_focus_to_the_table() -> None:
     store = FakeSessionStore(2 * SESSION_PAGE_SIZE + 50)
     screen = SessionsScreen(store)
@@ -299,6 +350,37 @@ async def test_the_last_requested_load_wins() -> None:
         assert store.pages_requested[1:] == [(frozenset({TUI}), 2), (frozenset({TUI, CLI}), 1)]
         assert screen._page == 1
         assert screen._session_ids[0] == "session-0"
+
+
+@pytest.mark.asyncio
+async def test_asking_again_for_the_page_on_its_way_leaves_its_load_running() -> None:
+    store = GatedPageStore(2 * SESSION_PAGE_SIZE + 1)
+    screen = SessionsScreen(store)
+
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
+        await pilot.app.push_screen(screen)
+        await wait_for_load_idle(screen, pilot)
+
+        await _click_pager(pilot, screen, "next-page")
+        await wait_for_blocked_loads(store, pilot, 1)
+        # The pager shows page 1 until page 2 arrives, so Next asks for page 2 again.
+        await _click_pager(pilot, screen, "next-page")
+        assert not await wait_until(lambda: len(store.gates) > 1 or store.cancelled_loads, pilot=pilot, timeout=0.5)
+        # The click still hands the table focus, or Enter on Next would skip a page once it arrives.
+        assert pilot.app.focused is screen.query_one("#sessions")
+
+        # A new selection replaces that load, and its page 2 is a new request.
+        await click_when_settled(pilot, "#surface-cli")
+        await wait_for_blocked_loads(store, pilot, 2)
+        await _click_pager(pilot, screen, "next-page")
+        await wait_for_blocked_loads(store, pilot, 3)
+        store.release_all()
+        await _wait_for_page(screen, pilot, 2)
+
+        both = frozenset({TUI, CLI})
+        assert store.pages_requested[1:] == [(frozenset({TUI}), 2), (both, 1), (both, 2)]
+        assert store.cancelled_loads == 2
+        assert _pager(screen) == (False, "Page 2 of 3", False)
 
 
 @pytest.mark.asyncio

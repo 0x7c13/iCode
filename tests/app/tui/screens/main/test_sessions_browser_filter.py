@@ -53,7 +53,11 @@ async def test_surface_filter_is_remembered_between_opens_per_mode(tmp_path: Pat
         store = main._services.state_store if main is not None else None
         if main is None or store is None:
             raise AssertionError("the app has no main screen or state store")
-        for session_id, surface in (("tui-session", SessionSurface.TUI), ("cli-session", SessionSurface.CLI)):
+        for session_id, surface in (
+            ("tui-session", SessionSurface.TUI),
+            ("cli-session", SessionSurface.CLI),
+            ("acp-session", SessionSurface.ACP),
+        ):
             await store.save_session(session_id, {"messages": [Message("user", ["hello"])]}, last_surface=surface)
 
         browser = await _open_browser(app, pilot)
@@ -70,7 +74,11 @@ async def test_surface_filter_is_remembered_between_opens_per_mode(tmp_path: Pat
         assert _checked(browser) == {"surface-tui": True, "surface-cli": True, "surface-acp": False}
         assert _listed(browser) == {"tui-session", "cli-session"}
         await click_when_settled(pilot, "#surface-acp")
-        await wait_for(lambda: not browser._loading, pilot=pilot, description="ACP sessions are listed")
+        await wait_for(
+            lambda: _listed(browser) == {"tui-session", "cli-session", "acp-session"} and not browser._loading,
+            pilot=pilot,
+            description="ACP sessions are listed",
+        )
         await _close_browser(app, pilot)
 
         # Workflow mode starts from the default and never inherits ACP, which it offers no checkbox for.
@@ -79,11 +87,8 @@ async def test_surface_filter_is_remembered_between_opens_per_mode(tmp_path: Pat
         assert _checked(browser) == {"surface-tui": True, "surface-cli": False}
         # No workflow session is saved, so the filters are hidden: toggle the box itself.
         browser.query_one("#surface-tui", Checkbox).value = False
-        await wait_for(
-            lambda: not browser._surfaces and not browser._loading,
-            pilot=pilot,
-            description="the workflow filter changed",
-        )
+        # The browser reports its filter as it takes it, before the load it starts.
+        await wait_for(lambda: not browser._surfaces, pilot=pilot, description="the workflow filter is cleared")
         await _close_browser(app, pilot)
 
         await switch_mode(main, pilot)
