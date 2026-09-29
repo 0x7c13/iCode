@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import tempfile
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -185,6 +186,8 @@ def extract_messages(
     for path in sorted(source_root.rglob("*.py")):
         try:
             source = path.read_text(encoding="utf-8")
+            if not _may_name_msg(source):
+                continue
             tree = ast.parse(source, filename=path.as_posix())
         except (OSError, SyntaxError, UnicodeError) as error:
             raise CatalogToolError(f"Could not parse catalog source {path}: {error}") from error
@@ -196,7 +199,25 @@ def extract_messages(
     return tuple(sorted(validated, key=lambda message: message.key))
 
 
+def _may_name_msg(source: str) -> bool:
+    """Return whether *source* can spell the name ``msg``; a file that cannot defines no message.
+
+    Most source files never mention msg, so extraction skips them unparsed.
+    Python reads identifiers NFKC-normalized, so a non-ASCII spelling of msg
+    still counts.
+    """
+    return "msg" in (source if source.isascii() else unicodedata.normalize("NFKC", source))
+
+
 def _extract_file(path: Path, tree: ast.Module, *, location_root: Path) -> list[ExtractedMessage]:
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "msg"
+    ]
+    if not calls:
+        # Every check below is about a msg() call; a file without one defines nothing.
+        return []
     parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     location = _relative_location(path, location_root)
     canonical_import_ordinal = _canonical_msg_import_ordinal(tree)
@@ -207,9 +228,7 @@ def _extract_file(path: Path, tree: ast.Module, *, location_root: Path) -> list[
     }
     shadowed = _msg_binding_shadowed(tree)
     extracted: list[ExtractedMessage] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "msg":
-            continue
+    for node in calls:
         if canonical_import_ordinal is None or top_level_ordinal.get(id(node), -1) < canonical_import_ordinal:
             # A bare msg() call keyed on the name alone may be an unrelated
             # local callable; extracting it would forge catalog entries.  A

@@ -311,10 +311,6 @@ class UserMessage(Widget):
         background: $boost;
         height: auto;
     }
-    UserMessage.-highlighted {
-        background: $accent 25%;
-        border-left: thick $tui-border-warning $border-opacity;
-    }
     UserMessage.-compressed {
         border-left: thick $tui-border-neutral-160 $border-opacity;
         color: $text-muted;
@@ -322,9 +318,23 @@ class UserMessage(Widget):
     UserMessage.-compressed > VirtualizedMarkdown {
         color: $text-muted;
     }
+    /* After -compressed, so a selected turn shows its selection even when compressed. */
+    UserMessage.-highlighted {
+        background: $primary 18%;
+        border-left: thick $tui-border-selected-turn $border-opacity;
+    }
+    UserMessage.-highlighted:ansi {
+        background: $tui-ansi-turn-background;
+        border-left: thick $tui-border-neutral-128;
+    }
+    /* An injected note never has a left border, selected or not: the :ansi twin
+       ties the selected rule's specificity and wins by coming after it. */
     UserMessage.-injection {
         margin-left: 2;
         margin-top: 0;
+        border-left: none;
+    }
+    UserMessage.-injection:ansi {
         border-left: none;
     }
     UserMessage > VirtualizedMarkdown {

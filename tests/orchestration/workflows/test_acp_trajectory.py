@@ -11,6 +11,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+import chrys.orchestration.workflows.agent_node_build as agent_node_build_module
 from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalResponse,
@@ -82,6 +83,8 @@ workflow = wf.build()
         return await real_connect(client)
 
     monkeypatch.setattr(AcpAgentClient, "connect", create_autospec(real_connect, side_effect=connect))
+    # Each refused handshake is still scheduled as a retry, without the production connect backoff's wait.
+    monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
     host = make_host(tmp_path, project=project, profiles=[external], allow_user_interaction=True)
 
     async def set_manual(event: WorkflowRunAccepted) -> None:
@@ -118,8 +121,8 @@ workflow = wf.build()
     await host.event_bus.subscribe(WorkflowNodeStateChanged, retry)
     try:
         await confirm(host, "review")
-        # Not one turn: two node attempts, each opening with a refused handshake. The two production
-        # connect backoffs alone sleep 6 s, and the worker and both agents are interpreters to spawn.
+        # Not one turn: two node attempts, each opening with a refused handshake, and the worker and
+        # both agents are interpreters to spawn.
         result, _ = await asyncio.wait_for(run(host, "review"), timeout=ENGINE_TEST_WAIT_TIMEOUT)
         assert result.outcome.value == "completed"
         session_dir = host.workflow_session_dir

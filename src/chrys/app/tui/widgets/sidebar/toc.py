@@ -76,10 +76,17 @@ class ConversationToc(Widget, can_focus=False):
         scrollbar-size-vertical: 1;
     }
     ConversationToc Tree > .tree--cursor {
-        background: $primary 30%;
+        background: $primary 18%;
     }
     ConversationToc Tree:focus > .tree--cursor {
-        background: $primary 50%;
+        color: $foreground;
+        background: $primary 28%;
+    }
+    ConversationToc Tree:ansi > .tree--cursor {
+        background: $tui-ansi-turn-background;
+    }
+    ConversationToc Tree:ansi:focus > .tree--cursor {
+        background: $tui-ansi-turn-focus-background;
     }
     ConversationToc Tree > .tree--guides {
         color: $primary 40%;

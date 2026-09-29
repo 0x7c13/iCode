@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from math import ceil
 
 
@@ -53,6 +53,20 @@ def aggregate_dead_cyclic_fraction(
         zero_collected=0,
         frozen_objects_added_by_absorbs=total_frozen_additions,
     )
+
+
+def steady_growth_per_cycle(settled_bytes: Sequence[int], *, warmup_cycles: int) -> float:
+    """Return how much a repeated cycle's settled heap grows per cycle after warm-up.
+
+    Every cycle must end in the same state, so a steady rise across them is retained
+    work. The first ``warmup_cycles`` still fill one-off caches and are skipped.
+    """
+    if warmup_cycles < 0:
+        raise ValueError("warmup_cycles must be non-negative")
+    settled = settled_bytes[warmup_cycles:]
+    if len(settled) < 2:
+        raise ValueError("steady growth needs at least two cycles after the warm-up")
+    return (settled[-1] - settled[0]) / (len(settled) - 1)
 
 
 def latency_in_unfrozen_collects(action_ms: float, *, unfrozen_collect_ms: float) -> float:
