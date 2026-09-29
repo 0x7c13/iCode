@@ -46,6 +46,8 @@ iCode checks `--workdir` at startup. The specified directory must exist even if 
 
 Session data is saved in iCode's session storage directory, rather than the working directory. To find the actual location, see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). iCode records the working directory when a session is created. Listing sessions through an ACP client shows only sessions that match the current working directory. iCode refuses to restore a session if the working directory does not match.
 
+Sessions used through an ACP client also appear in the TUI's "Chat Sessions" window once you check "ACP" there. See [Resume an existing session](../daily-use/sessions.md#resume-an-existing-session).
+
 ## Interact through the client
 
 iCode sends agent replies and tool call status to the client. When the client cancels a task, iCode interrupts the current task.

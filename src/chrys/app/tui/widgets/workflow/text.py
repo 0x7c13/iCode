@@ -64,9 +64,6 @@ STOP = msg("tui.workflow.stop", fallback="■ Cancel")
 RESULT = msg("tui.workflow.result", fallback="Result")
 RESULT_TITLE = msg("tui.workflow.result_title", fallback="Result · {node}")
 OUTPUTS = msg("tui.workflow.outputs", fallback="Outputs")
-OUTPUT_PREVIOUS_PAGE = msg("tui.workflow.output.previous_page", fallback="Previous")
-OUTPUT_NEXT_PAGE = msg("tui.workflow.output.next_page", fallback="Next")
-OUTPUT_PAGE = msg("tui.workflow.output.page", fallback="Page {page} of {pages}")
 OUTPUT_SUMMARY_ONLY = msg(
     "tui.workflow.output.summary_only", fallback="Full output is unavailable. Only the saved summary is shown."
 )

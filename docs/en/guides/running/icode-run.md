@@ -175,6 +175,8 @@ icode run "Add the missing tests based on the previous turn's findings" --agent 
 
 Replace `<session-id>` with the session ID returned by the first turn.
 
+Sessions created or continued with `icode run` also appear in the TUI's "Chat Sessions" window once you check "CLI" there. See [Resume an existing session](../daily-use/sessions.md#resume-an-existing-session).
+
 ## Exit status
 
 Automation scripts can use the exit status to determine the outcome:

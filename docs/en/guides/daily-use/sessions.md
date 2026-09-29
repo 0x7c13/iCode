@@ -25,10 +25,12 @@ After you set a title manually, the new title appears in the session list and on
 
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.
 
-To find and resume another session, press **F1**, click `f1 Sessions`, or enter `/sessions` in the input field to open the "Chat Sessions" window. It lists each session's ID, title, directory, last active time, number of conversation turns, and session data size.
+To find and resume another session, press **F1**, click `f1 Sessions`, or enter `/sessions` in the input field to open the "Chat Sessions" window. It lists each session's ID, title, directory, last active time, number of conversation turns, and session data size. Each page shows up to 100 sessions, most recently active first.
 
-- **Sort sessions**: Sessions are sorted by last active time, newest first. Click a column header to sort by that column: "Last Active", "Turns", and "Size" start in descending order, and the other columns in ascending order. Click the same header again to reverse the order.
-- **Search sessions**: Enter a session ID, title, directory, or a prompt you previously entered in the search field at the bottom.
+- **Filter by where a session was last used**: The "TUI", "CLI", and "ACP" checkboxes above the search field show sessions last used in the TUI, in [`icode run`](../running/icode-run.md), or in an editor or other client connected through [`icode acp`](../running/icode-acp.md). Only "TUI" is checked at first. Sessions from earlier iCode versions count as TUI. iCode remembers your choice until you quit it. Hover over a session to see where it was last used.
+- **Switch pages**: Click "Previous" or "Next" on the right, next to the checkboxes.
+- **Sort sessions**: Sessions are sorted by last active time, newest first. Click a column header to sort the current page by that column: "Last Active", "Turns", and "Size" start in descending order, and the other columns in ascending order. Click the same header again to reverse the order.
+- **Search sessions**: Enter a session ID, title, directory, or a prompt you previously entered in the search field at the bottom. The search covers only the current page.
 - **Resume a session**: Select a session and click "Resume". You can also double-click it, or select it with the up and down arrow keys and press Enter. iCode closes the current conversation view, loads the selected session, and switches the working directory to the session's saved primary working directory; the current session remains saved in the list. Before resuming, check the working directory that will be restored in the list's "Directory" column.
 
 When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.

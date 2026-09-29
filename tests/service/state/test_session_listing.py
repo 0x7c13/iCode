@@ -549,9 +549,7 @@ async def test_listing_the_legacy_way_still_reports_sizes_and_feeds_the_catalog(
     await _chat(store, "s", surface=SessionSurface.ACP)
 
     listed = await store.list_sessions()
-    streamed = [meta async for batch in store.stream_session_metas() for meta in batch]
 
-    assert listed == streamed
     assert listed[0].size_bytes == store_module._dir_size(store.session_dir("s")) > 0
     assert listed[0].last_surface is SessionSurface.ACP
     assert _catalog_ids(tmp_path) == {"s"}

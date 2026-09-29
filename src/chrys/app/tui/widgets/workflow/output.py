@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, ClassVar
 from rich.style import Style
 from rich.text import Text
 from textual import on
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Static
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Static
 
+from chrys.app.tui.widgets.page_navigator import PageNavigator
 from chrys.app.tui.widgets.workflow import text
 from chrys.foundation.events import types as events
 
@@ -47,19 +48,7 @@ class WorkflowOutputView(Vertical):
     /* Whole margins: a lone margin-top or margin-bottom would zero the side margins above. */
     WorkflowOutputView #workflow-outputs-scroll > #workflow-iterations { display: none; margin: 0 1 1 1; }
     WorkflowOutputView #workflow-outputs-scroll > #workflow-outputs { margin: 1 1 0 1; }
-    WorkflowOutputView #workflow-output-pages { height: 1; margin: 1 0; padding: 0 1; align: right middle; }
-    WorkflowOutputView #workflow-output-pages Button {
-        min-width: 10; width: auto; height: 1; border: none; padding: 0 1;
-        background: $primary 20%; color: $primary; text-style: none;
-    }
-    WorkflowOutputView #workflow-output-pages Button:hover,
-    WorkflowOutputView #workflow-output-pages Button:focus {
-        background: $primary 40%; text-style: none;
-    }
-    WorkflowOutputView #workflow-output-pages Button:disabled {
-        background: transparent; color: $text-muted;
-    }
-    WorkflowOutputView #workflow-output-page { width: auto; margin: 0 2; }
+    WorkflowOutputView #workflow-output-pages { width: 1fr; margin: 1 0; padding: 0 1; }
     """
 
     def __init__(self, locale: LocaleController | None) -> None:
@@ -75,13 +64,9 @@ class WorkflowOutputView(Vertical):
             yield Static(id="workflow-iterations")
             yield WorkflowStatusOutput(self._locale)
             yield Static(id="workflow-outputs")
-        with Horizontal(id="workflow-output-pages") as pages:
-            pages.display = False
-            yield Button(
-                Text(text.render(text.OUTPUT_PREVIOUS_PAGE.bind(), self._locale)), id="workflow-output-previous"
-            )
-            yield Static(id="workflow-output-page")
-            yield Button(Text(text.render(text.OUTPUT_NEXT_PAGE.bind(), self._locale)), id="workflow-output-next")
+        pages = PageNavigator(self._locale, id="workflow-output-pages")
+        pages.display = False
+        yield pages
 
     def clear(self) -> None:
         self.show_iterations({})
@@ -130,12 +115,7 @@ class WorkflowOutputView(Vertical):
 
     def refresh_localization(self) -> None:
         self.query_one(WorkflowStatusOutput).refresh_localization()
-        self.query_one("#workflow-output-previous", Button).label = Text(
-            text.render(text.OUTPUT_PREVIOUS_PAGE.bind(), self._locale)
-        )
-        self.query_one("#workflow-output-next", Button).label = Text(
-            text.render(text.OUTPUT_NEXT_PAGE.bind(), self._locale)
-        )
+        self.query_one(PageNavigator).refresh_localization()
         if self._results is not None:
             self._paginate()
             self._show_page()
@@ -147,20 +127,15 @@ class WorkflowOutputView(Vertical):
         self.query_one("#workflow-outputs", Static).update(
             Text(text.render(text.OUTPUTS.bind(), self._locale) + "\n" + self._output[start:end])
         )
-        self.query_one("#workflow-output-pages").display = pages > 1
-        self.query_one("#workflow-output-previous", Button).disabled = self._page == 0
-        self.query_one("#workflow-output-next", Button).disabled = self._page == pages - 1
-        self.query_one("#workflow-output-page", Static).update(
-            Text(text.render(text.OUTPUT_PAGE.bind(page=self._page + 1, pages=pages), self._locale))
-        )
+        navigator = self.query_one(PageNavigator)
+        navigator.display = pages > 1
+        navigator.show(self._page + 1, pages)
 
-    @on(Button.Pressed, "#workflow-output-previous")
-    @on(Button.Pressed, "#workflow-output-next")
-    def change_page(self, event: Button.Pressed) -> None:
+    @on(PageNavigator.Changed, "#workflow-output-pages")
+    def change_page(self, event: PageNavigator.Changed) -> None:
         event.stop()
-        page = self._page + (1 if event.button.id == "workflow-output-next" else -1)
+        page = event.page - 1
         if 0 <= page < len(self._page_ends):
-            # Move focus before disabling a boundary button, which otherwise focuses its sibling.
             self.screen.set_focus(self.query_one("#workflow-outputs-scroll", VerticalScroll), scroll_visible=False)
             self._page = page
             self._show_page()

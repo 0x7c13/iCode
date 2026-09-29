@@ -80,15 +80,15 @@ async def test_all_output_nodes_remain_accessible(
         pager = panel.query_one("#workflow-output-pages")
         if first_result.startswith("long"):
             assert pager.display
-            assert panel.query_one("#workflow-output-previous", Button).disabled
+            assert panel.query_one("#workflow-output-pages #previous-page", Button).disabled
             chunks = [str(output.content).removeprefix("Outputs\n")]
-            next_page = panel.query_one("#workflow-output-next", Button)
-            page_label = panel.query_one("#workflow-output-page", Static)
+            next_page = panel.query_one("#workflow-output-pages #next-page", Button)
+            page_label = panel.query_one("#workflow-output-pages #page-number", Static)
             # Each click is a user navigation operation, not a readiness poll.
             while not next_page.disabled:
                 await wait_for(lambda: next_page.region.height > 0 and not next_page.has_class("-active"), pilot=pilot)
                 before = page_label.content
-                await click_when_settled(pilot, "#workflow-output-next")
+                await click_when_settled(pilot, "#workflow-output-pages #next-page")
                 await wait_for(lambda before=before: page_label.content != before, pilot=pilot)
                 assert app.focused is output_scroll
                 chunks.append(str(output.content).removeprefix("Outputs\n"))
@@ -100,9 +100,11 @@ async def test_all_output_nodes_remain_accessible(
             final_page = str(output.content).removeprefix("Outputs\n")
             main._workflow.refresh()
             app.locale_controller.switch_locale("zh-Hans")
-            await wait_for(lambda: "页" in str(panel.query_one("#workflow-output-page", Static).content), pilot=pilot)
+            await wait_for(
+                lambda: "页" in str(panel.query_one("#workflow-output-pages #page-number", Static).content), pilot=pilot
+            )
             assert str(output.content).endswith(final_page)
-            await click_when_settled(pilot, "#workflow-output-previous")
+            await click_when_settled(pilot, "#workflow-output-pages #previous-page")
             await wait_for(lambda: not str(output.content).endswith(final_page), pilot=pilot)
             assert app.focused is output_scroll
             assert output.region.width > 0

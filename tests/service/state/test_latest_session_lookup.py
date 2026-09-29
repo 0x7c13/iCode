@@ -893,8 +893,8 @@ async def test_index_file_is_not_listed_as_legacy_session(tmp_path: Path) -> Non
     assert (tmp_path / SESSION_MRU_FILE_NAME).exists()
     metas = await store.list_sessions()
     assert [m.session_id for m in metas] == ["s1"]
-    streamed = [m.session_id async for batch in store.stream_session_metas() for m in batch]
-    assert streamed == ["s1"]
+    listing = await store.open_session_listing(kind="chat")
+    assert [entry.session_id for entry in listing.entries] == ["s1"]
 
 
 async def test_mru_failure_never_fails_session_operations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -577,6 +577,8 @@ icode workflow run WORKFLOW_ID --input "Input text" --trust
 
 After creating or changing a workflow file, `--trust` confirms trust in the current source and execution environment, just as clicking “Trust” does in the TUI. It can be omitted if the previously trusted content has not changed. See [Trust confirmation](../../reference/workflows.md#trust-confirmation) for the scope of these checks and what happens during loading.
 
+To view a run started from the command line in the TUI, open the "Workflow Sessions" window and check "CLI".
+
 ### Save text results
 
 By default, the CLI outputs each output node's `text`, with a blank line between results. Final results go to stdout (standard output). While the workflow runs, its progress goes to stderr (standard error): each node's state, what an agent node does (its tool calls and the notes it writes between them), and messages sent by `ctx.emit()`. For example:

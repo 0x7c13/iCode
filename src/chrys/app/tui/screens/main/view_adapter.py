@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.events.types import ProvisionalPresentation
+    from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.state.store import StateStore
@@ -118,6 +119,8 @@ class MainScreenViewAdapter:
         self._locale_controller = locale_controller
         self._rollback_progress_modal: RollbackProgressModal | None = None
         self._input_restore_generation = 0
+        # The sessions browser's surface filter per mode (workflow mode or not), kept while the app runs.
+        self._session_surfaces: dict[bool, frozenset[SessionSurface]] = {}
 
     # -------------------------------------------------------------- #
     # Generic screen effects
@@ -495,13 +498,20 @@ class MainScreenViewAdapter:
     def open_sessions_screen(self, state_store: StateStore, *, current_session_id: str, on_result: object) -> None:
         from chrys.app.tui.screens.sessions import SessionsScreen
 
+        workflow_mode = self._screen._workflow.workflow_mode
+
+        def remember(surfaces: frozenset[SessionSurface]) -> None:
+            self._session_surfaces[workflow_mode] = surfaces
+
         _push_screen_untyped(
             self._screen.app,
             SessionsScreen(
                 state_store,
                 current_session_id=current_session_id,
                 locale_controller=self._locale_controller,
-                workflow_mode=self._screen._workflow.workflow_mode,
+                workflow_mode=workflow_mode,
+                surfaces=self._session_surfaces.get(workflow_mode),
+                on_surfaces_changed=remember,
             ),
             on_result,
         )

@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "39afb511823fd59e7e75e40a47ab6de537fe5c2c329f13c2777ea4c7a377079f",
+  "inventory_sha256": "08b59eaeb036f6e325f5d2a0dc31022ffc3cf9e6f20dbe17247381816676e261",
   "nodes": [
     {
       "cases": [
@@ -7398,7 +7398,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._cancel_if_rollback_owner_changed",
       "source_column": 8,
-      "source_line": 868,
+      "source_line": 877,
       "wrapper_target": null
     },
     {
@@ -7418,7 +7418,7 @@
       "primitive": "thread_pool",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 28,
-      "source_line": 578,
+      "source_line": 587,
       "wrapper_target": null
     },
     {
@@ -7438,7 +7438,7 @@
       "primitive": "thread_pool",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 35,
-      "source_line": 591,
+      "source_line": 600,
       "wrapper_target": null
     },
     {
@@ -7458,7 +7458,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 11,
-      "source_line": 634,
+      "source_line": 643,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -7478,7 +7478,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 34,
-      "source_line": 645,
+      "source_line": 654,
       "wrapper_target": null
     },
     {
@@ -7498,7 +7498,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 16,
-      "source_line": 654,
+      "source_line": 663,
       "wrapper_target": null
     },
     {
@@ -7518,7 +7518,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 668,
+      "source_line": 677,
       "wrapper_target": null
     },
     {
@@ -7538,7 +7538,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 678,
+      "source_line": 687,
       "wrapper_target": null
     },
     {
@@ -7558,7 +7558,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 694,
+      "source_line": 703,
       "wrapper_target": null
     },
     {
@@ -7578,7 +7578,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 727,
+      "source_line": 736,
       "wrapper_target": null
     },
     {
@@ -7598,7 +7598,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 737,
+      "source_line": 746,
       "wrapper_target": null
     },
     {
@@ -7618,7 +7618,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 748,
+      "source_line": 757,
       "wrapper_target": null
     },
     {
@@ -7638,7 +7638,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 782,
+      "source_line": 791,
       "wrapper_target": null
     },
     {
@@ -7658,7 +7658,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 798,
+      "source_line": 807,
       "wrapper_target": null
     },
     {
@@ -7678,7 +7678,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 809,
+      "source_line": 818,
       "wrapper_target": null
     },
     {
@@ -7698,7 +7698,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 8,
-      "source_line": 812,
+      "source_line": 821,
       "wrapper_target": null
     },
     {
@@ -7718,7 +7718,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 489,
+      "source_line": 498,
       "wrapper_target": null
     },
     {
@@ -7738,7 +7738,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_with_permit",
       "source_column": 16,
-      "source_line": 492,
+      "source_line": 501,
       "wrapper_target": null
     },
     {
@@ -7758,7 +7758,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._execute_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 504,
+      "source_line": 513,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._execute_user_rollback_after_resource_preflight"
     },
     {
@@ -7778,7 +7778,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 8,
-      "source_line": 353,
+      "source_line": 362,
       "wrapper_target": null
     },
     {
@@ -7798,7 +7798,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 355,
+      "source_line": 364,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -7818,7 +7818,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 357,
+      "source_line": 366,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._refuse_if_rollback_state_invalid"
     },
     {
@@ -7838,7 +7838,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 8,
-      "source_line": 363,
+      "source_line": 372,
       "wrapper_target": "chrys.foundation.util.async_tasks.await_task_quiescence"
     },
     {
@@ -7858,7 +7858,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 364,
+      "source_line": 373,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -7878,7 +7878,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 366,
+      "source_line": 375,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._refuse_if_rollback_state_invalid"
     },
     {
@@ -7898,7 +7898,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 373,
+      "source_line": 382,
       "wrapper_target": null
     },
     {
@@ -7918,7 +7918,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 384,
+      "source_line": 393,
       "wrapper_target": null
     },
     {
@@ -7938,7 +7938,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 406,
+      "source_line": 415,
       "wrapper_target": null
     },
     {
@@ -7958,7 +7958,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 16,
-      "source_line": 418,
+      "source_line": 427,
       "wrapper_target": null
     },
     {
@@ -7978,7 +7978,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 16,
-      "source_line": 429,
+      "source_line": 438,
       "wrapper_target": null
     },
     {
@@ -7998,7 +7998,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 446,
+      "source_line": 455,
       "wrapper_target": null
     },
     {
@@ -8018,7 +8018,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 458,
+      "source_line": 467,
       "wrapper_target": null
     },
     {
@@ -8038,7 +8038,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._refuse_if_rollback_state_invalid",
       "source_column": 8,
-      "source_line": 882,
+      "source_line": 891,
       "wrapper_target": null
     },
     {
@@ -8058,7 +8058,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController.begin_rollback_projection",
       "source_column": 15,
-      "source_line": 244,
+      "source_line": 253,
       "wrapper_target": null
     },
     {
@@ -8078,7 +8078,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 12,
-      "source_line": 301,
+      "source_line": 310,
       "wrapper_target": null
     },
     {
@@ -8098,7 +8098,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 11,
-      "source_line": 309,
+      "source_line": 318,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -8118,7 +8118,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 11,
-      "source_line": 311,
+      "source_line": 320,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._refuse_if_rollback_state_invalid"
     },
     {
@@ -8138,7 +8138,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 27,
-      "source_line": 314,
+      "source_line": 323,
       "wrapper_target": null
     },
     {
@@ -8158,7 +8158,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 12,
-      "source_line": 320,
+      "source_line": 329,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -8178,7 +8178,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 23,
-      "source_line": 323,
+      "source_line": 332,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._prepare_user_rollback_with_permit"
     },
     {
@@ -8198,7 +8198,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 12,
-      "source_line": 331,
+      "source_line": 340,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._execute_user_rollback_with_permit"
     },
     {
@@ -46358,7 +46358,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.delete_session",
       "source_column": 8,
-      "source_line": 2117,
+      "source_line": 2123,
       "wrapper_target": null
     },
     {
@@ -46378,7 +46378,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.list_sessions",
       "source_column": 15,
-      "source_line": 1733,
+      "source_line": 1768,
       "wrapper_target": null
     },
     {
@@ -46398,7 +46398,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 20,
-      "source_line": 1927,
+      "source_line": 1962,
       "wrapper_target": null
     },
     {
@@ -46418,7 +46418,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 17,
-      "source_line": 1930,
+      "source_line": 1965,
       "wrapper_target": null
     },
     {
@@ -46438,7 +46438,7 @@
       "primitive": "wrapper",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 30,
-      "source_line": 1936,
+      "source_line": 1971,
       "wrapper_target": "chrys.service.state.store.JsonFileStateStore.list_sessions"
     },
     {
@@ -46458,7 +46458,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_recovery_session",
       "source_column": 15,
-      "source_line": 1122,
+      "source_line": 1113,
       "wrapper_target": null
     },
     {
@@ -46478,7 +46478,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_recovery_session_meta",
       "source_column": 15,
-      "source_line": 1140,
+      "source_line": 1131,
       "wrapper_target": null
     },
     {
@@ -46498,7 +46498,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session",
       "source_column": 15,
-      "source_line": 1173,
+      "source_line": 1164,
       "wrapper_target": null
     },
     {
@@ -46518,7 +46518,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_meta",
       "source_column": 15,
-      "source_line": 1272,
+      "source_line": 1263,
       "wrapper_target": null
     },
     {
@@ -46538,7 +46538,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_page",
       "source_column": 15,
-      "source_line": 2069,
+      "source_line": 2075,
       "wrapper_target": null
     },
     {
@@ -46558,7 +46558,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_raw",
       "source_column": 15,
-      "source_line": 1234,
+      "source_line": 1225,
       "wrapper_target": null
     },
     {
@@ -46578,7 +46578,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_workflow_session",
       "source_column": 15,
-      "source_line": 1157,
+      "source_line": 1148,
       "wrapper_target": null
     },
     {
@@ -46598,7 +46598,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.open_session_listing",
       "source_column": 15,
-      "source_line": 2035,
+      "source_line": 2036,
       "wrapper_target": null
     },
     {
@@ -46618,7 +46618,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.recovery_session_wins",
       "source_column": 15,
-      "source_line": 1095,
+      "source_line": 1086,
       "wrapper_target": null
     },
     {
@@ -46638,7 +46638,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.save_session",
       "source_column": 15,
-      "source_line": 947,
+      "source_line": 938,
       "wrapper_target": null
     },
     {
@@ -46658,107 +46658,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.save_workflow_session",
       "source_column": 15,
-      "source_line": 974,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._refresh_catalog)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:1",
-      "module": "chrys.service.state.store",
-      "ordinal": 1,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 8,
-      "source_line": 1955,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._session_dir_candidates)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:2",
-      "module": "chrys.service.state.store",
-      "ordinal": 2,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 23,
-      "source_line": 1956,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(_parse)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:3",
-      "module": "chrys.service.state.store",
-      "ordinal": 3,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 32,
-      "source_line": 1966,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._legacy_session_metas, seen_ids)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:4",
-      "module": "chrys.service.state.store",
-      "ordinal": 4,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 17,
-      "source_line": 1970,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._settle_listing_caches)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:5",
-      "module": "chrys.service.state.store",
-      "ordinal": 5,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 8,
-      "source_line": 1974,
+      "source_line": 965,
       "wrapper_target": null
     },
     {
@@ -46778,7 +46678,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.update_session_titles",
       "source_column": 15,
-      "source_line": 1440,
+      "source_line": 1431,
       "wrapper_target": null
     },
     {

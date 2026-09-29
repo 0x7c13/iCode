@@ -30,6 +30,7 @@ from chrys.foundation.events.types import AgentRuntimeDetails, RollbackResult, R
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.tool_kinds import KIND_SHELL
+from tests.app.tui.screens._sessions_support import FakeSessionStore
 
 
 def _controller(locale: str = "zh-Hans") -> LocaleController:
@@ -253,18 +254,10 @@ async def test_man_page_retranslates_in_place_and_preserves_page(monkeypatch: py
         assert str(dialog.query_one("#man-container").border_title) == "/exit"
 
 
-class _EmptySessionStore:
-    async def stream_session_metas(self, *, kind=None):
-        yield []
-
-    async def delete_session(self, _session_id: str) -> None:
-        return
-
-
 @pytest.mark.asyncio
 async def test_sessions_delete_confirmation_reuses_localized_title_and_action() -> None:
     controller = _controller()
-    screen = SessionsScreen(cast(Any, _EmptySessionStore()), locale_controller=controller)
+    screen = SessionsScreen(cast(Any, FakeSessionStore(0)), locale_controller=controller)
     screen._get_selected_session_id = lambda: "session-abc"  # type: ignore[method-assign]
     app = _LocalizedHost(controller)
 

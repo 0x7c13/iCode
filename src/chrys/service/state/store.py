@@ -13,12 +13,11 @@ import threading
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Collection
+    from collections.abc import Callable, Collection
 
 from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.models.session_surface import SessionSurface
@@ -171,9 +170,6 @@ class StateStore(Protocol):
 
     async def list_sessions(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]: ...
     async def load_latest_session_id(self, *, chat_only: bool = False) -> str | None: ...
-    def stream_session_metas(
-        self, *, batch_size: int = 32, kind: Literal["chat", "workflow"] | None = None
-    ) -> AsyncIterator[list[SessionMeta]]: ...
     async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing: ...
     async def load_session_page(
         self,
@@ -1977,40 +1973,6 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             default=None,
         )
         return latest_chat.session_id if latest_chat is not None else None
-
-    async def stream_session_metas(
-        self, *, batch_size: int = 32, kind: Literal["chat", "workflow"] | None = None
-    ) -> AsyncIterator[list[SessionMeta]]:
-        """Yield session metas in batches without blocking the event loop.
-
-        Folders are parsed ``batch_size`` at a time inside worker threads and
-        each chunk is yielded as soon as it is ready, so a UI can render
-        progressively instead of waiting for a full scan of a potentially
-        huge sessions directory.  Unchanged sessions are served from the
-        in-process meta cache; the multi-MB envelope payloads themselves are
-        never retained.
-        """
-        seen_ids: set[str] = set()
-        await asyncio.to_thread(self._refresh_catalog)
-        session_dirs = await asyncio.to_thread(self._session_dir_candidates)
-        for chunk in batched(session_dirs, batch_size, strict=False):
-
-            def _parse(chunk: tuple[Path, ...] = chunk) -> list[SessionMeta]:
-                return [
-                    self._with_workflow_status(replace(meta, size_bytes=_dir_size(d)))
-                    for d in chunk
-                    if (meta := self._meta_for_session_dir(d)) is not None and (kind is None or meta.kind == kind)
-                ]
-
-            metas = [m for m in await asyncio.to_thread(_parse) if m.session_id not in seen_ids]
-            seen_ids.update(m.session_id for m in metas)
-            if metas:
-                yield metas
-        legacy = await asyncio.to_thread(self._legacy_session_metas, seen_ids)
-        legacy = [self._with_workflow_status(meta) for meta in legacy if kind is None or meta.kind == kind]
-        if legacy:
-            yield legacy
-        await asyncio.to_thread(self._settle_listing_caches)
 
     # ------------------------------------------------------------------ #
     # Paged listing

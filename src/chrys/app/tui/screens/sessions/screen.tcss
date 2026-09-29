@@ -22,7 +22,14 @@ SessionsScreen > #container.-empty {
 
 SessionsScreen > #container > #empty-note {
     width: 100%;
+    /* Stands in for the table while filters or the search leave nothing to list. */
+    height: 1fr;
+    min-height: 5;
     display: none;
+}
+
+SessionsScreen > #container.-empty > #empty-note {
+    height: 5;
 }
 
 SessionsScreen > #container > #sessions-loading-state {
@@ -43,6 +50,39 @@ SessionsScreen > #container > DataTable {
     height: 1fr;
     min-height: 3;
     scrollbar-size: 1 1;
+}
+
+SessionsScreen > #container > #filters {
+    /* A dim rule parts the controls from the table, full width like the table. */
+    height: 2;
+    padding: 0 1;
+    border-top: solid $tui-border-foreground 15%;
+}
+
+SessionsScreen > #container > #filters > #surface-filters {
+    width: 1fr;
+    height: 1;
+}
+
+SessionsScreen > #container > #filters > #surface-filters > Checkbox {
+    width: auto;
+    height: 1;
+    padding: 0;
+    margin: 0 2 0 0;
+    border: none;
+    background: transparent;
+}
+
+/* The markers of the settings and agent editor checkboxes. Class-level
+   specificity on purpose: the ANSI theme's `App:ansi Checkbox` rules win. */
+SessionsScreen Checkbox > .toggle--button {
+    color: $foreground 35%;
+    background: $foreground 6%;
+}
+
+SessionsScreen Checkbox.-on > .toggle--button {
+    color: $success;
+    background: $foreground 6%;
 }
 
 SessionsScreen > #container > #footer {

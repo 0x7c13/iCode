@@ -2,19 +2,20 @@
 
 """SessionsScreen — modal for browsing and restoring persisted sessions.
 
-Opens as a centered modal overlay (Ctrl+S).  Displays all persisted sessions
-in a sortable DataTable: click a column header to sort (click again to flip
-direction), type in the bottom search box to filter across every column plus
-each session's user prompts (rows found only through prompt text render in
-italics, list after the column matches, and carry the matched context in
-their tooltip), and forked sessions nest under their parent as a tree.  Session metadata is
-scanned asynchronously and rendered once complete so sorting, filtering, and
-tree parentage appear in a stable order.  Resume to load, Delete to remove.
+Opens as a centered modal overlay (Ctrl+S).  Sessions list newest first, in
+pages of at most 100, filtered by where each was last used (TUI, CLI, ACP;
+TUI only by default).  The store snapshots the listing once, so paging never
+reshuffles, and each page loads fresh.  Within the page shown: click a column
+header to sort (click again to flip direction), type in the bottom search box
+to filter across every column plus each session's user prompts (rows found
+only through prompt text render in italics, list after the column matches,
+and carry the matched context in their tooltip), and forked sessions nest
+under their parent as a tree.  Resume to load, Delete to remove.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.cells import cell_len
 from rich.style import Style
@@ -29,6 +30,7 @@ from chrys.app.tui.i18n import LocaleController, render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.screens.sessions.presenter import (
     COLUMNS,
+    SURFACE_LABELS,
     WORKFLOW_COLUMNS,
     SessionRow,
     WorkflowSessionPick,
@@ -38,20 +40,32 @@ from chrys.app.tui.screens.sessions.presenter import (
     format_tokens,
     last_interaction_display,
     profile_display,
+    surface_label,
     title_display,
 )
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
-from chrys.app.tui.widgets import ChrysLoadingIndicator, DialogButtonRow, DialogButtonSpec, HatchedEmptyState
+from chrys.app.tui.widgets import (
+    Checkbox,
+    ChrysLoadingIndicator,
+    DialogButtonRow,
+    DialogButtonSpec,
+    HatchedEmptyState,
+    PageNavigator,
+)
 from chrys.app.tui.widgets.input import EnhancedInput
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayPath, MessageRef, msg
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.session_ids import session_short_id
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Collection
+
     from textual import events
     from textual.app import ComposeResult
     from textual.timer import Timer
 
+    from chrys.service.state.session_listing import SessionListing
     from chrys.service.state.store import SessionMeta, StateStore
 
 
@@ -60,6 +74,11 @@ _SEARCH_DEBOUNCE_SECONDS = 0.15
 
 _TREE_LEVEL_WIDTH = 2
 """Cells one fork level adds to the Session ID column ('└ ' / '│ ')."""
+
+DEFAULT_SURFACES = frozenset({SessionSurface.TUI})
+"""Surfaces listed until the user picks others; sessions from before surfaces were recorded count as TUI."""
+WORKFLOW_SURFACES = frozenset({SessionSurface.TUI, SessionSurface.CLI})
+"""Where workflow runs start: the TUI and ``icode workflow run``; ACP clients start none."""
 
 _DELETE_SESSION_TITLE = msg("tui.sessions.title.delete", fallback="Delete Session")
 _SESSION_OPEN_ELSEWHERE = msg(
@@ -72,9 +91,11 @@ _TOOLTIP_WORKFLOW = msg("tui.sessions.tooltip.workflow", fallback="Workflow: {wo
 _TOOLTIP_STATUS = msg("tui.sessions.tooltip.status", fallback="Status: {status}")
 _TOOLTIP_RUN = msg("tui.sessions.tooltip.run", fallback="Run: {run_id}")
 _NO_SAVED_SESSIONS = msg("tui.sessions.empty", fallback="No saved sessions.")
+_NO_FILTERED_SESSIONS = msg("tui.sessions.empty.filtered", fallback="No sessions match the selected filters.")
+_NO_SEARCH_MATCHES = msg("tui.sessions.empty.search", fallback="No sessions on this page match your search.")
 _SEARCH_PLACEHOLDER = msg(
     "tui.sessions.search_placeholder",
-    fallback="Search sessions… (matches any column & your prompts)",
+    fallback="Search this page… (matches any column & your prompts)",
 )
 _RESUME = msg("tui.sessions.button.resume", fallback="Resume")
 _DELETE = msg("tui.sessions.button.delete", fallback="Delete")
@@ -93,6 +114,7 @@ _TOOLTIP_LAST_INTERACTION = msg(
     fallback="Last interaction: {interaction}",
 )
 _TOOLTIP_FORKED_FROM = msg("tui.sessions.tooltip.forked_from", fallback="Forked from: {session_id}")
+_TOOLTIP_SURFACE = msg("tui.sessions.tooltip.surface", fallback="Last used in: {surface}")
 _DELETE_SESSION_MESSAGE = msg(
     "tui.sessions.delete.confirm_message",
     fallback='Delete session\n"{session_id}"?\n\nThis cannot be undone.',
@@ -207,13 +229,30 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         *,
         locale_controller: LocaleController | None = None,
         workflow_mode: bool = False,
+        surfaces: Collection[SessionSurface] | None = None,
+        on_surfaces_changed: Callable[[frozenset[SessionSurface]], None] | None = None,
     ) -> None:
         self._state_store = state_store
         self._current_session_id = current_session_id
         self._locale_controller = locale_controller
         self._workflow_mode = workflow_mode
+        self._kind: Literal["chat", "workflow"] = "workflow" if workflow_mode else "chat"
         self._columns = WORKFLOW_COLUMNS if workflow_mode else COLUMNS
-        self._sessions: list[SessionMeta] = []
+        self._offered_surfaces = tuple(
+            surface for surface in SURFACE_LABELS if not workflow_mode or surface in WORKFLOW_SURFACES
+        )
+        # A surface the browser offers no checkbox for could never be unchecked.
+        chosen = DEFAULT_SURFACES if surfaces is None else surfaces
+        self._surfaces = frozenset(surface for surface in chosen if surface in self._offered_surfaces)
+        self._on_surfaces_changed = on_surfaces_changed
+        # Taken once, on the first load: pages keep their order however sessions change meanwhile.
+        self._listing: SessionListing | None = None
+        self._page = 1
+        self._page_count = 1
+        self._filtered_total = 0
+        """Sessions of the selected surfaces, across every page."""
+        self._page_loaded = False
+        # The page's sessions: what sorting and searching work on.
         self._rendered_sessions: list[SessionMeta] = []
         self._session_ids: list[str] = []
         self._rows: list[SessionRow] = []
@@ -237,6 +276,16 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             table = _SessionTable(id="sessions", cursor_type="row")
             table.display = False
             yield table
+            with HorizontalGroup(id="filters") as filters:
+                filters.display = False
+                with HorizontalGroup(id="surface-filters"):
+                    for surface in self._offered_surfaces:
+                        yield Checkbox(
+                            render_str(localizer, SURFACE_LABELS[surface].bind()),
+                            value=surface in self._surfaces,
+                            id=f"surface-{surface.value}",
+                        )
+                yield PageNavigator(self._locale_controller, id="session-pages")
             with HorizontalGroup(id="footer") as footer:
                 footer.display = False
                 # The themed border lives on the wrapper so the input's
@@ -270,30 +319,29 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
     @work(exclusive=True, group="load-sessions")
     async def _load_sessions(
         self,
+        page: int = 1,
         preferred_cursor_row: int | None = None,
         preferred_session_id: str | None = None,
     ) -> None:
-        """Stream session metas from the store, then render one stable table.
+        """Load one page of the listing, then render it.
 
-        Batches arrive from :meth:`StateStore.stream_session_metas`, but the
-        UI waits for the full set before sorting/filtering/tree assembly.
-        Rendering partial batches makes rows jump as later sessions and fork
-        parents arrive.
+        The listing is snapshotted by the first load; later loads (paging,
+        filtering, reloading after a delete) page through that snapshot.
+        Loads are exclusive: a newer request cancels the one in flight, so
+        the page shown is always the last one asked for.
         """
         self._loading = True
-        self._update_chrome(
-            visible_rows=len(self._rows),
-            filtered=bool(self.query_one("#search", _SearchInput).value.strip()),
-            total_sessions=len(self._rendered_sessions),
-        )
-        self._sessions = []
-        async for batch in self._state_store.stream_session_metas(kind="workflow" if self._workflow_mode else "chat"):
-            self._sessions.extend(batch)
+        self._update_chrome()
+        if self._listing is None:
+            self._listing = await self._state_store.open_session_listing(kind=self._kind)
+        loaded = await self._state_store.load_session_page(self._listing, surfaces=self._surfaces, page=page)
         self._loading = False
-        self._rendered_sessions = list(self._sessions)
+        self._page, self._page_count, self._filtered_total = loaded.page, loaded.page_count, loaded.total
+        self._page_loaded = True
         self._render_table(
             preferred_cursor_row=preferred_cursor_row,
             preferred_session_id=preferred_session_id,
+            source_sessions=list(loaded.metas),
         )
         self._cursor_initialized = True
 
@@ -356,7 +404,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         has_rows = bool(rows)
         self.query_one("#resume", Button).disabled = not has_rows
         self.query_one("#delete", Button).disabled = not has_rows
-        self._update_chrome(visible_rows=len(rows), filtered=bool(highlight), total_sessions=len(render_source))
+        self._update_chrome()
 
     def _match_style(self) -> Style:
         """Search-match highlight style, themed to the warning color."""
@@ -414,6 +462,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         parts.append(
             self._render_message(_TOOLTIP_LAST_INTERACTION.bind(interaction=last_interaction_display(updated)))
         )
+        surface = self._render_message(surface_label(meta.last_surface))
+        parts.append(self._render_message(_TOOLTIP_SURFACE.bind(surface=surface)))
         if meta.kind == "chat" and meta.parent_session_id:
             parts.append(
                 self._render_message(_TOOLTIP_FORKED_FROM.bind(session_id=session_short_id(meta.parent_session_id)))
@@ -465,28 +515,81 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         else:
             table.move_cursor(row=0)
 
-    def _update_chrome(self, *, visible_rows: int, filtered: bool, total_sessions: int) -> None:
-        """Empty-state visibility plus the live count in the border."""
-        show_loading = self._loading and total_sessions == 0
-        has_sessions = total_sessions > 0
+    def _update_chrome(self) -> None:
+        """Which of loading, empty note, table and controls show, plus the count in the border.
+
+        With no sessions at all the dialog shrinks to its empty note. Once
+        any exist, the filters, pager and footer stay so every filter can be
+        undone, and a note replaces the table when the selected surfaces or
+        the search leave nothing to show.
+        """
+        show_loading = not self._page_loaded
+        has_sessions = self._listing is not None and bool(self._listing.entries)
+        visible_rows = len(self._rows)
+        search = self.query_one("#search", _SearchInput)
+        searching = bool(search.value.strip())
         container = self.query_one("#container")
         if has_sessions or show_loading:
             container.remove_class("-empty")
         else:
             container.add_class("-empty")
+        show_table = not show_loading and visible_rows > 0
+        table = self.query_one("#sessions", _SessionTable)
         self.query_one("#sessions-loading-state").display = show_loading
-        self.query_one("#empty-note").display = not show_loading and not has_sessions
-        self.query_one("#sessions").display = not show_loading and has_sessions
-        self.query_one("#footer").display = not show_loading and has_sessions
+        table.display = show_table
+        note = self.query_one("#empty-note", HatchedEmptyState)
+        note.display = not show_loading and not show_table
+        if not has_sessions:
+            reason = _NO_SAVED_SESSIONS
+        elif searching and self._rendered_sessions:
+            reason = _NO_SEARCH_MATCHES
+        else:
+            reason = _NO_FILTERED_SESSIONS
+        if (label := self._render_message(reason.bind())) != note.label:
+            note.update_label(label)
+        show_controls = not show_loading and has_sessions
+        self.query_one("#filters").display = show_controls
+        self.query_one("#footer").display = show_controls
+        navigator = self.query_one(PageNavigator)
+        # A page turned while the search hid the table left focus on the pager.
+        if navigator.disables_focused(self._page, self._page_count) and (show_table or show_controls):
+            self.set_focus(table if show_table else search, scroll_visible=False)
+        navigator.show(self._page, self._page_count)
 
         if show_loading:
             container.border_subtitle = Text(self._render_message(_LOADING_SESSIONS.bind()))
         elif has_sessions:
-            count = f"{visible_rows}/{total_sessions}" if filtered else f"{total_sessions}"
+            count = f"{visible_rows}/{len(self._rendered_sessions)}" if searching else f"{self._filtered_total}"
             label = _WORKFLOW_SESSION_COUNT if self._workflow_mode else _SESSION_COUNT
             container.border_subtitle = Text(self._render_message(label.bind(count_text=count)))
         else:
             container.border_subtitle = ""
+
+    # ------------------------------------------------------------------
+    # Surface filters & paging
+    # ------------------------------------------------------------------
+
+    @on(Checkbox.Changed, "#surface-filters Checkbox")
+    def _on_surface_toggled(self, event: Checkbox.Changed) -> None:
+        """A surface was checked or unchecked: list the first page of the new selection."""
+        event.stop()
+        surfaces = frozenset(
+            surface for surface in self._offered_surfaces if self.query_one(f"#surface-{surface.value}", Checkbox).value
+        )
+        if surfaces == self._surfaces:
+            return
+        self._surfaces = surfaces
+        if self._on_surfaces_changed is not None:
+            self._on_surfaces_changed(surfaces)
+        self._load_sessions(page=1)
+
+    @on(PageNavigator.Changed, "#session-pages")
+    def _on_page_changed(self, event: PageNavigator.Changed) -> None:
+        event.stop()
+        table = self.query_one("#sessions", _SessionTable)
+        if table.display:
+            self.set_focus(table, scroll_visible=False)
+        self._load_sessions(page=event.page)
 
     # ------------------------------------------------------------------
     # Sorting & searching
@@ -632,14 +735,20 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                     markup=False,
                 )
                 return
+            if self._listing is not None:
+                self._listing = self._listing.without(session_id)
             optimistic_sessions = [meta for meta in self._rendered_sessions if meta.session_id != session_id]
+            if len(optimistic_sessions) < len(self._rendered_sessions):
+                self._filtered_total = max(0, self._filtered_total - 1)
             self._render_table(
                 preferred_cursor_row=preferred_cursor_row,
                 preferred_session_id=preferred_session_id,
                 prefer_live_selection=False,
                 source_sessions=optimistic_sessions,
             )
+            # The next page's first session moves up into this one.
             self._load_sessions(
+                page=self._page,
                 preferred_cursor_row=preferred_cursor_row,
                 preferred_session_id=preferred_session_id,
             )

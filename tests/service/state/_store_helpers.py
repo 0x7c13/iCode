@@ -7,9 +7,17 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.kernel import Message
-from chrys.service.state.store import JsonFileStateStore
+from chrys.service.state.store import JsonFileStateStore, SessionMeta
+
+
+async def browser_page(store: JsonFileStateStore, kind: Literal["chat", "workflow"] = "chat") -> list[SessionMeta]:
+    """The sessions browser's first page of *kind*, every surface selected."""
+    listing = await store.open_session_listing(kind=kind)
+    return list((await store.load_session_page(listing, surfaces=frozenset(SessionSurface))).metas)
 
 
 async def _save(store: JsonFileStateStore, session_id: str, *texts: str) -> None:

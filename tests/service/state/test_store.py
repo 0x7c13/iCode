@@ -25,7 +25,7 @@ from chrys.service.state.store import (
     _dir_size,
 )
 from chrys.service.trajectory.tombstone import DeleteOutcome, DeleteResult
-from tests.service.state._store_helpers import SkewedDateTime, write_legacy_envelope
+from tests.service.state._store_helpers import SkewedDateTime, browser_page, write_legacy_envelope
 
 
 @pytest.mark.asyncio
@@ -269,20 +269,6 @@ async def test_list_sessions_cache_evicts_deleted_sessions(tmp_path: Path) -> No
     assert set(store._meta_cache) == {"keep"}
 
 
-@pytest.mark.asyncio
-async def test_stream_session_metas_yields_batches_matching_list(tmp_path: Path) -> None:
-    store = JsonFileStateStore(tmp_path)
-    for index in range(5):
-        await store.save_session(f"s{index}", {"messages": [], "compressed_msgs": []})
-
-    batches = [batch async for batch in store.stream_session_metas(batch_size=2)]
-
-    assert [len(batch) for batch in batches] == [2, 2, 1]
-    streamed_ids = [meta.session_id for batch in batches for meta in batch]
-    listed_ids = [meta.session_id for meta in await store.list_sessions()]
-    assert streamed_ids == listed_ids
-
-
 async def test_list_sessions_ignores_lock_directory(tmp_path: Path) -> None:
     """Root-level .locks metadata is not a session directory."""
     store = JsonFileStateStore(tmp_path)
@@ -304,10 +290,10 @@ async def test_list_sessions_skips_malformed_timestamp_metadata(tmp_path: Path) 
     write_legacy_envelope(tmp_path / "bad-legacy.json", "bad-legacy", created_at=123)
 
     sessions = await store.list_sessions()
-    streamed_ids = [meta.session_id async for batch in store.stream_session_metas() for meta in batch]
+    browsed = await browser_page(store)
 
     assert [s.session_id for s in sessions] == ["good"]
-    assert streamed_ids == ["good"]
+    assert [meta.session_id for meta in browsed] == ["good"]
 
 
 @pytest.mark.asyncio

@@ -42,16 +42,6 @@ async def test_legacy_flat_files_with_duplicate_ids_list_once(tmp_path: Path) ->
     assert [s.session_id for s in sessions] == ["dupe"]
 
 
-async def test_stream_session_metas_includes_legacy_flat_files(tmp_path: Path) -> None:
-    store = JsonFileStateStore(tmp_path)
-    await store.save_session("modern", {"messages": [], "compressed_msgs": []})
-    write_legacy_envelope(tmp_path / "oldstyle.json", "oldstyle")
-
-    streamed_ids = [meta.session_id async for batch in store.stream_session_metas() for meta in batch]
-
-    assert sorted(streamed_ids) == ["modern", "oldstyle"]
-
-
 async def test_list_sessions_legacy_files_default_to_zero(tmp_path: Path) -> None:
     """Sessions written before the version fields existed read back with
     ``schema_version=0`` and empty ``app_version`` — those defaults let
