@@ -126,8 +126,6 @@ def test_pages_are_clamped_and_counted_over_the_filtered_snapshot() -> None:
     assert ([entry.session_id for entry in entries], page) == (["s0", "s2", "s4"], 1)
     assert page_slice(listing, frozenset(), 1, page_size=3) == ((), 1, 1, 0)
 
-    assert listing.page_of("s6", TUI, page_size=3) == 2
-    assert listing.page_of("s1", TUI, page_size=3) is None
     assert _ids(listing.without("s2"), TUI) == ["s0", "s4", "s6"]
     with pytest.raises(ValueError, match="page_size"):
         listing.page_count(ALL, page_size=0)

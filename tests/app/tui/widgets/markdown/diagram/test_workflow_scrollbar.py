@@ -16,6 +16,7 @@ from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
 from chrys.app.tui.widgets.workflow.scrollbar import WorkflowScrollBar
+from tests.support.tui_helpers import resize_when_settled
 from tests.support.waiting import wait_for
 
 
@@ -96,7 +97,8 @@ async def test_footer_navigation_drags_pages_and_follows_keyboard_and_resize(the
             events.MouseScrollRight(bar, x=1, y=0, delta_x=1, delta_y=0, button=0, shift=False, meta=False, ctrl=False)
         )
         await wait_for(lambda: graph.scroll_x > 0 and bar.position == native.position, pilot=pilot)
-        await pilot.resize_terminal(70, 28)
+        # The bar and the graph already agree at the old size.
+        await resize_when_settled(pilot, 70, 28)
         await wait_for(lambda: bar.window_size == graph.scrollable_content_region.width, pilot=pilot)
         assert bar.region.width == graph.scrollable_content_region.width + graph.styles.padding.width
         assert bar.region.bottom == panel.content_region.bottom

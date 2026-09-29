@@ -21,7 +21,7 @@ from chrys.foundation.models.execution import ExecutionSnapshot
 from tests.orchestration.workflows._hosting import make_project, write_workflow
 from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
 
@@ -71,8 +71,8 @@ async def test_layout_button_preserves_live_state_and_retry_controls(
         await wait_for(lambda: "second" in graph._retry_regions and "first" in graph._elapsed_labels, pilot=pilot)
         graph.select_node("second")
         states = dict(graph._views)
-        await pilot.resize_terminal(80, 42)
-        await wait_for(lambda: app.size.width == 80 and graph.outer_size.width == panel.content_size.width, pilot=pilot)
+        await resize_when_settled(pilot, 80, 42)
+        await wait_for(lambda: graph.outer_size.width == panel.content_size.width, pilot=pilot)
 
         for direction in (Direction.TOP_DOWN, Direction.LEFT_RIGHT):
             await wait_for(lambda: not toggle.has_class("-active"), pilot=pilot)

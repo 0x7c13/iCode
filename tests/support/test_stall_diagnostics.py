@@ -11,24 +11,26 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from tests.support.stall_diagnostics import StallSampler, format_report
+from tests.support.stall_diagnostics import PhaseRecord, StallSampler, format_report
 from tests.support.waiting import wait_for
 
 _SAMPLES = 5
 _SPIN_DEADLINE_SECONDS = 5.0
 
 
-def _spin_until_sampled(sampler: StallSampler) -> None:
-    """Keep the calling thread busy in Python until the sampler has seen it enough times: the stretch to attribute.
+def _spin_until_sampled(phase: PhaseRecord) -> None:
+    """Keep the calling thread busy in Python until the sampler has seen it enough times and timed a stretch of it.
 
-    Spinning on the sampler's own count, not on the clock, keeps the number of samples the same under any load.
+    A stretch takes two samples in a row that find the thread on the same line, and a loop gives up the GIL on more
+    than one line: spinning on what the sampler recorded, not on the clock or a sample count, holds under any load.
     """
     deadline = time.monotonic() + _SPIN_DEADLINE_SECONDS
-    while sampler.sampled()[0] < _SAMPLES:
+    while phase.samples < _SAMPLES or not phase.longest_busy[0]:
         assert time.monotonic() < deadline, "the sampler stopped sampling"
 
 
-def _hold(release: threading.Event) -> None:
+def _hold(started: threading.Event, release: threading.Event) -> None:
+    started.set()
     release.wait()
 
 
@@ -42,16 +44,21 @@ def test_sampler_attributes_a_busy_loop_thread_and_a_starved_executor() -> None:
     try:
         # One thread, two holds: the second sits in the queue for as long as the phase lasts.
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="asyncio") as pool:
-            pool.submit(_hold, release)
-            pool.submit(_hold, release)
-            sampler.begin_phase("busy")
-            _spin_until_sampled(sampler)
-            phase = sampler.end_phase(failed=False)
-            release.set()
+            try:
+                started = threading.Event()
+                pool.submit(_hold, started, release)
+                # Queued before the thread took the first, the second would briefly make a queue of two.
+                assert started.wait(_SPIN_DEADLINE_SECONDS), "the executor never ran the first hold"
+                pool.submit(_hold, threading.Event(), release)
+                phase = sampler.begin_phase("busy")
+                _spin_until_sampled(phase)
+                assert sampler.end_phase(failed=False) is phase
+            finally:
+                # Leaving the pool waits for both holds.
+                release.set()
     finally:
         sampler.close()
 
-    assert phase is not None
     assert phase.samples >= _SAMPLES
     assert phase.idle_samples == 0
     assert sum(phase.busy.values()) == phase.samples

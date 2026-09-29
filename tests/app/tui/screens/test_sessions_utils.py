@@ -22,9 +22,7 @@ from chrys.app.tui.screens.sessions.screen import (
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.service.state.store import ChatSessionMeta
-from tests.support.waiting import wait_for
-
-from ._sessions_support import (
+from tests.support.sessions_browser import (
     FakeSessionStore,
     GatedPageStore,
     SessionsHostApp,
@@ -34,6 +32,7 @@ from ._sessions_support import (
     wait_for_load_idle,
     wait_for_row_count,
 )
+from tests.support.waiting import wait_for
 
 
 async def _wait_for_results(results: list[str | None], pilot, count: int) -> None:

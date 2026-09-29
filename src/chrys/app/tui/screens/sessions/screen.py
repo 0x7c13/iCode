@@ -259,6 +259,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._sort_column: str = column_by_key("").key
         self._sort_reverse: bool = column_by_key("").default_reverse
         self._loading = True
+        self._loading_page: int | None = None
+        """The page the load in flight asked for (the store may clamp it); None once a load finishes."""
         # Becomes True once the cursor has jumped to the currently loaded
         # session (or the initial scan finished without finding it).
         self._cursor_initialized = False
@@ -310,11 +312,20 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                 )
 
     def on_mount(self) -> None:
-        self._load_sessions()
+        self._request_page(1)
 
     # ------------------------------------------------------------------
     # Loading & rendering
     # ------------------------------------------------------------------
+
+    def _request_page(
+        self, page: int, *, preferred_cursor_row: int | None = None, preferred_session_id: str | None = None
+    ) -> None:
+        """Load and show *page*, replacing any load in flight."""
+        self._loading_page = page
+        self._load_sessions(
+            page=page, preferred_cursor_row=preferred_cursor_row, preferred_session_id=preferred_session_id
+        )
 
     @work(exclusive=True, group="load-sessions")
     async def _load_sessions(
@@ -336,6 +347,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
             self._listing = await self._state_store.open_session_listing(kind=self._kind)
         loaded = await self._state_store.load_session_page(self._listing, surfaces=self._surfaces, page=page)
         self._loading = False
+        self._loading_page = None
         self._page, self._page_count, self._filtered_total = loaded.page, loaded.page_count, loaded.total
         self._page_loaded = True
         self._render_table(
@@ -551,8 +563,11 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self.query_one("#filters").display = show_controls
         self.query_one("#footer").display = show_controls
         navigator = self.query_one(PageNavigator)
-        # A page turned while the search hid the table left focus on the pager.
-        if navigator.disables_focused(self._page, self._page_count) and (show_table or show_controls):
+        # Focus must not stay on a pager button this disables (a page turned while the search hid
+        # the table) or on the table once it hides (a page where the search matches nothing).
+        if (show_table or show_controls) and (
+            navigator.disables_focused(self._page, self._page_count) or (self.focused is table and not show_table)
+        ):
             self.set_focus(table if show_table else search, scroll_visible=False)
         navigator.show(self._page, self._page_count)
 
@@ -581,7 +596,7 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         self._surfaces = surfaces
         if self._on_surfaces_changed is not None:
             self._on_surfaces_changed(surfaces)
-        self._load_sessions(page=1)
+        self._request_page(1)
 
     @on(PageNavigator.Changed, "#session-pages")
     def _on_page_changed(self, event: PageNavigator.Changed) -> None:
@@ -589,7 +604,10 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         table = self.query_one("#sessions", _SessionTable)
         if table.display:
             self.set_focus(table, scroll_visible=False)
-        self._load_sessions(page=event.page)
+        # The pager still shows the old page while a slow load runs: asking again would only
+        # restart it, and the cancelled read would go on in its thread.
+        if event.page != self._loading_page:
+            self._request_page(event.page)
 
     # ------------------------------------------------------------------
     # Sorting & searching
@@ -619,12 +637,18 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
     @on(Input.Submitted, "#search")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
         """Enter in the search box — jump to the filtered results."""
-        self.query_one("#sessions", _SessionTable).focus()
+        self._focus_table()
 
     @on(_SearchInput.Escaped)
     def _on_search_escaped(self, event: _SearchInput.Escaped) -> None:
         """Escape on an empty search box — return focus to the table."""
-        self.query_one("#sessions", _SessionTable).focus()
+        self._focus_table()
+
+    def _focus_table(self) -> None:
+        # A hidden table can still take focus, which would leave the keyboard nowhere visible.
+        table = self.query_one("#sessions", _SessionTable)
+        if table.display:
+            table.focus()
 
     # ------------------------------------------------------------------
     # Selection & dismissal
@@ -747,8 +771,6 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                 source_sessions=optimistic_sessions,
             )
             # The next page's first session moves up into this one.
-            self._load_sessions(
-                page=self._page,
-                preferred_cursor_row=preferred_cursor_row,
-                preferred_session_id=preferred_session_id,
+            self._request_page(
+                self._page, preferred_cursor_row=preferred_cursor_row, preferred_session_id=preferred_session_id
             )

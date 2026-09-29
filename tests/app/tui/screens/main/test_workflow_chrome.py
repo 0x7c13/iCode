@@ -40,7 +40,7 @@ from tests.app.tui.screens.main._workflow_support import (
 )
 from tests.orchestration.workflows._hosting import make_project, write_workflow
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 from tests.support.workflow_workers import python_workflow
 
@@ -220,11 +220,9 @@ async def test_workflow_frame_and_controls_center_after_resize(tmp_path: Path, m
         assert not tabs.get_pane("workflow-output-tab").query("#workflow-header")
         assert tabs.get_pane("workflow-output-tab").query_one("#workflow-iterations", Static)
         for width in (140, 100, 80):
-            await pilot.resize_terminal(width, 42)
-            await wait_for(
-                lambda width=width: app.size.width == width and graph.outer_size.width == panel.content_size.width,
-                pilot=pilot,
-            )
+            # The screen, not just the App's size, must be at the new width before any scroll reads the layout.
+            await resize_when_settled(pilot, width, 42)
+            await wait_for(lambda: graph.outer_size.width == panel.content_size.width, pilot=pilot)
             start = panel.query_one("#workflow-start", Button)
             stop = panel.query_one("#workflow-stop", Button)
             layout = panel.query_one("#workflow-layout", Button)

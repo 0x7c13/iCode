@@ -25,7 +25,7 @@ from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import UserInjectCancel
 from tests.support.tui_app_harness import EmptyAgentRegistry, SessionGenerationEngine, make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 
 from .helpers import make_app, wait_for_confirmation, wait_for_editor, wait_for_settings_dialog, wait_for_themes
@@ -187,16 +187,12 @@ async def test_compact_dock_respects_inline_sidebar_state_and_restores_it(
             assert not sidebar.display
             await pilot.press("ctrl+g")
             assert not sidebar.display and chat.region.width >= 40
-            await pilot.resize_terminal(160, 40)
-            await wait_for(
-                lambda: main.size.width == 160 and sidebar.display == sidebar_visible and not main._layout_required,
-                pilot=pilot,
-            )
+            # A Screen's size is the App's, which changes before the screen is laid out at it.
+            await resize_when_settled(pilot, 160, 40)
+            await wait_for(lambda: sidebar.display == sidebar_visible and not main._layout_required, pilot=pilot)
             assert sidebar.display == sidebar_visible
-            await pilot.resize_terminal(80, 40)
-            await wait_for(
-                lambda: main.size.width == 80 and not sidebar.display and not main._layout_required, pilot=pilot
-            )
+            await resize_when_settled(pilot, 80, 40)
+            await wait_for(lambda: not sidebar.display and not main._layout_required, pilot=pilot)
             assert not sidebar.display
             await pilot.click("#theme-close")
             await wait_for(lambda: main.theme_editor is None, pilot=pilot)
