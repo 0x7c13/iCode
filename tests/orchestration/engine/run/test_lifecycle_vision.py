@@ -369,7 +369,7 @@ class _Host:
         self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
         self._current = self.current
         self.permits = _HostPermits()
-        self.session = SimpleNamespace()
+        self.session = SimpleNamespace(mark_surface=lambda: None)
         self._bus = _Bus()
         self.session.session_id = "session-1"
         self.session.workspace = Workspace(primary_cwd=str(tmp_path))

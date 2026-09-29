@@ -37,6 +37,7 @@ from chrys.foundation.events.types import (
     UserMessage,
     UserRetry,
 )
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.kernel import FunctionTool
 from chrys.orchestration.engine.assembly import assemble_agent_engine
@@ -196,6 +197,7 @@ async def create_test_engine(
     compaction: CompactionConfig | None = None,
     max_context_tokens: int = 100_000,
     max_transient_retries: int | None = None,
+    surface: SessionSurface | None = None,
 ) -> PipelineTestContext:
     """Create a fully wired mock engine without advisory workspace scans.
 
@@ -209,6 +211,7 @@ async def create_test_engine(
         skills: Runtime skill-provider configuration for the built agent.
         compaction: Custom compaction config (default: disabled).
         max_context_tokens: Model context window size.
+        surface: The launch surface a turn records on its session.
 
     Returns:
         PipelineTestContext ready for test use.
@@ -298,6 +301,7 @@ async def create_test_engine(
         state_store=store,
         model_registry=model_registry,
         initial_workspace=workspace if workspace is not None else Workspace.from_cwd(str(tmp_path)),
+        surface=surface,
     )
     # Restore/reload replaces layered settings; retain the mock-turn policy.
     engine.settings_handle.override(workspace_change_notice=False)

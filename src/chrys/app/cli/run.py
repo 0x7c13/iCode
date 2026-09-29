@@ -23,6 +23,7 @@ from chrys.foundation.config.spec import Source
 from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_terminal_block
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
@@ -264,6 +265,7 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
         approval_mode=ApprovalMode.BYPASS,
         cwd=cwd,
         on_successful_turn=on_buddy_successful_turn,
+        surface=SessionSurface.CLI,
     )
     if model_registry is not None:
         # --model was applied host-locally (CLI provenance, no process pointer);

@@ -16,6 +16,7 @@ import chrys.orchestration.engine.engine as engine_module
 import chrys.orchestration.engine.rollback as rollback_module
 from chrys.foundation.events.types import Error, RollbackResult, UserRollback, Warning
 from chrys.foundation.i18n import DisplayBlock
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.util.lock import FileLock
 from chrys.kernel import Message
@@ -269,6 +270,84 @@ class TestRollbackSwap:
 
         assert loaded is not None
         assert loaded["messages"][0].text == "rolled back"
+
+    async def test_a_rollback_keeps_the_surface_the_session_last_worked_in(
+        self, tmp_path: Path, *, engine_services
+    ) -> None:
+        """A rollback is not a turn: the snapshot's older surface never replaces the session's last one."""
+        engine = _make_engine(tmp_path, engine_services=engine_services)
+        store = JsonFileStateStore(tmp_path)
+        engine_services(engine).history.bind(
+            {"messages": [Message(role="user", contents=["hello"])], "compressed_msgs": []}
+        )
+
+        rolled_back_state = {"messages": [Message("user", ["rolled back"])], "compressed_msgs": []}
+        pre_rollback_state = {"messages": [Message("user", ["pre rollback"])], "compressed_msgs": []}
+        await store.save_session("rb_test", rolled_back_state, last_surface=SessionSurface.CLI)
+        session_dir = tmp_path / "rb_test"
+        snap_dir = session_dir / "snapshots"
+        snap_dir.mkdir()
+        (snap_dir / "turn_2.json").write_text((session_dir / "session.json").read_text(encoding="utf-8"), "utf-8")
+        await store.save_session("rb_test", pre_rollback_state, last_surface=SessionSurface.ACP)
+
+        async def _fake_restore(_event: Any) -> None: ...
+
+        engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
+
+        await engine._on_user_rollback(UserRollback(target_turn=1, revert_changes=False))
+
+        for name in ("session.json", "session.json.bak"):
+            envelope = json.loads((session_dir / name).read_text(encoding="utf-8"))
+            assert envelope["meta"]["last_surface"] == "acp", name
+        loaded = await store.load_session("rb_test")
+        assert loaded is not None
+        assert loaded["messages"][0].text == "rolled back"
+
+    async def test_a_rollback_keeps_the_surface_a_crashed_turn_recorded_in_its_sidecar(
+        self, tmp_path: Path, *, engine_services
+    ) -> None:
+        """The restore after the swap discards the sidecar, which may be the only record of the last surface."""
+        engine = _make_engine(tmp_path, engine_services=engine_services)
+        store = JsonFileStateStore(tmp_path)
+        engine_services(engine).history.bind(
+            {"messages": [Message(role="user", contents=["hello"])], "compressed_msgs": []}
+        )
+
+        rolled_back = [Message("user", ["rolled back"])]
+        pre_rollback = [*rolled_back, Message("user", ["more"])]
+        await store.save_session(
+            "rb_test", {"messages": rolled_back, "compressed_msgs": []}, last_surface=SessionSurface.TUI
+        )
+        session_dir = tmp_path / "rb_test"
+        snap_dir = session_dir / "snapshots"
+        snap_dir.mkdir()
+        (snap_dir / "turn_2.json").write_text((session_dir / "session.json").read_text(encoding="utf-8"), "utf-8")
+        await store.save_session(
+            "rb_test", {"messages": pre_rollback, "compressed_msgs": []}, last_surface=SessionSurface.CLI
+        )
+        store.save_recovery_session(
+            "rb_test",
+            {"messages": [*pre_rollback, Message("user", ["cut short"])], "compressed_msgs": []},
+            last_surface=SessionSurface.ACP,
+        )
+        meta = await store.load_session_meta("rb_test", prefer_recovery=True)
+        assert meta is not None and meta.last_surface == SessionSurface.ACP
+
+        async def _restore_ignoring_recovery(event: Any) -> None:
+            assert event.ignore_recovery is True
+            store.delete_recovery_session(event.session_id)
+
+        engine.lifecycle.on_session_restore = _restore_ignoring_recovery  # type: ignore[assignment]
+
+        await engine._on_user_rollback(UserRollback(target_turn=1, revert_changes=False))
+
+        assert not (session_dir / "session.recovery.json").exists()
+        meta = await store.load_session_meta("rb_test", prefer_recovery=True)
+        assert meta is not None
+        assert meta.last_surface == SessionSurface.ACP
+        loaded = await store.load_session("rb_test")
+        assert loaded is not None
+        assert [message.text for message in loaded["messages"]] == ["rolled back"]
 
     async def test_a_cancel_on_the_audit_record_still_restores_the_swapped_session(
         self, tmp_path: Path, *, engine_services

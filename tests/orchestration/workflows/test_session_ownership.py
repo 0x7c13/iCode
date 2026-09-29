@@ -9,6 +9,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.state.store import JsonFileStateStore
@@ -60,6 +61,27 @@ async def test_session_binding_round_trips_and_rejected_changes_do_not_create_ru
         assert fourth.run_id not in {first.run_id, second.run_id, third.run_id}
         assert host.workflow_session_id != identity
         assert await store.load_latest_session_id(chat_only=True) is None
+    finally:
+        await host.shutdown()
+
+
+@pytest.mark.parametrize("surface", [SessionSurface.CLI, SessionSurface.ACP])
+async def test_a_run_records_the_launch_surface_on_its_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surface: SessionSurface
+) -> None:
+    patch_runtime(monkeypatch, [MockChatClient(responses=[])])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", python_workflow("def check(text):\n    return text\n", "check"))
+    host = make_host(tmp_path, project=project, surface=surface)
+    store = JsonFileStateStore(tmp_path / "sessions")
+    try:
+        await confirm(host, "review")
+        await run(host, "review")
+        identity = host.workflow_session_id
+        state = await store.load_workflow_session(identity)
+        assert state is not None and state.surface is surface
+        meta = await store.load_session_meta(identity)
+        assert meta is not None and meta.last_surface is surface
     finally:
         await host.shutdown()
 

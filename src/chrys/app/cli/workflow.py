@@ -25,6 +25,7 @@ from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
 from chrys.foundation.events.types import WorkflowRunAccepted
 from chrys.foundation.i18n.formatting import sanitize_terminal_block
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.orchestration.session_host import (
@@ -201,6 +202,7 @@ async def _run_command(args: argparse.Namespace) -> int:
         profile_name=loaded.settings.default_agent.strip() or DEFAULT_AGENT_PROFILE,
         loaded_settings=loaded,
         approval_mode=ApprovalMode.BYPASS,
+        surface=SessionSurface.CLI,
     )
     started = time.monotonic()
     try:

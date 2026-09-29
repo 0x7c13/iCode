@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from chrys.foundation.models.session_surface import SessionSurface, parse_session_surface
 from chrys.foundation.models.workflow_session import (
     WorkflowIdentity,
     WorkflowModelSelection,
@@ -45,6 +46,11 @@ def _sequence(value: Any, name: str) -> list[Any]:
     return value
 
 
+def _raw_surface(value: Any) -> str | None:
+    # Lenient on purpose: a malformed surface only loses its browser filter.
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass
 class WorkflowSessionState:
     """Durable session identity and settings survive every run-resource lifetime."""
@@ -56,6 +62,13 @@ class WorkflowSessionState:
     runtime: SessionUsageMetadata | None = None
     mutations: dict[str, Any] | None = None
     model: WorkflowModelSelection | None = None
+    # Set when a run is admitted, so a discarded admission restores the previous value.
+    # Kept raw so a surface a newer version recorded survives this one's saves; read it via ``surface``.
+    last_surface: str | None = None
+
+    @property
+    def surface(self) -> SessionSurface | None:
+        return parse_session_surface(self.last_surface)
 
     def selection(self, session_id: str) -> WorkflowSessionSelection:
         return WorkflowSessionSelection(session_id, self.identity, self.workspace, self.model)
@@ -114,6 +127,7 @@ class WorkflowSessionState:
             SessionUsageMetadata.from_state_dict(data),
             mutations,
             decode_workflow_model(data.get("model")),
+            _raw_surface(data.get("last_surface")),
         )
 
     def encode(self) -> dict[str, Any]:
@@ -130,6 +144,8 @@ class WorkflowSessionState:
         }
         if self.mutations is not None:
             result["chrys_mutations"] = self.mutations
+        if self.last_surface is not None:
+            result["last_surface"] = str(self.last_surface)
         return result
 
 

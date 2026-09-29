@@ -340,6 +340,8 @@ class TurnRunner:
         have an opening item to name in its ``turn.started`` event.
         """
         self._turn_state.lease.advance_conversation_revision()
+        # Fresh and retry turns alike make this launch's surface the session's last one.
+        self._session.mark_surface()
         self._fire_turn_started()
         self._current.require_loaded().consumed_injections.clear()
         self._current.require_loaded().intermediate_texts.clear()

@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "bfc5c3e77dbad19dee9fdfae0195d69aa30fd1f964fed53b98ba1d168615c6aa",
+  "inventory_sha256": "39afb511823fd59e7e75e40a47ab6de537fe5c2c329f13c2777ea4c7a377079f",
   "nodes": [
     {
       "cases": [
@@ -12678,7 +12678,7 @@
       "primitive": "timeout",
       "qualname": "TurnRunner._compute_workspace_notice",
       "source_column": 12,
-      "source_line": 465,
+      "source_line": 467,
       "wrapper_target": null
     },
     {
@@ -12698,7 +12698,7 @@
       "primitive": "thread_pool",
       "qualname": "TurnRunner._compute_workspace_notice",
       "source_column": 16,
-      "source_line": 466,
+      "source_line": 468,
       "wrapper_target": null
     },
     {
@@ -12718,7 +12718,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._fire_before_turn",
       "source_column": 8,
-      "source_line": 449,
+      "source_line": 451,
       "wrapper_target": null
     },
     {
@@ -12738,7 +12738,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._prepare_user_contents",
       "source_column": 17,
-      "source_line": 415,
+      "source_line": 417,
       "wrapper_target": null
     },
     {
@@ -12758,7 +12758,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._record_trajectory_turn_started",
       "source_column": 8,
-      "source_line": 381,
+      "source_line": 383,
       "wrapper_target": null
     },
     {
@@ -12778,7 +12778,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._refresh_runtime_skills",
       "source_column": 8,
-      "source_line": 505,
+      "source_line": 507,
       "wrapper_target": null
     },
     {
@@ -12818,7 +12818,7 @@
       "primitive": "wrapper",
       "qualname": "TurnRunner.pre_run",
       "source_column": 8,
-      "source_line": 365,
+      "source_line": 367,
       "wrapper_target": "chrys.orchestration.engine.run.runner.TurnRunner._record_trajectory_turn_started"
     },
     {
@@ -13598,7 +13598,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 12,
-      "source_line": 1932,
+      "source_line": 1935,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.fire_session_end_hooks"
     },
     {
@@ -13618,7 +13618,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 12,
-      "source_line": 1936,
+      "source_line": 1939,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_trajectory_log"
     },
     {
@@ -13638,7 +13638,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 12,
-      "source_line": 1951,
+      "source_line": 1954,
       "wrapper_target": null
     },
     {
@@ -13658,7 +13658,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 8,
-      "source_line": 1982,
+      "source_line": 1985,
       "wrapper_target": null
     },
     {
@@ -13678,7 +13678,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._fire_session_restored_hook",
       "source_column": 8,
-      "source_line": 1885,
+      "source_line": 1888,
       "wrapper_target": null
     },
     {
@@ -13698,7 +13698,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 31,
-      "source_line": 1645,
+      "source_line": 1648,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"
     },
     {
@@ -13718,7 +13718,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 12,
-      "source_line": 1662,
+      "source_line": 1665,
       "wrapper_target": null
     },
     {
@@ -13738,7 +13738,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 16,
-      "source_line": 1680,
+      "source_line": 1683,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -13758,7 +13758,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 12,
-      "source_line": 1705,
+      "source_line": 1708,
       "wrapper_target": null
     },
     {
@@ -13778,7 +13778,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 20,
-      "source_line": 1721,
+      "source_line": 1724,
       "wrapper_target": null
     },
     {
@@ -13798,7 +13798,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 12,
-      "source_line": 1794,
+      "source_line": 1797,
       "wrapper_target": null
     },
     {
@@ -13818,7 +13818,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 24,
-      "source_line": 1833,
+      "source_line": 1836,
       "wrapper_target": null
     },
     {
@@ -13838,7 +13838,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 8,
-      "source_line": 1841,
+      "source_line": 1844,
       "wrapper_target": null
     },
     {
@@ -13858,7 +13858,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 8,
-      "source_line": 1871,
+      "source_line": 1874,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._fire_session_restored_hook"
     },
     {
@@ -13878,7 +13878,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._publish_session_fork_error",
       "source_column": 8,
-      "source_line": 921,
+      "source_line": 924,
       "wrapper_target": null
     },
     {
@@ -13898,7 +13898,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle._reconcile_existing_spill_storage",
       "source_column": 19,
-      "source_line": 931,
+      "source_line": 934,
       "wrapper_target": null
     },
     {
@@ -13938,7 +13938,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._restart_after_failed_reset",
       "source_column": 8,
-      "source_line": 1225,
+      "source_line": 1228,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"
     },
     {
@@ -13958,7 +13958,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._restart_after_failed_reset",
       "source_column": 12,
-      "source_line": 1249,
+      "source_line": 1252,
       "wrapper_target": null
     },
     {
@@ -13978,7 +13978,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._restart_after_failed_reset",
       "source_column": 12,
-      "source_line": 1253,
+      "source_line": 1256,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -13998,7 +13998,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._start_fresh_session",
       "source_column": 8,
-      "source_line": 1288,
+      "source_line": 1291,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"
     },
     {
@@ -14018,7 +14018,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._start_fresh_session",
       "source_column": 8,
-      "source_line": 1292,
+      "source_line": 1295,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -14478,7 +14478,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_new_session",
       "source_column": 27,
-      "source_line": 1270,
+      "source_line": 1273,
       "wrapper_target": null
     },
     {
@@ -14498,7 +14498,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_new_session",
       "source_column": 12,
-      "source_line": 1277,
+      "source_line": 1280,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_fresh_session"
     },
     {
@@ -14518,7 +14518,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 27,
-      "source_line": 1304,
+      "source_line": 1307,
       "wrapper_target": null
     },
     {
@@ -14538,7 +14538,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 26,
-      "source_line": 1317,
+      "source_line": 1320,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._delete_session_reporting"
     },
     {
@@ -14558,7 +14558,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 20,
-      "source_line": 1322,
+      "source_line": 1325,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_fresh_session"
     },
     {
@@ -14578,7 +14578,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 12,
-      "source_line": 1328,
+      "source_line": 1331,
       "wrapper_target": null
     },
     {
@@ -14598,7 +14598,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_delete",
       "source_column": 18,
-      "source_line": 1898,
+      "source_line": 1901,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._delete_session_reporting"
     },
     {
@@ -14618,7 +14618,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_delete",
       "source_column": 12,
-      "source_line": 1900,
+      "source_line": 1903,
       "wrapper_target": null
     },
     {
@@ -14911,14 +14911,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(state_store.fork_session, active_session_id)",
+      "expression": "await asyncio.to_thread(state_store.fork_session, active_session_id, last_surface=self._session.surface)",
       "identity": "chrys.orchestration.engine.session_lifecycle:SessionLifecycle.on_session_fork:15",
       "module": "chrys.orchestration.engine.session_lifecycle",
       "ordinal": 15,
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 29,
-      "source_line": 882,
+      "source_line": 883,
       "wrapper_target": null
     },
     {
@@ -14938,7 +14938,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 12,
-      "source_line": 884,
+      "source_line": 887,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"
     },
     {
@@ -14958,7 +14958,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 12,
-      "source_line": 893,
+      "source_line": 896,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"
     },
     {
@@ -14978,7 +14978,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 8,
-      "source_line": 903,
+      "source_line": 906,
       "wrapper_target": null
     },
     {
@@ -14998,7 +14998,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 8,
-      "source_line": 910,
+      "source_line": 913,
       "wrapper_target": null
     },
     {
@@ -15018,7 +15018,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 12,
-      "source_line": 1337,
+      "source_line": 1340,
       "wrapper_target": null
     },
     {
@@ -15038,7 +15038,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 30,
-      "source_line": 1347,
+      "source_line": 1350,
       "wrapper_target": null
     },
     {
@@ -15058,7 +15058,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1353,
+      "source_line": 1356,
       "wrapper_target": null
     },
     {
@@ -15078,7 +15078,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 20,
-      "source_line": 1365,
+      "source_line": 1368,
       "wrapper_target": null
     },
     {
@@ -15098,7 +15098,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 20,
-      "source_line": 1373,
+      "source_line": 1376,
       "wrapper_target": null
     },
     {
@@ -15118,7 +15118,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1377,
+      "source_line": 1380,
       "wrapper_target": null
     },
     {
@@ -15138,7 +15138,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 19,
-      "source_line": 1389,
+      "source_line": 1392,
       "wrapper_target": null
     },
     {
@@ -15158,7 +15158,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1391,
+      "source_line": 1394,
       "wrapper_target": null
     },
     {
@@ -15178,7 +15178,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1400,
+      "source_line": 1403,
       "wrapper_target": null
     },
     {
@@ -15198,7 +15198,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 24,
-      "source_line": 1448,
+      "source_line": 1451,
       "wrapper_target": null
     },
     {
@@ -15218,7 +15218,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 24,
-      "source_line": 1492,
+      "source_line": 1495,
       "wrapper_target": null
     },
     {
@@ -15238,7 +15238,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 35,
-      "source_line": 1549,
+      "source_line": 1552,
       "wrapper_target": null
     },
     {
@@ -15258,7 +15258,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 24,
-      "source_line": 1559,
+      "source_line": 1562,
       "wrapper_target": null
     },
     {
@@ -15278,7 +15278,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1573,
+      "source_line": 1576,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"
     },
     {
@@ -15298,7 +15298,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1575,
+      "source_line": 1578,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"
     },
     {
@@ -15318,7 +15318,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 12,
-      "source_line": 1585,
+      "source_line": 1588,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"
     },
     {
@@ -15338,7 +15338,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1608,
+      "source_line": 1611,
       "wrapper_target": null
     },
     {
@@ -15478,7 +15478,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_after_failed_startup_restore",
       "source_column": 16,
-      "source_line": 1060,
+      "source_line": 1063,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"
     },
     {
@@ -15498,7 +15498,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.reset_after_failed_startup_restore",
       "source_column": 24,
-      "source_line": 1075,
+      "source_line": 1078,
       "wrapper_target": null
     },
     {
@@ -15518,7 +15518,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 17,
-      "source_line": 1108,
+      "source_line": 1111,
       "wrapper_target": null
     },
     {
@@ -15538,7 +15538,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 20,
-      "source_line": 1119,
+      "source_line": 1122,
       "wrapper_target": null
     },
     {
@@ -15558,7 +15558,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 16,
-      "source_line": 1144,
+      "source_line": 1147,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"
     },
     {
@@ -15578,7 +15578,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 24,
-      "source_line": 1160,
+      "source_line": 1163,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._restart_after_failed_reset"
     },
     {
@@ -15598,7 +15598,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 20,
-      "source_line": 1172,
+      "source_line": 1175,
       "wrapper_target": null
     },
     {
@@ -15618,7 +15618,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 16,
-      "source_line": 1191,
+      "source_line": 1194,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"
     },
     {
@@ -15638,7 +15638,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 20,
-      "source_line": 1193,
+      "source_line": 1196,
       "wrapper_target": null
     },
     {
@@ -15658,7 +15658,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 16,
-      "source_line": 1201,
+      "source_line": 1204,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -16878,7 +16878,7 @@
       "primitive": "sync_primitive",
       "qualname": "SessionWriter._drain",
       "source_column": 27,
-      "source_line": 389,
+      "source_line": 396,
       "wrapper_target": null
     },
     {
@@ -16898,7 +16898,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter._drain",
       "source_column": 20,
-      "source_line": 392,
+      "source_line": 399,
       "wrapper_target": null
     },
     {
@@ -16918,7 +16918,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter._persist_strict",
       "source_column": 24,
-      "source_line": 360,
+      "source_line": 367,
       "wrapper_target": null
     },
     {
@@ -16938,7 +16938,7 @@
       "primitive": "shield",
       "qualname": "SessionWriter.flush",
       "source_column": 12,
-      "source_line": 424,
+      "source_line": 431,
       "wrapper_target": null
     },
     {
@@ -16958,7 +16958,7 @@
       "primitive": "gather",
       "qualname": "SessionWriter.flush",
       "source_column": 33,
-      "source_line": 424,
+      "source_line": 431,
       "wrapper_target": null
     },
     {
@@ -16978,7 +16978,7 @@
       "primitive": "sync_primitive",
       "qualname": "SessionWriter.persist_barrier",
       "source_column": 8,
-      "source_line": 338,
+      "source_line": 345,
       "wrapper_target": null
     },
     {
@@ -16998,7 +16998,7 @@
       "primitive": "shield",
       "qualname": "SessionWriter.persist_barrier",
       "source_column": 24,
-      "source_line": 347,
+      "source_line": 354,
       "wrapper_target": null
     },
     {
@@ -17018,7 +17018,7 @@
       "primitive": "wrapper",
       "qualname": "SessionWriter.persist_now",
       "source_column": 8,
-      "source_line": 302,
+      "source_line": 309,
       "wrapper_target": "chrys.orchestration.engine.state.session_writer.SessionWriter.flush"
     },
     {
@@ -17038,7 +17038,7 @@
       "primitive": "sync_primitive",
       "qualname": "SessionWriter.persist_now",
       "source_column": 8,
-      "source_line": 313,
+      "source_line": 320,
       "wrapper_target": null
     },
     {
@@ -17058,7 +17058,7 @@
       "primitive": "shield",
       "qualname": "SessionWriter.persist_now",
       "source_column": 15,
-      "source_line": 321,
+      "source_line": 328,
       "wrapper_target": null
     },
     {
@@ -17078,7 +17078,7 @@
       "primitive": "wrapper",
       "qualname": "SessionWriter.save_current_session",
       "source_column": 8,
-      "source_line": 141,
+      "source_line": 148,
       "wrapper_target": "chrys.orchestration.engine.state.session_writer.SessionWriter.flush"
     },
     {
@@ -17098,7 +17098,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter.save_current_session",
       "source_column": 16,
-      "source_line": 214,
+      "source_line": 221,
       "wrapper_target": null
     },
     {
@@ -17118,7 +17118,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter.save_current_session",
       "source_column": 37,
-      "source_line": 230,
+      "source_line": 237,
       "wrapper_target": null
     },
     {
@@ -20758,7 +20758,7 @@
       "primitive": "async_context",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 19,
-      "source_line": 520,
+      "source_line": 523,
       "wrapper_target": null
     },
     {
@@ -20778,7 +20778,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 16,
-      "source_line": 539,
+      "source_line": 542,
       "wrapper_target": null
     },
     {
@@ -20798,7 +20798,7 @@
       "primitive": "multi_wait",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 37,
-      "source_line": 550,
+      "source_line": 553,
       "wrapper_target": null
     },
     {
@@ -20818,7 +20818,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 567,
+      "source_line": 570,
       "wrapper_target": null
     },
     {
@@ -20838,7 +20838,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 27,
-      "source_line": 571,
+      "source_line": 574,
       "wrapper_target": null
     },
     {
@@ -20858,7 +20858,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 573,
+      "source_line": 576,
       "wrapper_target": null
     },
     {
@@ -20878,7 +20878,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 575,
+      "source_line": 578,
       "wrapper_target": null
     },
     {
@@ -20898,7 +20898,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 27,
-      "source_line": 579,
+      "source_line": 582,
       "wrapper_target": null
     },
     {
@@ -20918,7 +20918,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 581,
+      "source_line": 584,
       "wrapper_target": null
     },
     {
@@ -20938,7 +20938,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 594,
+      "source_line": 597,
       "wrapper_target": null
     },
     {
@@ -20958,7 +20958,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 601,
+      "source_line": 604,
       "wrapper_target": null
     },
     {
@@ -20978,7 +20978,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 602,
+      "source_line": 605,
       "wrapper_target": null
     },
     {
@@ -20998,7 +20998,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 608,
+      "source_line": 611,
       "wrapper_target": null
     },
     {
@@ -21018,7 +21018,7 @@
       "primitive": "sleep",
       "qualname": "ChrysSessionHost._iter_run_events_locked._event_task_ready_after_checkpoint",
       "source_column": 16,
-      "source_line": 534,
+      "source_line": 537,
       "wrapper_target": null
     },
     {
@@ -21038,7 +21038,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked._publish_user_turn",
       "source_column": 16,
-      "source_line": 526,
+      "source_line": 529,
       "wrapper_target": null
     },
     {
@@ -21058,7 +21058,7 @@
       "primitive": "sync_primitive",
       "qualname": "ChrysSessionHost._iter_turn_events",
       "source_column": 19,
-      "source_line": 479,
+      "source_line": 482,
       "wrapper_target": null
     },
     {
@@ -21078,7 +21078,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost._iter_turn_events",
       "source_column": 12,
-      "source_line": 482,
+      "source_line": 485,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events_locked"
     },
     {
@@ -21098,7 +21098,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._resolve_restore_session_id",
       "source_column": 19,
-      "source_line": 910,
+      "source_line": 913,
       "wrapper_target": null
     },
     {
@@ -21118,7 +21118,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.cancel_current_turn",
       "source_column": 8,
-      "source_line": 488,
+      "source_line": 491,
       "wrapper_target": null
     },
     {
@@ -21138,7 +21138,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.cancel_workflow",
       "source_column": 12,
-      "source_line": 876,
+      "source_line": 879,
       "wrapper_target": null
     },
     {
@@ -21158,7 +21158,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.iter_run_events",
       "source_column": 8,
-      "source_line": 467,
+      "source_line": 470,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"
     },
     {
@@ -21178,7 +21178,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.iter_turn_events",
       "source_column": 8,
-      "source_line": 472,
+      "source_line": 475,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"
     },
     {
@@ -21198,7 +21198,7 @@
       "primitive": "sync_primitive",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 19,
-      "source_line": 765,
+      "source_line": 768,
       "wrapper_target": null
     },
     {
@@ -21218,7 +21218,7 @@
       "primitive": "async_context",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 35,
-      "source_line": 765,
+      "source_line": 768,
       "wrapper_target": null
     },
     {
@@ -21238,7 +21238,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 12,
-      "source_line": 767,
+      "source_line": 770,
       "wrapper_target": null
     },
     {
@@ -21258,7 +21258,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 16,
-      "source_line": 797,
+      "source_line": 800,
       "wrapper_target": null
     },
     {
@@ -21278,7 +21278,7 @@
       "primitive": "async_iteration",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 16,
-      "source_line": 798,
+      "source_line": 801,
       "wrapper_target": null
     },
     {
@@ -21298,7 +21298,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 24,
-      "source_line": 842,
+      "source_line": 845,
       "wrapper_target": null
     },
     {
@@ -21318,7 +21318,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 24,
-      "source_line": 847,
+      "source_line": 850,
       "wrapper_target": null
     },
     {
@@ -21338,7 +21338,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 20,
-      "source_line": 848,
+      "source_line": 851,
       "wrapper_target": null
     },
     {
@@ -21358,7 +21358,7 @@
       "primitive": "sleep",
       "qualname": "ChrysSessionHost.iter_workflow_events.enforce_deadline",
       "source_column": 16,
-      "source_line": 783,
+      "source_line": 786,
       "wrapper_target": null
     },
     {
@@ -21378,7 +21378,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.load_workflow_session",
       "source_column": 15,
-      "source_line": 681,
+      "source_line": 684,
       "wrapper_target": null
     },
     {
@@ -21398,7 +21398,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.load_workflow_session",
       "source_column": 16,
-      "source_line": 692,
+      "source_line": 695,
       "wrapper_target": null
     },
     {
@@ -21418,7 +21418,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.preview_workflow",
       "source_column": 18,
-      "source_line": 721,
+      "source_line": 724,
       "wrapper_target": null
     },
     {
@@ -21438,7 +21438,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 28,
-      "source_line": 417,
+      "source_line": 420,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._resolve_restore_session_id"
     },
     {
@@ -21458,7 +21458,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 424,
+      "source_line": 427,
       "wrapper_target": null
     },
     {
@@ -21478,7 +21478,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 438,
+      "source_line": 441,
       "wrapper_target": null
     },
     {
@@ -21498,7 +21498,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 439,
+      "source_line": 442,
       "wrapper_target": null
     },
     {
@@ -21518,7 +21518,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 441,
+      "source_line": 444,
       "wrapper_target": null
     },
     {
@@ -21538,7 +21538,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 454,
+      "source_line": 457,
       "wrapper_target": null
     },
     {
@@ -21558,7 +21558,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 456,
+      "source_line": 459,
       "wrapper_target": null
     },
     {
@@ -21578,7 +21578,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 457,
+      "source_line": 460,
       "wrapper_target": null
     },
     {
@@ -21598,7 +21598,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.run_until_final",
       "source_column": 19,
-      "source_line": 646,
+      "source_line": 649,
       "wrapper_target": null
     },
     {
@@ -21618,7 +21618,7 @@
       "primitive": "timeout",
       "qualname": "ChrysSessionHost.run_until_final",
       "source_column": 15,
-      "source_line": 647,
+      "source_line": 650,
       "wrapper_target": null
     },
     {
@@ -21638,7 +21638,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.run_until_final._run",
       "source_column": 12,
-      "source_line": 628,
+      "source_line": 631,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.iter_run_events"
     },
     {
@@ -21658,7 +21658,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.run_workflow_until_final",
       "source_column": 8,
-      "source_line": 859,
+      "source_line": 862,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.iter_workflow_events"
     },
     {
@@ -21678,7 +21678,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.shutdown",
       "source_column": 8,
-      "source_line": 880,
+      "source_line": 883,
       "wrapper_target": null
     },
     {
@@ -21698,7 +21698,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.start",
       "source_column": 12,
-      "source_line": 405,
+      "source_line": 408,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.restore_session"
     },
     {
@@ -21718,7 +21718,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.start",
       "source_column": 12,
-      "source_line": 412,
+      "source_line": 415,
       "wrapper_target": null
     },
     {
@@ -26098,7 +26098,7 @@
       "primitive": "wrapper",
       "qualname": "WorkflowCoordinator._admit",
       "source_column": 16,
-      "source_line": 687,
+      "source_line": 690,
       "wrapper_target": "chrys.foundation.util.once_close.finish_close"
     },
     {
@@ -26118,7 +26118,7 @@
       "primitive": "wrapper",
       "qualname": "WorkflowCoordinator._admit",
       "source_column": 16,
-      "source_line": 707,
+      "source_line": 710,
       "wrapper_target": "chrys.foundation.util.once_close.finish_close"
     },
     {
@@ -26138,7 +26138,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit",
       "source_column": 12,
-      "source_line": 712,
+      "source_line": 715,
       "wrapper_target": null
     },
     {
@@ -26158,7 +26158,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 24,
-      "source_line": 700,
+      "source_line": 703,
       "wrapper_target": null
     },
     {
@@ -26178,7 +26178,7 @@
       "primitive": "thread_pool",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 24,
-      "source_line": 702,
+      "source_line": 705,
       "wrapper_target": null
     },
     {
@@ -26198,7 +26198,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 20,
-      "source_line": 703,
+      "source_line": 706,
       "wrapper_target": null
     },
     {
@@ -26218,7 +26218,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 24,
-      "source_line": 705,
+      "source_line": 708,
       "wrapper_target": null
     },
     {
@@ -26298,7 +26298,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._reply",
       "source_column": 8,
-      "source_line": 753,
+      "source_line": 756,
       "wrapper_target": null
     },
     {
@@ -45718,7 +45718,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.delete_session",
       "source_column": 8,
-      "source_line": 428,
+      "source_line": 435,
       "wrapper_target": null
     },
     {
@@ -45738,7 +45738,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.list_sessions",
       "source_column": 15,
-      "source_line": 422,
+      "source_line": 429,
       "wrapper_target": null
     },
     {
@@ -45758,7 +45758,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.load_session",
       "source_column": 15,
-      "source_line": 410,
+      "source_line": 417,
       "wrapper_target": null
     },
     {
@@ -45778,7 +45778,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.load_session_meta",
       "source_column": 15,
-      "source_line": 416,
+      "source_line": 423,
       "wrapper_target": null
     },
     {
@@ -45798,7 +45798,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.recovery_session_wins",
       "source_column": 15,
-      "source_line": 404,
+      "source_line": 411,
       "wrapper_target": null
     },
     {
@@ -45811,14 +45811,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self.save_recovery_session_strict(session_id, history_state, agent_profile_name=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, workspace=workspace, model_profile=model_profile, agent_profile_fingerprint=agent_profile_fingerprint, model_profile_fingerprint=model_profile_fingerprint)",
+      "expression": "await self.save_recovery_session_strict(session_id, history_state, agent_profile_name=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, workspace=workspace, model_profile=model_profile, agent_profile_fingerprint=agent_profile_fingerprint, model_profile_fingerprint=model_profile_fingerprint, last_surface=last_surface)",
       "identity": "chrys.service.session.persistence:SessionPersistence.save_recovery_session:1",
       "module": "chrys.service.session.persistence",
       "ordinal": 1,
       "primitive": "wrapper",
       "qualname": "SessionPersistence.save_recovery_session",
       "source_column": 12,
-      "source_line": 314,
+      "source_line": 318,
       "wrapper_target": "chrys.service.session.persistence.SessionPersistence.save_recovery_session_strict"
     },
     {
@@ -45831,14 +45831,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(self._state_store.save_recovery_session, session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint)",
+      "expression": "await asyncio.to_thread(self._state_store.save_recovery_session, session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, last_surface=last_surface)",
       "identity": "chrys.service.session.persistence:SessionPersistence.save_recovery_session_strict:1",
       "module": "chrys.service.session.persistence",
       "ordinal": 1,
       "primitive": "thread_pool",
       "qualname": "SessionPersistence.save_recovery_session_strict",
       "source_column": 8,
-      "source_line": 380,
+      "source_line": 386,
       "wrapper_target": null
     },
     {
@@ -45851,14 +45851,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._state_store.save_session(session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id)",
+      "expression": "await self._state_store.save_session(session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, last_surface=last_surface)",
       "identity": "chrys.service.session.persistence:SessionPersistence.save_session:1",
       "module": "chrys.service.session.persistence",
       "ordinal": 1,
       "primitive": "awaitable",
       "qualname": "SessionPersistence.save_session",
       "source_column": 25,
-      "source_line": 271,
+      "source_line": 273,
       "wrapper_target": null
     },
     {
@@ -45878,7 +45878,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.save_session",
       "source_column": 12,
-      "source_line": 290,
+      "source_line": 293,
       "wrapper_target": null
     },
     {
@@ -46358,7 +46358,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.delete_session",
       "source_column": 8,
-      "source_line": 1727,
+      "source_line": 2117,
       "wrapper_target": null
     },
     {
@@ -46378,7 +46378,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.list_sessions",
       "source_column": 15,
-      "source_line": 1442,
+      "source_line": 1733,
       "wrapper_target": null
     },
     {
@@ -46398,7 +46398,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 20,
-      "source_line": 1636,
+      "source_line": 1927,
       "wrapper_target": null
     },
     {
@@ -46418,7 +46418,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 17,
-      "source_line": 1639,
+      "source_line": 1930,
       "wrapper_target": null
     },
     {
@@ -46438,7 +46438,7 @@
       "primitive": "wrapper",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 30,
-      "source_line": 1645,
+      "source_line": 1936,
       "wrapper_target": "chrys.service.state.store.JsonFileStateStore.list_sessions"
     },
     {
@@ -46458,7 +46458,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_recovery_session",
       "source_column": 15,
-      "source_line": 974,
+      "source_line": 1122,
       "wrapper_target": null
     },
     {
@@ -46478,7 +46478,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_recovery_session_meta",
       "source_column": 15,
-      "source_line": 992,
+      "source_line": 1140,
       "wrapper_target": null
     },
     {
@@ -46498,7 +46498,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session",
       "source_column": 15,
-      "source_line": 1025,
+      "source_line": 1173,
       "wrapper_target": null
     },
     {
@@ -46518,7 +46518,27 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_meta",
       "source_column": 15,
-      "source_line": 1124,
+      "source_line": 1272,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._load_session_page_sync, listing, surfaces, page, page_size)",
+      "identity": "chrys.service.state.store:JsonFileStateStore.load_session_page:1",
+      "module": "chrys.service.state.store",
+      "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "JsonFileStateStore.load_session_page",
+      "source_column": 15,
+      "source_line": 2069,
       "wrapper_target": null
     },
     {
@@ -46538,7 +46558,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_raw",
       "source_column": 15,
-      "source_line": 1086,
+      "source_line": 1234,
       "wrapper_target": null
     },
     {
@@ -46558,7 +46578,27 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_workflow_session",
       "source_column": 15,
-      "source_line": 1009,
+      "source_line": 1157,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._open_session_listing_sync, kind)",
+      "identity": "chrys.service.state.store:JsonFileStateStore.open_session_listing:1",
+      "module": "chrys.service.state.store",
+      "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "JsonFileStateStore.open_session_listing",
+      "source_column": 15,
+      "source_line": 2035,
       "wrapper_target": null
     },
     {
@@ -46578,7 +46618,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.recovery_session_wins",
       "source_column": 15,
-      "source_line": 947,
+      "source_line": 1095,
       "wrapper_target": null
     },
     {
@@ -46591,14 +46631,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(self._save_session_sync, session_id, state, agent_profile=agent_profile, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, title=title, agent_profile_history=agent_profile_history, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, parent_session_id=parent_session_id)",
+      "expression": "await asyncio.to_thread(self._save_session_sync, session_id, state, agent_profile=agent_profile, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, title=title, agent_profile_history=agent_profile_history, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, parent_session_id=parent_session_id, last_surface=last_surface)",
       "identity": "chrys.service.state.store:JsonFileStateStore.save_session:1",
       "module": "chrys.service.state.store",
       "ordinal": 1,
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.save_session",
       "source_column": 15,
-      "source_line": 803,
+      "source_line": 947,
       "wrapper_target": null
     },
     {
@@ -46618,7 +46658,27 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.save_workflow_session",
       "source_column": 15,
-      "source_line": 829,
+      "source_line": 974,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._refresh_catalog)",
+      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:1",
+      "module": "chrys.service.state.store",
+      "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "JsonFileStateStore.stream_session_metas",
+      "source_column": 8,
+      "source_line": 1955,
       "wrapper_target": null
     },
     {
@@ -46632,13 +46692,13 @@
         }
       ],
       "expression": "await asyncio.to_thread(self._session_dir_candidates)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:1",
+      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:2",
       "module": "chrys.service.state.store",
-      "ordinal": 1,
+      "ordinal": 2,
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.stream_session_metas",
       "source_column": 23,
-      "source_line": 1664,
+      "source_line": 1956,
       "wrapper_target": null
     },
     {
@@ -46652,13 +46712,13 @@
         }
       ],
       "expression": "await asyncio.to_thread(_parse)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:2",
+      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:3",
       "module": "chrys.service.state.store",
-      "ordinal": 2,
+      "ordinal": 3,
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.stream_session_metas",
       "source_column": 32,
-      "source_line": 1674,
+      "source_line": 1966,
       "wrapper_target": null
     },
     {
@@ -46672,13 +46732,13 @@
         }
       ],
       "expression": "await asyncio.to_thread(self._legacy_session_metas, seen_ids)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:3",
+      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:4",
       "module": "chrys.service.state.store",
-      "ordinal": 3,
+      "ordinal": 4,
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.stream_session_metas",
       "source_column": 17,
-      "source_line": 1678,
+      "source_line": 1970,
       "wrapper_target": null
     },
     {
@@ -46691,14 +46751,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(self._evict_stale_meta_cache_sync)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:4",
+      "expression": "await asyncio.to_thread(self._settle_listing_caches)",
+      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:5",
       "module": "chrys.service.state.store",
-      "ordinal": 4,
+      "ordinal": 5,
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.stream_session_metas",
       "source_column": 8,
-      "source_line": 1682,
+      "source_line": 1974,
       "wrapper_target": null
     },
     {
@@ -46718,7 +46778,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.update_session_titles",
       "source_column": 15,
-      "source_line": 1291,
+      "source_line": 1440,
       "wrapper_target": null
     },
     {

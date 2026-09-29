@@ -608,7 +608,9 @@ async def test_session_host_restores_existing_session(monkeypatch: pytest.Monkey
     assert [event.operation for event in second_result.events if isinstance(event, AgentLoadStarted)] == ["restore"]
     assert [event.operation for event in second_result.events if isinstance(event, AgentLoadFinished)] == ["restore"]
     assert clients == []
-    session_dirs = [path.name for path in (tmp_path / "sessions").iterdir() if path.is_dir() and path.name != ".locks"]
+    session_dirs = [
+        path.name for path in (tmp_path / "sessions").iterdir() if path.is_dir() and not path.name.startswith(".")
+    ]
     assert session_dirs == [session_short_id(session_id)]
 
 

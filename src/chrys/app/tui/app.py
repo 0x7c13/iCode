@@ -78,6 +78,7 @@ from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
@@ -1244,6 +1245,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             model_registry=model_registry,
             on_successful_turn=_on_successful_turn,
             on_turn_started=session_title_updater.on_turn_started,
+            surface=SessionSurface.TUI,
         )
 
         app = app_cls(

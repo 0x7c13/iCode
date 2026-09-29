@@ -38,13 +38,13 @@ def _mru_raw(root: Path) -> dict:
 
 def _count_scans(monkeypatch: pytest.MonkeyPatch, store: JsonFileStateStore) -> list[int]:
     scans = [0]
-    original = store._list_sessions_sync
+    original = store._scan_session_metas_sync
 
-    def counting(*, kind=None) -> list:
+    def counting() -> list:
         scans[0] += 1
-        return original(kind=kind)
+        return original()
 
-    monkeypatch.setattr(store, "_list_sessions_sync", counting)
+    monkeypatch.setattr(store, "_scan_session_metas_sync", counting)
     return scans
 
 
@@ -546,14 +546,14 @@ async def test_latest_session_returns_post_merge_latest_after_backfill(
     await _save(store, "s1", "a")
     await _save(store, "s2", "a")
     store._mru.invalidate()
-    original = store._list_sessions_sync
+    original = store._scan_session_metas_sync
 
-    def scan_then_concurrent_save(*, kind=None) -> list:
-        listed = original(kind=kind)
+    def scan_then_concurrent_save() -> list:
+        listed = original()
         store._save_session_sync("s3", {"messages": [Message("user", ["late"])], "compressed_msgs": []})
         return listed
 
-    monkeypatch.setattr(store, "_list_sessions_sync", scan_then_concurrent_save)
+    monkeypatch.setattr(store, "_scan_session_metas_sync", scan_then_concurrent_save)
     assert await store.load_latest_session_id() == "s3"
     snapshot = SessionMruIndex(tmp_path).load()
     assert snapshot is not None and snapshot.complete is True
@@ -567,11 +567,11 @@ async def test_backfill_ranks_every_merged_entry_not_just_the_leader(
     store = JsonFileStateStore(tmp_path)
     await _save(store, "old", "a")
     store._mru.invalidate()
-    original = store._list_sessions_sync
+    original = store._scan_session_metas_sync
     inflight_lock = FileLock(store._write_lock_path("inflight"))
 
-    def scan_then_concurrent_writers(*, kind=None) -> list:
-        listed = original(kind=kind)
+    def scan_then_concurrent_writers() -> list:
+        listed = original()
         # Writer A: recorded (under its write lock) but not yet committed.
         inflight_lock.acquire()
         store._mru.record("inflight", datetime.now(UTC) + timedelta(seconds=30))
@@ -579,7 +579,7 @@ async def test_backfill_ranks_every_merged_entry_not_just_the_leader(
         store._save_session_sync("committed", {"messages": [Message("user", ["b"])], "compressed_msgs": []})
         return listed
 
-    monkeypatch.setattr(store, "_list_sessions_sync", scan_then_concurrent_writers)
+    monkeypatch.setattr(store, "_scan_session_metas_sync", scan_then_concurrent_writers)
     try:
         assert await store.load_latest_session_id() == "committed"
     finally:
@@ -594,10 +594,10 @@ async def test_backfill_accepts_a_merged_leader_that_advanced_before_verificatio
     store = JsonFileStateStore(tmp_path)
     await _save(store, "old", "a")
     store._mru.invalidate()
-    original_scan = store._list_sessions_sync
+    original_scan = store._scan_session_metas_sync
     original_verify = store._mru_verify
 
-    def scan_then_concurrent_save(*, kind=None) -> list:
+    def scan_then_concurrent_save() -> list:
         listed = original_scan()
         store._save_session_sync("late", {"messages": [Message("user", ["1"])], "compressed_msgs": []})
         return listed
@@ -608,7 +608,7 @@ async def test_backfill_accepts_a_merged_leader_that_advanced_before_verificatio
             store._save_session_sync("late", {"messages": [Message("user", ["1", "2"])], "compressed_msgs": []})
         return original_verify(session_id)
 
-    monkeypatch.setattr(store, "_list_sessions_sync", scan_then_concurrent_save)
+    monkeypatch.setattr(store, "_scan_session_metas_sync", scan_then_concurrent_save)
     monkeypatch.setattr(store, "_mru_verify", verify_after_another_save)
     assert await store.load_latest_session_id() == "late"
 
@@ -617,15 +617,15 @@ async def test_backfill_of_an_empty_root_still_returns_a_concurrently_committed_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = JsonFileStateStore(tmp_path)
-    original = store._list_sessions_sync
+    original = store._scan_session_metas_sync
 
-    def empty_scan_then_concurrent_save(*, kind=None) -> list:
-        listed = original(kind=kind)
+    def empty_scan_then_concurrent_save() -> list:
+        listed = original()
         assert listed == []
         store._save_session_sync("late", {"messages": [Message("user", ["x"])], "compressed_msgs": []})
         return listed
 
-    monkeypatch.setattr(store, "_list_sessions_sync", empty_scan_then_concurrent_save)
+    monkeypatch.setattr(store, "_scan_session_metas_sync", empty_scan_then_concurrent_save)
     assert await store.load_latest_session_id() == "late"
 
 
@@ -660,15 +660,15 @@ async def test_backfill_does_not_resurrect_a_session_deleted_after_the_scan(
     await _save(store, "older", "a")
     await _save(store, "newer", "a")
     store._mru.invalidate()
-    original = store._list_sessions_sync
+    original = store._scan_session_metas_sync
 
-    def scan_then_concurrent_delete(*, kind=None) -> list:
-        listed = original(kind=kind)
+    def scan_then_concurrent_delete() -> list:
+        listed = original()
         assert {m.session_id for m in listed} == {"older", "newer"}
         store._delete_session_sync("newer")
         return listed
 
-    monkeypatch.setattr(store, "_list_sessions_sync", scan_then_concurrent_delete)
+    monkeypatch.setattr(store, "_scan_session_metas_sync", scan_then_concurrent_delete)
     assert await store.load_latest_session_id() == "older"
     assert "newer" not in _mru_ids(tmp_path)  # the stale scan input was rebuilt in, then pruned as a ghost
 

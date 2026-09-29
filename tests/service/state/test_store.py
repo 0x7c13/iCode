@@ -10,6 +10,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -222,15 +223,27 @@ async def test_list_sessions_turn_count_ignores_restarted_counter(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_serves_cached_meta_until_file_changes(tmp_path: Path) -> None:
+async def test_list_sessions_serves_cached_meta_until_file_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = JsonFileStateStore(tmp_path)
     await store.save_session("cached", {"messages": [Message("user", ["a"])], "compressed_msgs": []})
+    parsed: list[str] = []
+    parse = store._session_meta_from_envelope
+
+    def counting_parse(envelope: dict[str, Any], *, size_bytes: int) -> SessionMeta:
+        parsed.append(envelope["meta"]["session_id"])
+        return parse(envelope, size_bytes=size_bytes)
+
+    monkeypatch.setattr(store, "_session_meta_from_envelope", counting_parse)
 
     first = await store.list_sessions()
     second = await store.list_sessions()
 
-    # Unchanged on disk — the exact cached object is reused, not re-parsed.
-    assert second[0] is first[0]
+    # Unchanged on disk — the cached meta is reused, not re-parsed; the size is re-measured.
+    assert parsed == ["cached"]
+    assert second == first
+    assert first[0].size_bytes == _dir_size(store.session_dir("cached")) > 0
 
     await store.save_session(
         "cached",
@@ -238,7 +251,7 @@ async def test_list_sessions_serves_cached_meta_until_file_changes(tmp_path: Pat
     )
     third = await store.list_sessions()
 
-    assert third[0] is not first[0]
+    assert parsed == ["cached", "cached"]
     assert third[0].message_count == 2
 
 
