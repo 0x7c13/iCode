@@ -38,6 +38,7 @@ from chrys.service.session.persistence import SessionPersistence
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.session_surface import SessionSurface
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.agents.schema import MCPServerConfig
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -65,8 +66,13 @@ def assemble_agent_engine(
     on_successful_turn: Callable[[], None] | None = None,
     on_turn_started: Callable[[], None] | None = None,
     allow_user_interaction: bool = True,
+    surface: SessionSurface | None = None,
 ) -> AgentEngine:
-    """Build the owners and inject the engine's event-routing facade."""
+    """Build the owners and inject the engine's event-routing facade.
+
+    *surface* is the frontend this engine serves; turns and workflow runs
+    record it on their session. Production entry points always pass it.
+    """
     bus = event_bus
     if loaded_settings is not None and settings is not None and settings is not loaded_settings.settings:
         error_message = "Pass either settings or loaded_settings, not two different ones."
@@ -79,6 +85,7 @@ def assemble_agent_engine(
         persistence=persistence,
         workspace=initial_workspace,
         approval_mode=initial_approval_mode or ApprovalMode(settings_handle.settings.default_approval_mode),
+        surface=surface,
     )
     current = CurrentAgent()
     on_successful_turn: Callable[[], None] = (

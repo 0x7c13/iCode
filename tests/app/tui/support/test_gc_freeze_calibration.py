@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import importlib
+import tracemalloc
+from collections.abc import Iterator
 
 import pytest
 from scripts.gc_freeze_calibration_math import (
@@ -12,6 +14,7 @@ from scripts.gc_freeze_calibration_math import (
     dead_cyclic_fraction,
     latency_in_unfrozen_collects,
     minimum_deferred_diff_surfaces,
+    steady_growth_per_cycle,
     validated_absorb_points,
 )
 from textual.widgets import Static
@@ -26,6 +29,18 @@ def _calibration_module(monkeypatch: pytest.MonkeyPatch):
     """Import the executable script with its sibling-import path available."""
     monkeypatch.syspath_prepend(str(REPO_ROOT / "scripts"))
     return importlib.import_module("scripts.calibrate_gc_freeze")
+
+
+@pytest.fixture
+def traced_heap() -> Iterator[None]:
+    """Trace allocations as the calibration run does, leaving an outer trace running."""
+    started = not tracemalloc.is_tracing()
+    tracemalloc.start()
+    try:
+        yield
+    finally:
+        if started:
+            tracemalloc.stop()
 
 
 @pytest.mark.parametrize(
@@ -53,6 +68,18 @@ def test_action_latency_is_counted_in_bare_unfrozen_collects() -> None:
     assert latency_in_unfrozen_collects(300.0, unfrozen_collect_ms=120.0) == pytest.approx(2.5)
     with pytest.raises(ValueError, match="positive"):
         latency_in_unfrozen_collects(300.0, unfrozen_collect_ms=0.0)
+
+
+def test_steady_growth_skips_warmup_cycles_and_averages_the_rest() -> None:
+    settled = [1_000, 1_400, 1_500, 1_510, 1_520]
+
+    assert steady_growth_per_cycle(settled, warmup_cycles=2) == pytest.approx(10.0)
+    assert steady_growth_per_cycle(settled, warmup_cycles=0) == pytest.approx(130.0)
+    assert steady_growth_per_cycle([1_500, 1_400], warmup_cycles=0) == pytest.approx(-100.0)
+    with pytest.raises(ValueError, match="two cycles"):
+        steady_growth_per_cycle(settled, warmup_cycles=4)
+    with pytest.raises(ValueError, match="non-negative"):
+        steady_growth_per_cycle(settled, warmup_cycles=-1)
 
 
 def test_dead_cyclic_fraction_uses_inclusive_freeze_delta() -> None:
@@ -199,3 +226,55 @@ async def test_collapse_probe_reopens_gate_for_watchdog_idle_reclaim(
         assert result.descendant_alive_while_frozen is True
         assert result.descendant_reclaimed is True
         assert app._calibration_action_blocked is True
+
+
+@pytest.mark.gc_calibration
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("traced_heap")
+@pytest.mark.parametrize(
+    ("kept_bytes_per_collapse", "gate_passed"),
+    [(0, True), (256 * 1024, False)],
+    ids=["reclaimed", "keeps-memory"],
+)
+async def test_repeated_collapse_gate_fails_only_when_each_collapse_keeps_memory(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    kept_bytes_per_collapse: int,
+    gate_passed: bool,
+) -> None:
+    calibration = _calibration_module(monkeypatch)
+    kept: list[bytearray] = []
+    weak_tool_descendant = calibration._weak_tool_descendant
+
+    def keep_memory_per_collapse(group):
+        kept.append(bytearray(kept_bytes_per_collapse))
+        return weak_tool_descendant(group)
+
+    monkeypatch.setattr(calibration, "_weak_tool_descendant", keep_memory_per_collapse)
+    app, _updater = calibration._build_app(tmp_path, enabled=True)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await calibration._wait_for_initial_freeze(app=app, pilot=pilot)
+        _screen, panel, _terminal = await calibration._populate_whole_app(
+            app=app,
+            pilot=pilot,
+            turns=1,
+            include_collapse_probe=True,
+        )
+        await calibration._request_full_reclaim(coordinator=app._gc_freeze, pilot=pilot)
+
+        # One transcript turn warms up over two cycles, as the default --turns 12 does.
+        result = await calibration._measure_repeated_tool_group_collapse(
+            app=app,
+            pilot=pilot,
+            panel=panel,
+            turns=1,
+            cycles=4,
+            warmup_cycles=2,
+        )
+
+        assert app._calibration_action_blocked is True
+    assert len(kept) == 4
+    # Every cycle still sees the removed subtree alive while frozen and gone after the reclaim.
+    assert [cycle.passed for cycle in result.cycles] == [True] * 4
+    assert (result.steady_growth_bytes_per_cycle > result.growth_limit_bytes_per_cycle) is not gate_passed
+    assert result.gate_passed is gate_passed

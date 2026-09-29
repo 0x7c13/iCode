@@ -443,71 +443,79 @@ class TestSnapshotGapTolerance:
         assert any(w.code == "rollback_unavailable" for w in warnings)
 
 
-class TestRollbackTitleOverlayPreservation:
-    """The custom title is session-scoped and must survive a snapshot restore."""
+class TestRollbackSessionOverlayPreservation:
+    """The custom title and last surface are session-scoped and must survive a snapshot restore."""
 
-    def test_read_and_reapply_title_overlays(self, tmp_path: Path) -> None:
-        from chrys.orchestration.engine.rollback import _read_title_overlays, _reapply_title_overlays
+    def test_read_and_reapply_session_overlays(self, tmp_path: Path) -> None:
+        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
 
         session_file = tmp_path / "session.json"
         session_file.write_text(
             json.dumps(
                 {
-                    "meta": {"title": "first msg", "custom_title": "Pinned", "generated_title": "Auto"},
+                    "meta": {
+                        "title": "first msg",
+                        "custom_title": "Pinned",
+                        "generated_title": "Auto",
+                        "last_surface": "tui",
+                    },
                     "state": {},
                 }
             ),
             encoding="utf-8",
         )
-        overlays = _read_title_overlays(session_file)
-        assert overlays == {"custom_title": "Pinned"}
+        overlays = _read_session_overlays(session_file)
+        assert overlays == {"custom_title": "Pinned", "last_surface": "tui"}
 
         # Simulate the snapshot restore wiping the overlays wholesale.
-        session_file.write_text(json.dumps({"meta": {"title": "first msg"}, "state": {}}), encoding="utf-8")
-        _reapply_title_overlays(session_file, overlays)
+        session_file.write_text(
+            json.dumps({"meta": {"title": "first msg", "last_surface": "cli"}, "state": {}}), encoding="utf-8"
+        )
+        _reapply_session_overlays(session_file, overlays)
         meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
         assert meta["custom_title"] == "Pinned"
+        assert meta["last_surface"] == "tui"
         assert "generated_title" not in meta
         assert meta["title"] == "first msg"
 
     def test_generated_title_from_snapshot_wins_on_rollback(self, tmp_path: Path) -> None:
         """The current generated title summarizes turns the rollback discards;
         the snapshot's own value is the one describing the restored history."""
-        from chrys.orchestration.engine.rollback import _read_title_overlays, _reapply_title_overlays
+        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
 
         session_file = tmp_path / "session.json"
         session_file.write_text(
             json.dumps({"meta": {"title": "x", "generated_title": "New topic"}, "state": {}}),
             encoding="utf-8",
         )
-        overlays = _read_title_overlays(session_file)
+        overlays = _read_session_overlays(session_file)
 
         session_file.write_text(
             json.dumps({"meta": {"title": "x", "generated_title": "Old topic"}, "state": {}}),
             encoding="utf-8",
         )
-        _reapply_title_overlays(session_file, overlays)
+        _reapply_session_overlays(session_file, overlays)
         meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
         assert meta["generated_title"] == "Old topic"
 
     def test_read_overlays_tolerates_missing_or_invalid_file(self, tmp_path: Path) -> None:
-        from chrys.orchestration.engine.rollback import _read_title_overlays
+        from chrys.orchestration.engine.rollback import _read_session_overlays
 
-        assert _read_title_overlays(tmp_path / "missing.json") == {}
+        assert _read_session_overlays(tmp_path / "missing.json") == {}
         bad = tmp_path / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
-        assert _read_title_overlays(bad) == {}
+        assert _read_session_overlays(bad) == {}
 
     def test_cleared_custom_title_survives_rollback(self, tmp_path: Path) -> None:
         """An explicit empty custom_title (user cleared the pin) must override a snapshot's old pin."""
-        from chrys.orchestration.engine.rollback import _read_title_overlays, _reapply_title_overlays
+        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
 
         session_file = tmp_path / "session.json"
         session_file.write_text(
             json.dumps({"meta": {"title": "x", "custom_title": "", "generated_title": "Auto"}, "state": {}}),
             encoding="utf-8",
         )
-        overlays = _read_title_overlays(session_file)
+        overlays = _read_session_overlays(session_file)
         assert overlays == {"custom_title": ""}
 
         # Snapshot from before the clear still carries the pin.
@@ -515,9 +523,42 @@ class TestRollbackTitleOverlayPreservation:
             json.dumps({"meta": {"title": "x", "custom_title": "Pinned"}, "state": {}}),
             encoding="utf-8",
         )
-        _reapply_title_overlays(session_file, overlays)
+        _reapply_session_overlays(session_file, overlays)
         meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
         assert meta["custom_title"] == ""
+
+    @pytest.mark.parametrize(("sidecar_hour", "expected"), [(11, "acp"), (9, "cli")], ids=["newer", "older"])
+    def test_the_surface_of_a_newer_sidecar_is_the_one_kept(
+        self, tmp_path: Path, sidecar_hour: int, expected: str
+    ) -> None:
+        """A sidecar newer than the primary holds the session's last turn, cut short by a crash."""
+        from chrys.orchestration.engine.rollback import _read_session_overlays
+
+        def envelope(hour: int, surface: str) -> str:
+            updated_at = f"2026-09-01T{hour:02d}:00:00+00:00"
+            return json.dumps({"meta": {"title": "x", "updated_at": updated_at, "last_surface": surface}, "state": {}})
+
+        session_file = tmp_path / "session.json"
+        session_file.write_text(envelope(10, "cli"), encoding="utf-8")
+        (tmp_path / "session.recovery.json").write_text(envelope(sidecar_hour, "acp"), encoding="utf-8")
+
+        assert _read_session_overlays(session_file) == {"last_surface": expected}
+
+    def test_a_session_that_never_recorded_a_surface_keeps_the_snapshots(self, tmp_path: Path) -> None:
+        """Only a surface the current session recorded outranks the snapshot's."""
+        from chrys.orchestration.engine.rollback import _read_session_overlays, _reapply_session_overlays
+
+        session_file = tmp_path / "session.json"
+        session_file.write_text(json.dumps({"meta": {"title": "x"}, "state": {}}), encoding="utf-8")
+        overlays = _read_session_overlays(session_file)
+        assert overlays == {}
+
+        session_file.write_text(
+            json.dumps({"meta": {"title": "x", "last_surface": "acp"}, "state": {}}), encoding="utf-8"
+        )
+        _reapply_session_overlays(session_file, overlays)
+        meta = json.loads(session_file.read_text(encoding="utf-8"))["meta"]
+        assert meta["last_surface"] == "acp"
 
 
 # ---------------------------------------------------------------------------

@@ -10,16 +10,17 @@ import json
 import logging
 import os as os
 import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import Callable, Collection
 
 from chrys.foundation.config.settings import resolve_sessions_dir
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.files import atomic_write_text as _common_atomic_write_text
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.service.state._fork import SessionForkMixin
@@ -63,13 +64,38 @@ from chrys.service.state._session_meta import _first_message_created_at as _firs
 from chrys.service.state._session_meta import _is_visible_message as _is_visible_message
 from chrys.service.state._session_meta import _message_created_at as _message_created_at
 from chrys.service.state._session_meta import _parse_session_timestamp as _parse_session_timestamp
+from chrys.service.state._session_meta import recorded_surface as recorded_surface
 from chrys.service.state.serializers import deserialize_state, serialize_state
+from chrys.service.state.session_catalog import (
+    CatalogEntry,
+    FileSignature,
+    RunListing,
+    RunListingKey,
+    SessionCatalogFile,
+    file_signature,
+    is_recordable,
+)
+from chrys.service.state.session_listing import (
+    SESSION_PAGE_SIZE,
+    SessionListing,
+    SessionListingEntry,
+    SessionPage,
+    page_slice,
+)
 from chrys.service.state.session_mru import SessionMruEntry, SessionMruIndex, coerce_utc, sort_entries
 from chrys.service.state.workflow import WorkflowSessionState
-from chrys.service.workflows.history import read_workflow_meta
-from chrys.service.workflows.layout import run_dir
+from chrys.service.workflows.history import read_workflow_meta, read_workflow_run
+from chrys.service.workflows.layout import EVENTS_FILE, HEADER_FILE, run_dir
 
 logger = logging.getLogger(__name__)
+
+# The catalog is rewritten whole, so after its first merge a process merges a
+# trickle of new entries (the session a turn just changed) at most this often;
+# a batch worth sharing (a cold listing) merges at once. Unmerged entries are
+# only a peer's cache miss. Pruning a gone session's entry is never deferred:
+# it holds prompt excerpts.
+SESSION_CATALOG_COMMIT_INTERVAL_SECONDS = 60.0
+SESSION_CATALOG_EAGER_COMMIT_ENTRIES = 16
 
 
 @runtime_checkable
@@ -98,6 +124,7 @@ class StateStore(Protocol):
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
         parent_session_id: str = "",
+        last_surface: SessionSurface | None = None,
     ) -> SessionCheckpoint | None: ...
     async def save_workflow_session(
         self, session_id: str, state: WorkflowSessionState, *, title: str = ""
@@ -123,6 +150,7 @@ class StateStore(Protocol):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         parent_session_id: str = "",
+        last_surface: SessionSurface | None = None,
     ) -> None: ...
     async def load_recovery_session(self, session_id: str) -> dict[str, Any] | None: ...
     async def load_recovery_session_meta(self, session_id: str) -> SessionMeta | None: ...
@@ -142,9 +170,15 @@ class StateStore(Protocol):
 
     async def list_sessions(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]: ...
     async def load_latest_session_id(self, *, chat_only: bool = False) -> str | None: ...
-    def stream_session_metas(
-        self, *, batch_size: int = 32, kind: Literal["chat", "workflow"] | None = None
-    ) -> AsyncIterator[list[SessionMeta]]: ...
+    async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing: ...
+    async def load_session_page(
+        self,
+        listing: SessionListing,
+        *,
+        surfaces: Collection[SessionSurface],
+        page: int = 1,
+        page_size: int = SESSION_PAGE_SIZE,
+    ) -> SessionPage: ...
     async def update_session_titles(
         self,
         session_id: str,
@@ -152,20 +186,40 @@ class StateStore(Protocol):
         custom_title: str | None = None,
         generated_title: str | None = None,
     ) -> SessionMeta | None: ...
-    def fork_session(self, parent_session_id: str) -> str: ...
+    def fork_session(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str: ...
     async def delete_session(self, session_id: str, *, allow_active: bool = False) -> None: ...
 
 
 def _dir_size(path: Path) -> int:
-    """Total size in bytes of all files under *path* (non-recursive-safe)."""
+    """Total bytes of the regular files under *path*; unreadable parts count as empty.
+
+    An explicit ``os.scandir`` stack: entry types come from the directory
+    listing, so only files cost a ``stat``, and links and junctions are
+    never followed.
+    """
     total = 0
-    try:
-        for entry in path.rglob("*"):
-            if entry.is_file():
-                total += entry.stat().st_size
-    except OSError:
-        pass
+    pending = [os.fspath(path)]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_junction() or entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
     return total
+
+
+def _is_run_name(run_id: str) -> bool:
+    """Run ids come from storage; a corrupt envelope must not escape its session folder."""
+    return bool(run_id) and Path(run_id).name == run_id and run_id not in (".", "..")
 
 
 def _newer_of(current: SessionMruEntry | None, candidate: SessionMruEntry) -> SessionMruEntry:
@@ -187,15 +241,31 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         # would list as a ghost entry and may still be discarded), so the
         # title waits here until the first full save merges it.
         self._pending_custom_titles: dict[str, str] = {}
-        # Listing cache: cache-id -> (file-signature key, SessionMeta).
-        # Holds ONLY the small ``SessionMeta`` dataclasses — the multi-MB
-        # envelope payloads are parsed transiently and dropped — so memory
-        # stays bounded even with thousands of sessions.  Accessed from
-        # ``asyncio.to_thread`` workers, so all reads/writes/evictions take
-        # ``_meta_cache_lock``; a lost check-then-set race costs at most one
-        # redundant re-parse.
-        self._meta_cache: dict[str, tuple[tuple[object, ...], SessionMeta]] = {}
+        # Listing cache: folder name -> catalog entry (``session.json``
+        # signature + listing meta without size).  Holds ONLY the small
+        # ``SessionMeta`` dataclasses — the multi-MB envelope payloads are
+        # parsed transiently and dropped — so memory stays bounded even with
+        # thousands of sessions.  Entries also come from, and are merged back
+        # into, the persisted catalog (``session_catalog.py``); ``_catalog_pending``
+        # names the ones not yet written there, ``_catalog_removals_owed`` the
+        # deleted or vanished sessions not yet removed from it.  Legacy flat files are cached
+        # separately and never persisted.  Accessed from ``asyncio.to_thread``
+        # workers, so all reads/writes/evictions take ``_meta_cache_lock``; a
+        # lost check-then-set race costs at most one redundant re-parse.
+        self._meta_cache: dict[str, CatalogEntry] = {}
+        self._legacy_meta_cache: dict[str, tuple[FileSignature, SessionMeta]] = {}
         self._meta_cache_lock = threading.Lock()
+        self._catalog = SessionCatalogFile(self._dir)
+        self._catalog_signature: FileSignature | None = None
+        self._catalog_pending: set[str] = set()
+        self._catalog_removals_owed: set[str] = set()
+        self._catalog_committed_at: float | None = None
+        # The surface-carry fields of each sidecar this store wrote, keyed by
+        # its folder (the short id: callers pass either id form) and matched
+        # on the file's signature so checkpoints never re-parse their own
+        # sidecar; one another process wrote (or rewrote) is parsed once.
+        # Only read and written under the session's write lock.
+        self._written_recovery_meta: dict[str, tuple[FileSignature, dict[str, Any]]] = {}
         # Derived per-root MRU index (``session_mru.json``) so ``/resume``
         # can find the newest session without parsing every envelope.
         # Session files stay authoritative; every index update is
@@ -357,6 +427,20 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         include_snapshots: bool = True,
     ) -> dict[str, Any] | None:
         """Read a session envelope, falling back to backup/snapshots if needed."""
+        envelope, _source = self._read_session_envelope_with_source(
+            session_id, heal=heal, migrate=migrate, include_snapshots=include_snapshots
+        )
+        return envelope
+
+    def _read_session_envelope_with_source(
+        self,
+        session_id: str,
+        *,
+        heal: bool = True,
+        migrate: bool = True,
+        include_snapshots: bool = True,
+    ) -> tuple[dict[str, Any] | None, Literal["primary", "backup", "snapshot"]]:
+        """Read a session envelope and name the file it came from."""
         if migrate:
             path = self._resolve_session_file(session_id)
         else:
@@ -364,24 +448,24 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             path = session_file if session_file.exists() else None
         backup = self._backup_file(session_id)
 
-        candidates: list[Path] = []
+        candidates: list[tuple[Path, Literal["primary", "backup", "snapshot"]]] = []
         if path is not None:
-            candidates.append(path)
+            candidates.append((path, "primary"))
         if backup.exists():
-            candidates.append(backup)
+            candidates.append((backup, "backup"))
         if include_snapshots:
-            candidates.extend(self._snapshot_recovery_files(session_id))
+            candidates.extend((snapshot, "snapshot") for snapshot in self._snapshot_recovery_files(session_id))
         if not candidates:
-            return None
+            return None, "primary"
 
-        for candidate in candidates:
+        for candidate, source in candidates:
             envelope = self._read_json_file(candidate)
             if envelope is None:
                 continue
             if heal and candidate != path:
                 self._heal_session_file_from_candidate(session_id, self._session_file(session_id), envelope, candidate)
-            return envelope
-        return None
+            return envelope, source
+        return None, "primary"
 
     def _heal_session_file_from_candidate(
         self,
@@ -491,6 +575,43 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         candidates = (recovery_value, existing_value) if prefer_recovery else (existing_value, recovery_value)
         return next((value for value in candidates if isinstance(value, str)), "")
 
+    def _carried_surface_unlocked(
+        self,
+        session_id: str,
+        existing_meta: dict[str, Any],
+        recovery_meta: dict[str, Any],
+        *,
+        inherited_from_primary: bool,
+    ) -> str | None:
+        """The recorded surface an unmarked save keeps; ``None`` when none was ever recorded.
+
+        Only a turn names the surface, so every other save carries the stored
+        value verbatim (one written by a newer version survives), as
+        ``recorded_surface`` picks it; consulting the sidecar parses only one
+        this store did not write itself.
+        """
+        if inherited_from_primary and not recovery_meta:
+            recovery_meta = self._recovery_carry_meta_unlocked(session_id)
+        return recorded_surface(existing_meta, recovery_meta, sidecar_first=not inherited_from_primary)
+
+    def _recovery_carry_meta_unlocked(self, session_id: str) -> dict[str, Any]:
+        """The sidecar's ``updated_at``/``last_surface``; empty when there is no sidecar."""
+        signature = file_signature(self._recovery_file(session_id))
+        if signature is None:
+            return {}
+        written = self._written_recovery_meta.get(_session_short_id(session_id))
+        if written is not None and written[0] == signature:
+            return written[1]
+        return self._read_recovery_meta_unlocked(session_id)
+
+    def _remember_written_recovery_meta_unlocked(self, session_id: str, meta: dict[str, Any]) -> None:
+        signature = file_signature(self._recovery_file(session_id))
+        if signature is None:
+            self._written_recovery_meta.pop(_session_short_id(session_id), None)
+            return
+        carried = {key: meta[key] for key in ("updated_at", "last_surface") if key in meta}
+        self._written_recovery_meta[_session_short_id(session_id)] = (signature, carried)
+
     @staticmethod
     def _resolve_created_at(
         live_created_at: str | None,
@@ -533,6 +654,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
         parent_session_id: str = "",
+        last_surface: SessionSurface | None = None,
         kind: Literal["chat", "workflow"] = "chat",
         force_updated_at: bool = False,
     ) -> dict[str, Any]:
@@ -659,6 +781,15 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                     "parent_session_id": parent_session_id or existing_meta.get("parent_session_id", ""),
                 }
             )
+            surface = (
+                last_surface.value
+                if last_surface is not None
+                else self._carried_surface_unlocked(
+                    session_id, existing_meta, recovery_meta, inherited_from_primary=inherited_from_primary
+                )
+            )
+            if surface is not None:
+                meta["last_surface"] = surface
         return {
             "meta": meta,
             "state": state if kind == "workflow" else serialize_state(state),
@@ -668,6 +799,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
 
     def _delete_recovery_session_unlocked(self, session_id: str) -> None:
         """Best-effort deletion of the recovery sidecar."""
+        self._written_recovery_meta.pop(_session_short_id(session_id), None)
         with contextlib.suppress(OSError):
             self._recovery_file(session_id).unlink()
 
@@ -731,6 +863,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
         parent_session_id: str = "",
+        last_surface: SessionSurface | None = None,
         kind: Literal["chat", "workflow"] = "chat",
     ) -> SessionCheckpoint:
         """Sync implementation of session save (runs in a thread)."""
@@ -761,6 +894,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 model_profile_fingerprint=model_profile_fingerprint,
                 service_session_id=service_session_id,
                 parent_session_id=parent_session_id,
+                last_surface=last_surface,
                 kind=kind,
                 force_updated_at=self._recovery_file(session_id).exists(),
             )
@@ -795,6 +929,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_profile_fingerprint: str | None = None,
         service_session_id: str | None = None,
         parent_session_id: str = "",
+        last_surface: SessionSurface | None = None,
     ) -> SessionCheckpoint:
         """Checkpoint Chat history and model metadata into the session folder.
 
@@ -820,6 +955,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             model_profile_fingerprint=model_profile_fingerprint,
             service_session_id=service_session_id,
             parent_session_id=parent_session_id,
+            last_surface=last_surface,
         )
 
     async def save_workflow_session(
@@ -856,6 +992,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         model_base_url: str = "",
         model_profile_fingerprint: str | None = None,
         parent_session_id: str = "",
+        last_surface: SessionSurface | None = None,
     ) -> None:
         """Synchronously write a crash-recovery sidecar for an in-flight turn."""
         recovery_file = self._recovery_file(session_id)
@@ -881,11 +1018,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 model_profile_fingerprint=model_profile_fingerprint,
                 service_session_id="",
                 parent_session_id=parent_session_id,
+                last_surface=last_surface,
                 force_updated_at=True,
             )
             payload = json.dumps(data, indent=2, ensure_ascii=False)
             self._record_mru(session_id, self._envelope_updated_at(data))
             _common_atomic_write_text(recovery_file, payload)
+            self._remember_written_recovery_meta_unlocked(session_id, data["meta"])
 
     @staticmethod
     def _envelope_updated_at(envelope: dict[str, Any] | None) -> datetime | None:
@@ -902,8 +1041,8 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         session_id: str,
         *,
         prefer_recovery: bool = False,
-    ) -> tuple[dict[str, Any] | None, str]:
-        """Return the effective envelope and source without healing recovery into primary."""
+    ) -> tuple[dict[str, Any] | None, Literal["recovery", "primary", "backup", "snapshot"]]:
+        """Return the effective envelope and the file it came from, without healing recovery into primary."""
         self._migrate_if_needed(session_id)
         recovery_path = self._recovery_file(session_id)
         if prefer_recovery and recovery_path.exists():
@@ -922,7 +1061,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 self._delete_recovery_session_if_not_newer(session_id, primary_updated_at=primary_updated_at)
             else:
                 self._delete_recovery_session_if_not_newer(session_id, primary_updated_at=None)
-        return self._read_session_envelope(session_id), "primary"
+        return self._read_session_envelope_with_source(session_id)
 
     def _resolve_effective_envelope(
         self,
@@ -1149,6 +1288,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 meta["generated_title"] = generated_title
             payload = json.dumps(envelope, indent=2, ensure_ascii=False)
             _common_atomic_write_text(recovery_file, payload)
+            self._remember_written_recovery_meta_unlocked(session_id, meta)
         except OSError:
             logger.debug("Failed to mirror titles into recovery sidecar for %s", session_id, exc_info=True)
 
@@ -1322,56 +1462,59 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             return (-1, -1)
         return (stat.st_mtime_ns, stat.st_size)
 
-    def _meta_cache_key(self, session_dir: Path, *, lock_held: bool, dir_size: int) -> tuple[object, ...]:
-        """Invalidation key covering every input that shapes a listed meta.
-
-        The active-lock state participates because it decides whether a
-        recovery sidecar is eligible to win envelope resolution.  The total
-        directory size participates so ``size_bytes`` (and snapshot-healed
-        sessions with no primary envelope) can't stay stale when sidecar
-        artifacts (snapshots, mutations, logs) change without touching
-        ``session.json``.
-        """
-        return (
-            self._file_signature(session_dir / SESSION_FILE_NAME),
-            self._file_signature(session_dir / SESSION_BACKUP_FILE_NAME),
-            self._file_signature(session_dir / SESSION_RECOVERY_FILE_NAME),
-            lock_held,
-            dir_size,
-        )
-
     def _meta_for_session_dir(self, session_dir: Path) -> SessionMeta | None:
-        """Load one folder-format session's meta, via the listing cache."""
-        short_id = session_dir.name
+        """One folder-format session's listing meta (``size_bytes`` unset), via the listing caches."""
         try:
-            lock_held = self._active_lock_is_held(short_id)
-            cache_key = self._meta_cache_key(session_dir, lock_held=lock_held, dir_size=_dir_size(session_dir))
-            with self._meta_cache_lock:
-                cached = self._meta_cache.get(short_id)
-            if cached is not None and cached[0] == cache_key:
-                meta = cached[1]
-                return meta
-            raw = self._resolve_effective_envelope(short_id, prefer_recovery=not lock_held)
-            if raw is None:
-                return None
-            # Recompute size and key after parsing: envelope resolution may
-            # GC a stale recovery sidecar or heal the primary, and caching
-            # the pre-parse key would serve a meta whose inputs already
-            # moved.
-            size_bytes = _dir_size(session_dir)
-            meta = self._session_meta_from_envelope(raw, size_bytes=size_bytes)
-            post_key = self._meta_cache_key(session_dir, lock_held=lock_held, dir_size=size_bytes)
-            with self._meta_cache_lock:
-                self._meta_cache[short_id] = (post_key, meta)
-            return meta
+            resolved = self._listing_meta(session_dir)
         except KeyError, ValueError, TypeError, OSError:
             return None
+        return resolved[0] if resolved is not None else None
+
+    def _listing_meta(self, session_dir: Path) -> tuple[SessionMeta, CatalogEntry | None] | None:
+        """Resolve listing meta and, when it is cacheable, its catalog entry.
+
+        Only a stable read of a valid primary with no recovery sidecar is
+        cached: the sidecar's eligibility depends on the active lock, and a
+        backup or snapshot fallback on files outside the signature. Those
+        sessions are resolved live, probing the lock only when a sidecar
+        exists.
+        """
+        short_id = session_dir.name
+        primary = session_dir / SESSION_FILE_NAME
+        recovery = session_dir / SESSION_RECOVERY_FILE_NAME
+        signature = file_signature(primary)
+        recovery_present = file_signature(recovery) is not None
+        if signature is not None and not recovery_present:
+            with self._meta_cache_lock:
+                cached = self._meta_cache.get(short_id)
+            if cached is not None and cached.signature == signature:
+                return cached.meta, cached
+        lock_held = recovery_present and self._active_lock_is_held(short_id)
+        # A sidecar that appears after the probe is a live writer's checkpoint: never read it.
+        prefer_recovery = recovery_present and not lock_held
+        raw, source = self._resolve_effective_envelope_with_source(short_id, prefer_recovery=prefer_recovery)
+        if raw is None:
+            return None
+        meta = self._session_meta_from_envelope(raw, size_bytes=0)
+        stable = (
+            source == "primary"
+            and signature is not None
+            and not recovery_present
+            and file_signature(primary) == signature
+            and file_signature(recovery) is None
+        )
+        if not stable or signature is None:
+            return meta, None
+        entry = CatalogEntry(signature, meta)
+        with self._meta_cache_lock:
+            self._meta_cache[short_id] = entry
+            # A malformed envelope's meta would be dropped on every load: keep it in memory only.
+            if is_recordable(entry):
+                self._catalog_pending.add(short_id)
+        return meta, entry
 
     def _with_workflow_status(self, meta: SessionMeta) -> SessionMeta:
-        if meta.kind != "workflow" or not meta.latest_run_id:
-            return meta
-        # Run ids come from storage; do not let a corrupt envelope escape its session folder.
-        if Path(meta.latest_run_id).name != meta.latest_run_id or meta.latest_run_id in (".", ".."):
+        if meta.kind != "workflow" or not _is_run_name(meta.latest_run_id):
             return meta
         return replace(
             meta,
@@ -1381,61 +1524,244 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             ),
         )
 
+    def _workflow_listed_at(
+        self, session_dir: Path, meta: WorkflowSessionMeta, entry: CatalogEntry | None
+    ) -> datetime | None:
+        """The latest run's listing time (``None``: no displayable run), cached on its run files.
+
+        Matches ``_with_workflow_status``: the time does not depend on the
+        live status, so it can be kept without probing the active lock.
+        """
+        run_id = meta.latest_run_id
+        if not _is_run_name(run_id):
+            return None
+        directory = run_dir(session_dir, run_id)
+
+        def run_key() -> RunListingKey:
+            return RunListingKey(
+                run_id, file_signature(directory / HEADER_FILE), file_signature(directory / EVENTS_FILE)
+            )
+
+        key = run_key()
+        if entry is not None and entry.run is not None and entry.run.key == key:
+            return entry.run.listed_at
+        read = read_workflow_run(directory, active=False)
+        listed_at = read.meta.updated_at if read.meta is not None else None
+        # A read an I/O error shaped would stick until the run files change.
+        if read.settled and entry is not None and run_key() == key:
+            listed = replace(entry, run=RunListing(key, listed_at))
+            recordable = is_recordable(listed)
+            with self._meta_cache_lock:
+                if self._meta_cache.get(session_dir.name) is entry:
+                    self._meta_cache[session_dir.name] = listed
+                    # As in ``_listing_meta``: an entry no load would read back stays in memory.
+                    if recordable:
+                        self._catalog_pending.add(session_dir.name)
+        return listed_at
+
+    # ------------------------------------------------------------------ #
+    # Persisted listing catalog
+    # ------------------------------------------------------------------ #
+
+    def _refresh_catalog(self) -> None:
+        """Adopt the persisted catalog's entries when its file changed since the last look."""
+        signature = file_signature(self._catalog.path)
+        with self._meta_cache_lock:
+            if signature == self._catalog_signature:
+                return
+        loaded = self._catalog.load() if signature is not None else {}
+        if loaded is None:
+            return  # Unreadable right now: look again next time.
+        with self._meta_cache_lock:
+            self._catalog_signature = signature
+            for short_id, entry in loaded.items():
+                current = self._meta_cache.get(short_id)
+                # A differing in-memory entry not yet persisted was derived
+                # here after the peer's write, or will simply miss and re-parse.
+                if current is None or (current.signature != entry.signature and short_id not in self._catalog_pending):
+                    self._meta_cache[short_id] = entry
+
+    def _commit_catalog(self) -> None:
+        """Settle owed removals, then merge newly derived entries into the persisted catalog; best-effort.
+
+        Removals never wait for the commit interval. A skipped or failed
+        merge keeps the entries pending for a later listing.
+        """
+        self._settle_catalog_removals()
+        now = time.monotonic()
+        with self._meta_cache_lock:
+            self._catalog_pending.intersection_update(self._meta_cache.keys())
+            updates = {short_id: self._meta_cache[short_id] for short_id in self._catalog_pending}
+            if not updates:
+                return
+            last = self._catalog_committed_at
+            if (
+                len(updates) < SESSION_CATALOG_EAGER_COMMIT_ENTRIES
+                and last is not None
+                and now - last < SESSION_CATALOG_COMMIT_INTERVAL_SECONDS
+            ):
+                return
+            self._catalog_committed_at = now
+        outcome = self._catalog.commit(
+            updates, still_valid=self._catalog_entry_still_valid, is_live=self._catalog_liveness()
+        )
+        if not outcome.settled:
+            return
+        with self._meta_cache_lock:
+            for short_id, entry in updates.items():
+                if self._meta_cache.get(short_id) is entry:
+                    self._catalog_pending.discard(short_id)
+            if outcome.signature is not None:
+                # Our own write needs no reload; peers' entries it merged are
+                # only a missed cache hit away.
+                self._catalog_signature = outcome.signature
+
+    def _catalog_entry_still_valid(self, short_id: str, entry: CatalogEntry) -> bool:
+        session_dir = self._dir / short_id
+        return (
+            file_signature(session_dir / SESSION_FILE_NAME) == entry.signature
+            and file_signature(session_dir / SESSION_RECOVERY_FILE_NAME) is None
+        )
+
+    def _catalog_liveness(self) -> Callable[[str], bool]:
+        """Whether the session an entry describes still exists.
+
+        It needs its primary file (a reset keeps the folder) and no recorded
+        delete intent (a logical delete may leave the primary pinned). The
+        intents are read on first use: a delete records its intent before it
+        removes its entry under the catalog lock, so a check made under that
+        lock sees every delete whose removal went first.
+        """
+        from chrys.service.trajectory.tombstone import pending_delete_intents
+
+        deleted: frozenset[str] | None = None
+
+        def is_live(short_id: str) -> bool:
+            nonlocal deleted
+            if not short_id or short_id.startswith(".") or "/" in short_id or "\\" in short_id:
+                return False
+            if deleted is None:
+                deleted = pending_delete_intents(self._dir)
+            return short_id not in deleted and file_signature(self._dir / short_id / SESSION_FILE_NAME) is not None
+
+        return is_live
+
+    def _forget_catalog_entry(self, session_id: str) -> None:
+        """Drop a deleted session's listing entry from memory and from the persisted catalog.
+
+        A removal the catalog lock or a write failure stops stays owed and is
+        retried before each later commit, until it lands (as is one for a
+        session a scan found gone).
+        """
+        short_id = _session_short_id(session_id)
+        with self._meta_cache_lock:
+            self._meta_cache.pop(short_id, None)
+            self._catalog_pending.discard(short_id)
+            self._catalog_removals_owed.add(short_id)
+        self._settle_catalog_removals()
+
+    def _settle_catalog_removals(self) -> None:
+        with self._meta_cache_lock:
+            owed = frozenset(self._catalog_removals_owed)
+        if not owed or not self._catalog.remove(owed):
+            return
+        with self._meta_cache_lock:
+            self._catalog_removals_owed.difference_update(owed)
+
     def _legacy_session_metas(self, seen_session_ids: set[str]) -> list[SessionMeta]:
-        """Metas for legacy flat-file sessions not yet migrated to folders.
+        """Metas for legacy flat-file sessions not yet migrated to folders."""
+        return [meta for _path, meta in self._legacy_session_metas_with_paths(seen_session_ids)]
+
+    def _legacy_session_metas_with_paths(self, seen_session_ids: set[str]) -> list[tuple[Path, SessionMeta]]:
+        """Legacy flat-file sessions not yet migrated to folders, with their files.
 
         Duplicate ``meta.session_id`` values — across flat files, or against
         the folder-format ids in *seen_session_ids* — keep only the first
         occurrence, matching the pre-cache listing behavior.
         """
-        sessions: list[SessionMeta] = []
+        sessions: list[tuple[Path, SessionMeta]] = []
         seen = set(seen_session_ids)
         for path in self._legacy_session_files():
             meta = self._legacy_meta_for_file(path)
             if meta is None or meta.session_id in seen:
                 continue
             seen.add(meta.session_id)
-            sessions.append(meta)
+            sessions.append((path, meta))
         return sessions
 
     def _legacy_meta_for_file(self, path: Path) -> SessionMeta | None:
-        """Load one legacy flat-file session's meta, via the listing cache."""
+        """Load one legacy flat-file session's meta, via its in-process cache."""
         try:
-            cache_id = f"legacy:{path.name}"
-            cache_key: tuple[object, ...] = (self._file_signature(path),)
+            signature = file_signature(path)
             with self._meta_cache_lock:
-                cached = self._meta_cache.get(cache_id)
-            if cached is not None and cached[0] == cache_key:
+                cached = self._legacy_meta_cache.get(path.name)
+            if signature is not None and cached is not None and cached[0] == signature:
                 return cached[1]
             raw = json.loads(path.read_text(encoding="utf-8"))
             meta = self._session_meta_from_envelope(raw, size_bytes=path.stat().st_size)
-            with self._meta_cache_lock:
-                self._meta_cache[cache_id] = (cache_key, meta)
+            if signature is not None and file_signature(path) == signature:
+                with self._meta_cache_lock:
+                    self._legacy_meta_cache[path.name] = (signature, meta)
             return meta
         except json.JSONDecodeError, KeyError, ValueError, TypeError, OSError:
             return None
 
     def _evict_stale_meta_cache_sync(self) -> None:
-        """Drop cache entries whose backing session no longer exists on disk."""
-        try:
-            live = {p.name for p in self._dir.iterdir() if p.is_dir()}
-            live |= {f"legacy:{p.name}" for p in self._legacy_session_files()}
-        except OSError:
-            return
+        """Drop cache entries whose session file is gone (deleted, or reset in place).
+
+        An evicted folder entry is owed its catalog removal: once out of
+        memory, no later scan would find it again.
+        """
         with self._meta_cache_lock:
-            for key in [k for k in self._meta_cache if k not in live]:
-                del self._meta_cache[key]
+            cached = list(self._meta_cache)
+        is_live = self._catalog_liveness()
+        gone = [key for key in cached if not is_live(key)]
+        try:
+            live_legacy: set[str] | None = {p.name for p in self._legacy_session_files()}
+        except OSError:
+            live_legacy = None
+        with self._meta_cache_lock:
+            dead = [key for key in gone if self._meta_cache.pop(key, None) is not None]
+            self._catalog_pending.difference_update(dead)
+            self._catalog_removals_owed.update(dead)
+            if live_legacy is not None:
+                for key in [key for key in self._legacy_meta_cache if key not in live_legacy]:
+                    del self._legacy_meta_cache[key]
+
+    def _settle_listing_caches(self) -> None:
+        """After a scan: evict gone sessions, then remove them from, and merge new entries into, the catalog."""
+        self._evict_stale_meta_cache_sync()
+        self._commit_catalog()
+
+    def _folder_metas(self) -> list[tuple[Path, SessionMeta]]:
+        """Every session folder's listing meta, without size or run status."""
+        self._refresh_catalog()
+        return [
+            (session_dir, meta)
+            for session_dir in self._session_dir_candidates()
+            if (meta := self._meta_for_session_dir(session_dir)) is not None
+        ]
+
+    def _scan_session_metas_sync(self) -> list[SessionMeta]:
+        """Every listed session's meta without folder size or run status (for ranking by time)."""
+        folders = self._folder_metas()
+        sessions = [meta for _session_dir, meta in folders]
+        sessions.extend(self._legacy_session_metas({meta.session_id for meta in sessions}))
+        self._settle_listing_caches()
+        return sessions
 
     def _list_sessions_sync(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]:
         """Sync implementation of session listing (runs in a thread)."""
-        sessions: list[SessionMeta] = []
-        for session_dir in self._session_dir_candidates():
-            meta = self._meta_for_session_dir(session_dir)
-            if meta is not None:
-                sessions.append(meta)
-        sessions.extend(self._legacy_session_metas({s.session_id for s in sessions}))
-        self._evict_stale_meta_cache_sync()
-        return [self._with_workflow_status(meta) for meta in sessions if kind is None or meta.kind == kind]
+        folders = self._folder_metas()
+        sessions = [
+            replace(meta, size_bytes=_dir_size(session_dir))
+            for session_dir, meta in folders
+            if kind is None or meta.kind == kind
+        ]
+        legacy = self._legacy_session_metas({meta.session_id for _session_dir, meta in folders})
+        sessions.extend(meta for meta in legacy if kind is None or meta.kind == kind)
+        self._settle_listing_caches()
+        return [self._with_workflow_status(meta) for meta in sessions]
 
     async def list_sessions(self, *, kind: Literal["chat", "workflow"] | None = None) -> list[SessionMeta]:
         """List all saved sessions with metadata."""
@@ -1460,7 +1786,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         after its in-flight record failed verification.
         """
         scan_started = datetime.now(UTC)
-        sessions = self._list_sessions_sync()
+        sessions = self._scan_session_metas_sync()
         entries = sort_entries(SessionMruEntry(m.session_id, coerce_utc(m.updated_at)) for m in sessions)
         scanned = entries[0] if entries else None
         merged = self._note_mru(lambda: self._mru.rebuild(entries))
@@ -1600,7 +1926,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             # counts (folder over legacy, first sorted legacy otherwise) is the
             # listing's rule, so let the listing rank it — legacy roots are
             # transitional and the meta cache makes the repeat cheap.
-            for meta in self._list_sessions_sync():
+            for meta in self._scan_session_metas_sync():
                 best = _newer_of(best, SessionMruEntry(meta.session_id, coerce_utc(meta.updated_at)))
         if best is not None and best != winner:
             self._record_mru(best.session_id, best.last_updated_at)
@@ -1648,38 +1974,105 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         )
         return latest_chat.session_id if latest_chat is not None else None
 
-    async def stream_session_metas(
-        self, *, batch_size: int = 32, kind: Literal["chat", "workflow"] | None = None
-    ) -> AsyncIterator[list[SessionMeta]]:
-        """Yield session metas in batches without blocking the event loop.
+    # ------------------------------------------------------------------ #
+    # Paged listing
+    # ------------------------------------------------------------------ #
 
-        Folders are parsed ``batch_size`` at a time inside worker threads and
-        each chunk is yielded as soon as it is ready, so a UI can render
-        progressively instead of waiting for a full scan of a potentially
-        huge sessions directory.  Unchanged sessions are served from the
-        in-process meta cache; the multi-MB envelope payloads themselves are
-        never retained.
+    def _listed_at(self, source: Path, meta: SessionMeta, entry: CatalogEntry | None) -> datetime | None:
+        """A session's listing time; ``None`` for a workflow session with no displayable run."""
+        if isinstance(meta, WorkflowSessionMeta):
+            return self._workflow_listed_at(source, meta, entry)
+        return meta.updated_at
+
+    def _open_session_listing_sync(self, kind: Literal["chat", "workflow"]) -> SessionListing:
+        self._refresh_catalog()
+        entries: list[SessionListingEntry] = []
+        seen: set[str] = set()
+        for session_dir in self._session_dir_candidates():
+            try:
+                resolved = self._listing_meta(session_dir)
+            except KeyError, ValueError, TypeError, OSError:
+                continue
+            if resolved is None:
+                continue
+            meta, entry = resolved
+            if meta.session_id in seen:
+                continue  # a copied folder: the first one lists, as when streaming
+            seen.add(meta.session_id)
+            if meta.kind == kind and (listed_at := self._listed_at(session_dir, meta, entry)) is not None:
+                entries.append(
+                    SessionListingEntry(
+                        meta.session_id, coerce_utc(listed_at), meta.last_surface or SessionSurface.TUI, session_dir
+                    )
+                )
+        for path, meta in self._legacy_session_metas_with_paths(seen):
+            if meta.kind != kind:
+                continue
+            # A legacy file is migrated to its folder on first load; until then
+            # any workflow run lives under the folder its id names.
+            listed_at = self._listed_at(self._session_dir(meta.session_id), meta, None)
+            if listed_at is not None:
+                entries.append(
+                    SessionListingEntry(
+                        meta.session_id,
+                        coerce_utc(listed_at),
+                        meta.last_surface or SessionSurface.TUI,
+                        path,
+                        legacy=True,
+                    )
+                )
+        self._settle_listing_caches()
+        entries.sort(key=lambda item: (item.listed_at, item.session_id), reverse=True)
+        return SessionListing(kind, tuple(entries))
+
+    async def open_session_listing(self, *, kind: Literal["chat", "workflow"]) -> SessionListing:
+        """Snapshot the displayable sessions of *kind*, newest first, for paging.
+
+        Costs a ``stat`` per session folder plus a parse for each session
+        changed since it was last listed (by any process, through the
+        persisted catalog); folder sizes and run status are left to
+        :meth:`load_session_page`.
         """
-        seen_ids: set[str] = set()
-        session_dirs = await asyncio.to_thread(self._session_dir_candidates)
-        for chunk in batched(session_dirs, batch_size, strict=False):
+        return await asyncio.to_thread(self._open_session_listing_sync, kind)
 
-            def _parse(chunk: tuple[Path, ...] = chunk) -> list[SessionMeta]:
-                return [
-                    self._with_workflow_status(meta)
-                    for d in chunk
-                    if (meta := self._meta_for_session_dir(d)) is not None and (kind is None or meta.kind == kind)
-                ]
+    def _load_session_page_sync(
+        self, listing: SessionListing, surfaces: Collection[SessionSurface], page: int, page_size: int
+    ) -> SessionPage:
+        from chrys.service.trajectory.tombstone import pending_delete_intents
 
-            metas = [m for m in await asyncio.to_thread(_parse) if m.session_id not in seen_ids]
-            seen_ids.update(m.session_id for m in metas)
-            if metas:
-                yield metas
-        legacy = await asyncio.to_thread(self._legacy_session_metas, seen_ids)
-        legacy = [self._with_workflow_status(meta) for meta in legacy if kind is None or meta.kind == kind]
-        if legacy:
-            yield legacy
-        await asyncio.to_thread(self._evict_stale_meta_cache_sync)
+        selected, current, page_count, total = page_slice(listing, surfaces, page, page_size=page_size)
+        deleted = pending_delete_intents(self._dir) if selected else frozenset()
+        metas: list[SessionMeta] = []
+        for item in selected:
+            meta = self._legacy_meta_for_file(item.source) if item.legacy else None
+            # Loading a legacy session since the snapshot moved it into its folder.
+            folder = self._session_dir(item.session_id) if item.legacy else item.source
+            # A logical delete may leave the primary pinned.
+            if meta is None and folder.name not in deleted:
+                meta = self._meta_for_session_dir(folder)
+                if meta is not None:
+                    meta = replace(meta, size_bytes=_dir_size(folder))
+            # A session deleted, or replaced by another, since the snapshot drops out of its page.
+            if meta is not None and meta.session_id == item.session_id and meta.kind == listing.kind:
+                metas.append(self._with_workflow_status(meta))
+        self._commit_catalog()
+        return SessionPage(tuple(metas), current, page_count, total)
+
+    async def load_session_page(
+        self,
+        listing: SessionListing,
+        *,
+        surfaces: Collection[SessionSurface],
+        page: int = 1,
+        page_size: int = SESSION_PAGE_SIZE,
+    ) -> SessionPage:
+        """Load one page of *listing* filtered to *surfaces*: fresh metas with sizes and run status.
+
+        Rows keep the snapshot's order and page; their contents (title,
+        surface, run status) are read now, so a session changed since the
+        snapshot shows its current state where the snapshot placed it.
+        """
+        return await asyncio.to_thread(self._load_session_page_sync, listing, surfaces, page, page_size)
 
     def _delete_session_sync(self, session_id: str, *, allow_active: bool = False) -> None:
         """Sync implementation of session delete (runs in a thread)."""
@@ -1717,7 +2110,10 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 # session records before it can commit, so it cannot slip in
                 # between the deletion and this removal and lose its entry.
                 self._note_mru(lambda: self._mru.remove(session_id))
+                # The catalog holds prompt excerpts: they go with the session.
+                self._forget_catalog_entry(session_id)
                 self._pending_custom_titles.pop(session_id, None)
+                self._written_recovery_meta.pop(_session_short_id(session_id), None)
         finally:
             if active_lock is not None:
                 active_lock.release()

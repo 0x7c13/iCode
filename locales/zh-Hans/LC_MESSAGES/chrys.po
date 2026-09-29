@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.27.1\n"
+"Project-Id-Version: Chrys 0.28.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -8062,6 +8062,24 @@ msgstr "测试通知已发送"
 msgid "tui.notifications.title"
 msgstr "通知"
 
+#. English: Next
+#. chrys-meta={"fingerprint":"76ab483aafbabc91744a0cdfe3b807ec08274c2076d659bdf6285be63be19921","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/page_navigator.py
+msgid "tui.page_navigator.next"
+msgstr "下一页"
+
+#. English: Page {page} of {pages}
+#. chrys-meta={"fingerprint":"13de16864fdd61d3ae38154cac2b24ef8f8b5b65416473aba5aa7c221062ca31","multiline":false,"placeholders":["page","pages"]}
+#: src/chrys/app/tui/widgets/page_navigator.py
+msgid "tui.page_navigator.page"
+msgstr "第 {page} 页，共 {pages} 页"
+
+#. English: Previous
+#. chrys-meta={"fingerprint":"4f5a72fa2720eb99a32fdf149c7d187cccf9caea16123aeeeb610f9dd7d7d9f5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/page_navigator.py
+msgid "tui.page_navigator.previous"
+msgstr "上一页"
+
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/event_handlers.py
@@ -8829,17 +8847,29 @@ msgstr "会话已在另一个 {app_name} 实例中打开。"
 msgid "tui.sessions.empty"
 msgstr "没有已保存的会话。"
 
+#. English: No sessions match the selected filters.
+#. chrys-meta={"fingerprint":"4cd2e28ce780a5a5c096ba709592490fa4e523f968153394820ad643130dad7f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.empty.filtered"
+msgstr "没有符合所选筛选条件的会话。"
+
+#. English: No sessions on this page match your search.
+#. chrys-meta={"fingerprint":"049a3963099d161b2180c5b93b2c564d43b83dbb75e58dc5dbb04e68f9e65e7f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.empty.search"
+msgstr "本页没有匹配搜索的会话。"
+
 #. English: Loading sessions
 #. chrys-meta={"fingerprint":"6e1188e79edff717a8a95bb7fb83d4cfab60d38ee884b49f59321304cbcec79c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.loading"
 msgstr "正在加载会话"
 
-#. English: Search sessions… (matches any column & your prompts)
-#. chrys-meta={"fingerprint":"4a5570975702a06a4e362bcab46a3ada72a3798f6f59977d5457a82e6b8115af","multiline":false,"placeholders":[]}
+#. English: Search this page… (matches any column & your prompts)
+#. chrys-meta={"fingerprint":"f87aabb0dc1f39e3d61082c7eaf08c620cb7d84c86b982237d5797b7f2383d3d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.search_placeholder"
-msgstr "搜索会话…（匹配任意列和你的提示词）"
+msgstr "搜索本页…（匹配任意列和你的提示词）"
 
 #. English: Cancelled
 #. chrys-meta={"fingerprint":"f0ea7e7ae2fa270015fa78e6b5fcff27cc4ffa6d30271bc6d150455cbf1c252f","multiline":false,"placeholders":[]}
@@ -8870,6 +8900,30 @@ msgstr "已中断"
 #: src/chrys/app/tui/screens/sessions/presenter.py
 msgid "tui.sessions.status.running"
 msgstr "运行中"
+
+#. English: ACP
+#. chrys-meta={"fingerprint":"f2d7f8c530ab9c6a713010f182948118589e9b59fade5102c81008fb143a1014","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/presenter.py
+msgid "tui.sessions.surface.acp"
+msgstr "ACP"
+
+#. English: CLI
+#. chrys-meta={"fingerprint":"713bb69f360698ba2b9318baa93bc5e6e47491edab0838b3c1184eb07cf9fe58","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/presenter.py
+msgid "tui.sessions.surface.cli"
+msgstr "CLI"
+
+#. English: TUI
+#. chrys-meta={"fingerprint":"cbf8fff223cb42c8487d64d9cb6aeb983be3ec38238dcd55fe5d3fcb6bd03191","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/presenter.py
+msgid "tui.sessions.surface.tui"
+msgstr "TUI"
+
+#. English: Unknown
+#. chrys-meta={"fingerprint":"a93cbe5327a323a92511fb30571ddce8b415b6036133252f9055d052f4c33992","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/presenter.py
+msgid "tui.sessions.surface.unknown"
+msgstr "未知"
 
 #. English: 1 day ago
 #. English-plural: {count} days ago
@@ -8972,6 +9026,12 @@ msgstr "运行：{run_id}"
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.tooltip.status"
 msgstr "状态：{status}"
+
+#. English: Last used in: {surface}
+#. chrys-meta={"fingerprint":"d0460a1b35a7adcc741be1fe2a3ec5d9d27d0151d78530723d60c2dd57c216aa","multiline":false,"placeholders":["surface"]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.tooltip.surface"
+msgstr "最后使用于：{surface}"
 
 #. English: Title: {title}
 #. chrys-meta={"fingerprint":"fddfc7c35827edc3724595806c0aeb444ce046b2cbb0b488fccd2641e64c1e23","multiline":false,"placeholders":["title"]}
@@ -13289,29 +13349,11 @@ msgstr "节点状态已加载：{loaded}/{total}"
 msgid "tui.workflow.output.load"
 msgstr "加载输出"
 
-#. English: Unattributed output
-#. chrys-meta={"fingerprint":"6081ce007b89ede2e7688ccff41ea84624cfb9097787ed370c7ff5cc1fe2e2ee","multiline":false,"placeholders":[]}
+#. English: Output outside nodes
+#. chrys-meta={"fingerprint":"e66a1b1975b04b448f178638e9695f7a52190f4f187007e3834c9235ac6d2b14","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.output.native"
-msgstr "未归属输出"
-
-#. English: Next
-#. chrys-meta={"fingerprint":"76ab483aafbabc91744a0cdfe3b807ec08274c2076d659bdf6285be63be19921","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.output.next_page"
-msgstr "下一页"
-
-#. English: Page {page} of {pages}
-#. chrys-meta={"fingerprint":"13de16864fdd61d3ae38154cac2b24ef8f8b5b65416473aba5aa7c221062ca31","multiline":false,"placeholders":["page","pages"]}
-#: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.output.page"
-msgstr "第 {page} 页，共 {pages} 页"
-
-#. English: Previous
-#. chrys-meta={"fingerprint":"4f5a72fa2720eb99a32fdf149c7d187cccf9caea16123aeeeb610f9dd7d7d9f5","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/workflow/text.py
-msgid "tui.workflow.output.previous_page"
-msgstr "上一页"
+msgstr "节点外输出"
 
 #. English: Full output is unavailable. Only the saved summary is shown.
 #. chrys-meta={"fingerprint":"dc9c5f8e78132056261da15c8ef4930eadd2de2d4cc67cbfc55cdbeda6a61316","multiline":false,"placeholders":[]}
@@ -13349,6 +13391,18 @@ msgstr "工作流预览超时。"
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.restore.fallback"
 msgstr "最近一次运行不可用。正在显示最新的可读运行：{run_id}。"
+
+#. English: Result
+#. chrys-meta={"fingerprint":"26e6b71d0b6f7f7005eaeef64cfb341a12d773a71146d47e74b8fd377399b911","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.result"
+msgstr "结果"
+
+#. English: Result · {node}
+#. chrys-meta={"fingerprint":"d3006ffdaaa91451a581996f15696adf72c8a5e44f7ecf0147f8b191437dd942","multiline":false,"placeholders":["node"]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.result_title"
+msgstr "结果 · {node}"
 
 #. English: Copied run input
 #. chrys-meta={"fingerprint":"9238ceb7d6f01f800a8fe73398a4e754623c9a6e256b0c2ebdc68fa541981a7b","multiline":false,"placeholders":[]}
@@ -14020,6 +14074,15 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.workflow.open_diff"
 #~ msgstr "查看差异"
+
+#~ msgid "tui.workflow.output.next_page"
+#~ msgstr "下一页"
+
+#~ msgid "tui.workflow.output.page"
+#~ msgstr "第 {page} 页，共 {pages} 页"
+
+#~ msgid "tui.workflow.output.previous_page"
+#~ msgstr "上一页"
 
 #~ msgid "tui.workflow.overview"
 #~ msgstr "概览"

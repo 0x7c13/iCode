@@ -9,6 +9,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+import chrys.orchestration.workflows.agent_node_build as agent_node_build_module
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
     ApprovalRequest,
@@ -138,6 +139,8 @@ async def test_approvals_keep_the_original_request_across_retries_and_replace_it
 async def test_node_usage_across_calls_retries_and_nodes_is_persisted_without_changing_the_main_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The timeout is retried in place; its production backoff would only add seconds.
+    monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
     project = make_project(tmp_path)
     reference = project / "reference.txt"
     reference.write_text("reference", encoding="utf-8")

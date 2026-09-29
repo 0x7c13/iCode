@@ -25,7 +25,10 @@ from tests.support.tui_helpers import (
 )
 from tests.support.waiting import DEFAULT_WAIT_TIMEOUT, wait_for, wait_until, wait_until_quiet
 
-_TURNS = 60
+# At _SIZE either history replays as a tail batch and two prepend batches,
+# so the first and the last prepended batch differ.
+_TURNS = 36
+_TOOL_TURNS = 24
 _SIZE = (80, 24)
 
 
@@ -613,7 +616,7 @@ async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(monkeyp
     async with ChatPanelApp().run_test(size=_SIZE) as pilot:
         cp = pilot.app.query_one(ChatPanel)
         gate = _PrependGate(cp, monkeypatch)
-        await cp.replay_history(_turns(40, with_tools=True))
+        await cp.replay_history(_turns(_TOOL_TURNS, with_tools=True))
         await gate.wait_held(pilot)
         mounted_groups = list(cp.query(ToolGroup))
         assert mounted_groups
@@ -627,8 +630,8 @@ async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(monkeyp
         await _wait_complete(cp)
         groups = list(cp.query(ToolGroup))
 
-        assert len(groups) == 40
-        assert [group.collapsed for group in groups] == [False] * 40
+        assert len(groups) == _TOOL_TURNS
+        assert [group.collapsed for group in groups] == [False] * _TOOL_TURNS
         # Everything is expanded now, so the next fold-all collapses.
         assert cp.toggle_fold_all() is True
 
@@ -649,7 +652,7 @@ async def test_fold_all_while_the_last_batch_mounts_outlasts_the_choice_before_i
                 folds.append(cp.toggle_fold_all())
 
         monkeypatch.setattr(cp, "mount_replay_batch", mount_replay_batch)
-        await cp.replay_history(_turns(40, with_tools=True))
+        await cp.replay_history(_turns(_TOOL_TURNS, with_tools=True))
         await gate.wait_held(pilot)
         assert cp.toggle_fold_all() is False
 
@@ -657,4 +660,4 @@ async def test_fold_all_while_the_last_batch_mounts_outlasts_the_choice_before_i
         await _wait_complete(cp)
 
         assert folds == [True]
-        assert [group.collapsed for group in cp.query(ToolGroup)] == [True] * 40
+        assert [group.collapsed for group in cp.query(ToolGroup)] == [True] * _TOOL_TURNS

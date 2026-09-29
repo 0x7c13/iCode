@@ -750,7 +750,7 @@ icode workflow list [--json]
 #### 参数
 
 ```shell
-icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeout SECONDS] [--json]
+icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeout SECONDS] [--json] [-q]
 ```
 
 | 参数 | 默认值与用途 |
@@ -761,11 +761,12 @@ icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeou
 | `--trust` | 信任当前自定义源码及环境；内置工作流无需此选项 |
 | `--timeout SECONDS` | 默认无总时限；必须为有限正数，覆盖预览、工作流加载和执行；不包含会话恢复、部分初始化及清理时间，超时后仍等待清理完成 |
 | `--json` | 使用 JSON 输出 |
+| `-q` / `--quiet` | 不在 stderr 显示进度；仍显示警告、错误、加载输出和节点外输出，以及最终输出 |
 | `-h` / `--help` | 查看帮助 |
 
 #### 文本输出
 
-不加 `--json` 时使用文本模式，将最终输出按声明顺序拼接到 stdout，多份结果之间空一行。节点状态、`ctx.emit()` 进度、加载输出及未归属输出等运行诊断写入 stderr。
+不加 `--json` 时使用文本模式，将最终输出按声明顺序拼接到 stdout，多份结果之间空一行。进度逐行写入 stderr，每个步骤一行：节点状态、智能体节点的工具调用及其间写下的说明、`ctx.emit()` 进度、循环迭代，以及运行成功时最后的 `✓ Workflow completed` 行。加载输出、节点外输出等运行诊断也写入 stderr。`--quiet` 隐藏进度，但保留警告、错误，以及加载输出和节点外输出。
 
 #### JSON 输出
 

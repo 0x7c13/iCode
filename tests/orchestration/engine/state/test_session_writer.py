@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.service.profiles.models.schema import ModelProfile
@@ -32,12 +33,15 @@ def _seed_identity_components(store: JsonFileStateStore, tmp_path: Path) -> tupl
         "model_profile_fingerprint": "original-model-fingerprint",
         "workspace": workspace,
         "model_profile": model,
+        "last_surface": SessionSurface.CLI,
     }
     components = make_checkpoint_components(store, "original")
     profile = _profile("Original", "Original display")
     profile.id = "agent-id"
     components.session.agent_profile = profile
     components.session.workspace = workspace
+    components.session.surface = SessionSurface.CLI
+    components.session.mark_surface()
     install_loaded_agent(
         components,
         agent_profile_fingerprint="original-agent-fingerprint",
@@ -48,7 +52,7 @@ def _seed_identity_components(store: JsonFileStateStore, tmp_path: Path) -> tupl
 
 
 @pytest.mark.parametrize("operation", ["checkpoint", "barrier", "strict", "primary"])
-async def test_session_writes_preserve_all_eight_identity_fields(tmp_path: Path, operation: str) -> None:
+async def test_session_writes_preserve_all_nine_identity_fields(tmp_path: Path, operation: str) -> None:
     components, expected = _seed_identity_components(JsonFileStateStore(tmp_path), tmp_path)
     if operation == "checkpoint":
         method = "save_recovery_session"

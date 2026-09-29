@@ -33,13 +33,13 @@ Agents in a workflow use the same tool approval process as Chat mode. Before run
 
 The example first asks how deeply to read the project. Choose `deep` to try parallel analysis by multiple agents, or `quick` for a quick reading by one agent with fewer calls.
 
-During execution, watch the graph to see which nodes are running, completed, or skipped. To stop the workflow, click “⏹ Cancel” and confirm.
+During execution, watch the graph to see which nodes are running, completed, or skipped. To stop the workflow, click “■ Cancel” and confirm.
 
 If an error puts a node in the “awaiting retry” state, click it to inspect the error details, resolve the issue, and click “Retry”. You can also close the node details and cancel the entire run. Manual retry applies only to nodes awaiting retry in the current run; it cannot rerun completed nodes or resume a run that has ended. Retrying may repeat file writes or external requests, and changes already made are not automatically undone.
 
 After generating a project introduction, the example includes the draft in a question for review. Answer `ok` to accept it, or provide specific revision requests. The example performs at most two writing rounds and outputs the final introduction. The `deep` path also outputs suggestions for further reading.
 
-When the run ends, open “Output” to view the final result. Click “▶ Start” again to enter new input and run again.
+When the run ends with a result, click “Result” to the right of “■ Cancel” to read the final output. If the workflow has several outputs, each one gets its own tab, named after its output node. “Output” still shows the full record, including node states and progress messages. Click “▶ Start” again to enter new input and run again.
 
 A workflow session can save multiple runs. Click the “Run 1”, “Run 2”, and subsequent run tabs above “Workflow”, “Info”, and the other tabs to browse each run. After quitting and reopening iCode, first switch to “Workflow” through the app mode selector in the upper left. Press `F1` or click `f1 Sessions` at the bottom of the interface, then select a workflow session to view its historical inputs, outputs, and node records.
 
@@ -577,13 +577,31 @@ icode workflow run WORKFLOW_ID --input "Input text" --trust
 
 After creating or changing a workflow file, `--trust` confirms trust in the current source and execution environment, just as clicking “Trust” does in the TUI. It can be omitted if the previously trusted content has not changed. See [Trust confirmation](../../reference/workflows.md#trust-confirmation) for the scope of these checks and what happens during loading.
 
+To view a run started from the command line in the TUI, open the "Workflow Sessions" window and check "CLI".
+
 ### Save text results
 
-By default, the CLI outputs each output node's `text`, with a blank line between results. Final results go to stdout (standard output); node states and progress messages sent by `ctx.emit()` go to stderr (standard error). Redirect the final results to a file with `>`:
+By default, the CLI outputs each output node's `text`, with a blank line between results. Final results go to stdout (standard output). While the workflow runs, its progress goes to stderr (standard error): each node's state, what an agent node does (its tool calls and the notes it writes between them), and messages sent by `ctx.emit()`. For example:
+
+```text
+• Starting workflow review…
+Workflow Code review (review) · run 0b337219bb2e · session 890c8ee93562
+▸ [plan] running
+  [plan] → read   src/app.py
+  [plan]   ✓ 0.1s
+✓ [plan] completed · 4.2s
+▸ [report] running
+✓ [report] completed · 2.0s
+✓ Workflow completed · 6.5s
+```
+
+On a terminal, control characters in the results are shown as `�`. Redirect the final results to a file with `>` to keep them exactly as written; the progress still shows in the terminal:
 
 ```shell
 icode workflow run WORKFLOW_ID --input "Input text" > result.txt
 ```
+
+To see only warnings, errors and the final results, add `-q` or `--quiet`.
 
 ### Get JSON results
 

@@ -4,18 +4,14 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from rich.style import Style
 from rich.text import Text
-from textual.app import App, ComposeResult
 from textual.events import MouseMove
 from textual.widgets import Button, DataTable, Static
 
-from chrys.app.tui.i18n import LocaleController
-from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.sessions.presenter import format_size
 from chrys.app.tui.screens.sessions.screen import (
     SessionsScreen,
@@ -25,122 +21,19 @@ from chrys.app.tui.screens.sessions.screen import (
 )
 from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
-from chrys.foundation.config.settings import Settings
-from chrys.service.state.store import ChatSessionMeta, SessionMeta
+from chrys.service.state.store import ChatSessionMeta
 from tests.support.waiting import wait_for
 
-
-class _SessionsApp(App):
-    locale_controller = LocaleController(Settings(locale="en"))
-
-    def compose(self) -> ComposeResult:
-        yield Static("placeholder")
-
-
-class _SessionStore:
-    def __init__(self, count: int) -> None:
-        base = datetime(2026, 1, 1, tzinfo=UTC)
-        self.sessions = [
-            ChatSessionMeta(
-                session_id=f"session-{index}",
-                agent_profile="Code",
-                agent_display_name="Code",
-                created_at=base - timedelta(minutes=index),
-                updated_at=base - timedelta(minutes=index),
-                message_count=1,
-                title=f"Session {index}",
-            )
-            for index in range(count)
-        ]
-
-    async def list_sessions(self) -> list[SessionMeta]:
-        return list(self.sessions)
-
-    async def stream_session_metas(self, *, batch_size: int = 32, kind=None):
-        for start in range(0, len(self.sessions), batch_size):
-            yield list(self.sessions[start : start + batch_size])
-
-    async def delete_session(self, session_id: str, *, allow_active: bool = False) -> None:
-        self.sessions = [session for session in self.sessions if session.session_id != session_id]
-
-
-class _DelayedFinalBatchStore(_SessionStore):
-    def __init__(self, count: int, initial_count: int) -> None:
-        super().__init__(count)
-        self.initial_count = initial_count
-        self.initial_batch_yielded = asyncio.Event()
-        self.release_final_batch = asyncio.Event()
-
-    async def stream_session_metas(self, *, batch_size: int = 32, kind=None):
-        yield list(self.sessions[: self.initial_count])
-        self.initial_batch_yielded.set()
-        await self.release_final_batch.wait()
-        remaining = self.sessions[self.initial_count :]
-        if remaining:
-            yield list(remaining)
-
-
-class _BlockedReloadStore(_SessionStore):
-    def __init__(self, count: int) -> None:
-        super().__init__(count)
-        self.stream_calls = 0
-        self.reload_started = asyncio.Event()
-        self.release_reload = asyncio.Event()
-
-    async def stream_session_metas(self, *, batch_size: int = 32, kind=None):
-        self.stream_calls += 1
-        if self.stream_calls > 1:
-            self.reload_started.set()
-            await self.release_reload.wait()
-        yield list(self.sessions)
-
-
-class _PartialBlockedReloadStore(_SessionStore):
-    def __init__(self, count: int) -> None:
-        super().__init__(count)
-        self.stream_calls = 0
-        self.reload_started = asyncio.Event()
-        self.partial_batch_yielded = asyncio.Event()
-        self.release_reload = asyncio.Event()
-
-    async def stream_session_metas(self, *, batch_size: int = 32, kind=None):
-        self.stream_calls += 1
-        if self.stream_calls == 1:
-            yield list(self.sessions)
-            return
-
-        self.reload_started.set()
-        sessions = list(self.sessions)
-        if sessions:
-            yield sessions[:1]
-        self.partial_batch_yielded.set()
-        await self.release_reload.wait()
-        if len(sessions) > 1:
-            yield sessions[1:]
-
-
-async def _wait_for_row_count(table: DataTable, pilot, count: int) -> None:
-    await wait_for(
-        lambda: table.row_count == count,
-        pilot=pilot,
-        description=f"sessions table reaches {count} rows",
-    )
-
-
-async def _wait_for_load_idle(screen: SessionsScreen, pilot) -> None:
-    await wait_for(
-        lambda: not screen._loading,
-        pilot=pilot,
-        description="Expected sessions load to become idle",
-    )
-
-
-async def _wait_for_event(event: asyncio.Event, pilot) -> None:
-    await wait_for(
-        event.is_set,
-        pilot=pilot,
-        description="Expected event to be set",
-    )
+from ._sessions_support import (
+    FakeSessionStore,
+    GatedPageStore,
+    SessionsHostApp,
+    confirm_delete,
+    open_delete_dialog,
+    wait_for_blocked_loads,
+    wait_for_load_idle,
+    wait_for_row_count,
+)
 
 
 async def _wait_for_results(results: list[str | None], pilot, count: int) -> None:
@@ -151,31 +44,16 @@ async def _wait_for_results(results: list[str | None], pilot, count: int) -> Non
     )
 
 
-async def _open_delete_dialog(screen: SessionsScreen, pilot) -> ConfirmDialog:
-    screen.action_delete_session()
-    await pilot.pause()
-    dialog = pilot.app.screen
-    assert isinstance(dialog, ConfirmDialog)
-    return dialog
-
-
-async def _confirm_delete(screen: SessionsScreen, pilot) -> None:
-    dialog = await _open_delete_dialog(screen, pilot)
-    dialog.query_one("#confirm-yes", Button).press()
-    await pilot.pause()
-
-
 @pytest.mark.asyncio
-async def test_chat_session_browser_excludes_workflow_sessions() -> None:
-    store = _SessionStore(3)
-    store.sessions[1].kind = "workflow"
-    app = _SessionsApp()
+@pytest.mark.parametrize("workflow_mode", [False, True])
+async def test_session_browser_lists_only_its_mode_kind(workflow_mode: bool) -> None:
+    store = FakeSessionStore(3)
+    app = SessionsHostApp()
     async with app.run_test() as pilot:
-        screen = SessionsScreen(store)
+        screen = SessionsScreen(store, workflow_mode=workflow_mode)
         await app.push_screen(screen)
-        await _wait_for_load_idle(screen, pilot)
-        assert screen._session_ids == ["session-0", "session-2"]
-        assert screen.query_one("#sessions", DataTable).row_count == 2
+        await wait_for_load_idle(screen, pilot)
+        assert store.listings_opened == ["workflow" if workflow_mode else "chat"]
 
 
 @pytest.mark.asyncio
@@ -270,25 +148,27 @@ class TestNextSessionIdAfterDelete:
 
 
 @pytest.mark.asyncio
-async def test_initial_load_shows_loading_until_final_rows_ready() -> None:
-    store = _DelayedFinalBatchStore(count=4, initial_count=2)
+async def test_initial_load_shows_loading_until_the_page_is_ready() -> None:
+    store = GatedPageStore(4, free_loads=0)
     store.sessions[3].updated_at = datetime(2026, 1, 2, tzinfo=UTC)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_event(store.initial_batch_yielded, pilot)
+        await wait_for_blocked_loads(store, pilot, 1)
 
         assert table.row_count == 0
         assert not bool(table.display)
         assert bool(screen.query_one("#sessions-loading-state").display)
         assert isinstance(screen.query_one("#sessions-loading"), ChrysLoadingIndicator)
         assert not bool(screen.query_one("#footer").display)
+        assert not bool(screen.query_one("#filters").display)
+        assert not bool(screen.query_one("#empty-note").display)
         assert screen.query_one("#container").border_subtitle == "Loading sessions"
 
-        store.release_final_batch.set()
-        await _wait_for_row_count(table, pilot, 4)
+        store.release_all()
+        await wait_for_row_count(table, pilot, 4)
 
         assert not bool(screen.query_one("#sessions-loading-state").display)
         assert bool(table.display)
@@ -300,18 +180,18 @@ async def test_initial_load_shows_loading_until_final_rows_ready() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_keeps_same_visible_row_when_following_rows_remain() -> None:
-    store = _SessionStore(8)
+    store = FakeSessionStore(8)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 8)
+        await wait_for_row_count(table, pilot, 8)
 
         table.move_cursor(row=4)
         await pilot.pause()
-        await _confirm_delete(screen, pilot)
-        await _wait_for_row_count(table, pilot, 7)
+        await confirm_delete(screen, pilot)
+        await wait_for_row_count(table, pilot, 7)
 
         assert table.cursor_coordinate.row == 4
         assert screen._get_selected_session_id() == "session-5"
@@ -319,18 +199,18 @@ async def test_delete_keeps_same_visible_row_when_following_rows_remain() -> Non
 
 @pytest.mark.asyncio
 async def test_delete_selects_previous_row_when_deleted_row_was_last() -> None:
-    store = _SessionStore(5)
+    store = FakeSessionStore(5)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 5)
+        await wait_for_row_count(table, pilot, 5)
 
         table.move_cursor(row=4)
         await pilot.pause()
-        await _confirm_delete(screen, pilot)
-        await _wait_for_row_count(table, pilot, 4)
+        await confirm_delete(screen, pilot)
+        await wait_for_row_count(table, pilot, 4)
 
         assert table.cursor_coordinate.row == 3
         assert screen._get_selected_session_id() == "session-3"
@@ -338,16 +218,16 @@ async def test_delete_selects_previous_row_when_deleted_row_was_last() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_leaves_no_selection_when_no_rows_remain() -> None:
-    store = _SessionStore(1)
+    store = FakeSessionStore(1)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 1)
+        await wait_for_row_count(table, pilot, 1)
 
-        await _confirm_delete(screen, pilot)
-        await _wait_for_row_count(table, pilot, 0)
+        await confirm_delete(screen, pilot)
+        await wait_for_row_count(table, pilot, 0)
 
         assert screen._get_selected_session_id() is None
         assert bool(screen.query_one("#empty-note").display)
@@ -358,19 +238,19 @@ async def test_delete_leaves_no_selection_when_no_rows_remain() -> None:
 @pytest.mark.asyncio
 async def test_delete_other_session_does_not_yank_cursor_to_current() -> None:
     """Post-delete the cursor lands on the neighbor, not the loaded session."""
-    store = _SessionStore(5)
+    store = FakeSessionStore(5)
     screen = SessionsScreen(store, current_session_id="session-0")
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 5)
+        await wait_for_row_count(table, pilot, 5)
         assert screen._get_selected_session_id() == "session-0"
 
         table.move_cursor(row=3)
         await pilot.pause()
-        await _confirm_delete(screen, pilot)
-        await _wait_for_row_count(table, pilot, 4)
+        await confirm_delete(screen, pilot)
+        await wait_for_row_count(table, pilot, 4)
 
         assert table.cursor_coordinate.row == 3
         assert screen._get_selected_session_id() == "session-4"
@@ -378,15 +258,15 @@ async def test_delete_other_session_does_not_yank_cursor_to_current() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_after_sort_selects_visible_neighbor_by_session_id() -> None:
-    store = _SessionStore(4)
+    store = FakeSessionStore(4)
     for index, turns in enumerate((40, 10, 20, 30)):
         store.sessions[index].turn_count = turns
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 4)
+        await wait_for_row_count(table, pilot, 4)
 
         _click_header(screen, 4)  # Turns — descending first.
         await pilot.pause()
@@ -396,8 +276,8 @@ async def test_delete_after_sort_selects_visible_neighbor_by_session_id() -> Non
         await pilot.pause()
         assert screen._get_selected_session_id() == "session-3"
 
-        await _confirm_delete(screen, pilot)
-        await _wait_for_row_count(table, pilot, 3)
+        await confirm_delete(screen, pilot)
+        await wait_for_row_count(table, pilot, 3)
 
         assert [table.get_row_at(i)[4].plain for i in range(3)] == ["40", "20", "10"]
         assert table.cursor_coordinate.row == 1
@@ -406,74 +286,81 @@ async def test_delete_after_sort_selects_visible_neighbor_by_session_id() -> Non
 
 @pytest.mark.asyncio
 async def test_delete_reload_final_render_preserves_user_cursor_move() -> None:
-    store = _BlockedReloadStore(4)
+    store = GatedPageStore(4)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 4)
+        await wait_for_row_count(table, pilot, 4)
 
         table.move_cursor(row=1)
         await pilot.pause()
-        await _confirm_delete(screen, pilot)
-        await _wait_for_event(store.reload_started, pilot)
-        await _wait_for_row_count(table, pilot, 3)
+        await confirm_delete(screen, pilot)
+        await wait_for_blocked_loads(store, pilot, 1)
+        await wait_for_row_count(table, pilot, 3)
         assert screen._get_selected_session_id() == "session-2"
+        # Counted before the reload lands, too.
+        assert screen.query_one("#container").border_subtitle == "3 sessions"
 
         table.move_cursor(row=2)
         await pilot.pause()
         assert screen._get_selected_session_id() == "session-3"
 
-        store.release_reload.set()
-        await _wait_for_load_idle(screen, pilot)
+        store.release_all()
+        await wait_for_load_idle(screen, pilot)
 
         assert screen._get_selected_session_id() == "session-3"
 
 
 @pytest.mark.asyncio
-async def test_rapid_delete_optimistic_render_uses_last_rendered_full_source() -> None:
-    store = _PartialBlockedReloadStore(4)
+async def test_rapid_delete_while_reload_is_pending_renders_from_the_last_render() -> None:
+    store = GatedPageStore(4)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 4)
+        await wait_for_row_count(table, pilot, 4)
 
         table.move_cursor(row=0)
         await pilot.pause()
-        await _confirm_delete(screen, pilot)
-        await _wait_for_event(store.partial_batch_yielded, pilot)
-        await _wait_for_row_count(table, pilot, 3)
+        await confirm_delete(screen, pilot)
+        await wait_for_blocked_loads(store, pilot, 1)
+        await wait_for_row_count(table, pilot, 3)
         assert [table.get_row_at(i)[0].plain for i in range(3)] == ["session1", "session2", "session3"]
 
         table.move_cursor(row=1)
         await pilot.pause()
-        await _confirm_delete(screen, pilot)
-        await _wait_for_row_count(table, pilot, 2)
+        await confirm_delete(screen, pilot)
+        await wait_for_row_count(table, pilot, 2)
 
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["session1", "session3"]
         assert screen._get_selected_session_id() == "session-3"
 
-        store.release_reload.set()
-        await _wait_for_load_idle(screen, pilot)
+        # The second delete's reload replaced the first.
+        await wait_for_blocked_loads(store, pilot, 2)
+        await wait_for(lambda: store.cancelled_loads == 1, pilot=pilot, description="first reload is cancelled")
+        store.release_all()
+        await wait_for_load_idle(screen, pilot)
+        assert [table.get_row_at(i)[0].plain for i in range(2)] == ["session1", "session3"]
+        assert screen._get_selected_session_id() == "session-3"
 
 
 @pytest.mark.asyncio
 async def test_delete_confirmation_uses_neighbor_from_dialog_open_order() -> None:
-    store = _SessionStore(4)
+    store = FakeSessionStore(4)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 4)
+        await wait_for_row_count(table, pilot, 4)
 
         table.move_cursor(row=1)
         await pilot.pause()
         assert screen._get_selected_session_id() == "session-1"
-        dialog = await _open_delete_dialog(screen, pilot)
+        dialog = await open_delete_dialog(screen, pilot)
 
         store.sessions[3].updated_at = datetime(2026, 1, 3, tzinfo=UTC)
         screen._render_table()
@@ -481,25 +368,25 @@ async def test_delete_confirmation_uses_neighbor_from_dialog_open_order() -> Non
         assert [table.get_row_at(i)[0].plain for i in range(4)] == ["session3", "session0", "session1", "session2"]
 
         dialog.query_one("#confirm-yes", Button).press()
-        await _wait_for_row_count(table, pilot, 3)
+        await wait_for_row_count(table, pilot, 3)
 
         assert screen._get_selected_session_id() == "session-2"
 
 
 @pytest.mark.asyncio
 async def test_delete_optimistic_render_uses_current_stable_source_after_dialog_refresh() -> None:
-    store = _BlockedReloadStore(3)
+    store = GatedPageStore(3)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 3)
+        await wait_for_row_count(table, pilot, 3)
 
         table.move_cursor(row=1)
         await pilot.pause()
         assert screen._get_selected_session_id() == "session-1"
-        dialog = await _open_delete_dialog(screen, pilot)
+        dialog = await open_delete_dialog(screen, pilot)
 
         discovered_session = ChatSessionMeta(
             session_id="session-new",
@@ -516,27 +403,27 @@ async def test_delete_optimistic_render_uses_current_stable_source_after_dialog_
         assert screen._session_ids == ["session-new", "session-0", "session-1", "session-2"]
 
         dialog.query_one("#confirm-yes", Button).press()
-        await _wait_for_event(store.reload_started, pilot)
-        await _wait_for_row_count(table, pilot, 3)
+        await wait_for_blocked_loads(store, pilot, 1)
+        await wait_for_row_count(table, pilot, 3)
 
         assert screen._session_ids == ["session-new", "session-0", "session-2"]
         assert screen._get_selected_session_id() == "session-2"
 
-        store.release_reload.set()
-        await _wait_for_load_idle(screen, pilot)
+        store.release_all()
+        await wait_for_load_idle(screen, pilot)
 
 
 @pytest.mark.asyncio
 async def test_delete_session_cancel_leaves_row_intact() -> None:
-    store = _SessionStore(2)
+    store = FakeSessionStore(2)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 2)
+        await wait_for_row_count(table, pilot, 2)
 
-        dialog = await _open_delete_dialog(screen, pilot)
+        dialog = await open_delete_dialog(screen, pilot)
         message = dialog.query_one("#confirm-message", Static)
         confirm = dialog.query_one("#confirm-yes", Button)
         assert message.render().plain == 'Delete session\n"session0"?\n\nThis cannot be undone.'
@@ -552,15 +439,15 @@ async def test_delete_session_cancel_leaves_row_intact() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_session_escape_cancels_confirmation() -> None:
-    store = _SessionStore(2)
+    store = FakeSessionStore(2)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 2)
+        await wait_for_row_count(table, pilot, 2)
 
-        await _open_delete_dialog(screen, pilot)
+        await open_delete_dialog(screen, pilot)
         await pilot.press("escape")
         await pilot.pause()
 
@@ -570,16 +457,16 @@ async def test_delete_session_escape_cancels_confirmation() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_current_session_requires_confirmation_before_dismiss() -> None:
-    store = _SessionStore(2)
+    store = FakeSessionStore(2)
     screen = SessionsScreen(store, current_session_id="session-0")
     results: list[str | None] = []
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen, callback=results.append)
         table = screen.query_one("#sessions", DataTable)
-        await _wait_for_row_count(table, pilot, 2)
+        await wait_for_row_count(table, pilot, 2)
 
-        dialog = await _open_delete_dialog(screen, pilot)
+        dialog = await open_delete_dialog(screen, pilot)
 
         assert results == []
         dialog.query_one("#confirm-yes", Button).press()
@@ -592,16 +479,16 @@ async def test_delete_current_session_requires_confirmation_before_dismiss() -> 
 
 @pytest.mark.asyncio
 async def test_sessions_table_treats_session_metadata_as_plain_text() -> None:
-    store = _SessionStore(1)
+    store = FakeSessionStore(1)
     store.sessions[0].agent_profile_history = ["Code [/home/jack]"]
     store.sessions[0].primary_cwd = "/tmp/[/project]"
     store.sessions[0].title = "Review crash from [/home/jack]"
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 1)
+        await wait_for_row_count(table, pilot, 1)
 
         cells = table.get_row_at(0)
         assert all(isinstance(cell, Text) for cell in cells)
@@ -615,7 +502,8 @@ async def test_sessions_table_treats_session_metadata_as_plain_text() -> None:
             "Directory: /tmp/[/project]\n"
             "Turns: 0\n"
             "Total tokens: 0\n"
-            f"Last interaction: {last_interaction}"
+            f"Last interaction: {last_interaction}\n"
+            "Last used in: TUI"
         )
 
 
@@ -628,16 +516,16 @@ def _click_header(screen: SessionsScreen, column_index: int) -> None:
 
 @pytest.mark.asyncio
 async def test_header_click_sorts_and_click_again_reverses() -> None:
-    store = _SessionStore(3)
+    store = FakeSessionStore(3)
     store.sessions[0].turn_count = 5
     store.sessions[1].turn_count = 20
     store.sessions[2].turn_count = 1
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 3)
+        await wait_for_row_count(table, pilot, 3)
 
         _click_header(screen, 4)  # Turns — numeric, descending first
         await pilot.pause()
@@ -652,13 +540,13 @@ async def test_header_click_sorts_and_click_again_reverses() -> None:
 
 @pytest.mark.asyncio
 async def test_header_click_keeps_selected_session() -> None:
-    store = _SessionStore(4)
+    store = FakeSessionStore(4)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 4)
+        await wait_for_row_count(table, pilot, 4)
 
         table.move_cursor(row=2)
         await pilot.pause()
@@ -674,19 +562,19 @@ async def test_header_click_keeps_selected_session() -> None:
 async def test_search_filters_rows_and_highlights_matches(theme: str) -> None:
     from textual.widgets import Input
 
-    store = _SessionStore(5)
+    store = FakeSessionStore(5)
     store.sessions[3].title = "unique needle title"
     screen = SessionsScreen(store)
 
-    app = _SessionsApp()
+    app = SessionsHostApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.theme = theme
         await app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 5)
+        await wait_for_row_count(table, pilot, 5)
 
         screen.query_one("#search", Input).value = "needle"
-        await _wait_for_row_count(table, pilot, 1)
+        await wait_for_row_count(table, pilot, 1)
 
         title_cell = table.get_row_at(0)[1]
         assert title_cell.plain == "unique needle title"
@@ -699,20 +587,20 @@ async def test_search_filters_rows_and_highlights_matches(theme: str) -> None:
         assert screen._get_selected_session_id() == "session-3"
 
         screen.query_one("#search", Input).value = ""
-        await _wait_for_row_count(table, pilot, 5)
+        await wait_for_row_count(table, pilot, 5)
 
 
 @pytest.mark.asyncio
 async def test_search_escape_clears_then_returns_focus_to_table() -> None:
     from textual.widgets import Input
 
-    store = _SessionStore(2)
+    store = FakeSessionStore(2)
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 2)
+        await wait_for_row_count(table, pilot, 2)
 
         search = screen.query_one("#search", Input)
         search.focus()
@@ -734,15 +622,15 @@ async def test_search_escape_clears_then_returns_focus_to_table() -> None:
 
 @pytest.mark.asyncio
 async def test_forked_sessions_nest_under_parent_with_tree_guides() -> None:
-    store = _SessionStore(3)
+    store = FakeSessionStore(3)
     # session-2 is a fork of session-0; forks carry the parent's full id.
     store.sessions[2].parent_session_id = "session-0"
     screen = SessionsScreen(store)
 
-    async with _SessionsApp().run_test(size=(120, 40)) as pilot:
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
         await pilot.app.push_screen(screen)
         table = screen.query_one("#sessions", _SessionTable)
-        await _wait_for_row_count(table, pilot, 3)
+        await wait_for_row_count(table, pilot, 3)
 
         # Default sort: newest first — session-0 root, its fork right below.
         first_column = [table.get_row_at(i)[0].plain for i in range(3)]

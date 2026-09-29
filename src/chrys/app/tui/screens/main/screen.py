@@ -2837,6 +2837,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _on_workflow_stop(self) -> None:
         self._workflow.run_control.stop()
 
+    @on(WorkflowPanel.ResultRequested)
+    def _on_workflow_result(self, event: WorkflowPanel.ResultRequested) -> None:
+        event.stop()
+        self._workflow.session_view.open_result()
+
     @on(WorkflowGraph.NodeSelected)
     def _on_workflow_node(self, event: WorkflowGraph.NodeSelected) -> None:
         event.stop()

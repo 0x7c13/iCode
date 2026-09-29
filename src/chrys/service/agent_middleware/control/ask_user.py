@@ -28,6 +28,7 @@ from chrys.foundation.trajectory.event_types import WaitCategory
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import _SHORT_ID_LEN
 from chrys.service.agent_middleware.events.hook_dispatch import get_call_id
+from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.trajectory.tools import tool_operation_id
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
@@ -155,59 +156,52 @@ class AskUserMiddleware(FunctionMiddleware):
 
         request_id = uuid4().hex[:_SHORT_ID_LEN]
 
-        # Subscribe before publishing (same pattern as ApprovalMiddleware)
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[AskUserResponse] = loop.create_future()
-
-        async def _handler(event: AskUserResponse) -> None:
-            if event.request_id == request_id and not future.done():
-                future.set_result(event)
-
-        await self._bus.subscribe(AskUserResponse, _handler)
-
-        await self._bus.publish(
-            QuestionToUser(
-                request_id=request_id,
-                questions=questions,
-                session_id=self._session_id,
-                call_id=get_call_id(context),
-                caller_name=self._caller_name,
-            )
-        )
-
-        timeout = self._timeout_seconds
-        wait = WaitTrace.open(WaitCategory.USER_INPUT, target_operation_id=tool_operation_id(context.metadata))
-        try:
-            # Inside the block that closes the wait and drops the subscription:
-            # the start marker awaits its write ack, and an interrupt landing
-            # there is exactly the case the cancellation branch below exists for.
-            if wait is not None:
-                await wait.started()
-            response = await (future if timeout is None else asyncio.wait_for(future, timeout=timeout))
-            if response.cancelled:
-                context.result = tool_error(
-                    "ask_user_no_response",
-                    "user did not provide a response.",
-                    retryable=True,
+        # Subscribe before publishing. Publishing awaits frontend handlers and
+        # can be cancelled before the response wait starts, so the subscription
+        # is owned across that whole interval.
+        async with OneShotCorrelation(self._bus, AskUserResponse, request_id=request_id) as correlation:
+            future = correlation.future
+            await self._bus.publish(
+                QuestionToUser(
+                    request_id=request_id,
+                    questions=questions,
+                    session_id=self._session_id,
+                    call_id=get_call_id(context),
+                    caller_name=self._caller_name,
                 )
-            else:
-                answers = _answers_from_response(response, question_count=len(questions))
-                context.result = format_ask_user_result(questions, answers)
-            if wait is not None:
-                await wait.finished()
-        except TimeoutError:
-            if wait is not None:
-                await wait.finished(outcome=WaitOutcome.TIMED_OUT)
-            context.result = tool_error(
-                "ask_user_timeout",
-                f"user did not respond within {_format_timeout(timeout or 0)}.",
-                retryable=True,
-                details={"timeout_seconds": timeout or 0},
             )
-            await self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))
-        except asyncio.CancelledError:
-            if wait is not None:
-                wait.finished_soon(outcome=WaitOutcome.CANCELLED)
-            raise
-        finally:
-            await self._bus.unsubscribe(AskUserResponse, _handler)
+
+            timeout = self._timeout_seconds
+            wait = WaitTrace.open(WaitCategory.USER_INPUT, target_operation_id=tool_operation_id(context.metadata))
+            try:
+                # Inside the block that closes the wait and drops the subscription:
+                # the start marker awaits its write ack, and an interrupt landing
+                # there is exactly the case the cancellation branch below exists for.
+                if wait is not None:
+                    await wait.started()
+                response = await (future if timeout is None else asyncio.wait_for(future, timeout=timeout))
+                if response.cancelled:
+                    context.result = tool_error(
+                        "ask_user_no_response",
+                        "user did not provide a response.",
+                        retryable=True,
+                    )
+                else:
+                    answers = _answers_from_response(response, question_count=len(questions))
+                    context.result = format_ask_user_result(questions, answers)
+                if wait is not None:
+                    await wait.finished()
+            except TimeoutError:
+                if wait is not None:
+                    await wait.finished(outcome=WaitOutcome.TIMED_OUT)
+                context.result = tool_error(
+                    "ask_user_timeout",
+                    f"user did not respond within {_format_timeout(timeout or 0)}.",
+                    retryable=True,
+                    details={"timeout_seconds": timeout or 0},
+                )
+                await self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))
+            except asyncio.CancelledError:
+                if wait is not None:
+                    wait.finished_soon(outcome=WaitOutcome.CANCELLED)
+                raise

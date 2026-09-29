@@ -34,6 +34,7 @@ _EXPORTS = {
     "HATCH_GLYPH": "hatch",
     "hatch_style": "hatch",
     "HatchedEmptyState": "hatch",
+    "PageNavigator": "page_navigator",
     "PromptDraft": "ask_user_prompt",
     "Select": "select",
     "StableAutoHeightScroll": "dialog_scroll",

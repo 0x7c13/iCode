@@ -17,6 +17,7 @@ import chrys.orchestration.workflows.agent_node_build as agent_node_module
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.events.types import Event, WorkflowRunAccepted
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes
 from chrys.kernel import FunctionTool
@@ -106,6 +107,7 @@ def make_host(
     loaded_settings: LoadedSettings | None = None,
     settings: Settings | None = None,
     approval_mode: ApprovalMode | None = ApprovalMode.BYPASS,
+    surface: SessionSurface | None = None,
 ) -> ChrysSessionHost:
     models = ModelProfileRegistry()
     models.register(
@@ -128,6 +130,7 @@ def make_host(
         workspace=workspace,
         allow_user_interaction=allow_user_interaction,
         session_id=session_id,
+        surface=surface,
     )
 
 

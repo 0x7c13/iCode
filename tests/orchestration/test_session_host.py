@@ -30,10 +30,12 @@ from chrys.foundation.events.types import (
     ApprovalRequest,
     AskUserResponse,
     Error,
+    Event,
     InvocationAborted,
     InvocationMessage,
     InvocationPaused,
     InvocationToolCallResult,
+    InvocationToolCallStart,
     QuestionToUser,
     SessionRestore,
     SessionRestored,
@@ -242,7 +244,7 @@ async def test_session_host_defaults_to_bypass_approval(monkeypatch: pytest.Monk
     )
 
     try:
-        result = await host.run_until_final("run the tool", timeout=45)
+        result = await host.run_until_final("run the tool", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -261,6 +263,37 @@ async def test_session_host_defaults_to_bypass_approval(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_run_until_final_hands_every_streamed_event_to_on_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    client = MockChatClient(
+        responses=[
+            MockResponse(tool_calls=[("guarded_echo", "c1", {"message": "hi"})]),
+            MockResponse(text="done"),
+        ]
+    )
+    _patch_runtime(monkeypatch, [client], [_make_tool()])
+    settings, model_registry = _make_settings_and_models()
+    host = ChrysSessionHost(
+        profile_name="Headless",
+        settings=settings,
+        agent_registry=_make_agent_registry(_make_profile()),
+        model_registry=model_registry,
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+    seen: list[Event] = []
+
+    try:
+        result = await host.run_until_final("run the tool", timeout=45, keep_events=True, on_event=seen.append)
+    finally:
+        await host.shutdown()
+
+    assert result.text == "done"
+    assert seen == result.events
+    assert any(isinstance(event, InvocationToolCallResult) for event in seen)
+
+
+@pytest.mark.asyncio
 async def test_session_host_auto_start_streams_load_before_final_message(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -276,7 +309,7 @@ async def test_session_host_auto_start_streams_load_before_final_message(
     )
 
     try:
-        result = await host.run_until_final("prompt", timeout=45)
+        result = await host.run_until_final("prompt", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -555,7 +588,7 @@ async def test_session_host_restores_existing_session(monkeypatch: pytest.Monkey
 
     await second._bus.subscribe(SessionRestore, collect_restore_request)
     try:
-        second_result = await second.run_until_final("second prompt", timeout=45)
+        second_result = await second.run_until_final("second prompt", timeout=45, keep_events=True)
     finally:
         await second.shutdown()
 
@@ -575,7 +608,9 @@ async def test_session_host_restores_existing_session(monkeypatch: pytest.Monkey
     assert [event.operation for event in second_result.events if isinstance(event, AgentLoadStarted)] == ["restore"]
     assert [event.operation for event in second_result.events if isinstance(event, AgentLoadFinished)] == ["restore"]
     assert clients == []
-    session_dirs = [path.name for path in (tmp_path / "sessions").iterdir() if path.is_dir() and path.name != ".locks"]
+    session_dirs = [
+        path.name for path in (tmp_path / "sessions").iterdir() if path.is_dir() and not path.name.startswith(".")
+    ]
     assert session_dirs == [session_short_id(session_id)]
 
 
@@ -1598,6 +1633,74 @@ async def test_session_host_hides_ask_user_from_delegated_agent(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["run_until_final", "iter_turn_events"])
+async def test_a_delegated_agents_tool_calls_reach_the_headless_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, entry: str
+) -> None:
+    """Child activity is headless-visible (only its prose stays private), so its local tool calls carry the session.
+
+    ``iter_turn_events`` is the ACP server's entry, which forwards them as ``chrys/sub_agent_tool_call_*``.
+    """
+    parent_client = MockChatClient(
+        responses=[
+            MockResponse(tool_calls=[("Explore", "sub-1", {"prompt": "inspect the workspace"})]),
+            MockResponse(text="delegation complete"),
+        ]
+    )
+    sub_agent_client = MockChatClient(
+        responses=[
+            MockResponse(tool_calls=[("guarded_echo", "child-1", {"message": "hi"})]),
+            MockResponse(text="inspection complete"),
+        ]
+    )
+    _patch_runtime(monkeypatch, [parent_client], [_make_tool()])
+    monkeypatch.setattr(
+        sub_agent_module,
+        "create_client",
+        create_autospec(sub_agent_module.create_client, return_value=sub_agent_client),
+    )
+    settings, model_registry = _make_settings_and_models()
+    parent_profile = _make_profile(approval_default="skip")
+    parent_profile.sub_agents = SubAgentsConfig(agents=[SubAgentRef(profile="Explore")])
+    sub_agent_profile = AgentProfile(
+        name="Explore",
+        sub_agent_only=True,
+        instructions="Inspect the workspace.",
+        tools=ToolsConfig(builtins=[]),
+        approval=ApprovalConfig(default="skip", overrides={}),
+        compaction=CompactionConfig(enabled=False),
+    )
+    host = ChrysSessionHost(
+        profile_name="Headless",
+        settings=settings,
+        agent_registry=_make_agent_registry_many(parent_profile, sub_agent_profile),
+        model_registry=model_registry,
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+
+    try:
+        if entry == "run_until_final":
+            result = await host.run_until_final("delegate this task", timeout=45, keep_events=True)
+            assert result.text == "delegation complete"
+            events, session_id = result.events, result.session_id
+        else:
+            events = [event async for event in host.iter_turn_events("delegate this task")]
+            session_id = host.session_id
+    finally:
+        await host.shutdown()
+
+    child_calls = [
+        event
+        for event in events
+        if isinstance(event, InvocationToolCallStart | InvocationToolCallResult) and event.origin.kind == "sub_agent"
+    ]
+    assert [type(event) for event in child_calls] == [InvocationToolCallStart, InvocationToolCallResult]
+    assert {event.call_id for event in child_calls} == {child_calls[0].call_id}
+    assert session_id
+    assert all(event.session_id == session_id for event in child_calls)
+
+
+@pytest.mark.asyncio
 async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -1631,7 +1734,7 @@ async def test_session_host_ends_a_failed_delegation_instead_of_pausing_it(
     )
 
     try:
-        result = await host.run_until_final("delegate this task", timeout=45)
+        result = await host.run_until_final("delegate this task", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -1761,7 +1864,7 @@ async def test_session_host_interactive_ask_user_completes_turn(monkeypatch: pyt
     )
 
     try:
-        result = await host.run_until_final("ask me something", timeout=45)
+        result = await host.run_until_final("ask me something", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 
@@ -1840,7 +1943,7 @@ async def test_session_host_ignores_sessionless_run_events(monkeypatch: pytest.M
     )
 
     try:
-        result = await host.run_until_final("prompt", timeout=45)
+        result = await host.run_until_final("prompt", timeout=45, keep_events=True)
     finally:
         await host.shutdown()
 

@@ -285,7 +285,7 @@ class _Host:
         self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
         self._current = self.current
         self.permits = _HostPermits()
-        self.session = SimpleNamespace()
+        self.session = SimpleNamespace(mark_surface=lambda: None)
         self._turn_state = make_turn_state()
         self._bus = EventBus()
         self.session.session_id = None
@@ -606,7 +606,7 @@ async def test_pending_retry_dispatch_strips_trailing_markers_before_task() -> N
         def __init__(self) -> None:
             self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
             self._current = self.current
-            self.session = SimpleNamespace()
+            self.session = SimpleNamespace(mark_surface=lambda: None)
             self._turn_state = make_turn_state()
             self._history = _OrderedHistory()
             self._fsm = EngineStateMachine()

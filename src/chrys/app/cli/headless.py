@@ -198,6 +198,19 @@ def restore_delta_warnings(loaded: LoadedSettings, pending: Iterable[Warning]) -
     ]
 
 
+def reported_warning_keys(runtime: PreparedRuntime) -> set[tuple[str, str]]:
+    """``(code, message)`` of every pending warning, under both of its wordings.
+
+    The pending list reports the retry environment variable in its
+    compatibility wording, while a later settings load (an engine start, a
+    workflow's admission) composes the same verdict generically; progress
+    output counts either spelling as already reported.
+    """
+    keys = {(warning.code, warning.message) for warning in runtime.pending_warnings}
+    keys.update((warning.code, warning.message) for warning in settings_warning_events(runtime.loaded))
+    return keys
+
+
 def exception_message(exc: BaseException) -> str:
     # KeyError's ``str()`` wraps the message in quotes; ``args[0]`` keeps it clean.
     if isinstance(exc, KeyError) and exc.args:

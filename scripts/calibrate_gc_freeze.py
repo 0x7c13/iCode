@@ -9,10 +9,10 @@ Run serially from the repository root::
 The probe mounts the real ChrysApp/MainScreen graph and exercises coordinator
 sequences, every participant, background timers/tasks, transcript Markdown/diff
 LRUs, selection, viewport invalidation, full transcript scrolling, hidden
-terminal output, a populated file-suggestion index, and frozen ToolGroup
-removal. Optional repeated theme invalidation is a separate policy stress. The
-script emits one JSON report and exits nonzero when any whole-App, retained-byte,
-dead-object, removal-recovery, or ratio-based latency gate fails.
+terminal output, a populated file-suggestion index, and repeated frozen
+ToolGroup removal. Optional repeated theme invalidation is a separate policy
+stress. The script emits one JSON report and exits nonzero when any whole-App,
+retained-byte, dead-object, removal-recovery, or ratio-based latency gate fails.
 Action latency includes any deferred full-screen layout an action schedules
 (the cyclic-cache fallback's cache renewal), not only the coordinator's
 synchronous GC/hook duration. The absorb and full-reclaim gates express it in
@@ -45,6 +45,7 @@ from gc_freeze_calibration_math import (
     dead_cyclic_fraction,
     latency_in_unfrozen_collects,
     minimum_deferred_diff_surfaces,
+    steady_growth_per_cycle,
     validated_absorb_points,
 )
 from profile_chat_panel import _populate_realistic_session
@@ -103,6 +104,11 @@ _ACTION_POLL_SECONDS = 0.01
 _POST_ACTION_REFRESH_HOPS = 2
 _CALIBRATION_SCROLL_SETTLE_SECONDS = 0.35
 _COLLAPSE_PROBE_CALL_ID = "gc-collapse-probe"
+# At --turns 12 the reclaimed heap rose about 110 KB and 50 KB over the first two
+# collapse cycles and about 2 KB per cycle after them. Keeping the removed tool
+# subtree would add its whole peak, about 650 KB, every cycle.
+_COLLAPSE_CYCLES = 6
+_COLLAPSE_WARMUP_CYCLES = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,18 +133,29 @@ class IntervalResult:
 
 
 @dataclass(frozen=True, slots=True)
-class CollapseResult:
-    """Frozen completed-tool removal peak and full-reclaim recovery."""
+class CollapseCycle:
+    """One frozen completed-tool removal: its retained peak and the full reclaim after it."""
 
     retained_peak_bytes: int
     bytes_before_collapse: int
     bytes_after_reclaim: int
     descendant_alive_while_frozen: bool
     descendant_reclaimed: bool
-    baseline_recovered: bool
+    removal_reason_recorded: bool
     reclaim_ms: float
     reclaim_layout_ms: float
     reclaim_layout_passes: int
+    passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CollapseResult:
+    """Repeated collapse cycles and how the reclaimed heap grows across them."""
+
+    cycles: tuple[CollapseCycle, ...]
+    warmup_cycles: int
+    steady_growth_bytes_per_cycle: float
+    growth_limit_bytes_per_cycle: int
     gate_passed: bool
 
 
@@ -903,7 +920,7 @@ async def _measure_tool_group_collapse(
     app: ChrysApp,
     pilot,
     panel: ChatPanel,
-) -> CollapseResult:
+) -> CollapseCycle:
     group = panel._tool_groups_by_call_id.get(_COLLAPSE_PROBE_CALL_ID)
     if (
         group is None
@@ -947,26 +964,23 @@ async def _measure_tool_group_collapse(
     bytes_after_reclaim = tracemalloc.get_traced_memory()[0]
     descendant_reclaimed = not _weakref_alive(descendant_ref)
     retained_peak_bytes = max(0, peak_bytes - bytes_after_reclaim)
-    baseline_recovered = bytes_after_reclaim <= bytes_before_collapse + _MEASUREMENT_NOISE_BYTES
     removal_reason_recorded = GcReclaimReason.STABLE_CONTENT_REMOVED.value in action_metrics.idle_reclaim_reasons
-    gate_passed = (
-        descendant_alive_while_frozen
-        and descendant_reclaimed
-        and baseline_recovered
-        and retained_peak_bytes > 0
-        and removal_reason_recorded
-    )
-    result = CollapseResult(
+    result = CollapseCycle(
         retained_peak_bytes=retained_peak_bytes,
         bytes_before_collapse=bytes_before_collapse,
         bytes_after_reclaim=bytes_after_reclaim,
         descendant_alive_while_frozen=descendant_alive_while_frozen,
         descendant_reclaimed=descendant_reclaimed,
-        baseline_recovered=baseline_recovered,
+        removal_reason_recorded=removal_reason_recorded,
         reclaim_ms=action.duration_ms,
         reclaim_layout_ms=action.layout_ms,
         reclaim_layout_passes=action.layout_passes,
-        gate_passed=gate_passed,
+        passed=(
+            descendant_alive_while_frozen
+            and descendant_reclaimed
+            and retained_peak_bytes > 0
+            and removal_reason_recorded
+        ),
     )
     group.collapsed = False
     for _ in range(100):
@@ -976,6 +990,43 @@ async def _measure_tool_group_collapse(
     if not group._content_mounted or not group._tools:
         raise RuntimeError("collapsed ToolGroup did not rebuild after reclaim calibration")
     return result
+
+
+async def _measure_repeated_tool_group_collapse(
+    *,
+    app: ChrysApp,
+    pilot,
+    panel: ChatPanel,
+    turns: int,
+    cycles: int = _COLLAPSE_CYCLES,
+    warmup_cycles: int = _COLLAPSE_WARMUP_CYCLES,
+) -> CollapseResult:
+    """Collapse the probe repeatedly and gate on how the reclaimed heap grows.
+
+    One cycle's heap before the collapse and after its reclaim differ by whether the
+    probe's content was render-cached when it collapsed, which swings the difference
+    by that content's size between runs of the same code. Every cycle ends in the
+    same state, collapsed and fully reclaimed, so retained work shows as steady
+    growth of that settled heap once the warm-up cycles have filled one-off caches.
+    """
+    measured: list[CollapseCycle] = []
+    for _ in range(cycles):
+        measured.append(await _measure_tool_group_collapse(app=app, pilot=pilot, panel=panel))
+        # Freeze the rebuilt content, so the next collapse removes frozen content
+        # again and reaches the idle full reclaim.
+        await _wait_for_render_surfaces(pilot=pilot, panel=panel, turns=turns)
+        await _request_full_reclaim(coordinator=app._gc_freeze, pilot=pilot)
+    growth = steady_growth_per_cycle(
+        [cycle.bytes_after_reclaim for cycle in measured],
+        warmup_cycles=warmup_cycles,
+    )
+    return CollapseResult(
+        cycles=tuple(measured),
+        warmup_cycles=warmup_cycles,
+        steady_growth_bytes_per_cycle=growth,
+        growth_limit_bytes_per_cycle=_MEASUREMENT_NOISE_BYTES,
+        gate_passed=all(cycle.passed for cycle in measured) and growth <= _MEASUREMENT_NOISE_BYTES,
+    )
 
 
 async def _measure_unfrozen_full_collect(
@@ -1187,9 +1238,12 @@ async def calibrate(
 
                 _install_file_cache(screen, 0)
                 await _request_full_reclaim(coordinator=app._gc_freeze, pilot=pilot)
-                collapse = await _measure_tool_group_collapse(app=app, pilot=pilot, panel=panel)
-                await _wait_for_render_surfaces(pilot=pilot, panel=panel, turns=turns)
-                await _request_full_reclaim(coordinator=app._gc_freeze, pilot=pilot)
+                collapse = await _measure_repeated_tool_group_collapse(
+                    app=app,
+                    pilot=pilot,
+                    panel=panel,
+                    turns=turns,
+                )
 
                 file_index = _install_file_cache(screen, suggestion_count)
                 large_absorb_samples, large_frozen_collect_samples = await _measure_absorb_latency_samples(
@@ -1271,7 +1325,7 @@ async def calibrate(
             full_with_file_ms = max(interval.full_reclaim_ms for interval in intervals)
             representative_full_ms = max(
                 baseline.full_reclaim_ms,
-                collapse.reclaim_ms,
+                collapse.cycles[0].reclaim_ms,
                 statistics.median(interval.full_reclaim_ms for interval in intervals),
             )
             full_to_unfrozen_ratio = latency_in_unfrozen_collects(

@@ -10,6 +10,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+import chrys.orchestration.workflows.agent_node_build as agent_node_build_module
 from chrys.foundation.events.types import WorkflowRunAccepted, WorkflowRunFinished, WorkflowRunStarted
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.mutations.store import SnapshotStore
@@ -31,6 +32,8 @@ async def test_file_writes_share_one_period_across_retries_then_open_a_new_perio
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The timeout is retried in place; its production backoff would only add seconds.
+    monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
     project = make_project(tmp_path)
     file = project / "target.txt"
     file.write_text("before")

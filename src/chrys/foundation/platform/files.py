@@ -15,6 +15,7 @@ import stat
 import tempfile
 from ctypes import wintypes
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
@@ -301,6 +302,34 @@ def _strip_created_posix_acl(fd: int) -> None:
         _strip_darwin_acl(fd)
 
 
+def strip_inherited_acl(fd: int) -> None:
+    """Drop the ACL entries a file just created inherited from its directory.
+
+    On macOS a directory's inheritable entries (``everyone allow read,
+    file_inherit``) grant access beside ``st_mode``, so a private mode alone
+    does not make a new file private. Linux needs nothing (its POSIX.1e mask
+    follows the group bits a private mode clears), nor does Windows here or a
+    filesystem without ACLs.
+    """
+    _strip_created_posix_acl(fd)
+
+
+def strip_inherited_directory_acl(path: Path) -> None:
+    """``strip_inherited_acl`` for a directory just created at *path*.
+
+    Strip it before creating anything inside: whatever is created in a
+    directory without an ACL inherits none.
+    """
+    if not _is_macos():
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags)
+    try:
+        _strip_darwin_acl(fd)
+    finally:
+        os.close(fd)
+
+
 def _verify_posix_owner_only(fd: int) -> None:
     _verify_posix_owner_identity(fd)
     info = os.fstat(fd)
@@ -347,6 +376,7 @@ def _open_posix_parent(path: Path) -> tuple[int, str]:
     return directory_fd, absolute.name
 
 
+@cache
 def _windows_file_api() -> _WindowsFileAPI:
     """Load the small Win32 security API surface used by secure files."""
     windows_ctypes = cast(Any, ctypes)
@@ -704,6 +734,19 @@ def _windows_final_path(api: _WindowsFileAPI, handle: int) -> str:
     return text
 
 
+def _windows_os_error(code: int, path: Path) -> OSError:
+    """Build the ``OSError`` Python raises for a failed Win32 file call on *path*.
+
+    The Win32 code sets ``winerror`` and maps to the POSIX ``errno`` (so an
+    access denial is a ``PermissionError`` and a missing parent is ENOENT),
+    and the message is the system's own text.
+    """
+    return OSError(None, cast(Any, ctypes).FormatError(code).strip(), str(path), code)
+
+
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_REPARSE_TAG_NAME_SURROGATE = 0x20000000
 _WINDOWS_SHARE_READ = 0x00000001
 _WINDOWS_SHARE_WRITE = 0x00000002
 _WINDOWS_SHARE_DELETE = 0x00000004
@@ -732,8 +775,16 @@ def _windows_secure_open(
     delete: bool = False,
     append: bool = False,
     verify_identity_only: bool = False,
+    legacy_import: bool = False,
 ) -> int:
-    """Open a Windows file handle without traversing a final reparse point."""
+    """Open a Windows file handle without traversing a final reparse point.
+
+    ``legacy_import`` opens a regular file of any owner for
+    ``secure_open_regular_binary``: open failures are raised as Windows
+    reports them, and a reparse point is refused only when it names another
+    file (a symbolic link, a junction), since cloud placeholders, deduplicated
+    and WOF-compressed files keep their data behind one.
+    """
     api = _windows_file_api()
     access = (0x80000000 if read else 0) | (0x40000000 if write else 0) | (0x00010000 if delete else 0)
     share = WINDOWS_SECURE_OPEN_SHARE_MODE
@@ -772,6 +823,8 @@ def _windows_secure_open(
         if security_descriptor is not None:
             api.kernel32.LocalFree(security_descriptor)
     if handle == wintypes.HANDLE(-1).value:
+        if legacy_import:
+            raise _windows_os_error(create_error, path)
         raise SecureFileError(create_error, "Unable to open owner-only Windows file.")
 
     class _FileAttributeTagInfo(ctypes.Structure):
@@ -789,7 +842,10 @@ def _windows_secure_open(
             ctypes.sizeof(info),
         ):
             raise _windows_error(api, "Unable to inspect owner-only Windows file.")
-        if info.file_attributes & (0x00000010 | 0x00000400):
+        refused_reparse = info.file_attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT and (
+            not legacy_import or info.reparse_tag & _WINDOWS_REPARSE_TAG_NAME_SURROGATE
+        )
+        if info.file_attributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY or refused_reparse:
             raise SecureFileError("Secure Windows file is a directory or reparse point.")
         # The pathname-based parent walk is racy against junction swaps;
         # re-verify by handle that traversal landed on the validated path.
@@ -813,7 +869,10 @@ def _windows_secure_open(
         api.kernel32.CloseHandle(handle)
         raise
     try:
-        if verify_identity_only:
+        if legacy_import:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SecureFileError("Secure file is not a regular file.")
+        elif verify_identity_only:
             verify_owner_identity_fd(fd)
         else:
             verify_owner_only_fd(fd)
@@ -1149,6 +1208,73 @@ def secure_open_owner_verified_binary(path: Path) -> BinaryIO:
         os.close(fd)
         raise
     return os.fdopen(fd, "rb")
+
+
+def secure_open_regular_binary(path: Path) -> BinaryIO:
+    """Read a regular file without following its final link, accepting any readable owner/mode.
+
+    For explicit imports of legacy data only: migration may import files an
+    elevated older release created. Only the leaf is opened no-follow; the
+    parents are traversed as by any open, so a parent alias or an ancestor the
+    user may enter but not list still works (the owner-verified reader opens
+    every parent and needs read access to each). Open failures are raised as
+    the system reports them: migration shows them as the reason a file stayed
+    behind.
+    """
+    if _is_windows():
+        # The handle's final path must match the requested one, so compare
+        # against the parents' real spelling (a mapped drive, a junction).
+        target = path.parent.resolve() / path.name
+        pinned = _windows_secure_open(target, read=True, write=False, create=False, truncate=False, legacy_import=True)
+        try:
+            fd = _windows_reopen_same_file(target, pinned)
+        finally:
+            os.close(pinned)
+        return os.fdopen(fd, "rb")
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    # Never block inside open(2): a planted FIFO would otherwise wedge the
+    # caller before the regular-file verification can reject it.
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise SecureFileError("Secure file is not a regular file.")
+        _clear_posix_nonblock(fd)
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
+
+
+def _windows_reopen_same_file(path: Path, pinned_fd: int) -> int:
+    """Reopen *path* for reading as any program would, pinned to *pinned_fd*'s file.
+
+    The no-follow handle proves the leaf is no link, but it opens a reparse
+    point itself, and for a cloud placeholder (OneDrive Files On-Demand), a
+    deduplicated or a WOF-compressed file that is the raw stream behind the
+    filter, not the file's content. The ordinary reopen reads through the
+    filter; since it resolves the name again, it must land on the same file.
+    """
+    api = _windows_file_api()
+    handle = api.kernel32.CreateFileW(str(path), 0x80000000, WINDOWS_SECURE_OPEN_SHARE_MODE, None, 3, 0x00000080, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise _windows_os_error(cast(Any, ctypes).get_last_error(), path)
+    try:
+        fd = _windows_open_osfhandle(
+            int(handle), os.O_RDONLY | getattr(os, "O_NOINHERIT", 0) | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        api.kernel32.CloseHandle(handle)
+        raise
+    try:
+        if not os.path.samestat(os.fstat(pinned_fd), os.fstat(fd)):
+            raise SecureFileError("Windows file was replaced while it was being opened.")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def atomic_write_owner_only_bytes(path: Path, payload: bytes, *, create_parents: bool = True) -> None:

@@ -27,6 +27,7 @@ from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, API
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.workspace import Workspace
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.schema import ModelProfile
@@ -209,6 +210,7 @@ class SessionPersistence:
         service_session_id: str | None = None,
         agent_profile_fingerprint: str = "",
         model_profile_fingerprint: str | None = None,
+        last_surface: SessionSurface | None = None,
         raise_on_error: bool = False,
     ) -> bool:
         """Persist session state to disk and publish ``SessionSaved``.
@@ -285,6 +287,7 @@ class SessionPersistence:
                 model_base_url=model_base_url,
                 model_profile_fingerprint=model_profile_fingerprint,
                 service_session_id=service_session_id,
+                last_surface=last_surface,
             )
             self._last_checkpoint = (session_id, checkpoint) if checkpoint is not None else None
             await self._bus.publish(SessionSaved(session_id=session_id))
@@ -308,6 +311,7 @@ class SessionPersistence:
         model_profile: ModelProfile | None = None,
         agent_profile_fingerprint: str = "",
         model_profile_fingerprint: str | None = None,
+        last_surface: SessionSurface | None = None,
     ) -> None:
         """Persist a recovery sidecar, logging and swallowing write failures."""
         try:
@@ -321,6 +325,7 @@ class SessionPersistence:
                 model_profile=model_profile,
                 agent_profile_fingerprint=agent_profile_fingerprint,
                 model_profile_fingerprint=model_profile_fingerprint,
+                last_surface=last_surface,
             )
         except Exception:
             logger.warning("Failed to save recovery session %s", session_id, exc_info=True)
@@ -337,6 +342,7 @@ class SessionPersistence:
         model_profile: ModelProfile | None = None,
         agent_profile_fingerprint: str = "",
         model_profile_fingerprint: str | None = None,
+        last_surface: SessionSurface | None = None,
     ) -> bool:
         """Persist a recovery sidecar and propagate every write-path failure."""
         if self._state_store is None or session_id is None or not has_real_messages(history_state):
@@ -394,6 +400,7 @@ class SessionPersistence:
             model_profile_id=model_profile_id,
             model_base_url=model_base_url,
             model_profile_fingerprint=model_profile_fingerprint,
+            last_surface=last_surface,
         )
         return True
 

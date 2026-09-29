@@ -1748,3 +1748,31 @@ async def test_interrupting_a_pending_approval_records_its_resolution() -> None:
         == sink.only(EventType.APPROVAL_REQUESTED).payload["approval_request_id"]
     )
     assert resolved.payload["wait_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_approval_cancelled_during_request_publication_unsubscribes() -> None:
+    bus = EventBus()
+    publishing = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def block_request(_event: ApprovalRequest) -> None:
+        publishing.set()
+        await blocked.wait()
+
+    await bus.subscribe(ApprovalRequest, block_request)
+    middleware = ApprovalMiddleware(approval_policy=_require_all_policy(), event_bus=bus)
+    harness = await _Harness.attach(bus)
+    task = harness.start(middleware, _ctx("write_file", "shell", {"command": "touch file"}))
+    try:
+        await wait_for(lambda: publishing.is_set() or task.done(), description="request publication or early exit")
+        if task.done():
+            await task  # Surface an early failure instead of a publication timeout.
+        assert publishing.is_set()
+        assert len(bus._handlers[ApprovalResponse]) == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert bus._handlers[ApprovalResponse] == []
+    assert harness.called is False

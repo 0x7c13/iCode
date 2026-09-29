@@ -19,6 +19,7 @@ from rich.cells import cell_len
 from chrys.app.tui.util.formatting import format_byte_size
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.util.session_ids import session_short_id
 
 if TYPE_CHECKING:
@@ -66,6 +67,22 @@ _STATUS_INTERRUPTED = msg("tui.sessions.status.interrupted", fallback="Interrupt
 _STATUS_CANCELLED = msg("tui.sessions.status.cancelled", fallback="Cancelled")
 _STATUS_FAILED = msg("tui.sessions.status.failed", fallback="Error")
 _STATUS_COMPLETED = msg("tui.sessions.status.completed", fallback="Completed")
+
+_SURFACE_TUI = msg("tui.sessions.surface.tui", fallback="TUI")
+_SURFACE_CLI = msg("tui.sessions.surface.cli", fallback="CLI")
+_SURFACE_ACP = msg("tui.sessions.surface.acp", fallback="ACP")
+SURFACE_LABELS = {
+    SessionSurface.TUI: _SURFACE_TUI,
+    SessionSurface.CLI: _SURFACE_CLI,
+    SessionSurface.ACP: _SURFACE_ACP,
+}
+_SURFACE_UNKNOWN = msg("tui.sessions.surface.unknown", fallback="Unknown")
+
+
+def surface_label(surface: SessionSurface | None) -> MessageRef:
+    """Where the session was last used; sessions saved before that was recorded read as unknown."""
+    return (SURFACE_LABELS[surface] if surface is not None else _SURFACE_UNKNOWN).bind()
+
 
 WORKFLOW_STATUSES = {
     "running": _STATUS_RUNNING,

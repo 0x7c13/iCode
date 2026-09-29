@@ -879,7 +879,10 @@ class SessionLifecycle:
             return
 
         try:
-            new_session_id = await asyncio.to_thread(state_store.fork_session, active_session_id)
+            # Forking is work on the new session, so it starts out on this launch's surface.
+            new_session_id = await asyncio.to_thread(
+                state_store.fork_session, active_session_id, last_surface=self._session.surface
+            )
         except SessionNotFoundError:
             await self._publish_session_fork_error(
                 "session_fork_not_found",

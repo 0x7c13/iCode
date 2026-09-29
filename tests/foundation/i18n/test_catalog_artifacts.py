@@ -675,6 +675,16 @@ def test_extraction_rejects_msg_calls_without_the_canonical_import(tmp_path: Pat
         i18n.extract_messages(source_root, location_root=source_root)
 
 
+def test_extraction_reads_a_file_that_spells_msg_only_in_fullwidth(tmp_path: Path) -> None:
+    # Extraction skips files that never mention msg, but Python reads
+    # identifiers NFKC-normalized: a fullwidth msg() call is still a msg()
+    # call, so it is still checked.
+    source_root = _source_root(tmp_path, "MESSAGE = \uff4d\uff53\uff47('rogue.key', fallback='Rogue')\n")
+
+    with pytest.raises(i18n.CatalogToolError, match="canonical"):
+        i18n.extract_messages(source_root, location_root=source_root)
+
+
 def test_extraction_rejects_a_conditional_canonical_import(tmp_path: Path) -> None:
     # A conditional canonical import can lose to a rogue same-name binding at
     # runtime while the extractor would still record the call site.

@@ -4,16 +4,21 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import chrys.service.state.session_migration as migration_module
-from chrys.foundation.platform.files import atomic_write_owner_only_bytes, secure_open_owner_only_binary
+from chrys.foundation.platform.files import secure_open_owner_only_binary
 from chrys.foundation.util.lock import FileLock
 from chrys.service.state.session_migration import (
     MigrationItem,
@@ -28,6 +33,7 @@ from chrys.service.state.store import (
     session_dir_candidates,
     session_write_lock_path,
 )
+from tests.support.secure_files import plant_owner_only_bytes
 
 
 def _make_session(root: Path, short_id: str, *, text: str = "hello") -> Path:
@@ -66,7 +72,8 @@ def test_plan_and_run_copy_sessions_into_fresh_destination(tmp_path: Path) -> No
     first_session = _make_session(src, "aaaaaaaaaaaa")
     _make_session(src, "bbbbbbbbbbbb", text="second")
     source_image = first_session / "doc_converter" / "image-copied.png"
-    atomic_write_owner_only_bytes(source_image, b"copied-image")
+    source_image.parent.mkdir()
+    plant_owner_only_bytes(source_image, b"copied-image")
     (src / ".locks").mkdir()
     (src / ".locks" / "stray.write.lock").write_text("")
     (src / SESSION_MRU_FILE_NAME).write_text("{}")
@@ -401,9 +408,6 @@ def test_a_legacy_file_open_refuses_a_link_even_without_the_lstat_check(tmp_path
     victim.write_text("{}")
     link = tmp_path / "link.json"
     _symlink_or_skip(link, victim, directory=False)
-    if not hasattr(os, "O_NOFOLLOW"):
-        pytest.skip("O_NOFOLLOW unavailable on this platform")
-
     with pytest.raises(OSError):
         migration_module._open_source_file(link)
 
@@ -424,7 +428,7 @@ def test_legacy_flat_file_is_copied(tmp_path: Path) -> None:
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     src.mkdir()
-    (src / "legacylegacy.json").write_text(json.dumps({"meta": {"session_id": "legacylegacy"}}))
+    plant_owner_only_bytes(src / "legacylegacy.json", json.dumps({"meta": {"session_id": "legacylegacy"}}).encode())
     (src / SESSION_MRU_FILE_NAME).write_text("{}")
 
     plan = plan_session_migration(src, dst)
@@ -453,7 +457,7 @@ def test_legacy_file_copy_never_follows_a_planted_partial_symlink(tmp_path: Path
     src.mkdir()
     dst.mkdir()
     payload = json.dumps({"meta": {"session_id": "legacylegacy"}})
-    (src / "legacylegacy.json").write_text(payload)
+    plant_owner_only_bytes(src / "legacylegacy.json", payload.encode())
     victim = tmp_path / "victim.txt"
     victim.write_text("untouched")
     _symlink_or_skip(dst / f"legacylegacy.json.partial-{os.getpid()}", victim, directory=False)
@@ -603,3 +607,314 @@ def test_junctions_dropped_when_nested_and_rejected_at_root(tmp_path: Path, monk
     assert not (dst / "jjjjjjjjjjjj").exists()
     assert not (dst / "aaaaaaaaaaaa" / "compactions" / "planted").exists()
     assert (dst / "aaaaaaaaaaaa" / "compactions" / "real" / "keep.txt").read_text() == "y"
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o644])
+def test_legacy_permissions_are_accepted_but_destination_is_private(tmp_path: Path, mode: int) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "legacylegacy.json"
+    # Deliberately reproduce an older writer, including the elevated token's
+    # default owner on Windows, rather than planting a modern owner-only file.
+    source.write_bytes(b'{"legacy":true}')
+    source.chmod(mode)
+    dst = tmp_path / "dst"
+    report = run_session_migration(plan_session_migration(src, dst))
+    assert report.failed == ()
+    assert report.copied == ("legacylegacy",)
+    copied = dst / source.name
+    assert copied.read_bytes() == b'{"legacy":true}'
+    assert source.read_bytes() == b'{"legacy":true}'
+    if os.name != "nt":
+        # The copy never inherits a broad legacy mode: it is written as
+        # privately as the session store writes its own files.
+        assert stat.S_IMODE(copied.stat().st_mode) == 0o600
+        assert source.stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_session_folder_copy_keeps_files_private_and_their_timestamps(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    session = _make_session(src, "aaaaaaaaaaaa")
+    readable = {SESSION_FILE_NAME: 0o644, "snapshots/turn_1.json": 0o640, "hook.sh": 0o755}
+    (session / "hook.sh").write_text("#!/bin/sh\n")
+    for relative, mode in readable.items():
+        (session / relative).chmod(mode)
+    os.utime(session / SESSION_FILE_NAME, (1_000_000, 1_000_000))
+    dst = tmp_path / "dst"
+
+    report = run_session_migration(plan_session_migration(src, dst))
+
+    assert report.failed == ()
+    assert report.copied == ("aaaaaaaaaaaa",)
+    copied = dst / "aaaaaaaaaaaa"
+    assert {relative: stat.S_IMODE((copied / relative).stat().st_mode) for relative in readable} == {
+        SESSION_FILE_NAME: 0o600,
+        "snapshots/turn_1.json": 0o600,
+        "hook.sh": 0o700,
+    }
+    assert (copied / SESSION_FILE_NAME).stat().st_mtime == 1_000_000
+    assert {relative: stat.S_IMODE((session / relative).stat().st_mode) for relative in readable} == readable
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS file flags")
+def test_locked_session_files_are_copied_private_and_stay_locked(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    session = _make_session(src, "aaaaaaaaaaaa")
+    locked = session / SESSION_FILE_NAME
+    locked.chmod(0o644)
+    content = locked.read_bytes()
+    dst = tmp_path / "dst"
+    copied = dst / "aaaaaaaaaaaa" / SESSION_FILE_NAME
+    # Finder's "Locked": copy2 copies it after the mode, and a locked file
+    # refuses even its owner's chmod.
+    os.chflags(locked, stat.UF_IMMUTABLE)
+    try:
+        report = run_session_migration(plan_session_migration(src, dst))
+
+        assert report.failed == ()
+        assert report.copied == ("aaaaaaaaaaaa",)
+        info = os.stat(copied)
+        assert stat.S_IMODE(info.st_mode) == 0o600
+        assert info.st_flags & stat.UF_IMMUTABLE
+        with secure_open_owner_only_binary(copied) as handle:
+            assert handle.read() == content
+    finally:
+        for path in (locked, copied):
+            if os.path.lexists(path):
+                os.chflags(path, 0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+@pytest.mark.parametrize(("error", "migrates"), [(errno.EPERM, True), (errno.EIO, False)])
+def test_only_a_filesystem_that_refuses_the_mode_keeps_a_broad_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: int, migrates: bool
+) -> None:
+    src = tmp_path / "src"
+    session = _make_session(src, "aaaaaaaaaaaa")
+    (session / SESSION_FILE_NAME).chmod(0o644)
+    real_chmod = os.chmod
+
+    def refuse_narrowing(path: str, mode: int, *, follow_symlinks: bool = True) -> None:
+        # copy2 still copies the source's mode; only the narrowing is refused.
+        if mode == 0o600:
+            raise OSError(error, os.strerror(error), path)
+        real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(migration_module.os, "chmod", refuse_narrowing)
+    dst = tmp_path / "dst"
+
+    report = run_session_migration(plan_session_migration(src, dst))
+
+    if migrates:
+        # exFAT, FAT and some network shares refuse modes: the copy keeps the
+        # one the filesystem reports, as the store's own saves do there.
+        assert report.failed == ()
+        assert report.copied == ("aaaaaaaaaaaa",)
+        assert stat.S_IMODE((dst / "aaaaaaaaaaaa" / SESSION_FILE_NAME).stat().st_mode) == 0o644
+    else:
+        assert report.copied == ()
+        assert [source for source, _reason in report.failed] == [session]
+        assert os.strerror(errno.EIO) in report.failed[0][1]
+        assert not (dst / "aaaaaaaaaaaa").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS ACLs grant access beside the mode bits")
+def test_migrated_copies_drop_an_acl_the_destination_passes_on(tmp_path: Path) -> None:
+    from chrys.foundation.platform import files
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    granted = subprocess.run(
+        ["chmod", "+a", "everyone allow read,list,search,file_inherit,directory_inherit", str(shared)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+    )
+    if granted.returncode != 0:
+        pytest.skip(f"this volume cannot carry ACLs: {granted.stderr!r}")
+
+    def assert_no_acl(path: Path) -> None:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            files._verify_darwin_no_acl(fd)
+        finally:
+            os.close(fd)
+
+    # The destination really passes its ACL on to what is created in it.
+    (shared / "control.json").write_text("{}")
+    with pytest.raises(files.SecureFileError, match="extended ACL"):
+        assert_no_acl(shared / "control.json")
+    src = tmp_path / "src"
+    _make_session(src, "aaaaaaaaaaaa")
+    (src / "legacylegacy.json").write_bytes(b"legacy")
+    dst = shared / "sessions"
+
+    report = run_session_migration(plan_session_migration(src, dst))
+
+    assert report.failed == ()
+    assert set(report.copied) == {"aaaaaaaaaaaa", "legacylegacy"}
+    session = dst / "aaaaaaaaaaaa"
+    for copied in (dst / "legacylegacy.json", session / SESSION_FILE_NAME, session / "snapshots" / "turn_1.json"):
+        # Owner-only, as the session store's secure readers require: 0600 and no ACL.
+        with secure_open_owner_only_binary(copied) as handle:
+            assert handle.read()
+    for directory in (session, session / "snapshots"):
+        assert_no_acl(directory)
+
+
+def test_legacy_copy_does_not_require_a_filesystem_that_stores_owner_only_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # exFAT, FAT and some network shares report a fixed broad mode; the store
+    # still saves sessions there, so migration must still copy into them.
+    from chrys.foundation.platform import files
+
+    def cannot_store_owner_only(_fd: int) -> None:
+        raise files.SecureFileError("Secure file permissions are not owner-only.")
+
+    monkeypatch.setattr(files, "verify_owner_only_fd", cannot_store_owner_only)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "legacylegacy.json").write_bytes(b"legacy")
+    dst = tmp_path / "dst"
+    report = run_session_migration(plan_session_migration(src, dst))
+    assert report.failed == ()
+    assert report.copied == ("legacylegacy",)
+    assert (dst / "legacylegacy.json").read_bytes() == b"legacy"
+    assert _partials(dst) == []
+
+
+def test_migration_accepts_parent_aliases_for_legacy_files_and_directories(tmp_path: Path) -> None:
+    import chrys.service.tools.session_artifacts as session_artifacts
+
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    _symlink_or_skip(alias, real, directory=True)
+    src = alias / "src"
+    session = _make_session(src, "aaaaaaaaaaaa")
+    (session / "doc_converter").mkdir()
+    # Written as an older release did, not as an owner-only publish.
+    (session / "doc_converter" / "image-copied.png").write_bytes(b"copied-image")
+    (src / "legacylegacy.json").write_bytes(b"legacy")
+    dst = alias / "dst"
+    # Run the Windows re-publish of document images on every host.
+    with patch.object(session_artifacts, "get_platform", return_value=SimpleNamespace(is_windows=True)):
+        report = run_session_migration(plan_session_migration(src, dst))
+    assert report.failed == ()
+    assert set(report.copied) == {"aaaaaaaaaaaa", "legacylegacy"}
+    assert (dst / "legacylegacy.json").read_bytes() == b"legacy"
+    with secure_open_owner_only_binary(real / "dst" / "aaaaaaaaaaaa" / "doc_converter" / "image-copied.png") as copied:
+        assert copied.read() == b"copied-image"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership boundary")
+def test_legacy_import_accepts_readable_foreign_owner_without_relaxing_secure_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chrys.foundation.platform import files
+
+    source = tmp_path.resolve() / "legacy.json"
+    source.write_bytes(b"old elevated session")
+    actual_uid = source.stat().st_uid
+    monkeypatch.setattr(files, "_posix_effective_uid", lambda: actual_uid + 1)
+    with pytest.raises(files.SecureFileError, match="not owned"):
+        files.secure_open_owner_verified_binary(source)
+    with migration_module._open_source_file(source) as handle:
+        assert handle.read() == b"old elevated session"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory search permission")
+def test_legacy_file_migrates_beneath_an_ancestor_that_can_be_entered_but_not_listed(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    ancestor = tmp_path / "enter-only"
+    src = ancestor / "src"
+    _make_session(src, "aaaaaaaaaaaa")
+    (src / "legacylegacy.json").write_bytes(b"legacy")
+    dst = tmp_path / "dst"
+    ancestor.chmod(0o111)
+    try:
+        report = run_session_migration(plan_session_migration(src, dst))
+    finally:
+        ancestor.chmod(0o755)
+    assert report.failed == ()
+    assert set(report.copied) == {"aaaaaaaaaaaa", "legacylegacy"}
+    assert (dst / "legacylegacy.json").read_bytes() == b"legacy"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+def test_unreadable_legacy_file_reports_the_system_reason(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "legacylegacy.json"
+    source.write_bytes(b"legacy")
+    source.chmod(0)
+    try:
+        report = run_session_migration(plan_session_migration(src, tmp_path / "dst"))
+    finally:
+        source.chmod(0o600)
+    assert report.copied == ()
+    # The dialog tells the user to fix what the reason names.
+    assert report.failed == ((source, f"[Errno 13] Permission denied: '{source}'"),)
+
+
+def test_legacy_missing_source_has_actionable_reason(tmp_path: Path) -> None:
+    with pytest.raises(OSError, match="source changed since planning"):
+        migration_module._open_source_file(tmp_path / "missing.json")
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_partial_cleanup_failure_logs_path_without_masking_copy_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, legacy: bool
+) -> None:
+    src = tmp_path / "src"
+    if legacy:
+        src.mkdir()
+        (src / "legacylegacy.json").write_bytes(b"session data")
+    else:
+        session = _make_session(src, "aaaaaaaaaaaa")
+        (session / "nested").mkdir()
+        (session / "nested" / "blocked.txt").write_text("held open")
+        for index in range(5):
+            (session / "nested" / f"turn-{index}.json").write_text("{}")
+    dst = tmp_path / "dst"
+
+    def fail_replace(source: object, destination: object) -> None:
+        raise OSError("original publish failure")
+
+    monkeypatch.setattr(migration_module.os, "replace", fail_replace)
+    if legacy:
+        original_unlink = Path.unlink
+
+        def fail_partial_unlink(path: Path, missing_ok: bool = False) -> None:
+            if ".partial-" in path.name:
+                raise PermissionError("cleanup refused")
+            original_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_partial_unlink)
+    else:
+        original_os_unlink = os.unlink
+
+        def refuse_blocked_unlink(path: str, *, dir_fd: int | None = None) -> None:
+            if os.path.basename(os.fspath(path)) == "blocked.txt":
+                raise PermissionError("cleanup refused")
+            original_os_unlink(path, dir_fd=dir_fd)
+
+        monkeypatch.setattr(migration_module.os, "unlink", refuse_blocked_unlink)
+
+    report = run_session_migration(plan_session_migration(src, dst))
+    assert report.copied == ()
+    assert len(report.failed) == 1
+    assert report.failed[0][1] == "original publish failure"
+    leftovers = _partials(dst)
+    assert len(leftovers) == 1
+    if not legacy:
+        # One undeletable entry must not keep every other copied file behind.
+        assert [entry.name for entry in leftovers[0].rglob("*") if entry.is_file()] == ["blocked.txt"]
+    assert str(leftovers[0]) in caplog.text
+    assert "cleanup refused" in caplog.text
+    assert "may contain session data" in caplog.text

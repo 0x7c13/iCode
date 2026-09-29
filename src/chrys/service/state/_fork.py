@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.files import _fsync_dir as _common_fsync_dir
 from chrys.foundation.platform.files import (
     atomic_write_owner_only_bytes,
@@ -77,10 +78,13 @@ class SessionForkMixin:
         def _record_mru(self, session_id: str, updated_at: datetime | None) -> None: ...
         def _migrate_if_needed_unlocked(self, session_id: str) -> None: ...
 
-    def fork_session(self, parent_session_id: str) -> str:
-        """Create an independent copy of *parent_session_id* with a new canonical id."""
+    def fork_session(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str:
+        """Create an independent copy of *parent_session_id* with a new canonical id.
+
+        *last_surface* names the surface that forked it; ``None`` keeps the parent's.
+        """
         try:
-            return self._fork_session_sync(parent_session_id)
+            return self._fork_session_sync(parent_session_id, last_surface=last_surface)
         except SessionNotFoundError:
             raise
         except SessionForkError:
@@ -88,7 +92,7 @@ class SessionForkMixin:
         except Exception as exc:
             raise SessionForkError(f"Failed to fork session {parent_session_id}") from exc
 
-    def _fork_session_sync(self, parent_session_id: str) -> str:
+    def _fork_session_sync(self, parent_session_id: str, *, last_surface: SessionSurface | None = None) -> str:
         """Sync implementation of session fork."""
         with FileLock(self._write_lock_path(parent_session_id), timeout=SESSION_WRITE_LOCK_TIMEOUT_SECONDS):
             self._migrate_if_needed_unlocked(parent_session_id)
@@ -124,6 +128,7 @@ class SessionForkMixin:
                             parent_session_id=parent_session_id,
                             new_session_id=new_session_id,
                             copied_sub_agent_artifacts=copied_sub_agent_artifacts,
+                            last_surface=last_surface,
                         )
                         # Index before the rename commits the fork.
                         self._record_mru(new_session_id, fork_updated_at)
@@ -188,6 +193,7 @@ class SessionForkMixin:
         parent_session_id: str,
         new_session_id: str,
         copied_sub_agent_artifacts: list[str],
+        last_surface: SessionSurface | None = None,
     ) -> datetime:
         """Delete non-copyable files and rewrite fork-local session identity.
 
@@ -214,6 +220,7 @@ class SessionForkMixin:
             updated_at=updated_at,
             parent_clipboard_root=parent_clipboard_root,
             fork_clipboard_root=fork_clipboard_root,
+            last_surface=last_surface,
         )
         backup = tmp_dir / SESSION_BACKUP_FILE_NAME
         if backup.exists():
@@ -224,6 +231,7 @@ class SessionForkMixin:
                 updated_at=updated_at,
                 parent_clipboard_root=parent_clipboard_root,
                 fork_clipboard_root=fork_clipboard_root,
+                last_surface=last_surface,
             )
             if not rewritten:
                 atomic_copy_file(primary, backup)
@@ -236,6 +244,7 @@ class SessionForkMixin:
                 updated_at=updated_at,
                 parent_clipboard_root=parent_clipboard_root,
                 fork_clipboard_root=fork_clipboard_root,
+                last_surface=last_surface,
             )
             if not rewritten:
                 snapshot.unlink()
@@ -503,6 +512,7 @@ class SessionForkMixin:
         updated_at: str,
         parent_clipboard_root: Path,
         fork_clipboard_root: Path,
+        last_surface: SessionSurface | None = None,
     ) -> None:
         envelope = self._read_json_file(path)
         if envelope is None:
@@ -514,6 +524,7 @@ class SessionForkMixin:
             updated_at=updated_at,
             parent_clipboard_root=parent_clipboard_root,
             fork_clipboard_root=fork_clipboard_root,
+            last_surface=last_surface,
         )
         _atomic_write_text(path, json.dumps(envelope, indent=2, ensure_ascii=False))
 
@@ -526,6 +537,7 @@ class SessionForkMixin:
         updated_at: str,
         parent_clipboard_root: Path,
         fork_clipboard_root: Path,
+        last_surface: SessionSurface | None = None,
     ) -> bool:
         envelope = self._read_json_file(path)
         if envelope is None:
@@ -539,6 +551,7 @@ class SessionForkMixin:
                 updated_at=updated_at,
                 parent_clipboard_root=parent_clipboard_root,
                 fork_clipboard_root=fork_clipboard_root,
+                last_surface=last_surface,
             )
         except SessionForkError:
             logger.warning("Skipping malformed fork auxiliary session envelope: %s", path, exc_info=True)
@@ -556,6 +569,7 @@ class SessionForkMixin:
         updated_at: str,
         parent_clipboard_root: Path,
         fork_clipboard_root: Path,
+        last_surface: SessionSurface | None = None,
     ) -> None:
         meta = envelope.get("meta")
         if not isinstance(meta, dict):
@@ -564,6 +578,8 @@ class SessionForkMixin:
         meta["parent_session_id"] = parent_session_id
         meta["updated_at"] = updated_at
         meta["service_session_id"] = ""
+        if last_surface is not None:
+            meta["last_surface"] = last_surface.value
         # The fork is a new on-disk revision: derived summaries must not be
         # able to claim they were computed from it via the parent's id.
         envelope[SESSION_CHECKPOINT_ID_KEY] = new_analytics_id()

@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.session_surface import SessionSurface, parse_session_surface
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.util.time import parse_created_at
 from chrys.kernel import Message
@@ -49,6 +51,8 @@ class SessionMetadata:
     schema_version: int = 0
     os_name: str = ""
     arch: str = ""
+    # The surface of the last turn or run; ``None`` for sessions saved before it was recorded.
+    last_surface: SessionSurface | None = None
 
     @property
     def display_title(self) -> str:
@@ -115,6 +119,23 @@ def _parse_session_timestamp(value: object) -> datetime | None:
     """Return one persisted timestamp as an aware UTC datetime, if valid."""
     parsed = parse_created_at(value)
     return coerce_utc(parsed) if parsed is not None else None
+
+
+def recorded_surface(
+    primary_meta: Mapping[str, Any], recovery_meta: Mapping[str, Any], *, sidecar_first: bool = False
+) -> str | None:
+    """The surface the session's last turn recorded, verbatim; ``None`` when none ever was.
+
+    A sidecar newer than the primary holds the turn a crash cut short, which
+    is the session's last one, so its surface outranks the primary's.
+    """
+    primary_updated_at = _parse_session_timestamp(primary_meta.get("updated_at"))
+    recovery_updated_at = _parse_session_timestamp(recovery_meta.get("updated_at"))
+    recovery_first = sidecar_first or (
+        recovery_updated_at is not None and (primary_updated_at is None or recovery_updated_at > primary_updated_at)
+    )
+    candidates = (recovery_meta, primary_meta) if recovery_first else (primary_meta, recovery_meta)
+    return next((value for meta in candidates if isinstance(value := meta.get("last_surface"), str) and value), None)
 
 
 def _message_created_at(message: object) -> datetime | None:
@@ -491,12 +512,14 @@ class SessionMetaMixin:
             state = WorkflowSessionState.decode(envelope.get("state"))
             return WorkflowSessionMeta(
                 **common,
+                last_surface=state.surface,
                 workflow_id=state.identity.workflow_id,
                 run_count=state.run_count,
                 latest_run_id=state.latest_run_id,
             )
         return ChatSessionMeta(
             **common,
+            last_surface=parse_session_surface(meta.get("last_surface")),
             agent_profile=meta.get("agent_profile", ""),
             agent_display_name=meta.get("agent_display_name", meta.get("display_name", "")),
             message_count=meta.get("message_count", 0),

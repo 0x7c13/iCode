@@ -11,13 +11,23 @@ never deleting from the source and never overwriting an existing destination.
 from __future__ import annotations
 
 import contextlib
+import errno
+import logging
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
+from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import (
+    secure_open_regular_binary,
+    strip_inherited_acl,
+    strip_inherited_directory_acl,
+)
 from chrys.foundation.util.lock import FileLock
 from chrys.service.state.store import (
     legacy_session_files,
@@ -28,6 +38,8 @@ from chrys.service.state.store import (
 )
 from chrys.service.tools.session_artifacts import reharden_document_image_artifacts
 
+logger = logging.getLogger(__name__)
+
 # Per-session wait for the source/destination write locks. Longer than a
 # single envelope write, far shorter than the store's own writer timeout so a
 # busy session is reported instead of stalling the whole migration.
@@ -35,6 +47,10 @@ MIGRATION_WRITE_LOCK_TIMEOUT_SECONDS = 2.0
 
 _LINKED_ENTRY_REASON = "linked entry"
 _SOURCE_CHANGED_REASON = "source changed since planning"
+# Flags under which even a file's owner cannot change its mode (macOS).
+_LOCK_FLAGS = stat.UF_IMMUTABLE | stat.UF_APPEND | stat.SF_IMMUTABLE | stat.SF_APPEND
+# How a filesystem that cannot store a file mode refuses to change it.
+_MODE_REFUSED_ERRNOS = frozenset({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
 class SessionMigrationError(ValueError):
@@ -190,16 +206,86 @@ def _copy_session_dir(item: MigrationItem) -> None:
     The partial comes from ``mkdtemp`` (random dot-prefixed name, created by
     us), so nothing pre-existing at a predictable path is ever removed or
     written through; ``copystat`` at the end of the copy restores the source
-    folder's own mode over the temporary directory's.
+    folder's own mode over the temporary directory's. Until then the partial
+    is 0700, so no copied file is readable by others before its mode is
+    narrowed. The partial drops any ACL it inherited from the destination
+    before the copy (macOS), so nothing copied into it inherits one either.
     """
     partial = Path(tempfile.mkdtemp(prefix=f".partial-{item.session_id}-", dir=item.destination.parent))
     try:
-        shutil.copytree(item.source, partial, symlinks=True, ignore=make_junction_dropping_ignore(), dirs_exist_ok=True)
-        reharden_document_image_artifacts(item.source, partial)
+        strip_inherited_directory_acl(partial)
+        shutil.copytree(
+            item.source,
+            partial,
+            symlinks=True,
+            ignore=make_junction_dropping_ignore(),
+            copy_function=_copy_file_privately,
+            dirs_exist_ok=True,
+        )
+        # The owner-only writers compare each file's final path with the one
+        # they were given, so hand them the partial's real spelling.
+        reharden_document_image_artifacts(item.source, partial.resolve(), legacy_import=True)
         os.replace(partial, item.destination)
     finally:
         if os.path.lexists(partial):
-            shutil.rmtree(partial, ignore_errors=True)
+            _remove_partial_dir(partial)
+
+
+def _copy_file_privately(source: str, destination: str) -> str:
+    """``copy2`` whose copy is never readable by other users on POSIX.
+
+    The session store writes its files 0600, but an older release may have
+    left them 0644: the copy keeps the source's content, timestamps, owner
+    bits and flags, never group or other access.
+    """
+    shutil.copy2(source, destination)
+    if not get_platform().is_windows:
+        _narrow_to_owner(destination)
+    return destination
+
+
+def _narrow_to_owner(path: str) -> None:
+    """Drop group and other access from the file *path*, keeping its flags.
+
+    ``copy2`` copies a macOS lock (``chflags uchg``) after the mode, and a
+    locked file refuses even its owner's chmod: the lock is lifted while the
+    mode narrows and put back after, and a lock that cannot be lifted fails
+    the copy. A filesystem that cannot store the mode (exFAT, FAT, some
+    network shares) refuses the chmod itself; the copy then keeps whatever
+    mode it reports, as the store's own saves do there.
+    """
+    info = os.stat(path)
+    mode = stat.S_IMODE(info.st_mode)
+    if not mode & 0o077:
+        return
+    locks = 0
+    if sys.platform == "darwin":
+        locks = info.st_flags & _LOCK_FLAGS
+        if locks:
+            os.chflags(path, info.st_flags & ~locks)
+    try:
+        os.chmod(path, mode & ~0o077)
+    except OSError as exc:
+        if exc.errno not in _MODE_REFUSED_ERRNOS:
+            raise
+    if sys.platform == "darwin" and locks:
+        os.chflags(path, info.st_flags)
+
+
+def _remove_partial_dir(partial: Path) -> None:
+    """Remove as much of *partial* as possible, logging it when anything is left.
+
+    One undeletable entry (a handle held open on Windows) must not stop the
+    removal of every other copied file, so errors are collected, not raised.
+    """
+    failures: list[BaseException] = []
+    shutil.rmtree(partial, onexc=lambda _function, _path, exc: failures.append(exc))
+    if failures:
+        logger.warning(
+            "Unable to remove partial session directory %s; it may contain session data",
+            partial,
+            exc_info=failures[0],
+        )
 
 
 def _source_changed_reason(item: MigrationItem) -> str | None:
@@ -223,44 +309,53 @@ def _source_changed_reason(item: MigrationItem) -> str | None:
     return None
 
 
-def _open_source_file(path: Path) -> int:
-    """Open a legacy session file for reading without following a link at its leaf.
-
-    ``O_NOFOLLOW`` makes the check and the open one step on POSIX; the
-    ``fstat`` guard covers Windows (no such flag; the ``lstat`` re-check
-    before the copy is what rejects a planted link there) and FIFOs/devices.
-    """
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(path, flags)
+def _open_source_file(path: Path) -> BinaryIO:
+    """Open the leaf without following it; translate stale-source failures."""
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise OSError(_SOURCE_CHANGED_REASON)
-    except BaseException:
-        os.close(fd)
+        return secure_open_regular_binary(path)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP or path.is_symlink() or os.path.isjunction(path):
+            raise OSError(_LINKED_ENTRY_REASON) from exc
+        if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+            raise OSError(_SOURCE_CHANGED_REASON) from exc
+        # Anything else (a permission error, a device that went away) is
+        # reported as the system put it: the lstat re-check already found the
+        # entry unchanged.
         raise
-    return fd
 
 
 def _copy_legacy_file(item: MigrationItem) -> None:
     """Copy a legacy flat session file via an exclusively created partial, then rename into place.
 
-    The partial is created by ``mkstemp`` (random name, ``O_EXCL``) and written
+    The partial is created by ``mkstemp`` (random name, ``O_EXCL``, 0600 on
+    POSIX — the same private mode the session store writes with) and written
     through its descriptor, so a pre-planted path can neither be followed nor
-    overwritten; the source is read through a no-follow descriptor and the copy
-    keeps that descriptor's mode and timestamps.
+    overwritten. Any ACL the destination passes on is stripped before the
+    content is written (macOS). The copy keeps the source's timestamps, never
+    its broader mode; nothing verifies the mode afterwards, so filesystems that
+    cannot store it (exFAT, FAT, some network shares) still migrate, as they
+    still save.
     """
     fd, name = tempfile.mkstemp(prefix=f"{item.destination.name}.partial-", dir=item.destination.parent)
     partial = Path(name)
     try:
-        with os.fdopen(fd, "wb") as out, os.fdopen(_open_source_file(item.source), "rb") as src:
+        with os.fdopen(fd, "wb") as out, _open_source_file(item.source) as src:
+            strip_inherited_acl(out.fileno())
             shutil.copyfileobj(src, out)
             source_stat = os.fstat(src.fileno())
-        os.chmod(partial, stat.S_IMODE(source_stat.st_mode))
         os.utime(partial, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
         os.replace(partial, item.destination)
     finally:
-        with contextlib.suppress(OSError):
+        try:
             partial.unlink()
+        except FileNotFoundError:
+            pass  # Successful replacement already consumed the partial.
+        except OSError:
+            # Preserve the original copy failure while making sensitive
+            # leftovers visible; never sweep other migrations' partials.
+            logger.warning(
+                "Unable to remove partial session file %s; it may contain session data", partial, exc_info=True
+            )
 
 
 def run_session_migration(plan: MigrationPlan) -> MigrationReport:

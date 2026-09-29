@@ -17,7 +17,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import Error, RollbackResult, SessionRestore, UserRollback, Warning
 from chrys.foundation.i18n import DisplayBlock, msg
@@ -35,7 +35,7 @@ from chrys.service.mutations.snapshot_files import (
     turn_prompt_previews as collect_turn_prompt_previews,
 )
 from chrys.service.mutations.workspace_changes import format_partial_revert_notice, format_retained_changes_notice
-from chrys.service.state.store import SESSION_BACKUP_FILE_NAME
+from chrys.service.state.store import SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, recorded_surface
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
@@ -133,34 +133,43 @@ class _RollbackLockLease:
             lock.release()
 
 
-def _read_title_overlays(session_file: Path) -> dict[str, str]:
-    """Capture title overlays before a snapshot overwrites ``session.json``.
-
-    Only ``custom_title`` is session-scoped: the user's pin (or explicit
-    clear — an empty string must survive too, or a pre-clear snapshot would
-    resurrect the pin) wins over whatever the snapshot carried.
-    ``generated_title`` is deliberately NOT preserved: it summarizes the
-    conversation, and after a rollback the snapshot's own value is the one
-    that describes the restored turns — the newer title describes history
-    that no longer exists.  The key is captured verbatim; only an
-    unreadable envelope (or one whose meta never had it) yields nothing.
-    """
+def _read_envelope_meta(path: Path) -> dict[str, Any]:
+    """The envelope's ``meta``; empty when the file is missing or unreadable."""
     try:
-        envelope = json.loads(session_file.read_text(encoding="utf-8"))
+        envelope = json.loads(path.read_text(encoding="utf-8"))
     except OSError, ValueError:
         return {}
     meta = envelope.get("meta") if isinstance(envelope, dict) else None
-    if not isinstance(meta, dict):
-        return {}
-    overlays: dict[str, str] = {}
-    value = meta.get("custom_title")
-    if isinstance(value, str):
-        overlays["custom_title"] = value
+    return meta if isinstance(meta, dict) else {}
+
+
+def _read_session_overlays(session_file: Path) -> dict[str, str]:
+    """Capture session-scoped meta before a snapshot overwrites ``session.json``.
+
+    These describe the session, not the turns it holds, so the current
+    value wins over whatever the snapshot carried: ``custom_title`` is the
+    user's pin (or explicit clear — an empty string must survive too, or a
+    pre-clear snapshot would resurrect the pin), and ``last_surface`` names
+    the surface whose turn last worked in the session, which a rollback,
+    not being a turn, never changes.  That turn may be one a crash cut
+    short, recorded only in a newer sidecar the restore after the swap
+    discards, so the surface is read as the store would read it.
+    ``generated_title`` is deliberately NOT preserved: it summarizes the
+    conversation, and after a rollback the snapshot's own value is the one
+    that describes the restored turns — the newer title describes history
+    that no longer exists.  Each value is captured verbatim; one the files
+    never recorded (or an unreadable envelope) yields nothing for it.
+    """
+    meta = _read_envelope_meta(session_file)
+    overlays = {"custom_title": value} if isinstance(value := meta.get("custom_title"), str) else {}
+    surface = recorded_surface(meta, _read_envelope_meta(session_file.with_name(SESSION_RECOVERY_FILE_NAME)))
+    if surface is not None:
+        overlays["last_surface"] = surface
     return overlays
 
 
-def _reapply_title_overlays(session_file: Path, overlays: dict[str, str]) -> None:
-    """Merge preserved title overlays back into the restored snapshot, best-effort."""
+def _reapply_session_overlays(session_file: Path, overlays: dict[str, str]) -> None:
+    """Merge preserved session-scoped meta back into the restored snapshot, best-effort."""
     if not overlays:
         return
     from chrys.foundation.platform.files import atomic_write_text
@@ -173,7 +182,7 @@ def _reapply_title_overlays(session_file: Path, overlays: dict[str, str]) -> Non
         meta.update(overlays)
         atomic_write_text(session_file, json.dumps(envelope, indent=2, ensure_ascii=False))
     except OSError, ValueError:
-        logger.warning("Failed to preserve session titles across rollback for %s", session_file, exc_info=True)
+        logger.warning("Failed to preserve session metadata across rollback for %s", session_file, exc_info=True)
 
 
 def capture_snapshot_writer(session: ActiveSession, settings_handle: SettingsHandle) -> Callable[[], None]:
@@ -710,13 +719,13 @@ class RollbackController:
                 if not snapshot_path.exists():
                     snapshot_missing_after_lock = True
                 else:
-                    title_overlays = _read_title_overlays(session_file)
+                    overlays = _read_session_overlays(session_file)
                     self._permits.commit_session_transition(transition_owner)
                     atomic_copy_file(snapshot_path, session_file)
-                    _reapply_title_overlays(session_file, title_overlays)
+                    _reapply_session_overlays(session_file, overlays)
                     backup_file = session_file.with_name(SESSION_BACKUP_FILE_NAME)
                     try:
-                        # Copy the restored (title-patched) primary so both files
+                        # Copy the restored (overlay-patched) primary so both files
                         # stay identical.
                         atomic_copy_file(session_file, backup_file)
                     except OSError:

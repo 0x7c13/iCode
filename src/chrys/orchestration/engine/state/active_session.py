@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.session_resources import SessionResources
 from chrys.service.approval.policy import ApprovalMode
@@ -31,6 +32,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         persistence: SessionPersistence,
         workspace: Workspace | None,
         approval_mode: ApprovalMode | None,
+        surface: SessionSurface | None = None,
     ) -> None:
         super().__init__(
             persistence=persistence,
@@ -39,6 +41,10 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         )
         # Launch policy survives session resets and is never restored from checkpoints.
         self.approval_mode = approval_mode or ApprovalMode.MANUAL
+        # The surface this launch serves. Opening or saving a session never
+        # records it; a turn does, through ``mark_surface``.
+        self.surface = surface
+        self._surface_mark: tuple[str, SessionSurface] | None = None
         self.agent_profile: AgentProfile | None = None
         self.shutting_down: bool = False
         self.turn_number: int = 0
@@ -103,6 +109,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self.shutting_down = False
         self.workspace = workspace or Workspace.from_cwd()
         self.session_id = session_id
+        self._surface_mark = None
         self.reset_spill_quota()
         self.turn_number = 0
         self.runtime_meta = SessionRuntimeMetadata()
@@ -115,6 +122,9 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         """Adopt the restore identity before hydrating its state."""
         self.shutting_down = False
         self.session_id = session_id
+        # Reopening is not a turn, even of the session last marked here:
+        # another launch may have worked in it meanwhile.
+        self._surface_mark = None
         self.reset_spill_quota()
         self.recovered_from_sidecar = recovered_from_sidecar
 
@@ -122,6 +132,22 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         """Restore the saved runtime metadata and turn position together."""
         self.runtime_meta = runtime_meta
         self.turn_number = turn_number
+
+    def mark_surface(self) -> None:
+        """Record that a turn of the current session runs on this launch's surface."""
+        if self.surface is not None and self.session_id is not None:
+            self._surface_mark = (self.session_id, self.surface)
+
+    def marked_surface(self) -> SessionSurface | None:
+        """The surface a save of the current session records; ``None`` keeps the stored one.
+
+        A reset or restore clears the mark; it also names its session, so no
+        other identity change can hand it to another session.
+        """
+        mark = self._surface_mark
+        if mark is None or mark[0] != self.session_id:
+            return None
+        return mark[1]
 
     def mark_closing(self) -> None:
         """Mark entry into session teardown."""

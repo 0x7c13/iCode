@@ -663,6 +663,9 @@ class WorkflowCoordinator:
             except ValueError as exc:
                 raise _Rejection(REJECT_SPEC_CHANGED, str(exc)) from exc
             owner.require_state().model = model
+            if self._session.surface is not None:
+                # Written by the admission save below; a discarded admission restores the previous surface.
+                owner.require_state().last_surface = self._session.surface.value
             session = owner.session
             session_id, session_dir = owner.require_session_id(), owner.require_session_dir()
             header = RunHeader(

@@ -227,6 +227,7 @@ _BORDER_COLOR_LITERAL_DEFAULTS: dict[str, str] = {
 }
 _SEMANTIC_BORDER_COLOR_VARIABLE_SOURCES: dict[str, str] = {
     "tui-border-agent-message": "success",
+    "tui-border-selected-turn": "primary",
     "tui-border-status-error": "error",
     "tui-border-status-warning": "warning",
     "tui-border-user-message": "accent",
@@ -263,6 +264,9 @@ def with_tui_css_variables(theme: Theme, variables: dict[str, str]) -> dict[str,
     ):
         resolved[name] = theme.variables.get(name, resolved[source])
     resolved["hatch-color"] = theme.variables.get("hatch-color", f"{resolved['foreground']} 15%")
+    # Native ANSI colors ignore alpha; opaque neutral fills keep turn text readable.
+    resolved["tui-ansi-turn-background"] = "#303030" if theme.dark else "#DADADA"
+    resolved["tui-ansi-turn-focus-background"] = "#444444" if theme.dark else "#C6C6C6"
     border_override = theme.variables.get("border-color")
     for alias, source in _BORDER_COLOR_VARIABLE_SOURCES.items():
         resolved[alias] = border_override or resolved[source]

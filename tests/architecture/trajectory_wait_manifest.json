@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "ea51b1c305ad781e86e918e7f81278740d8fef799bc8fb7b2517dfa41e4d5694",
+  "inventory_sha256": "08b59eaeb036f6e325f5d2a0dc31022ffc3cf9e6f20dbe17247381816676e261",
   "nodes": [
     {
       "cases": [
@@ -7398,7 +7398,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._cancel_if_rollback_owner_changed",
       "source_column": 8,
-      "source_line": 868,
+      "source_line": 877,
       "wrapper_target": null
     },
     {
@@ -7418,7 +7418,7 @@
       "primitive": "thread_pool",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 28,
-      "source_line": 578,
+      "source_line": 587,
       "wrapper_target": null
     },
     {
@@ -7438,7 +7438,7 @@
       "primitive": "thread_pool",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 35,
-      "source_line": 591,
+      "source_line": 600,
       "wrapper_target": null
     },
     {
@@ -7458,7 +7458,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 11,
-      "source_line": 634,
+      "source_line": 643,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -7478,7 +7478,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 34,
-      "source_line": 645,
+      "source_line": 654,
       "wrapper_target": null
     },
     {
@@ -7498,7 +7498,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 16,
-      "source_line": 654,
+      "source_line": 663,
       "wrapper_target": null
     },
     {
@@ -7518,7 +7518,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 668,
+      "source_line": 677,
       "wrapper_target": null
     },
     {
@@ -7538,7 +7538,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 678,
+      "source_line": 687,
       "wrapper_target": null
     },
     {
@@ -7558,7 +7558,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 694,
+      "source_line": 703,
       "wrapper_target": null
     },
     {
@@ -7578,7 +7578,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 727,
+      "source_line": 736,
       "wrapper_target": null
     },
     {
@@ -7598,7 +7598,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 737,
+      "source_line": 746,
       "wrapper_target": null
     },
     {
@@ -7618,7 +7618,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 748,
+      "source_line": 757,
       "wrapper_target": null
     },
     {
@@ -7638,7 +7638,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 782,
+      "source_line": 791,
       "wrapper_target": null
     },
     {
@@ -7658,7 +7658,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 798,
+      "source_line": 807,
       "wrapper_target": null
     },
     {
@@ -7678,7 +7678,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 12,
-      "source_line": 809,
+      "source_line": 818,
       "wrapper_target": null
     },
     {
@@ -7698,7 +7698,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_after_resource_preflight",
       "source_column": 8,
-      "source_line": 812,
+      "source_line": 821,
       "wrapper_target": null
     },
     {
@@ -7718,7 +7718,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 489,
+      "source_line": 498,
       "wrapper_target": null
     },
     {
@@ -7738,7 +7738,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._execute_user_rollback_with_permit",
       "source_column": 16,
-      "source_line": 492,
+      "source_line": 501,
       "wrapper_target": null
     },
     {
@@ -7758,7 +7758,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._execute_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 504,
+      "source_line": 513,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._execute_user_rollback_after_resource_preflight"
     },
     {
@@ -7778,7 +7778,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 8,
-      "source_line": 353,
+      "source_line": 362,
       "wrapper_target": null
     },
     {
@@ -7798,7 +7798,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 355,
+      "source_line": 364,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -7818,7 +7818,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 357,
+      "source_line": 366,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._refuse_if_rollback_state_invalid"
     },
     {
@@ -7838,7 +7838,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 8,
-      "source_line": 363,
+      "source_line": 372,
       "wrapper_target": "chrys.foundation.util.async_tasks.await_task_quiescence"
     },
     {
@@ -7858,7 +7858,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 364,
+      "source_line": 373,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -7878,7 +7878,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 11,
-      "source_line": 366,
+      "source_line": 375,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._refuse_if_rollback_state_invalid"
     },
     {
@@ -7898,7 +7898,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 373,
+      "source_line": 382,
       "wrapper_target": null
     },
     {
@@ -7918,7 +7918,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 384,
+      "source_line": 393,
       "wrapper_target": null
     },
     {
@@ -7938,7 +7938,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 406,
+      "source_line": 415,
       "wrapper_target": null
     },
     {
@@ -7958,7 +7958,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 16,
-      "source_line": 418,
+      "source_line": 427,
       "wrapper_target": null
     },
     {
@@ -7978,7 +7978,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 16,
-      "source_line": 429,
+      "source_line": 438,
       "wrapper_target": null
     },
     {
@@ -7998,7 +7998,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 446,
+      "source_line": 455,
       "wrapper_target": null
     },
     {
@@ -8018,7 +8018,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._prepare_user_rollback_with_permit",
       "source_column": 12,
-      "source_line": 458,
+      "source_line": 467,
       "wrapper_target": null
     },
     {
@@ -8038,7 +8038,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController._refuse_if_rollback_state_invalid",
       "source_column": 8,
-      "source_line": 882,
+      "source_line": 891,
       "wrapper_target": null
     },
     {
@@ -8058,7 +8058,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController.begin_rollback_projection",
       "source_column": 15,
-      "source_line": 244,
+      "source_line": 253,
       "wrapper_target": null
     },
     {
@@ -8078,7 +8078,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 12,
-      "source_line": 301,
+      "source_line": 310,
       "wrapper_target": null
     },
     {
@@ -8098,7 +8098,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 11,
-      "source_line": 309,
+      "source_line": 318,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -8118,7 +8118,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 11,
-      "source_line": 311,
+      "source_line": 320,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._refuse_if_rollback_state_invalid"
     },
     {
@@ -8138,7 +8138,7 @@
       "primitive": "awaitable",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 27,
-      "source_line": 314,
+      "source_line": 323,
       "wrapper_target": null
     },
     {
@@ -8158,7 +8158,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 12,
-      "source_line": 320,
+      "source_line": 329,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._cancel_if_rollback_owner_changed"
     },
     {
@@ -8178,7 +8178,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 23,
-      "source_line": 323,
+      "source_line": 332,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._prepare_user_rollback_with_permit"
     },
     {
@@ -8198,7 +8198,7 @@
       "primitive": "wrapper",
       "qualname": "RollbackController.on_user_rollback",
       "source_column": 12,
-      "source_line": 331,
+      "source_line": 340,
       "wrapper_target": "chrys.orchestration.engine.rollback.RollbackController._execute_user_rollback_with_permit"
     },
     {
@@ -12678,7 +12678,7 @@
       "primitive": "timeout",
       "qualname": "TurnRunner._compute_workspace_notice",
       "source_column": 12,
-      "source_line": 465,
+      "source_line": 467,
       "wrapper_target": null
     },
     {
@@ -12698,7 +12698,7 @@
       "primitive": "thread_pool",
       "qualname": "TurnRunner._compute_workspace_notice",
       "source_column": 16,
-      "source_line": 466,
+      "source_line": 468,
       "wrapper_target": null
     },
     {
@@ -12718,7 +12718,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._fire_before_turn",
       "source_column": 8,
-      "source_line": 449,
+      "source_line": 451,
       "wrapper_target": null
     },
     {
@@ -12738,7 +12738,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._prepare_user_contents",
       "source_column": 17,
-      "source_line": 415,
+      "source_line": 417,
       "wrapper_target": null
     },
     {
@@ -12758,7 +12758,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._record_trajectory_turn_started",
       "source_column": 8,
-      "source_line": 381,
+      "source_line": 383,
       "wrapper_target": null
     },
     {
@@ -12778,7 +12778,7 @@
       "primitive": "awaitable",
       "qualname": "TurnRunner._refresh_runtime_skills",
       "source_column": 8,
-      "source_line": 505,
+      "source_line": 507,
       "wrapper_target": null
     },
     {
@@ -12818,7 +12818,7 @@
       "primitive": "wrapper",
       "qualname": "TurnRunner.pre_run",
       "source_column": 8,
-      "source_line": 365,
+      "source_line": 367,
       "wrapper_target": "chrys.orchestration.engine.run.runner.TurnRunner._record_trajectory_turn_started"
     },
     {
@@ -13598,7 +13598,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 12,
-      "source_line": 1932,
+      "source_line": 1935,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.fire_session_end_hooks"
     },
     {
@@ -13618,7 +13618,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 12,
-      "source_line": 1936,
+      "source_line": 1939,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_trajectory_log"
     },
     {
@@ -13638,7 +13638,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 12,
-      "source_line": 1951,
+      "source_line": 1954,
       "wrapper_target": null
     },
     {
@@ -13658,7 +13658,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._delete_session_reporting",
       "source_column": 8,
-      "source_line": 1982,
+      "source_line": 1985,
       "wrapper_target": null
     },
     {
@@ -13678,7 +13678,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._fire_session_restored_hook",
       "source_column": 8,
-      "source_line": 1885,
+      "source_line": 1888,
       "wrapper_target": null
     },
     {
@@ -13698,7 +13698,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 31,
-      "source_line": 1645,
+      "source_line": 1648,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"
     },
     {
@@ -13718,7 +13718,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 12,
-      "source_line": 1662,
+      "source_line": 1665,
       "wrapper_target": null
     },
     {
@@ -13738,7 +13738,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 16,
-      "source_line": 1680,
+      "source_line": 1683,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -13758,7 +13758,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 12,
-      "source_line": 1705,
+      "source_line": 1708,
       "wrapper_target": null
     },
     {
@@ -13778,7 +13778,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 20,
-      "source_line": 1721,
+      "source_line": 1724,
       "wrapper_target": null
     },
     {
@@ -13798,7 +13798,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 12,
-      "source_line": 1794,
+      "source_line": 1797,
       "wrapper_target": null
     },
     {
@@ -13818,7 +13818,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 24,
-      "source_line": 1833,
+      "source_line": 1836,
       "wrapper_target": null
     },
     {
@@ -13838,7 +13838,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 8,
-      "source_line": 1841,
+      "source_line": 1844,
       "wrapper_target": null
     },
     {
@@ -13858,7 +13858,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._hydrate_restored_session",
       "source_column": 8,
-      "source_line": 1871,
+      "source_line": 1874,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._fire_session_restored_hook"
     },
     {
@@ -13878,7 +13878,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._publish_session_fork_error",
       "source_column": 8,
-      "source_line": 921,
+      "source_line": 924,
       "wrapper_target": null
     },
     {
@@ -13898,7 +13898,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle._reconcile_existing_spill_storage",
       "source_column": 19,
-      "source_line": 931,
+      "source_line": 934,
       "wrapper_target": null
     },
     {
@@ -13938,7 +13938,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._restart_after_failed_reset",
       "source_column": 8,
-      "source_line": 1225,
+      "source_line": 1228,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"
     },
     {
@@ -13958,7 +13958,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle._restart_after_failed_reset",
       "source_column": 12,
-      "source_line": 1249,
+      "source_line": 1252,
       "wrapper_target": null
     },
     {
@@ -13978,7 +13978,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._restart_after_failed_reset",
       "source_column": 12,
-      "source_line": 1253,
+      "source_line": 1256,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -13998,7 +13998,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._start_fresh_session",
       "source_column": 8,
-      "source_line": 1288,
+      "source_line": 1291,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"
     },
     {
@@ -14018,7 +14018,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle._start_fresh_session",
       "source_column": 8,
-      "source_line": 1292,
+      "source_line": 1295,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -14478,7 +14478,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_new_session",
       "source_column": 27,
-      "source_line": 1270,
+      "source_line": 1273,
       "wrapper_target": null
     },
     {
@@ -14498,7 +14498,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_new_session",
       "source_column": 12,
-      "source_line": 1277,
+      "source_line": 1280,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_fresh_session"
     },
     {
@@ -14518,7 +14518,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 27,
-      "source_line": 1304,
+      "source_line": 1307,
       "wrapper_target": null
     },
     {
@@ -14538,7 +14538,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 26,
-      "source_line": 1317,
+      "source_line": 1320,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._delete_session_reporting"
     },
     {
@@ -14558,7 +14558,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 20,
-      "source_line": 1322,
+      "source_line": 1325,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_fresh_session"
     },
     {
@@ -14578,7 +14578,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_clear",
       "source_column": 12,
-      "source_line": 1328,
+      "source_line": 1331,
       "wrapper_target": null
     },
     {
@@ -14598,7 +14598,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_delete",
       "source_column": 18,
-      "source_line": 1898,
+      "source_line": 1901,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._delete_session_reporting"
     },
     {
@@ -14618,7 +14618,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_delete",
       "source_column": 12,
-      "source_line": 1900,
+      "source_line": 1903,
       "wrapper_target": null
     },
     {
@@ -14911,14 +14911,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(state_store.fork_session, active_session_id)",
+      "expression": "await asyncio.to_thread(state_store.fork_session, active_session_id, last_surface=self._session.surface)",
       "identity": "chrys.orchestration.engine.session_lifecycle:SessionLifecycle.on_session_fork:15",
       "module": "chrys.orchestration.engine.session_lifecycle",
       "ordinal": 15,
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 29,
-      "source_line": 882,
+      "source_line": 883,
       "wrapper_target": null
     },
     {
@@ -14938,7 +14938,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 12,
-      "source_line": 884,
+      "source_line": 887,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"
     },
     {
@@ -14958,7 +14958,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 12,
-      "source_line": 893,
+      "source_line": 896,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"
     },
     {
@@ -14978,7 +14978,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 8,
-      "source_line": 903,
+      "source_line": 906,
       "wrapper_target": null
     },
     {
@@ -14998,7 +14998,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_fork",
       "source_column": 8,
-      "source_line": 910,
+      "source_line": 913,
       "wrapper_target": null
     },
     {
@@ -15018,7 +15018,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 12,
-      "source_line": 1337,
+      "source_line": 1340,
       "wrapper_target": null
     },
     {
@@ -15038,7 +15038,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 30,
-      "source_line": 1347,
+      "source_line": 1350,
       "wrapper_target": null
     },
     {
@@ -15058,7 +15058,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1353,
+      "source_line": 1356,
       "wrapper_target": null
     },
     {
@@ -15078,7 +15078,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 20,
-      "source_line": 1365,
+      "source_line": 1368,
       "wrapper_target": null
     },
     {
@@ -15098,7 +15098,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 20,
-      "source_line": 1373,
+      "source_line": 1376,
       "wrapper_target": null
     },
     {
@@ -15118,7 +15118,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1377,
+      "source_line": 1380,
       "wrapper_target": null
     },
     {
@@ -15138,7 +15138,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 19,
-      "source_line": 1389,
+      "source_line": 1392,
       "wrapper_target": null
     },
     {
@@ -15158,7 +15158,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1391,
+      "source_line": 1394,
       "wrapper_target": null
     },
     {
@@ -15178,7 +15178,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1400,
+      "source_line": 1403,
       "wrapper_target": null
     },
     {
@@ -15198,7 +15198,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 24,
-      "source_line": 1448,
+      "source_line": 1451,
       "wrapper_target": null
     },
     {
@@ -15218,7 +15218,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 24,
-      "source_line": 1492,
+      "source_line": 1495,
       "wrapper_target": null
     },
     {
@@ -15238,7 +15238,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 35,
-      "source_line": 1549,
+      "source_line": 1552,
       "wrapper_target": null
     },
     {
@@ -15258,7 +15258,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 24,
-      "source_line": 1559,
+      "source_line": 1562,
       "wrapper_target": null
     },
     {
@@ -15278,7 +15278,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1573,
+      "source_line": 1576,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"
     },
     {
@@ -15298,7 +15298,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1575,
+      "source_line": 1578,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"
     },
     {
@@ -15318,7 +15318,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 12,
-      "source_line": 1585,
+      "source_line": 1588,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"
     },
     {
@@ -15338,7 +15338,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.on_session_restore",
       "source_column": 16,
-      "source_line": 1608,
+      "source_line": 1611,
       "wrapper_target": null
     },
     {
@@ -15478,7 +15478,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_after_failed_startup_restore",
       "source_column": 16,
-      "source_line": 1060,
+      "source_line": 1063,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"
     },
     {
@@ -15498,7 +15498,7 @@
       "primitive": "thread_pool",
       "qualname": "SessionLifecycle.reset_after_failed_startup_restore",
       "source_column": 24,
-      "source_line": 1075,
+      "source_line": 1078,
       "wrapper_target": null
     },
     {
@@ -15518,7 +15518,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 17,
-      "source_line": 1108,
+      "source_line": 1111,
       "wrapper_target": null
     },
     {
@@ -15538,7 +15538,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 20,
-      "source_line": 1119,
+      "source_line": 1122,
       "wrapper_target": null
     },
     {
@@ -15558,7 +15558,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 16,
-      "source_line": 1144,
+      "source_line": 1147,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"
     },
     {
@@ -15578,7 +15578,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 24,
-      "source_line": 1160,
+      "source_line": 1163,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._restart_after_failed_reset"
     },
     {
@@ -15598,7 +15598,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 20,
-      "source_line": 1172,
+      "source_line": 1175,
       "wrapper_target": null
     },
     {
@@ -15618,7 +15618,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 16,
-      "source_line": 1191,
+      "source_line": 1194,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"
     },
     {
@@ -15638,7 +15638,7 @@
       "primitive": "awaitable",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 20,
-      "source_line": 1193,
+      "source_line": 1196,
       "wrapper_target": null
     },
     {
@@ -15658,7 +15658,7 @@
       "primitive": "wrapper",
       "qualname": "SessionLifecycle.reset_session_to_welcome",
       "source_column": 16,
-      "source_line": 1201,
+      "source_line": 1204,
       "wrapper_target": "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"
     },
     {
@@ -16878,7 +16878,7 @@
       "primitive": "sync_primitive",
       "qualname": "SessionWriter._drain",
       "source_column": 27,
-      "source_line": 389,
+      "source_line": 396,
       "wrapper_target": null
     },
     {
@@ -16898,7 +16898,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter._drain",
       "source_column": 20,
-      "source_line": 392,
+      "source_line": 399,
       "wrapper_target": null
     },
     {
@@ -16918,7 +16918,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter._persist_strict",
       "source_column": 24,
-      "source_line": 360,
+      "source_line": 367,
       "wrapper_target": null
     },
     {
@@ -16938,7 +16938,7 @@
       "primitive": "shield",
       "qualname": "SessionWriter.flush",
       "source_column": 12,
-      "source_line": 424,
+      "source_line": 431,
       "wrapper_target": null
     },
     {
@@ -16958,7 +16958,7 @@
       "primitive": "gather",
       "qualname": "SessionWriter.flush",
       "source_column": 33,
-      "source_line": 424,
+      "source_line": 431,
       "wrapper_target": null
     },
     {
@@ -16978,7 +16978,7 @@
       "primitive": "sync_primitive",
       "qualname": "SessionWriter.persist_barrier",
       "source_column": 8,
-      "source_line": 338,
+      "source_line": 345,
       "wrapper_target": null
     },
     {
@@ -16998,7 +16998,7 @@
       "primitive": "shield",
       "qualname": "SessionWriter.persist_barrier",
       "source_column": 24,
-      "source_line": 347,
+      "source_line": 354,
       "wrapper_target": null
     },
     {
@@ -17018,7 +17018,7 @@
       "primitive": "wrapper",
       "qualname": "SessionWriter.persist_now",
       "source_column": 8,
-      "source_line": 302,
+      "source_line": 309,
       "wrapper_target": "chrys.orchestration.engine.state.session_writer.SessionWriter.flush"
     },
     {
@@ -17038,7 +17038,7 @@
       "primitive": "sync_primitive",
       "qualname": "SessionWriter.persist_now",
       "source_column": 8,
-      "source_line": 313,
+      "source_line": 320,
       "wrapper_target": null
     },
     {
@@ -17058,7 +17058,7 @@
       "primitive": "shield",
       "qualname": "SessionWriter.persist_now",
       "source_column": 15,
-      "source_line": 321,
+      "source_line": 328,
       "wrapper_target": null
     },
     {
@@ -17078,7 +17078,7 @@
       "primitive": "wrapper",
       "qualname": "SessionWriter.save_current_session",
       "source_column": 8,
-      "source_line": 141,
+      "source_line": 148,
       "wrapper_target": "chrys.orchestration.engine.state.session_writer.SessionWriter.flush"
     },
     {
@@ -17098,7 +17098,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter.save_current_session",
       "source_column": 16,
-      "source_line": 214,
+      "source_line": 221,
       "wrapper_target": null
     },
     {
@@ -17118,7 +17118,7 @@
       "primitive": "awaitable",
       "qualname": "SessionWriter.save_current_session",
       "source_column": 37,
-      "source_line": 230,
+      "source_line": 237,
       "wrapper_target": null
     },
     {
@@ -20758,7 +20758,7 @@
       "primitive": "async_context",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 19,
-      "source_line": 504,
+      "source_line": 523,
       "wrapper_target": null
     },
     {
@@ -20778,7 +20778,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 16,
-      "source_line": 523,
+      "source_line": 542,
       "wrapper_target": null
     },
     {
@@ -20798,7 +20798,7 @@
       "primitive": "multi_wait",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 37,
-      "source_line": 534,
+      "source_line": 553,
       "wrapper_target": null
     },
     {
@@ -20818,7 +20818,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 551,
+      "source_line": 570,
       "wrapper_target": null
     },
     {
@@ -20838,7 +20838,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 27,
-      "source_line": 555,
+      "source_line": 574,
       "wrapper_target": null
     },
     {
@@ -20858,7 +20858,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 557,
+      "source_line": 576,
       "wrapper_target": null
     },
     {
@@ -20878,7 +20878,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 559,
+      "source_line": 578,
       "wrapper_target": null
     },
     {
@@ -20898,7 +20898,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 27,
-      "source_line": 563,
+      "source_line": 582,
       "wrapper_target": null
     },
     {
@@ -20918,7 +20918,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 565,
+      "source_line": 584,
       "wrapper_target": null
     },
     {
@@ -20938,7 +20938,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 578,
+      "source_line": 597,
       "wrapper_target": null
     },
     {
@@ -20958,7 +20958,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 585,
+      "source_line": 604,
       "wrapper_target": null
     },
     {
@@ -20978,7 +20978,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 586,
+      "source_line": 605,
       "wrapper_target": null
     },
     {
@@ -20998,7 +20998,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 592,
+      "source_line": 611,
       "wrapper_target": null
     },
     {
@@ -21018,7 +21018,7 @@
       "primitive": "sleep",
       "qualname": "ChrysSessionHost._iter_run_events_locked._event_task_ready_after_checkpoint",
       "source_column": 16,
-      "source_line": 518,
+      "source_line": 537,
       "wrapper_target": null
     },
     {
@@ -21038,7 +21038,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked._publish_user_turn",
       "source_column": 16,
-      "source_line": 510,
+      "source_line": 529,
       "wrapper_target": null
     },
     {
@@ -21058,7 +21058,7 @@
       "primitive": "sync_primitive",
       "qualname": "ChrysSessionHost._iter_turn_events",
       "source_column": 19,
-      "source_line": 463,
+      "source_line": 482,
       "wrapper_target": null
     },
     {
@@ -21078,7 +21078,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost._iter_turn_events",
       "source_column": 12,
-      "source_line": 466,
+      "source_line": 485,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events_locked"
     },
     {
@@ -21098,7 +21098,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._resolve_restore_session_id",
       "source_column": 19,
-      "source_line": 863,
+      "source_line": 913,
       "wrapper_target": null
     },
     {
@@ -21118,7 +21118,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.cancel_current_turn",
       "source_column": 8,
-      "source_line": 472,
+      "source_line": 491,
       "wrapper_target": null
     },
     {
@@ -21138,7 +21138,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.cancel_workflow",
       "source_column": 12,
-      "source_line": 829,
+      "source_line": 879,
       "wrapper_target": null
     },
     {
@@ -21158,7 +21158,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.iter_run_events",
       "source_column": 8,
-      "source_line": 451,
+      "source_line": 470,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"
     },
     {
@@ -21178,7 +21178,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.iter_turn_events",
       "source_column": 8,
-      "source_line": 456,
+      "source_line": 475,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"
     },
     {
@@ -21198,7 +21198,7 @@
       "primitive": "sync_primitive",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 19,
-      "source_line": 728,
+      "source_line": 768,
       "wrapper_target": null
     },
     {
@@ -21218,7 +21218,7 @@
       "primitive": "async_context",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 35,
-      "source_line": 728,
+      "source_line": 768,
       "wrapper_target": null
     },
     {
@@ -21238,7 +21238,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 12,
-      "source_line": 730,
+      "source_line": 770,
       "wrapper_target": null
     },
     {
@@ -21258,7 +21258,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 16,
-      "source_line": 759,
+      "source_line": 800,
       "wrapper_target": null
     },
     {
@@ -21278,7 +21278,7 @@
       "primitive": "async_iteration",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 16,
-      "source_line": 760,
+      "source_line": 801,
       "wrapper_target": null
     },
     {
@@ -21298,7 +21298,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 24,
-      "source_line": 795,
+      "source_line": 845,
       "wrapper_target": null
     },
     {
@@ -21318,7 +21318,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 24,
-      "source_line": 800,
+      "source_line": 850,
       "wrapper_target": null
     },
     {
@@ -21338,7 +21338,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 20,
-      "source_line": 801,
+      "source_line": 851,
       "wrapper_target": null
     },
     {
@@ -21358,7 +21358,7 @@
       "primitive": "sleep",
       "qualname": "ChrysSessionHost.iter_workflow_events.enforce_deadline",
       "source_column": 16,
-      "source_line": 745,
+      "source_line": 786,
       "wrapper_target": null
     },
     {
@@ -21378,7 +21378,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.load_workflow_session",
       "source_column": 15,
-      "source_line": 650,
+      "source_line": 684,
       "wrapper_target": null
     },
     {
@@ -21398,7 +21398,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.load_workflow_session",
       "source_column": 16,
-      "source_line": 661,
+      "source_line": 695,
       "wrapper_target": null
     },
     {
@@ -21418,7 +21418,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.preview_workflow",
       "source_column": 18,
-      "source_line": 690,
+      "source_line": 724,
       "wrapper_target": null
     },
     {
@@ -21438,7 +21438,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 28,
-      "source_line": 401,
+      "source_line": 420,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._resolve_restore_session_id"
     },
     {
@@ -21458,7 +21458,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 408,
+      "source_line": 427,
       "wrapper_target": null
     },
     {
@@ -21478,7 +21478,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 422,
+      "source_line": 441,
       "wrapper_target": null
     },
     {
@@ -21498,7 +21498,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 423,
+      "source_line": 442,
       "wrapper_target": null
     },
     {
@@ -21518,7 +21518,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 425,
+      "source_line": 444,
       "wrapper_target": null
     },
     {
@@ -21538,7 +21538,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 438,
+      "source_line": 457,
       "wrapper_target": null
     },
     {
@@ -21558,7 +21558,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 440,
+      "source_line": 459,
       "wrapper_target": null
     },
     {
@@ -21578,7 +21578,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 441,
+      "source_line": 460,
       "wrapper_target": null
     },
     {
@@ -21598,7 +21598,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.run_until_final",
       "source_column": 19,
-      "source_line": 615,
+      "source_line": 649,
       "wrapper_target": null
     },
     {
@@ -21618,7 +21618,7 @@
       "primitive": "timeout",
       "qualname": "ChrysSessionHost.run_until_final",
       "source_column": 15,
-      "source_line": 616,
+      "source_line": 650,
       "wrapper_target": null
     },
     {
@@ -21638,7 +21638,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.run_until_final._run",
       "source_column": 12,
-      "source_line": 600,
+      "source_line": 631,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.iter_run_events"
     },
     {
@@ -21658,7 +21658,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.run_workflow_until_final",
       "source_column": 8,
-      "source_line": 812,
+      "source_line": 862,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.iter_workflow_events"
     },
     {
@@ -21678,7 +21678,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.shutdown",
       "source_column": 8,
-      "source_line": 833,
+      "source_line": 883,
       "wrapper_target": null
     },
     {
@@ -21698,7 +21698,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.start",
       "source_column": 12,
-      "source_line": 389,
+      "source_line": 408,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.restore_session"
     },
     {
@@ -21718,7 +21718,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.start",
       "source_column": 12,
-      "source_line": 396,
+      "source_line": 415,
       "wrapper_target": null
     },
     {
@@ -26098,7 +26098,7 @@
       "primitive": "wrapper",
       "qualname": "WorkflowCoordinator._admit",
       "source_column": 16,
-      "source_line": 687,
+      "source_line": 690,
       "wrapper_target": "chrys.foundation.util.once_close.finish_close"
     },
     {
@@ -26118,7 +26118,7 @@
       "primitive": "wrapper",
       "qualname": "WorkflowCoordinator._admit",
       "source_column": 16,
-      "source_line": 707,
+      "source_line": 710,
       "wrapper_target": "chrys.foundation.util.once_close.finish_close"
     },
     {
@@ -26138,7 +26138,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit",
       "source_column": 12,
-      "source_line": 712,
+      "source_line": 715,
       "wrapper_target": null
     },
     {
@@ -26158,7 +26158,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 24,
-      "source_line": 700,
+      "source_line": 703,
       "wrapper_target": null
     },
     {
@@ -26178,7 +26178,7 @@
       "primitive": "thread_pool",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 24,
-      "source_line": 702,
+      "source_line": 705,
       "wrapper_target": null
     },
     {
@@ -26198,7 +26198,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 20,
-      "source_line": 703,
+      "source_line": 706,
       "wrapper_target": null
     },
     {
@@ -26218,7 +26218,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._admit.discard",
       "source_column": 24,
-      "source_line": 705,
+      "source_line": 708,
       "wrapper_target": null
     },
     {
@@ -26298,7 +26298,7 @@
       "primitive": "awaitable",
       "qualname": "WorkflowCoordinator._reply",
       "source_column": 8,
-      "source_line": 753,
+      "source_line": 756,
       "wrapper_target": null
     },
     {
@@ -33678,7 +33678,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware._ensure_auto_fulfill_block_subscription",
       "source_column": 8,
-      "source_line": 655,
+      "source_line": 656,
       "wrapper_target": null
     },
     {
@@ -33698,7 +33698,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.close",
       "source_column": 8,
-      "source_line": 659,
+      "source_line": 660,
       "wrapper_target": null
     },
     {
@@ -33718,7 +33718,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 12,
-      "source_line": 338,
+      "source_line": 339,
       "wrapper_target": null
     },
     {
@@ -33738,7 +33738,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 20,
-      "source_line": 361,
+      "source_line": 362,
       "wrapper_target": null
     },
     {
@@ -33758,7 +33758,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 16,
-      "source_line": 382,
+      "source_line": 383,
       "wrapper_target": null
     },
     {
@@ -33778,7 +33778,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 16,
-      "source_line": 411,
+      "source_line": 412,
       "wrapper_target": null
     },
     {
@@ -33798,7 +33798,7 @@
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 12,
-      "source_line": 425,
+      "source_line": 426,
       "wrapper_target": null
     },
     {
@@ -33811,14 +33811,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.subscribe(ApprovalResponse, _handler)",
+      "expression": "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id)",
       "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:6",
       "module": "chrys.service.agent_middleware.control.approval",
       "ordinal": 6,
-      "primitive": "awaitable",
+      "primitive": "async_context",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 8,
-      "source_line": 469,
+      "source_column": 23,
+      "source_line": 465,
       "wrapper_target": null
     },
     {
@@ -33837,8 +33837,8 @@
       "ordinal": 7,
       "primitive": "wrapper",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 12,
-      "source_line": 478,
+      "source_column": 24,
+      "source_line": 477,
       "wrapper_target": "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._ensure_auto_fulfill_block_subscription"
     },
     {
@@ -33857,8 +33857,8 @@
       "ordinal": 8,
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 8,
-      "source_line": 482,
+      "source_column": 20,
+      "source_line": 481,
       "wrapper_target": null
     },
     {
@@ -33877,7 +33877,7 @@
       "ordinal": 9,
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 20,
+      "source_column": 24,
       "source_line": 534,
       "wrapper_target": null
     },
@@ -33897,7 +33897,7 @@
       "ordinal": 10,
       "primitive": "wrapper",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 50,
+      "source_column": 31,
       "source_line": 543,
       "wrapper_target": "chrys.service.agent_middleware.control.approval_hooks.await_approval_with_hooks"
     },
@@ -33911,14 +33911,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.unsubscribe(ApprovalResponse, _handler)",
+      "expression": "await judge_task",
       "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:11",
       "module": "chrys.service.agent_middleware.control.approval",
       "ordinal": 11,
-      "primitive": "awaitable",
+      "primitive": "future",
       "qualname": "ApprovalMiddleware.process",
-      "source_column": 16,
-      "source_line": 560,
+      "source_column": 28,
+      "source_line": 565,
       "wrapper_target": null
     },
     {
@@ -33931,34 +33931,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await judge_task",
+      "expression": "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args))",
       "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:12",
       "module": "chrys.service.agent_middleware.control.approval",
       "ordinal": 12,
-      "primitive": "future",
-      "qualname": "ApprovalMiddleware.process",
-      "source_column": 24,
-      "source_line": 567,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if user_decided else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:13",
-      "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 13,
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 16,
-      "source_line": 576,
+      "source_line": 577,
       "wrapper_target": null
     },
     {
@@ -33972,13 +33952,13 @@
         }
       ],
       "expression": "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=context.arguments, workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:14",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:13",
       "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 14,
+      "ordinal": 13,
       "primitive": "wrapper",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 31,
-      "source_line": 597,
+      "source_line": 598,
       "wrapper_target": "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"
     },
     {
@@ -33992,13 +33972,13 @@
         }
       ],
       "expression": "await publisher.publish(InvocationToolCallArgsUpdated(origin=publisher.origin, agent_name=self._caller_name, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=final_args, session_id=self._session_id))",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:15",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:14",
       "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 15,
+      "ordinal": 14,
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 20,
-      "source_line": 618,
+      "source_line": 619,
       "wrapper_target": null
     },
     {
@@ -34012,13 +33992,13 @@
         }
       ],
       "expression": "await call_next()",
-      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:16",
+      "identity": "chrys.service.agent_middleware.control.approval:ApprovalMiddleware.process:15",
       "module": "chrys.service.agent_middleware.control.approval",
-      "ordinal": 16,
+      "ordinal": 15,
       "primitive": "awaitable",
       "qualname": "ApprovalMiddleware.process",
       "source_column": 12,
-      "source_line": 638,
+      "source_line": 639,
       "wrapper_target": null
     },
     {
@@ -34038,7 +34018,7 @@
       "primitive": "future",
       "qualname": "await_approval_with_hooks",
       "source_column": 15,
-      "source_line": 38,
+      "source_line": 37,
       "wrapper_target": null
     },
     {
@@ -34058,7 +34038,7 @@
       "primitive": "multi_wait",
       "qualname": "await_approval_with_hooks",
       "source_column": 8,
-      "source_line": 43,
+      "source_line": 42,
       "wrapper_target": null
     },
     {
@@ -34078,7 +34058,7 @@
       "primitive": "awaitable",
       "qualname": "await_approval_with_hooks",
       "source_column": 4,
-      "source_line": 56,
+      "source_line": 55,
       "wrapper_target": null
     },
     {
@@ -34098,7 +34078,7 @@
       "primitive": "future",
       "qualname": "await_approval_with_hooks",
       "source_column": 13,
-      "source_line": 57,
+      "source_line": 56,
       "wrapper_target": null
     },
     {
@@ -34111,14 +34091,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await manager.fire(HookEvent.APPROVAL_RESOLVED, {**payload, 'approved': result[0]}, target_operation_id=target_operation_id)",
+      "expression": "await manager.fire(HookEvent.APPROVAL_RESOLVED, {**payload, 'approved': result.approved}, target_operation_id=target_operation_id)",
       "identity": "chrys.service.agent_middleware.control.approval_hooks:await_approval_with_hooks:5",
       "module": "chrys.service.agent_middleware.control.approval_hooks",
       "ordinal": 5,
       "primitive": "awaitable",
       "qualname": "await_approval_with_hooks",
       "source_column": 4,
-      "source_line": 58,
+      "source_line": 57,
       "wrapper_target": null
     },
     {
@@ -34138,7 +34118,7 @@
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
       "source_column": 12,
-      "source_line": 147,
+      "source_line": 148,
       "wrapper_target": null
     },
     {
@@ -34151,14 +34131,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.subscribe(AskUserResponse, _handler)",
+      "expression": "async with OneShotCorrelation(self._bus, AskUserResponse, request_id=request_id)",
       "identity": "chrys.service.agent_middleware.control.ask_user:AskUserMiddleware.process:2",
       "module": "chrys.service.agent_middleware.control.ask_user",
       "ordinal": 2,
-      "primitive": "awaitable",
+      "primitive": "async_context",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 8,
-      "source_line": 166,
+      "source_column": 19,
+      "source_line": 162,
       "wrapper_target": null
     },
     {
@@ -34177,8 +34157,8 @@
       "ordinal": 3,
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 8,
-      "source_line": 168,
+      "source_column": 12,
+      "source_line": 164,
       "wrapper_target": null
     },
     {
@@ -34197,8 +34177,8 @@
       "ordinal": 4,
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 16,
-      "source_line": 185,
+      "source_column": 20,
+      "source_line": 181,
       "wrapper_target": null
     },
     {
@@ -34217,8 +34197,8 @@
       "ordinal": 5,
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 23,
-      "source_line": 186,
+      "source_column": 27,
+      "source_line": 182,
       "wrapper_target": null
     },
     {
@@ -34237,8 +34217,8 @@
       "ordinal": 6,
       "primitive": "timeout",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 61,
-      "source_line": 186,
+      "source_column": 65,
+      "source_line": 182,
       "wrapper_target": null
     },
     {
@@ -34257,8 +34237,8 @@
       "ordinal": 7,
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 16,
-      "source_line": 197,
+      "source_column": 20,
+      "source_line": 193,
       "wrapper_target": null
     },
     {
@@ -34277,8 +34257,8 @@
       "ordinal": 8,
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 16,
-      "source_line": 200,
+      "source_column": 20,
+      "source_line": 196,
       "wrapper_target": null
     },
     {
@@ -34297,28 +34277,8 @@
       "ordinal": 9,
       "primitive": "awaitable",
       "qualname": "AskUserMiddleware.process",
-      "source_column": 12,
-      "source_line": 207,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._bus.unsubscribe(AskUserResponse, _handler)",
-      "identity": "chrys.service.agent_middleware.control.ask_user:AskUserMiddleware.process:10",
-      "module": "chrys.service.agent_middleware.control.ask_user",
-      "ordinal": 10,
-      "primitive": "awaitable",
-      "qualname": "AskUserMiddleware.process",
-      "source_column": 12,
-      "source_line": 213,
+      "source_column": 16,
+      "source_line": 203,
       "wrapper_target": null
     },
     {
@@ -35511,7 +35471,7 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.publish(InvocationToolCallStart(origin=origin, agent_name=self._agent_name, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id))",
+      "expression": "await self._bus.publish(InvocationToolCallStart(origin=origin, agent_name=self._agent_name, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id, session_id=self._session_id))",
       "identity": "chrys.service.agent_middleware.events.sub_agent_events:SubAgentEventMiddleware._process_tool_call:2",
       "module": "chrys.service.agent_middleware.events.sub_agent_events",
       "ordinal": 2,
@@ -35538,7 +35498,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 12,
-      "source_line": 652,
+      "source_line": 653,
       "wrapper_target": null
     },
     {
@@ -35558,7 +35518,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 16,
-      "source_line": 692,
+      "source_line": 693,
       "wrapper_target": null
     },
     {
@@ -35578,7 +35538,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 16,
-      "source_line": 698,
+      "source_line": 699,
       "wrapper_target": null
     },
     {
@@ -35598,7 +35558,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 12,
-      "source_line": 713,
+      "source_line": 714,
       "wrapper_target": null
     },
     {
@@ -35618,7 +35578,7 @@
       "primitive": "wrapper",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 41,
-      "source_line": 797,
+      "source_line": 798,
       "wrapper_target": "chrys.service.mutations.pipeline.finalize_mutation_tracking"
     },
     {
@@ -35638,7 +35598,7 @@
       "primitive": "wrapper",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 36,
-      "source_line": 853,
+      "source_line": 854,
       "wrapper_target": "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"
     },
     {
@@ -35651,14 +35611,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata))",
+      "expression": "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata, session_id=self._session_id))",
       "identity": "chrys.service.agent_middleware.events.sub_agent_events:SubAgentEventMiddleware._process_tool_call:9",
       "module": "chrys.service.agent_middleware.events.sub_agent_events",
       "ordinal": 9,
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 20,
-      "source_line": 888,
+      "source_line": 889,
       "wrapper_target": null
     },
     {
@@ -35678,7 +35638,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 24,
-      "source_line": 903,
+      "source_line": 905,
       "wrapper_target": null
     },
     {
@@ -35698,7 +35658,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 24,
-      "source_line": 912,
+      "source_line": 914,
       "wrapper_target": null
     },
     {
@@ -35718,7 +35678,7 @@
       "primitive": "wrapper",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 20,
-      "source_line": 920,
+      "source_line": 922,
       "wrapper_target": "chrys.service.agent_middleware.events.sub_agent_events.SubAgentEventMiddleware._publish_progress"
     },
     {
@@ -45758,7 +45718,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.delete_session",
       "source_column": 8,
-      "source_line": 428,
+      "source_line": 435,
       "wrapper_target": null
     },
     {
@@ -45778,7 +45738,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.list_sessions",
       "source_column": 15,
-      "source_line": 422,
+      "source_line": 429,
       "wrapper_target": null
     },
     {
@@ -45798,7 +45758,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.load_session",
       "source_column": 15,
-      "source_line": 410,
+      "source_line": 417,
       "wrapper_target": null
     },
     {
@@ -45818,7 +45778,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.load_session_meta",
       "source_column": 15,
-      "source_line": 416,
+      "source_line": 423,
       "wrapper_target": null
     },
     {
@@ -45838,7 +45798,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.recovery_session_wins",
       "source_column": 15,
-      "source_line": 404,
+      "source_line": 411,
       "wrapper_target": null
     },
     {
@@ -45851,14 +45811,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self.save_recovery_session_strict(session_id, history_state, agent_profile_name=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, workspace=workspace, model_profile=model_profile, agent_profile_fingerprint=agent_profile_fingerprint, model_profile_fingerprint=model_profile_fingerprint)",
+      "expression": "await self.save_recovery_session_strict(session_id, history_state, agent_profile_name=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, workspace=workspace, model_profile=model_profile, agent_profile_fingerprint=agent_profile_fingerprint, model_profile_fingerprint=model_profile_fingerprint, last_surface=last_surface)",
       "identity": "chrys.service.session.persistence:SessionPersistence.save_recovery_session:1",
       "module": "chrys.service.session.persistence",
       "ordinal": 1,
       "primitive": "wrapper",
       "qualname": "SessionPersistence.save_recovery_session",
       "source_column": 12,
-      "source_line": 314,
+      "source_line": 318,
       "wrapper_target": "chrys.service.session.persistence.SessionPersistence.save_recovery_session_strict"
     },
     {
@@ -45871,14 +45831,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(self._state_store.save_recovery_session, session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint)",
+      "expression": "await asyncio.to_thread(self._state_store.save_recovery_session, session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, last_surface=last_surface)",
       "identity": "chrys.service.session.persistence:SessionPersistence.save_recovery_session_strict:1",
       "module": "chrys.service.session.persistence",
       "ordinal": 1,
       "primitive": "thread_pool",
       "qualname": "SessionPersistence.save_recovery_session_strict",
       "source_column": 8,
-      "source_line": 380,
+      "source_line": 386,
       "wrapper_target": null
     },
     {
@@ -45891,14 +45851,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._state_store.save_session(session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id)",
+      "expression": "await self._state_store.save_session(session_id, history_state, agent_profile=agent_profile_name, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, agent_profile_history=agent_profile_history or None, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, last_surface=last_surface)",
       "identity": "chrys.service.session.persistence:SessionPersistence.save_session:1",
       "module": "chrys.service.session.persistence",
       "ordinal": 1,
       "primitive": "awaitable",
       "qualname": "SessionPersistence.save_session",
       "source_column": 25,
-      "source_line": 271,
+      "source_line": 273,
       "wrapper_target": null
     },
     {
@@ -45918,7 +45878,7 @@
       "primitive": "awaitable",
       "qualname": "SessionPersistence.save_session",
       "source_column": 12,
-      "source_line": 290,
+      "source_line": 293,
       "wrapper_target": null
     },
     {
@@ -46398,7 +46358,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.delete_session",
       "source_column": 8,
-      "source_line": 1723,
+      "source_line": 2123,
       "wrapper_target": null
     },
     {
@@ -46418,7 +46378,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.list_sessions",
       "source_column": 15,
-      "source_line": 1438,
+      "source_line": 1768,
       "wrapper_target": null
     },
     {
@@ -46438,7 +46398,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 20,
-      "source_line": 1632,
+      "source_line": 1962,
       "wrapper_target": null
     },
     {
@@ -46458,7 +46418,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 17,
-      "source_line": 1635,
+      "source_line": 1965,
       "wrapper_target": null
     },
     {
@@ -46478,7 +46438,7 @@
       "primitive": "wrapper",
       "qualname": "JsonFileStateStore.load_latest_session_id",
       "source_column": 30,
-      "source_line": 1641,
+      "source_line": 1971,
       "wrapper_target": "chrys.service.state.store.JsonFileStateStore.list_sessions"
     },
     {
@@ -46498,7 +46458,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_recovery_session",
       "source_column": 15,
-      "source_line": 974,
+      "source_line": 1113,
       "wrapper_target": null
     },
     {
@@ -46518,7 +46478,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_recovery_session_meta",
       "source_column": 15,
-      "source_line": 992,
+      "source_line": 1131,
       "wrapper_target": null
     },
     {
@@ -46538,7 +46498,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session",
       "source_column": 15,
-      "source_line": 1025,
+      "source_line": 1164,
       "wrapper_target": null
     },
     {
@@ -46558,7 +46518,27 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_meta",
       "source_column": 15,
-      "source_line": 1120,
+      "source_line": 1263,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._load_session_page_sync, listing, surfaces, page, page_size)",
+      "identity": "chrys.service.state.store:JsonFileStateStore.load_session_page:1",
+      "module": "chrys.service.state.store",
+      "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "JsonFileStateStore.load_session_page",
+      "source_column": 15,
+      "source_line": 2075,
       "wrapper_target": null
     },
     {
@@ -46578,7 +46558,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_session_raw",
       "source_column": 15,
-      "source_line": 1082,
+      "source_line": 1225,
       "wrapper_target": null
     },
     {
@@ -46598,7 +46578,27 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.load_workflow_session",
       "source_column": 15,
-      "source_line": 1009,
+      "source_line": 1148,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.to_thread(self._open_session_listing_sync, kind)",
+      "identity": "chrys.service.state.store:JsonFileStateStore.open_session_listing:1",
+      "module": "chrys.service.state.store",
+      "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "JsonFileStateStore.open_session_listing",
+      "source_column": 15,
+      "source_line": 2036,
       "wrapper_target": null
     },
     {
@@ -46618,7 +46618,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.recovery_session_wins",
       "source_column": 15,
-      "source_line": 947,
+      "source_line": 1086,
       "wrapper_target": null
     },
     {
@@ -46631,14 +46631,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await asyncio.to_thread(self._save_session_sync, session_id, state, agent_profile=agent_profile, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, title=title, agent_profile_history=agent_profile_history, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, parent_session_id=parent_session_id)",
+      "expression": "await asyncio.to_thread(self._save_session_sync, session_id, state, agent_profile=agent_profile, agent_display_name=agent_display_name, agent_profile_id=agent_profile_id, agent_profile_fingerprint=agent_profile_fingerprint, primary_cwd=primary_cwd, working_dirs=working_dirs, title=title, agent_profile_history=agent_profile_history, model_provider=model_provider, model_api_style=model_api_style, model_id=model_id, model_profile_id=model_profile_id, model_base_url=model_base_url, model_profile_fingerprint=model_profile_fingerprint, service_session_id=service_session_id, parent_session_id=parent_session_id, last_surface=last_surface)",
       "identity": "chrys.service.state.store:JsonFileStateStore.save_session:1",
       "module": "chrys.service.state.store",
       "ordinal": 1,
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.save_session",
       "source_column": 15,
-      "source_line": 803,
+      "source_line": 938,
       "wrapper_target": null
     },
     {
@@ -46658,87 +46658,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.save_workflow_session",
       "source_column": 15,
-      "source_line": 829,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._session_dir_candidates)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:1",
-      "module": "chrys.service.state.store",
-      "ordinal": 1,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 23,
-      "source_line": 1660,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(_parse)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:2",
-      "module": "chrys.service.state.store",
-      "ordinal": 2,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 32,
-      "source_line": 1670,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._legacy_session_metas, seen_ids)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:3",
-      "module": "chrys.service.state.store",
-      "ordinal": 3,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 17,
-      "source_line": 1674,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.to_thread(self._evict_stale_meta_cache_sync)",
-      "identity": "chrys.service.state.store:JsonFileStateStore.stream_session_metas:4",
-      "module": "chrys.service.state.store",
-      "ordinal": 4,
-      "primitive": "thread_pool",
-      "qualname": "JsonFileStateStore.stream_session_metas",
-      "source_column": 8,
-      "source_line": 1678,
+      "source_line": 965,
       "wrapper_target": null
     },
     {
@@ -46758,7 +46678,7 @@
       "primitive": "thread_pool",
       "qualname": "JsonFileStateStore.update_session_titles",
       "source_column": 15,
-      "source_line": 1287,
+      "source_line": 1431,
       "wrapper_target": null
     },
     {

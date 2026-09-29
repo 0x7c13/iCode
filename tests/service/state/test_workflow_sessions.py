@@ -15,6 +15,7 @@ from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.workflows.store import RunSpec, WorkflowRunStore
+from tests.service.state._store_helpers import browser_page
 from tests.support.workflow_history import record_workflow_run, workflow_state
 
 
@@ -54,7 +55,7 @@ async def test_workflow_status_comes_from_log_without_resaving_session(
     try:
         assert (await store.list_sessions())[0].latest_run.status == "running"
         await run_store.finish(outcome, {"reason": reason})
-        listed = [meta async for batch in store.stream_session_metas() for meta in batch]
+        listed = await browser_page(store, "workflow")
         assert listed[0].latest_run.status == status
     finally:
         await run_store.close()
@@ -118,9 +119,7 @@ async def test_kind_queries_skip_workflow_headers_and_load_only_latest_run(
     monkeypatch.setattr(store_module, "read_workflow_meta", read)
     for _ in range(2):
         assert [meta.session_id for meta in await store.list_sessions(kind="chat")] == [chat_id]
-        assert [meta.session_id async for batch in store.stream_session_metas(kind="chat") for meta in batch] == [
-            chat_id
-        ]
+        assert [meta.session_id for meta in await browser_page(store, "chat")] == [chat_id]
     assert reads == []
     (meta,) = await store.list_sessions(kind="workflow")
     assert meta.kind == "workflow" and meta.run_count == 2
@@ -178,14 +177,19 @@ async def test_corrupt_workflow_is_isolated_from_both_session_lists(tmp_path: Pa
     chat_id, good_id, broken_id = (str(uuid4()) for _ in range(3))
     await store.save_session(chat_id, {"messages": [Message("user", ["legacy chat"])]})
     for session_id in (good_id, broken_id):
-        await store.save_workflow_session(session_id, WorkflowSessionState.decode(workflow_state(tmp_path)))
+        run_id = uuid4().hex
+        state = workflow_state(tmp_path, run_count=1, latest_run_id=run_id)
+        await store.save_workflow_session(session_id, WorkflowSessionState.decode(state))
+        directory = store.session_dir(session_id) / "workflows" / run_id
+        await record_workflow_run(directory, session_id=session_id, title="Review", outcome="completed")
     path = store.session_dir(broken_id) / "session.json"
     envelope = json.loads(path.read_text())
     envelope["state"][field] = value
     path.write_text(json.dumps(envelope))
     assert [meta.session_id for meta in await store.list_sessions(kind="chat")] == [chat_id]
     assert [meta.session_id for meta in await store.list_sessions(kind="workflow")] == [good_id]
-    assert {meta.session_id async for batch in store.stream_session_metas() for meta in batch} == {chat_id, good_id}
+    browsed = [*await browser_page(store, "chat"), *await browser_page(store, "workflow")]
+    assert {meta.session_id for meta in browsed} == {chat_id, good_id}
     assert await store.load_session_meta(broken_id) is None
 
 

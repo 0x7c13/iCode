@@ -51,6 +51,7 @@ from chrys.foundation.events.types import (
     WorkspaceChange,
     WorkspaceUpdated,
 )
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.text.yaml_io import dump_yaml
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
@@ -592,6 +593,7 @@ class AcpSessionManager:
             allow_user_interaction=True,
             on_successful_turn=_on_successful_turn,
             on_turn_started=_on_turn_started,
+            surface=SessionSurface.ACP,
         )
         updater = SessionTitleUpdater(host.event_bus, self._state_store, engine_getter=lambda: host.engine)
         updater_slot.append(updater)

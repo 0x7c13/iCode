@@ -61,10 +61,9 @@ KEEP_RUNNING = msg("tui.workflow.cancel_run.keep_running", fallback="Keep runnin
 START = msg("tui.workflow.start", fallback="▶ Start")
 STARTING = msg("tui.workflow.starting", fallback="Starting…")
 STOP = msg("tui.workflow.stop", fallback="■ Cancel")
+RESULT = msg("tui.workflow.result", fallback="Result")
+RESULT_TITLE = msg("tui.workflow.result_title", fallback="Result · {node}")
 OUTPUTS = msg("tui.workflow.outputs", fallback="Outputs")
-OUTPUT_PREVIOUS_PAGE = msg("tui.workflow.output.previous_page", fallback="Previous")
-OUTPUT_NEXT_PAGE = msg("tui.workflow.output.next_page", fallback="Next")
-OUTPUT_PAGE = msg("tui.workflow.output.page", fallback="Page {page} of {pages}")
 OUTPUT_SUMMARY_ONLY = msg(
     "tui.workflow.output.summary_only", fallback="Full output is unavailable. Only the saved summary is shown."
 )
@@ -232,7 +231,7 @@ NODES_LOADED = msg("tui.workflow.nodes_loaded", fallback="Node states loaded: {l
 OK = msg("tui.workflow.button.ok", fallback="OK")
 
 LOAD_OUTPUT = msg("tui.workflow.output.load", fallback="Load output")
-NATIVE_OUTPUT = msg("tui.workflow.output.native", fallback="Unattributed output")
+NATIVE_OUTPUT = msg("tui.workflow.output.native", fallback="Output outside nodes")
 OUTPUT_TRUNCATED = msg("tui.workflow.output.truncated", fallback="Some output was omitted by the capture limit.")
 ACP_STDERR = msg("tui.workflow.node.acp_stderr", fallback="ACP stderr: {path}")
 

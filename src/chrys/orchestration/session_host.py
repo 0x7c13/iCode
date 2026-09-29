@@ -63,6 +63,7 @@ from chrys.foundation.events.types import (
     UserMessage,
     Warning,
     WorkflowCancelRequest,
+    WorkflowNodeStateChanged,
     WorkflowRunAccepted,
     WorkflowRunFinished,
     WorkflowRunRejected,
@@ -70,6 +71,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.events.workflow import WORKFLOW_RUN_EVENTS
 from chrys.foundation.i18n import DisplayBlock, DisplaySequence, MessageRef, msg
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workflow_session import (
     WorkflowDraft,
     WorkflowSessionSelection,
@@ -184,9 +186,25 @@ def allows_headless_event(event: Event) -> bool:
     )
 
 
+def allows_workflow_node_event(event: Event) -> bool:
+    """Whether a workflow agent node's own activity may reach a headless workflow stream that asked for it.
+
+    The complement of what :func:`allows_headless_event` drops for workflow-rooted invocations: tool calls,
+    retries, compaction and sub-agent lifecycle, and the node's own prose. A node's sub-agents keep their prose
+    private, as a chat turn's do.
+    """
+    if not isinstance(event, InvocationEvent) or not isinstance(event, _HEADLESS_RUN_EVENT_TYPES):
+        return False
+    if event.origin.root.kind != "workflow_node":
+        return False
+    return event.origin.kind == "workflow_node" or not isinstance(
+        event, InvocationMessage | InvocationPresentationAttemptAccepted | InvocationPresentationAttemptRejected
+    )
+
+
 @dataclass(frozen=True)
 class HeadlessRunResult:
-    """Final response and events from one headless agent turn."""
+    """Final response from one headless agent turn; ``events`` stays empty unless the caller asked to keep them."""
 
     text: str
     session_id: str
@@ -196,9 +214,8 @@ class HeadlessRunResult:
 class HeadlessRunError(RuntimeError):
     """Raised when a headless agent turn ends with an engine error."""
 
-    def __init__(self, event: Error, events: list[Event]) -> None:
+    def __init__(self, event: Error) -> None:
         self.event = event
-        self.events = events
         super().__init__(event.message or event.code or "Headless agent run failed")
 
 
@@ -299,6 +316,7 @@ class ChrysSessionHost:
         allow_user_interaction: bool = False,
         on_successful_turn: Callable[[], None] | None = None,
         on_turn_started: Callable[[], None] | None = None,
+        surface: SessionSurface | None = None,
     ) -> None:
         self._profile_name = profile_name.strip()
         self._restore_session_id = (session_id or "").strip() or None
@@ -332,6 +350,7 @@ class ChrysSessionHost:
             on_successful_turn=on_successful_turn,
             on_turn_started=on_turn_started,
             allow_user_interaction=allow_user_interaction,
+            surface=surface,
         )
         self._approval_mode = self._engine.session.approval_mode
 
@@ -417,7 +436,7 @@ class ChrysSessionHost:
 
         async def _on_error(event: Error) -> None:
             if event.session_id == target_session_id and not restored.done():
-                restored.set_exception(HeadlessRunError(event, [event]))
+                restored.set_exception(HeadlessRunError(event))
 
         await self._bus.subscribe(SessionRestored, _on_restored)
         await self._bus.subscribe(Error, _on_error)
@@ -478,7 +497,6 @@ class ChrysSessionHost:
         raise_for_outcome: bool,
     ) -> AsyncIterator[Event]:
         """Run one user turn while the host run lock is held."""
-        events: list[Event] = []
         final: InvocationMessage | None = None
         error: Error | None = None
         question: QuestionToUser | None = None
@@ -488,7 +506,8 @@ class ChrysSessionHost:
 
         def _record_event(event: Event) -> None:
             nonlocal final, error, question
-            events.append(event)
+            # Only the terminal state is kept: a caller that wants the turn's
+            # events reads them from this iterator as they stream.
             if (
                 isinstance(event, InvocationMessage)
                 and event.origin.kind == "turn"
@@ -566,7 +585,7 @@ class ChrysSessionHost:
                         outcome = self._resolve_run_outcome(final=final, error=error, question=question)
                         self._last_turn_outcome = outcome
                         if raise_for_outcome:
-                            self._raise_for_run_outcome(events, outcome=outcome)
+                            self._raise_for_run_outcome(outcome)
                         return
             finally:
                 if start_task is not None:
@@ -591,14 +610,29 @@ class ChrysSessionHost:
                     with contextlib.suppress(asyncio.CancelledError):
                         await next_event_task
 
-    async def run_until_final(self, message: str | UserMessage, *, timeout: float | None = None) -> HeadlessRunResult:
-        """Run one user turn and return the final assistant response."""
+    async def run_until_final(
+        self,
+        message: str | UserMessage,
+        *,
+        timeout: float | None = None,
+        keep_events: bool = False,
+        on_event: Callable[[Event], None] | None = None,
+    ) -> HeadlessRunResult:
+        """Run one user turn and return the final assistant response.
+
+        The turn's streamed events are retained in ``HeadlessRunResult.events``
+        only with *keep_events*: a long turn streams many deltas nobody reads.
+        *on_event* sees every event as it streams, before the next one is read.
+        """
 
         async def _run() -> HeadlessRunResult:
             events: list[Event] = []
             final: InvocationMessage | None = None
             async for event in self.iter_run_events(message):
-                events.append(event)
+                if on_event is not None:
+                    on_event(event)
+                if keep_events:
+                    events.append(event)
                 if (
                     isinstance(event, InvocationMessage)
                     and event.origin.kind == "turn"
@@ -708,6 +742,7 @@ class ChrysSessionHost:
         *,
         input_text: str = "",
         timeout: float = 0.0,
+        include_node_activity: bool = False,
     ) -> AsyncIterator[Event]:
         """Run one workflow and yield backend events until its ``WorkflowRunFinished``.
 
@@ -721,6 +756,11 @@ class ChrysSessionHost:
         ``timeout`` is in seconds and covers admission and execution. Expiry before acceptance
         raises :class:`WorkflowRunTimeoutError`; an accepted run finishes as
         cancelled with reason ``deadline_exceeded``. Both paths await cleanup.
+
+        With ``include_node_activity`` the stream also carries this run's agent-node activity
+        (:func:`allows_workflow_node_event`), admitted only for invocations one of this run's
+        ``WorkflowNodeStateChanged`` events announced: the runner binds an activation's invocation id before
+        publishing ``running``, so a same-session invocation from any other run is never yielded.
         """
         if self._run_lock.locked():
             error_message = "Concurrent runs are not supported for a ChrysSessionHost."
@@ -736,6 +776,7 @@ class ChrysSessionHost:
             )
             run_id: str | None = None
             execution_session_id: str | None = None
+            owned_invocations: set[str] = set()
             rejected = False
             finished = False
             timed_out = False
@@ -758,7 +799,8 @@ class ChrysSessionHost:
                 # the run was admitted, and a cancellation landing there must still give the run up below.
                 await self._bus.publish(request)
                 async for event in stream:
-                    if not allows_headless_event(event):
+                    node_activity = include_node_activity and allows_workflow_node_event(event)
+                    if not node_activity and not allows_headless_event(event):
                         continue
                     if isinstance(event, WorkflowRunAccepted | WorkflowRunRejected) and event.request_id != request_id:
                         continue  # the reply to someone else's request, a replayed acceptance included
@@ -782,6 +824,14 @@ class ChrysSessionHost:
                             WORKFLOW_RUN_EVENTS,
                         )
                         and event.run_id != run_id
+                    ):
+                        continue
+                    if isinstance(event, WorkflowNodeStateChanged) and event.invocation_id:
+                        owned_invocations.add(event.invocation_id)
+                    if (
+                        node_activity
+                        and isinstance(event, InvocationEvent)
+                        and event.origin.root.invocation_id not in owned_invocations
                     ):
                         continue
                     yield event
@@ -918,14 +968,9 @@ class ChrysSessionHost:
             return
         task.add_done_callback(cls._observe_task_exception)
 
-    def _raise_for_run_outcome(
-        self,
-        events: list[Event],
-        *,
-        outcome: TurnOutcome,
-    ) -> None:
+    def _raise_for_run_outcome(self, outcome: TurnOutcome) -> None:
         if isinstance(outcome, Errored):
-            raise HeadlessRunError(outcome.error, events)
+            raise HeadlessRunError(outcome.error)
         if isinstance(outcome, Cancelled):
             error_message = outcome.reason or "Agent run was cancelled."
             raise RuntimeError(error_message)

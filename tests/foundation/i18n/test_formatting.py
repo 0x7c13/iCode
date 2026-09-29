@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from chrys.foundation.i18n import DisplayPath, msg
@@ -13,6 +15,7 @@ from chrys.foundation.i18n.formatting import (
     has_visible_content,
     sanitize_legacy_block,
     sanitize_legacy_scalar,
+    sanitize_terminal_block,
     validate_authored_template,
 )
 
@@ -176,3 +179,9 @@ def test_legacy_scalar_sanitization_replaces_all_controls() -> None:
 
 def test_legacy_block_sanitization_preserves_only_lf() -> None:
     assert sanitize_legacy_block("a\tb\nc\rd\x1be") == "a�b\nc�d�e"
+
+
+def test_terminal_block_sanitization_keeps_layout_and_replaces_other_controls() -> None:
+    assert sanitize_terminal_block("a\tb\r\nc\rd\x1b]52;c;x\x07e\x7ff\x85g") == "a\tb\nc\nd�]52;c;x�e�f�g"
+    with pytest.raises(TypeError):
+        sanitize_terminal_block(cast(Any, b"bytes"))

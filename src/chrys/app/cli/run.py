@@ -14,6 +14,7 @@ from pathlib import Path
 
 from chrys.app.cli import headless
 from chrys.app.cli.headless import PreparedRuntime
+from chrys.app.cli.progress import ProgressWriter, RunContext, TurnProgress, guarded, progress_console
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
@@ -21,7 +22,8 @@ from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_terminal_block
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
@@ -100,6 +102,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Working directory for the run",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Do not show progress on stderr; only warnings, errors and the final response are printed",
+    )
     return parser
 
 
@@ -152,9 +160,30 @@ def _write_result(result: HeadlessRunResult, *, as_json: bool, duration: float) 
         }
         headless.write_json(payload)
         return
-    sys.stdout.write(result.text)
-    if not result.text.endswith("\n"):
+    # Redirected output is data for another program and stays byte-for-byte.
+    text = sanitize_terminal_block(result.text) if sys.stdout.isatty() else result.text
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
         sys.stdout.write("\n")
+
+
+def _turn_progress(args: argparse.Namespace, host: ChrysSessionHost, prepared: PreparedRuntime) -> TurnProgress | None:
+    """Progress on stderr (only its warnings for quiet output); nothing for JSON."""
+    if args.json:
+        return None
+
+    def context() -> RunContext:
+        engine = host.engine
+        workspace = engine.workspace
+        return RunContext(
+            model=engine.runtime_details.model.name,
+            workdir=workspace.primary_cwd if workspace is not None else "",
+        )
+
+    writer = ProgressWriter(
+        progress_console(), reported_warnings=headless.reported_warning_keys(prepared), quiet=args.quiet
+    )
+    return TurnProgress(writer, render=prepared.localizer.render, context=context)
 
 
 def _apply_cwd(cwd: str | None) -> str | None:
@@ -236,27 +265,38 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
         approval_mode=ApprovalMode.BYPASS,
         cwd=cwd,
         on_successful_turn=on_buddy_successful_turn,
+        surface=SessionSurface.CLI,
     )
     if model_registry is not None:
         # --model was applied host-locally (CLI provenance, no process pointer);
         # pin it so a settings reload cannot revert the run to the global default.
         host.engine.pin_model_profile()
+    progress = _turn_progress(args, host, prepared)
     started = time.monotonic()
     try:
         if session_id:
             # The restore loads settings from the saved session's own root, and
-            # the headless run stream never carries the bus warnings that load
-            # publishes (``Warning`` is not a run event type) — so the restore
-            # is driven here and the target root's additions are written before
-            # the run. ``start()`` is idempotent; the run does not restore twice.
-            await host.start()
-            headless.write_warning_events(
-                headless.restore_delta_warnings(host.engine.loaded_settings, prepared.pending_warnings),
-                prepared.localizer,
-                as_json=args.json,
-            )
-        result = await host.run_until_final(prompt)
-        _write_result(result, as_json=args.json, duration=time.monotonic() - started)
+            # the run stream opens only after it, so it never carries what the
+            # restore publishes — so the restore is driven here and the target
+            # root's additions are written before the run. ``start()`` is
+            # idempotent; the run does not restore twice.
+            if progress is None:
+                await host.start()
+            else:
+                progress.restoring(session_id)
+                async with progress.observe_restore(host.event_bus):
+                    await host.start()
+            delta = headless.restore_delta_warnings(host.engine.loaded_settings, prepared.pending_warnings)
+            if progress is None:
+                headless.write_warning_events(delta, prepared.localizer, as_json=args.json)
+            else:
+                progress.warnings(delta)
+                progress.restored(host.session_id or "")
+        result = await host.run_until_final(prompt, on_event=None if progress is None else guarded(progress.handle))
+        duration = time.monotonic() - started
+        if progress is not None:
+            progress.succeeded(duration=duration, session_id=result.session_id)
+        _write_result(result, as_json=args.json, duration=duration)
         return 0
     finally:
         await host.shutdown()

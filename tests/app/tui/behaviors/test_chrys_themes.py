@@ -8,9 +8,10 @@ import re
 from pathlib import Path
 
 import pytest
-from rich.color import EIGHT_BIT_PALETTE, Color
+from rich.color import EIGHT_BIT_PALETTE, Color, ColorSystem
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Checkbox, Input, Static, Tab, TabbedContent, TextArea
+from textual.color import Color as TextualColor
+from textual.widgets import Button, Checkbox, Input, Static, Tab, TabbedContent, TextArea, Tree
 
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.theme import (
@@ -19,7 +20,10 @@ from chrys.app.tui.theme import (
     CHRYS_THEME,
     TuiVariableDefaultsMixin,
 )
+from chrys.app.tui.themes.document import copy_theme
+from chrys.app.tui.widgets.chat.messages import UserMessage
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
+from chrys.app.tui.widgets.sidebar.toc import ConversationToc, TocItem
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.service.state.store import JsonFileStateStore
@@ -28,6 +32,133 @@ from tests.support.tui_app_harness import ShutdownOnlyEngine, make_chrys_app
 
 _CHRYS_CSS = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
 _CHRYS_THEME = SRC_ROOT / "chrys" / "app" / "tui" / "theme.py"
+
+
+class _TurnHighlightApp(TuiVariableDefaultsMixin, App[None]):
+    def compose(self) -> ComposeResult:
+        message = UserMessage("Selected turn")
+        message.add_class("-highlighted")
+        yield message
+        yield ConversationToc()
+
+
+class _SelectedMessageKindsApp(TuiVariableDefaultsMixin, App[None]):
+    def compose(self) -> ComposeResult:
+        for message_id, compressed, is_injection, selected in (
+            ("turn", False, False, True),
+            ("compressed-turn", True, False, True),
+            ("note", False, True, True),
+            ("unselected-note", False, True, False),
+        ):
+            message = UserMessage("Selected turn", compressed=compressed, is_injection=is_injection)
+            message.id = message_id
+            if selected:
+                message.add_class("-highlighted")
+            yield message
+
+
+@pytest.mark.parametrize("theme_name", ["chrys", "chrys-ansi"])
+async def test_selection_wins_over_compression_but_never_borders_an_injected_note(theme_name: str) -> None:
+    app = _SelectedMessageKindsApp()
+    app.register_theme(CHRYS_THEME)
+    app.register_theme(CHRYS_ANSI_THEME)
+    app.theme = theme_name
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        turn, compressed_turn, note, unselected_note = (
+            app.query_one(f"#{message_id}", UserMessage)
+            for message_id in ("turn", "compressed-turn", "note", "unselected-note")
+        )
+
+        assert compressed_turn.styles.border_left == turn.styles.border_left
+        assert compressed_turn.styles.background == turn.styles.background
+        # Selecting a note must not give it a border, which would also shift its text.
+        assert note.styles.border_left == unselected_note.styles.border_left
+        assert note.content_region.x == unselected_note.content_region.x
+        assert note.styles.background == turn.styles.background
+
+
+@pytest.mark.parametrize("theme_name", ["chrys-ansi", "ansi-dark", "ansi-light", "textual-light", "nord"])
+async def test_selected_turn_colors_follow_theme_switches_and_ansi_mode(theme_name: str) -> None:
+    app = _TurnHighlightApp()
+    app.register_theme(CHRYS_THEME)
+    app.register_theme(CHRYS_ANSI_THEME)
+    source = app.get_theme(theme_name)
+    assert source is not None
+    app.register_theme(copy_theme(source, name="user-copy"))
+    async with app.run_test() as pilot:
+        toc = app.query_one(ConversationToc)
+        toc.update_items([TocItem("turn-1", "Selected turn")])
+        tree = toc.query_one(Tree)
+        for name in ("chrys", theme_name, "user-copy", "chrys"):
+            app.theme = name
+            app.screen.set_focus(None)
+            await pilot.pause()
+            variables = app.get_css_variables()
+            primary = TextualColor.parse(variables["primary"])
+            border_opacity = float(variables["border-opacity"].removesuffix("%")) / 100
+            theme = app.current_theme
+            background = (
+                TextualColor.parse("#303030" if theme.dark else "#DADADA") if theme.ansi else primary.with_alpha(0.18)
+            )
+            selected = app.query_one(UserMessage)
+            assert selected.styles.background == background
+            assert tree.get_component_styles("tree--cursor").background == background
+            assert selected.styles.border_left[1] == (
+                TextualColor.parse("#808080") if theme.ansi else primary.with_alpha(border_opacity)
+            )
+            tree.focus()
+            await pilot.pause()
+            cursor = tree.get_component_styles("tree--cursor")
+            assert cursor.background == (
+                TextualColor.parse("#444444" if theme.dark else "#C6C6C6") if theme.ansi else primary.with_alpha(0.28)
+            )
+            assert cursor.color == TextualColor.parse(variables["foreground"])
+
+
+@pytest.mark.parametrize(
+    ("theme_name", "background_index", "focus_index"),
+    # Rich rounds these light RGB grays down one palette step; pin the emitted indices.
+    [("chrys-ansi", 236, 238), ("ansi-dark", 236, 238), ("ansi-light", 252, 250)],
+)
+async def test_ansi_selected_turns_emit_256_color_grays(
+    theme_name: str, background_index: int, focus_index: int
+) -> None:
+    app = _TurnHighlightApp()
+    app.register_theme(CHRYS_ANSI_THEME)
+    app.theme = theme_name
+    app.console._color_system = ColorSystem.EIGHT_BIT
+    async with app.run_test() as pilot:
+        toc = app.query_one(ConversationToc)
+        toc.update_items([TocItem("turn-1", "Selected turn")])
+        await pilot.pause()
+        tree = toc.query_one(Tree)
+        tree.move_cursor(tree.root.children[0])
+        selected = app.query_one(UserMessage)
+        for focused, expected_index in ((False, background_index), (True, focus_index)):
+            app.screen.set_focus(tree if focused else None)
+            await pilot.pause()
+            strips = app.screen._compositor.render_strips()
+            # Inspect final composited text, through the terminal encoder, rather than CSS alone.
+            for row, index in (
+                (selected.content_region.y + 1, background_index),
+                (tree.content_region.y + tree.cursor_line, expected_index),
+            ):
+                strip = strips[row]
+                assert "Selected turn" in strip.text
+                encoded = strip.render(app.console)
+                assert f"48;5;{index}" in encoded
+                assert "48;2;" not in encoded
+                assert "38;2;" not in encoded
+                text_segments = [segment for segment in strip if "Selected turn" in segment.text]
+                assert text_segments
+                for segment in text_segments:
+                    assert segment.style is not None and segment.style.bgcolor is not None
+                    downgraded = segment.style.bgcolor.downgrade(ColorSystem.EIGHT_BIT)
+                    assert downgraded.number == index
+                    red, green, blue = downgraded.get_truecolor()
+                    assert red == green == blue
+                    assert red >= 188 if not app.current_theme.dark else red <= 68
 
 
 @pytest.mark.parametrize(
@@ -79,6 +210,7 @@ async def test_chrys_uses_gray_borders_without_muting_semantic_colors() -> None:
         #literal { border: round $tui-border-neutral-160 $border-opacity; }
         #user-message { border: round $tui-border-user-message $border-opacity; }
         #agent-message { border: round $tui-border-agent-message $border-opacity; }
+        #selected-turn { border: round $tui-border-selected-turn $border-opacity; }
         #titled {
             border: round $tui-border-primary $border-opacity;
             border-title-color: $tui-border-title-primary;
@@ -98,6 +230,7 @@ async def test_chrys_uses_gray_borders_without_muting_semantic_colors() -> None:
             yield Static("literal", id="literal")
             yield Static("user-message", id="user-message")
             yield Static("agent-message", id="agent-message")
+            yield Static("selected-turn", id="selected-turn")
             titled = Static("titled", id="titled")
             titled.border_title = "Title"
             titled.border_subtitle = "Subtitle"
@@ -110,7 +243,11 @@ async def test_chrys_uses_gray_borders_without_muting_semantic_colors() -> None:
             border_color = app.query_one(f"#{widget_id}", Static).styles.border_top[1]
             assert border_color.hex6 == "#5F5F5F"
             assert border_color.a == 0.8
-        for widget_id, expected_color in (("user-message", "#FF87D7"), ("agent-message", "#5FFF87")):
+        for widget_id, expected_color in (
+            ("user-message", "#FF87D7"),
+            ("agent-message", "#5FFF87"),
+            ("selected-turn", "#AF87FF"),
+        ):
             border_color = app.query_one(f"#{widget_id}", Static).styles.border_top[1]
             assert border_color.hex6 == expected_color
             assert border_color.a == 0.8

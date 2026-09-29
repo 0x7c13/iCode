@@ -15,6 +15,7 @@ import pytest
 
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
+from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workflow_session import WorkflowIdentity, WorkflowModelSelection
 from chrys.foundation.models.workspace import Workspace
 from chrys.kernel import Message
@@ -220,6 +221,27 @@ async def test_close_waits_for_model_save_and_rejects_late_updates(
     finally:
         release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await owner.close()
+
+
+async def test_admission_rollback_restores_the_previous_surface(tmp_path: Path) -> None:
+    owner = await _owner(tmp_path)
+    store = owner.persistence.state_store
+    assert store is not None and owner.session.session_id is not None
+    try:
+        await owner.open(reconcile=True)
+        owner.require_state().last_surface = SessionSurface.ACP.value
+        await owner.save()
+        await _prepare(owner)
+        owner.require_state().last_surface = SessionSurface.CLI.value
+        await owner.save()
+        assert (await store.load_workflow_session(owner.session.session_id)).surface is SessionSurface.CLI
+
+        await owner.discard_admission()
+
+        assert owner.require_state().surface is SessionSurface.ACP
+        assert (await store.load_workflow_session(owner.session.session_id)).surface is SessionSurface.ACP
+    finally:
         await owner.close()
 
 

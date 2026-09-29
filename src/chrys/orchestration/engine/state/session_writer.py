@@ -18,6 +18,7 @@ from chrys.service.session.persistence import has_real_messages
 from chrys.service.trajectory.items import ensure_history_item_ids
 
 if TYPE_CHECKING:
+    from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.workspace import Workspace
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
@@ -39,6 +40,7 @@ class SessionMetadata(TypedDict):
     model_profile_fingerprint: str | None
     workspace: Workspace | None
     model_profile: ModelProfile | None
+    last_surface: SessionSurface | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +120,11 @@ class SessionWriter:
         return self._recovery_persisted_seq
 
     def session_identity(self) -> SessionIdentity:
-        """Capture the eight persistence metadata fields without yielding."""
+        """Capture the persistence metadata fields without yielding.
+
+        The surface mark is read with the session id, so a queued recovery
+        snapshot keeps the value of the moment it was captured.
+        """
         return SessionIdentity(
             session_id=self._session.session_id,
             metadata=SessionMetadata(
@@ -129,6 +135,7 @@ class SessionWriter:
                 model_profile_fingerprint=self._current.manifest.model_profile_fingerprint,
                 workspace=self._session.workspace,
                 model_profile=self._current.manifest.active_profile,
+                last_surface=self._session.marked_surface(),
             ),
         )
 

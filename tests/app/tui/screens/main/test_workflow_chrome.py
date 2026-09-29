@@ -21,7 +21,7 @@ from chrys.app.tui.screens.dialogs.workflow_picker import WorkflowPickerDialog
 from chrys.app.tui.screens.guides.screen import GuideDialog
 from chrys.app.tui.screens.main import workflow_content
 from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
-from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen, set_widget_visibility_without_layout
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_INTERRUPTED, StatusBar
@@ -242,20 +242,30 @@ async def test_workflow_frame_and_controls_center_after_resize(tmp_path: Path, m
             assert layout.region.x >= header.region.right
             assert layout.region.right == panel.content_region.right - 1
             controls = panel.query_one("#workflow-controls")
+            # No run has finished: Result is hidden but keeps its slot, so showing it moves no other button.
+            result = panel.query_one("#workflow-result", Button)
+            assert not result.visible and not result.region
+            placed = [new.region, start.region, stop.region]
+            set_widget_visibility_without_layout(result, True)
+            assert [new.region, start.region, stop.region] == placed
+            assert result.region.x == stop.region.right + 1 and result.region.y == stop.region.y
+            assert result.region.height == stop.region.height and result.flat and result.variant == "warning"
             for button in controls.query(Button):
                 assert button.content_size.width >= cell_len(str(button.label))
             if controls.max_scroll_x:
                 assert controls.show_horizontal_scrollbar
-                stop.scroll_visible(animate=False, immediate=True)
-                await wait_for(lambda stop=stop: stop.region.right <= panel.content_region.right, pilot=pilot)
+                result.scroll_visible(animate=False, immediate=True)
+                await wait_for(lambda result=result: result.region.right <= panel.content_region.right, pilot=pilot)
                 new.scroll_visible(animate=False, immediate=True)
                 await wait_for(lambda new=new: new.region.x >= panel.content_region.x, pilot=pilot)
             else:
-                assert stop.region.right <= panel.content_region.right
+                assert result.region.right <= panel.content_region.right
                 assert (
-                    abs((new.region.x + stop.region.right) - (panel.content_region.x + panel.content_region.right)) <= 1
+                    abs((new.region.x + result.region.right) - (panel.content_region.x + panel.content_region.right))
+                    <= 1
                 )
-            assert list(tabs.get_pane("workflow-graph-tab").query(Button)) == [layout, new, start, stop]
+            set_widget_visibility_without_layout(result, False)
+            assert list(tabs.get_pane("workflow-graph-tab").query(Button)) == [layout, new, start, stop, result]
             assert tabs.region.x == panel.region.x + 1
             assert tabs.region.right == panel.region.right - 1
             assert tabs.query_one(Tabs).size.height == 2
