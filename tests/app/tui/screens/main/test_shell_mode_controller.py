@@ -7,6 +7,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
+import pytest
+
 from chrys.app.tui.screens.main.shell_mode import ShellModeController
 from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
@@ -113,6 +115,32 @@ def test_focus_guard_allows_ask_user_inline_controls_to_keep_focus() -> None:
     controller.on_descendant_focus(AskUserResponseFooter("req-1"))
 
     assert focus_view.calls == []
+
+
+@pytest.mark.parametrize(
+    ("active", "fullscreen_terminal"),
+    [(False, False), (True, False), (False, True), (True, True)],
+    ids=["chat", "shell", "fullscreen", "shell-fullscreen"],
+)
+def test_panel_focus_is_kept_exactly_where_the_focus_guard_leaves_it(active: bool, fullscreen_terminal: bool) -> None:
+    """MainScreen makes the sidebar tab strip focusable from ``keeps_panel_focus``."""
+    from chrys.app.tui.widgets.chat.panel import ChatPanel
+
+    class _FakeChatChild:
+        def __init__(self) -> None:
+            self.ancestors_with_self = [self, ChatPanel()]
+
+        def has_class(self, _name: str) -> bool:
+            return False
+
+    controller, state, _shell_view, focus_view, _shell_mode_states = _make_shell_mode_controller()
+    state.shell.active = active
+    state.shell.fullscreen_terminal = fullscreen_terminal
+
+    controller.on_descendant_focus(_FakeChatChild())
+
+    assert controller.keeps_panel_focus() is (active or fullscreen_terminal)
+    assert (focus_view.calls == []) is controller.keeps_panel_focus()
 
 
 def test_shell_mode_state_watcher_owns_layout() -> None:

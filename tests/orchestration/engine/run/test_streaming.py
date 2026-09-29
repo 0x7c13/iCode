@@ -1,16 +1,16 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for line-by-line streaming of the final agent response.
+"""Tests for the streamed projection of the final agent response.
 
-In streaming mode (``CHRYS_STREAM=true``) the executor emits per-line
-``AgentMessage(is_final=False)`` events as the final LLM response's text
-arrives, so the TUI progressively reveals the answer.  Intermediate text
-(text emitted alongside ``function_call`` content) is NOT streamed — it
-flows through the existing non-streamed intermediate-text handler.
+In streaming mode (``CHRYS_STREAM=true``) the executor emits the final LLM
+response's text as one cumulative ``AgentMessage(is_final=False)`` snapshot
+before the final event: the text arrives buffered whole, so it is never
+replayed line by line.  Intermediate text (text emitted alongside
+``function_call`` content) is NOT streamed — it flows through the existing
+non-streamed intermediate-text handler.
 
 Covers these edge cases:
-- Multi-line final text with trailing newline
-- Multi-line final text *without* trailing newline (last line unterminated)
+- Multi-line final text with LF, CRLF and CR separators, terminated or not
 - Single-line final text (no newline at all)
 - Empty final text
 - Intermediate text before a tool call is not streamed
@@ -38,7 +38,7 @@ from tests.support.waiting import wait_for
 
 
 def _streaming_chunks(events: list) -> list[str]:
-    """Extract ``is_final=False`` AgentMessage texts (the progressive reveal)."""
+    """Extract ``is_final=False`` AgentMessage texts (the streamed snapshot)."""
     return [
         e.text
         for e in events
@@ -60,142 +60,35 @@ def _intermediates(events: list) -> list[str]:
     ]
 
 
-class TestStreamingLineByLine:
-    """Final-response text is revealed line by line via is_final=False events."""
+class TestStreamingFinalSnapshot:
+    """Final-response text is published as one is_final=False snapshot."""
 
     @pytest.mark.asyncio
-    async def test_multiline_with_trailing_newline(self, tmp_path):
-        ctx = await create_test_engine(
-            [MockResponse(text="line1\nline2\nline3\n")],
-            tmp_path,
-            stream=True,
-        )
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "line1\nline2\nline3\n",
+            "line1\nline2\nline3",
+            "Hello, world!",
+            "line1\r\nline2\r\nline3\r\n",
+            "line1\r\nline2\r\nline3",
+            "line1\rline2\rline3\r",
+            "line1\rline2\rline3",
+        ],
+        ids=["lf", "lf-unterminated", "single-line", "crlf", "crlf-unterminated", "cr", "cr-unterminated"],
+    )
+    async def test_the_whole_text_is_one_snapshot_before_the_final(self, tmp_path, text):
+        ctx = await create_test_engine([MockResponse(text=text)], tmp_path, stream=True)
         try:
             await ctx.send_message("go")
-            chunks = _streaming_chunks(ctx.events)
-            # Each complete line emits a cumulative snapshot.
-            assert chunks == [
-                "line1\n",
-                "line1\nline2\n",
-                "line1\nline2\nline3\n",
+            assert _streaming_chunks(ctx.events) == [text]
+            assert _finals(ctx.events) == [text]
+            turn_texts = [
+                e
+                for e in ctx.events
+                if isinstance(e, InvocationMessage) and e.origin.kind == "turn" and not e.is_intermediate
             ]
-            assert _finals(ctx.events) == ["line1\nline2\nline3\n"]
-        finally:
-            await ctx.cleanup()
-
-    @pytest.mark.asyncio
-    async def test_multiline_without_trailing_newline(self, tmp_path):
-        """The unterminated final line must also be emitted as is_final=False."""
-        ctx = await create_test_engine(
-            [MockResponse(text="line1\nline2\nline3")],
-            tmp_path,
-            stream=True,
-        )
-        try:
-            await ctx.send_message("go")
-            chunks = _streaming_chunks(ctx.events)
-            # Two \n-terminated lines, plus the unterminated tail.
-            assert chunks == [
-                "line1\n",
-                "line1\nline2\n",
-                "line1\nline2\nline3",
-            ]
-            assert _finals(ctx.events) == ["line1\nline2\nline3"]
-        finally:
-            await ctx.cleanup()
-
-    @pytest.mark.asyncio
-    async def test_single_line_no_newline(self, tmp_path):
-        """A single unterminated line still emits one streaming event."""
-        ctx = await create_test_engine(
-            [MockResponse(text="Hello, world!")],
-            tmp_path,
-            stream=True,
-        )
-        try:
-            await ctx.send_message("go")
-            assert _streaming_chunks(ctx.events) == ["Hello, world!"]
-            assert _finals(ctx.events) == ["Hello, world!"]
-        finally:
-            await ctx.cleanup()
-
-    @pytest.mark.asyncio
-    async def test_crlf_line_endings(self, tmp_path):
-        """Windows-style CRLF line endings should each emit one streaming event."""
-        ctx = await create_test_engine(
-            [MockResponse(text="line1\r\nline2\r\nline3\r\n")],
-            tmp_path,
-            stream=True,
-        )
-        try:
-            await ctx.send_message("go")
-            chunks = _streaming_chunks(ctx.events)
-            assert chunks == [
-                "line1\r\n",
-                "line1\r\nline2\r\n",
-                "line1\r\nline2\r\nline3\r\n",
-            ]
-            assert _finals(ctx.events) == ["line1\r\nline2\r\nline3\r\n"]
-        finally:
-            await ctx.cleanup()
-
-    @pytest.mark.asyncio
-    async def test_crlf_without_trailing_newline(self, tmp_path):
-        """CRLF separators with an unterminated tail."""
-        ctx = await create_test_engine(
-            [MockResponse(text="line1\r\nline2\r\nline3")],
-            tmp_path,
-            stream=True,
-        )
-        try:
-            await ctx.send_message("go")
-            chunks = _streaming_chunks(ctx.events)
-            assert chunks == [
-                "line1\r\n",
-                "line1\r\nline2\r\n",
-                "line1\r\nline2\r\nline3",
-            ]
-            assert _finals(ctx.events) == ["line1\r\nline2\r\nline3"]
-        finally:
-            await ctx.cleanup()
-
-    @pytest.mark.asyncio
-    async def test_cr_line_endings(self, tmp_path):
-        """Classic Mac-style CR-only separators should each emit one streaming event."""
-        ctx = await create_test_engine(
-            [MockResponse(text="line1\rline2\rline3\r")],
-            tmp_path,
-            stream=True,
-        )
-        try:
-            await ctx.send_message("go")
-            chunks = _streaming_chunks(ctx.events)
-            assert chunks == [
-                "line1\r",
-                "line1\rline2\r",
-                "line1\rline2\rline3\r",
-            ]
-            assert _finals(ctx.events) == ["line1\rline2\rline3\r"]
-        finally:
-            await ctx.cleanup()
-
-    @pytest.mark.asyncio
-    async def test_cr_without_trailing_newline(self, tmp_path):
-        """CR separators with an unterminated tail — the critical regression case."""
-        ctx = await create_test_engine(
-            [MockResponse(text="line1\rline2\rline3")],
-            tmp_path,
-            stream=True,
-        )
-        try:
-            await ctx.send_message("go")
-            chunks = _streaming_chunks(ctx.events)
-            assert chunks == [
-                "line1\r",
-                "line1\rline2\r",
-                "line1\rline2\rline3",
-            ]
-            assert _finals(ctx.events) == ["line1\rline2\rline3"]
+            assert [e.is_final for e in turn_texts] == [False, True]
         finally:
             await ctx.cleanup()
 
@@ -288,11 +181,8 @@ class TestStreamingSkipsIntermediate:
         try:
             await ctx.send_message("go")
             chunks = _streaming_chunks(ctx.events)
-            # Only the final-response lines stream.
-            assert chunks == [
-                "Answer line 1\n",
-                "Answer line 1\nAnswer line 2",
-            ]
+            # Only the final response streams.
+            assert chunks == ["Answer line 1\nAnswer line 2"]
             # Neither intermediate text leaks into streaming chunks.
             assert not any("thought" in c for c in chunks)
         finally:

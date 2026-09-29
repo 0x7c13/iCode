@@ -82,6 +82,7 @@ class EventType:
     COMPACTION_STARTED = "compaction.started"
     COMPACTION_PHASE_FINISHED = "compaction.phase.finished"
     COMPACTION_FINISHED = "compaction.finished"
+    COMPACTION_SKIPPED = "compaction.skipped"
 
     # Sub-agents, waits, hooks, mutation summary.
     SUB_AGENT_STARTED = "sub_agent.started"
@@ -147,6 +148,15 @@ class TurnEndReason:
     CANCELLED = "cancelled"
     SUPERSEDED = "superseded"
     PROCESS_EXIT = "process_exit"
+
+
+class CompactionSkipReason:
+    """``compaction.skipped.reason_code`` — why usage past the trigger started no pass."""
+
+    DISABLED = "disabled"
+    """The agent's profile turns automatic compaction off."""
+    TURNS_UNRESOLVED = "turns_unresolved"
+    """The request's messages resolved to no turn, so there is nothing to compact against."""
 
 
 class TurnSuspendReason:

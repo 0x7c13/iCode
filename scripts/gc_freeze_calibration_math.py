@@ -53,3 +53,17 @@ def aggregate_dead_cyclic_fraction(
         zero_collected=0,
         frozen_objects_added_by_absorbs=total_frozen_additions,
     )
+
+
+def latency_in_unfrozen_collects(action_ms: float, *, unfrozen_collect_ms: float) -> float:
+    """Express an action's latency in bare full collections of a matched unfrozen heap.
+
+    The basis is what one ``gc.collect()`` costs with no freeze machinery at all, so no
+    choice the freeze design makes (cache hooks, the reflows they force) can move it. A
+    basis that runs the design's own hooks instead rewards overhead shared by both sides:
+    dropping a cost ``c`` from ``(a + c) / (b + c)`` raises the ratio although the action
+    got faster.
+    """
+    if unfrozen_collect_ms <= 0:
+        raise ValueError("unfrozen_collect_ms must be positive")
+    return action_ms / unfrozen_collect_ms

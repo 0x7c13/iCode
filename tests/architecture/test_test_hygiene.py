@@ -12,6 +12,7 @@ from tests.architecture import (
     test_hygiene_exchange_walker_shapes,
     test_hygiene_exchange_walkers,
     test_hygiene_i18n_messages,
+    test_hygiene_llm_client_owners,
     test_hygiene_optional_imports,
     test_hygiene_source_asserts,
     test_hygiene_subprocess_stdin,
@@ -36,6 +37,7 @@ from tests.architecture.test_hygiene_exchange_walkers import (
     _assert_result_only_classifier_imports_are_allowlisted,
 )
 from tests.architecture.test_hygiene_i18n_messages import _assert_i18n_message_construction_is_canonical
+from tests.architecture.test_hygiene_llm_client_owners import _assert_llm_clients_have_reviewed_owners
 from tests.architecture.test_hygiene_optional_imports import _assert_optional_extra_imports_are_function_scoped
 from tests.architecture.test_hygiene_source_asserts import _assert_no_source_asserts
 from tests.architecture.test_hygiene_subprocess_stdin import _assert_subprocess_stdin_is_explicit
@@ -77,6 +79,7 @@ _RULE_MODULES = (
     test_hygiene_exchange_walker_shapes,
     test_hygiene_exchange_walkers,
     test_hygiene_i18n_messages,
+    test_hygiene_llm_client_owners,
     test_hygiene_optional_imports,
     test_hygiene_source_asserts,
     test_hygiene_subprocess_stdin,
@@ -112,6 +115,7 @@ _SRC_HYGIENE_RULES = (
     _assert_tui_content_markup_prose_is_localized,
     _assert_tui_content_from_text_disables_markup,
     _assert_i18n_message_construction_is_canonical,
+    _assert_llm_clients_have_reviewed_owners,
 )
 
 _GLOBAL_SRC_HYGIENE_RULES = (_assert_tui_locale_controller_propagation_is_explicit,)

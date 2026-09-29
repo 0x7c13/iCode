@@ -18,13 +18,19 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Button, Static, Tab, TabbedContent, TabPane, Tabs
 
+from chrys.app.tui.clipboard import copy_text_to_clipboards
+from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.util.formatting import format_elapsed
 from chrys.app.tui.util.logo import WORKFLOW_LOGO
 from chrys.app.tui.util.message_gate import messages_disabled
 from chrys.app.tui.util.removal import finish_shielded
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
+from chrys.app.tui.widgets.chat.messages import COPY_MESSAGE_BUTTON, MessageCopyButton, MessageHeaderRow
 from chrys.app.tui.widgets.dialog_buttons import DialogButtonRow, DialogButtonSpec
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.markdown.diagram.model import Direction
+from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.app.tui.widgets.workflow import text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
@@ -32,7 +38,7 @@ from chrys.app.tui.widgets.workflow.info import INFO_TAB, WorkflowInfo, Workflow
 from chrys.app.tui.widgets.workflow.node_view import NodeView, RetryTarget
 from chrys.app.tui.widgets.workflow.output import WorkflowOutputText, WorkflowOutputView, WorkflowStatusOutput
 from chrys.app.tui.widgets.workflow.scrollbar import WorkflowScrollBar
-from chrys.app.tui.widgets.workflow.source import workflow_source_syntax
+from chrys.app.tui.widgets.workflow.source import WorkflowSourceSyntax
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.service.workflows.graph import AgentSpec, manifest_warnings
 
@@ -114,7 +120,9 @@ class WorkflowPanel(Vertical):
     WorkflowPanel #workflow-code-scroll { height: 1fr; overflow: auto auto; scrollbar-size: 1 1; }
     WorkflowPanel #workflow-info-scroll { height: 1fr; padding: 0; scrollbar-size: 1 1; }
     WorkflowPanel #workflow-input-scroll { height: 1fr; scrollbar-size-vertical: 1; }
-    WorkflowPanel #workflow-run-input { margin: 0 1; }
+    WorkflowPanel #workflow-input-actions { align-horizontal: right; padding: 0 1; }
+    WorkflowPanel #workflow-input-actions > MessageCopyButton { display: block; }
+    WorkflowPanel #workflow-run-input { height: auto; margin: 0 1; padding: 0; background: transparent; }
     WorkflowPanel #workflow-code-source { height: auto; width: auto; min-width: 100%; margin-left: -1; }
     """
 
@@ -220,14 +228,21 @@ class WorkflowPanel(Vertical):
                 VerticalScroll(id="workflow-code-scroll"),
             ):
                 yield Static(id="workflow-code-source", expand=True)
-            with (
-                TabPane(
-                    Content.from_text(text.render(text.INPUT.bind(), self.locale_controller), markup=False),
-                    id="workflow-input-tab",
-                ),
-                VerticalScroll(id="workflow-input-scroll"),
+            with TabPane(
+                Content.from_text(text.render(text.INPUT.bind(), self.locale_controller), markup=False),
+                id="workflow-input-tab",
             ):
-                yield Static(id="workflow-run-input")
+                # Selecting the rendered input copies display text; this copies it as submitted.
+                input_actions = MessageHeaderRow(id="workflow-input-actions")
+                input_actions.display = False
+                with input_actions:
+                    yield MessageCopyButton(
+                        tooltip=text.render(text.COPY_RUN_INPUT.bind(), self.locale_controller),
+                        text=text.render(COPY_MESSAGE_BUTTON.bind(), self.locale_controller),
+                    )
+                with VerticalScroll(id="workflow-input-scroll"):
+                    # The text the user started the run with, shown as their chat messages are.
+                    yield VirtualizedMarkdown(id="workflow-run-input", parser_factory=create_user_text_markdown_parser)
             with TabPane(
                 Content.from_text(text.render(text.OUTPUT.bind(), self.locale_controller), markup=False),
                 id="workflow-output-tab",
@@ -254,6 +269,9 @@ class WorkflowPanel(Vertical):
         self.query_one("#workflow-start", Button).label = Text(
             text.render(self._start_label.bind(), self.locale_controller)
         )
+        copy_input = self.query_one("#workflow-input-actions > MessageCopyButton", MessageCopyButton)
+        copy_input.update(Text(text.render(COPY_MESSAGE_BUTTON.bind(), self.locale_controller)))
+        copy_input.tooltip = text.render(text.COPY_RUN_INPUT.bind(), self.locale_controller)
         self._graph_run_id = None
         self._graph_dirty = True
         self.post_message(self.ViewChanged())
@@ -468,7 +486,22 @@ class WorkflowPanel(Vertical):
         input_text = run.started.input_text if run else ""
         if input_text != self._painted_input:
             self._painted_input = input_text
-            self.query_one("#workflow-run-input", Static).update(Text(input_text))
+            self.query_one("#workflow-input-actions").display = bool(input_text.strip())
+            self.query_one("#workflow-run-input", VirtualizedMarkdown).update(sanitize_source_text(input_text))
+
+    def on_message_copy_button_clicked(self, event: MessageCopyButton.Clicked) -> None:
+        """Copy the run input exactly as it was submitted."""
+        event.stop()
+        run_input = self._painted_input
+        if not run_input or not run_input.strip():
+            return
+        copy_text_to_clipboards(self.app, run_input)
+        self.notify(
+            text.render(text.RUN_INPUT_COPIED.bind(), self.locale_controller),
+            title=text.render(COPIED_TITLE.bind(), self.locale_controller),
+            timeout=2,
+            markup=False,
+        )
 
     @property
     def graph_visible(self) -> bool:
@@ -530,7 +563,11 @@ class WorkflowPanel(Vertical):
 
     def show_code(self, source: bytes, *, differs: bool) -> None:
         self.code_differs = differs
-        self.query_one("#workflow-code-source", Static).update(workflow_source_syntax(source))
+        view = self.query_one("#workflow-code-source", Static)
+        # Every Code tab visit re-reads the source; a view already showing these
+        # bytes keeps its rendering and layout instead of re-highlighting them.
+        if not (isinstance(view.content, WorkflowSourceSyntax) and view.content.source == source):
+            view.update(WorkflowSourceSyntax(source))
 
     @on(TabbedContent.TabActivated, "#workflow-run")
     def view_changed(self, event: TabbedContent.TabActivated) -> None:

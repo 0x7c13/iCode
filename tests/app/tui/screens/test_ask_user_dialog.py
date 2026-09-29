@@ -12,6 +12,7 @@ from textual.containers import VerticalGroup
 from textual.css.query import NoMatches
 from textual.events import MouseDown, MouseUp
 from textual.geometry import Offset
+from textual.markup import escape
 from textual.screen import ModalScreen
 from textual.selection import Selection
 from textual.widgets import Button, Static
@@ -291,6 +292,19 @@ async def test_ask_user_dialog_option_labels_are_plain_text() -> None:
         await pilot.pause()
 
     assert results == [("ask-9", (AskUserAnswer(values=("[not markup]",)),))]
+
+
+@pytest.mark.asyncio
+async def test_ask_user_dialog_caller_name_is_sanitized_plain_text() -> None:
+    dialog = _dialog(request_id="ask-caller", question="Pick one.", caller_name="node\x1b[2J[red]x[/]")
+
+    app = _DialogHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog)
+        await pilot.pause()
+
+        # Textual stores a Text subtitle as escaped markup, so the brackets render literally.
+        assert dialog.query_one("#askuser-container").border_subtitle == escape("node�[2J[red]x[/]")
 
 
 @pytest.mark.asyncio

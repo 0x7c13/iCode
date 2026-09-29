@@ -32,9 +32,10 @@ from chrys.foundation.events.types import (
     WORKFLOW_OUTPUT_FINAL,
     WorkflowOutputSummary,
 )
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion, validate_ask_user_answers
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.invoker.contracts import AbortCause
-from chrys.orchestration.invoker.resources import finish_close
 from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
 from chrys.orchestration.workflows.agent_node import WorkflowAgentShell
 from chrys.orchestration.workflows.agent_node_build import AgentNodeResources
@@ -140,10 +141,10 @@ class WorkerCallbacks:
     def bind(self, runner: WorkflowRunner) -> None:
         self._runner = runner
 
-    async def ask(self, ref: AttemptRef, prompt: str) -> str:
+    async def ask(self, ref: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         if self._runner is None:
             raise AskUnavailable("no run is active.")
-        return await self._runner.on_ask(ref, prompt)
+        return await self._runner.on_ask(ref, questions)
 
     async def emit(self, ref: AttemptRef, ordinal: int, text: str) -> None:
         if self._runner is not None:
@@ -153,8 +154,11 @@ class WorkerCallbacks:
 @dataclass(slots=True)
 class _PendingAsk:
     ref: AttemptRef
+    questions: tuple[AskUserQuestion, ...]
     answering: bool = False
-    future: asyncio.Future[str] = field(default_factory=lambda: asyncio.get_running_loop().create_future())
+    future: asyncio.Future[tuple[AskUserAnswer, ...]] = field(
+        default_factory=lambda: asyncio.get_running_loop().create_future()
+    )
 
 
 class WorkflowRunner:
@@ -340,8 +344,11 @@ class WorkflowRunner:
             )
         )
 
-    def answer(self, node_id: str, activation_id: str, request_id: str, answer: str) -> bool:
-        """Queue one answer, including from an inline ask subscriber; reject duplicate admissions."""
+    def answer(self, node_id: str, activation_id: str, request_id: str, answers: tuple[AskUserAnswer, ...]) -> bool:
+        """Queue one answer, including from an inline ask subscriber; reject duplicate or invalid admissions.
+
+        An invalid answer leaves the ask open, so a corrected one can still follow.
+        """
         pending = self._asks.get(request_id)
         if (
             self._terminal is not None
@@ -351,32 +358,38 @@ class WorkflowRunner:
             or (pending.ref.node_id, pending.ref.activation_id) != (node_id, activation_id)
         ):
             return False
+        validated = validate_ask_user_answers(answers, questions=pending.questions)
+        if validated is None:
+            return False
         pending.answering = True
-        self._spawn(self._answer(pending, request_id, answer))
+        self._spawn(self._answer(pending, request_id, validated))
         return True
 
-    async def _answer(self, pending: _PendingAsk, request_id: str, answer: str) -> None:
+    async def _answer(self, pending: _PendingAsk, request_id: str, answers: tuple[AskUserAnswer, ...]) -> None:
         async def commit() -> None:
-            if await self._record(self._journal.node_answer(pending.ref, request_id, answer)) is None:
+            if (
+                await self._record(self._journal.node_answer(pending.ref, request_id, pending.questions, answers))
+                is None
+            ):
                 return
             if not pending.future.done():
-                pending.future.set_result(answer)
+                pending.future.set_result(answers)
 
         # Once admitted, the answer owns its durable write through cancellation.
         await finish_close(asyncio.create_task(commit()))
 
     # -- worker callbacks ----------------------------------------------------------
 
-    async def on_ask(self, ref: AttemptRef, prompt: str) -> str:
+    async def on_ask(self, ref: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         if self._mode is RunMode.HEADLESS:
             raise AskUnavailable("nobody can answer in a headless run.")
         if self._terminal is not None:
             raise AskUnavailable("the run is over.")
         request_id = new_analytics_id()
-        pending = _PendingAsk(ref)
+        pending = _PendingAsk(ref, questions)
         self._asks[request_id] = pending
         try:
-            if await self._record(self._journal.node_ask(ref, request_id, prompt)) is None:
+            if await self._record(self._journal.node_ask(ref, request_id, questions)) is None:
                 raise AskUnavailable("the run record failed.")
             return await pending.future
         finally:
@@ -559,7 +572,7 @@ class WorkflowRunner:
         shell = self._shell_for(ref)
         if not shell.is_prepared:
             try:
-                await shell.open(value.text)
+                await shell.open(value.text, attempt=ref.attempt)
             except WorkflowStorageFailed as exc:
                 self._storage_failed(str(exc))
                 return

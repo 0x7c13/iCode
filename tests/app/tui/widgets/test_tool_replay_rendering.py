@@ -12,10 +12,12 @@ from textual.geometry import Region
 from textual.widget import Widget
 
 from chrys.app.tui.widgets.chat import panel as chat_panel_module
+from chrys.app.tui.widgets.chat import replay_mount as replay_mount_module
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
-    _UserMessageText,
+    UserMessage,
+    _UserHeader,
     format_message_created_at,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
@@ -171,7 +173,7 @@ async def test_replay_user_hides_zero_duration_event_suffix() -> None:
         await panel.replay_history(messages)
         await pilot.pause()
 
-        header = panel.query_one(_UserMessageText).render().plain.splitlines()[0]
+        header = str(panel.query_one(_UserHeader).content)
         assert "(0ms)" not in header
         assert " - " in header
 
@@ -341,8 +343,8 @@ async def test_replay_history_hatches_batch_until_descendants_finish(monkeypatch
 
 
 async def test_replay_history_bounds_each_textual_registration_batch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Large restores must yield between bounded registration bursts."""
-    batch_size = chat_panel_module._REPLAY_MOUNT_BATCH_SIZE
+    """Large restores register bounded bursts: the newest batch first, older ones prepended."""
+    batch_size = replay_mount_module.REPLAY_MOUNT_BATCH_SIZE
     messages = [
         {"role": "user", "contents": [{"type": "text", "text": f"message {index}"}]} for index in range(batch_size + 8)
     ]
@@ -361,9 +363,18 @@ async def test_replay_history_bounds_each_textual_registration_batch(monkeypatch
         cp.set_replay_progress_callback(lambda current, total: progress.append((current, total)))
         await cp.replay_history(messages)
 
-        total = len(messages)
+        # The restore's progress covers the newest batch, which is all that
+        # mounts before replay returns.
+        assert batch_sizes == [batch_size]
+        assert progress == [(0, batch_size), (batch_size, batch_size)]
+
+        await cp.wait_replay_complete()
+
         assert batch_sizes == [batch_size, 8]
-        assert progress == [(0, total), (batch_size, total), (total, total)]
+        assert progress == [(0, batch_size), (batch_size, batch_size)]
+        assert [child._text for child in cp.children if isinstance(child, UserMessage)] == [
+            f"message {index}" for index in range(len(messages))
+        ]
 
 
 async def test_replay_history_duplicate_call_id_distinct_snapshots() -> None:

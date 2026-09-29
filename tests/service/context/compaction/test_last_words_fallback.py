@@ -24,9 +24,11 @@ from tests.service.context.compaction._last_words_helpers import (
     generate,
     long_structured_note,
     make_generator,
+    retry_collector,
     structured_note,
     user,
 )
+from tests.support.provider_errors import openai_status
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
 
@@ -700,6 +702,78 @@ async def test_provider_context_rejection_traverses_shrink_ladder_at_zero_transi
     assert client.calls == 5
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert "maximum context length exceeded" in str(exc_info.value.__cause__)
+
+
+async def _prompt_lengths_after(tmp_path, monkeypatch, rejection: BaseException) -> tuple[list[int], int]:  # type: ignore[no-untyped-def]
+    """Fail the first fallback call with *rejection*; return each call's prompt length and the retries announced."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    retry_events, publish_retry = retry_collector()
+    prompt_lengths: list[int] = []
+
+    class _Client:
+        async def get_response(self, messages, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            prompt_lengths.append(len(messages[1].text))
+            if len(prompt_lengths) == 1:
+                raise rejection
+
+            class _Response:
+                usage_details = None
+                raw_text = structured_note()
+
+            return _Response()
+
+    gen = make_generator(tmp_path, publish_retry=publish_retry)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(
+        gen,
+        user_request="do X",
+        previous_last_words="previous",
+        dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+    )
+    return prompt_lengths, len(retry_events)
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (
+            500,
+            "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+        ),
+        (503, "maximum context length is temporarily reduced"),
+    ],
+)
+async def test_a_server_error_naming_the_context_window_shrinks_the_fallback(
+    tmp_path, monkeypatch, status: int, message: str
+) -> None:
+    """A gateway may wrap an overflow in a 5xx: shrinking costs one smaller candidate, retrying the whole budget."""
+    rejection = await openai_status(status, {"error": {"type": "server_error", "message": message}})
+
+    prompt_lengths, retries = await _prompt_lengths_after(tmp_path, monkeypatch, rejection)
+
+    assert len(prompt_lengths) == 2
+    assert prompt_lengths[1] < prompt_lengths[0]
+    assert retries == 0
+
+
+async def test_a_rate_limit_naming_tokens_retries_the_same_fallback_candidate(tmp_path, monkeypatch) -> None:
+    """A 429 that mentions tokens is throttling: a smaller candidate would not help, the backoff does."""
+    rejection = await openai_status(
+        429,
+        {
+            "error": {
+                "type": "tokens",
+                "code": "rate_limit_exceeded",
+                "message": "Too many tokens, please wait before trying again.",
+            }
+        },
+    )
+
+    prompt_lengths, retries = await _prompt_lengths_after(tmp_path, monkeypatch, rejection)
+
+    assert len(prompt_lengths) == 2
+    assert prompt_lengths[1] == prompt_lengths[0]
+    assert retries == 1
 
 
 @pytest.mark.parametrize("use_completer", [False, True], ids=["fallback", "completer"])

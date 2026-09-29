@@ -104,7 +104,7 @@ async def test_sub_agent_renders_task_prompt_as_markdown_in_dedicated_panel() ->
         nested = matched[0]
         assert isinstance(nested, BaseToolCard)
         assert nested.tool_name == "read_file"
-        assert prompt not in [message._text for message in surface.query(AgentMessage)]
+        assert prompt not in [message.text for message in surface.query(AgentMessage)]
 
 
 def test_sub_agent_renderer_uses_base_tool_card_contract() -> None:
@@ -305,6 +305,23 @@ async def test_sub_agent_acp_transport_pause_shows_ui_only_diagnostic_banner() -
         assert "Diagnostics: /workspace/.chrys/sessions/s1/approvals/acp.log" in rendered
 
 
+async def test_sub_agent_pause_shows_what_went_wrong_above_the_raw_error() -> None:
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "delegate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+        tool.set_paused("framework_exc", "Connection error.", 0, None, "Can't resolve api.example.com.")
+        pause_info = tool.query_one("#sa-pause-info", Static)
+        await wait_for(
+            lambda: "Connection error." in pause_info.render().plain,
+            pilot=pilot,
+            description="pause info with the display line",
+        )
+
+        lines = pause_info.render().plain.splitlines()
+        assert lines.index("Can't resolve api.example.com.") + 1 == lines.index("Connection error.")
+
+
 async def test_sub_agent_pause_diagnostic_path_display_copy_is_surrogate_safe() -> None:
     from chrys.foundation.platform.files import surrogate_safe_text
 
@@ -455,6 +472,52 @@ async def test_sub_agent_card_status_follows_structured_failure_metadata(
         assert tool.status == expected_status
         assert tool.has_class(f"-{expected_status}")
         assert not tool.has_class("-error" if expected_status == "complete" else "-complete")
+
+
+@pytest.mark.parametrize(
+    ("result_text", "expected"),
+    [
+        pytest.param(
+            "Error: sub-agent 'Explore' failed — Streaming response produced no progress for 300s",
+            "Errored: Streaming response produced no progress for 300s",
+            id="policy-failure-shows-its-cause",
+        ),
+        pytest.param(
+            "Error: sub-agent 'Explore' aborted by user after failure — Error code: 400",
+            "Errored: aborted by user after failure — Error code: 400",
+            id="user-abort-keeps-the-abort",
+        ),
+        pytest.param("Error: sub-agent 'Explore' failed — ", "Errored", id="no-cause-falls-back"),
+        pytest.param("Error: cancelled (global interrupt)", "Errored: cancelled (global interrupt)", id="other-error"),
+    ],
+)
+async def test_sub_agent_error_line_names_the_failure_reason(result_text: str, expected: str) -> None:
+    """A failed card says why on its one-line summary instead of a bare "Errored"."""
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "investigate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+
+        tool.set_complete(result_text, 25, metadata={TOOL_FAILED_METADATA_KEY: True})
+        await pilot.pause()
+
+        assert tool.status == "error"
+        assert tool.query_one("#sa-activity-text", Static).render().plain == expected
+        assert tool.result_text == result_text
+
+
+async def test_sub_agent_error_line_is_one_sanitized_line() -> None:
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "investigate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+
+        tool.set_error("Error: provider said\n\x1b[31mno")
+        await pilot.pause()
+
+        line = tool.query_one("#sa-activity-text", Static).render().plain
+        assert line.startswith("Errored: provider said ")
+        assert "\n" not in line and "\x1b" not in line
 
 
 async def test_sub_agent_update_args_refreshes_task_prompt() -> None:

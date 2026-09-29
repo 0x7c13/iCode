@@ -262,29 +262,29 @@ def test_a_project_may_tighten_the_retry_budget_but_not_loosen_it(config_dir: Pa
     assert loaded.settings.max_transient_retries == 3
     assert loaded.source_for("llm.retry.max_transient").layer is Source.PROJECT
 
-    _write_project_yaml(project_root, "llm:\n  retry:\n    max_transient: 10\n")
+    _write_project_yaml(project_root, "llm:\n  retry:\n    max_transient: 12\n")
     loaded = load_settings(project_root=project_root)
     assert loaded.settings.max_transient_retries is None
     assert loaded.source_for("llm.retry.max_transient").layer is Source.DEFAULT
     (warning,) = loaded.warnings
     assert warning.outcome.reason is CoerceReason.LOOSENS_USER_BASELINE
-    assert warning.outcome.raw == "10"
+    assert warning.outcome.raw == "12"
 
 
 def test_the_frontend_context_informs_the_tighten_verdict(config_dir: Path, project_root: Path) -> None:
-    """The same file is a loosening for the TUI (7) and a tightening for
-    headless (15) — which is why the context is an input to the load."""
+    """The same file is a loosening for the TUI (10) and a tightening for
+    headless (18) — which is why the context is an input to the load."""
     freeze_process_env()
     _enable_gate(config_dir)
-    _write_project_yaml(project_root, "llm:\n  retry:\n    max_transient: 10\n")
+    _write_project_yaml(project_root, "llm:\n  retry:\n    max_transient: 12\n")
 
     tui = load_settings(project_root=project_root)
     headless = load_settings(
-        project_root=project_root, eval_context=EvalContext(frontend_default_max_transient_retries=15)
+        project_root=project_root, eval_context=EvalContext(frontend_default_max_transient_retries=18)
     )
 
     assert tui.settings.max_transient_retries is None
-    assert headless.settings.max_transient_retries == 10
+    assert headless.settings.max_transient_retries == 12
     assert headless.warnings == ()
 
 
@@ -366,7 +366,7 @@ def test_the_environment_does_not_move_the_project_fence(
     monkeypatch.setenv("CHRYS_MAX_TRANSIENT_RETRIES", "30")
     freeze_process_env()
     _enable_gate(config_dir)
-    _write_project_yaml(project_root, "llm:\n  retry:\n    max_transient: 10\n")
+    _write_project_yaml(project_root, "llm:\n  retry:\n    max_transient: 12\n")
 
     loaded = load_settings(project_root=project_root)
 

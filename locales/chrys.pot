@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.26.0\n"
+"Project-Id-Version: Chrys 0.27.1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -261,6 +261,184 @@ msgstr ""
 msgid "engine.fork_turn_active"
 msgstr ""
 
+#. English: {message} {hint}
+#. chrys-meta={"fingerprint":"2915288bdaf397f8a07684a40dfd5a081efc73c131b2a6bc33225423748ec73c","multiline":false,"placeholders":["hint","message"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.display.with_hint"
+msgstr ""
+
+#. English: The device running {app} doesn't seem to have a network connection.
+#. Check it first.
+#. chrys-meta={"fingerprint":"99bd0dd8413d1ee6ccab7bb891fa6d0865f6468e2ac8bf0c39fe5dbfd6db851d","multiline":false,"placeholders":["app"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.hint.maybe_offline"
+msgstr ""
+
+#. English: The API key is invalid or lacks access. Check the API key in the
+#. model profile.
+#. chrys-meta={"fingerprint":"aa03cc8798fa7d0fca62908cb79c1976a3f98afdb837e3f7e76413ca92ae8bc7","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.auth_failed"
+msgstr ""
+
+#. English: Connecting to {host} timed out. Check your network and firewall.
+#. chrys-meta={"fingerprint":"2095647ac8e4488d51d71298d5de8f48aa5891fcd6f1470bd706bdbbf777c43a","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.connect_timeout"
+msgstr ""
+
+#. English: Couldn't connect to {host}. Check your network connection.
+#. chrys-meta={"fingerprint":"290865585c57ca21a111fb6971f26c3bc8b3eb095bff4e13e0fe5883318905c9","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.connection_failed"
+msgstr ""
+
+#. English: The connection to {host} was interrupted.
+#. chrys-meta={"fingerprint":"a1ad0e6058c95c4de77a34ab93357b22e75094bc3a89d3925d0795e997f70979","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.connection_lost"
+msgstr ""
+
+#. English: {host} refused the connection. Check the address and port, and that
+#. the service is running.
+#. chrys-meta={"fingerprint":"c055604093ee68ebae509ada76fe76dbd972b8d7467d08c9588ced1731305855","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.connection_refused"
+msgstr ""
+
+#. English: The model service's content filter blocked this request.
+#. chrys-meta={"fingerprint":"257eb6ffd8c981f1dec2fd77ebdaabe3d7d8a6fdbb299715e866697e6efb8a91","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.content_filtered"
+msgstr ""
+
+#. English: The request exceeds the model's context window. Check that the
+#. profile's context window matches the model's real one.
+#. chrys-meta={"fingerprint":"549d8180e5abda09a81f193105838ccca5262c562e947f1223176572878437df","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.context_overflow"
+msgstr ""
+
+#. English: Can't resolve {host}. Check your network connection and DNS; if the
+#. address is wrong, fix the base URL in the model profile.
+#. chrys-meta={"fingerprint":"29b0bbc25ea2e5f23ac617e71a561bb685f224d4af035681cdbafe465b7f99fc","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.dns_failed"
+msgstr ""
+
+#. English: Can't reach {host}: the host is unreachable. Check your network,
+#. VPN, or firewall.
+#. chrys-meta={"fingerprint":"f110714a11b72ce30d1b63b48aff295177316dc61891e4c0d96715d9999b0f6a","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.host_unreachable"
+msgstr ""
+
+#. English: The service address is invalid. Check the base URL in the model
+#. profile.
+#. chrys-meta={"fingerprint":"a9ff3441defbac613df7485ada48348108d191fb4de9e8b5f7e56816197da8a9","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.invalid_endpoint"
+msgstr ""
+
+#. English: Couldn't connect to the model service. Check your network and proxy
+#. settings.
+#. chrys-meta={"fingerprint":"2443fe2339d90de45d23bc658923459c7e699a7da1e013dc7f5b05e310fa7c1a","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.network_generic"
+msgstr ""
+
+#. English: Can't reach the network: there is no route to {host}. Check your
+#. network connection or VPN.
+#. chrys-meta={"fingerprint":"5f27cab0d352092ec41bc749fbf935d9f1545011775dbb7bc9c687a547ea7266","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.no_route"
+msgstr ""
+
+#. English: The model service is overloaded.
+#. chrys-meta={"fingerprint":"5c2deb4ef7a5695505a5cbc5f678d3e356c538bb7a52523a27d24c382534e179","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.overloaded"
+msgstr ""
+
+#. English: The request is too large (for example, an image or attachment).
+#. Make it smaller and try again.
+#. chrys-meta={"fingerprint":"e701135640cb7b3a2238ac7a6d976be2cf2a02833b7c0065c72c9c7034288024","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.payload_too_large"
+msgstr ""
+
+#. English: The proxy {proxy} requires authentication or rejected the
+#. credentials.
+#. chrys-meta={"fingerprint":"da7cd28b98357c63916fc75ecc6de810d3fb5e55adcc48aed3dd494eafe06432","multiline":false,"placeholders":["proxy"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.proxy_auth_failed"
+msgstr ""
+
+#. English: The proxy {proxy} couldn't connect to {host}.
+#. chrys-meta={"fingerprint":"704a73d769f6834b5a8fd871146bfdb950d21c7b83815ce73640b714470f12d6","multiline":false,"placeholders":["host","proxy"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.proxy_rejected"
+msgstr ""
+
+#. English: Can't connect to the proxy {proxy}. Check that the proxy is running
+#. and configured correctly, or turn on "Bypass proxy" in the model profile.
+#. chrys-meta={"fingerprint":"74592bc5d485c9c09916c086307bcd262b082766f0c1113b1504d0d684d51e7b","multiline":false,"placeholders":["proxy"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.proxy_unreachable"
+msgstr ""
+
+#. English: The model service account is out of quota or credit. Check the
+#. account and try again.
+#. chrys-meta={"fingerprint":"c9d844241694abb97c8c55621f8c6887f829033387d4b3542aec619ec8c37aeb","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.quota_exhausted"
+msgstr ""
+
+#. English: The model service is rate limiting requests.
+#. chrys-meta={"fingerprint":"078b224c3dcf0dfa7393b19febea59c1575903e544f2ed671791c1107fff9d67","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.rate_limited"
+msgstr ""
+
+#. English: Timed out waiting for a response from {host}.
+#. chrys-meta={"fingerprint":"2b76a6d8d483a03f151eb07394fdbd8834e6164e3289de91b11470f191f467bb","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.read_timeout"
+msgstr ""
+
+#. English: The model service returned an internal error.
+#. chrys-meta={"fingerprint":"8dec6d7b772a6b21b56636b1636f3f07d304a18813977e2fe19687f00e021949","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.server_error"
+msgstr ""
+
+#. English: The model's response was cut off.
+#. chrys-meta={"fingerprint":"1f67c42073ffa243f561acceaa9f95ae22b76f3744762cd3b6f4ffbc6a404766","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.stream_truncated"
+msgstr ""
+
+#. English: Couldn't establish a secure connection to {host}: the certificate
+#. isn't trusted or the protocol doesn't match. On a corporate network, check
+#. the proxy certificate setup.
+#. chrys-meta={"fingerprint":"a56753b62bf1eae029a8685b9b6a0a336a6c1ad13dbf4ea9daa3d714d82cb145","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.tls_failed"
+msgstr ""
+
+#. English: Connecting to {host} through the proxy {proxy} failed. Check the
+#. proxy and your network connection.
+#. chrys-meta={"fingerprint":"963cb3696b2d6777c07d51555f7260e11128159b4f0009d7cde9d50672835343","multiline":false,"placeholders":["host","proxy"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.via_proxy_failed"
+msgstr ""
+
+#. English: Timed out sending the request to {host}.
+#. chrys-meta={"fingerprint":"5b01c5ed56bbd5a4e00e07305a5b32f2d8975bab1735534317564c2afcd51226","multiline":false,"placeholders":["host"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.write_timeout"
+msgstr ""
+
 #. English: Awaiting {count} sub-agent(s)
 #. English-plural: Awaiting {count} sub-agent(s)
 #. chrys-meta={"fingerprint":"53baa473b7b67d7105814470f91e8bbf58d03490708fac73f3d157f1634becd3","multiline":false,"placeholders":[]}
@@ -423,7 +601,7 @@ msgstr ""
 
 #. English: Stream stalled
 #. chrys-meta={"fingerprint":"cfa9476c7f6d431c0ffe575bbe624d9f27efde67acd7c8681d0464b4a81e9672","multiline":false,"placeholders":[]}
-#: src/chrys/orchestration/engine/run/bindings.py
+#: src/chrys/foundation/errors/display.py
 msgid "retry.stream_stalled"
 msgstr ""
 
@@ -4081,16 +4259,22 @@ msgstr ""
 msgid "tui.chat.agent_fallback_label"
 msgstr ""
 
+#. English: Copy raw agent response
+#. chrys-meta={"fingerprint":"debb1b468d0766e3761ee82b35ba67d8d81dc969f1f43827bfeff59c91210835","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.copy_agent_response_tooltip"
+msgstr ""
+
 #. English: copy
 #. chrys-meta={"fingerprint":"d8ed75600cd5a4fe4cf55a8d4be1b83db63d707a7e7797cc9513e395f47ac02f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
-msgid "tui.chat.copy_agent_response_button"
+msgid "tui.chat.copy_message_button"
 msgstr ""
 
-#. English: Copy agent response
-#. chrys-meta={"fingerprint":"e251bcbcf132abba4b00203194028e459101642d9c3f12231f3a7009a3332ee2","multiline":false,"placeholders":[]}
+#. English: Copy your raw message
+#. chrys-meta={"fingerprint":"66835a466af55ca99d94bb2b2bb5edf3d61d36fe3af871e1746ab7030f479dfb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
-msgid "tui.chat.copy_agent_response_tooltip"
+msgid "tui.chat.copy_user_message_tooltip"
 msgstr ""
 
 #. English: {message} Retrying in {delay_seconds}s
@@ -4824,6 +5008,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4a068fafe2f821ca3df6d4e47c847e729f3dc8b1cd9c4fb7f38daa768ad36086","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/copy_messages.py
 msgid "tui.copy.title.success"
+msgstr ""
+
+#. English: Copied your message
+#. chrys-meta={"fingerprint":"6a756827d52fc3395264d20d432f831876692e5dc0adb6eaa9c60e37e4d457ae","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.copy.user_message"
 msgstr ""
 
 #. English: Event stream copied
@@ -6342,6 +6532,24 @@ msgstr ""
 msgid "tui.mcp.command"
 msgstr ""
 
+#. English: Delete
+#. chrys-meta={"fingerprint":"b97a11a66ef7ce18c7aba25e143ede41f2f0eac80ae1529f01c9ff8938188cd5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.confirm"
+msgstr ""
+
+#. English: Delete MCP server "{name}"?
+#. chrys-meta={"fingerprint":"b6b12e13bb994cc8e4c833fd3c190de4e288d08563e68db40ddfcaa85ba493f9","multiline":true,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.message"
+msgstr ""
+
+#. English: Delete MCP Server
+#. chrys-meta={"fingerprint":"e4cc5c3046e2e04a100b3b4f12f8f416623e7ff96b7e2361522c16c796142dbe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/agents/panels/mcp.py
+msgid "tui.mcp.confirm_delete.title"
+msgstr ""
+
 #. English: *The server supports prompt templates, but none are available.*
 #. chrys-meta={"fingerprint":"998c4faa4e70a155c142199f14c6a9384abd54830bd04c119c59811f3da1d998","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/mcp.py
@@ -6709,12 +6917,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"c03c55a22533889c241f1889c3074e0283ca2ea96435810d81782bd105e9a023","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/validation_messages.py
 msgid "tui.mcp.selected_tool_names"
-msgstr ""
-
-#. English: MCP Server
-#. chrys-meta={"fingerprint":"b4842c56fa280ad58067fad7da77fe4a286afbb89a3a25fcca0fa2b33a9de15f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/mcp.py
-msgid "tui.mcp.server"
 msgstr ""
 
 #. English: Server Name
@@ -10753,6 +10955,12 @@ msgstr ""
 msgid "tui.tool_card.sub_agent.duration"
 msgstr ""
 
+#. English: Errored: {reason}
+#. chrys-meta={"fingerprint":"6bcdf1454b867972274949b98e2cd7eaf7d4f33b4edfffd0bf3d33478f20faed","multiline":false,"placeholders":["reason"]}
+#: src/chrys/app/tui/widgets/chat/renderers/sub_agent.py
+msgid "tui.tool_card.sub_agent.errored_with_reason"
+msgstr ""
+
 #. English: Paused — awaiting user
 #. chrys-meta={"fingerprint":"ce5fc6a0f41b8ce2fbfca81224f23ffaa4917e678b8e927d866b0bc4b4e9668c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/renderers/sub_agent.py
@@ -12571,6 +12779,12 @@ msgstr ""
 msgid "tui.workflow.confirm.warnings"
 msgstr ""
 
+#. English: Copy raw run input
+#. chrys-meta={"fingerprint":"a9e650e3b6777b4f47a88e39cd2fadbc9486151237cd62aae2330a191083c1ba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.copy_run_input_tooltip"
+msgstr ""
+
 #. English: default model
 #. chrys-meta={"fingerprint":"2f129c2610c4edf89f3849b2602dac2e7b361b6ee428c5d0790de5af50c1a847","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
@@ -12985,6 +13199,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"da2a10131684dd1413e30fd877b7c7da374dc3dee6714f0fc8fe1e520b9e5c5d","multiline":false,"placeholders":["run_id"]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.restore.fallback"
+msgstr ""
+
+#. English: Copied run input
+#. chrys-meta={"fingerprint":"9238ceb7d6f01f800a8fe73398a4e754623c9a6e256b0c2ebdc68fa541981a7b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.run_input_copied"
 msgstr ""
 
 #. English: Run Settings

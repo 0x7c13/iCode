@@ -16,10 +16,26 @@ class InvocationOrigin:
     session_id: str
     invocation_id: str
     parent: InvocationOrigin | None
+    attempt: int = 0
+    """The workflow scheduler attempt a node pass belongs to; 0 for invocations without attempts.
+
+    Part of equality, so a publisher bound to one attempt rejects another attempt's facts. Backend
+    admission and continuation tickets compare with :meth:`same_invocation` instead.
+    """
 
     def __post_init__(self) -> None:
         if self.kind not in ("turn", "sub_agent", "workflow_node") or not self.invocation_id:
             raise ValueError("A live invocation requires a kind and invocation identity")
+
+    def same_invocation(self, other: InvocationOrigin | None) -> bool:
+        """Whether *other* names this logical invocation, in any of its attempts."""
+        return (
+            other is not None
+            and other.kind == self.kind
+            and other.session_id == self.session_id
+            and other.invocation_id == self.invocation_id
+            and other.parent == self.parent
+        )
 
     @property
     def root(self) -> InvocationOrigin:

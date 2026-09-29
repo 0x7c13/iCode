@@ -122,10 +122,10 @@ def _load_bool_env(name: str, *, default: bool = False) -> bool:
 DEFAULT_ASK_USER_TIMEOUT_SECONDS = 900
 """Default ``ask_user`` reply wait (15 minutes) when ``CHRYS_ASK_USER_TIMEOUT_SECONDS`` is unset."""
 
-DEFAULT_MAX_TRANSIENT_RETRIES = 7
+DEFAULT_MAX_TRANSIENT_RETRIES = 10
 """Default application-layer transient retry budget for interactive frontends."""
 
-HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES = 15
+HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES = 18
 """Default application-layer transient retry budget for ``chrys run``."""
 
 MAX_TRANSIENT_RETRIES_LIMIT = 50
@@ -942,8 +942,8 @@ class Settings:
             apply=Apply.RELOAD,
             group="llm",
             kind=Kind.OPTIONAL_INT,
-            # Raising it multiplies cost and wait against the 3/7/15/30/60s
-            # backoff, so a repository may only lower it.
+            # Raising it multiplies cost and wait against the backoff (up to
+            # 600 s a retry), so a repository may only lower it.
             project_merge=ProjectMerge.TIGHTEN_ONLY,
             semantic_value=_semantic_max_transient_retries,
         ),

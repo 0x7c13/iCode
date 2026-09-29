@@ -29,7 +29,7 @@ from chrys.foundation.models.workflow_session import WorkflowModelSelection, Wor
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.paths import resolve_workspace_path
-from chrys.orchestration.invoker.resources import finish_close
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.workflows.catalog import WorkflowCatalog, WorkflowNotFoundError
 from chrys.orchestration.workflows.preview import (
     WorkflowInspection,

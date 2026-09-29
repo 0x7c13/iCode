@@ -9,6 +9,8 @@ import logging
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
+from chrys.kernel import report_wire_progress
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping, Sequence
 
@@ -68,6 +70,9 @@ async def get_final_response(
                 await _await_with_timeout(aiter.__anext__(), timeout, "LLM stream update")
             except StopAsyncIteration:
                 break
+            # A call made while a wire pull waits on it (a compaction side
+            # call) keeps that pull's stall watchdog alive chunk by chunk.
+            report_wire_progress()
         return await _await_with_timeout(result.get_final_response(), timeout, "LLM final response")
     except TimeoutError:
         try:

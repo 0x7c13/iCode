@@ -24,7 +24,7 @@ from chrys.foundation.trajectory_timing import (
     stamp_trajectory_timing,
 )
 from chrys.foundation.util.time import parse_created_at, utc_iso
-from chrys.kernel import Message
+from chrys.kernel import GROUP_ANNOTATION_KEY, SUMMARY_OF_GROUP_IDS_KEY, Message
 
 MESSAGE_CREATED_AT_KEY = "_chrys_created_at"
 LAST_ASSISTANT_CREATED_AT_STATE_KEY = "_chrys_last_assistant_created_at"
@@ -56,6 +56,30 @@ def persisted_tool_call_context(additional_properties: object) -> dict[str, Any]
 def is_structural_marker(message: Message) -> bool:
     """Return True when *message* is a Chrys structural/status marker."""
     return HistoryMarkerKind.KEY in message.additional_properties
+
+
+def is_compaction_tool_summary(message: Mapping[str, object]) -> bool:
+    """Return True when a serialized message is a compaction tool-call summary.
+
+    Compaction replaces a completed tool-call group with an assistant
+    ``[Tool call: …]`` text message and keeps it in persisted history as the
+    model's context for that group. The model never said it, so every
+    transcript replay skips it. The messages it replaced are excluded on
+    disk, so the session transcript, which loads without them, deliberately
+    shows none of them; narration the summary cannot represent (an image,
+    say) was never replaced and still shows. A compressed block archives its
+    turns as they were, excluded originals included, and renders those by
+    its own rules (narration and hosted cards show, local tool cards don't).
+    Recognized by its group annotation only: a real answer may carry the
+    same text.
+    """
+    if message.get("role") != "assistant":
+        return False
+    additional_properties = message.get("additional_properties")
+    if not isinstance(additional_properties, Mapping):
+        return False
+    annotation = additional_properties.get(GROUP_ANNOTATION_KEY)
+    return isinstance(annotation, Mapping) and SUMMARY_OF_GROUP_IDS_KEY in annotation
 
 
 def should_stamp_message_created_at(message: Message) -> bool:

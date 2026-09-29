@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -20,6 +21,7 @@ from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.invocation_progress import invocation_progress_parts
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptSurface,
@@ -95,6 +97,7 @@ _SUB_AGENT_AFTER_RETRIES = msg(
     plural_fallback="(after {count} auto-retry attempts)",
 )
 _SUB_AGENT_DIAGNOSTICS = msg("tui.tool_card.sub_agent.diagnostics", fallback="Diagnostics: {path}")
+_SUB_AGENT_ERRORED_WITH_REASON = msg("tui.tool_card.sub_agent.errored_with_reason", fallback="Errored: {reason}")
 _SUB_AGENT_PAUSED = msg(
     "tui.tool_card.sub_agent.paused",
     fallback="Paused — awaiting user",
@@ -117,6 +120,23 @@ _SUB_AGENT_REASON_MESSAGES: dict[str, MessageDef] = {
 
 _COMPACTION_ENTRY_KIND = "compaction"
 """Synthetic ``tool_kind`` for the Phase-4 compaction progress line."""
+
+# The failure results the sub-agent policies write name the card's own agent
+# ("sub-agent 'X' failed — <cause>"); the card line keeps only what the card
+# does not already say.
+_OWN_AGENT_PREFIX = re.compile(r"sub-agent '[^']*' (?:failed —\s*)?")
+# Far wider than any card: the activity line ellipsizes to its own width.
+_ERROR_REASON_MAX_CHARS = 400
+
+
+def _error_reason(result: str) -> str:
+    """One display line naming why the sub-agent call failed, or ``""``."""
+    text = result.strip().removeprefix("Error:").lstrip()
+    text = _OWN_AGENT_PREFIX.sub("", text, count=1) if text.startswith("sub-agent '") else text
+    reason = sanitize_legacy_scalar(surrogate_safe_text(" ".join(text.split())))
+    if len(reason) > _ERROR_REASON_MAX_CHARS:
+        reason = reason[: _ERROR_REASON_MAX_CHARS - 1] + "…"
+    return reason
 
 
 @dataclass
@@ -539,8 +559,16 @@ class SubAgentToolCall(BaseToolCard):
     def _spin(self) -> None:
         if self.status == "running":
             self._spin_idx = (self._spin_idx + 1) % len(self._SPINNERS)
+            # Only a shown card repaints (see ``ToolCall._spin``); the first tick after it shows paints it.
+            if not is_widget_shown_on_active_screen(self):
+                return
             with suppress(Exception):
-                self.query_one("#sa-label", Static).update(self._running_label_text())
+                # The label shows whole seconds: most ticks leave it as it is, and
+                # rewriting an equal label would only repaint the header.
+                label = self._running_label_text()
+                header = self.query_one("#sa-label", ToolCardHeader)
+                if header.content != label:
+                    header.update(label)
                 self._update_title()
 
     def _update_title(self) -> None:
@@ -1083,7 +1111,8 @@ class SubAgentToolCall(BaseToolCard):
             "rejected": TOOL_CARD_REJECTED,
             "interrupted": TOOL_CARD_INTERRUPTED,
         }[status]
-        self._remember_activity(status_message.bind())
+        reason = _error_reason(result) if status == "error" else ""
+        self._remember_activity(_SUB_AGENT_ERRORED_WITH_REASON.bind(reason=reason) if reason else status_message.bind())
 
     def _drop_inner_call_tracking(self) -> None:
         """Free per-call id bookkeeping once the parent call is terminal.
@@ -1234,12 +1263,15 @@ class SubAgentToolCall(BaseToolCard):
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
         """Transition the card to a paused state with Retry/Abort buttons.
 
         Called when :class:`InvocationPaused` arrives. Auto-retry (if any
         happened first) is now finished; the banner is replaced with the
         pause-info block and the action row is revealed.
+        ``last_error_display`` is the rendered meaning of ``last_error``,
+        shown above the raw text.
         """
         self.status = "paused"
         # Paused supersedes the retrying banner — the retry run completed
@@ -1258,6 +1290,8 @@ class SubAgentToolCall(BaseToolCard):
         info_lines = [reason_label]
         if retry_attempts:
             info_lines.append(self._render_message(_SUB_AGENT_AFTER_RETRIES.bind(count=retry_attempts)))
+        if last_error_display:
+            info_lines.append(last_error_display)
         if last_error:
             info_lines.append(last_error)
         if diagnostic_path:

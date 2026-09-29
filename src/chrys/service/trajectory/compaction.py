@@ -2,6 +2,9 @@
 
 """``compaction.started`` / ``compaction.phase.finished`` / ``compaction.finished`` recording.
 
+``compaction.skipped`` is the marker for usage past the trigger that started no
+pass, so a context that fills up without compacting says why.
+
 One run covers one triggered compaction pass (or one forced compression);
 its phases report what they freed, with ``turn_numbers``, ``tool_names``, and
 Phase-4 ``consumed_item_ids`` always continued as ``event.segment`` lines so
@@ -63,6 +66,35 @@ def _before_after_measurements(source: str) -> dict[str, Any]:
         **_token_measurements("/payload/tokens_before", source=source),
         **_token_measurements("/payload/tokens_after", source=TOKEN_MEASUREMENT_SOURCE),
     }
+
+
+def record_compaction_skipped(
+    *,
+    reason_code: str,
+    estimated_input_tokens: int,
+    trigger_tokens: int,
+    max_context_tokens: int,
+) -> None:
+    """Queue ``compaction.skipped`` under the ambient scope; recording never blocks the request."""
+    context = current_trajectory()
+    if context is None:
+        return
+    try:
+        context.sink.emit_soon(
+            context.draft(
+                EventType.COMPACTION_SKIPPED,
+                parent_operation_id=context.innermost_model_operation_id,
+                payload={
+                    "reason_code": reason_code,
+                    "estimated_input_tokens": estimated_input_tokens,
+                    "trigger_tokens": trigger_tokens,
+                    "max_context_tokens": max_context_tokens,
+                },
+                measurements=_token_measurements("/payload/estimated_input_tokens"),
+            )
+        )
+    except Exception:
+        logger.debug("Trajectory compaction.skipped emit failed", exc_info=True)
 
 
 class CompactionRunTrace:

@@ -33,6 +33,7 @@ from chrys.foundation.i18n import DisplayBlock, Localizer
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.util.env_templates import EnvVarResolutionError
 from chrys.service.mcp.adapter import MCPConnectionError, MCPToolNameCollisionError, MCPToolNameValidationError
+from tests.app.tui.screens._agent_config_support import press_and_answer_confirm
 from tests.support.waiting import wait_for
 
 
@@ -524,7 +525,7 @@ async def test_remove_mcp_connection_preserves_edits_in_remaining_servers() -> N
         cards[1].query_one("#mcp-name-1", Input).value = "edited"
         cards[1].query_one("#mcp-desc-1", TextArea).text = "edited description"
         cards[1].query_one("#mcp-cmd-1", TextArea).text = "uvx edited-server"
-        cards[0].query_one("#mcp-delete-btn-0", Button).press()
+        await press_and_answer_confirm(pilot, cards[0].query_one("#mcp-delete-btn-0", Button))
 
         cards = await _wait_for_mcp_cards(panel, pilot, 1, exact=True)
         cards = await _wait_for_mcp_name_inputs(panel, pilot, 1, exact=True)
@@ -557,7 +558,7 @@ async def test_remove_mcp_connection_preserves_invalid_draft_command() -> None:
 
         cards = await _wait_for_mcp_cards(panel, pilot, 2)
         cards[1].query_one("#mcp-cmd-1", TextArea).text = 'python "'
-        cards[0].query_one("#mcp-delete-btn-0", Button).press()
+        await press_and_answer_confirm(pilot, cards[0].query_one("#mcp-delete-btn-0", Button))
 
         cards = await _wait_for_mcp_cards(panel, pilot, 1, exact=True)
         cards = await _wait_for_mcp_name_inputs(panel, pilot, 1, exact=True)
@@ -586,7 +587,7 @@ async def test_remove_mcp_connection_preserves_partial_env_row_value_without_key
         survivor_env.query_one(".mcp-item-row").query_one(".mcp-item-value-input", Input).value = "secret-token"
         assert any("key name is required" in error for error in cards[1].validate())
 
-        cards[0].query_one("#mcp-delete-btn-0", Button).press()
+        await press_and_answer_confirm(pilot, cards[0].query_one("#mcp-delete-btn-0", Button))
 
         await _wait_for_mcp_cards(panel, pilot, 1, exact=True)
         cards = await _wait_for_mcp_name_inputs(panel, pilot, 1, exact=True)
@@ -618,7 +619,7 @@ async def test_remove_mcp_connection_preserves_partial_header_row_value_without_
         survivor_headers.query_one(".mcp-item-row").query_one(".mcp-item-value-input", Input).value = "Bearer token"
         assert any("key name is required" in error for error in cards[1].validate())
 
-        cards[0].query_one("#mcp-delete-btn-0", Button).press()
+        await press_and_answer_confirm(pilot, cards[0].query_one("#mcp-delete-btn-0", Button))
 
         await _wait_for_mcp_cards(panel, pilot, 1, exact=True)
         cards = await _wait_for_mcp_name_inputs(panel, pilot, 1, exact=True)
@@ -706,6 +707,20 @@ async def test_stdio_command_line_parses_into_command_and_args() -> None:
         assert config.allowed_tools == ["echo", "add"]
         assert config.tool_name_prefix == "filesystem"
         assert config.request_timeout == 45
+
+
+def test_a_saved_command_line_shown_in_the_field_reads_back_as_the_same_arguments() -> None:
+    args = ["[/bold] literal", 'say "hi"', "", "C:\\Program Files\\data\\", "two\nlines", "--flag"]
+
+    shown = MCPConnectionCard._format_command_line("python server.py", args)
+
+    assert MCPConnectionCard._split_command_line(shown) == ("python server.py", args)
+
+
+def test_a_command_typed_over_several_lines_splits_at_the_line_breaks() -> None:
+    typed = "npx -y\r\n@scope/server\n--port 8080"
+
+    assert MCPConnectionCard._split_command_line(typed) == ("npx", ["-y", "@scope/server", "--port", "8080"])
 
 
 @pytest.mark.asyncio
@@ -1486,12 +1501,14 @@ async def test_mcp_card_removal_is_blocked_while_connection_test_runs() -> None:
             description="MCP connection test to start",
         )
 
-        await panel._on_remove(SimpleNamespace(index=0))  # type: ignore[arg-type]
+        panel._on_remove(MCPConnectionCard.Removed(card))
         await pilot.pause()
 
         assert len(await _wait_for_mcp_cards(panel, pilot, 2)) == 2
         assert app.notifications
         assert "Wait for MCP connection tests" in app.notifications[-1][0]
+        # Refused before asking: no delete confirmation opens over the test dialog.
+        assert isinstance(app.screen, ConnectionTestDialog)
 
         release.set()
         await _wait_for_test_dialog(app, pilot, success=True)

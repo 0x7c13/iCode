@@ -29,6 +29,8 @@ from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.source_text import sanitize_source_text
+from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.tool_call import (
     TOOL_CARD_REJECTED,
     TOOL_CARD_RUNNING,
@@ -376,8 +378,11 @@ class SkillToolCall(BaseToolCard):
     def _spin(self) -> None:
         if self.status == "running":
             self._spin_idx = (self._spin_idx + 1) % len(self._SPINNERS)
+            # Only a shown card repaints (see ``ToolCall._spin``); the first tick after it shows paints it.
+            if not is_widget_shown_on_active_screen(self):
+                return
             with suppress(Exception):
-                self.query_one("#skill-panel", Static).update(self._render_spinner())
+                update_static_in_place(self.query_one("#skill-panel", Static), self._render_spinner())
 
     def _spinner_verb(self) -> str:
         """Return the verb used in the running spinner."""

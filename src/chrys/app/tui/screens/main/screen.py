@@ -10,6 +10,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from textual import __version__ as TEXTUAL_VERSION
 from textual import on, work
 from textual.actions import SkipAction
 from textual.binding import Binding
@@ -195,6 +196,8 @@ _MODEL_UNCONFIGURED_SETUP = msg("tui.model_guard.button.setup", fallback="Set up
 
 _TERMINAL_TITLE_ACTIVITY_INTERVAL_SECONDS = 0.65
 _TERMINAL_TITLE_RUNNING_FRAMES = ("◇", "◈", "◆", "◈")
+TEXTUAL_BACKGROUND_REFRESH_FORK_VERSION = "8.2.7"
+"""The Textual release whose private ``Screen._compositor_refresh`` ``MainScreen`` mirrors."""
 type _TerminalTitleSource = Literal["cwd", "session", "user_message"]
 
 
@@ -266,6 +269,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         locale_controller: LocaleController | None = None,
         on_editor_keymap_changed: Callable[[str], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
+        approval_mode: ApprovalMode = ApprovalMode.MANUAL,
     ) -> None:
         self._services = MainScreenServices(
             bus=event_bus,
@@ -328,8 +332,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.theme_editor: ThemeEditorPanel | None = None
         self._theme_editor_opening = False
         self._shell_requested_after_editor = False
-        self._approval_mode = ApprovalMode.MANUAL
-        self._state.runtime.approval_mode = self._approval_mode
+        # Seeded with the engine's launch mode: the startup ApprovalModeUpdated
+        # sync then confirms what the header already shows, instead of
+        # flipping a placeholder and toasting a change nobody made.
+        self._approval_mode = approval_mode
+        self._state.runtime.approval_mode = approval_mode
         # Relies on EventBus.publish awaiting handlers sequentially so
         # synchronous backend rejections can mark submits as blocked.
         self._submit_state = self._state.submit
@@ -343,6 +350,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._git_branch_retry_cwd_on_display_sync: str | None = None
         self._git_branch_closed = False
         super().__init__()
+        self.set_reactive(MainScreen.header_approval_mode, approval_mode)
         self._reactive_state_initialized = True
         # Track profile switch system message so we can de-duplicate consecutive
         # switches (A→B, B→C becomes A→C) and clear it when the pattern breaks.
@@ -1438,6 +1446,48 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Keep chat selection highlights aligned after the transcript scrolls."""
         self._chat_selection.schedule_reproject(panel)
 
+    def _compositor_refresh(self) -> None:
+        """Forward each repaint to the dialog above this screen once.
+
+        Every ``ModalScreen`` lets this screen show through (``chrys.tcss``),
+        so a dialog paints this screen's frame as its backdrop and must receive
+        every region this screen repaints while covered. Textual's background
+        branch forwards those regions, but it also marks them dirty again on
+        this screen and sets ``_repaint_required``. The next update then swaps
+        the dirty widgets for this screen alone and forwards the old regions
+        once more, together with any new damage, and marks the union again.
+        Whatever was forwarded once is forwarded on every later update: after
+        the first layout, scroll or status change under the dialog, every
+        spinner tick makes the dialog re-render and re-blend the whole backdrop.
+
+        Forward only the regions this update repainted. The re-marking keeps
+        nothing fresh: the dialog repaints a forwarded region from this
+        screen's current compositor output, and Textual repaints this screen's
+        whole frame when the dialog closes (``Screen._on_screen_resume`` and
+        ``App._replace_screen``). Underlay animation stays visible because
+        every tick still reaches the dialog.
+
+        This is a version-gated fork of the non-inline background branch of
+        Textual's private ``Screen._compositor_refresh``. The only intentional
+        semantic delta is dropping the re-marking; the top-screen and inline
+        branches, and other Textual releases, take the stock path.
+        """
+        app = self.app
+        dirty_regions = self._compositor._dirty_regions
+        if (
+            TEXTUAL_VERSION != TEXTUAL_BACKGROUND_REFRESH_FORK_VERSION
+            or app.is_inline
+            or not dirty_regions
+            or self is app.screen
+            or self not in app._background_screens
+        ):
+            super()._compositor_refresh()
+            return
+        app.screen.refresh(*dirty_regions)
+        dirty_regions.clear()
+        self._dirty_widgets.clear()
+        app._update_mouse_over(self)
+
     def _screen_resized(self, size: Size) -> None:
         """Ignore unchanged resize broadcasts while this screen is under an overlay."""
         if size == self._size:
@@ -1454,6 +1504,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # Now — and only now — the compositor's visible map matches the new
         # scroll offset, so a pending chat-highlight re-projection is safe.
         self._chat_selection.on_screen_layout_refreshed()
+        # Likewise a workflow panel shown before this layout placed it.
+        self._workflow.screen_layout_refreshed()
 
     async def on_mount(self) -> None:
         """Subscribe to backend events when the screen mounts."""
@@ -1610,11 +1662,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def action_chat_page_up(self) -> None:
         """Scroll the transcript up one page, even while the input is focused."""
-        self.query_one(ChatPanel).scroll_page_up(animate=False)
+        panel = self.query_one(ChatPanel)
+        panel.note_user_scroll()
+        panel.scroll_page_up(animate=False)
 
     def action_chat_page_down(self) -> None:
         """Scroll the transcript down one page, even while the input is focused."""
-        self.query_one(ChatPanel).scroll_page_down(animate=False)
+        panel = self.query_one(ChatPanel)
+        panel.note_user_scroll()
+        panel.scroll_page_down(animate=False)
 
     def action_chat_scroll_bottom(self) -> None:
         """Scroll the transcript to the bottom, even while the input is focused."""
@@ -1691,6 +1747,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _set_shell_mode_flag(self, active: bool) -> None:
         self._shell_mode = active
         self._state.shell.active = active
+        self._sync_sidebar_tab_strip_focus()
 
     def _set_shell_mode_state(self, active: bool) -> None:
         self.shell_mode_state = active
@@ -1698,6 +1755,20 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _set_fullscreen_terminal_flag(self, active: bool) -> None:
         self._fullscreen_terminal = active
         self._state.shell.fullscreen_terminal = active
+        self._sync_sidebar_tab_strip_focus()
+
+    def _sync_sidebar_tab_strip_focus(self) -> None:
+        """Make the sidebar tab strip focusable exactly where sidebar focus is not handed back.
+
+        Asks what ``on_descendant_focus`` asks: workflow mode returns before the shell
+        controller, whose ``keeps_panel_focus`` covers shell mode and the fullscreen terminal.
+        Focus itself moves only with the view switch that follows each mode change
+        (``exit_shell_mode`` returns it to a visible input).
+        """
+        self._sync_shell_state_from_legacy_flags()
+        self.query_one(SidebarPanel).set_tab_strip_focusable(
+            self._workflow.workflow_mode or self._shell_mode_controller.keeps_panel_focus()
+        )
 
     def _sync_shell_state_from_legacy_flags(self) -> None:
         self._state.shell.active = self._shell_mode
@@ -2690,6 +2761,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._workflow.leave()
         self._workflow.workflow_mode = workflow
         self.query_one(SidebarPanel).set_workflow_mode(workflow)
+        self._sync_sidebar_tab_strip_focus()
         self._view_adapter.sync_main_surface()
         self._suggestions.dismiss_suggestions()
         self._sync_workflow_chrome()

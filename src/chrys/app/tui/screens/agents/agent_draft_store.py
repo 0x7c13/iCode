@@ -803,9 +803,25 @@ def validate_mcp_draft(
     render_message: _RenderMessage = format_message,
 ) -> list[str]:
     """Validate one profile's MCP config after widget state is converted."""
-    errors: list[str] = []
+    return [
+        error
+        for server_errors in mcp_draft_errors_by_server(prefix, profile, render_message=render_message)
+        for error in server_errors
+    ]
+
+
+def mcp_draft_errors_by_server(
+    prefix: str,
+    profile: AgentProfile,
+    *,
+    render_message: _RenderMessage = format_message,
+) -> list[list[str]]:
+    """Return each MCP server's validation errors, in ``profile.tools.mcp`` order."""
+    by_server: list[list[str]] = []
     seen_names: set[str] = set()
     for index, server in enumerate(profile.tools.mcp, start=1):
+        errors: list[str] = []
+        by_server.append(errors)
         display = server.name or render_message(MCP_SERVER_CONTEXT.bind(index=index))
         if not server.name:
             errors.append(
@@ -918,4 +934,4 @@ def validate_mcp_draft(
                 always_load=server.always_load,
             )
         )
-    return errors
+    return by_server

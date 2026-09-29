@@ -163,7 +163,6 @@ def test_tracer_self_test_gives_the_probe_devnull_stdin(monkeypatch: pytest.Monk
         DEVNULL=subprocess.DEVNULL,
         PIPE=subprocess.PIPE,
         CompletedProcess=subprocess.CompletedProcess,
-        CREATE_NO_WINDOW=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     monkeypatch.setattr(trace_mod, "subprocess", fake_subprocess)
     monkeypatch.setattr(trace_mod, "_probe_done", False)

@@ -150,7 +150,7 @@ def test_prepare_runtime_uses_interactive_transient_retry_default(monkeypatch: p
 
     loaded = acp_cli._prepare_runtime()
 
-    assert loaded.settings.effective_max_transient_retries() == 7
+    assert loaded.settings.effective_max_transient_retries() == 10
 
 
 @pytest.mark.asyncio

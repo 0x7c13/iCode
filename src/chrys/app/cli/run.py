@@ -19,6 +19,7 @@ from chrys.app.parsing import SanitizingArgumentParser
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
+from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.text.encoding import decode_bytes
@@ -299,15 +300,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except HeadlessRunError as exc:
         runtime = holder.runtime
-        if args.json or runtime is None or exc.event.display_message is None:
+        event = exc.event
+        detail = None
+        if args.json or runtime is None or event.display_message is None:
             message = headless.exception_message(exc)
         else:
-            message = runtime.localizer.render(exc.event.display_message)
+            message = runtime.localizer.render(event.display_message)
+            if event.display_hint is not None:
+                message = runtime.localizer.render(
+                    DISPLAY_WITH_HINT.bind(message=message, hint=runtime.localizer.render(event.display_hint))
+                )
+            if event.code == "executor_error":
+                # The display says what went wrong; the raw text is the evidence.
+                detail = event.message.strip() or None
         headless.write_error(
             message,
             as_json=args.json,
-            code=exc.event.code or "headless_run_error",
-            session_id=exc.event.session_id,
+            code=event.code or "headless_run_error",
+            session_id=event.session_id,
+            detail=detail,
         )
         return 1
     except SessionNotFoundError as exc:

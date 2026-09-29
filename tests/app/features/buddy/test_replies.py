@@ -51,12 +51,16 @@ class _Stream:
 class _Client:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.closed = False
 
     async def get_response(
         self, messages: list[Message], *, stream: bool = False, options: dict[str, Any] | None = None
     ) -> _Response | _Stream:
         self.calls.append({"messages": messages, "stream": stream, "options": options})
         return _Stream() if stream else _Response()
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 class _Engine:
@@ -102,7 +106,7 @@ def test_the_engine_double_offers_what_the_real_engine_offers(tmp_path: Path) ->
 def _client_factory(monkeypatch: pytest.MonkeyPatch, make: Callable[[ModelProfile], _Client]) -> None:
     """Stand in for the client factory. Its routing arguments are spelled out, so a new one fails here first."""
 
-    def create_client(
+    async def create_client(
         profile: ModelProfile,
         *,
         session_id: str | None = None,
@@ -208,7 +212,7 @@ async def test_the_call_is_routed_under_the_current_session(monkeypatch: pytest.
     client = _Client()
     context: dict[str, object] = {}
 
-    def create_client(
+    async def create_client(
         _profile: ModelProfile,
         *,
         session_id: str | None = None,
@@ -326,6 +330,27 @@ async def test_an_empty_answer_is_covered_by_a_stock_line(client: _Client, monke
     buddy = a_buddy()
 
     assert await pet_reply(buddy) in {f"💛 {line.format(name=buddy.name)}" for line in STOCK_REPLIES}
+
+
+class _FailingClient(_Client):
+    async def get_response(
+        self, messages: list[Message], *, stream: bool = False, options: dict[str, Any] | None = None
+    ) -> _Response | _Stream:
+        raise ConnectionError("offline")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers", [True, False])
+async def test_reply_closes_its_client(answers: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _Client() if answers else _FailingClient()
+    _client_factory(monkeypatch, lambda _profile: client)
+    _no_engine(monkeypatch, default_profile())
+    buddy = a_buddy()
+
+    reply = await pet_reply(buddy)
+
+    assert (reply == "💛 hoot hoot") is answers
+    assert client.closed
 
 
 def test_a_stock_reply_needs_no_model_and_names_the_buddy() -> None:

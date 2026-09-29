@@ -33,9 +33,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.process import ManagedStdioProcess, spawn_managed_stdio_process
 from chrys.service.workflows import protocol
+from chrys.service.workflows.asks import answers_to_wire, questions_from_wire
 from chrys.service.workflows.environment import PreparedEnvironment
 from chrys.service.workflows.graph import ManifestError, manifest_warnings
 from chrys.service.workflows.protocol import (
@@ -76,7 +78,7 @@ _CONTROL_METHODS = frozenset({Method.CANCEL, Method.SHUTDOWN})
 _ATTEMPT_METHODS = frozenset({Method.RUN_PYTHON, Method.EVAL_OUTGOING, Method.EVAL_LOOP_UNTIL, Method.COMBINE})
 _EVAL_METHODS = frozenset({Method.EVAL_OUTGOING, Method.EVAL_LOOP_UNTIL, Method.COMBINE})
 
-AskHandler = Callable[[AttemptRef, str], Awaitable[str]]
+AskHandler = Callable[[AttemptRef, tuple[AskUserQuestion, ...]], Awaitable[tuple[AskUserAnswer, ...]]]
 EmitHandler = Callable[[AttemptRef, int, str], Awaitable[None]]
 
 
@@ -786,9 +788,7 @@ class WorkflowWorkerClient:
 
     def _on_ask(self, request_id: int, params: dict[str, Any]) -> None:
         ref = ref_from_wire(params.get("ref"))
-        prompt = params.get("prompt")
-        if not isinstance(prompt, str):
-            raise ProtocolError("ask needs a str prompt.")
+        questions = questions_from_wire(params.get("questions"))
         key = ref_key(ref)
         if key in self._terminal:
             self._loop.create_task(self._respond_error(request_id, ErrorCode.ATTEMPT_TERMINATED, "attempt is over."))
@@ -798,7 +798,7 @@ class WorkflowWorkerClient:
                 self._respond_error(request_id, ErrorCode.ASK_UNAVAILABLE, "nobody can answer in this run.")
             )
             return
-        task = self._loop.create_task(self._serve_ask(request_id, ref, prompt), name="chrys.workflow.worker.ask")
+        task = self._loop.create_task(self._serve_ask(request_id, ref, questions), name="chrys.workflow.worker.ask")
         self._ask_tasks[key].add(task)
         self._asks.add(task)
         task.add_done_callback(lambda done, key=key: self._forget_ask(key, done))
@@ -807,11 +807,11 @@ class WorkflowWorkerClient:
         self._ask_tasks[key].discard(task)
         self._asks.discard(task)
 
-    async def _serve_ask(self, request_id: int, ref: AttemptRef, prompt: str) -> None:
+    async def _serve_ask(self, request_id: int, ref: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> None:
         if self._ask_handler is None:
             raise RuntimeError("Serving a workflow question requires an ask handler.")
         try:
-            answer = await self._ask_handler(ref, prompt)
+            answers = answers_to_wire(questions, await self._ask_handler(ref, questions))
         except asyncio.CancelledError:
             with contextlib.suppress(WorkerError):
                 await self._respond_error(request_id, ErrorCode.ATTEMPT_TERMINATED, "attempt is over.")
@@ -823,7 +823,7 @@ class WorkflowWorkerClient:
             await self._respond_error(request_id, ErrorCode.ASK_UNAVAILABLE, f"ask handler failed: {exc!r}")
         else:
             try:
-                await self._send({"id": request_id, "result": {"answer": answer}})
+                await self._send({"id": request_id, "result": {"answers": answers}})
             except WorkerRpcError as exc:  # the answer cannot be framed: the worker must not wait forever
                 await self._respond_error(request_id, ErrorCode.ASK_UNAVAILABLE, f"answer is not serializable: {exc}")
             except WorkerLostError:

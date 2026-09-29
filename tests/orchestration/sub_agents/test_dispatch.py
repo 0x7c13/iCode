@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, create_autospec
 
 import pytest
 
@@ -715,6 +715,9 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
             nonlocal captured_publish_retry
             captured_publish_retry = publish_retry
 
+        async def aclose(self) -> None:
+            pass
+
     class _Controller(SubAgentPolicyDouble):
         def __init__(self, *, shell, prompt: str, **_kwargs: object) -> None:
             super().__init__(shell=shell, prompt=prompt)
@@ -731,7 +734,11 @@ async def test_sub_agent_last_words_retry_callback_publishes_current_invocation(
     monkeypatch.setattr(runtime_factory_module, "Agent", _Agent)
     monkeypatch.setattr(runtime_factory_module, "LastWordsGenerator", _LastWordsGenerator)
     monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _Controller)
-    monkeypatch.setattr(sub_agent_module, "create_client", lambda *_args, **_kwargs: MockChatClient())
+    monkeypatch.setattr(
+        sub_agent_module,
+        "create_client",
+        create_autospec(sub_agent_module.create_client, side_effect=lambda *_args, **_kwargs: MockChatClient()),
+    )
     monkeypatch.setattr(skills_adapter, "create_skills_provider", AsyncMock(return_value=(None, [])))
 
     tools = SubAgentTools(event_bus=bus, session_id="s-1", session_dir=tmp_path)
@@ -823,6 +830,9 @@ async def test_sub_agent_compaction_status_callback_publishes_current_invocation
             captured_publish_status = publish_status
             captured_generator_kwargs.append(kwargs)
 
+        async def aclose(self) -> None:
+            pass
+
     class _Controller(SubAgentPolicyDouble):
         def __init__(self, *, shell, prompt: str, **_kwargs: object) -> None:
             super().__init__(shell=shell, prompt=prompt)
@@ -847,7 +857,11 @@ async def test_sub_agent_compaction_status_callback_publishes_current_invocation
     monkeypatch.setattr(runtime_factory_module, "Agent", _Agent)
     monkeypatch.setattr(runtime_factory_module, "LastWordsGenerator", _LastWordsGenerator)
     monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _Controller)
-    monkeypatch.setattr(sub_agent_module, "create_client", lambda *_args, **_kwargs: MockChatClient())
+    monkeypatch.setattr(
+        sub_agent_module,
+        "create_client",
+        create_autospec(sub_agent_module.create_client, side_effect=lambda *_args, **_kwargs: MockChatClient()),
+    )
     monkeypatch.setattr(skills_adapter, "create_skills_provider", AsyncMock(return_value=(None, [])))
 
     tools = SubAgentTools(
@@ -968,7 +982,11 @@ async def test_registered_parallel_invocations_get_independent_compaction_state(
     monkeypatch.setattr(sub_agent_module, "ToolRegistry", _ToolRegistry)
     monkeypatch.setattr(runtime_factory_module, "Agent", _Agent)
     monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _Controller)
-    monkeypatch.setattr(sub_agent_module, "create_client", lambda *_args, **_kwargs: MockChatClient())
+    monkeypatch.setattr(
+        sub_agent_module,
+        "create_client",
+        create_autospec(sub_agent_module.create_client, side_effect=lambda *_args, **_kwargs: MockChatClient()),
+    )
     monkeypatch.setattr(skills_adapter, "create_skills_provider", AsyncMock(return_value=(None, [])))
 
     spill_quota = SpillQuota()

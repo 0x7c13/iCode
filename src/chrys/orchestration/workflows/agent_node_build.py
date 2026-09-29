@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_env import SessionEnvironment
-from chrys.foundation.retry import StreamStall
+from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
 from chrys.foundation.tool_kinds import KIND_ASK_USER, KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
-from chrys.kernel import LoopRecorder
+from chrys.kernel import LoopRecorder, StallExhaustedAction
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
@@ -26,9 +26,12 @@ from chrys.orchestration.invoker.attempts import (
     AttemptTaskHandle,
     BlockingCallTiming,
     HistoryRollback,
-    KeepAndRaise,
     ModelRunTrace,
+    RestoreAndFallback,
     RetryBoundaryPolicy,
+    WireRecipe,
+    continuation_token_observer_for,
+    has_live_continuation_token,
 )
 from chrys.orchestration.invoker.child_compaction import ChildCompactionEvents, CompactionRollback
 from chrys.orchestration.invoker.child_history import ChildHistory, service_storage_side
@@ -80,10 +83,13 @@ from chrys.service.tools.registry import ToolRegistry
 from chrys.service.vision import filter_image_tools
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
     from chrys.foundation.retry import RetryAttemptInfo
+    from chrys.kernel import Message
     from chrys.orchestration.session_usage import SessionUsagePublisher
     from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
     from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
@@ -101,6 +107,9 @@ if TYPE_CHECKING:
     from chrys.service.workflows.admission import AgentBinding
 
 logger = logging.getLogger(__name__)
+
+RETRY_BACKOFF_SCHEDULE = TRANSIENT_RETRY_BACKOFF_SECONDS
+"""Seconds between a node's in-pass request and ACP connection retries, as the chat agent waits."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,8 +147,11 @@ class AgentNodeCallbacks:
     usage: Callable[..., None]
     side_call_usage: Callable[[Mapping[str, Any]], None]
     validation_retry: Callable[[RetryAttemptInfo], Awaitable[None]]
+    wire_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]]
     service_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]]
     interruptible_sleep: Callable[[int], Awaitable[bool]]
+    emitter: Callable[[], BoundEmitter]
+    """The publisher of the attempt in flight; each scheduler attempt publishes under its own origin."""
     acp_usage: Callable[..., None]
     adopt_translator: Callable[[AcpUpdateTranslator], Awaitable[None]]
     acp_counters: AcpInvocationCounters
@@ -156,6 +168,9 @@ class KernelNodeParts:
     trace: ModelRunTrace
     sub_agent_tools: SubAgentTools | None
     """The node's sub-agent registry, when its profile references any; the shell routes controls to it."""
+    hosted_unkept: Callable[[Sequence[Message]], tuple[str, ...]]
+    """Provider-hosted tool calls the newest model request executed that the given resumed history does not
+    keep with that request's landed response: a resumed pass would send that request again."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +194,6 @@ async def build_kernel_node(
     node_id: str,
     invocation_id: str,
     res: AgentNodeResources,
-    emitter: BoundEmitter,
     archive: AgentNodeArchive,
     callbacks: AgentNodeCallbacks,
     intermediate_buffer: IntermediateTextBuffer,
@@ -192,7 +206,7 @@ async def build_kernel_node(
         raise RuntimeError("A kernel workflow node requires a model binding.")
     profile = binding.agent
     chat_options = effective_chat_options(model)
-    client = create_client(
+    client = await create_client(
         model,
         on_intermediate_text_async=callbacks.publish_intermediate,
         on_intermediate_text_sync=intermediate_buffer.store,
@@ -206,6 +220,7 @@ async def build_kernel_node(
         session_dir=res.session_dir,
         tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
     )
+    await conversation.own_or_release(client.aclose)
     environment = SessionEnvironment.capture(session_id=res.session_id, workspace=res.workspace)
     registry = ToolRegistry(vision_enabled=model.vision)
     builtin_categories = list(profile.tools.builtins or [])
@@ -279,7 +294,7 @@ async def build_kernel_node(
     if suffix:
         instructions = f"{instructions}\n\n{suffix}" if instructions else suffix
     reporting = ChildCompactionEvents(
-        emitter=emitter,
+        emitter=callbacks.emitter,
         name=display_name,
         tool_name=node_id,
         profile=profile.name,
@@ -358,7 +373,7 @@ async def build_kernel_node(
     )
     agent = runtime.agent
     await agent.__aenter__()
-    conversation.own(lambda: agent.__aexit__(None, None, None))
+    await conversation.own_or_release(lambda: agent.__aexit__(None, None, None))
     runtime.reminder.prepare_turn()
     ctx = runtime.context
 
@@ -375,7 +390,7 @@ async def build_kernel_node(
         mutation_coordinator=res.mutation_coordinator,
         tool_result_ceiling_tokens=res.settings.tool_result_ceiling_tokens,
         stats=stats,
-        origin=emitter.origin,
+        origin=callbacks.emitter().origin,
     )
     middleware: list[Any] = [sub_event_mw]
     if res.allow_user_interaction:
@@ -410,7 +425,7 @@ async def build_kernel_node(
             turn_context=turn_context,
         ),
     )
-    approval.bind_publisher(emitter)
+    approval.bind_publisher(callbacks.emitter())
     middleware.append(approval)
     middleware.append(SleepMiddleware(res.bus, session_id=session_id))
     middleware.append(
@@ -431,9 +446,10 @@ async def build_kernel_node(
         message_hasher=serialized_message_payload,
     )
     session = runtime.create_session()
+    client_kwargs: dict[str, Any] = {"loop_recorder": loop_recorder}
     run_kwargs: AgentRunKwargs = {
         "session": session,
-        "client_kwargs": {"loop_recorder": loop_recorder},
+        "client_kwargs": client_kwargs,
         "middleware": middleware,
         "compaction_strategy": ctx.compaction_strategy,
         "tokenizer": ctx.compaction_strategy.tokenizer,
@@ -446,6 +462,24 @@ async def build_kernel_node(
     history = ChildHistory(session, loop_recorder)
     service_storage = service_storage_side(client, run_kwargs.get("options"))
     compaction = CompactionRollback(ctx.compaction_strategy)
+    # A failed request is retried where it failed, with the chat agent's budget and backoff: in place on
+    # the wire under local storage, as a whole run under service-side storage, where the wire may not.
+    max_retries = res.settings.effective_max_transient_retries()
+    if not service_storage:
+        client_kwargs["wire_retry_policy"] = WireRecipe(
+            max_retries=max_retries,
+            stall_timeout_seconds=model.http_read_timeout,
+            stall_max_retries=max_retries,
+            stall_exhausted_action=StallExhaustedAction.BLOCKING_FALLBACK,
+            backoff_schedule=RETRY_BACKOFF_SCHEDULE,
+            interrupted=lambda: callbacks.observer.abort_cause() is not None,
+            interruptible_sleep=callbacks.interruptible_sleep,
+            publish_retry=callbacks.wire_retry,
+            prepare_retry=None,
+            hosted_commits_in_flight=validation.hosted_commits_in_flight,
+        ).build()
+    # A background response a failed poll left running is resumed by the retry, never created twice.
+    client_kwargs["continuation_token_observer"] = continuation_token_observer_for(run_kwargs)
 
     def check_abort() -> None:
         if callbacks.observer.abort_cause() is not None:
@@ -453,7 +487,7 @@ async def build_kernel_node(
 
     attempt_handle = AttemptTaskHandle()
     recipe = AttemptRecipe(
-        stall_exhaustion=KeepAndRaise(),
+        stall_exhaustion=RestoreAndFallback(sub_event_mw.reject_hosted_attempt),
         stall_error=lambda timeout: StreamStall(f"no streaming updates received for {timeout:g}s"),
         retry_boundary=RetryBoundaryPolicy.OBSERVE,
         blocking_call_timing=BlockingCallTiming.BEFORE_ATTEMPT_TASK,
@@ -482,8 +516,8 @@ async def build_kernel_node(
         stream_observer=None,
         publish_retry=callbacks.service_retry,
         interruptible_sleep=callbacks.interruptible_sleep,
-        max_retries=lambda: 0,
-        backoff_schedule=lambda: (),
+        max_retries=lambda: max_retries,
+        backoff_schedule=lambda: RETRY_BACKOFF_SCHEDULE,
         stream_timeout=lambda: model.http_read_timeout,
         committed_count=lambda: loop_recorder.committed_count,
         hosted_commits=validation.hosted_commits_observed,
@@ -504,12 +538,22 @@ async def build_kernel_node(
             web_tools.begin_pass,
             lambda: validation.set_observation_hook(sub_event_mw.begin_hosted_pass()),
             validation.reset_service_retry_state,
-            validation.reset_hosted_commit_observations,
+            lambda: validation.begin_pass_hosted_baseline(
+                resumes_background_response=has_live_continuation_token(run_kwargs)
+            ),
         ),
         failure_disposition=FailureDisposition.CALLER_DECISION,
     )
     return KernelNodeParts(
-        backend, history, sub_event_mw, approval, ctx.compaction_strategy, run_kwargs, attempt_trace, sub_agent_tools
+        backend,
+        history,
+        sub_event_mw,
+        approval,
+        ctx.compaction_strategy,
+        run_kwargs,
+        attempt_trace,
+        sub_agent_tools,
+        lambda kept: validation.hosted_commits_in_flight_unkept(kept, loop_recorder.landed_response),
     )
 
 
@@ -590,7 +634,6 @@ def build_acp_node(
     node_id: str,
     invocation_id: str,
     res: AgentNodeResources,
-    emitter: BoundEmitter,
     archive: AgentNodeArchive,
     callbacks: AgentNodeCallbacks,
 ) -> AcpNodeParts:
@@ -622,7 +665,7 @@ def build_acp_node(
         tool_name=node_id,
         agent_name=display_name,
         prompt="",
-        origin=emitter.origin,
+        origin=callbacks.emitter().origin,
         spec_factory=lambda _attempt: resolve_acp_spec(config, environment, stderr_path, workspace_roots=roots),
         broker=broker,
         event_bus=res.bus,
@@ -633,6 +676,7 @@ def build_acp_node(
         usage_callback=callbacks.acp_usage,
         translator_callback=callbacks.adopt_translator,
         counters=callbacks.acp_counters,
+        backoff_schedule=RETRY_BACKOFF_SCHEDULE,
     )
     conversation.own(backend.aclose)
     return AcpNodeParts(backend)

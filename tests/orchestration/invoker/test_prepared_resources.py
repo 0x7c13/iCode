@@ -243,6 +243,58 @@ async def test_create_approval_on_closing_owner_closes_constructed_middleware(mo
     assert owner._releases == []
 
 
+async def test_own_or_release_registers_while_the_owner_is_open() -> None:
+    owner = Conversation()
+    order: list[str] = []
+
+    await owner.own_or_release(_release(order, "client"))
+
+    assert order == []
+    await owner.aclose()
+    assert order == ["client"]
+
+
+async def test_a_resource_acquired_while_its_owner_closed_is_released_at_once() -> None:
+    owner = Conversation()
+    acquisition = asyncio.Event()
+    order: list[str] = []
+
+    async def acquire() -> None:
+        await acquisition.wait()
+        await owner.own_or_release(_release(order, "client"))
+
+    acquiring = asyncio.create_task(acquire())
+    await owner.aclose()
+    acquisition.set()
+
+    with pytest.raises(PreparedClosed):
+        await acquiring
+    assert order == ["client"]
+    assert owner._releases == []
+
+
+async def test_a_refused_resource_whose_release_fails_still_reports_the_close(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    owner = Conversation()
+    await owner.aclose()
+
+    async def broken() -> None:
+        raise OSError("pool close failed")
+
+    with pytest.raises(PreparedClosed):
+        await owner.own_or_release(broken)
+    assert "Error releasing a resource its closing owner refused" in caplog.text
+
+
+async def test_a_refused_resource_is_released_even_when_its_caller_is_cancelled() -> None:
+    owner = Conversation()
+    await owner.aclose()
+    release = ReleaseGate()
+
+    await assert_cancel_during_rollback(asyncio.create_task(owner.own_or_release(release)), release)
+
+
 async def test_cancelled_open_caller_can_join_same_prepared_close() -> None:
     prepared = PreparedAgent()
     entered = asyncio.Event()

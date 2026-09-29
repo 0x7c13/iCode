@@ -50,7 +50,7 @@ Model role keys take the ID or unique name of an existing model profile. Buddy d
 | `model.role.approval_judge` | `CHRYS_MODEL_PROFILE_APPROVAL_JUDGE` | Unset | String; the model profile used for automatic approval. Uses the current model when unset |
 | `model.role.session_title` | `CHRYS_MODEL_PROFILE_SESSION_TITLE` | Unset | String; the model profile used to generate session titles automatically. Uses the current model when unset |
 | `model.role.buddy_model_id` | `CHRYS_PET_MODEL` | Unset | String; the model used by Buddy, using the current model profile's connection. Uses the current model when unset |
-| `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `7` for the TUI (including `icode serve`) and `icode acp`, or `15` for `icode run` and `icode workflow run`. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
+| `llm.retry.max_transient` | `CHRYS_MAX_TRANSIENT_RETRIES` | `null` | Integer or `null`; `null` uses the default retry count for the launch command: `10` for the TUI (including `icode serve`) and `icode acp`, or `18` for `icode run` and `icode workflow run`. The wait before each retry grows, up to 10 minutes. `0` disables automatic retries for transient errors; negative values are invalid; capped at `50` |
 
 Transient error retries handle recoverable errors such as temporary network failures, request timeouts, and rate limits. Raising the count also increases the wait and number of requests before a final failure. This number is not the total number of model requests for the entire task.
 
@@ -117,7 +117,7 @@ Origin lists take exact origins (scheme, host, and optional port, such as `https
 | `tools.web_fetch.allowed_origins` | `[]` | Origin list; when not empty, `web_fetch` reads only from these origins |
 | `tools.web_fetch.denied_origins` | `[]` | Origin list; origins `web_fetch` never reads. Takes precedence over every other list |
 | `tools.web_egress.proxy_url` | Unset | String; an `http://` or `https://` proxy used only by web tools, written as an origin without credentials or a path, such as `http://proxy.example.com:8080`. Web tools ignore `HTTP_PROXY`, `HTTPS_PROXY`, and similar variables |
-| `tools.web_egress.proxy_dns` | `local` | String; `local` or `remote`. With a proxy set, `local` resolves host names on this computer and connects only to checked public addresses; `remote` sends the host name to the proxy, which then decides the final address. Has no effect without `proxy_url`. See [Use a fake-IP proxy](../guides/configuration/web-tools.md#use-a-fake-ip-proxy) |
+| `tools.web_egress.proxy_dns` | `local` | String; `local` or `remote`. With a proxy set, `local` resolves host names on this device and connects only to checked public addresses; `remote` sends the host name to the proxy, which then decides the final address. Has no effect without `proxy_url`. See [Use a fake-IP proxy](../guides/configuration/web-tools.md#use-a-fake-ip-proxy) |
 
 Host names in these values may contain underscores.
 

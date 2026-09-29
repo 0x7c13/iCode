@@ -12,6 +12,7 @@ from textual.widgets import Static
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import (
     ChatPanelApp,
     _simulate_chat_panel_user_scroll_y,
@@ -754,6 +755,29 @@ async def test_chat_panel_scroll_to_turn_pauses_running_autoscroll() -> None:
         cp.scroll_to_turn("turn-1")
 
         assert cp._auto_scroll_paused_by_user is True
+
+
+async def test_a_toc_jump_is_not_pulled_back_by_the_settle_repin_its_own_layout_queues() -> None:
+    """Content that shrinks while anchored releases the anchor and re-pins the bottom after the next refresh.
+
+    The jump's own geometry read can run that layout: a full map rebuilt lazily arranges the panel.
+    """
+    async with ChatPanelApp().run_test(size=(80, 20)) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await _scrolled_to_bottom(cp, pilot)
+        await wait_for(lambda: cp.scroll_y == cp.max_scroll_y > 0, pilot=pilot, description="settled at the bottom")
+        assert cp._anchor_released is False
+
+        # One row more than the content fills: the jump's arrange reads it as a shrink.
+        cp.set_reactive(Widget.virtual_size, Size(cp.virtual_size.width, cp.virtual_size.height + 1))
+        cp.screen._compositor._full_map_invalidated = True
+        cp.scroll_to_turn("turn-1")
+        # Settled includes the refresh callbacks: a re-pin the jump's layout queued has run.
+        await wait_for(lambda: screen_is_settled(pilot.app, cp.screen), pilot=pilot, description="settled")
+
+        target = cp.query_one("#turn-1")
+        assert cp.scroll_y <= target.virtual_region.y <= cp.scroll_y + 1
+        assert cp.scroll_y < cp.max_scroll_y
 
 
 async def test_chat_panel_toc_navigation_running_state_post_run_does_not_pause_autoscroll() -> None:

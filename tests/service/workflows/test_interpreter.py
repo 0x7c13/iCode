@@ -14,7 +14,7 @@ import pytest
 
 from chrys.service.workflows import interpreter as probe_module
 from chrys.service.workflows.interpreter import InterpreterError, InterpreterProbe, probe_interpreter
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 async def test_probe_reports_the_running_interpreter() -> None:
@@ -56,7 +56,9 @@ async def test_cancelled_probe_reaps_its_child(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(probe_module, "PROBE_SOURCE", stall)
     task = asyncio.create_task(probe_interpreter(sys.executable))
     await wait_for(
-        lambda: task.done() or bool(pid_file.exists() and pid_file.read_text()), description="probe child wrote its pid"
+        lambda: task.done() or bool(pid_file.exists() and pid_file.read_text()),
+        description="probe child wrote its pid",
+        timeout=ENGINE_TURN_TIMEOUT,
     )
     if task.done():
         await task

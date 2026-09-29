@@ -68,6 +68,9 @@ icode workflow run echo --trust --input "Hello"
 | `WorkflowValue` | 节点之间传递的文本与结构化数据 |
 | `SourceValue` | 汇合函数收到的来源与结果 |
 | `NodeContext` | Python 节点的进度报告与人工问答入口 |
+| `Question` | `NodeContext.ask` 的一个问题，可带单选或多选选项 |
+| `Option` | `Question` 的一个选项 |
+| `Answer` | 用户对一个 `Question` 的回答 |
 | `Retry` | 节点重试次数与间隔 |
 
 ### `WorkflowBuilder`
@@ -429,13 +432,94 @@ emit(text: str) -> None
 
 ```python
 async ask(prompt: str) -> str
+async ask(prompt: Question) -> Answer
+async ask(prompt: list[Question] | tuple[Question, ...]) -> tuple[Answer, ...]
 ```
 
-向用户提问，等待回答后返回文本。只能在异步节点函数中通过 `await ctx.ask(prompt)` 调用。
+向用户提问并等待回答。只能在异步节点函数中通过 `await ctx.ask(...)` 调用。返回值取决于传入的参数：
 
-TUI 会显示问题并接收用户回答。CLI 不支持交互，调用会以 `ask_unavailable` 失败。
+- 传入字符串（不能为空）：提出一个开放式问题，返回用户输入的文本。
+- 传入 [`Question`](#question)：可提供选项供用户单选或多选，返回一个 [`Answer`](#answer)。
+- 传入包含 1 到 5 个问题的列表或元组：在同一个对话框中一并提问，每个问题一个标签页，按问题顺序返回 `Answer` 元组。只有一个元素的列表也返回元组。
+
+传入其他类型的参数会引发 `TypeError`；传入空列表或超过五个问题会引发 `ValueError`。
+
+TUI 使用与智能体提问工具相同的对话框显示问题。CLI 不支持交互，调用会以 `ask_unavailable` 失败。
 
 等待回答的时间计入节点超时，`ask()` 不使用智能体提问工具的超时设置。如需一直等待用户回答，可在注册 Python 节点时设置 `timeout=None`，取消该节点的超时限制。
+
+[会话目录](../guides/daily-use/sessions.md#查找会话-id-和会话保存位置)下该运行的 `workflows/<run_id>/events.jsonl` 只保存问题和回答的文本摘要（截断至 512 个字符），不保存完整问题。
+
+### `Question`
+
+```python
+Question(
+    question: str,
+    header: str = "",
+    options: list[Option | str] | tuple[Option | str, ...] = (),
+    multi_select: bool = False,
+)
+```
+
+`ctx.ask()` 的一个问题。字段名与智能体提问工具一致。
+
+- `question`：问题正文，按 Markdown 渲染，不能为空。除消息大小上限外没有长度限制，因此可以把整篇草稿放进问题供用户审阅。
+- `header`：问题标签页上的简短标题，最多 64 个字符。未设置时标签页显示问题序号。只有同时提出多个问题时才显示标签页，因此也才显示标题。
+- `options`：最多 8 个选项。字符串是 `Option(label=...)` 的简写。没有选项时，问题只接受输入的回答。
+- `multi_select`：为 `True` 时用户可以选择多个选项，此时至少需要一个选项。
+
+选项标签会去除首尾空白，并且在同一问题内不能重复。所有字符串都必须是有效的 Unicode，不能包含未配对的代理字符。类型错误引发 `TypeError`，其他违规引发 `ValueError`；两者都在创建 `Question` 或 `Option` 时抛出，因此回溯信息会指向你的代码。
+
+无论问题是否带有选项，用户都可以自行输入回答，或在选择选项时附加备注。
+
+### `Option`
+
+```python
+Option(label: str, description: str = "")
+```
+
+- `label`：用户选择的内容，也是 `Answer.selected` 中返回的值，最多 200 个字符。
+- `description`：显示在标签下方的一行说明，最多 500 个字符。
+
+### `Answer`
+
+```python
+class Answer:
+    selected: tuple[str, ...] = ()
+    text: str = ""
+    answered: bool       # 只读属性
+    choice: str | None   # 只读属性
+```
+
+用户对一个 `Question` 的回答。
+
+- `selected`：回答中与所提供选项标签一致的值，按选项顺序排列。点击选项与输入与标签完全相同（区分大小写）的文本，得到的回答相同。
+- `text`：用户输入的其他内容：与任何标签都不匹配的自定义回答，或随选项一起给出的备注。
+- `answered`：仅当用户跳过该问题时为 `False`。
+- `choice`：唯一选中的标签；未选中任何选项时为 `None`。选中多个时引发 `ValueError`，多选问题请读取 `selected`。
+
+每个回答都是以下三种形式之一：
+
+| `selected` | `text` | 含义 |
+| --- | --- | --- |
+| 非空 | 备注，或 `""` | 选择或输入了所提供的选项标签；单选问题最多一个 |
+| `()` | 非空 | 与任何标签都不匹配的自定义回答 |
+| `()` | `""` | 已跳过 |
+
+对话框的行为：
+
+- 只有一个单选问题时，点击选项会立即提交，因此备注需要在点击前输入。不点击选项而直接提交时，输入的文本就是完整的回答。
+- 有多个问题时，点击单选问题的选项会跳到下一个未回答的问题或“提交”标签页。多选问题和输入的回答通过“回答并继续”前进（最后一个问题为“回答并检查”）。“提交”标签页列出所有回答，通过“提交回答”发送；仍有问题未回答时按钮为“仍然提交”。一个问题都没有回答时，需要再按一次确认才会提交。
+- 对话框无法用 Esc 关闭。问题会一直等待，直到用户回答，或所属的尝试或运行结束。
+
+`Answer` 是本地结果，不能作为节点输出：节点应返回字符串或 `WorkflowValue`。如需把选择结果传给下游，请同时放入 `text`（智能体节点和默认汇合读取）和 `data`（供 Python 节点使用）：
+
+```python
+async def pick_areas(value: WorkflowValue, ctx: NodeContext) -> WorkflowValue:
+    answer = await ctx.ask(Question("涉及哪些部分？", options=["API", "Storage", "UI"], multi_select=True))
+    text = "\n".join(part for part in (", ".join(answer.selected), answer.text) if part)
+    return WorkflowValue(text=text, data={"selected": list(answer.selected), "text": answer.text})
+```
 
 ### `Retry`
 
@@ -518,14 +602,16 @@ Python 节点和智能体节点的 `timeout` 限制单次尝试的执行时间�
 | 情况 | 自动重试条件 |
 | --- | --- |
 | Python 节点的函数异常或执行超时 | 尚未达到 `Retry.max_attempts` |
-| 非 ACP 智能体节点的临时错误，如连接中断、模型请求超时 | 尚未达到 `Retry.max_attempts`；额外配置服务端工具时有例外，见下文 |
-| 非 ACP 智能体节点达到 `timeout` 上限 | 尚未达到 `Retry.max_attempts`，且该节点此前各次尝试均未执行任何工具（包括服务端工具） |
-| 外部 ACP 智能体节点失败或达到 `timeout` 上限 | 当前不自动重试 |
-| 智能体非临时错误、条件或合并计算失败、返回值无法序列化或超限、运行环境不支持问答等 | 不自动重试 |
+| 非 ACP 智能体节点的模型请求遇到临时错误，如连接中断、限流、请求超时 | 先在本次尝试内重试该请求，与聊天模式一致；仍失败时，尚未达到 `Retry.max_attempts` 则重试节点 |
+| 非 ACP 智能体节点达到 `timeout` 上限 | 尚未达到 `Retry.max_attempts` |
+| 外部 ACP 智能体节点连接中断、长时间无响应、报错或达到 `timeout` 上限 | 尚未达到 `Retry.max_attempts`。iCode 无法判断外部智能体报告的哪些错误无法恢复，因此都会重试；但智能体无法启动、本次尝试内多次重试连接后仍连不上、配置被拒绝，以及智能体拒绝回答、提前停止或回答为空时不重试 |
+| 重试也无法解决的错误，如额度或套餐已用尽、对话超出模型长度上限、外部智能体需要登录；以及条件或合并计算失败、返回值无法序列化或超限、运行环境不支持问答等 | 不自动重试 |
 
-若通过模型配置启用了由服务商运行的工具（如联网搜索、代码执行），且失败前这些工具已经执行，则不自动重试，以免重复执行。这一限制不包括 iCode 的文件、Shell 和 MCP 工具。
+若重试可能让模型服务商再次运行它自己那边的工具（如服务商运行的 MCP 服务器或 Shell），则不自动重试节点。服务商运行的搜索和代码执行可以安全重复，不影响重试；iCode 自己的文件、Shell 和 MCP 工具也不影响。
 
-智能体遇到临时错误时，重试会利用已保留的对话记录继续执行。
+非 ACP 智能体的尝试失败或超时后，重试会接着已有的对话继续执行：已完成的工具调用不会再次执行，节点详情中新一次尝试的对话记录也接着上一次显示。外部 ACP 智能体会以相同输入开启新会话，新一次尝试的对话记录只显示这个会话。若智能体已经完成、之后节点的其他步骤（如出边条件）失败，重试会从输入重新运行智能体。
+
+`Retry(max_attempts=1)` 只关闭节点重试：失败的模型请求仍会在本次尝试内重试。
 
 TUI 中，节点失败且不再自动重试时（自动重试次数已用尽或不满足自动重试条件），会进入 `awaiting_retry`（等待手动重试）。用户可以查看错误诊断后重试，也可以取消整个运行。手动重试只适用于当前运行中处于这一状态的节点。
 

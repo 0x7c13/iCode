@@ -22,10 +22,21 @@ Two classes are pinned elsewhere and deliberately not duplicated:
 from __future__ import annotations
 
 import copy
+import datetime as dt
+import gc
+import types
+import weakref
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import Enum
 from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from chrys.foundation.retry import restore_message_properties, snapshot_message_properties
-from chrys.kernel import AgentSession
+from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
+from chrys.kernel import AgentSession, LoopRecorder
 from chrys.kernel._types import (
     _coalesce_code_interpreter_content,
     _coalesce_text_content,
@@ -40,8 +51,10 @@ from chrys.orchestration.engine.loader import _preserved_history_state
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.engine.session_lifecycle import _reset_restore_history_state
 from chrys.orchestration.invoker.attempts import HistoryRollback
+from chrys.service.agent_middleware.injection import ConsumedInjection, InjectionAnchor
 from chrys.service.context.compaction.scoped import clone_for_slice
 from chrys.service.context.providers.history import _TURN_ID_KEY, _compress_state
+from chrys.service.session import checkpoint as session_checkpoint
 from chrys.service.session.checkpoint import _DetachedLoopRecorder, build_recovery_state
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
@@ -122,8 +135,9 @@ class TestDeepcopyFamily:
 
     def test_build_recovery_state_returns_identity_fresh_messages(self) -> None:
         """Copy class: crash-recovery state (``build_recovery_state`` deep-copies
-        the live state in AND deep-copies the shaped result out; live objects
-        never leak into the recovery payload)."""
+        the live state once and shapes that copy; live objects never leak into
+        the recovery payload). ``TestRecoverySnapshotIsolation`` walks every
+        merged input."""
         user_content = Content.from_text("question")
         user_message = Message("user", [user_content])
         live_state = {"messages": [user_message]}
@@ -203,6 +217,289 @@ class TestDeepcopyFamily:
         assert copied["messages"][0] is not message
         assert copied["messages"][0].contents[0] is not content
         assert state["messages"][0] is message
+
+
+# ---------------------------------------------------------------------------
+# Crash-recovery snapshot: no mutable object shared with any live input
+# ---------------------------------------------------------------------------
+
+# Objects a deepcopy may hand back unchanged; sharing them is harmless.
+_IMMUTABLE_LEAVES = (
+    type(None),
+    bool,
+    int,
+    float,
+    complex,
+    str,
+    bytes,
+    Enum,
+    dt.date,
+    dt.time,
+    dt.timedelta,
+    type,
+    types.FunctionType,
+    types.BuiltinFunctionType,
+    types.MethodType,
+    types.ModuleType,
+    weakref.ref,
+)
+# SDK payloads every Message/Content deepcopy shares by reference (pinned by
+# ``TestDeepcopyFamily``); the walk does not descend into them.
+_SHARED_BY_REFERENCE_FIELDS = frozenset({"raw_representation"})
+
+
+def _mutable_objects(*roots: object) -> dict[int, object]:
+    """Every mutable object reachable from *roots*, keyed by id.
+
+    Tuples and frozensets are walked but not recorded: a deepcopy returns the
+    same tuple when every member is immutable, so only their members count.
+    """
+    found: dict[int, object] = {}
+    walked: set[int] = set()
+    pending: list[object] = list(roots)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _IMMUTABLE_LEAVES) or id(node) in walked:
+            continue
+        walked.add(id(node))
+        if isinstance(node, dict):
+            found[id(node)] = node
+            pending.extend(node.keys())
+            pending.extend(node.values())
+        elif isinstance(node, list | set | bytearray):
+            found[id(node)] = node
+            pending.extend(node)
+        elif isinstance(node, tuple | frozenset):
+            pending.extend(node)
+        else:
+            found[id(node)] = node
+            try:
+                attributes = vars(node)
+            except TypeError:
+                # Slotted objects: walk the values they hold, never their class.
+                pending.extend(referent for referent in gc.get_referents(node) if not isinstance(referent, type))
+            else:
+                found[id(attributes)] = attributes
+                pending.extend(value for name, value in attributes.items() if name not in _SHARED_BY_REFERENCE_FIELDS)
+    return found
+
+
+def _shared_mutables(result: object, live: dict[int, object]) -> list[object]:
+    return [node for key, node in _mutable_objects(result).items() if key in live]
+
+
+class _RetainingMutationTracker:
+    """Hands out the ledger payload it keeps, as a caching producer could."""
+
+    def __init__(self) -> None:
+        self.payload: dict[str, Any] = {
+            "turns": [{"turn_id": 7, "mutations": [{"path": "a.py", "operation": "edit"}]}],
+            "snapshots": {"a.py@7": {"path": "a.py", "existed": True}},
+        }
+
+    def serialize(self) -> dict[str, Any]:
+        return self.payload
+
+
+@dataclass
+class _RetainingRuntimeMetadata(SessionRuntimeMetadata):
+    """Runtime metadata that keeps the state dict it last handed out."""
+
+    handed_out: dict[str, Any] = field(default_factory=dict)
+
+    def to_state_dict(self) -> dict[str, Any]:
+        self.handed_out = super().to_state_dict()
+        return self.handed_out
+
+
+@dataclass
+class _RecoveryInputs:
+    """One populated value for every input ``build_recovery_state`` merges."""
+
+    live_state: dict[str, Any]
+    recorder: LoopRecorder
+    loop_result_message: Message
+    mutation_tracker: _RetainingMutationTracker
+    runtime_meta: _RetainingRuntimeMetadata
+    user_contents: list[Content]
+    consumed_injections: list[ConsumedInjection]
+    last_words_manifest: list[dict[str, Any]]
+    last_words_breaker: dict[str, Any]
+    todos: list[dict[str, str]]
+
+    @classmethod
+    def create(cls) -> _RecoveryInputs:
+        earlier_answer = Message("assistant", [Content.from_text("earlier answer")])
+        earlier_answer.additional_properties["nested"] = {"key": ["value"]}
+        live_state: dict[str, Any] = {
+            "messages": [Message("user", [Content.from_text("earlier question")]), earlier_answer],
+            "compressed_msgs": [],
+            "turn_counter": 1,
+            "chrys_workspace_baseline": {"roots": {"/work": {"files": ["a.py"]}}},
+            "chrys_todos": [{"content": "stale", "status": "pending", "active_form": "Staling"}],
+        }
+        call = Content.from_function_call("call-1", "write_file", arguments={"path": "a.py"})
+        call.additional_properties[TOOL_INVOCATION_ORDER_KEY] = 0
+        assistant = Message("assistant", [call])
+        recorder = LoopRecorder()
+        commit = recorder.stage_exchange([assistant], [call], result_carrier_item_id="a" * 32)[0]
+        result = Content.from_function_result("call-1", result="written")
+        commit.commit_final(result)
+        loop_result_message = Message("tool", [result])
+        recorder.seal_exchange(loop_result_message)
+        return cls(
+            live_state=live_state,
+            recorder=recorder,
+            loop_result_message=loop_result_message,
+            mutation_tracker=_RetainingMutationTracker(),
+            runtime_meta=_RetainingRuntimeMetadata(
+                total_session_tokens=42,
+                last_usage_details={"input_token_count": 10, "output_token_count": 5},
+                context_calibration={"v": 2, "calibration_ratio": 1.0},
+            ),
+            user_contents=[Content.from_text("do work")],
+            consumed_injections=[
+                ConsumedInjection(
+                    text="mid-run note",
+                    anchor=InjectionAnchor.from_message(assistant),
+                    created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+                    consumption_id="inj-1",
+                )
+            ],
+            last_words_manifest=[{"tool": "write_file", "paths": ["a.py"]}],
+            last_words_breaker={"failures": [{"reason": "timeout"}]},
+            todos=[{"content": "ship it", "status": "in_progress", "active_form": "Shipping it"}],
+        )
+
+    def live_roots(self) -> tuple[object, ...]:
+        return (
+            self.live_state,
+            self.recorder,
+            self.mutation_tracker,
+            self.runtime_meta,
+            self.user_contents,
+            self.consumed_injections,
+            self.last_words_manifest,
+            self.last_words_breaker,
+            self.todos,
+        )
+
+    def build(self) -> dict[str, Any]:
+        recovered = build_recovery_state(
+            self.live_state,
+            self.recorder,
+            mutation_tracker=self.mutation_tracker,
+            runtime_meta=self.runtime_meta,
+            user_text="do work",
+            user_contents=self.user_contents,
+            user_created_at="2026-01-01T00:00:00+00:00",
+            consumed_injections=self.consumed_injections,
+            last_words="note",
+            last_words_manifest=self.last_words_manifest,
+            last_words_breaker=self.last_words_breaker,
+            catalog_pointer_record_count=3,
+            todos=self.todos,
+        )
+        assert recovered is not None
+        return recovered
+
+
+class TestRecoverySnapshotIsolation:
+    """Copy class: crash-recovery snapshot isolation. The snapshot goes to a
+    writer thread while the turn keeps mutating live state, so no mutable
+    object in it may be reachable from any input: the live history, the
+    recorder, or a value merged over the history copy."""
+
+    def test_recovery_state_shares_no_mutable_object_with_any_input(self) -> None:
+        inputs = _RecoveryInputs.create()
+
+        recovered = inputs.build()
+
+        # Walked after the build: producers hand out their objects during it.
+        live = _mutable_objects(*inputs.live_roots())
+        assert _shared_mutables(recovered, live) == []
+        # Every input reached the snapshot, so the walk above covered it.
+        assert recovered["chrys_mutations"] == inputs.mutation_tracker.payload
+        assert recovered["last_usage"] == {"input_token_count": 10, "output_token_count": 5}
+        assert recovered["context_calibration"] == {"v": 2, "calibration_ratio": 1.0}
+        assert recovered["last_words_manifest"] == inputs.last_words_manifest
+        assert recovered["last_words_breaker"] == inputs.last_words_breaker
+        assert recovered["chrys_todos"] == inputs.todos
+        assert recovered["chrys_workspace_baseline"] == inputs.live_state["chrys_workspace_baseline"]
+        texts = [message.text for message in recovered["messages"]]
+        assert "do work" in texts
+        assert "mid-run note" in texts
+        assert any(
+            content.type == "function_result" and content.result == "written"
+            for message in recovered["messages"]
+            for content in message.contents
+        )
+
+    def test_history_is_deep_copied_once_per_snapshot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The whole history is copied once; shaping works on that copy and
+        hands it out without a second whole-state copy."""
+        inputs = _RecoveryInputs.create()
+        history_copies = 0
+
+        def counting_deepcopy(value: object, memo: dict[int, Any] | None = None) -> object:
+            nonlocal history_copies
+            if isinstance(value, dict) and "messages" in value:
+                history_copies += 1
+            return copy.deepcopy(value, memo)
+
+        shadow_copy = types.ModuleType("copy")
+        shadow_copy.deepcopy = counting_deepcopy
+        monkeypatch.setattr(session_checkpoint, "copy", shadow_copy)
+
+        inputs.build()
+
+        assert history_copies == 1
+
+    @pytest.mark.parametrize(
+        "uncopied",
+        [
+            "live_state",
+            "loop_messages",
+            "mutations",
+            "runtime_meta",
+            "last_words_manifest",
+            "last_words_breaker",
+            "todos",
+            "user_contents",
+        ],
+    )
+    def test_walk_reports_any_input_left_uncopied(self, monkeypatch: pytest.MonkeyPatch, uncopied: str) -> None:
+        """Red path: skipping the copy of any one input shares live objects."""
+        inputs = _RecoveryInputs.create()
+        handed_out: dict[str, Callable[[object], bool]] = {
+            "live_state": lambda value: value is inputs.live_state,
+            "loop_messages": lambda value: (
+                isinstance(value, list) and any(item is inputs.loop_result_message for item in value)
+            ),
+            "mutations": lambda value: value is inputs.mutation_tracker.payload,
+            "runtime_meta": lambda value: value is inputs.runtime_meta.handed_out,
+            "last_words_manifest": lambda value: value is inputs.last_words_manifest,
+            "last_words_breaker": lambda value: value is inputs.last_words_breaker,
+            "todos": lambda value: value is inputs.todos,
+            "user_contents": lambda value: value is inputs.user_contents,
+        }
+        skip_copy = handed_out[uncopied]
+        skipped: list[object] = []
+
+        def deepcopy_except(value: object, memo: dict[int, Any] | None = None) -> object:
+            if skip_copy(value):
+                skipped.append(value)
+                return value
+            return copy.deepcopy(value, memo)
+
+        shadow_copy = types.ModuleType("copy")
+        shadow_copy.deepcopy = deepcopy_except
+        monkeypatch.setattr(session_checkpoint, "copy", shadow_copy)
+
+        recovered = inputs.build()
+
+        assert len(skipped) == 1
+        assert _shared_mutables(recovered, _mutable_objects(*inputs.live_roots())) != []
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,8 @@ from chrys.foundation.events.types import (
     WorkflowRunFinished,
     WorkflowRunNotice,
 )
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
+from chrys.service.workflows.asks import answer_summary, ask_summary
 from chrys.service.workflows.outcomes import RunOutcome
 from chrys.service.workflows.records import run_started_event
 from chrys.service.workflows.scheduler import AttemptRef
@@ -153,18 +155,24 @@ class WorkflowJournal:
             ),
         )
 
-    async def node_ask(self, ref: AttemptRef, request_id: str, prompt: str) -> int:
-        summary = summarize(prompt)
+    async def node_ask(self, ref: AttemptRef, request_id: str, questions: tuple[AskUserQuestion, ...]) -> int:
+        summary = summarize(ask_summary(questions))
         return await self._record(
             RunRecord.NODE_ASK,
             {**_ref_record(ref), "request": request_id, "prompt": summary},
             lambda seq: WorkflowNodeAskUser(
-                seq=seq, request_id=request_id, prompt=prompt, session_id=self._session_id, **_ref_fields(ref)
+                seq=seq, request_id=request_id, questions=questions, session_id=self._session_id, **_ref_fields(ref)
             ),
         )
 
-    async def node_answer(self, ref: AttemptRef, request_id: str, answer: str) -> int:
-        summary = summarize(answer)
+    async def node_answer(
+        self,
+        ref: AttemptRef,
+        request_id: str,
+        questions: tuple[AskUserQuestion, ...],
+        answers: tuple[AskUserAnswer, ...],
+    ) -> int:
+        summary = summarize(answer_summary(questions, answers))
         return await self._record(
             RunRecord.NODE_ANSWER,
             {**_ref_record(ref), "request": request_id, "answer": summary},

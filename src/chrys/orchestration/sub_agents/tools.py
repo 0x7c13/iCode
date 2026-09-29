@@ -452,7 +452,7 @@ class SubAgentTools:
                 if buffer is not None:
                     buffer.store(text)
 
-            client = create_client(
+            client = await create_client(
                 sub_active_profile,
                 on_intermediate_text_async=_on_intermediate_async,
                 on_intermediate_text_sync=_on_intermediate_sync,
@@ -462,6 +462,7 @@ class SubAgentTools:
                 session_dir=self._session_dir,
                 tool_result_ceiling_tokens=self._tool_result_ceiling_tokens,
             )
+            await prepared.own_or_release(client.aclose)
             model_provenance = SubAgentModelProvenance(
                 provider=sub_active_profile.provider,
                 api_style=sub_active_profile.api_style,
@@ -663,7 +664,7 @@ class SubAgentTools:
             ctx = registered.context
             agent = registered.agent
             await agent.__aenter__()
-            prepared.own(lambda: agent.__aexit__(None, None, None))
+            await prepared.own_or_release(lambda: agent.__aexit__(None, None, None))
 
             per_agent_max = ref.max_concurrency
             description = (
@@ -1805,9 +1806,9 @@ class SubAgentTools:
                         *((begin_web_pass,) if begin_web_pass is not None else ()),
                         _begin_hosted_pass,
                         validation_middleware.reset_service_retry_state,
-                        validation_middleware.reset_hosted_commit_observations,
                     ),
                     hosted_commits_probe=validation_middleware.hosted_commits_observed,
+                    begin_hosted_baseline=validation_middleware.begin_pass_hosted_baseline,
                     trajectory_context=sub_agent_trace.child_context if sub_agent_trace is not None else None,
                     trajectory_boundary_operation_id=(
                         sub_agent_trace.operation_id if sub_agent_trace is not None else None

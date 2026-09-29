@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -34,12 +35,15 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
-from chrys.kernel import Message
+from chrys.kernel import Content, Message
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState
+from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig, CompactionConfig, ToolsConfig
+from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.engine.run._engine_run_helpers import (
     _PROFILE,
@@ -51,13 +55,13 @@ from tests.orchestration.engine.run._engine_run_helpers import (
 )
 from tests.support.event_capture import collect_events
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
+from tests.support.scripted_clients import HostedMockChatClient, HostedMockResponse
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for, wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
-    from chrys.service.profiles.models.registry import ModelProfileRegistry
 
 # ---------------------------------------------------------------------------
 # Engine bootstrap
@@ -127,7 +131,7 @@ async def started_retry_engine(
 
     clients: list[MockChatClient] = []
 
-    def _create_client(s=None, **kw):
+    async def _create_client(s=None, **kw):
         client = client_factory()
         clients.append(client)
         return client
@@ -412,6 +416,88 @@ async def test_retry_after_restored_awaiting_sub_agents_marker_starts_model_call
     user_msgs = [m for m in msgs if m.role == "user"]
     assert [(m.text or "").strip() for m in user_msgs] == ["Run the child agent"]
     assert engine.current.loaded.bindings.backend.history_state.get("turn_counter", 0) == 1
+
+
+async def test_retry_after_restored_first_turn_compacts_its_tool_work(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Continue on a restored first turn with completed tool work sends no new
+    input: the stored opener is the last user message, rebuilt by the reminder
+    middleware.  With nothing earlier in state to anchor the history segment,
+    compaction must still resolve that turn and drop its work."""
+    profile = AgentProfile(
+        name="Code",
+        display_name="Code Agent",
+        instructions="You are a coding assistant.",
+        tools=ToolsConfig(builtins=[]),
+        approval=ApprovalConfig(default="auto"),
+        compaction=CompactionConfig(enabled=True),
+    )
+    registry = AgentProfileRegistry()
+    registry.register(profile)
+    state_store = JsonFileStateStore(tmp_path)
+    session_id = "restore-first-turn-tool-work"
+    user = Message("user", ["Inspect the repository"])
+    call = Message("assistant", [Content.from_function_call("read-1", "read_file", arguments={"path": "a.py"})])
+    result = Message("tool", [Content.from_function_result("read-1", result="source " * 2_000)])
+    interrupted = Message("assistant", ["Execution interrupted"])
+    interrupted.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.INTERRUPTED
+    interrupted.additional_properties["_interrupted_by"] = "error"
+    turn = Message("assistant", [""])
+    turn.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.TURN
+    turn.additional_properties["_turn"] = 1
+    await state_store.save_session(
+        session_id,
+        {"messages": [user, call, result, interrupted, turn], "turn_counter": 1},
+        agent_profile="Code",
+        agent_display_name="Code Agent",
+        primary_cwd=str(tmp_path),
+        agent_profile_history=["Code"],
+    )
+
+    async def generate(self: LastWordsGenerator, *_args: object, **_kwargs: object) -> str:
+        return "Read a.py. Next, report what it does."
+
+    generate_call = create_autospec(LastWordsGenerator.generate, side_effect=generate)
+    monkeypatch.setattr(LastWordsGenerator, "generate", generate_call)
+    started = await started_retry_engine(
+        agent_engine,
+        tmp_path,
+        monkeypatch,
+        client_factory=lambda: MockChatClient(responses=[MockResponse(text="Reported from the note.")]),
+        agent_registry=registry,
+        state_store=state_store,
+        profile=profile,
+        event_types=_RESTORE_EVENT_TYPES,
+    )
+    bus, events, engine, mock_clients = started.bus, started.events, started.engine, started.clients
+
+    await bus.publish(SessionRestore(session_id=session_id))
+    await wait_for(lambda: len(_filter(events, SessionRestored)) >= 1, description="session restore")
+    assert engine.current.loaded is not None
+    strategy = engine.current.loaded.bindings.backend.compaction_strategy
+    assert strategy is not None
+    # Only a current turn exists, so an unreachable target leaves Phase 4 as
+    # the one phase that can act.
+    strategy.trigger_pct = 0.00001
+    strategy.target_pct = 0.000005
+
+    events.clear()
+    await bus.publish(UserRetry())
+    finals = await _final_agent_messages_after_run(engine, events)
+
+    assert len(finals) == 1
+    assert generate_call.call_count == 1
+    (sent, _options) = mock_clients[-1].call_history[-1]
+    assert not any(
+        content.call_id == "read-1"
+        for message in sent
+        for content in message.contents
+        if content.type in ("function_call", "function_result")
+    )
+    (opener,) = [m for m in sent if m.role == "user"]
+    assert opener.text.startswith("Inspect the repository")
+    assert "Read a.py. Next, report what it does." in opener.text
 
 
 async def test_retry_after_error_no_progress(tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch):
@@ -699,3 +785,55 @@ async def test_multiple_interrupt_retry_notes_stay_in_single_turn(
         if (getattr(m, "additional_properties", None) or {}).get(HistoryMarkerKind.KEY) == HistoryMarkerKind.INTERRUPTED
     ]
     assert len(interrupted) == 0
+
+
+async def test_retry_that_polls_an_empty_background_response_never_creates_its_hosted_work_again(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry polls the response the failed turn left running; when the poll comes back empty, a new request would
+    run the response's hosted call again, so the turn fails instead."""
+    model_registry = ModelProfileRegistry()
+    model_registry.register(
+        ModelProfile(
+            id="mock-profile",
+            name="mock",
+            provider="mock",
+            model_id="mock",
+            stream=True,
+            # Stored responses can keep running in the background after the connection drops.
+            chat_options='{"store": true}',
+        )
+    )
+    started = await started_retry_engine(
+        agent_engine,
+        tmp_path,
+        monkeypatch,
+        client_factory=lambda: HostedMockChatClient(
+            responses=[
+                HostedMockResponse(
+                    hosted=[Content.from_mcp_server_tool_call("mc1", "create_issue")],
+                    continuation_token={"response_id": "resp_1"},
+                    error_after_hosted=ConnectionResetError("connection reset by peer"),
+                ),
+                MockResponse(text=""),
+                MockResponse(text="created again"),
+            ]
+        ),
+        settings=Settings(model_profile="mock-profile", workspace_change_notice=False, max_transient_retries=0),
+        model_registry=model_registry,
+    )
+    bus, engine, (client,) = started.bus, started.engine, started.clients
+
+    await bus.publish(UserMessage(text="File the issue"))
+    await _wait_for_call_count(client, 1)
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+    assert engine.state is EngineState.FAILED
+
+    await bus.publish(UserRetry())
+    await _wait_for_call_count(client, 2)
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state)
+
+    assert engine.state is EngineState.FAILED
+    assert client.call_count == 2
+    _messages, poll_options = client.call_history[1]
+    assert poll_options["continuation_token"] == {"response_id": "resp_1"}

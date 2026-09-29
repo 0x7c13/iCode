@@ -81,7 +81,7 @@ async def test_workflow_live_and_archived_progress_interleave_text_and_tools(
                 for widget in surface.direct_children()
                 if isinstance(widget, UserMessage | AgentMessage | ToolGroup)
             ] == [UserMessage, AgentMessage, ToolGroup, AgentMessage, ToolGroup]
-            assert [message._text for message in surface.query(AgentMessage)] == [
+            assert [message.text for message in surface.query(AgentMessage)] == [
                 "First inspection.",
                 "Second inspection.",
             ]
@@ -123,7 +123,7 @@ def _assert_order(surface: AgentTranscriptSurface) -> None:
         ToolGroup,
         AgentMessage,
     ]
-    assert [message._text for message in surface.query(AgentMessage)] == [
+    assert [message.text for message in surface.query(AgentMessage)] == [
         "First inspection.",
         "Second inspection.",
         "Done",

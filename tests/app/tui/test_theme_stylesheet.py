@@ -1,23 +1,26 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""User theme failures recover at the live stylesheet boundary."""
+"""User theme failures recover at the live stylesheet boundary, which also keeps parsed rules cached."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import create_autospec
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 import yaml
 from textual.app import ComposeResult
 from textual.color import Color
-from textual.css.stylesheet import StylesheetParseError
+from textual.css import stylesheet as textual_stylesheet
+from textual.css.parse import parse as parse_css
+from textual.css.stylesheet import Stylesheet, StylesheetParseError
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Input
+from textual.widgets import Button, Footer, Input, Static
 
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.screens.dialogs.editor import EditorDialog
 from chrys.app.tui.screens.themes import ThemesScreen
+from chrys.app.tui.theme_stylesheet import ThemeStylesheet
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.editor import EditorBufferSnapshot, MessageEditor
@@ -27,6 +30,7 @@ from chrys.foundation.events.types import Warning
 from chrys.service.state.store import JsonFileStateStore
 from tests.app.tui.screens.themes.helpers import wait_for_themes
 from tests.support.paths import SRC_ROOT
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import EmptyAgentRegistry, ShutdownOnlyEngine, make_chrys_app
 from tests.support.waiting import wait_for
 
@@ -149,6 +153,86 @@ async def test_stylesheet_copy_keeps_theme_recovery(tmp_path: Path, monkeypatch:
         stylesheet.parse()
         assert app.theme == "chrys"
         assert stylesheet.rules
+
+
+def _no_theme_recovery(_stylesheet: Stylesheet, error: Exception) -> bool:
+    pytest.fail(f"valid CSS needed theme recovery: {error}")
+
+
+def _spy_on_tokenizing(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Record every source Textual tokenizes; a source served from the rule cache is never tokenized."""
+    spy = create_autospec(parse_css, side_effect=parse_css)
+    monkeypatch.setattr(textual_stylesheet, "parse", spy)
+    return spy
+
+
+def test_parse_past_textual_rule_cache_size_tokenizes_only_the_new_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Textual's rule cache holds 64 sources; the walk over 100 must still find each unchanged one.
+    stylesheet = ThemeStylesheet(variables={}, recover=_no_theme_recovery)
+    for index in range(100):
+        stylesheet.add_source(
+            f"#probe-{index} {{ width: {index + 1}; }}",
+            read_from=("probe.py", f"Probe{index}.DEFAULT_CSS"),
+            is_default_css=True,
+        )
+    stylesheet.parse()
+    added = ("probe.py", "Added.DEFAULT_CSS")
+    stylesheet.add_source("#added { width: 1; }", read_from=added, is_default_css=True)
+    tokenized = _spy_on_tokenizing(monkeypatch)
+
+    stylesheet.parse()
+
+    assert [call.args[2] for call in tokenized.call_args_list] == [added]
+    assert len(stylesheet.rules) == 101
+
+
+class CssCacheProbe(Static):
+    DEFAULT_CSS = """
+    CssCacheProbe {
+        width: 7;
+    }
+    """
+
+
+class CssCacheProbeScreen(Screen):
+    CSS = """
+    CssCacheProbeScreen {
+        background: red;
+    }
+    """
+
+
+@pytest.mark.parametrize("first", ["widget", "screen"])
+async def test_first_widget_or_screen_of_a_type_tokenizes_only_its_own_css(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    """Once the live stylesheet outgrows Textual's rule cache, new CSS must not re-tokenize every source."""
+    app = make_chrys_app(tmp_path)
+    async with app.run_test() as pilot:
+        await wait_for(lambda: screen_is_settled(app, app.screen), pilot=pilot, description="startup screen settled")
+        # Workflow mode and its dialogs take the app past Textual's 64 sources; stand in for them.
+        for index in range(64):
+            app.stylesheet.add_source(
+                f"#css-cache-filler-{index} {{ width: 1; }}",
+                read_from=("filler.py", f"Filler{index}.DEFAULT_CSS"),
+                is_default_css=True,
+            )
+        app.stylesheet.parse()
+        existing = set(app.stylesheet.source)
+        tokenized = _spy_on_tokenizing(monkeypatch)
+
+        if first == "widget":
+            await app.screen.mount(CssCacheProbe())
+            added = "CssCacheProbe.DEFAULT_CSS"
+        else:
+            screen = CssCacheProbeScreen()
+            await app.push_screen(screen)
+            await wait_for(lambda: app.screen is screen and screen.is_mounted, pilot=pilot)
+            added = "CssCacheProbeScreen.CSS"
+
+        sources = [call.args[2] for call in tokenized.call_args_list]
+        assert [source for source in sources if source[1] == added] != []
+        assert [source for source in sources if source in existing] == []
 
 
 @pytest.mark.parametrize(("saved", "key"), [("custom", "enter"), ("custom", "escape"), ("chrys", "enter")])

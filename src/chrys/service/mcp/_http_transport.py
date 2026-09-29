@@ -14,7 +14,12 @@ from typing import Any
 from chrys.foundation.errors import clean_error_message
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
 from chrys.service.mcp._tool_mixins import _NoPrePagePingMixin, _StructuredContentFallbackMixin
-from chrys.service.mcp.owned import MCPStreamableHTTPTool, _mcp_call_headers, _url_origin
+from chrys.service.mcp.owned import (
+    LOCAL_HTTP_FAILURE_ERROR_DATA,
+    MCPStreamableHTTPTool,
+    _mcp_call_headers,
+    _url_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +141,7 @@ async def _chrys_streamable_http_client(
                         error=ErrorData(
                             code=code,
                             message=f"HTTP MCP request failed: {detail}",
+                            data=LOCAL_HTTP_FAILURE_ERROR_DATA,
                         ),
                     )
                     await ctx.read_stream_writer.send(SessionMessage(message=JSONRPCMessage(error)))

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadFinished,
@@ -517,6 +518,7 @@ class AgentLoader:
         exc: Exception,
     ) -> None:
         """Publish an agent load failure event."""
+        display_message, display_hint = display_fields(exc)
         await self._bus.publish(
             AgentLoadFailed(
                 operation=operation,
@@ -524,6 +526,8 @@ class AgentLoader:
                 display_name=profile.display_name or profile.name,
                 message=clean_error_message(exc),
                 session_id=self._session.session_id,
+                display_message=display_message,
+                display_hint=display_hint,
             ),
         )
 

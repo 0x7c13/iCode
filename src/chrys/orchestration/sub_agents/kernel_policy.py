@@ -9,9 +9,10 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast
 
 from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     InvocationPaused,
     InvocationRetryAttempt,
@@ -20,6 +21,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.hosted_tools import HostedToolStatus
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.retry import (
+    TRANSIENT_RETRY_BACKOFF_SECONDS,
     StreamStall,
     StreamStallExhausted,
 )
@@ -43,6 +45,7 @@ from chrys.orchestration.invoker.attempts import (
     KeepAndRaise,
     ModelRunTrace,
     RetryBoundaryPolicy,
+    has_live_continuation_token,
 )
 from chrys.orchestration.invoker.child_compaction import CompactionRollback
 from chrys.orchestration.invoker.child_history import ChildHistory, service_storage_side
@@ -73,6 +76,7 @@ from chrys.service.trajectory.retries import RetryBackoffTrace
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from chrys.foundation.i18n import MessageRef
     from chrys.kernel import Agent, AgentSession
     from chrys.service.agent_middleware.control.sleep import SleepMiddleware
     from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
@@ -81,6 +85,12 @@ if TYPE_CHECKING:
 from .shell import SubAgentToolShell
 
 logger = logging.getLogger(__name__)
+
+
+class HostedBaselineHook(Protocol):
+    """Starts a pass's hosted-work baseline, as ``ResponseValidationMiddleware.begin_pass_hosted_baseline`` does."""
+
+    def __call__(self, *, resumes_background_response: bool) -> None: ...
 
 
 def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, Any]]:
@@ -92,7 +102,6 @@ def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, Any]]:
 # feels the same between main-agent and sub-agent failures. The sub-agent
 # retry loop uses the same schedule and cap.
 _DEFAULT_MAX_RETRIES = 5
-_DEFAULT_BACKOFF_SCHEDULE = (3, 7, 15, 30, 60)
 _DEFAULT_STREAM_ATTEMPT_TIMEOUT = 300.0
 
 # Decisions resolved into the ``pending_decision`` future. Kept as string
@@ -145,7 +154,7 @@ class KernelSubAgentPolicy:
         parent_event_call_id: str = "",
         sub_agent_log_file: str = "",
         max_retries: int = _DEFAULT_MAX_RETRIES,
-        backoff_schedule: tuple[int, ...] = _DEFAULT_BACKOFF_SCHEDULE,
+        backoff_schedule: tuple[int, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS,
         persist_dir: Path | None = None,
         log_writer: SubAgentSessionLogWriter | None = None,
         log_stats: SubAgentLogStats | None = None,
@@ -157,6 +166,7 @@ class KernelSubAgentPolicy:
         sleep_middleware: SleepMiddleware | None = None,
         pass_start_hooks: Sequence[Callable[[], None]] = (),
         hosted_commits_probe: Callable[[], tuple[str, ...]] | None = None,
+        begin_hosted_baseline: HostedBaselineHook | None = None,
         trajectory_context: TrajectoryContext | None = None,
         trajectory_boundary_operation_id: str | None = None,
     ) -> None:
@@ -203,12 +213,15 @@ class KernelSubAgentPolicy:
             stream_attempt_timeout if stream_attempt_timeout is not None else _DEFAULT_STREAM_ATTEMPT_TIMEOUT
         )
         self._sleep_middleware = sleep_middleware
+        # The hosted baseline reads this policy's own request options, not the caller's run_kwargs: a
+        # whole-run retry replaces them, so only these say whether the pass polls a background response.
+        self._begin_hosted_baseline_hook = begin_hosted_baseline
         # Fired at the start of every pass (initial run, or a user Retry
         # decision after a pause).  Components carrying state across a pass's
         # whole-run retry attempts — the validation middleware's retry budget —
         # register here so an aborted pass cannot leak state into the next
         # one; mirrors the main executor's run_cycle_start_hooks.
-        self._pass_start_hooks = tuple(pass_start_hooks)
+        self._pass_start_hooks = (*pass_start_hooks, self._begin_hosted_baseline)
         # Validation-middleware probe for provider-hosted tool executions the
         # loop recorder cannot see; consulted by the whole-run retry gate.
         self._hosted_commits_probe = hosted_commits_probe
@@ -217,6 +230,8 @@ class KernelSubAgentPolicy:
         self._service_retry_trace: RetryBackoffTrace | None = None
 
         self._last_error: str = ""
+        self._last_error_display: MessageRef | None = None
+        self._last_error_hint: MessageRef | None = None
         self._failure_reason: SubAgentFailureReason | None = None
         self._retry_attempts_total: int = 0
         # The answer of the pass that completed the invocation, if any.
@@ -312,6 +327,7 @@ class KernelSubAgentPolicy:
         await self._shell.cascade_abort()
 
     def _record_failure(self, exc: Exception) -> None:
+        self._last_error_display, self._last_error_hint = display_fields(exc)
         if isinstance(exc, StreamStallExhausted):
             # Keep the original stall message (chained via __cause__)
             # so the pause banner shows the underlying reason instead
@@ -417,7 +433,7 @@ class KernelSubAgentPolicy:
         attempt: int,
         max_attempts: int,
         delay_seconds: int,
-        _exc: BaseException,
+        exc: BaseException,
         *,
         scope: Literal["wire", "run"] = "run",
     ) -> None:
@@ -426,6 +442,7 @@ class KernelSubAgentPolicy:
             await self._tool_event_middleware.reject_hosted_attempt(message)
         if self._bus is None:
             return
+        display_message, display_hint = display_fields(exc, retry_notice=True)
         await self._emitter.publish(
             InvocationRetryAttempt(
                 origin=self.origin,
@@ -436,6 +453,8 @@ class KernelSubAgentPolicy:
                 max_attempts=max_attempts,
                 delay_seconds=delay_seconds,
                 session_id=self._session_id,
+                display_message=display_message,
+                display_hint=display_hint,
             )
         )
 
@@ -503,8 +522,11 @@ class KernelSubAgentPolicy:
         options["continuation_token"] = token
 
     def _has_live_continuation_token(self) -> bool:
-        options = self._run_kwargs.get("options")
-        return isinstance(options, dict) and options.get("continuation_token") is not None
+        return has_live_continuation_token(self._run_kwargs)
+
+    def _begin_hosted_baseline(self) -> None:
+        if self._begin_hosted_baseline_hook is not None:
+            self._begin_hosted_baseline_hook(resumes_background_response=self._has_live_continuation_token())
 
     async def _write_log(
         self,
@@ -743,6 +765,8 @@ class KernelSubAgentPolicy:
             tool_name=self._tool_name,
             reason=self._failure_reason.value if self._failure_reason else "",
             last_error=self._last_error,
+            last_error_display=self._last_error_display,
+            last_error_hint=self._last_error_hint,
             retry_attempts=self._retry_attempts_total,
             session_id=self._session_id,
         )

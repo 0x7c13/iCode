@@ -11,6 +11,7 @@ from typing import Any
 
 from chrys.foundation.events import types as events
 from chrys.foundation.events.workflow import WorkflowRunEvent
+from chrys.foundation.models.ask_user import AskUserQuestion
 from chrys.foundation.trajectory.envelope import TrajectoryEvent
 from chrys.foundation.util.time import parse_created_at
 from chrys.service.state.workflow import decode_workflow_model
@@ -96,7 +97,9 @@ def decode_run_event(record: TrajectoryEvent, *, directory: Path) -> WorkflowRun
                 **common, **ref, kind=payload["kind"], ordinal=payload["ordinal"], summary_text=payload["summary"]
             )
         if kind == RunRecord.NODE_ASK:
-            return events.WorkflowNodeAskUser(**common, **ref, request_id=payload["request"], prompt=payload["prompt"])
+            # Only the bounded summary is stored: a replayed ask is that summary as one open question.
+            question = AskUserQuestion(question=payload["prompt"])
+            return events.WorkflowNodeAskUser(**common, **ref, request_id=payload["request"], questions=(question,))
         if kind == RunRecord.NODE_ANSWER:
             return events.WorkflowNodeAnswered(**common, **ref, request_id=payload["request"], answer=payload["answer"])
         return events.WorkflowRunNotice(**common, **ref, code=payload["code"], message=payload["message"])

@@ -17,6 +17,10 @@ class HostedMockResponse(MockResponse):
     """A scripted response that opens with provider-hosted output."""
 
     hosted: list[Content] = field(default_factory=list)
+    # Streamed with the hosted output, as a background response announces the id a later request polls.
+    continuation_token: Any = None
+    # Raised right after the streamed hosted output: the connection drops while the response runs on.
+    error_after_hosted: BaseException | None = None
 
 
 class HostedMockChatClient(MockChatClient):
@@ -36,7 +40,14 @@ class HostedMockChatClient(MockChatClient):
         finish_reason: FinishReasonLiteral | FinishReason,
     ) -> AsyncIterable[ChatResponseUpdate]:
         if isinstance(resp, HostedMockResponse) and resp.hosted:
-            yield ChatResponseUpdate(contents=list(resp.hosted), role="assistant", model=model_id)
+            yield ChatResponseUpdate(
+                contents=list(resp.hosted),
+                role="assistant",
+                model=model_id,
+                continuation_token=resp.continuation_token,
+            )
+            if resp.error_after_hosted is not None:
+                raise resp.error_after_hosted
         async for update in super()._stream_updates(resp, model_id, finish_reason):
             yield update
 

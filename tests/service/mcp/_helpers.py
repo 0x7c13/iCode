@@ -5,9 +5,14 @@
 from __future__ import annotations
 
 import builtins
-from types import SimpleNamespace
-from typing import Any
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any, cast
 from unittest.mock import AsyncMock
+
+from mcp import ClientSession, types
+from mcp.shared.session import ProgressFnT
 
 from chrys.kernel import FunctionTool as ChrysFunctionTool
 from chrys.service.mcp.owned import MCPTool
@@ -46,26 +51,114 @@ def _mcp_remote_tool(
     *,
     meta: dict[str, Any] | None = None,
     input_schema: dict[str, Any] | None = None,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> types.Tool:
+    return types.Tool(
         name=name,
         description="Remote tool",
         inputSchema=input_schema if input_schema is not None else {"type": "object", "properties": {}},
-        meta=meta,
-        execution=None,
+        _meta=meta,
     )
 
 
-def _mcp_remote_prompt(name: str) -> SimpleNamespace:
-    return SimpleNamespace(name=name, description="Remote prompt", arguments=[])
+def _mcp_remote_prompt(name: str) -> types.Prompt:
+    return types.Prompt(name=name, description="Remote prompt", arguments=[])
 
 
-async def _load_fake_remote_tools(tool: MCPTool, *remote_tools: SimpleNamespace) -> None:
-    tool.session = SimpleNamespace(
-        list_tools=AsyncMock(return_value=SimpleNamespace(tools=list(remote_tools), nextCursor=None))
-    )
-    tool._ensure_connected = AsyncMock()  # type: ignore[method-assign]
+async def _load_fake_remote_tools(tool: MCPTool, *remote_tools: types.Tool) -> None:
+    tool.session = _as_client_session(_ScriptedClientSession(tools=remote_tools))
     await tool.load_tools()
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolCall:
+    name: str
+    arguments: dict[str, Any] | None
+    meta: dict[str, Any] | None
+
+
+_SESSION_REQUESTS = frozenset({"send_ping", "list_tools", "list_prompts", "call_tool", "get_prompt"})
+
+
+class _ScriptedClientSession:
+    """The ``ClientSession`` requests a connected owned engine makes, with the SDK's signatures and types.
+
+    The lists answer with the scripted tools and prompts. ``call_tool`` and ``get_prompt`` answer
+    with their scripted result or raise their scripted exception; one the test left unscripted
+    fails it. ``fail_first`` names requests whose first calls raise the given exceptions instead,
+    one each, before they answer. ``requests`` logs every request by method name, and
+    ``tool_calls`` what each ``call_tool`` asked for.
+    """
+
+    def __init__(
+        self,
+        *,
+        tools: Sequence[types.Tool] = (),
+        prompts: Sequence[types.Prompt] = (),
+        call_tool: types.CallToolResult | Exception | None = None,
+        get_prompt: types.GetPromptResult | Exception | None = None,
+        fail_first: Mapping[str, Sequence[Exception]] | None = None,
+    ) -> None:
+        failures = dict(fail_first or {})
+        if unknown := failures.keys() - _SESSION_REQUESTS:
+            raise ValueError(f"no such session request: {sorted(unknown)}")
+        self._tools = list(tools)
+        self._prompts = list(prompts)
+        self._call_tool = call_tool
+        self._get_prompt = get_prompt
+        self._failures = {request: list(errors) for request, errors in failures.items()}
+        self.requests: list[str] = []
+        self.tool_calls: list[_ToolCall] = []
+
+    def _begin(self, request: str) -> None:
+        self.requests.append(request)
+        if pending := self._failures.get(request):
+            raise pending.pop(0)
+
+    async def send_ping(self) -> types.EmptyResult:
+        self._begin("send_ping")
+        return types.EmptyResult()
+
+    async def list_tools(
+        self, cursor: str | None = None, *, params: types.PaginatedRequestParams | None = None
+    ) -> types.ListToolsResult:
+        self._begin("list_tools")
+        return types.ListToolsResult(tools=self._tools)
+
+    async def list_prompts(
+        self, cursor: str | None = None, *, params: types.PaginatedRequestParams | None = None
+    ) -> types.ListPromptsResult:
+        self._begin("list_prompts")
+        return types.ListPromptsResult(prompts=self._prompts)
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        read_timeout_seconds: timedelta | None = None,
+        progress_callback: ProgressFnT | None = None,
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> types.CallToolResult:
+        self._begin("call_tool")
+        self.tool_calls.append(_ToolCall(name, arguments, meta))
+        return _scripted_answer(self._call_tool, "call_tool")
+
+    async def get_prompt(self, name: str, arguments: dict[str, str] | None = None) -> types.GetPromptResult:
+        self._begin("get_prompt")
+        return _scripted_answer(self._get_prompt, "get_prompt")
+
+
+def _scripted_answer[T](answer: T | Exception | None, request: str) -> T:
+    if answer is None:
+        raise AssertionError(f"the test scripted no {request} answer")
+    if isinstance(answer, Exception):
+        raise answer
+    return answer
+
+
+def _as_client_session(session: _ScriptedClientSession) -> ClientSession:
+    """The scripted session in the engine's ``ClientSession`` slot, which it fills structurally."""
+    return cast("ClientSession", session)
 
 
 class _FakeConnectionTool:

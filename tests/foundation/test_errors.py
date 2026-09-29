@@ -5,12 +5,27 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import ssl
+import sys
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors import ErrorKind, classify_error, clean_error_message
+from chrys.foundation.errors._walk import iter_explicit_graph
+from tests.support.network_faults import (
+    INJECTED_V4,
+    INJECTED_V6,
+    NetworkFaults,
+    SimulatedWindowsError,
+    os_error,
+    refused,
+    socket_error_text,
+    win_proactor_reset,
+)
+from tests.support.provider_errors import API_HOST, openai_network
 
 
 def test_single_member_exception_groups_expose_the_leaf() -> None:
@@ -141,6 +156,137 @@ def test_clean_error_message_exposes_invalid_url_hidden_by_sdk_connection_error(
     wrapped = _make_chained(sdk_error, "service failed to complete the prompt: Connection error.")
 
     assert clean_error_message(wrapped) == "Connection error: Invalid port: 'not-a-port'"
+
+
+_REFUSED_LEAF = socket_error_text(errno.ECONNREFUSED)
+
+
+def _refuse_v4(faults: NetworkFaults) -> None:
+    faults.resolve_to(API_HOST, INJECTED_V4)
+    faults.refuse(INJECTED_V4)
+
+
+async def test_clean_error_message_shows_the_socket_error_below_all_connection_attempts_failed() -> None:
+    exc = await openai_network(_refuse_v4)
+
+    assert clean_error_message(exc) == f"All connection attempts failed: {_REFUSED_LEAF}"
+    assert clean_error_message(_make_chained(exc, "service failed to complete the prompt: Connection error.")) == (
+        f"Connection error: {_REFUSED_LEAF}"
+    )
+
+
+async def test_the_socket_error_never_names_the_peer_address() -> None:
+    # asyncio's message names the address it dialed; this text reaches the
+    # model through sub-agent results, MCP startup errors and ACP.
+    exc = await openai_network(_refuse_v4)
+    leaves = [node for node in iter_explicit_graph(exc) if isinstance(node, ConnectionRefusedError)]
+
+    assert [INJECTED_V4 in str(leaf) for leaf in leaves] == [True]
+    assert INJECTED_V4 not in clean_error_message(exc)
+    assert INJECTED_V4 not in clean_error_message(_make_chained(exc, "Connection error."))
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (os_error(errno.ENETUNREACH), refused),
+        (refused, os_error(errno.ENETUNREACH)),
+    ],
+    ids=["refused-last", "refused-first"],
+)
+async def test_a_dual_stack_group_shows_the_attempt_that_named_its_kind(
+    first: Callable[[tuple[Any, ...]], OSError], second: Callable[[tuple[Any, ...]], OSError]
+) -> None:
+    def arrange(faults: NetworkFaults) -> None:
+        faults.resolve_to(API_HOST, INJECTED_V6, INJECTED_V4)
+        faults.fail_connect(INJECTED_V6, first)
+        faults.fail_connect(INJECTED_V4, second)
+
+    exc = await openai_network(arrange)
+
+    # The refused attempt got furthest and names the group, whichever ran last.
+    assert classify_error(exc).kind is ErrorKind.CONNECTION_REFUSED
+    assert clean_error_message(exc) == f"All connection attempts failed: {_REFUSED_LEAF}"
+
+
+@pytest.mark.parametrize("absent_first", [True, False], ids=["absent-first", "absent-last"])
+async def test_an_address_family_the_machine_lacks_abstains(absent_first: bool) -> None:
+    absent, no_route = os_error(errno.EAFNOSUPPORT), os_error(errno.ENETUNREACH)
+
+    def arrange(faults: NetworkFaults) -> None:
+        faults.resolve_to(API_HOST, INJECTED_V6, INJECTED_V4)
+        faults.fail_connect(INJECTED_V6, absent if absent_first else no_route)
+        faults.fail_connect(INJECTED_V4, no_route if absent_first else absent)
+
+    result = classify_error(await openai_network(arrange))
+
+    # The attempt that never left the machine outranks nothing, so the one
+    # that had no route names the group and still proves the first hop failed.
+    assert (result.kind, result.failed_at_first_hop) == (ErrorKind.NO_ROUTE, True)
+
+
+async def test_an_unrecognized_attempt_that_names_the_group_shows_its_socket_error() -> None:
+    def arrange(faults: NetworkFaults) -> None:
+        faults.resolve_to(API_HOST, INJECTED_V6, INJECTED_V4)
+        faults.fail_connect(INJECTED_V6, os_error(errno.EACCES))
+        faults.fail_connect(INJECTED_V4, os_error(errno.ENETUNREACH))
+
+    exc = await openai_network(arrange)
+
+    assert classify_error(exc).kind is ErrorKind.CONNECTION_FAILED
+    assert clean_error_message(exc) == f"All connection attempts failed: {socket_error_text(errno.EACCES)}"
+
+
+def test_a_file_error_keeps_its_file_name() -> None:
+    connect_error = type("ConnectError", (Exception,), {})("All connection attempts failed")
+    connect_error.__cause__ = FileNotFoundError(errno.ENOENT, "Connect call failed", "/run/gateway.sock")
+
+    assert clean_error_message(_make_chained(connect_error)) == (
+        f"All connection attempts failed: {socket_error_text(errno.ENOENT)}: '/run/gateway.sock'"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Winsock codes need the Windows system's words")
+def test_a_winsock_code_without_a_winerror_keeps_the_system_words() -> None:
+    # A selector loop raises OSError(err, "Connect call failed ...") with no ``winerror``.
+    connect_error = type("ConnectError", (Exception,), {})("All connection attempts failed")
+    connect_error.__cause__ = OSError(10061, "Connect call failed ('10.1.2.3', 443)")
+
+    detail = clean_error_message(_make_chained(connect_error)).removeprefix("All connection attempts failed: ")
+
+    assert detail.startswith("[Errno 10061] ")
+    assert detail.removeprefix("[Errno 10061] ").strip()
+    assert "Unknown error" not in detail
+    assert "10.1.2.3" not in detail
+
+
+def test_a_windows_socket_error_keeps_the_system_words() -> None:
+    leaf = SimulatedWindowsError(errno.EINVAL, "The remote computer refused the network connection", 1225)
+    connect_error = type("ConnectError", (Exception,), {})("All connection attempts failed")
+    connect_error.__cause__ = leaf
+
+    assert clean_error_message(_make_chained(connect_error)) == (
+        "All connection attempts failed: [WinError 1225] The remote computer refused the network connection"
+    )
+
+
+_NETNAME_DELETED = 64
+_NETNAME_DELETED_WORDS = "The specified network name is no longer available."
+
+
+async def test_a_proactor_reset_without_its_winerror_keeps_the_system_words() -> None:
+    def arrange(faults: NetworkFaults) -> None:
+        faults.resolve_to(API_HOST, INJECTED_V4)
+        faults.fail_connect(INJECTED_V4, win_proactor_reset(_NETNAME_DELETED, _NETNAME_DELETED_WORDS))
+
+    exc = await openai_network(arrange)
+
+    assert classify_error(exc).kind is ErrorKind.CONNECTION_LOST
+    # The stand-in EINVAL names nothing: never "[Errno 22] Invalid argument".
+    assert clean_error_message(exc) == f"All connection attempts failed: {_NETNAME_DELETED_WORDS}"
+    assert clean_error_message(_make_chained(exc, "service failed to complete the prompt: Connection error.")) == (
+        f"Connection error: {_NETNAME_DELETED_WORDS}"
+    )
 
 
 def test_clean_error_message_ignores_stale_context_below_transport_error() -> None:

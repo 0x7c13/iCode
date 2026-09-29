@@ -82,7 +82,7 @@ class WorkflowNodeDialog(BaseDialog[None]):
         self.selected: WorkflowNodeStateChanged | None = None
         self._revision: tuple[int, bool] | None = None
         self._generation = 0
-        self._transcript_id: tuple[str, int | None] | None = None
+        self._transcript_id: tuple[str, int, bool] | None = None
         self._transcript_lock = asyncio.Lock()
         self._iteration_keys: tuple[str, ...] = ()
         self._attempt_keys: tuple[tuple[str, int], ...] = ()
@@ -387,11 +387,12 @@ class WorkflowNodeDialog(BaseDialog[None]):
 
     async def _load_transcript(self, generation: int, attempt: WorkflowNodeStateChanged | None) -> str:
         invocation = attempt.invocation_id if attempt else ""
-        journal = self.run.journals.get(invocation) if self.run else None
-        # Only the current attempt follows live events. Older attempts share an
-        # invocation identity, but must display their own archived boundary.
+        number = attempt.attempt if attempt else 0
+        journal = self.run.journals.get((invocation, number)) if self.run else None
+        # Only the current attempt follows live events; older attempts display
+        # their own archived boundary.
         live = bool(journal and self.run and self.run.nodes.get(self.node["id"]) == attempt)
-        identity = (invocation, None if live else attempt.attempt if attempt else 0)
+        identity = (invocation, number, live)
         if self._transcript_id == identity:
             return ""
         archived = None

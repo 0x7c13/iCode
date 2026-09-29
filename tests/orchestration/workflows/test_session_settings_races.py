@@ -22,7 +22,7 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.workflows._hosting import confirm, make_host, make_project, run, write_workflow
 from tests.support.event_capture import capture_event_sequence
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 
 
@@ -48,7 +48,7 @@ async def test_approval_change_does_not_wait_for_the_workflow_owner_to_close(
     try:
         await confirm(host, "echo")
         execution = asyncio.create_task(run(host, "echo"))
-        await wait_for(lambda: closing.is_set() or execution.done())
+        await wait_for(lambda: closing.is_set() or execution.done(), timeout=ENGINE_TURN_TIMEOUT)
         if execution.done():
             await execution
         assert closing.is_set()

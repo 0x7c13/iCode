@@ -20,6 +20,11 @@ code, letting the terminal render its native background in those cells.
 
 Widget imports StylesCache before Chrys bootstrap. Replace the live cached
 method as well, so the first process does not retain the old method or results.
+
+The live method also fixes a retention: Textual caches ``get_inner_outer`` per
+instance, so its 1024-entry LRU keeps that many StylesCaches of removed widgets
+alive, each with its rendered lines. The result depends only on the colors, so
+the replacement caches on those alone.
 """
 
 from __future__ import annotations
@@ -50,10 +55,13 @@ def apply_runtime_patch() -> None:
         return
 
     @lru_cache(1024)
-    def get_inner_outer(self: Any, base_background: Any, background: Any) -> tuple[Any, Any]:
+    def inner_outer(base_background: Any, background: Any) -> tuple[Any, Any]:
         is_default = getattr(base_background, "ansi", None) == -1
         outer = Style() if (is_default or base_background.a == 0) else Style(background=base_background)
         return Style(background=base_background + background), outer
+
+    def get_inner_outer(self: Any, base_background: Any, background: Any) -> tuple[Any, Any]:
+        return inner_outer(base_background, background)
 
     setattr(get_inner_outer, _RUNTIME_PATCH_MARKER, True)
     StylesCache.get_inner_outer = get_inner_outer

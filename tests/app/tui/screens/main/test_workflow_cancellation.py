@@ -55,7 +55,7 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
             running, node_id="entry_points", activation_id="entry_points@iter#1", invocation_id="security"
         )
         await bus.publish(completed)
-        origin = InvocationOrigin("workflow_node", "", "review", None)
+        origin = InvocationOrigin("workflow_node", "", "review", None, attempt=1)
         for call_id in ("finished", "pending"):
             await bus.publish(
                 events.InvocationToolCallStart(
@@ -75,7 +75,9 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         await bus.publish(events.InvocationCompactionStarted(origin=origin, compaction_id="compaction"))
         await bus.publish(
             events.InvocationMessage(
-                origin=InvocationOrigin("workflow_node", "", "security", None), text="Finished review", is_final=True
+                origin=InvocationOrigin("workflow_node", "", "security", None, attempt=1),
+                text="Finished review",
+                is_final=True,
             )
         )
         await bus.publish(replace(completed, state="completed"))
@@ -116,7 +118,7 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         assert len(cancels) == 1 and cancels[0].run_id == "run"
         run = main._workflow.session_view.projector.current
         assert run is not None
-        journal = run.journals["review"]
+        journal = run.journals["review", 1]
         stopped_operations = journal.operations
         # Duplicate terminal facts and late provider callbacks cannot revive the
         # transcript or add a second interruption notice.
@@ -130,7 +132,7 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
             events.InvocationToolCallResult(origin=origin, call_id="pending", tool_name="read_file", result="too late")
         )
         assert journal.operations == stopped_operations
-        assert len(run.journals["security"].operations) == 1
+        assert len(run.journals["security", 1].operations) == 1
 
         if not detail_open:
             main._workflow.session_view.open_node(running.node_id)

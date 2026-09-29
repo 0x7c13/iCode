@@ -111,3 +111,18 @@ If the error persists, compare the symptoms against the following cases:
 
 - **The error message contains `The Chat Completions client supports only n=1`**: With the Chat Completions style, iCode processes only one response per request and does not support multiple candidate responses, so the `n` parameter must be omitted or set to the integer `1`. Remove the value or set it to `1` in the profile's "Chat Options", including when it was set indirectly through `extra_body`.
 - **The response has an `HTTP 200` status but is not a valid model reply**: for example a `text/html` Content-Type with an error page, an error JSON body, or an empty body. This means a gateway or proxy wrapped a backend error as a successful response; check that the selected API style matches the model service address, and review the proxy route.
+
+### If iCode can't reach the model service
+
+When iCode can tell why a model request failed, it says so in plain words, with the original error text below it; a paused sub-agent's card shows both as well. While iCode retries, the retry notice shows only the plain-words message. If the device running iCode doesn't seem to have a network connection, iCode says so as well; check that first.
+
+| The message says | What to check |
+| --- | --- |
+| Can't resolve the address | Your network connection and DNS. If the address is wrong, fix the base URL in the model profile. |
+| The host refused the connection | The address and port in the base URL, and that the model service is running. |
+| Connecting or waiting for a response timed out | Your network, firewall, or VPN. |
+| Can't connect to the proxy | That the proxy is running and set up correctly. To connect without the proxy, turn on **Bypass proxy** in the model profile. |
+| The proxy requires authentication | The proxy's user name and password. |
+| Couldn't establish a secure connection | On a corporate network, the proxy's certificate setup. |
+| The API key is invalid or lacks access | The API key in the model profile. |
+| The request exceeds the model's context window | That the context window in the model profile matches the model's real one. |

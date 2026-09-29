@@ -31,6 +31,8 @@ To find and resume another session, press **F1**, click `f1 Sessions`, or enter 
 - **Search sessions**: Enter a session ID, title, directory, or a prompt you previously entered in the search field at the bottom.
 - **Resume a session**: Select a session and click "Resume". You can also double-click it, or select it with the up and down arrow keys and press Enter. iCode closes the current conversation view, loads the selected session, and switches the working directory to the session's saved primary working directory; the current session remains saved in the list. Before resuming, check the working directory that will be restored in the list's "Directory" column.
 
+When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.
+
 ## Delete old sessions
 
 Open the "Chat Sessions" window and first check the session ID, directory, and last active time. If you are unsure, resume the session to check its contents, then return to the "Chat Sessions" window. Select a session you no longer need and click "Delete".

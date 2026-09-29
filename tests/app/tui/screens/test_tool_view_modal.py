@@ -564,7 +564,7 @@ async def test_sub_agent_terminal_header_view_opens_full_transcript() -> None:
             pilot=pilot,
             description="terminal sub-agent full transcript",
         )
-        assert [message._text for message in surface.query(AgentMessage)] == [
+        assert [message.text for message in surface.query(AgentMessage)] == [
             "I will inspect the file.",
             "Inspection complete.",
         ]
@@ -779,7 +779,7 @@ async def test_header_renders_view_slash_copy_affordances() -> None:
         # like "auto 60%" are not Rich-parsable, so a raw style string would be
         # silently dropped and the text would inherit ancestor colors. The
         # blended (non-partial) foreground must be used — partial resolution
-        # loses the alpha and renders brighter than AgentCopyButton — while the
+        # loses the alpha and renders brighter than MessageCopyButton — while the
         # background color stays off the spans for ANSI passthrough themes.
         full_style = header.get_component_rich_style("toolcardheader--action")
         base_style = header._zone_style("toolcardheader--action")

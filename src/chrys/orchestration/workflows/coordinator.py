@@ -45,8 +45,8 @@ from chrys.foundation.events.types import (
 from chrys.foundation.models.workflow_session import WorkflowSessionSelection
 from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.execution import WorkflowExecution
-from chrys.orchestration.invoker.resources import finish_close
 from chrys.orchestration.workflows.agent_node_build import AgentNodeResources
 from chrys.orchestration.workflows.hooks import WorkflowSessionHooks
 from chrys.orchestration.workflows.preview import (
@@ -410,8 +410,8 @@ class WorkflowCoordinator:
         active = self._active
         if active is None or active.runner is None or event.run_id != active.execution.run_id:
             return
-        if not active.runner.answer(event.node_id, event.activation_id, event.request_id, event.answer):
-            logger.info("workflow run %s: no open ask matches answer %s", event.run_id, event.request_id)
+        if not active.runner.answer(event.node_id, event.activation_id, event.request_id, event.answers):
+            logger.info("workflow run %s: no open ask accepts answer %s", event.run_id, event.request_id)
 
     async def on_retry(self, event: WorkflowNodeRetryRequest) -> None:
         active = self._active

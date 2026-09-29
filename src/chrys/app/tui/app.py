@@ -483,6 +483,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             reason=event.reason,
             prompt=event.prompt,
             requested_at=event.time,
+            removed=event.removed,
         )
 
     def on_diagram_open_requested(self, event: DiagramOpenRequested) -> None:
@@ -541,13 +542,17 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
         Textual updates the entire App when it discovers a Screen stylesheet.
         Chrys secondary-screen styles are screen-local, so existing MainScreen
-        nodes cannot start matching them. Reparse globally so subsequently mounted
+        nodes cannot start matching them. Parse globally so subsequently mounted
         children see the new rules, then update only the already-registered
         screen root. Keep Textual's behavior for web and the startup MainScreen.
 
         This is a version-gated fork of Textual's private
-        ``App._load_screen_css`` implementation. The only intentional semantic
-        delta is updating ``screen`` rather than the entire App after reparsing.
+        ``App._load_screen_css`` implementation. The intentional semantic deltas
+        are updating ``screen`` rather than the entire App, and parsing the live
+        stylesheet in place rather than reparsing into a fresh one: the fresh
+        stylesheet's empty rule cache re-tokenizes every source, while the live
+        cache only holds rules for the current variables (``set_variables``
+        clears it), so only the new sources are tokenized.
         """
         if (
             TEXTUAL_VERSION != _TEXTUAL_LOAD_SCREEN_CSS_FORK_VERSION
@@ -580,7 +585,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 )
                 update = True
         if update:
-            self.stylesheet.reparse()
+            self.stylesheet.parse()
             self.stylesheet.update(screen)
 
     def _refresh_notifications(self) -> None:
@@ -904,6 +909,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             locale_controller=self._locale_controller,
             on_editor_keymap_changed=self._record_editor_keymap_override,
             tool_groups_expanded=lambda: self._settings_handle.settings.tool_groups_expanded,
+            approval_mode=self._engine.approval_mode,
         )
 
     async def on_mount(self) -> None:

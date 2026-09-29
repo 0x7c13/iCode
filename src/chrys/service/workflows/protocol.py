@@ -29,7 +29,7 @@ from typing import Any, Final
 
 from chrys.service.workflows.scheduler import AttemptRef
 
-PROTOCOL_VERSION: Final = 1
+PROTOCOL_VERSION: Final = 2
 PYTHON_FLOOR: Final = (3, 9)
 """Oldest interpreter that can run the host and the injected SDK."""
 

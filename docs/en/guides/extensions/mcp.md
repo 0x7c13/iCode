@@ -8,7 +8,9 @@ Before connecting an MCP server, confirm that its source is trustworthy. The ser
 
 Enter `/agents mcp` in the input field to open the current agent's "MCP" tab. Added server configurations apply only to the current agent; they are not automatically applied to other agents.
 
-Click "+ Add", then fill in the following fields in the new MCP server card:
+Each server has its own card. Saved servers are collapsed and show only their name; click the name to expand or collapse a card. If saving finds a problem, the card with the problem expands. To delete a server, click "✕" on its card and confirm.
+
+Click "+ Add", then fill in the following fields in the new card at the top of the list:
 
 1. Enter a "Server Name". This name identifies the server in the current agent's MCP configuration. Server names must be unique within an agent's MCP configuration, and are case-insensitive.
 2. Optionally enter a "Description" to note the server's purpose. This description is not provided to the agent as server instructions.

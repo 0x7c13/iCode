@@ -92,6 +92,8 @@ WORKFLOW_MESSAGE_IDS = frozenset(
         "tui.workflow.node.failed_phase",
         "tui.workflow.node.data_dropped",
         "tui.workflow.node.input",
+        "tui.workflow.copy_run_input_tooltip",
+        "tui.workflow.run_input_copied",
         "tui.workflow.node.no_record",
         "tui.workflow.node.no_transcript",
         "tui.workflow.node.output",

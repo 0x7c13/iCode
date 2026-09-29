@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, runtime_checkable
 
 from rich.style import Style
@@ -37,7 +38,11 @@ from chrys.app.tui.support.gc_freeze import (
     GcAbsorbRequested,
     GcReclaimReason,
     GcReclaimRequested,
+    GcRemovedContent,
+    current_gc_freeze_epoch,
 )
+from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
 from chrys.app.tui.widgets.chat.tool_view_builders import (
     TOOL_VIEW_EMPTY,
@@ -432,6 +437,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
     from textual.events import Click, Leave, MouseMove
     from textual.geometry import Offset
+    from textual.visual import VisualType
 
     _ToolCopyExcludedBase = Widget
 else:
@@ -932,6 +938,18 @@ class ToolCardHeader(Static):
     def on_mount(self) -> None:
         self._resolve_action_labels()
 
+    def update(self, content: VisualType = "", *, layout: bool = True) -> None:
+        """Replace the label; relayout only when the new label changes the header's size.
+
+        Running cards rewrite their label with the elapsed time every second, and a
+        same-size label needs a repaint, not a reflow of the whole transcript. An explicit
+        ``layout=False`` still skips the layout unconditionally.
+        """
+        if layout:
+            update_static_in_place(self, content)
+        else:
+            super().update(content, layout=False)
+
     def _resolve_action_labels(self) -> None:
         localizer = widget_localizer(self)
         self._view_label = render_str(localizer, TOOL_CARD_ACTION_VIEW.bind())
@@ -1300,10 +1318,16 @@ class ToolCall(BaseToolCard):
     def _spin(self) -> None:
         if self.status == "running" and not self._body_pinned:
             self._spin_idx = (self._spin_idx + 1) % len(self._SPINNERS)
+            # Only a shown card repaints: repainting a widget outside the visible cut (a collapsed
+            # group, scrolled away, under a modal) makes the next geometry read rebuild the
+            # compositor map for the whole transcript. Every tick renders the card's current
+            # state, so the first tick after the card shows paints it.
+            if not is_widget_shown_on_active_screen(self):
+                return
             from contextlib import suppress
 
             with suppress(Exception):
-                self.query_one("#tc-body", Static).update(self._render_spinner())
+                update_static_in_place(self.query_one("#tc-body", Static), self._render_spinner())
 
     def _render_spinner(self) -> Text:
         t = Text()
@@ -1512,6 +1536,8 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         self._pending_content_worker: Any | None = None
         self._content_structure_lock = asyncio.Lock()
         self._content_mounted = True
+        self._content_freeze_epoch: int | None = None
+        """GC freeze epoch read before the oldest mounted tool widget was built; None while none is."""
         self.display = False  # hidden until first tool is added
 
     def compose(self) -> ComposeResult:
@@ -1678,6 +1704,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
                 self._update_title()
                 return
 
+            self._note_content_build_epoch()
             if provider_hosted:
                 tc = create_tool_widget(
                     call_id,
@@ -2091,6 +2118,31 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
             else:
                 self.call_later(self._restore_completed_tool_widgets)
 
+    def _note_content_build_epoch(self) -> None:
+        """Record the GC freeze epoch before building the first mounted tool widget.
+
+        Read before any widget of the subtree exists, it bounds the whole subtree: an
+        unchanged epoch at prune time proves no freeze captured any part of it.
+        """
+        if self._content_freeze_epoch is None:
+            self._content_freeze_epoch = current_gc_freeze_epoch()
+
+    def _young_content_watch(self, content: Widget) -> GcRemovedContent | None:
+        """Describe the mounted content about to be pruned if no freeze has captured it.
+
+        Returns None when the epoch moved since the oldest child was built (or was never
+        recorded), so the prune keeps its idle full reclaim. Otherwise the coordinator
+        weakly watches every node of the subtree and reclaims only if one outlives the next
+        freezing action's collection.
+        """
+        built_at_epoch = self._content_freeze_epoch
+        if built_at_epoch is None or built_at_epoch != current_gc_freeze_epoch():
+            return None
+        return GcRemovedContent.watch(
+            built_at_epoch=built_at_epoch,
+            nodes=(node for child in content.children for node in child.walk_children(with_self=True)),
+        )
+
     def _release_expensive_tool_content(self) -> None:
         """Let child tool widgets drop expensive mounted content before pruning."""
         for tc in self._tools.values():
@@ -2122,16 +2174,17 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         with suppress(Exception):
             self._release_expensive_tool_content()
             content = self.query_one("#tg-content")
-            children = list(content.children)
-            if not children:
+            if not content.children:
                 self._content_mounted = False
                 self._tools = {}
+                self._content_freeze_epoch = None
                 return
+            young_content = self._young_content_watch(content)
             await content.remove_children()
             # Textual's FIFO arrangement cache keeps prior child placements
             # across node-version changes. Drop those detached placements before
-            # requesting a full reclaim so the removed frozen subtree is no
-            # longer reachable from this permanently mounted container.
+            # reporting the removal so the removed subtree is no longer
+            # reachable from this permanently mounted container.
             content._clear_arrangement_cache()
             # Refresh NodeList's cached displayed-child view. A hidden
             # container is not laid out again, so Textual would otherwise keep
@@ -2139,7 +2192,13 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
             _ = content.displayed_children
             self._content_mounted = False
             self._tools = {}
-            self.post_message(GcReclaimRequested(GcReclaimReason.STABLE_CONTENT_REMOVED, prompt=False))
+            self._content_freeze_epoch = None
+            # A subtree no freeze has captured is young garbage: the coordinator reclaims
+            # only if it outlives the next freezing action's collection, instead of
+            # rescanning the whole heap for it.
+            self.post_message(
+                GcReclaimRequested(GcReclaimReason.STABLE_CONTENT_REMOVED, prompt=False, removed=young_content)
+            )
             if not self.collapsed or not self.all_complete:
                 await self._restore_completed_tool_widgets_locked(allow_collapsed=not self.all_complete)
 
@@ -2157,6 +2216,8 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         content = self.query_one("#tg-content")
         rebuilt: dict[str, Widget] = {}
         records = list(self._tool_records.values())
+        if records:
+            self._note_content_build_epoch()
         widgets: list[Widget] = []
         for record in records:
             if record.provider_hosted:
@@ -2268,8 +2329,10 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         if not self._accepts_tool_mounts() or self.collapsed or not self._content_mounted:
             return
         self._cancel_pending_content_mounts()
+        # A factory, not a coroutine: an exclusive group cancels a worker that never
+        # started, and only a coroutine created at start leaves nothing unawaited.
         self._pending_content_worker = self.run_worker(
-            self._mount_pending_diffs(base_subtree_restored=base_subtree_restored),
+            partial(self._mount_pending_diffs, base_subtree_restored=base_subtree_restored),
             group=f"tool-group-{id(self)}-pending-content",
             exclusive=True,
             exit_on_error=False,

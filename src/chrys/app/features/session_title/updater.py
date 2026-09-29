@@ -29,17 +29,19 @@ import asyncio
 import contextlib
 import logging
 import re
-from dataclasses import replace
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import SessionTitleUpdated
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+from chrys.foundation.util.once_close import OnceClose, finish_close
 from chrys.kernel.compaction import EXCLUDED_KEY
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
+    from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.trajectory.context import TrajectoryContext
@@ -254,6 +256,23 @@ def _conversation_text(engine: AgentEngine, *, max_tokens: int | None = None) ->
     return conversation
 
 
+@dataclass(eq=False, slots=True)
+class _TitleClientSlot:
+    """One cached title client and the title calls currently using it.
+
+    A replaced or shut-down slot is ``retired``; whoever brings ``users`` to
+    zero on a retired slot closes it, so a call that is still cleaning up
+    after cancellation never sees its client closed underneath it.
+    """
+
+    client: Any
+    route_id: str
+    profile_snapshot: ModelProfile
+    close: OnceClose
+    users: int = 0
+    retired: bool = False
+
+
 class SessionTitleUpdater:
     """Own the lifecycle of the post-turn session-title side call."""
 
@@ -267,17 +286,23 @@ class SessionTitleUpdater:
         self._bus = bus
         self._state_store = state_store
         self._engine_getter = engine_getter
+        # The newest refresh; older ones stay in ``_tasks`` until they finish,
+        # since a cancelled refresh may still be cleaning up.
         self._task: asyncio.Task[None] | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+        # A task is cancelled at most once: a second cancel() would interrupt
+        # its cleanup and release its client lease early.
+        self._cancel_requested: set[asyncio.Task[None]] = set()
         self._closed = False
+        self._shutdown_task: asyncio.Task[None] | None = None
         # One title call runs per turn; rebuilding the SDK client (and its
         # transport pool) each time would leak connections, so cache it per
         # route session id (which folds in session and model identity) plus
         # a snapshot of the resolved profile — the route id omits
         # connection config (API key, headers, proxy/SSL, timeouts), so a
         # live profile edit must also invalidate the client.
-        self._client: object | None = None
-        self._client_route_id: str | None = None
-        self._client_profile: ModelProfile | None = None
+        self._slot: _TitleClientSlot | None = None
+        self._client_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     # Engine callbacks (sync, called from the event loop)
@@ -311,21 +336,37 @@ class SessionTitleUpdater:
             return
         task = loop.create_task(self._refresh_generated_title(engine, session_id))
         self._task = task
+        self._tasks.add(task)
         task.add_done_callback(self._on_task_done)
 
     async def shutdown(self) -> None:
-        """Cancel and await any in-flight title generation; refuse new ones."""
+        """Cancel and drain every title generation, then close the client; refuse new ones.
+
+        All callers share one shutdown task; a waiter's cancellation never
+        reaches it, so draining and closing complete regardless.
+        """
         self._closed = True
-        task = self._task
-        self._task = None
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.get_running_loop().create_task(self._shutdown())
+        await finish_close(self._shutdown_task)
 
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+
+    async def _shutdown(self) -> None:
+        self._cancel_task()
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            self._request_cancel(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._client_lock:
+            slot, self._slot = self._slot, None
+        if slot is not None:
+            slot.retired = True
+            if slot.users == 0:
+                await self._close_slot(slot)
 
     def _current_engine(self) -> AgentEngine | None:
         if self._engine_getter is not None:
@@ -334,13 +375,21 @@ class SessionTitleUpdater:
 
         return get_current_engine()
 
+    def _request_cancel(self, task: asyncio.Task[None]) -> None:
+        if task.done() or task in self._cancel_requested:
+            return
+        self._cancel_requested.add(task)
+        task.cancel()
+
     def _cancel_task(self) -> None:
         task = self._task
         self._task = None
-        if task is not None and not task.done():
-            task.cancel()
+        if task is not None:
+            self._request_cancel(task)
 
     def _on_task_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        self._cancel_requested.discard(task)
         if self._task is task:
             self._task = None
         if task.cancelled():
@@ -348,6 +397,54 @@ class SessionTitleUpdater:
         exc = task.exception()
         if exc is not None:
             logger.debug("Session title generation failed", exc_info=exc)
+
+    @contextlib.asynccontextmanager
+    async def _leased_client(
+        self,
+        profile: ModelProfile,
+        *,
+        route_session_id: str,
+        session_id: str,
+        session_dir: Path | None,
+    ) -> AsyncIterator[Any]:
+        """Lease the cached client for one call, replacing it when its route or profile changed."""
+        from chrys.service.llm.clients import create_client
+
+        stale: _TitleClientSlot | None = None
+        async with self._client_lock:
+            if self._closed:
+                raise RuntimeError("session title updater is shut down")
+            slot = self._slot
+            if slot is None or slot.route_id != route_session_id or slot.profile_snapshot != profile:
+                client = await create_client(
+                    profile,
+                    session_id=route_session_id,
+                    parent_session_id=session_id,
+                    session_dir=session_dir,
+                )
+                stale = slot
+                # Snapshot, not reference: registries may edit profile objects
+                # in place, and a shared reference would mask the change.
+                slot = self._slot = _TitleClientSlot(
+                    client, route_session_id, replace(profile), OnceClose(client.aclose)
+                )
+                if stale is not None:
+                    stale.retired = True
+            slot.users += 1
+        try:
+            if stale is not None and stale.users == 0:
+                await self._close_slot(stale)
+            yield slot.client
+        finally:
+            slot.users -= 1
+            if slot.retired and slot.users == 0:
+                await self._close_slot(slot)
+
+    async def _close_slot(self, slot: _TitleClientSlot) -> None:
+        try:
+            await slot.close()
+        except Exception:
+            logger.debug("Closing the session title client failed", exc_info=True)
 
     def _engine_is_current_and_idle(self, engine: AgentEngine, session_id: str) -> bool:
         """Only persist while the source session is still foreground and idle."""
@@ -451,7 +548,6 @@ class SessionTitleUpdater:
         from chrys.foundation.trajectory.context import side_call_scope
         from chrys.foundation.trajectory.envelope import ActorRole
         from chrys.kernel import Message
-        from chrys.service.llm.clients import create_client
         from chrys.service.llm.responses import get_final_response
         from chrys.service.llm.route_sessions import derive_llm_route_session_id
         from chrys.service.profiles.models.options import effective_chat_options
@@ -461,18 +557,6 @@ class SessionTitleUpdater:
             route_kind="session-title",
             model_profile=profile,
         )
-        if self._client is None or self._client_route_id != route_session_id or self._client_profile != profile:
-            self._client = create_client(
-                profile,
-                session_id=route_session_id,
-                parent_session_id=session_id,
-                session_dir=engine.session_dir,
-            )
-            self._client_route_id = route_session_id
-            # Snapshot, not reference: registries may edit profile objects
-            # in place, and a shared reference would mask the change.
-            self._client_profile = replace(profile)
-        client = self._client
         options: dict = {"model": profile.model_id}
         chat_options = effective_chat_options(profile)
         if chat_options:
@@ -482,14 +566,17 @@ class SessionTitleUpdater:
             Message(role="system", contents=[_SYSTEM_PROMPT]),
             Message(role="user", contents=[_build_title_request(transcript, existing_title=existing_title)]),
         ]
-        # The title call is a side call of the session: attribute its
-        # exchange to the title generator, not the main agent.
-        with side_call_scope(ActorRole.TITLE_GEN, context=trajectory):
-            response = await get_final_response(
-                client,
-                messages,
-                stream=profile.stream,
-                options=options,
-                timeout=profile.http_read_timeout,
-            )
+        async with self._leased_client(
+            profile, route_session_id=route_session_id, session_id=session_id, session_dir=engine.session_dir
+        ) as client:
+            # The title call is a side call of the session: attribute its
+            # exchange to the title generator, not the main agent.
+            with side_call_scope(ActorRole.TITLE_GEN, context=trajectory):
+                response = await get_final_response(
+                    client,
+                    messages,
+                    stream=profile.stream,
+                    options=options,
+                    timeout=profile.http_read_timeout,
+                )
         return _sanitize_title((response.text or "").strip())

@@ -23,7 +23,7 @@ from chrys.service.mcp._http_transport import (
     _HTTPMCPTool,
 )
 from chrys.service.mcp.adapter import MCPAdapter
-from chrys.service.mcp.owned import MCPStreamableHTTPTool, _mcp_call_headers
+from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool, _mcp_call_headers
 from chrys.service.profiles.agents.schema import MCPServerConfig
 from tests.service.mcp._helpers import block_import
 
@@ -122,6 +122,8 @@ async def test_streamable_http_post_failure_wakes_pending_request() -> None:
     assert error.id == 7
     assert error.error.code == CONNECTION_CLOSED
     assert "post exploded" in error.error.message
+    # Marked local, so the tool loop never hands this detail to the model.
+    assert error.error.data == LOCAL_HTTP_FAILURE_ERROR_DATA
     assert terminated == [("sess-1", client)]
 
 
@@ -824,8 +826,9 @@ async def test_http_connect_to_stopped_server_fails_without_hanging() -> None:
             request_timeout=1,
         )
 
-        # Keep the port reserved but deliberately not listening: connection
-        # attempts are refused while no concurrent worker can claim it.
+        # Keep the port reserved but not listening, so the connection fails
+        # while no concurrent worker can claim it. Whether it is refused or
+        # its SYN is dropped depends on the OS (macOS drops it).
         tools = await asyncio.wait_for(adapter.connect_all([config]), timeout=10)
 
     assert tools == []

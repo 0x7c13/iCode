@@ -984,7 +984,7 @@ def normalize_tools(
     return normalized
 
 
-def _get_tool_name(tool_item: ToolTypes) -> str | None:
+def declared_tool_name(tool_item: ToolTypes) -> str | None:
     """Return the declared name of an owned function tool or function-tool mapping."""
     if isinstance(tool_item, FunctionTool):
         return tool_item.name
@@ -1007,11 +1007,11 @@ def _append_unique_tools(existing_tools: list[ToolTypes], new_tools: Sequence[To
     """
     seen_by_name: dict[str, ToolTypes] = {}
     for tool_item in existing_tools:
-        if tool_name := _get_tool_name(tool_item):
+        if tool_name := declared_tool_name(tool_item):
             seen_by_name[tool_name] = tool_item
 
     for tool_item in new_tools:
-        tool_name = _get_tool_name(tool_item)
+        tool_name = declared_tool_name(tool_item)
         if tool_name is None:
             existing_tools.append(tool_item)
             continue

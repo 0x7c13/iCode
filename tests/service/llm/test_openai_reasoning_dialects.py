@@ -27,7 +27,15 @@ from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_chunk import ChoiceDelta as ChunkChoiceDelta
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
-from chrys.kernel import ChatMiddlewareLayer, ChatResponse, Content, FunctionTool, Message, ResponseStream
+from chrys.kernel import (
+    OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY,
+    ChatMiddlewareLayer,
+    ChatResponse,
+    Content,
+    FunctionTool,
+    Message,
+    ResponseStream,
+)
 from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
 from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
@@ -1008,6 +1016,95 @@ def test_text_separated_tool_calls_coalesce_into_one_aggregate_before_results() 
     assert aggregate["reasoning_content"] == "R"
     assert result_1 == {"role": "tool", "tool_call_id": "call_1", "content": "one"}
     assert result_2 == {"role": "tool", "tool_call_id": "call_2", "content": "two"}
+
+
+def test_wire_text_segments_split_at_calls_without_splitting_aggregate() -> None:
+    message = Message(
+        "assistant",
+        [
+            _content_reasoning(text="R1"),
+            Content.from_text("回"),
+            _content_reasoning(text="R2"),
+            Content.from_text("退"),
+            Content.from_function_call(call_id="call_1", name="alpha", arguments="{}"),
+            Content.from_text(""),
+            Content.from_function_call(call_id="call_2", name="beta", arguments="{}"),
+            Content.from_text("核对"),
+        ],
+    )
+
+    prepared = _client()._prepare_messages_for_openai([message])
+
+    assert len(prepared) == 1
+    aggregate = prepared[0]
+    assert aggregate["content"] == "回退\n核对"
+    assert aggregate["reasoning_content"] == "R1R2"
+    assert [call["id"] for call in aggregate["tool_calls"]] == ["call_1", "call_2"]
+
+
+@pytest.mark.parametrize(
+    ("hosted_call", "summary"),
+    [
+        (
+            Content.from_mcp_server_tool_call("hosted_1", "lookup", hosted_provider="anthropic"),
+            "[Provider-hosted tool context]\nTool: lookup\nFamily: mcp\nStatus: interrupted",
+        ),
+        (
+            Content.from_search_tool_call("hosted_1", tool_name="web_search", hosted_provider="anthropic"),
+            "[Provider-hosted tool context]\nTool: web_search\nFamily: search\nStatus: interrupted",
+        ),
+    ],
+    ids=["mcp", "search"],
+)
+def test_reasoning_history_preserves_text_boundary_at_degraded_hosted_calls(hosted_call: Content, summary: str) -> None:
+    message = Message(
+        "assistant",
+        [_content_reasoning(text="R"), Content.from_text("A"), hosted_call, Content.from_text("B")],
+    )
+    original = message.to_dict()
+
+    prepared = _client()._prepare_messages_for_openai([message])
+
+    assert prepared == [{"role": "assistant", "content": f"A\n{summary}\nB", "reasoning_content": "R"}]
+    assert message.to_dict() == original
+
+
+@pytest.mark.parametrize(
+    ("parts", "expected"),
+    [
+        ([("回", None), ("退\n把代码核对完毕", None)], "回退\n把代码核对完毕"),
+        ([("基线\n", None), ("核对完毕", None)], "基线\n核对完毕"),
+        ([("First.", None), ("\n\n", None), ("Second.", None)], "First.\n\nSecond."),
+        ([("回", "a"), ("退", "a"), ("Next.", "b")], "回退\nNext."),
+        ([("One.", "a"), ("Two.", "b"), ("Three.", "a")], "One.\nTwo.\nThree."),
+        ([("One.", None), ("Two.", "a"), ("Three.", None)], "One.\nTwo.\nThree."),
+        ([("One.", "a"), ("", "b"), ("Three.", "a")], "One.\nThree."),
+        ([("One.", "a"), ("", None), ("Three.", "a")], "One.\nThree."),
+    ],
+)
+def test_reasoning_history_reconstructs_text_within_item_boundaries(
+    parts: list[tuple[str, str | None]], expected: str
+) -> None:
+    contents: list[Content] = []
+    for index, (text, block_id) in enumerate(parts):
+        properties = {}
+        if block_id is not None:
+            # Mutable envelope fields must not split fragments of the same ID.
+            properties[OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY] = {
+                "id": block_id,
+                "status": "in_progress" if index == 0 else "completed",
+                "phase": "commentary" if index == 0 else "final_answer",
+            }
+        contents.extend([_content_reasoning(text="R"), Content.from_text(text, additional_properties=properties)])
+    contents.append(Content.from_function_call(call_id="call_1", name="read_file", arguments="{}"))
+    message = Message.from_dict(Message("assistant", contents).to_dict())
+
+    prepared = _client()._prepare_messages_for_openai([message])
+
+    assert len(prepared) == 1
+    assert prepared[0]["content"] == expected
+    assert prepared[0]["reasoning_content"] == "R" * len(parts)
+    assert prepared[0]["tool_calls"][0]["id"] == "call_1"
 
 
 def test_trailing_reasoning_after_last_result_emits_positional_carrier() -> None:

@@ -152,12 +152,15 @@ class KernelConversation:
             raise StaleContinuation("Continuation no longer names this live state")
 
     def continuation_is_live(self, ticket: ContinuationTicket, origin: InvocationOrigin) -> bool:
-        """Read ticket identity, generation and origin without consuming any state."""
+        """Read ticket identity, generation and invocation without consuming any state.
+
+        A later workflow attempt of the same invocation may redeem its predecessor's ticket.
+        """
         return (
             not self.owner.closing
             and ticket is self._ticket
             and ticket.state_generation == self._generation
-            and origin == self._ticket_origin
+            and origin.same_invocation(self._ticket_origin)
         )
 
     def latch_abort(self, cause: AbortCause) -> None:

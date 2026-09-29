@@ -67,7 +67,9 @@ class ImageCompressionDialog(InsertClipboardScreenMixin, ModalScreen[None]):
 
     def finish(self) -> None:
         """Dismiss after mounting, or remember the finish if mounting is still pending."""
-        if not self._mounted:
+        # Owners may still report after removal starts, which prunes the children before this
+        # dialog unmounts. Buffer as before mount; nothing will render it.
+        if not self._mounted or self._pruning or self._closing:
             self._dismiss_pending = True
             return
         self._safe_dismiss()

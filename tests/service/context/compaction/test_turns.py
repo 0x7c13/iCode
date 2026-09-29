@@ -354,6 +354,43 @@ class TestResolveTurnsWithState:
         assert resolved.previous[0].state_boundary == 0
         assert resolved.current.state_boundary == 3
 
+    def test_reminder_enriched_stored_opener_resolves_its_turn(self) -> None:
+        """A child continuing from its own history (retry after completed work)
+        sends no new input: its stored opener is the LAST user message, which the
+        reminder middleware rebuilds with fresh contents.  Only the shared
+        ``additional_properties`` dict ties it to state — without that tier the
+        opener falls outside the history segment and the turn resolves to no
+        span, so compaction never runs."""
+        opener = _user("investigate the repo")
+        work = [*_build_tool_group("c0", "read_file", "x" * 200), *_build_tool_group("c1", "grep", "x" * 200)]
+        state = {"messages": [opener, *work]}
+        wire = [_wire_message_view(m) for m in _wire_view(state)]
+        wire[0] = SystemReminderMiddleware._create_enriched(wire[0], ["runtime reminder"], [])
+        assert all(a is not b for a, b in zip(wire[0].contents, opener.contents, strict=False))
+
+        resolved = _resolve_turns(wire, state)
+
+        assert _spans(resolved) == [(0, len(wire))]
+        assert resolved.current.state_boundary == 0
+        assert _state_correspondence(wire, state["messages"])[0] == 0
+
+    def test_properties_identity_shared_by_two_state_messages_is_ambiguous(self) -> None:
+        """A dict aliased by two state messages proves nothing; the tier abstains."""
+        first = _user("q1")
+        second = _user("q2")
+        second.additional_properties = first.additional_properties
+        rebuilt = Message("user", ["q2 enriched"])
+        rebuilt.additional_properties = first.additional_properties
+
+        assert _state_correspondence([rebuilt], [first, second]) == {}
+
+    def test_properties_identity_requires_role_agreement(self) -> None:
+        stored = _assistant_text("a1")
+        rebuilt = Message("user", ["not the same message"])
+        rebuilt.additional_properties = stored.additional_properties
+
+        assert _state_correspondence([rebuilt], [stored]) == {}
+
     def test_fresh_prompt_boundary_absent_from_state(self) -> None:
         """A fresh prompt's opener is not stored yet: state_boundary is None."""
         opener1 = _user("q1")
@@ -535,6 +572,25 @@ async def test_provider_prefix_user_never_treated_as_previous_turn():
         assert msg.additional_properties.get(EXCLUDE_REASON_KEY) == _REASON_CURRENT_TURN_DROP
     p4 = [r for r in received if r.phase == "phase4"]
     assert p4 and p4[0].turn_numbers == [2]
+
+
+async def test_phase4_runs_when_reminder_rebuilds_the_stored_opener():
+    """Integration twin of the enriched-opener resolver pin: a child retry that
+    continues from its own history still compacts its current turn."""
+    state: dict = {"messages": [_user("investigate the repo and report")]}
+    for i in range(6):
+        state["messages"].extend(_build_tool_group(f"c{i}", "read_file", "x" * 3000))
+    wire = [_wire_message_view(m) for m in _wire_view(state)]
+    wire[0] = SystemReminderMiddleware._create_enriched(wire[0], ["runtime reminder"], [])
+
+    generator = StubLastWordsGenerator()
+    received: list[CompactionInfo] = []
+    strategy = _forced_phase4(wire, last_words_generator=generator, on_compaction=_async_appender(received))
+    strategy.bind_state(state)
+
+    assert await strategy(wire)
+    assert [r.phase for r in received if r.phase == "phase4"] == ["phase4"]
+    assert len(generator.calls) == 1
 
 
 async def test_p1_re_resolves_spans_after_summary_insertions():

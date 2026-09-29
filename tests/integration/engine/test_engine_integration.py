@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -214,7 +215,9 @@ async def test_compress_context_reduces_messages_in_tool_loop(agent_engine, monk
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 
@@ -331,7 +334,9 @@ async def test_compress_context_with_session_save_restore(
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 
@@ -535,7 +540,9 @@ async def test_compress_with_intermediate_text_and_injection(
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 
@@ -695,7 +702,9 @@ async def test_chrys_engine_full_pipeline(agent_engine, monkeypatch: pytest.Monk
 
     mock_client = MockChatClient(responses=mock_responses)
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     await engine.start(profile)
 
     # Verify SessionReady
@@ -771,7 +780,9 @@ async def test_chrys_engine_with_tool_calls(agent_engine, monkeypatch: pytest.Mo
 
     import chrys.orchestration.engine.build.builder as builder_module
 
-    monkeypatch.setattr(builder_module, "create_client", lambda s=None, **kw: mock_client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=mock_client)
+    )
     engine = agent_engine(bus, settings=settings)
     await engine.start(profile)
 

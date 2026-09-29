@@ -18,6 +18,7 @@ from chrys.foundation.events.types import (
     WorkflowRunAccepted,
     WorkflowRunNotice,
 )
+from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.orchestration.workflows.runner import WorkflowRunResult
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -82,7 +83,10 @@ def _states(events: list[Event]) -> dict[str, list[str]]:
 async def _run(
     host: ChrysSessionHost, workflow_id: str, *, input_text: str, answers: dict[str, list[str]] | None = None
 ) -> tuple[WorkflowRunResult, list[Event], list[WorkflowNodeAskUser]]:
-    """Run to the terminal, answering each node's questions from *answers* in order."""
+    """Run to the terminal, answering each node's questions from *answers* in order.
+
+    Each scripted reply is the one value the dialog hands back: a clicked option's label or typed text.
+    """
     events: list[Event] = []
     asks: list[WorkflowNodeAskUser] = []
     scripted = {node: list(replies) for node, replies in (answers or {}).items()}
@@ -99,7 +103,7 @@ async def _run(
                     node_id=event.node_id,
                     activation_id=event.activation_id,
                     request_id=event.request_id,
-                    answer=scripted[event.node_id].pop(0),
+                    answers=(AskUserAnswer(values=(scripted[event.node_id].pop(0),)),),
                 )
             )
     result = host.engine.workflows.result(run_id)
@@ -173,7 +177,7 @@ async def test_an_interactive_deep_tour_asks_twice_and_adds_next_steps(
     host = _host(tmp_path, project, interactive=True)
     try:
         result, events, asks = await _run(
-            host, DEMO, input_text="", answers={"choose_depth": ["Deep"], "review": ["OK."]}
+            host, DEMO, input_text="", answers={"choose_depth": ["deep"], "review": ["OK."]}
         )
     finally:
         await host.shutdown()
@@ -181,8 +185,11 @@ async def test_an_interactive_deep_tour_asks_twice_and_adds_next_steps(
     assert result.outcome.value == "completed"
     assert of_type(events, WorkflowRunNotice) == []
     assert [ask.node_id for ask in asks] == ["choose_depth", "review"]
+    (depth_question,) = asks[0].questions
+    assert (depth_question.header, [option.label for option in depth_question.options]) == ("", ["quick", "deep"])
+    assert not depth_question.multi_select
     # The review question carries the draft: the dialog is all the reviewer can see while it is open.
-    assert asks[1].prompt.startswith("The tour.\n\n---\n\n**Review, round 1 of 2.**")
+    assert asks[1].questions[0].question.startswith("The tour.\n\n---\n\n**Review, round 1 of 2.**")
     outputs = {output.node_id: output.value.text for output in result.outputs}
     assert list(outputs) == ["render_tour", "next_steps"]
     assert "Depth: deep\nStatus: accepted by the reader in round 1\n\nThe tour." in outputs["render_tour"]
@@ -202,6 +209,29 @@ async def test_an_interactive_deep_tour_asks_twice_and_adds_next_steps(
     )
     # The session appends its runtime reminder to every agent prompt; the node's input comes first.
     assert _prompt(steps).startswith("The tour.")
+
+
+async def test_a_typed_depth_that_differs_from_the_label_keeps_the_quick_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scan, writer = _client("notes"), _client("The tour.")
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), scan, writer])
+    project = make_project(tmp_path)
+    host = _host(tmp_path, project, interactive=True)
+    try:
+        result, events, asks = await _run(
+            host, DEMO, input_text="", answers={"choose_depth": ["Deep"], "review": ["OK."]}
+        )
+    finally:
+        await host.shutdown()
+
+    # Labels match case-sensitively: "Deep" is the person's own text, so `answer.choice` is None.
+    assert [ask.node_id for ask in asks] == ["choose_depth", "review"]
+    states, deep_nodes = _states(events), ("fan_out", *READERS)
+    assert {node: states[node] for node in deep_nodes} == {node: ["skipped"] for node in deep_nodes}
+    assert (scan.call_count, writer.call_count) == (1, 1)
+    (output,) = result.outputs
+    assert "Depth: quick\nStatus: accepted by the reader in round 1\n\nThe tour." in output.value.text
 
 
 async def test_feedback_reaches_the_second_round_and_an_unaccepted_draft_stays_a_draft(
@@ -225,7 +255,7 @@ async def test_feedback_reaches_the_second_round_and_an_unaccepted_draft_stays_a
     revision = _prompt(second)
     assert "asked for this change:\n\nMention the CLI." in revision
     assert "--- current tour ---\nDraft one." in revision
-    assert asks[1].prompt.startswith("Draft two.\n\n---\n\n**Review, round 2 of 2.**")
+    assert asks[1].questions[0].question.startswith("Draft two.\n\n---\n\n**Review, round 2 of 2.**")
     # on_exhausted="continue": the run completes, and the output says what it is.
     assert result.outcome.value == "completed"
     (output,) = result.outputs

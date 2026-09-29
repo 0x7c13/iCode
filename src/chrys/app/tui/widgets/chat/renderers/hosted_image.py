@@ -11,6 +11,7 @@ from typing import Any
 from rich.text import Text
 from textual.widgets import Static
 
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.widgets.chat.renderers.hosted_generic import (
     HOSTED_RESULT,
     HostedToolCall,
@@ -54,7 +55,7 @@ class HostedImageToolCall(HostedToolCall):
         with suppress(Exception):
             body = self.query_one("#tc-body", Static)
             body.display = True
-            body.update(Text(preview) if preview else self._render_spinner())
+            update_static_in_place(body, Text(preview) if preview else self._render_spinner())
         self._render_image_contents(list(self.image_contents))
         with suppress(Exception):
             self.query_one("#tc-label", Static).update(self._label_text())

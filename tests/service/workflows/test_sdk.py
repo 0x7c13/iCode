@@ -30,10 +30,13 @@ from chrys.workflows import __all__ as facade_exports
 from tests.service.workflows.driver import body_fn, yes
 
 FIXTURE = Path(__file__).parent / "fixtures" / "code-review.py"
-EIGHT = [
+AUTHORING_NAMES = [
+    "Answer",
     "BuilderScope",
     "NodeContext",
     "NodeHandle",
+    "Option",
+    "Question",
     "Retry",
     "SourceValue",
     "Workflow",
@@ -60,9 +63,9 @@ def _edge(manifest: dict[str, Any], edge_id: str) -> dict[str, Any]:
     return next(edge for edge in manifest["edges"] if edge["id"] == edge_id)
 
 
-def test_facade_and_sdk_export_exactly_the_eight_names() -> None:
-    assert facade_exports == EIGHT
-    assert sdk.__all__ == EIGHT
+def test_facade_and_sdk_export_exactly_the_authoring_names() -> None:
+    assert facade_exports == AUTHORING_NAMES
+    assert sdk.__all__ == AUTHORING_NAMES
 
 
 def test_golden_example_manifest() -> None:
@@ -431,8 +434,8 @@ def test_validation_error_carries_a_location() -> None:
 def test_node_context_type_checks_and_delegates() -> None:
     emitted: list[str] = []
 
-    async def ask(prompt: str) -> str:
-        return f"answer:{prompt}"
+    async def ask(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{"selected": [], "text": f"answer:{questions[0]['question']}"}]
 
     ctx = NodeContext(emit=emitted.append, ask=ask)
     ctx.emit("hello")
@@ -440,7 +443,7 @@ def test_node_context_type_checks_and_delegates() -> None:
     with pytest.raises(TypeError):
         ctx.emit(1)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
-        asyncio.run(ctx.ask(1))  # type: ignore[arg-type]
+        asyncio.run(ctx.ask(1))  # type: ignore[call-overload]
     assert asyncio.run(ctx.ask("q")) == "answer:q"
 
 

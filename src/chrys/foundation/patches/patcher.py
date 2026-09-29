@@ -218,14 +218,20 @@ def apply_all() -> list[PatchResult]:
     import chrys.foundation.patches.textual_dispatch_cache as textual_dispatch_cache
     import chrys.foundation.patches.textual_ime_cursor_anchor as textual_ime_cursor_anchor
     import chrys.foundation.patches.textual_kitty_keyboard as textual_kitty_keyboard
+    import chrys.foundation.patches.textual_lru_acyclic as textual_lru_acyclic
     import chrys.foundation.patches.textual_message_pump as textual_message_pump
+    import chrys.foundation.patches.textual_node_diet as textual_node_diet
     import chrys.foundation.patches.textual_one_shot_timer as textual_one_shot_timer
     import chrys.foundation.patches.textual_option_list as textual_option_list
     import chrys.foundation.patches.textual_precompose as textual_precompose
     import chrys.foundation.patches.textual_pruned_tabs as textual_pruned_tabs
+    import chrys.foundation.patches.textual_reflow_reuse as textual_reflow_reuse
+    import chrys.foundation.patches.textual_removed_node_caches as textual_removed_node_caches
     import chrys.foundation.patches.textual_removed_screen_callbacks as textual_removed_screen_callbacks
     import chrys.foundation.patches.textual_selection_extract as textual_selection_extract
+    import chrys.foundation.patches.textual_strip_cycles as textual_strip_cycles
     import chrys.foundation.patches.textual_tab_selection as textual_tab_selection
+    import chrys.foundation.patches.textual_timer_skip as textual_timer_skip
     import chrys.foundation.patches.textual_utf8_decoder as textual_utf8_decoder
     import chrys.foundation.patches.textual_win_sleep as textual_win_sleep
     import chrys.foundation.patches.watchdog_fsevents as watchdog_fsevents
@@ -262,9 +268,15 @@ def apply_all() -> list[PatchResult]:
             ("textual_message_pump", textual_message_pump.apply_runtime_patch),
             ("textual_dispatch_cache", textual_dispatch_cache.apply_runtime_patch),
             ("textual_one_shot_timer", textual_one_shot_timer.apply_runtime_patch),
+            ("textual_timer_skip", textual_timer_skip.apply_runtime_patch),
+            ("textual_reflow_reuse", textual_reflow_reuse.apply_runtime_patch),
+            ("textual_strip_cycles", textual_strip_cycles.apply_runtime_patch),
+            ("textual_lru_acyclic", textual_lru_acyclic.apply_runtime_patch),
+            ("textual_node_diet", textual_node_diet.apply_runtime_patch),
             ("textual_option_list", textual_option_list.apply_runtime_patch),
             ("textual_precompose", textual_precompose.apply_runtime_patch),
             ("textual_pruned_tabs", textual_pruned_tabs.apply_runtime_patch),
+            ("textual_removed_node_caches", textual_removed_node_caches.apply_runtime_patch),
             ("textual_removed_screen_callbacks", textual_removed_screen_callbacks.apply_runtime_patch),
             ("textual_selection_extract", textual_selection_extract.apply_runtime_patch),
             ("textual_tab_selection", textual_tab_selection.apply_runtime_patch),

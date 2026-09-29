@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.retry import StreamStall
 from chrys.kernel import (
@@ -23,6 +24,7 @@ from chrys.kernel import (
     ResponseStream,
     StallExhaustedAction,
     is_retry_boundary_update,
+    report_wire_progress,
     tool,
 )
 from chrys.kernel import loop as loop_module
@@ -1281,6 +1283,58 @@ async def test_cancel_during_watchdog_wait_unwinds_cleanly_and_closes_transport(
     assert transport_closed == 1
 
 
+def _first_byte_after(prepare: Any) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
+    """A stream whose first pull runs *prepare* (compaction's slot) before answering."""
+
+    async def _answer():
+        yield _text_update("done")
+
+    async def _resolve() -> ResponseStream[ChatResponseUpdate, ChatResponse]:
+        await prepare()
+        return ResponseStream(_answer(), finalizer=ChatResponse.from_updates)
+
+    return ResponseStream.from_awaitable(_resolve())
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_times_idle_gaps_not_reported_preparation() -> None:
+    """Preparation that outlasts the stall timeout but reports progress more
+    often than that (a LAST_WORDS side call streaming its note) keeps the pull
+    alive instead of being killed and redone on every wire retry."""
+    timeout = 1.0
+
+    async def _reporting_preparation() -> None:
+        # 1.2 s in total, always past the timeout; each gap leaves 0.9 s of slack.
+        for _ in range(12):
+            await asyncio.sleep(timeout / 10)
+            report_wire_progress()
+
+    policy = _Policy(stall_timeout_seconds=timeout, stall_exhausted_action=StallExhaustedAction.RAISE)
+    wire = _ScriptedWire([_first_byte_after(_reporting_preparation)])
+    stream = _layer(wire).get_response([_user()], stream=True, client_kwargs={"wire_retry_policy": policy})
+
+    response = await stream.get_final_response()
+
+    assert response.text == "done"
+    assert policy.events == []
+    assert len(wire.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_still_fires_once_preparation_goes_idle() -> None:
+    async def _idle_after_progress() -> None:
+        report_wire_progress()
+        await asyncio.Event().wait()
+
+    policy = _Policy(stall_timeout_seconds=0.05, stall_exhausted_action=StallExhaustedAction.RAISE)
+    wire = _ScriptedWire([_first_byte_after(_idle_after_progress)])
+    stream = _layer(wire).get_response([_user()], stream=True, client_kwargs={"wire_retry_policy": policy})
+
+    with pytest.raises(StreamStall):
+        await stream.get_final_response()
+    assert len(wire.calls) == 1
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.asyncio
 async def test_learned_continuation_token_survives_failed_poll_for_the_retry_owner(stream: bool) -> None:
@@ -1348,6 +1402,38 @@ async def test_invalid_terminal_completion_clears_token_before_outer_retry(strea
 
     # The completed response is immutable; the retry owner must issue a
     # fresh request instead of re-polling the same invalid completion.
+    assert observed == [token, None]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_wrapped_invalidating_error_clears_token_before_retry(stream: bool) -> None:
+    token = {"response_id": "pending-wrapped"}
+    observed: list[Any] = []
+    if stream:
+        pending = [_text_update("not-terminal", continuation_token=token)]
+    else:
+        pending = _text_response("not-terminal", continuation_token=token)
+    inner = ProviderResponseError(
+        "stream_truncated", "stream ended early", retryable=True, invalidates_continuation_token=True
+    )
+    try:
+        raise ChatClientException("service failed to complete the prompt", inner_exception=inner) from inner
+    except ChatClientException as exc:
+        wrapped = exc
+    wire = _ScriptedWire([pending, wrapped])
+
+    result = _layer(wire).get_response(
+        [_user()], stream=stream, client_kwargs={"continuation_token_observer": observed.append}
+    )
+    with pytest.raises(ChatClientException):
+        if stream:
+            async for _ in result:
+                pass
+        else:
+            await result
+
+    # The flag sits on the wrapped provider error, not on the wrapper.
     assert observed == [token, None]
 
 

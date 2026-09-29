@@ -28,12 +28,19 @@ import pytest
 
 from chrys.foundation import platform as platform_mod
 from chrys.foundation.patches import mdurl_cache as _mdurl_cache
+from chrys.foundation.patches import textual_block_border as _textual_block_border
 from chrys.foundation.patches import textual_dispatch_cache as _textual_dispatch_cache
+from chrys.foundation.patches import textual_lru_acyclic as _textual_lru_acyclic
+from chrys.foundation.patches import textual_node_diet as _textual_node_diet
 from chrys.foundation.patches import textual_one_shot_timer as _textual_one_shot_timer
 from chrys.foundation.patches import textual_pruned_tabs as _textual_pruned_tabs
+from chrys.foundation.patches import textual_reflow_reuse as _textual_reflow_reuse
+from chrys.foundation.patches import textual_removed_node_caches as _textual_removed_node_caches
 from chrys.foundation.patches import textual_removed_screen_callbacks as _textual_removed_screen_callbacks
 from chrys.foundation.patches import textual_selection_extract as _textual_selection_extract
+from chrys.foundation.patches import textual_strip_cycles as _textual_strip_cycles
 from chrys.foundation.patches import textual_tab_selection as _textual_tab_selection
+from chrys.foundation.patches import textual_timer_skip as _textual_timer_skip
 from chrys.foundation.patches import textual_win_sleep as _textual_win_sleep
 from chrys.foundation.patches import watchdog_fsevents as _watchdog_fsevents
 from chrys.foundation.patches import watchdog_windows as _watchdog_windows
@@ -61,7 +68,7 @@ from tests.support.waiting import ENGINE_TURN_TIMEOUT
 if TYPE_CHECKING:
     from tests.support.notifications import RecordingNotificationDriver
 
-pytest_plugins = ("tests.support.engines", "pytester")
+pytest_plugins = ("tests.support.engines", "tests.support.llm_http_clients", "pytester")
 
 warnings.filterwarnings("ignore", message=r"\[SKILLS\].*")
 warnings.filterwarnings("ignore", message=r"\[HARNESS\].*")
@@ -107,9 +114,38 @@ _textual_pruned_tabs.apply_runtime_patch()
 # a widget under one scheduled after a refresh can be dropped with the dialog.
 _textual_removed_screen_callbacks.apply_runtime_patch()
 
+# Widgets are removed exactly as in the app; unpatched, a parent that looked a removed child up
+# keeps its whole subtree alive, and GC freeze captures it.
+_textual_removed_node_caches.apply_runtime_patch()
+
 # Tab bars move their underline from a one-shot timer exactly as in the app; unpatched, a
 # collection or descheduling right after that timer starts means it never fires.
 _textual_one_shot_timer.apply_runtime_patch()
+
+# Every rendered line reads its colors through the same cache as in the app; unpatched, that
+# cache keeps up to 1024 removed widgets' rendered lines alive, and a worker's gen2 collections
+# grow into multi-second pauses.
+_textual_block_border.apply_runtime_patch()
+
+# Screens refresh from a repeating timer exactly as in the app; unpatched, every late frame
+# skips one tick too many and the refresh rate halves under load.
+_textual_timer_skip.apply_runtime_patch()
+
+# Screens lay out through the reusing reflow exactly as in the app; it must be installed before
+# the first widget exists.
+_textual_reflow_reuse.apply_runtime_patch()
+
+# Screens paint strips exactly as in the app; unpatched, every line painted at its own width is
+# a reference cycle that only the cyclic collector frees.
+_textual_strip_cycles.apply_runtime_patch()
+
+# Widgets cache box models, queries and rendered lines exactly as in the app; it must be installed
+# before the first cache exists.
+_textual_lru_acyclic.apply_runtime_patch()
+
+# Widgets keep their unchanged defaults on the class and build pump containers lazily exactly as
+# in the app; it must be installed before the first message pump exists.
+_textual_node_diet.apply_runtime_patch()
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +360,20 @@ def _uninstalled_process_settings() -> Iterator[None]:
     reset_process_settings()
     _reset_process_env_snapshot_for_tests()
     _reset_model_pointer_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_reached_first_hops() -> Iterator[None]:
+    """Start every test with no LLM first hop marked reached.
+
+    The set is process-wide on purpose (a hop once reached makes a later
+    NONAME retryable); across tests it would make DNS verdicts order-dependent.
+    """
+    from chrys.service.llm.route_facts import reset_reached_first_hops
+
+    reset_reached_first_hops()
+    yield
+    reset_reached_first_hops()
 
 
 @pytest.fixture(autouse=True)
@@ -636,6 +686,16 @@ def clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
             monkeypatch.delenv(key, raising=False)
 
     return _clear
+
+
+@pytest.fixture
+def direct_route(monkeypatch: pytest.MonkeyPatch, clear_proxy_env: Callable[[], None]) -> None:
+    """Send HTTP straight to its host, as a loopback stub or an injected fault needs.
+
+    With no proxy env at all, httpx falls back to the macOS/Windows system proxy.
+    """
+    clear_proxy_env()
+    monkeypatch.setenv("NO_PROXY", "*")
 
 
 @pytest.fixture

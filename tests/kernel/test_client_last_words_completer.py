@@ -507,6 +507,36 @@ def test_output_cap_clamp_uses_calibrated_room_and_never_mutates_or_raises(alias
     )
 
 
+def _admitted_cap(*, room: int, requested: int = 32_000, max_context_tokens: int = 200_000) -> int:
+    strategy = _AdmissionStrategy(max_context_tokens=max_context_tokens, last_included_tokens=max_context_tokens - room)
+    clamped = _clamp_output_cap_for_context(
+        {"max_tokens": requested},
+        strategy=strategy,
+        request_overhead_tokens=0,
+        client_kwargs={},
+    )
+    return clamped["max_tokens"]
+
+
+def test_output_cap_clamp_keeps_a_safety_margin_inside_a_wide_room() -> None:
+    """Estimated 196,008 input tokens leave 3,992 in a 200k window; a provider
+    counting one more token rejects 196,009 + 3,992 = 200,001 outright."""
+    assert _admitted_cap(room=3_992) == 3_992 - 2_000  # 1% of the window
+    assert _admitted_cap(room=100_000, requested=150_000) == 98_000
+    # A cap already inside the guarded room is left alone.
+    assert _admitted_cap(room=100_000, requested=32_000) == 32_000
+    # Small windows keep a floor of margin.
+    assert _admitted_cap(room=2_000, requested=4_000, max_context_tokens=8_000) == 2_000 - 256
+
+
+def test_output_cap_margin_yields_to_a_useful_output_but_never_past_the_room() -> None:
+    assert _admitted_cap(room=1_500) == 1_024
+    assert _admitted_cap(room=800) == 800
+    for room in range(1, 6_000, 37):
+        admitted = _admitted_cap(room=room)
+        assert min(room, 1_024) <= admitted <= room, room
+
+
 def test_output_cap_clamp_handles_multiple_aliases_and_minimum_legal_caps() -> None:
     strategy = _AdmissionStrategy(max_context_tokens=100, last_included_tokens=99)
     aliases = ("max_tokens", "max_output_tokens", "max_completion_tokens")
@@ -981,3 +1011,66 @@ async def test_completer_side_call_bypasses_compaction() -> None:
     # Only the side call carries the internal-side-call marker.
     assert client.inner_calls[0]["side_call"] is True
     assert client.inner_calls[1]["side_call"] is False
+
+
+@pytest.mark.parametrize(("stream", "expected"), [(True, [1, 4]), (False, [1, 2])])
+@pytest.mark.asyncio
+async def test_completer_reports_wire_progress_on_dispatch_each_chunk_and_completion(
+    stream: bool, expected: list[int]
+) -> None:
+    """The side call runs inside the live pull's stall watchdog: every report
+    restarts its idle timer, so a long note that keeps streaming never stalls
+    the pull.  A streamed note reports per chunk; a blocking one only around
+    the request."""
+    reports = 0
+
+    def _on_progress() -> None:
+        nonlocal reports
+        reports += 1
+
+    at_dispatch: list[int] = []
+
+    class _Client(_RecordingClient):
+        def _inner_get_response(self, **kwargs: Any) -> Any:
+            at_dispatch.append(reports)
+            return super()._inner_get_response(**kwargs)
+
+    completer = _ClientLastWordsCompleter(_Client(), stream=stream, options={"model": "m"}, client_kwargs={})
+    note = await kernel_client.start_with_wire_progress(
+        completer.complete_last_words([Message("user", ["q"])], "I", max_output_tokens=10), _on_progress
+    )
+
+    assert note == "note text"
+    assert [at_dispatch[0], reports] == expected
+    # The callback belongs to the task's context only.
+    kernel_client.report_wire_progress()
+    assert reports == expected[1]
+
+
+@pytest.mark.asyncio
+async def test_wire_preparation_reports_progress_once_compaction_finishes() -> None:
+    """The provider's time to first byte gets a full stall window after compaction."""
+    reports = 0
+
+    def _on_progress() -> None:
+        nonlocal reports
+        reports += 1
+
+    observed: list[tuple[str, int]] = []
+
+    class _Strategy(_CapturingStrategy):
+        async def __call__(self, messages: list[Any], context: Any = None) -> bool:
+            observed.append(("compaction", reports))
+            return await super().__call__(messages, context)
+
+    class _Client(_RecordingClient):
+        def _inner_get_response(self, **kwargs: Any) -> Any:
+            observed.append(("dispatch", reports))
+            return super()._inner_get_response(**kwargs)
+
+    await kernel_client.start_with_wire_progress(
+        _Client().get_response([Message("user", ["hi"])], options={"model": "m"}, compaction_strategy=_Strategy()),
+        _on_progress,
+    )
+
+    assert observed == [("compaction", 0), ("dispatch", 1)]

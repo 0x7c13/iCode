@@ -21,6 +21,7 @@ from chrys.app.tui.widgets.workflow.selection import WorkflowList
 from chrys.app.tui.widgets.workflow.values import WorkflowValueView
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -269,7 +270,7 @@ async def test_workflow_question_answers_and_run_terminal_owns_dialog(
             activation_id="py@iter#1",
             attempt=1,
             request_id="question",
-            prompt="Your [answer]?",
+            questions=(AskUserQuestion("Your [answer]?"),),
         )
         await bus.publish(question)
         if end == "before":
@@ -290,7 +291,8 @@ async def test_workflow_question_answers_and_run_terminal_owns_dialog(
             area.load_text("a precise answer")
             await click_when_settled(pilot, dialog.query_one("#askuser-submit", Button))
             await wait_for(lambda: len(answers) == 1 and app.screen is main, pilot=pilot)
-            assert answers[0].request_id == "question" and answers[0].answer == "a precise answer"
+            assert answers[0].request_id == "question"
+            assert answers[0].answers == (AskUserAnswer(values=("a precise answer",)),)
             assert answers[0].activation_id == "py@iter#1"
             await bus.publish(question)
             await wait_for(lambda: not main._workflow._refresh_pending, pilot=pilot)

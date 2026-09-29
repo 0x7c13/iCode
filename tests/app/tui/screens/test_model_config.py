@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -723,9 +724,20 @@ async def test_model_config_responses_capable_provider_api_style_round_trip(prov
     assert hidden_saved.api_style == "chat_completions"
 
 
-async def test_max_output_tokens_label_shows_wire_param_per_provider() -> None:
+async def test_max_output_tokens_label_shows_wire_param_per_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     """The Max Output Tokens label surfaces the actual wire parameter so users
-    can tell max_tokens providers apart from max_completion_tokens ones."""
+    can tell max_tokens providers apart from max_completion_tokens ones.
+
+    Labelling never imports the SDK-backed client modules: on a process that has
+    not loaded the openai SDK, the first open would import it on the UI loop.
+    """
+    for module in (
+        "openai",
+        "chrys.service.llm.openai_chat_completion",
+        "chrys.service.llm.deepseek",
+        "chrys.service.llm.glm",
+    ):
+        monkeypatch.setitem(sys.modules, module, None)
     registry, profile = single_profile_registry()
 
     async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):

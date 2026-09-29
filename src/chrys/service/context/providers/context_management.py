@@ -363,15 +363,9 @@ class ContextManagementProvider(ContextProvider):
         )
 
         try:
-            from chrys.service.llm.clients import create_client
+            from chrys.service.llm.clients import scoped_client
             from chrys.service.profiles.models.options import effective_chat_options
 
-            client = create_client(
-                self._profile,
-                session_id=self._session_id,
-                parent_session_id=self._parent_session_id,
-                session_dir=self._session_dir,
-            )
             chat_options = effective_chat_options(self._profile)
             messages = [
                 Message(
@@ -380,14 +374,20 @@ class ContextManagementProvider(ContextProvider):
                 ),
                 Message("user", [prompt]),
             ]
-            with side_call_scope(ActorRole.COMPACTION):
-                response = await get_final_response(
-                    client,
-                    messages,
-                    stream=self._profile.stream,
-                    options=chat_options,
-                    timeout=self._profile.http_read_timeout,
-                )
+            async with scoped_client(
+                self._profile,
+                session_id=self._session_id,
+                parent_session_id=self._parent_session_id,
+                session_dir=self._session_dir,
+            ) as client:
+                with side_call_scope(ActorRole.COMPACTION):
+                    response = await get_final_response(
+                        client,
+                        messages,
+                        stream=self._profile.stream,
+                        options=chat_options,
+                        timeout=self._profile.http_read_timeout,
+                    )
             return response.text or "No answer could be generated from the compressed context."
         except Exception as e:
             logger.warning("recall_context failed: %s", e, exc_info=True)

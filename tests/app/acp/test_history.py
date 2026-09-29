@@ -17,7 +17,14 @@ from chrys.foundation.tool_result_metadata import (
     SHELL_TIMED_OUT_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
 )
-from chrys.kernel import Content, Message
+from chrys.kernel import (
+    GROUP_ANNOTATION_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    Content,
+    Message,
+    set_excluded,
+)
 from chrys.service.session.message_metadata import TOOL_CALL_KIND_METADATA_KEY, TOOL_RESULT_METADATA_KEY
 from chrys.service.state.store import JsonFileStateStore
 
@@ -992,3 +999,61 @@ async def test_replay_preserves_mixed_text_local_and_hosted_content_order(tmp_pa
     ]
     text_updates = [update for update in updates if update.session_update == "agent_message_chunk"]
     assert [update.content.text for update in text_updates] == ["Before.", "\n\nBetween.", "\n\nAfter."]
+
+
+_SUMMARY_TEXT = '[Tool call: read_file(path="a.py") → contents]'
+
+
+def _summary_replay_transcript(*, compacted: bool) -> list[Message]:
+    """A turn whose read_file group compaction replaced, as saved: the summary, then the excluded originals.
+
+    Without ``compacted`` the group is absent altogether, which is how the
+    reopened transcript should read.
+    """
+    read_group: list[Message] = []
+    if compacted:
+        annotation = {
+            "id": "group_1",
+            "kind": "assistant_text",
+            SUMMARY_OF_MESSAGE_IDS_KEY: ["msg_1", "msg_2"],
+            SUMMARY_OF_GROUP_IDS_KEY: ["group_1"],
+        }
+        read_group = [
+            Message("assistant", [_SUMMARY_TEXT], additional_properties={GROUP_ANNOTATION_KEY: annotation}),
+            Message("assistant", [Content.from_function_call("c1", "read_file", arguments={"path": "a.py"})]),
+            Message("tool", [Content.from_function_result("c1", result="contents")]),
+        ]
+        for original in read_group[1:]:
+            set_excluded(original, excluded=True, reason="budget_tool_compaction")
+    return [
+        Message("user", ["inspect"]),
+        *read_group,
+        Message("assistant", [Content.from_function_call("c2", "zsh", arguments={"command": "ls"})]),
+        Message("tool", [Content.from_function_result("c2", result="ok")]),
+        # A real answer that happens to read like a summary.
+        Message("assistant", [_SUMMARY_TEXT]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_replay_session_history_skips_compacted_groups_but_keeps_same_text_answers(tmp_path) -> None:
+    """A compacted group replays as nothing: its originals are excluded on disk and its summary is the model's."""
+    store = JsonFileStateStore(tmp_path / "sessions")
+    updates: dict[bool, list[Any]] = {}
+    for compacted in (False, True):
+        session_id = f"s-{compacted}"
+        await store.save_session(
+            session_id,
+            {"messages": _summary_replay_transcript(compacted=compacted)},
+            agent_profile="Code",
+            primary_cwd=str(tmp_path),
+        )
+        client = _FakeClient()
+        await replay_session_history(client, store, session_id)
+        updates[compacted] = [notification.update for notification in client.updates]
+
+    assert updates[True] == updates[False]
+    assert [update.content.text for update in updates[True] if update.session_update == "agent_message_chunk"] == [
+        _SUMMARY_TEXT
+    ]
+    assert [update.title for update in updates[True] if update.session_update == "tool_call"] == ["zsh"]

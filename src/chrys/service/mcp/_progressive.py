@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from chrys.foundation.models.turns import current_turn_start, turn_slices
 from chrys.foundation.tool_call_context import TOOL_CALL_CONTEXT_METADATA_KEY, get_tool_context, set_tool_context
 from chrys.foundation.tool_kinds import KIND_MCP, set_tool_kind
-from chrys.kernel.exceptions import ToolExecutionException
+from chrys.kernel.exceptions import ModelVisibleToolError, ToolExecutionException
 from chrys.kernel.exchanges import (
     EmptyIdPolicy,
     LiveAccessor,
@@ -22,7 +22,7 @@ from chrys.kernel.exchanges import (
 )
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.sessions import ContextProvider
-from chrys.kernel.tools import FunctionTool, normalize_tools
+from chrys.kernel.tools import FunctionTool, declared_tool_name, normalize_tools
 from chrys.service.mcp.cache import clone_mcp_function_tool
 from chrys.service.mcp.owned import (
     _MCP_NORMALIZED_NAME_KEY,
@@ -209,7 +209,7 @@ class _ProgressiveMCPExposure:
         if isinstance(tool, str):
             return [tool]
         if not isinstance(tool, list) or not all(isinstance(name, str) for name in tool):
-            raise ToolExecutionException("MCP tool request must be a string or a list of strings.")
+            raise ModelVisibleToolError("MCP tool request must be a string or a list of strings.")
         return tool
 
     def _is_owned_catalog_tool(self, tool: FunctionTool) -> bool:
@@ -307,7 +307,16 @@ class _ProgressiveMCPExposure:
                 try:
                     ctx.add_tools(pending)
                 except ValueError as exc:
-                    raise ToolExecutionException(str(exc), inner_exception=exc) from exc
+                    # Its only ValueError is a name taken by a tool this server doesn't own. The
+                    # batch is added all or nothing, so none of the requested tools loaded. Names
+                    # are read as add_tools reads them, function-tool mappings included.
+                    live_names = {declared_tool_name(live) for live in ctx.tools}
+                    clashing = ", ".join(f"'{tool.name}'" for tool in pending if tool.name in live_names)
+                    raise ModelVisibleToolError(
+                        f"Cannot load {clashing or 'the requested MCP tools'}: another tool already has "
+                        "that name, so none of the requested MCP tools were loaded.",
+                        inner_exception=exc,
+                    ) from exc
             return "\n".join(messages) if messages else "No MCP tools requested."
 
         async def _unload(ctx: FunctionInvocationContext, tool: str | list[str]) -> str:

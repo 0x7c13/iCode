@@ -74,7 +74,7 @@ def _child_profile() -> AgentProfile:
 def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClient) -> None:
     """The node's sub-agent registration creates the child's client through the sub-agent module."""
 
-    def create_client(
+    async def create_client(
         model_profile: Any,
         *,
         on_intermediate_text_async: Callable[[str], Awaitable[None]],
@@ -234,7 +234,6 @@ async def test_a_mode_change_during_node_construction_reaches_its_sub_agents(
         node_id: str,
         invocation_id: str,
         res: Any,
-        emitter: Any,
         archive: Any,
         callbacks: Any,
         intermediate_buffer: Any,
@@ -246,7 +245,6 @@ async def test_a_mode_change_during_node_construction_reaches_its_sub_agents(
             node_id=node_id,
             invocation_id=invocation_id,
             res=res,
-            emitter=emitter,
             archive=archive,
             callbacks=callbacks,
             intermediate_buffer=intermediate_buffer,

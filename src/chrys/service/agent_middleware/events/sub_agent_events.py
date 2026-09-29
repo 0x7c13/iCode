@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from chrys.foundation.errors import clean_error_message
 from chrys.foundation.events.types import (
     InvocationMessage,
     InvocationPresentationAttemptAccepted,
@@ -89,6 +88,7 @@ from chrys.service.agent_middleware.events.result_persistence import (
     RESULT_SUB_AGENT_LOG_FILE_METADATA_KEY,
     write_result_carriage,
 )
+from chrys.service.agent_middleware.events.tool_error_text import tool_card_error_text
 from chrys.service.mutations.pipeline import (
     abort_mutation_tracking,
     finalize_mutation_tracking,
@@ -199,11 +199,16 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         self._hosted_run_generation = 0
         self._hosted_bridge: HostedPresentationBridge | None = None
 
+    def bind_origin(self, origin: InvocationOrigin) -> None:
+        """Bind the next pass; each tool call and hosted bridge keeps the origin it started under."""
+        self._origin = origin
+
     def begin_hosted_pass(self) -> HostedPresentationBridge:
         """Create the presentation bridge owned by the next controller pass."""
         self._hosted_run_generation += 1
+        origin = self._origin
         self._hosted_bridge = HostedPresentationBridge(
-            self._publish_hosted_operation,
+            lambda operation: self._publish_hosted_operation(operation, origin),
             run_generation=self._hosted_run_generation,
             before_response=self.release_intermediate_text,
         )
@@ -281,7 +286,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             descriptors.append({key: value for key, value in descriptor.items() if value != ""})
         return descriptors
 
-    async def _publish_hosted_operation(self, operation: PresentationSinkOperation) -> None:
+    async def _publish_hosted_operation(self, operation: PresentationSinkOperation, origin: InvocationOrigin) -> None:
         """Map one hosted presentation operation to sub-agent events."""
         if isinstance(operation, IntermediateTextOp):
             presentation = None
@@ -292,7 +297,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 InvocationMessage(
                     is_final=False,
                     is_intermediate=True,
-                    origin=self._origin,
+                    origin=origin,
                     agent_name=self._agent_name,
                     text=operation.text,
                     presentation=presentation,
@@ -303,7 +308,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         if isinstance(operation, PresentationAttemptAcceptedOp):
             await self._bus.publish(
                 InvocationPresentationAttemptAccepted(
-                    origin=self._origin,
+                    origin=origin,
                     agent_name=self._agent_name,
                     attempt_id=operation.attempt_id,
                     segment_ids=tuple(
@@ -316,7 +321,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         if isinstance(operation, PresentationAttemptRejectedOp):
             await self._bus.publish(
                 InvocationPresentationAttemptRejected(
-                    origin=self._origin,
+                    origin=origin,
                     agent_name=self._agent_name,
                     attempt_id=operation.attempt_id,
                     session_id=self._session_id,
@@ -338,7 +343,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         if isinstance(operation, HostedToolStartOp):
             await self._bus.publish(
                 InvocationToolCallStart(
-                    origin=self._origin,
+                    origin=origin,
                     **common,
                     tool_kind=HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY.get(view.family, ""),
                     args=view.arguments,
@@ -350,7 +355,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         elif isinstance(operation, HostedToolArgsOp):
             await self._bus.publish(
                 InvocationToolCallArgsUpdated(
-                    origin=self._origin,
+                    origin=origin,
                     **common,
                     tool_kind=HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY.get(view.family, ""),
                     args=view.arguments,
@@ -362,7 +367,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         elif isinstance(operation, HostedToolProgressOp):
             await self._bus.publish(
                 InvocationToolCallProgress(
-                    origin=self._origin,
+                    origin=origin,
                     **common,
                     lines=view.result_text.splitlines(),
                     image_contents=view.image_contents,
@@ -382,7 +387,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 metadata["provider_call_id"] = view.provider_call_id
             await self._bus.publish(
                 InvocationToolCallStatusUpdated(
-                    origin=self._origin,
+                    origin=origin,
                     **common,
                     status=view.status,
                     provider_status=view.provider_status,
@@ -392,7 +397,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         elif isinstance(operation, HostedToolResultOp):
             await self._bus.publish(
                 InvocationToolCallResult(
-                    origin=self._origin,
+                    origin=origin,
                     **common,
                     result=view.result_text,
                     image_contents=view.image_contents,
@@ -493,10 +498,11 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             if trajectory is not None
             else None
         )
+        origin = self._origin
         try:
             if preamble is not None:
                 await preamble.started()
-            await self._process(context, call_next, trajectory, preamble)
+            await self._process(context, call_next, trajectory, preamble, origin)
         except Exception:
             if preamble is not None:
                 preamble.finished_soon(outcome=PreparationOutcome.FAILED)
@@ -540,6 +546,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         call_next: Callable[[], Awaitable[None]],
         trajectory: ToolOperationTrace | None,
         preamble: PreparationTrace | None,
+        origin: InvocationOrigin,
     ) -> None:
         tool_order = get_tool_invocation_order(context)
         if tool_order is None:
@@ -582,21 +589,21 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         implicit_window = _uses_implicit_window(tool_name, tool_kind)
         if blocked:
             await self._process_tool_call(
-                context, _blocked_call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble
+                context, _blocked_call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble, origin
             )
         elif self._serialize_implicit_windows and implicit_window and self._mutation_tracker is not None:
             async with preparation_lock(self._mutation_tracker.get_implicit_window_lock(), preamble):
                 await self._process_tool_call(
-                    context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble
+                    context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble, origin
                 )
         elif file_lock_path and self._mutation_tracker is not None:
             async with preparation_lock(self._mutation_tracker.get_file_lock(file_lock_path), preamble):
                 await self._process_tool_call(
-                    context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble
+                    context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble, origin
                 )
         else:
             await self._process_tool_call(
-                context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble
+                context, call_next, call_id, provider_call_id, tool_name, args, trajectory, preamble, origin
             )
 
     async def _process_tool_call(
@@ -609,6 +616,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         args: dict,
         trajectory: ToolOperationTrace | None,
         preamble: PreparationTrace | None,
+        origin: InvocationOrigin,
     ) -> None:
         """Core tool-call processing for sub-agents."""
         tool_kind = get_tool_kind(context.function) or ""
@@ -632,7 +640,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
 
         await self._bus.publish(
             InvocationToolCallStart(
-                origin=self._origin,
+                origin=origin,
                 agent_name=self._agent_name,
                 tool_name=tool_name,
                 tool_kind=tool_kind,
@@ -706,8 +714,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         except Exception as exc:
             errored = True
             raised_error_kind = type(exc).__name__
-            message = clean_error_message(exc)
-            error_text = message if message.startswith("Error: ") else f"Error: {message}"
+            error_text = tool_card_error_text(exc)
             raise
         except BaseException:
             cancelled = True
@@ -880,7 +887,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                     result_images = extract_result_images(context.result)
                     await self._bus.publish(
                         InvocationToolCallResult(
-                            origin=self._origin,
+                            origin=origin,
                             agent_name=self._agent_name,
                             tool_name=tool_name,
                             call_id=call_id,

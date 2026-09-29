@@ -9,9 +9,9 @@ import contextlib
 import logging
 import shlex
 import socket
-import subprocess
-from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Sequence
+from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Literal, TypeGuard
 
 from rich.markup import escape
@@ -22,8 +22,8 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Label
 
-from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.screens.agents.panels.config_card import ConfigCard
+from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
+from chrys.app.tui.screens.agents.panels.config_card import CardListChanged, CollapsibleConfigCard
 from chrys.app.tui.screens.agents.panels.markdown_report import (
     NOT_ADVERTISED,
     SUPPORTED_MARK,
@@ -71,6 +71,7 @@ from chrys.app.tui.screens.agents.validation_messages import (
 from chrys.app.tui.screens.agents.validation_messages import (
     MCP_TOOL_ACCESS_NONE as _TOOL_ACCESS_NONE_LABEL,
 )
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, EnhancedTextArea, HatchedEmptyState, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
@@ -78,6 +79,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.command_line import join_windows_command_line, split_windows_command_line
 from chrys.service.mcp.adapter import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     STANDARD_CAPABILITY_GROUPS,
@@ -99,6 +101,13 @@ _WAIT_BEFORE_REMOVING = msg(
     "tui.mcp.wait_before_removing",
     fallback="Wait for MCP connection tests to finish before removing servers.",
 )
+_DELETE_SERVER_TITLE = msg("tui.mcp.confirm_delete.title", fallback="Delete MCP Server")
+_DELETE_SERVER_MESSAGE = msg(
+    "tui.mcp.confirm_delete.message",
+    fallback='Delete MCP server\n"{name}"?',
+    multiline=True,
+)
+_DELETE_SERVER_CONFIRM = msg("tui.mcp.confirm_delete.confirm", fallback="Delete")
 _TOOL_ACCESS_ALL_LABEL = msg("tui.mcp.tool_access.all", fallback="All server tools")
 _TOOL_ACCESS_SELECTED_LABEL = msg("tui.mcp.tool_access.selected", fallback="Only selected tools")
 _TOOL_LOADING_FULL_LABEL = msg(
@@ -161,7 +170,6 @@ _HEADER_VALUE_PLACEHOLDER = msg(
 )
 _VARIABLE_NAME_PLACEHOLDER = msg("tui.mcp.placeholder.variable_name", fallback="Variable name")
 _VALUE_PLACEHOLDER = msg("tui.mcp.placeholder.value", fallback="Value")
-_SERVER = msg("tui.mcp.server", fallback="MCP Server")
 _TRANSPORT = msg("tui.mcp.transport", fallback="Transport")
 _SERVER_NAME = msg("tui.mcp.server_name", fallback="Server Name")
 _SERVER_NAME_PLACEHOLDER = msg("tui.mcp.placeholder.server_name", fallback="Server name")
@@ -352,6 +360,17 @@ class _MCPKeyValueDrafts:
     env: list[tuple[str, str]] | None = None
 
 
+@dataclass(slots=True)
+class _MCPServerRow:
+    """One server in the panel: its config plus the UI-only state a card rebuild carries over."""
+
+    config: MCPServerConfig
+    command_line_text: str | None = None
+    key_value_drafts: _MCPKeyValueDrafts = field(default_factory=_MCPKeyValueDrafts)
+    # Saved servers open folded to their name row; a server added in the panel opens unfolded.
+    collapsed: bool = True
+
+
 _MCP_HEADER_ROWS = _MCPKeyValueRows(
     container_suffix="headers",
     action_prefix="h",
@@ -366,8 +385,11 @@ _MCP_ENV_ROWS = _MCPKeyValueRows(
 )
 
 
-class MCPConnectionCard(ConfigCard):
-    """A single MCP server entry with name, transport, and transport-specific fields."""
+class MCPConnectionCard(CollapsibleConfigCard):
+    """A single MCP server entry with name, transport, and transport-specific fields.
+
+    The header shows the server name, so a collapsed card shows just that name in the server list.
+    """
 
     DEFAULT_CSS = """
     MCPConnectionCard .mcp-row {
@@ -582,11 +604,26 @@ class MCPConnectionCard(ConfigCard):
     """
 
     class TestRequested(Message):
-        """Posted when the user requests a connection test for this card."""
+        """Posted when the user requests a connection test; carries the card, which a later rebuild may re-index."""
 
-        def __init__(self, index: int) -> None:
-            self.index = index
+        def __init__(self, card: MCPConnectionCard) -> None:
+            self.card = card
             super().__init__()
+
+        @property
+        def control(self) -> MCPConnectionCard:
+            return self.card
+
+    class Removed(CollapsibleConfigCard.Removed):
+        """Posted when the user clicks delete; carries the card, which a later rebuild may re-index."""
+
+        def __init__(self, card: MCPConnectionCard) -> None:
+            self.card = card
+            super().__init__(card.index)
+
+        @property
+        def control(self) -> MCPConnectionCard:
+            return self.card
 
     # Class-level counter for generating unique widget IDs across all card instances.
     _uid_counter: int = 0
@@ -600,6 +637,7 @@ class MCPConnectionCard(ConfigCard):
         command_line_text: str | None = None,
         key_value_drafts: _MCPKeyValueDrafts | None = None,
         read_only: bool = False,
+        collapsed: bool = False,
     ) -> None:
         self._config = config
         self._index = index
@@ -608,12 +646,15 @@ class MCPConnectionCard(ConfigCard):
         self._transport: Literal["stdio", "http"] = config.transport if _is_transport(config.transport) else "stdio"
         self._headers_user_modified = False
         self._env_user_modified = False
-        super().__init__(index=index, read_only=read_only)
+        super().__init__(index=index, collapsed=collapsed, read_only=read_only)
 
     @property
     def index(self) -> int:
         """Stable server index assigned by the panel."""
         return self._index
+
+    def _removed_message(self) -> MCPConnectionCard.Removed:
+        return self.Removed(self)
 
     @staticmethod
     def _format_command_line(command: str, args: list[str]) -> str:
@@ -621,7 +662,7 @@ class MCPConnectionCard(ConfigCard):
             return ""
         parts = [command, *args]
         if get_platform().is_windows:
-            return subprocess.list2cmdline(parts)
+            return join_windows_command_line(parts)
         return shlex.join(parts)
 
     @staticmethod
@@ -634,7 +675,7 @@ class MCPConnectionCard(ConfigCard):
         if not text:
             return "", []
         try:
-            parts = shlex.split(text, posix=not get_platform().is_windows)
+            parts = split_windows_command_line(text) if get_platform().is_windows else shlex.split(text)
         except ValueError as exc:
             error_message = render_message(MCP_INVALID_COMMAND.bind(detail=DisplayBlock(str(exc))))
             raise ValueError(error_message) from exc
@@ -753,203 +794,214 @@ class MCPConnectionCard(ConfigCard):
         cfg = self._config
         localizer = widget_localizer(self)
         yield from self.compose_header(
-            render_str(localizer, _SERVER.bind()),
+            self._header_title(cfg.name),
             row_class="mcp-header-row",
             title_class="mcp-title",
         )
 
-        with Vertical(classes="mcp-field"):
-            yield Label(render_str(localizer, _TRANSPORT.bind()), classes="mcp-label")
-            transport = Select(
-                _TRANSPORT_OPTIONS,
-                value=self._transport,
-                id=f"mcp-transport-{self._index}",
-                allow_blank=False,
-            )
-            transport.disabled = self._read_only
-            yield transport
-            yield Label(f"[red]*[/red] {escape(render_str(localizer, _SERVER_NAME.bind()))}", classes="mcp-label")
-            name = Input(
-                value=cfg.name,
-                placeholder=render_str(localizer, _SERVER_NAME_PLACEHOLDER.bind()),
-                id=f"mcp-name-{self._index}",
-            )
-            name.disabled = self._read_only
-            yield name
-            yield Label(render_str(localizer, _DESCRIPTION.bind()), classes="mcp-label")
-            description = EnhancedTextArea(
-                cfg.description or "",
-                id=f"mcp-desc-{self._index}",
-            )
-            description.read_only = self._read_only
-            yield description
-
-        with Vertical(
-            classes="mcp-transport-fields mcp-option-section mcp-transport-option-section",
-            id=f"mcp-transport-fields-{self._index}",
-        ) as transport_section:
-            transport_section.border_title = self._transport_options_title()
-            yield from self._compose_transport_fields(cfg)
-
-        with Vertical(classes="mcp-common-fields"):
-            with Vertical(
-                id=f"mcp-prompts-instructions-section-{self._index}",
-                classes="mcp-option-section",
-            ) as guidance_section:
-                guidance_section.border_title = render_str(localizer, _PROMPTS_AND_INSTRUCTIONS.bind())
-                expose_instructions_cb = Checkbox(
-                    render_str(localizer, _EXPOSE_SERVER_INSTRUCTIONS.bind()),
-                    value=cfg.expose_instructions,
-                    id=f"mcp-expose-instructions-{self._index}",
-                    classes="mcp-guidance-checkbox",
-                )
-                expose_instructions_cb.tooltip = render_str(
-                    localizer,
-                    _EXPOSE_INSTRUCTIONS_TOOLTIP.bind(app=APP_DISPLAY_NAME),
-                )
-                expose_instructions_cb.disabled = self._read_only
-                expose_instructions_cb.set_class(not cfg.expose_instructions, "-hint-collapsed")
-                yield expose_instructions_cb
-                expose_instructions_hint = Label(
-                    render_str(localizer, _EXPOSE_INSTRUCTIONS_HINT.bind()),
-                    id=f"mcp-expose-instructions-hint-{self._index}",
-                    classes="mcp-checkbox-hint",
-                )
-                expose_instructions_hint.display = cfg.expose_instructions
-                yield expose_instructions_hint
-                load_prompts_cb = Checkbox(
-                    render_str(localizer, _EXPOSE_SERVER_PROMPTS.bind()),
-                    value=cfg.load_prompts,
-                    id=f"mcp-load-prompts-{self._index}",
-                    classes="mcp-guidance-checkbox",
-                )
-                load_prompts_cb.tooltip = render_str(localizer, _LOAD_PROMPTS_TOOLTIP.bind(app=APP_DISPLAY_NAME))
-                load_prompts_cb.disabled = self._read_only
-                load_prompts_cb.set_class(not cfg.load_prompts, "-hint-collapsed")
-                yield load_prompts_cb
-                load_prompts_hint = Label(
-                    render_str(localizer, _LOAD_PROMPTS_HINT.bind()),
-                    id=f"mcp-load-prompts-hint-{self._index}",
-                    classes="mcp-checkbox-hint",
-                )
-                load_prompts_hint.display = cfg.load_prompts
-                yield load_prompts_hint
-
-            access_mode = self._tool_access_mode(cfg.allowed_tools)
-            with Vertical(
-                id=f"mcp-tool-access-section-{self._index}",
-                classes="mcp-option-section mcp-tool-access-section",
-            ) as access_section:
-                access_section.border_title = render_str(localizer, _TOOL_ACCESS.bind())
-                yield Label(render_str(localizer, _PERMITTED_TOOL_SET.bind()), classes="mcp-label")
-                access = Select(
-                    [(render_str(localizer, label.bind()), value) for label, value in _TOOL_ACCESS_OPTIONS],
-                    value=access_mode,
-                    id=f"mcp-tool-access-{self._index}",
+        with self.card_body():
+            with Vertical(classes="mcp-field"):
+                yield Label(render_str(localizer, _TRANSPORT.bind()), classes="mcp-label")
+                transport = Select(
+                    _TRANSPORT_OPTIONS,
+                    value=self._transport,
+                    id=f"mcp-transport-{self._index}",
                     allow_blank=False,
                 )
-                access.tooltip = render_str(localizer, _TOOL_ACCESS_TOOLTIP.bind())
-                access.disabled = self._read_only
-                yield access
-                selected_tools_fields = Vertical(
-                    id=f"mcp-selected-tools-fields-{self._index}",
-                    classes="mcp-policy-fields",
+                transport.disabled = self._read_only
+                yield transport
+                yield Label(f"[red]*[/red] {escape(render_str(localizer, _SERVER_NAME.bind()))}", classes="mcp-label")
+                name = Input(
+                    value=cfg.name,
+                    placeholder=render_str(localizer, _SERVER_NAME_PLACEHOLDER.bind()),
+                    id=f"mcp-name-{self._index}",
                 )
-                selected_tools_fields.display = access_mode == _TOOL_ACCESS_SELECTED
-                with selected_tools_fields:
-                    yield Label(render_str(localizer, _SELECTED_TOOL_NAMES.bind()), classes="mcp-label")
-                    allowed_tools_input = Input(
-                        value=", ".join(cfg.allowed_tools or []),
-                        placeholder=render_str(localizer, _SELECTED_TOOLS_PLACEHOLDER.bind()),
-                        id=f"mcp-tools-{self._index}",
-                    )
-                    allowed_tools_input.disabled = access_mode != _TOOL_ACCESS_SELECTED or self._read_only
-                    yield allowed_tools_input
-
-            no_tools = access_mode == _TOOL_ACCESS_NONE
-            loading_strategy = _TOOL_LOADING_PROGRESSIVE if cfg.use_progressive_disclosure else _TOOL_LOADING_FULL
-            model_exposure_fields = Vertical(
-                id=f"mcp-model-exposure-fields-{self._index}",
-                classes="mcp-option-section",
-            )
-            model_exposure_fields.display = not no_tools
-            with model_exposure_fields:
-                model_exposure_fields.border_title = render_str(localizer, _TOOL_LOADING.bind())
-                yield Label(render_str(localizer, _LOADING_STRATEGY.bind()), classes="mcp-label")
-                loading = Select(
-                    [(render_str(localizer, label.bind()), value) for label, value in _TOOL_LOADING_OPTIONS],
-                    value=loading_strategy,
-                    id=f"mcp-loading-strategy-{self._index}",
-                    allow_blank=False,
+                name.disabled = self._read_only
+                yield name
+                yield Label(render_str(localizer, _DESCRIPTION.bind()), classes="mcp-label")
+                description = EnhancedTextArea(
+                    cfg.description or "",
+                    id=f"mcp-desc-{self._index}",
                 )
-                loading.tooltip = render_str(localizer, _PROGRESSIVE_DISCLOSURE_TOOLTIP.bind())
-                loading.disabled = no_tools or self._read_only
-                yield loading
-                always_load_fields = Vertical(
-                    id=f"mcp-always-load-fields-{self._index}",
-                    classes="mcp-progressive-fields",
-                )
-                always_load_fields.display = not no_tools and cfg.use_progressive_disclosure
-                with always_load_fields:
-                    always_load_label = Label(
-                        render_str(localizer, _INITIALLY_VISIBLE_TOOLS.bind()),
-                        classes="mcp-label",
-                    )
-                    always_load_label.tooltip = render_str(localizer, _ALWAYS_LOAD_TOOLTIP.bind())
-                    yield always_load_label
-                    always_load = Input(
-                        value=", ".join(cfg.always_load),
-                        placeholder=render_str(localizer, _INITIAL_TOOLS_PLACEHOLDER.bind()),
-                        id=f"mcp-always-load-{self._index}",
-                    )
-                    always_load.tooltip = render_str(localizer, _ALWAYS_LOAD_TOOLTIP.bind())
-                    always_load.disabled = no_tools or not cfg.use_progressive_disclosure or self._read_only
-                    yield always_load
+                description.read_only = self._read_only
+                yield description
 
             with Vertical(
-                id=f"mcp-naming-limits-section-{self._index}",
-                classes="mcp-option-section",
-            ) as naming_section:
-                naming_section.border_title = render_str(localizer, _NAMING_AND_LIMITS.bind())
-                yield Label(render_str(localizer, _TOOL_NAME_PREFIX.bind()), classes="mcp-label")
-                prefix = Input(
-                    value=cfg.tool_name_prefix,
-                    placeholder=render_str(localizer, _TOOL_NAME_PREFIX_PLACEHOLDER.bind()),
-                    id=f"mcp-prefix-{self._index}",
-                    classes="mcp-naming-input",
-                )
-                prefix.disabled = self._read_only
-                yield prefix
-                yield Label(render_str(localizer, _REQUEST_TIMEOUT.bind()), classes="mcp-label")
-                timeout = Input(
-                    value=self._format_timeout(cfg.request_timeout),
-                    placeholder=render_str(
+                classes="mcp-transport-fields mcp-option-section mcp-transport-option-section",
+                id=f"mcp-transport-fields-{self._index}",
+            ) as transport_section:
+                transport_section.border_title = self._transport_options_title()
+                yield from self._compose_transport_fields(cfg)
+
+            with Vertical(classes="mcp-common-fields"):
+                with Vertical(
+                    id=f"mcp-prompts-instructions-section-{self._index}",
+                    classes="mcp-option-section",
+                ) as guidance_section:
+                    guidance_section.border_title = render_str(localizer, _PROMPTS_AND_INSTRUCTIONS.bind())
+                    expose_instructions_cb = Checkbox(
+                        render_str(localizer, _EXPOSE_SERVER_INSTRUCTIONS.bind()),
+                        value=cfg.expose_instructions,
+                        id=f"mcp-expose-instructions-{self._index}",
+                        classes="mcp-guidance-checkbox",
+                    )
+                    expose_instructions_cb.tooltip = render_str(
                         localizer,
-                        _REQUEST_TIMEOUT_PLACEHOLDER.bind(default=DEFAULT_CONNECT_TIMEOUT_SECONDS),
-                    ),
-                    id=f"mcp-timeout-{self._index}",
-                    classes="mcp-naming-input",
-                )
-                timeout.disabled = self._read_only
-                yield timeout
+                        _EXPOSE_INSTRUCTIONS_TOOLTIP.bind(app=APP_DISPLAY_NAME),
+                    )
+                    expose_instructions_cb.disabled = self._read_only
+                    expose_instructions_cb.set_class(not cfg.expose_instructions, "-hint-collapsed")
+                    yield expose_instructions_cb
+                    expose_instructions_hint = Label(
+                        render_str(localizer, _EXPOSE_INSTRUCTIONS_HINT.bind()),
+                        id=f"mcp-expose-instructions-hint-{self._index}",
+                        classes="mcp-checkbox-hint",
+                    )
+                    expose_instructions_hint.display = cfg.expose_instructions
+                    yield expose_instructions_hint
+                    load_prompts_cb = Checkbox(
+                        render_str(localizer, _EXPOSE_SERVER_PROMPTS.bind()),
+                        value=cfg.load_prompts,
+                        id=f"mcp-load-prompts-{self._index}",
+                        classes="mcp-guidance-checkbox",
+                    )
+                    load_prompts_cb.tooltip = render_str(localizer, _LOAD_PROMPTS_TOOLTIP.bind(app=APP_DISPLAY_NAME))
+                    load_prompts_cb.disabled = self._read_only
+                    load_prompts_cb.set_class(not cfg.load_prompts, "-hint-collapsed")
+                    yield load_prompts_cb
+                    load_prompts_hint = Label(
+                        render_str(localizer, _LOAD_PROMPTS_HINT.bind()),
+                        id=f"mcp-load-prompts-hint-{self._index}",
+                        classes="mcp-checkbox-hint",
+                    )
+                    load_prompts_hint.display = cfg.load_prompts
+                    yield load_prompts_hint
 
-        with Horizontal(classes="mcp-footer-row"):
-            with Horizontal(classes="mcp-footer-left"):
-                enabled = Checkbox(
-                    render_str(localizer, _ENABLED.bind()),
-                    value=cfg.enabled,
-                    id=f"mcp-enabled-{self._index}",
+                access_mode = self._tool_access_mode(cfg.allowed_tools)
+                with Vertical(
+                    id=f"mcp-tool-access-section-{self._index}",
+                    classes="mcp-option-section mcp-tool-access-section",
+                ) as access_section:
+                    access_section.border_title = render_str(localizer, _TOOL_ACCESS.bind())
+                    yield Label(render_str(localizer, _PERMITTED_TOOL_SET.bind()), classes="mcp-label")
+                    access = Select(
+                        [(render_str(localizer, label.bind()), value) for label, value in _TOOL_ACCESS_OPTIONS],
+                        value=access_mode,
+                        id=f"mcp-tool-access-{self._index}",
+                        allow_blank=False,
+                    )
+                    access.tooltip = render_str(localizer, _TOOL_ACCESS_TOOLTIP.bind())
+                    access.disabled = self._read_only
+                    yield access
+                    selected_tools_fields = Vertical(
+                        id=f"mcp-selected-tools-fields-{self._index}",
+                        classes="mcp-policy-fields",
+                    )
+                    selected_tools_fields.display = access_mode == _TOOL_ACCESS_SELECTED
+                    with selected_tools_fields:
+                        yield Label(render_str(localizer, _SELECTED_TOOL_NAMES.bind()), classes="mcp-label")
+                        allowed_tools_input = Input(
+                            value=", ".join(cfg.allowed_tools or []),
+                            placeholder=render_str(localizer, _SELECTED_TOOLS_PLACEHOLDER.bind()),
+                            id=f"mcp-tools-{self._index}",
+                        )
+                        allowed_tools_input.disabled = access_mode != _TOOL_ACCESS_SELECTED or self._read_only
+                        yield allowed_tools_input
+
+                no_tools = access_mode == _TOOL_ACCESS_NONE
+                loading_strategy = _TOOL_LOADING_PROGRESSIVE if cfg.use_progressive_disclosure else _TOOL_LOADING_FULL
+                model_exposure_fields = Vertical(
+                    id=f"mcp-model-exposure-fields-{self._index}",
+                    classes="mcp-option-section",
                 )
-                enabled.disabled = self._read_only
-                yield enabled
-            test_button = ConfigAddButton(
-                render_str(localizer, _TEST.bind()),
-                id=f"mcp-test-btn-{self._index}",
-                classes="mcp-test-btn",
-            )
-            test_button.disabled = self._read_only
-            test_button.display = not self._read_only
-            yield test_button
+                model_exposure_fields.display = not no_tools
+                with model_exposure_fields:
+                    model_exposure_fields.border_title = render_str(localizer, _TOOL_LOADING.bind())
+                    yield Label(render_str(localizer, _LOADING_STRATEGY.bind()), classes="mcp-label")
+                    loading = Select(
+                        [(render_str(localizer, label.bind()), value) for label, value in _TOOL_LOADING_OPTIONS],
+                        value=loading_strategy,
+                        id=f"mcp-loading-strategy-{self._index}",
+                        allow_blank=False,
+                    )
+                    loading.tooltip = render_str(localizer, _PROGRESSIVE_DISCLOSURE_TOOLTIP.bind())
+                    loading.disabled = no_tools or self._read_only
+                    yield loading
+                    always_load_fields = Vertical(
+                        id=f"mcp-always-load-fields-{self._index}",
+                        classes="mcp-progressive-fields",
+                    )
+                    always_load_fields.display = not no_tools and cfg.use_progressive_disclosure
+                    with always_load_fields:
+                        always_load_label = Label(
+                            render_str(localizer, _INITIALLY_VISIBLE_TOOLS.bind()),
+                            classes="mcp-label",
+                        )
+                        always_load_label.tooltip = render_str(localizer, _ALWAYS_LOAD_TOOLTIP.bind())
+                        yield always_load_label
+                        always_load = Input(
+                            value=", ".join(cfg.always_load),
+                            placeholder=render_str(localizer, _INITIAL_TOOLS_PLACEHOLDER.bind()),
+                            id=f"mcp-always-load-{self._index}",
+                        )
+                        always_load.tooltip = render_str(localizer, _ALWAYS_LOAD_TOOLTIP.bind())
+                        always_load.disabled = no_tools or not cfg.use_progressive_disclosure or self._read_only
+                        yield always_load
+
+                with Vertical(
+                    id=f"mcp-naming-limits-section-{self._index}",
+                    classes="mcp-option-section",
+                ) as naming_section:
+                    naming_section.border_title = render_str(localizer, _NAMING_AND_LIMITS.bind())
+                    yield Label(render_str(localizer, _TOOL_NAME_PREFIX.bind()), classes="mcp-label")
+                    prefix = Input(
+                        value=cfg.tool_name_prefix,
+                        placeholder=render_str(localizer, _TOOL_NAME_PREFIX_PLACEHOLDER.bind()),
+                        id=f"mcp-prefix-{self._index}",
+                        classes="mcp-naming-input",
+                    )
+                    prefix.disabled = self._read_only
+                    yield prefix
+                    yield Label(render_str(localizer, _REQUEST_TIMEOUT.bind()), classes="mcp-label")
+                    timeout = Input(
+                        value=self._format_timeout(cfg.request_timeout),
+                        placeholder=render_str(
+                            localizer,
+                            _REQUEST_TIMEOUT_PLACEHOLDER.bind(default=DEFAULT_CONNECT_TIMEOUT_SECONDS),
+                        ),
+                        id=f"mcp-timeout-{self._index}",
+                        classes="mcp-naming-input",
+                    )
+                    timeout.disabled = self._read_only
+                    yield timeout
+
+            with Horizontal(classes="mcp-footer-row"):
+                with Horizontal(classes="mcp-footer-left"):
+                    enabled = Checkbox(
+                        render_str(localizer, _ENABLED.bind()),
+                        value=cfg.enabled,
+                        id=f"mcp-enabled-{self._index}",
+                    )
+                    enabled.disabled = self._read_only
+                    yield enabled
+                test_button = ConfigAddButton(
+                    render_str(localizer, _TEST.bind()),
+                    id=f"mcp-test-btn-{self._index}",
+                    classes="mcp-test-btn",
+                )
+                test_button.disabled = self._read_only
+                test_button.display = not self._read_only
+                yield test_button
+
+    def _header_title(self, name: str) -> str:
+        # An unnamed server is told apart by position, with the label its Save errors use.
+        return name.strip() or render_str(widget_localizer(self), MCP_SERVER_CONTEXT.bind(index=self._index + 1))
+
+    @on(Input.Changed)
+    def _on_name_changed(self, event: Input.Changed) -> None:
+        # Not stopped: the config screen's dirty tracking also reads this event.
+        if event.input.id == f"mcp-name-{self._index}":
+            self.set_title(self._header_title(event.value))
 
     def _compose_transport_fields(self, cfg: MCPServerConfig) -> ComposeResult:
         localizer = widget_localizer(self)
@@ -1148,7 +1200,7 @@ class MCPConnectionCard(ConfigCard):
             return
         button = event.button
         if button.id == f"mcp-test-btn-{self._index}":
-            self.post_message(self.TestRequested(self._index))
+            self.post_message(self.TestRequested(self))
             return
 
         if button.id == self._key_value_add_button_id(_MCP_HEADER_ROWS):
@@ -1673,16 +1725,20 @@ class MCPConfigPanel(VerticalScroll):
         self,
         mcp_servers: list[MCPServerConfig] | None = None,
         *,
+        card_folds: Sequence[bool] | None = None,
         workspace_cwd: str | None = None,
         read_only: bool = False,
         additional_reserved_tool_names: Callable[[], Collection[str]] | None = None,
     ) -> None:
-        self._servers = list(mcp_servers) if mcp_servers else []
+        servers = list(mcp_servers or [])
+        # Folds from an earlier panel for these servers (see ``card_folds``); otherwise saved servers open folded.
+        folds = list(card_folds) if card_folds is not None and len(card_folds) == len(servers) else None
+        self._rows = [
+            _MCPServerRow(server, collapsed=True if folds is None else folds[index])
+            for index, server in enumerate(servers)
+        ]
         self._read_only = read_only
         self._additional_reserved_tool_names = additional_reserved_tool_names
-        # Parallel to _servers by index; keep in lockstep when inserting, removing, or rebuilding rows.
-        self._command_line_overrides: list[str | None] = [None for _server in self._servers]
-        self._key_value_drafts: list[_MCPKeyValueDrafts] = [_MCPKeyValueDrafts() for _server in self._servers]
         self._testing: set[int] = set()
         self._adapter = MCPAdapter(
             stdio_cwd=workspace_cwd or None,
@@ -1720,34 +1776,30 @@ class MCPConfigPanel(VerticalScroll):
 
     async def _rebuild_cards(self) -> None:
         container = self.query_one("#mcp-cards", Vertical)
-        await container.remove_children()
-        if not self._servers:
-            await container.mount(
-                HatchedEmptyState(render_str(widget_localizer(self), _EMPTY.bind()), classes="mcp-empty")
-            )
-            return
-        await container.mount(
-            *(
+        focused = self.screen.focused
+        if focused is not None and container in focused.ancestors and self.focusable:
+            # Removing the focused card (its ✕ after a delete) makes Textual focus a neighbour and
+            # animate the scroll to it; the panel itself stays put and keeps the keyboard.
+            self.screen.set_focus(self, scroll_visible=False)
+        replacements = (
+            [
                 MCPConnectionCard(
-                    server,
+                    row.config,
                     index,
-                    command_line_text=self._command_line_override_for_index(index),
-                    key_value_drafts=self._key_value_draft_for_index(index),
+                    command_line_text=row.command_line_text,
+                    key_value_drafts=row.key_value_drafts,
                     read_only=self._read_only,
+                    collapsed=row.collapsed,
                 )
-                for index, server in enumerate(self._servers)
-            )
+                for index, row in enumerate(self._rows)
+            ]
+            if self._rows
+            else [HatchedEmptyState(render_str(widget_localizer(self), _EMPTY.bind()), classes="mcp-empty")]
         )
-
-    def _command_line_override_for_index(self, index: int) -> str | None:
-        if index < len(self._command_line_overrides):
-            return self._command_line_overrides[index]
-        return None
-
-    def _key_value_draft_for_index(self, index: int) -> _MCPKeyValueDrafts:
-        if index < len(self._key_value_drafts):
-            return self._key_value_drafts[index]
-        return _MCPKeyValueDrafts()
+        # One batch: a layout between the removal and the mount would clamp the scroll to the emptied list.
+        with self.app.batch_update():
+            await container.remove_children()
+            await container.mount(*replacements)
 
     @on(Button.Pressed, "#mcp-add-btn")
     async def _on_add(self, _event: Button.Pressed) -> None:
@@ -1755,66 +1807,67 @@ class MCPConfigPanel(VerticalScroll):
             return
         from chrys.service.profiles.agents.schema import MCPServerConfig
 
-        if self._testing:
-            localizer = widget_localizer(self)
-            self.notify(
-                render_str(localizer, _WAIT_BEFORE_ADDING.bind()),
-                title=render_str(localizer, _MCP_TITLE.bind()),
-                timeout=3,
-                markup=False,
-            )
+        if self._refuse_while_testing(_WAIT_BEFORE_ADDING):
             return
         new_config = MCPServerConfig(name="New Server", transport="stdio")
-        self._servers, self._command_line_overrides, self._key_value_drafts = self._collect_server_snapshots(
-            preserve_blank_names=True
-        )
-        self._servers.insert(0, new_config)
-        self._command_line_overrides.insert(0, None)
-        self._key_value_drafts.insert(0, _MCPKeyValueDrafts())
+        self._rows = self._snapshot_rows(preserve_blank_names=True)
+        self._rows.insert(0, _MCPServerRow(new_config, collapsed=False))
         await self._rebuild_cards()
 
-    @on(MCPConnectionCard.Removed)
-    async def _on_remove(self, event: MCPConnectionCard.Removed) -> None:
-        if self._read_only:
-            return
-        if self._testing:
-            localizer = widget_localizer(self)
-            self.notify(
-                render_str(localizer, _WAIT_BEFORE_REMOVING.bind()),
-                title=render_str(localizer, _MCP_TITLE.bind()),
-                timeout=3,
-                markup=False,
-            )
-            return
-        self._servers, self._command_line_overrides, self._key_value_drafts = self._collect_server_snapshots(
-            preserve_blank_names=True
+    def _refuse_while_testing(self, reason: MessageDef) -> bool:
+        """Tell the user why the card list can't change yet; tests hold card indexes until they finish."""
+        if not self._testing:
+            return False
+        localizer = widget_localizer(self)
+        self.notify(
+            render_str(localizer, reason.bind()),
+            title=render_str(localizer, _MCP_TITLE.bind()),
+            timeout=3,
+            markup=False,
         )
-        if 0 <= event.index < len(self._servers):
-            self._servers.pop(event.index)
-            if event.index < len(self._command_line_overrides):
-                self._command_line_overrides.pop(event.index)
-            if event.index < len(self._key_value_drafts):
-                self._key_value_drafts.pop(event.index)
+        return True
+
+    @on(MCPConnectionCard.Removed)
+    def _on_remove(self, event: MCPConnectionCard.Removed) -> None:
+        card = event.card
+        if self._read_only or not self._shows(card) or self._refuse_while_testing(_WAIT_BEFORE_REMOVING):
+            return
+        dialog = ConfirmDialog(
+            title=_DELETE_SERVER_TITLE.bind(),
+            message=_DELETE_SERVER_MESSAGE.bind(name=card.header_title),
+            confirm_label=_DELETE_SERVER_CONFIRM.bind(),
+            confirm_variant="error",
+            locale_controller=widget_locale_controller(self),
+        )
+        self.app.push_screen(dialog, callback=partial(self._remove_confirmed, card))
+
+    async def _remove_confirmed(self, card: MCPConnectionCard, confirmed: bool | None) -> None:
+        if not confirmed or self._read_only or self._refuse_while_testing(_WAIT_BEFORE_REMOVING):
+            return
+        if not self._shows(card):
+            # The cards were rebuilt while the dialog was open (or a second ✕ press
+            # opened a second dialog): the confirmation names a card that is gone.
+            return
+        index = card.index
+        self._rows = self._snapshot_rows(preserve_blank_names=True)
+        if 0 <= index < len(self._rows):
+            self._rows.pop(index)
             await self._rebuild_cards()
+            self.post_message(CardListChanged())
 
     @on(MCPConnectionCard.TestRequested)
     def _on_test_requested(self, event: MCPConnectionCard.TestRequested) -> None:
-        if self._read_only:
+        card = event.card
+        if self._read_only or not self._shows(card) or card.index in self._testing:
             return
-        if event.index in self._testing:
-            return
-        if self._card_by_index(event.index) is None:
-            return
-        self._testing.add(event.index)
-        self._set_test_button_busy(event.index, True)
-        self._run_test_requested(event.index)
+        # Held until the test ends; adding and removing servers wait for it, so the index stays put.
+        self._testing.add(card.index)
+        self._set_test_button_busy(card, True)
+        self._run_test_requested(card)
 
     @work(thread=False)
-    async def _run_test_requested(self, index: int) -> None:
-        card = self._card_by_index(index)
-        if card is None:
-            raise RuntimeError("MCP test card should remain mounted while test is marked in-flight")
-
+    async def _run_test_requested(self, card: MCPConnectionCard) -> None:
+        index = card.index
         server_name = ""
         with contextlib.suppress(Exception):
             server_name = card.query_one(f"#mcp-name-{index}", Input).value.strip()
@@ -1866,7 +1919,7 @@ class MCPConfigPanel(VerticalScroll):
                 )
         finally:
             self._testing.discard(index)
-            self._set_test_button_busy(index, False)
+            self._set_test_button_busy(card, False)
 
     @staticmethod
     def _exception_chain(exc: BaseException) -> list[BaseException]:
@@ -1946,19 +1999,13 @@ class MCPConfigPanel(VerticalScroll):
 
         return f"{friendly}\n\n{raw}"
 
-    def _card_by_index(self, index: int) -> MCPConnectionCard | None:
-        for card in self.query(MCPConnectionCard):
-            if card.index == index:
-                return card
-        return None
+    def _shows(self, card: MCPConnectionCard) -> bool:
+        """Whether *card* is one of the mounted cards; a rebuild replaces them all, and re-indexes the new ones."""
+        return any(mounted is card for mounted in self.query(MCPConnectionCard))
 
-    def _set_test_button_busy(self, index: int, busy: bool) -> None:
-        card = self._card_by_index(index)
-        if card is None:
-            return
-
+    def _set_test_button_busy(self, card: MCPConnectionCard, busy: bool) -> None:
         with contextlib.suppress(Exception):
-            button = card.query_one(f"#mcp-test-btn-{index}", Button)
+            button = card.query_one(f"#mcp-test-btn-{card.index}", Button)
             if self._read_only:
                 button.disabled = True
                 button.display = False
@@ -1966,49 +2013,44 @@ class MCPConfigPanel(VerticalScroll):
             button.disabled = busy
             button.label = render_str(widget_localizer(self), (_TESTING if busy else _TEST).bind())
 
-    def _collect_server_snapshots(
-        self,
-        *,
-        preserve_blank_names: bool = False,
-    ) -> tuple[list[MCPServerConfig], list[str | None], list[_MCPKeyValueDrafts]]:
-        """Snapshot current MCP rows and UI-only draft text for rebuilds."""
+    def _snapshot_rows(self, *, preserve_blank_names: bool = False) -> list[_MCPServerRow]:
+        """Snapshot each card's config and UI-only state, in card order, for a rebuild or ``get_config``."""
         cards = list(self.query(MCPConnectionCard))
-        if len(cards) != len(self._servers):
-            return (
-                list(self._servers),
-                [self._command_line_override_for_index(index) for index in range(len(self._servers))],
-                [self._key_value_draft_for_index(index) for index in range(len(self._servers))],
+        if len(cards) != len(self._rows):
+            # Not mounted yet (or mid-rebuild): the rows are still the truth.
+            return list(self._rows)
+        return [
+            _MCPServerRow(
+                card._snapshot_config() if preserve_blank_names else card.get_config(),
+                command_line_text=card._snapshot_command_line_text(),
+                key_value_drafts=card._snapshot_key_value_drafts(),
+                collapsed=card.collapsed,
             )
-        if preserve_blank_names:
-            return (
-                [card._snapshot_config() for card in cards],
-                [card._snapshot_command_line_text() for card in cards],
-                [card._snapshot_key_value_drafts() for card in cards],
-            )
-        return (
-            [card.get_config() for card in cards],
-            [card._snapshot_command_line_text() for card in cards],
-            [card._snapshot_key_value_drafts() for card in cards],
-        )
-
-    def _collect_servers(self, *, preserve_blank_names: bool = False) -> list[MCPServerConfig]:
-        """Snapshot current MCP server rows, preserving panel state on rebuilds."""
-        servers, _command_lines, _key_value_drafts = self._collect_server_snapshots(
-            preserve_blank_names=preserve_blank_names
-        )
-        return servers
+            for card in cards
+        ]
 
     def get_config(self) -> list[MCPServerConfig]:
         """Collect config from all connection cards."""
-        return self._collect_servers()
+        return [row.config for row in self._snapshot_rows()]
 
-    def validate(self) -> list[str]:
-        """Validate all connection cards."""
+    def card_folds(self) -> list[bool]:
+        """Whether each server's card is folded, in ``get_config`` order.
+
+        The agent config screen rebuilds this panel from the draft when it loads
+        the agent again, and passes these back so an unsaved server's card stays
+        unfolded.
+        """
+        cards = list(self.query(MCPConnectionCard))
+        if len(cards) != len(self._rows):
+            return [row.collapsed for row in self._rows]
+        return [card.collapsed for card in cards]
+
+    def _validation_errors_by_card(self) -> list[tuple[MCPConnectionCard, list[str]]]:
         localizer = widget_localizer(self)
-        errors: list[str] = []
+        results: list[tuple[MCPConnectionCard, list[str]]] = []
         seen_names: set[str] = set()
         for card in self.query(MCPConnectionCard):
-            errors.extend(card.validate())
+            errors = list(card.validate())
             try:
                 name = card.query_one(f"#mcp-name-{card.index}", Input).value.strip()
                 if name:
@@ -2023,7 +2065,26 @@ class MCPConfigPanel(VerticalScroll):
                     seen_names.add(lower_name)
             except Exception:
                 pass
-        return errors
+            results.append((card, errors))
+        return results
+
+    def validate(self) -> list[str]:
+        """Validate all connection cards."""
+        return [error for _card, errors in self._validation_errors_by_card() for error in errors]
+
+    def unfold_invalid_cards(self, invalid_indexes: Collection[int] = ()) -> None:
+        """Unfold the cards that fail validation or sit at *invalid_indexes*, and scroll to the first.
+
+        A folded card hides the fields a Save error names, and the error names
+        the first invalid card first.
+        """
+        invalid = [
+            card for card, errors in self._validation_errors_by_card() if errors or card.index in invalid_indexes
+        ]
+        for card in invalid:
+            card.set_collapsed(False, scroll_visible=False)
+        if invalid:
+            self.call_after_refresh(invalid[0].scroll_visible, animate=False)
 
 
 # --- Test-dialog Markdown report -------------------------------------------

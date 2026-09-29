@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import gc
 import logging
+import weakref
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
-from functools import partial
+from functools import cache, partial
 from itertools import pairwise
 from time import perf_counter
 from typing import Any, Protocol, cast
@@ -19,6 +20,8 @@ from textual import _time as textual_time
 from textual.cache import FIFOCache, LRUCache
 from textual.message import Message
 from textual.screen import Screen
+
+from chrys.foundation.patches.textual_removed_node_caches import removal_clears_node_caches
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +100,37 @@ class GcAbsorbRequested(Message):
     terminal_boundary: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class GcRemovedContent:
+    """Weak handles on a removed subtree that no freeze had captured when it was removed.
+
+    ``built_at_epoch`` is :func:`current_gc_freeze_epoch` read before the subtree's first
+    node was built. While the epoch is unchanged the subtree is young, so instead of an
+    idle full reclaim the coordinator watches ``nodes`` and requests one only if a node
+    is still alive after the next freezing action's own collection, the one case where a
+    freeze would capture removed content.
+    """
+
+    built_at_epoch: int
+    nodes: tuple[weakref.ref[Any], ...]
+
+    @classmethod
+    def watch(cls, *, built_at_epoch: int, nodes: Iterable[object]) -> GcRemovedContent:
+        """Hold *nodes* weakly so the request never keeps the removed subtree alive."""
+        return cls(built_at_epoch=built_at_epoch, nodes=tuple(weakref.ref(node) for node in nodes))
+
+
 @dataclass
 class GcReclaimRequested(Message):
-    """Request a full reclaim at a prompt or idle lifecycle boundary."""
+    """Request a full reclaim at a prompt or idle lifecycle boundary.
+
+    An idle request that carries ``removed`` content still young when the coordinator
+    handles it becomes a watch on that content instead of a pending reclaim.
+    """
 
     reason: GcReclaimReason
     prompt: bool
+    removed: GcRemovedContent | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,8 +233,90 @@ class GcFreezeParticipant(Protocol):
         """Idempotently restore detached caches after any hook failure."""
 
 
+class _CacheProbeEntry:
+    """Weakly referenceable value the Textual cache probe watches die."""
+
+    __slots__ = ("__weakref__",)
+
+
+def _cache_frees_entries_by_refcount(
+    probe_cache: LRUCache[int, _CacheProbeEntry] | FIFOCache[int, _CacheProbeEntry],
+) -> bool:
+    """Whether *probe_cache* frees an evicted and a cleared entry by their last reference.
+
+    Upstream ``LRUCache`` links its entries into a ring, so ``clear()`` drops the index but
+    leaves the ring, and its entries, to a cyclic collection. The caller disables automatic
+    collection so a young ring cannot be collected before the check and pass as acyclic.
+    """
+    evicted = _CacheProbeEntry()
+    cleared = _CacheProbeEntry()
+    evicted_ref = weakref.ref(evicted)
+    cleared_ref = weakref.ref(cleared)
+    probe_cache[0] = evicted
+    probe_cache[1] = cleared
+    probe_cache.get(1)
+    # A capacity of two evicts key 0 under both the LRU and the FIFO policy.
+    probe_cache[2] = _CacheProbeEntry()
+    del evicted, cleared
+    evicted_freed = evicted_ref() is None
+    probe_cache.clear()
+    return evicted_freed and cleared_ref() is None
+
+
+@cache
+def textual_screen_caches_acyclic() -> bool:
+    """Whether Textual's per-widget caches free their entries without a cyclic collection.
+
+    Each widget keeps a box-model and a query-one ``LRUCache`` and an arrangement
+    ``FIFOCache``. Once ``textual_lru_acyclic`` stores LRU entries in an ``OrderedDict``,
+    neither cache holds a reference cycle: an entry evicted or cleared after a freeze is
+    freed by its last reference even though the cache itself is frozen, and the compositor
+    maps are plain containers a reflow replaces.
+
+    The answer comes from exercising both cache classes through their public API once per
+    process, after the runtime patch is installed. Anything unexpected, including an
+    upstream ring cache when the patch is skipped, answers ``False`` and keeps the detach
+    path.
+    """
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        acyclic = _cache_frees_entries_by_refcount(LRUCache(maxsize=2)) and _cache_frees_entries_by_refcount(
+            FIFOCache(maxsize=2)
+        )
+    except Exception:
+        logger.warning("Textual cache probe failed; GC freeze keeps detaching screen caches", exc_info=True)
+        return False
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+    logger.debug("Textual screen caches are %s", "acyclic" if acyclic else "cyclic; GC freeze detaches them")
+    return acyclic
+
+
+def textual_screen_caches_freeze_in_place() -> bool:
+    """Whether a GC action may freeze a screen's Textual caches as they are.
+
+    Their entries must be freed without a cyclic collection
+    (:func:`textual_screen_caches_acyclic`), and a removal must clear every entry that could
+    still hold the removed node (``textual_removed_node_caches``); otherwise a lookup cached
+    before a removal keeps the removed subtree alive until the detach path drops the cache.
+    When both hold, freezing the caches in place strands nothing, so a GC action need not
+    detach them, renew them and reflow the whole screen.
+    """
+    return removal_clears_node_caches() and textual_screen_caches_acyclic()
+
+
 def prepare_textual_screen_for_gc(screen: Screen) -> None:
-    """Release screen/compositor and detach standard cyclic LRUs before freezing."""
+    """Release screen/compositor and detach standard cyclic LRUs before freezing.
+
+    When :func:`textual_screen_caches_freeze_in_place` holds the caches stay installed. GC actions
+    run only while *screen* is on top (a covered MainScreen blocks them with ``TOP_SCREEN``), and
+    outside ``batch_update()`` the top screen lays out before the refresh callbacks that run them,
+    so its layout state names no widget removed from it.
+    """
+    if textual_screen_caches_freeze_in_place():
+        return
     screen._compositor.clear()
     for widget in screen.walk_children(with_self=True):
         widget._box_model_cache = cast(Any, detach_lru_cache(widget._box_model_cache))
@@ -227,8 +337,14 @@ def abort_textual_screen_gc_freeze(screen: Screen) -> None:
 
 
 def _normalize_textual_screen_gc_caches(screen: Screen) -> list[Exception]:
-    """Restore detached screen caches without stopping at the first failure."""
+    """Restore detached screen caches without stopping at the first failure.
+
+    Caches frozen in place were never detached, so there is nothing to renew and no reflow
+    to force.
+    """
     errors: list[Exception] = []
+    if textual_screen_caches_freeze_in_place():
+        return errors
     for widget in screen.walk_children(with_self=True):
         try:
             widget._box_model_cache = renew_lru_cache(widget._box_model_cache)
@@ -250,6 +366,27 @@ def _normalize_textual_screen_gc_caches(screen: Screen) -> list[Exception]:
 
 
 _enabled_owner: GcFreezeCoordinator | None = None
+_freeze_epoch = 0
+
+
+def current_gc_freeze_epoch() -> int:
+    """Return how many times a coordinator has frozen the permanent generation in this process.
+
+    ``gc.freeze()`` captures only objects alive when it runs, so content built after the epoch
+    was read stays out of the permanent generation until the epoch changes. Content removed
+    under the epoch it was built in is young garbage: unless something still holds it when
+    the next freeze runs, that action's own collection frees it without a full reclaim
+    (:class:`GcRemovedContent`).
+    """
+    return _freeze_epoch
+
+
+def _freeze_permanent_generation() -> None:
+    """Freeze every live tracked object, advancing the epoch first so no reader misses it."""
+    global _freeze_epoch
+
+    _freeze_epoch += 1
+    gc.freeze()
 
 
 class GcFreezeCoordinator:
@@ -289,6 +426,8 @@ class GcFreezeCoordinator:
         self._absorb_reasons: set[GcAbsorbReason] = set()
         self._prompt_reclaim_reasons: set[GcReclaimReason] = set()
         self._idle_reclaim_reasons: set[GcReclaimReason] = set()
+        self._removal_watch: dict[GcReclaimReason, list[weakref.ref[Any]]] = {}
+        """Young removed nodes the next freezing action checks after its collection."""
 
         self._absorbs_since_reclaim = 0
         self._last_input_at = self._clock()
@@ -385,8 +524,15 @@ class GcFreezeCoordinator:
         reason: GcReclaimReason,
         prompt: bool,
         requested_at: float | None = None,
+        removed: GcRemovedContent | None = None,
     ) -> None:
-        """Coalesce a full-reclaim request."""
+        """Coalesce a full-reclaim request, or watch removed content that is still young.
+
+        Removed content is young only while the epoch it was built under is current: no
+        freeze has run since, so none of it is frozen and the ordinary collector can free
+        it. Once the epoch has moved on, part of it may be frozen garbage, and the request
+        falls back to the idle reclaim.
+        """
         if self._inert():
             return
         source_time = self._clock() if requested_at is None else requested_at
@@ -398,10 +544,12 @@ class GcFreezeCoordinator:
             self._prompt_reclaim_reasons.add(reason)
             self._mark_pending()
             self._schedule()
+        elif removed is not None and removed.built_at_epoch == _freeze_epoch:
+            watched = [node for node in self._removal_watch.get(reason, ()) if node() is not None]
+            watched.extend(removed.nodes)
+            self._removal_watch[reason] = watched
         else:
-            self._idle_reclaim_pending = True
-            self._idle_reclaim_reasons.add(reason)
-            self._mark_pending()
+            self._request_idle_reclaim({reason})
 
     def note_input(self, *, occurred_at: float) -> None:
         """Record source-time activity and demote older terminal privilege."""
@@ -560,7 +708,8 @@ class GcFreezeCoordinator:
         if not self._prepare_for_freeze():
             return
         collected = gc.collect()
-        gc.freeze()
+        removal_survivors = self._take_removal_survivors()
+        _freeze_permanent_generation()
         if not self._finish_freeze():
             return
         self._frozen = True
@@ -578,6 +727,7 @@ class GcFreezeCoordinator:
             reason_snapshot=reason_snapshot,
         )
         self._clear_all_intents()
+        self._request_idle_reclaim(removal_survivors, at=action_at)
 
     def _run_full_reclaim(self) -> None:
         reason_snapshot = self._reason_snapshot()
@@ -588,7 +738,8 @@ class GcFreezeCoordinator:
             return
         gc.unfreeze()
         collected = gc.collect()
-        gc.freeze()
+        removal_survivors = self._take_removal_survivors()
+        _freeze_permanent_generation()
         if not self._finish_freeze():
             return
         self._frozen = True
@@ -606,6 +757,7 @@ class GcFreezeCoordinator:
             reason_snapshot=reason_snapshot,
         )
         self._clear_all_intents()
+        self._request_idle_reclaim(removal_survivors, at=action_at)
 
     def _run_absorb(self) -> None:
         reason_snapshot = self._reason_snapshot()
@@ -616,7 +768,8 @@ class GcFreezeCoordinator:
         if not self._prepare_for_freeze():
             return
         collected = gc.collect()
-        gc.freeze()
+        removal_survivors = self._take_removal_survivors()
+        _freeze_permanent_generation()
         if not self._finish_freeze():
             return
         action_at = self._clock()
@@ -628,9 +781,8 @@ class GcFreezeCoordinator:
         if not idle_reclaim_was_pending:
             self._reset_pending_diagnostics()
         if self._absorbs_since_reclaim >= _RECLAIM_SOFT_ABSORBS:
-            self._idle_reclaim_pending = True
-            self._idle_reclaim_reasons.add(GcReclaimReason.PERIODIC)
-            self._mark_pending(at=action_at)
+            removal_survivors.add(GcReclaimReason.PERIODIC)
+        self._request_idle_reclaim(removal_survivors, at=action_at)
         self._record_action(
             "absorb",
             collected=collected,
@@ -712,7 +864,29 @@ class GcFreezeCoordinator:
         self._absorb_reasons.clear()
         self._prompt_reclaim_reasons.clear()
         self._idle_reclaim_reasons.clear()
+        self._removal_watch.clear()
         self._reset_pending_diagnostics()
+
+    def _request_idle_reclaim(self, reasons: set[GcReclaimReason], *, at: float | None = None) -> None:
+        if not reasons:
+            return
+        self._idle_reclaim_pending = True
+        self._idle_reclaim_reasons.update(reasons)
+        self._mark_pending(at=at)
+
+    def _take_removal_survivors(self) -> set[GcReclaimReason]:
+        """Consume the removal watch; return the reasons whose removed content outlived collection.
+
+        Called between an action's ``gc.collect()`` and its freeze, where a live node is
+        exactly one the freeze is about to capture (or, under an absorb, one a previous
+        freeze already captured). It will be frozen garbage once released, so its reason
+        becomes an idle reclaim; content the collection freed needs none.
+        """
+        survivors = {
+            reason for reason, nodes in self._removal_watch.items() if any(node() is not None for node in nodes)
+        }
+        self._removal_watch.clear()
+        return survivors
 
     def _action_freeze_count(self) -> int | None:
         """Return a permanent-generation count only for offline calibration."""
@@ -925,12 +1099,16 @@ __all__ = [
     "GcFreezeParticipant",
     "GcReclaimReason",
     "GcReclaimRequested",
+    "GcRemovedContent",
     "abort_textual_screen_gc_freeze",
     "after_textual_screen_gc_freeze",
+    "current_gc_freeze_epoch",
     "detach_fifo_cache",
     "detach_lru_cache",
     "prepare_textual_screen_for_gc",
     "raise_gc_freeze_hook_errors",
     "renew_fifo_cache",
     "renew_lru_cache",
+    "textual_screen_caches_acyclic",
+    "textual_screen_caches_freeze_in_place",
 ]

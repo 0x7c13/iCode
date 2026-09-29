@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
+from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
 from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_IDS
@@ -405,6 +406,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.copy.invalid_argument",
     "tui.copy.title.action",
     "tui.copy.title.success",
+    "tui.copy.user_message",
     "tui.debug.copy.event_stream",
     "tui.diff.no_file_changes",
     "tui.diff.title",
@@ -905,6 +907,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.tool_card.sub_agent.compactions",
     "tui.tool_card.sub_agent.ctx_tokens",
     "tui.tool_card.sub_agent.diagnostics",
+    "tui.tool_card.sub_agent.errored_with_reason",
     "tui.tool_card.sub_agent.duration",
     "tui.tool_card.sub_agent.paused",
     "tui.tool_card.sub_agent.reason.acp_interrupted",
@@ -1122,6 +1125,9 @@ _message_ids.update(
         "tui.mcp.always_load_tooltip",
         "tui.mcp.bypass_proxy",
         "tui.mcp.command",
+        "tui.mcp.confirm_delete.confirm",
+        "tui.mcp.confirm_delete.message",
+        "tui.mcp.confirm_delete.title",
         "tui.mcp.description",
         "tui.mcp.empty",
         "tui.mcp.enabled",
@@ -1154,7 +1160,6 @@ _message_ids.update(
         "tui.mcp.prompts_and_instructions",
         "tui.mcp.request_timeout",
         "tui.mcp.selected_tool_names",
-        "tui.mcp.server",
         "tui.mcp.server_name",
         "tui.mcp.servers",
         "tui.mcp.servers_description",
@@ -1497,8 +1502,9 @@ _message_ids.update(
 _message_ids.update(
     {
         "tui.chat.agent_fallback_label",
-        "tui.chat.copy_agent_response_button",
         "tui.chat.copy_agent_response_tooltip",
+        "tui.chat.copy_message_button",
+        "tui.chat.copy_user_message_tooltip",
         "tui.chat.retry_message",
         "tui.chat.think_prefix",
         "tui.app.quit_help",
@@ -1970,5 +1976,10 @@ _message_ids.update(
 )
 
 EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
-    frozenset(_message_ids) | BUDDY_MESSAGE_IDS | WORKFLOW_MESSAGE_IDS | HELP_MESSAGE_IDS | WEB_MESSAGE_IDS
+    frozenset(_message_ids)
+    | BUDDY_MESSAGE_IDS
+    | WORKFLOW_MESSAGE_IDS
+    | HELP_MESSAGE_IDS
+    | WEB_MESSAGE_IDS
+    | ERROR_MESSAGE_IDS
 )

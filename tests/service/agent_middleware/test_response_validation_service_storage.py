@@ -339,6 +339,16 @@ class TestHostedCommitObservationProbes:
         assert mw.hosted_commits_observed() == ()
         assert mw.hosted_commits_in_flight() == ()
 
+    def test_a_pass_polling_a_background_response_keeps_its_hosted_work(self) -> None:
+        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
+        mw._observe_hosted_contents([Content.from_mcp_server_tool_call("mc1", "create_issue")])
+        mw.begin_pass_hosted_baseline(resumes_background_response=True)
+        assert mw.hosted_commits_observed() == ("create_issue",)
+        assert mw.hosted_commits_in_flight() == ("create_issue",)
+        mw.begin_pass_hosted_baseline(resumes_background_response=False)
+        assert mw.hosted_commits_observed() == ()
+        assert mw.hosted_commits_in_flight() == ()
+
 
 class TestServiceStorageRetryBudget:
     """Service-storage failures retry at the whole-run boundary, so the

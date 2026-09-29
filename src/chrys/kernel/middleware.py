@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, TypeIs, cast
 
 from ._types import ResponseStream
-from .client import _PreparedRequestObserverClient
+from .client import SupportsAclose, _PreparedRequestObserverClient
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -132,7 +132,7 @@ class FunctionInvocationContext:
         Raises:
             RuntimeError: If this invocation is not bound to a live tool loop.
         """
-        from .tools import FunctionTool, _get_tool_name, normalize_tools
+        from .tools import FunctionTool, declared_tool_name, normalize_tools
 
         if self.tools is None:
             raise RuntimeError(
@@ -170,7 +170,7 @@ class FunctionInvocationContext:
                 tool_item
                 for tool_item in self.tools
                 if id(tool_item) not in instances_to_remove
-                and _get_tool_name(tool_item) not in names_to_remove
+                and declared_tool_name(tool_item) not in names_to_remove
                 and not (
                     isinstance(tool_item, FunctionTool)
                     and tool_item.func is not None
@@ -484,6 +484,10 @@ class SupportsGetResponse(Protocol):
     ) -> Awaitable[ChatResponse] | ResponseStream[ChatResponseUpdate, ChatResponse]: ...
 
 
+class SupportsChatInner(SupportsGetResponse, SupportsAclose, Protocol):
+    """What :class:`ChatMiddlewareLayer` wraps: a model call plus the stack's close."""
+
+
 class ChatMiddlewareLayer:
     """Composition-style chat middleware layer over an inner client.
 
@@ -499,7 +503,7 @@ class ChatMiddlewareLayer:
     sequence without copying.
     """
 
-    def __init__(self, inner: SupportsGetResponse, *, middleware: Sequence[ChatMiddleware] | None = None) -> None:
+    def __init__(self, inner: SupportsChatInner, *, middleware: Sequence[ChatMiddleware] | None = None) -> None:
         self.inner = inner
         self.chat_middleware: list[ChatMiddleware] = list(middleware) if middleware else []
 
@@ -509,6 +513,9 @@ class ChatMiddlewareLayer:
         if name == "inner":
             raise AttributeError(name)
         return getattr(self.inner, name)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
 
     def get_response(
         self,

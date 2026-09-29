@@ -37,6 +37,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -56,6 +58,7 @@ from chrys.foundation.util.header_charset import (
     model_id_charset_error,
 )
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
+from chrys.foundation.util.once_close import OnceClose
 from chrys.service.profiles.models.options import parse_http_headers
 from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, API_STYLE_RESPONSES, ModelProfile
 
@@ -102,7 +105,7 @@ class _DeterministicConnectionRetryGuard(_ConnectionRetryBase):
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    import httpx
 
 
 def _build_user_agent(sdk_user_agent: str | None = None) -> str:
@@ -272,21 +275,26 @@ def _build_profile_http_client(
     *,
     raw_http_log_path: Path | None = None,
     session_id: str | None = None,
-) -> Any | None:
-    """Build a profile-owned ``httpx.AsyncClient`` when transport knobs require it.
+) -> httpx.AsyncClient:
+    """Build the profile's ``httpx.AsyncClient``; Chrys, not the SDK, owns every pool.
 
-    Default profiles skip this path so provider SDKs keep their own default
-    HTTP clients.  When proxy bypass is enabled, explicit ``None`` mounts
-    override httpx's environment-derived proxy transports while leaving
-    ``trust_env=True`` in place for CA bundle env such as ``SSL_CERT_FILE``.
+    Uses the provider SDK's public ``DefaultAsyncHttpxClient`` so a default
+    profile keeps the SDK's own pool limits, redirects and (Anthropic) TCP
+    keepalive socket options.  When proxy bypass is enabled, explicit ``None``
+    mounts override httpx's environment-derived proxy transports while
+    leaving ``trust_env=True`` in place for CA bundle env such as
+    ``SSL_CERT_FILE``.
+
+    Route hooks come first on both lists, so every request carries its route
+    snapshot before any other hook (the raw HTTP log) runs or fails.
     """
-    if profile.verify_ssl and not profile.bypass_proxy and raw_http_log_path is None:
-        return None
-
     if profile.provider == "anthropic":
         from anthropic import DefaultAsyncHttpxClient as HTTPClient
     else:
         from openai import DefaultAsyncHttpxClient as HTTPClient
+
+    from chrys.service.llm.proxy_route import ProxyRouter
+    from chrys.service.llm.route_facts import build_route_hooks
 
     kwargs: dict[str, Any] = {
         "verify": profile.verify_ssl,
@@ -295,14 +303,18 @@ def _build_profile_http_client(
     }
     if profile.bypass_proxy:
         kwargs["mounts"] = dict(BYPASS_PROXY_MOUNTS)
+    event_hooks = build_route_hooks(ProxyRouter.from_client_config(bypass_proxy=profile.bypass_proxy))
     if raw_http_log_path is not None:
         from chrys.service.llm.raw_http_log import build_raw_http_event_hooks
 
-        kwargs["event_hooks"] = build_raw_http_event_hooks(
+        raw_hooks = build_raw_http_event_hooks(
             log_path=raw_http_log_path,
             profile=profile,
             session_id=session_id,
         )
+        for event in ("request", "response"):
+            event_hooks[event] = [*event_hooks[event], *raw_hooks.get(event, ())]
+    kwargs["event_hooks"] = event_hooks
     return HTTPClient(**kwargs)
 
 
@@ -390,7 +402,7 @@ def _create_openai_async_client(
     return _ChrysAsyncOpenAI(**kwargs)
 
 
-def create_client(
+async def create_client(
     profile: ModelProfile,
     on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
     on_intermediate_text_sync: Callable[[str], None] | None = None,
@@ -400,7 +412,13 @@ def create_client(
     session_dir: Path | None = None,
     tool_result_ceiling_tokens: int | None = None,
 ) -> Any:
-    """Create a chat client based on the configured ``ModelProfile``.
+    """Create a chat client stack based on the configured ``ModelProfile``.
+
+    The factory rolls back its own failures: once the HTTP client exists,
+    any later failure (SDK construction, SDK header validation, stack
+    assembly, cancellation) closes it before the error propagates.  After a
+    successful return the caller owns the stack and must register
+    ``client.aclose`` with its one close owner before its next ``await``.
 
     Args:
         profile: The ``ModelProfile`` to bind this client to.  Provides
@@ -427,9 +445,24 @@ def create_client(
         tool_result_ceiling_tokens: Optional kernel backstop for local tool results.
 
     Returns:
-        A chat client instance compatible with Chrys' kernel runtime.
+        A chat client stack compatible with Chrys' kernel runtime; closing it
+        (``aclose``) closes the provider SDK client and its HTTP pool.
     """
     provider = profile.provider
+    # Tool-loop knobs for ToolLoopLayer. Intentional headroom on iterations:
+    # long autonomous sessions can chain many tool calls.
+    stack_kwargs: dict[str, Any] = {
+        "on_intermediate_text_async": on_intermediate_text_async,
+        "on_intermediate_text_sync": on_intermediate_text_sync,
+        "tool_result_ceiling_tokens": tool_result_ceiling_tokens,
+    }
+    if provider == "mock":
+        from chrys.service.llm.mock import MockChatClient
+
+        return MockChatClient(**stack_kwargs)
+    if provider not in _PROVIDER_API_KEY_ENVS:
+        raise _unknown_provider(provider)
+
     api_key = _resolve_profile_api_key(profile)
     headers = _build_default_headers(
         session_id,
@@ -437,8 +470,7 @@ def create_client(
         parent_session_id=parent_session_id,
         sdk_user_agent=_provider_sdk_user_agent(provider),
     )
-    if provider != "mock":
-        _validate_wire_charset(profile, api_key=api_key, headers=headers)
+    _validate_wire_charset(profile, api_key=api_key, headers=headers)
 
     import httpx
 
@@ -448,78 +480,80 @@ def create_client(
         write=profile.http_read_timeout,
         pool=profile.http_read_timeout,
     )
-    max_retries = profile.http_max_retries
     from chrys.service.llm.raw_http_log import raw_http_log_path as resolve_raw_http_log_path
 
-    raw_log_path = resolve_raw_http_log_path(session_id, session_dir)
+    http_client = _build_profile_http_client(
+        profile,
+        timeout,
+        raw_http_log_path=resolve_raw_http_log_path(session_id, session_dir),
+        session_id=session_id,
+    )
+    close_http_client = OnceClose(http_client.aclose)
+    stack_kwargs.update(
+        model_id=profile.model_id,
+        session_id=session_id,
+        parent_session_id=parent_session_id,
+        use_route_session_context=use_route_session_context,
+        max_iterations=7777,
+        max_consecutive_errors=10,
+    )
+    try:
+        return _build_client_stack(
+            profile,
+            api_key=api_key,
+            headers=headers,
+            timeout=timeout,
+            http_client=http_client,
+            stack_kwargs=stack_kwargs,
+        )
+    except BaseException:
+        try:
+            await close_http_client()
+        except Exception:
+            _log.warning("Closing the HTTP client of a failed %s client build failed", provider, exc_info=True)
+        raise
 
-    # Tool-loop knobs for ToolLoopLayer. Intentional headroom on iterations:
-    # long autonomous sessions can chain many tool calls.
-    tool_loop_max_iterations = 7777
-    tool_loop_max_consecutive_errors = 10
+
+def _unknown_provider(provider: str) -> ValueError:
+    return ValueError(
+        f"Unknown provider: {provider!r}. Use 'anthropic', 'openai', 'deepseek-openai', 'glm-openai', or 'mock'."
+    )
+
+
+def _build_client_stack(
+    profile: ModelProfile,
+    *,
+    api_key: str,
+    headers: dict[str, str],
+    timeout: Any,
+    http_client: httpx.AsyncClient,
+    stack_kwargs: dict[str, Any],
+) -> Any:
+    """Build the provider SDK client over *http_client* and wrap it in the Chrys stack."""
+    provider = profile.provider
+    sdk_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": profile.base_url,
+        "timeout": timeout,
+        "max_retries": profile.http_max_retries,
+        "default_headers": headers,
+        "http_client": http_client,
+    }
 
     if provider == "anthropic":
-        http_client = _build_profile_http_client(
-            profile,
-            timeout,
-            raw_http_log_path=raw_log_path,
-            session_id=session_id,
-        )
-        anthropic_client = _create_anthropic_async_client(
-            api_key=api_key,
-            base_url=profile.base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-            default_headers=headers,
-            http_client=http_client,
-        )
+        anthropic_client = _create_anthropic_async_client(**sdk_kwargs)
         _validate_sdk_wire_charset(profile, anthropic_client)
         from chrys.service.llm.instrumented import create_instrumented_anthropic_client
 
-        return create_instrumented_anthropic_client(
-            model_id=profile.model_id,
-            session_id=session_id,
-            parent_session_id=parent_session_id,
-            use_route_session_context=use_route_session_context,
-            on_intermediate_text_async=on_intermediate_text_async,
-            on_intermediate_text_sync=on_intermediate_text_sync,
-            anthropic_client=anthropic_client,
-            max_iterations=tool_loop_max_iterations,
-            max_consecutive_errors=tool_loop_max_consecutive_errors,
-            tool_result_ceiling_tokens=tool_result_ceiling_tokens,
-        )
+        return create_instrumented_anthropic_client(anthropic_client=anthropic_client, **stack_kwargs)
 
     if provider == "openai":
-        http_client = _build_profile_http_client(
-            profile,
-            timeout,
-            raw_http_log_path=raw_log_path,
-            session_id=session_id,
-        )
-        openai_client = _create_openai_async_client(
-            api_key=api_key,
-            base_url=profile.base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-            default_headers=headers,
-            http_client=http_client,
-        )
+        openai_client = _create_openai_async_client(**sdk_kwargs)
         _validate_sdk_wire_charset(profile, openai_client)
         if profile.api_style == API_STYLE_RESPONSES:
             from chrys.service.llm.instrumented import create_instrumented_openai_responses_client
 
-            return create_instrumented_openai_responses_client(
-                model_id=profile.model_id,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                use_route_session_context=use_route_session_context,
-                on_intermediate_text_async=on_intermediate_text_async,
-                on_intermediate_text_sync=on_intermediate_text_sync,
-                client=openai_client,
-                max_iterations=tool_loop_max_iterations,
-                max_consecutive_errors=tool_loop_max_consecutive_errors,
-                tool_result_ceiling_tokens=tool_result_ceiling_tokens,
-            )
+            return create_instrumented_openai_responses_client(client=openai_client, **stack_kwargs)
 
         if profile.api_style != API_STYLE_CHAT_COMPLETIONS:
             raise ValueError(f"Unknown OpenAI api_style: {profile.api_style!r}. Use 'chat_completions' or 'responses'.")
@@ -531,19 +565,7 @@ def create_client(
         # intermediate-text callbacks.
         from chrys.service.llm.instrumented import create_instrumented_openai_client
 
-        return create_instrumented_openai_client(
-            model_id=profile.model_id,
-            session_id=session_id,
-            parent_session_id=parent_session_id,
-            use_route_session_context=use_route_session_context,
-            on_intermediate_text_async=on_intermediate_text_async,
-            on_intermediate_text_sync=on_intermediate_text_sync,
-            client=openai_client,
-            chat_client_cls=None,
-            max_iterations=tool_loop_max_iterations,
-            max_consecutive_errors=tool_loop_max_consecutive_errors,
-            tool_result_ceiling_tokens=tool_result_ceiling_tokens,
-        )
+        return create_instrumented_openai_client(client=openai_client, chat_client_cls=None, **stack_kwargs)
 
     if provider == "deepseek-openai":
         from chrys.service.llm.deepseek import (
@@ -552,19 +574,8 @@ def create_client(
             DeepSeekResponsesClient,
         )
 
-        http_client = _build_profile_http_client(
-            profile,
-            timeout,
-            raw_http_log_path=raw_log_path,
-            session_id=session_id,
-        )
         deepseek_client = _create_openai_async_client(
-            api_key=api_key,
-            base_url=profile.base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-            default_headers=headers,
-            http_client=http_client,
+            **sdk_kwargs,
             api_key_env=_PROVIDER_API_KEY_ENVS["deepseek-openai"],
             base_url_env="DEEPSEEK_BASE_URL",
             default_base_url=DEEPSEEK_DEFAULT_BASE_URL,
@@ -574,17 +585,7 @@ def create_client(
             from chrys.service.llm.instrumented import create_instrumented_openai_responses_client
 
             return create_instrumented_openai_responses_client(
-                model_id=profile.model_id,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                use_route_session_context=use_route_session_context,
-                on_intermediate_text_async=on_intermediate_text_async,
-                on_intermediate_text_sync=on_intermediate_text_sync,
-                client=deepseek_client,
-                chat_client_cls=DeepSeekResponsesClient,
-                max_iterations=tool_loop_max_iterations,
-                max_consecutive_errors=tool_loop_max_consecutive_errors,
-                tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+                client=deepseek_client, chat_client_cls=DeepSeekResponsesClient, **stack_kwargs
             )
         if profile.api_style != API_STYLE_CHAT_COMPLETIONS:
             raise ValueError(
@@ -594,64 +595,33 @@ def create_client(
         from chrys.service.llm.instrumented import create_instrumented_openai_client
 
         return create_instrumented_openai_client(
-            model_id=profile.model_id,
-            session_id=session_id,
-            parent_session_id=parent_session_id,
-            use_route_session_context=use_route_session_context,
-            on_intermediate_text_async=on_intermediate_text_async,
-            on_intermediate_text_sync=on_intermediate_text_sync,
-            client=deepseek_client,
-            chat_client_cls=DeepSeekChatCompletionClient,
-            max_iterations=tool_loop_max_iterations,
-            max_consecutive_errors=tool_loop_max_consecutive_errors,
-            tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+            client=deepseek_client, chat_client_cls=DeepSeekChatCompletionClient, **stack_kwargs
         )
 
     if provider == "glm-openai":
         from chrys.service.llm.glm import GLM_DEFAULT_BASE_URL, GLMChatCompletionClient
         from chrys.service.llm.instrumented import create_instrumented_openai_client
 
-        http_client = _build_profile_http_client(
-            profile,
-            timeout,
-            raw_http_log_path=raw_log_path,
-            session_id=session_id,
-        )
         glm_client = _create_openai_async_client(
-            api_key=api_key,
-            base_url=profile.base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-            default_headers=headers,
-            http_client=http_client,
+            **sdk_kwargs,
             api_key_env=_PROVIDER_API_KEY_ENVS["glm-openai"],
             base_url_env="ZAI_BASE_URL",
             default_base_url=GLM_DEFAULT_BASE_URL,
         )
         _validate_sdk_wire_charset(profile, glm_client)
         return create_instrumented_openai_client(
-            model_id=profile.model_id,
-            session_id=session_id,
-            parent_session_id=parent_session_id,
-            use_route_session_context=use_route_session_context,
-            on_intermediate_text_async=on_intermediate_text_async,
-            on_intermediate_text_sync=on_intermediate_text_sync,
-            client=glm_client,
-            chat_client_cls=GLMChatCompletionClient,
-            max_iterations=tool_loop_max_iterations,
-            max_consecutive_errors=tool_loop_max_consecutive_errors,
-            tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+            client=glm_client, chat_client_cls=GLMChatCompletionClient, **stack_kwargs
         )
 
-    if provider == "mock":
-        from chrys.service.llm.mock import MockChatClient
+    # A provider with an API-key entry but no branch here: never build another provider's stack for it.
+    raise _unknown_provider(provider)
 
-        return MockChatClient(
-            on_intermediate_text_async=on_intermediate_text_async,
-            on_intermediate_text_sync=on_intermediate_text_sync,
-            tool_result_ceiling_tokens=tool_result_ceiling_tokens,
-        )
 
-    raise ValueError(
-        f"Unknown provider: {provider!r}. Use 'anthropic', 'openai', 'deepseek-openai', 'glm-openai', or 'mock'."
-    )
+@asynccontextmanager
+async def scoped_client(profile: ModelProfile, **kwargs: Any) -> AsyncIterator[Any]:
+    """Create a client stack for one bounded use and close it on every exit."""
+    client = await create_client(profile, **kwargs)
+    try:
+        yield client
+    finally:
+        await client.aclose()

@@ -23,6 +23,7 @@ from textual.widgets import Button, OptionList, SelectionList, TextArea
 from textual.widgets.selection_list import Selection
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets import EnhancedTextArea
 from chrys.app.tui.widgets.checkbox import CHECKED_MARKER, UNCHECKED_MARKER
 from chrys.foundation.i18n import msg
@@ -258,9 +259,11 @@ class AskUserOptions(SelectionList[int]):
 
     @staticmethod
     def _option_content(option: AskUserOption) -> Content:
-        content = Content.from_text(option.label, markup=False)
+        # Display copies only: the selection still answers with the original ``option.label``.
+        content = Content.from_text(sanitize_source_text(option.label), markup=False)
         if option.description:
-            content = Content.assemble(content, "\n", (f"{ASK_USER_DESCRIPTION_GLYPH} {option.description}", "dim"))
+            description = sanitize_source_text(option.description)
+            content = Content.assemble(content, "\n", (f"{ASK_USER_DESCRIPTION_GLYPH} {description}", "dim"))
         return content
 
     @property
@@ -638,8 +641,12 @@ def ask_user_hanging_answer(answer: AskUserAnswer, *, unanswered: str, style: St
     """
     base = style or Style()
     faint = base + Style(dim=True)
-    values = Text(", ".join(answer.values), style=base) if answer.values else Text(unanswered, style=faint)
+    values = (
+        Text(sanitize_source_text(", ".join(answer.values)), style=base)
+        if answer.values
+        else Text(unanswered, style=faint)
+    )
     rows: list[tuple[str | Text, RenderableType]] = [(Text(f"{ASK_USER_DESCRIPTION_GLYPH} ", style=base), values)]
     if answer.note:
-        rows.append(("", Text(answer.note, style=faint)))
+        rows.append(("", Text(sanitize_source_text(answer.note), style=faint)))
     return ask_user_hanging_grid(rows)

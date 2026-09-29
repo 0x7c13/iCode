@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
@@ -235,6 +235,45 @@ async def test_last_words_generator_retries_transient_failure_and_succeeds(tmp_p
     scheduled = sink.only(EventType.RETRY_SCHEDULED)
     started = sink.only(EventType.RETRY_STARTED)
     assert scheduled.payload["retry_mode"] == started.payload["retry_mode"] == RetryMode.COMPACTION
+
+
+async def test_fallback_attempts_report_wire_progress_before_each_dispatch(tmp_path, monkeypatch):
+    """Each reconstruction attempt restarts the waiting pull's stall watchdog,
+    so a retried note gets a full idle window per attempt."""
+    from chrys.kernel.client import start_with_wire_progress
+    from chrys.service.context.compaction.last_words import LastWordsGenerator
+    from chrys.service.profiles.models.resolver import default_profile
+
+    monkeypatch.setattr(LastWordsGenerator, "_MAX_RETRIES", 2)
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0, 0))
+    reports = 0
+
+    def _on_progress() -> None:
+        nonlocal reports
+        reports += 1
+
+    class _Response:
+        usage_details = None
+        raw_text = structured_note()
+
+    at_dispatch: list[int] = []
+
+    class _FlakyClient:
+        async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            at_dispatch.append(reports)
+            if len(at_dispatch) == 1:
+                raise ConnectionError("connection dropped")
+            return _Response()
+
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    gen._client = _FlakyClient()  # type: ignore[assignment]
+
+    out = await start_with_wire_progress(
+        generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[]), _on_progress
+    )
+
+    assert out == structured_note()
+    assert at_dispatch == [1, 2]
 
 
 async def test_injected_zero_transient_budget_disables_fallback_transport_retry(tmp_path):
@@ -661,7 +700,7 @@ async def test_last_words_generator_uses_model_profile_stream_setting(tmp_path):
     assert client.streams == [True]
 
 
-def test_last_words_generator_passes_session_ids_to_client(tmp_path):
+async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
     """Phase 4 LAST_WORDS calls should carry the active session header."""
     from chrys.service.context.compaction.last_words import LastWordsGenerator
     from chrys.service.profiles.models.resolver import default_profile
@@ -674,11 +713,38 @@ def test_last_words_generator_passes_session_ids_to_client(tmp_path):
     )
 
     with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
-        gen._get_client()
+        await gen._get_client()
 
     create_client.assert_called_once()
     assert create_client.call_args.kwargs["session_id"] == "sess-phase4"
     assert create_client.call_args.kwargs["parent_session_id"] == "parent-phase4"
+
+
+async def test_closing_the_generator_closes_its_client_and_refuses_a_new_one(tmp_path):
+    """The runtime that owns the generator closes it; a late fallback call must not reopen a client."""
+    from chrys.service.context.compaction.last_words import LastWordsGenerationError, LastWordsGenerator
+    from chrys.service.llm import clients as clients_mod
+    from chrys.service.profiles.models.resolver import default_profile
+
+    class _Client:
+        closes = 0
+
+        async def aclose(self) -> None:
+            self.closes += 1
+
+    client = _Client()
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    await gen.aclose()  # nothing created yet: a no-op
+
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    with patch.object(clients_mod, "create_client", create_autospec(clients_mod.create_client, return_value=client)):
+        assert await gen._get_client() is client
+        assert await gen._get_client() is client
+        await gen.aclose()
+        await gen.aclose()
+        assert client.closes == 1
+        with pytest.raises(LastWordsGenerationError, match="closed"):
+            await gen._get_client()
 
 
 async def test_last_words_generator_renders_only_scoped_timeline(tmp_path):

@@ -1038,10 +1038,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             state = raw.get("state", {})
             messages = state.get("messages", [])
             # Normalize: ensure each message has role + contents as dicts.
-            # Skip messages marked as excluded by intra-run compaction.
-            # Keep compaction summaries — they replace excluded tool calls
-            # with a text description and should be visible during replay
-            # so the user can see what was compacted.
+            # Skip every message compaction excluded, deliberately: tool
+            # calls it summarized or removed, a dropped current turn's
+            # in-between text, and turns folded into a compressed block.
+            # Tool summaries stay in this raw list as the model's context;
+            # transcript replays drop them too (``is_compaction_tool_summary``),
+            # so the reopened session transcript shows neither a summary nor
+            # the messages it replaced. Compressed blocks keep their own
+            # archived copy and render it separately.
             result = []
             for msg in messages:
                 ap = msg.get("additional_properties", {})

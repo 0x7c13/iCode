@@ -211,7 +211,7 @@ async def test_executor_defaults_and_configuration_snapshot(policy_executor: Tur
     assert (policy.max_retries, policy.stall_max_retries) == (5, 5)
     assert policy.stall_timeout_seconds == 300.0
     assert policy.stall_exhausted_action is StallExhaustedAction.BLOCKING_FALLBACK
-    assert [policy.backoff_seconds(n) for n in range(7)] == [3, 7, 15, 30, 60, 60, 60]
+    assert [policy.backoff_seconds(n) for n in range(10)] == [3, 7, 15, 30, 60, 120, 240, 600, 600, 600]
     assert policy.hosted_commits_in_flight is None
     executor._max_retries_override = 9
     executor._BACKOFF_SCHEDULE = ()

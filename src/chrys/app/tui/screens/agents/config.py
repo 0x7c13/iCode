@@ -9,7 +9,7 @@ import copy
 import logging
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -24,8 +24,9 @@ from textual.widgets import Button, OptionList, Select, Static, TabbedContent, T
 from textual.widgets.option_list import Option, OptionDoesNotExist
 
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
-from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.screens.agents.agent_draft_store import AgentDraftStore
+from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
+from chrys.app.tui.screens.agents.agent_draft_store import AgentDraftStore, mcp_draft_errors_by_server
+from chrys.app.tui.screens.agents.panels.config_card import CardListChanged
 from chrys.app.tui.screens.agents.validation_messages import FIX_VALIDATION_ERRORS
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets import Checkbox
@@ -236,6 +237,9 @@ class AgentsConfigScreen(BaseDialog[str]):
         self._selected_draft_key: str = ""
         self._drafts: dict[str, _AgentDraft] = {}
         self._mounted_tabs: set[str] = set()
+        # Per draft key: its MCP server cards' folds when it was last shown. The panel is
+        # rebuilt from the draft, which carries no UI state, each time the agent loads.
+        self._mcp_card_folds: dict[str, list[bool]] = {}
         self._hydrating: bool = False
         self._hydration_preserve_dirty: bool = False
         self._hydrating_generation: int = 0
@@ -353,6 +357,7 @@ class AgentsConfigScreen(BaseDialog[str]):
     def _initialize_drafts(self) -> None:
         """Seed modal-local drafts from the current registry state."""
         self._drafts.clear()
+        self._mcp_card_folds.clear()
         profiles = self._registry.list_profiles(include_sub_agent_only=True)
         for profile in profiles:
             key = self._existing_draft_key(profile.name)
@@ -469,14 +474,22 @@ class AgentsConfigScreen(BaseDialog[str]):
 
     # ── Profile loading ──────────────────────────────────────────────
 
-    def _load_profile(self, draft_key: str) -> None:
-        """Clear tab panes and mount fresh config panels for the given draft."""
+    def _load_profile(self, draft_key: str, *, mcp_card_folds_carried: bool = False) -> None:
+        """Clear tab panes and mount fresh config panels for the given draft.
+
+        ``mcp_card_folds_carried``: the caller has already set every draft's
+        MCP card folds (Save, which rebuilt the drafts), so leave them as set.
+        """
         draft = self._drafts.get(draft_key)
         if draft is None:
             return
         pending_agent_type = self._pending_agent_type_change
         if pending_agent_type is not None and pending_agent_type[0] != draft_key:
             self._pending_agent_type_change = None
+        if not mcp_card_folds_carried:
+            # Also on a reload in place: Reset keeps the MCP servers, and a panel
+            # ignores folds that no longer match its server count.
+            self._remember_mcp_card_folds()
         profile = draft.profile
         self._selected_draft_key = draft_key
         self._selected_profile_name = profile.name
@@ -718,6 +731,16 @@ class AgentsConfigScreen(BaseDialog[str]):
         pane.remove_children()
         pane.mount(SkillsConfigPanel(profile.skills, workspace_cwd=self._workspace_cwd, read_only=self._read_only))
 
+    def _remember_mcp_card_folds(self) -> None:
+        """Keep the selected draft's MCP card folds for the next time it loads."""
+        from chrys.app.tui.screens.agents.panels.mcp import MCPConfigPanel
+
+        key = self._selected_draft_key
+        if key not in self._drafts or "mcp" not in self._mounted_tabs:
+            return
+        with contextlib.suppress(NoMatches):
+            self._mcp_card_folds[key] = self._live_panel(MCPConfigPanel).card_folds()
+
     def _mount_mcp_tab(self, profile) -> None:
         from chrys.app.tui.screens.agents.panels.mcp import MCPConfigPanel
 
@@ -726,6 +749,7 @@ class AgentsConfigScreen(BaseDialog[str]):
         pane.mount(
             MCPConfigPanel(
                 profile.tools.mcp,
+                card_folds=self._mcp_card_folds.get(self._selected_draft_key),
                 workspace_cwd=self._workspace_cwd,
                 read_only=self._read_only,
                 additional_reserved_tool_names=self._selected_sub_agent_tool_names,
@@ -1066,11 +1090,23 @@ class AgentsConfigScreen(BaseDialog[str]):
         button_id = event.button.id or ""
         if not self._is_config_mutation_button(button_id):
             return
+        self._mark_structure_changed()
+
+    @on(CardListChanged)
+    def _on_card_list_changed(self, _event: CardListChanged) -> None:
+        if self._read_only:
+            return
+        self._mark_structure_changed()
+
+    def _mark_structure_changed(self) -> None:
+        # The panel rebuilds its rows asynchronously: mark dirty now, then re-read once it has settled.
         self._mark_selected_dirty(force=True, optimistic=True)
         self.call_after_refresh(lambda: self._mark_selected_dirty(force=True))
 
     @staticmethod
     def _is_config_mutation_button(button_id: str) -> bool:
+        # Not "mcp-delete-btn-": that press opens a confirmation, and the panel
+        # posts CardListChanged once a confirmed delete lands.
         if button_id in {
             "sa-add-btn",
             "mem-add-file",
@@ -1090,7 +1126,6 @@ class AgentsConfigScreen(BaseDialog[str]):
                 "mcp-eadd-",
                 "mcp-hdel-",
                 "mcp-edel-",
-                "mcp-delete-btn-",
                 "acp-row-delete-",
                 "sa-delete-btn-",
                 "mem-delete-btn-",
@@ -1253,6 +1288,10 @@ class AgentsConfigScreen(BaseDialog[str]):
             is_builtin=False,
             dirty=True,
         )
+        # The copy has the same MCP servers: open their cards as the original shows them.
+        self._remember_mcp_card_folds()
+        if (folds := self._mcp_card_folds.get(source_draft.key)) is not None:
+            self._mcp_card_folds[key] = list(folds)
 
         self._refresh_sidebar_preserving_selection()
         ol = self.query_one("#ac-list", OptionList)
@@ -1289,7 +1328,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             message=_RESET_AGENT_MESSAGE.bind(display=display),
             confirm_label=_RESET.bind(),
             confirm_variant="primary",
-            locale_controller=getattr(self.app, "locale_controller", None),
+            locale_controller=widget_locale_controller(self),
         )
         self.app.push_screen(
             dialog,
@@ -1406,7 +1445,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             message=_DELETE_AGENT_MESSAGE.bind(display=display),
             confirm_label=_DELETE.bind(),
             confirm_variant="error",
-            locale_controller=getattr(self.app, "locale_controller", None),
+            locale_controller=widget_locale_controller(self),
         )
         self.app.push_screen(
             dialog,
@@ -1509,6 +1548,7 @@ class AgentsConfigScreen(BaseDialog[str]):
         if not self._hydrating:
             errors = self._validate_all()
             if errors:
+                self._unfold_invalid_mcp_cards()
                 self.notify(
                     "\n".join(errors),
                     title=self._render_toast(_VALIDATION_ERROR_TITLE.bind()),
@@ -1532,7 +1572,10 @@ class AgentsConfigScreen(BaseDialog[str]):
         retargeted_profiles = self._retarget_renamed_sub_agent_refs()
         errors = self._validate_drafts(retargeted_profiles)
         if errors:
+            # Read before the restore: it can clear a dirty flag the retargeting set for this pass.
+            invalid_mcp_servers = self._selected_draft_invalid_mcp_servers()
             self._restore_drafts(draft_snapshot)
+            self._unfold_invalid_mcp_cards(invalid_mcp_servers)
             self.notify(
                 "\n".join(errors),
                 title=self._render_toast(_VALIDATION_ERROR_TITLE.bind()),
@@ -1628,6 +1671,34 @@ class AgentsConfigScreen(BaseDialog[str]):
 
         return errors
 
+    def _selected_draft_invalid_mcp_servers(self) -> set[int]:
+        """Positions of the selected draft's MCP servers that the saved-draft validation rejects.
+
+        That validation checks only dirty drafts: a clean selected draft reported
+        no error, so none of its cards is named by the Save error.
+        """
+        draft = self._drafts.get(self._selected_draft_key)
+        if draft is None or not draft.dirty:
+            return set()
+        return {index for index, errors in enumerate(mcp_draft_errors_by_server("", draft.profile)) if errors}
+
+    def _unfold_invalid_mcp_cards(self, invalid_servers: Collection[int] = ()) -> None:
+        """Unfold the MCP server cards that failed validation: a folded card hides the fields its error names.
+
+        The panel checks its own cards; *invalid_servers* adds the positions
+        Save's saved-draft validation rejected, which checks some fields differently.
+        """
+        from chrys.app.tui.screens.agents.panels.mcp import MCPConfigPanel
+
+        draft = self._drafts.get(self._selected_draft_key)
+        if "mcp" not in self._mounted_tabs or (draft is not None and draft.profile.acp is not None):
+            return
+        try:
+            self._live_panel(MCPConfigPanel).unfold_invalid_cards(invalid_servers)
+        except Exception:
+            # As in _validate_all: a panel that can't validate is skipped, never fails the Save handler.
+            logger.debug("Could not unfold the invalid MCP server cards", exc_info=True)
+
     def _validate_drafts(self, retargeted_profiles: list[AgentProfile] | None = None) -> list[str]:
         """Validate the staged draft graph before writing anything to disk."""
         model_profile_exists: Callable[[str], bool] | None = None
@@ -1681,13 +1752,20 @@ class AgentsConfigScreen(BaseDialog[str]):
         draft = self._drafts.get(self._selected_draft_key)
         if draft is None:
             return
-        draft.profile = self._build_profile_from_mounted_panels(draft)
+        try:
+            draft.profile = self._build_profile_from_mounted_panels(draft)
+        except Exception:
+            # A field that can't be read (an MCP command with an unclosed quote) fails before validation.
+            self._unfold_invalid_mcp_cards()
+            raise
         self._selected_profile_name = draft.profile.name
         validation_errors = self._mounted_panel_validation_errors()
         self._set_draft_dirty(draft, self._is_draft_dirty(draft) or bool(validation_errors))
         if validation_errors:
             # Switching still validates the mounted draft strictly because leaving
             # invalid widget state would make the in-memory transaction ambiguous.
+            # The user stays on this agent: show the cards whose fields the error names.
+            self._unfold_invalid_mcp_cards()
             error_message = "\n".join(
                 [
                     *validation_errors,
@@ -2012,9 +2090,19 @@ class AgentsConfigScreen(BaseDialog[str]):
         self._set_dismiss_intent(_DismissIntent.UPDATED)
         selected_name = self._selected_profile_name
 
+        # Rebuilding the drafts drops their keys: carry each agent's MCP card
+        # folds over by the name it was saved under.
+        self._remember_mcp_card_folds()
+        mcp_card_folds = {
+            self._drafts[key].profile.name: folds for key, folds in self._mcp_card_folds.items() if key in self._drafts
+        }
+
         # Refresh sidebar — a rename or description change should show
         # up immediately, and the user may keep editing.
         self._initialize_drafts()
+        for name, folds in mcp_card_folds.items():
+            if (key := self._find_visible_draft_key(name)) is not None:
+                self._mcp_card_folds[key] = folds
         self._populate_sidebar()
         selected_key = self._find_visible_draft_key(selected_name)
         if selected_key is None:
@@ -2025,7 +2113,7 @@ class AgentsConfigScreen(BaseDialog[str]):
             ol.highlighted = ol.get_option_index(selected_key)
         if selected_key:
             # Re-mount all tab panels against the freshly-saved profile.
-            self._load_profile(selected_key)
+            self._load_profile(selected_key, mcp_card_folds_carried=True)
         self._update_save_button_state()
 
         # Notify the caller of any active-profile change so main-screen widgets

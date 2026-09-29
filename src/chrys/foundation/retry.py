@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+TRANSIENT_RETRY_BACKOFF_SECONDS: tuple[int, ...] = (3, 7, 15, 30, 60, 120, 240, 600)
+"""Seconds before each transient retry of a model request, a whole run or an ACP connection; later
+retries wait the last value. Chat, sub-agents and workflow nodes all default to it, so they back off alike."""
+
 
 @dataclass(frozen=True, slots=True)
 class RetryAttemptInfo:

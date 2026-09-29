@@ -303,6 +303,51 @@ async def test_shell_mode_temporarily_replaces_trajectory_session_data_view(
         assert session_json._content_generation == retained_generation
 
 
+async def test_shell_mode_sidebar_tab_strip_keeps_focus_for_keyboard_navigation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Shell mode lets sidebar focus stay, so a clicked tab strip takes the arrow keys until the shell exits."""
+    from textual.widgets import TabbedContent, Tabs
+
+    from chrys.app.tui.terminal.panel import ShellPanel
+    from chrys.app.tui.terminal.widget import Terminal
+    from chrys.app.tui.widgets.chrome.input_bar import InputBar
+    from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
+    from tests.support.tui_helpers import click_when_settled
+
+    app = make_chrys_app(tmp_path)
+
+    async with app.run_test(size=(120, 36)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        shell = main.query_one(ShellPanel)
+        monkeypatch.setattr(shell, "_start_shell", lambda _cwd: None)
+        tabs = main.query_one(SidebarPanel).query_one(TabbedContent)
+        strip = tabs.query_one(Tabs)
+        chat_input = main.query_one(InputBar).query_one("#chat-input")
+
+        main.shell_mode_state = True
+        terminal = shell.query_one(Terminal)
+        await wait_for(lambda: main.focused is terminal, pilot=pilot, description="the terminal owns focus")
+
+        await click_when_settled(pilot, tabs.get_tab("tab-tasks"))
+        await wait_for(
+            lambda: tabs.active == "tab-tasks" and main.focused is strip,
+            pilot=pilot,
+            description="the clicked tab strip keeps focus",
+        )
+        await pilot.press("right")
+        await wait_for(lambda: tabs.active == "tab-context", pilot=pilot, description="Right selects the next tab")
+        assert main.focused is strip
+
+        main.shell_mode_state = False
+        await wait_for(
+            lambda: main.focused is chat_input, pilot=pilot, description="leaving shell mode hands focus to the input"
+        )
+        assert not strip.can_focus
+
+
 async def test_shell_mode_transitions_never_paint_half_applied_layout(tmp_path: Path) -> None:
     """Entering/exiting shell mode must never flush a mid-transition frame.
 

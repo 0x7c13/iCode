@@ -29,6 +29,7 @@ from chrys.app.tui.widgets.chat.messages import (
 from chrys.app.tui.widgets.chat.scroll_controller import ManualScrollGcGuard
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.events.types import ProvisionalPresentation
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.patches.textual_precompose import precompose_tree
@@ -180,6 +181,8 @@ class TranscriptRetryOp:
     max_attempts: int
     delay_seconds: int
     compaction: bool = False
+    # Shown after a display ``message`` (e.g. "seems offline"); never without one.
+    hint: MessageRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +258,22 @@ class AgentTranscriptJournal:
             self._progress_positions.clear()
         for subscriber in tuple(self._subscribers):
             subscriber.enqueue(operation)
+
+    def continue_from(self, earlier: AgentTranscriptJournal) -> None:
+        """Take *earlier*'s retained transcript as this one's beginning: an attempt resuming another.
+
+        Called on an empty journal before its first operation; live subscribers receive the carried
+        operations in order.
+        """
+        operations = earlier.operations
+        self._operations.extend(operations)
+        self._progress_positions = {
+            call_id: position + len(self._operations) - len(operations)
+            for call_id, position in earlier._progress_positions.items()
+        }
+        for subscriber in tuple(self._subscribers):
+            for operation in operations:
+                subscriber.enqueue(operation)
 
     def finalize_retention(self, *, durable_replay_available: bool) -> None:
         """Seal terminal history, releasing or bounding retained operations.
@@ -695,6 +714,11 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
             await self.remove_trailing_status()
         elif isinstance(operation, TranscriptRetryOp):
             message = self._render_message(operation.message)
+            if operation.hint is not None:
+                message = render_str(
+                    widget_localizer(self),
+                    DISPLAY_WITH_HINT.bind(message=message, hint=self._render_message(operation.hint)),
+                )
             if operation.compaction:
                 self._live.show_compaction_retry(
                     message, operation.attempt, operation.max_attempts, operation.delay_seconds

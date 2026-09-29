@@ -73,7 +73,8 @@ WHERE EACH FEATURE IS USED
     returning a WorkflowValue(text, data) .... read_request, plan, open_round, review
     returning a plain str ................... fan_out, hand_over, merge_findings, brief, tour_text, render_tour
     ctx.emit ................................ plan, fan_out, hand_over, choose_depth, open_round, review
-    await ctx.ask, timeout=None ............. choose_depth, review
+    await ctx.ask(Question), Answer ......... choose_depth (one choice between two Options)
+    await ctx.ask(str) ...................... review (free text)
     wf.agent, instructions_suffix ........... all six agents: the three readers, quick_scan, write_tour, next_steps
     timeout= ................................ conventions (agent), choose_depth and review (None)
     Retry on a Python node .................. read_key_files
@@ -137,6 +138,8 @@ from chrys.workflows import (
     BuilderScope,
     NodeContext,
     NodeHandle,
+    Option,
+    Question,
     Retry,
     SourceValue,
     Workflow,
@@ -226,13 +229,18 @@ REVISE_TASK = (
     "Return the complete revised tour, not a list of edits.\n\n--- current tour ---\n{draft}"
 )
 # A question is shown as Markdown in a dialog that stays open until it is answered, so the person
-# cannot look anything up in the run meanwhile: put what they need to decide into the question.
-DEPTH_QUESTION = (
-    "How deep should the tour go?\n\n"
-    "- `quick`: one reader skims the project (the default)\n"
-    "- `deep`: three readers study architecture, entry points and conventions in parallel, and the run"
-    " adds a list of next steps\n\n"
-    "Reply `quick` or `deep`."
+# cannot look anything up in the run meanwhile: put what they need to decide into the question and
+# its option descriptions.
+DEPTH_QUESTION = Question(
+    "How deep should the tour go?",
+    options=[
+        Option(QUICK, "One reader skims the project (the default)"),
+        Option(
+            DEEP,
+            "Three readers study architecture, entry points and conventions in parallel, and the run adds"
+            " a list of next steps",
+        ),
+    ],
 )
 REVIEW_QUESTION = (
     "{draft}\n\n---\n\n"
@@ -384,15 +392,19 @@ def depth_is_known(value: WorkflowValue) -> bool:
 async def choose_depth(value: WorkflowValue, ctx: NodeContext) -> WorkflowValue:
     """ASYNC `fn(value, ctx)`: the only shape that can `await ctx.ask`.
 
-    `ctx.ask` suspends this body until the person driving the run answers, and returns their answer as
-    a str. The node is declared with `timeout=None` because a timeout counts the waiting too.
+    `ctx.ask` suspends this body until the person driving the run answers. Asked a `Question`, it
+    returns an `Answer`: `answer.choice` is the option label they picked (clicking it and typing it
+    exactly are the same answer), or None when they typed something else or nothing; `answer.text`
+    holds what they typed besides. A list of up to five Questions shows them in one dialog, one tab each
+    labelled by its `header`, and returns a tuple of Answers. The node is declared with `timeout=None`
+    because a timeout counts the waiting too.
 
     In an unattended run this node is never activated: the conditional edges route around it, which
     shows up as "skipped" in the graph. That is one of two ways to keep `ctx.ask` out of a headless
     run; `review` shows the other.
     """
-    answer = (await ctx.ask(DEPTH_QUESTION)).strip().lower()
-    depth = DEEP if answer.startswith("d") else QUICK  # Anything that is not "deep" is the default.
+    answer = await ctx.ask(DEPTH_QUESTION)
+    depth = DEEP if answer.choice == DEEP else QUICK  # Anything that is not "deep" is the default.
     ctx.emit(f"Depth chosen: {depth}.")
     return WorkflowValue(text=value.text, data=dict(_state(value), depth=depth))
 

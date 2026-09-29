@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from weakref import WeakSet
 
 from rich.text import Text
@@ -72,6 +72,37 @@ def render_str(localizer: Localizer, reference: MessageRef) -> str:
     return _resolved_display_text(localizer, reference)
 
 
+@runtime_checkable
+class _AppNode(Protocol):
+    """A widget or screen: its ``app`` raises a RuntimeError while no app is active."""
+
+    @property
+    def app(self) -> object: ...
+
+
+@runtime_checkable
+class LocalizedApp(Protocol):
+    """An app that owns a locale controller: ChrysApp, and test hosts that set one."""
+
+    @property
+    def locale_controller(self) -> LocaleController: ...
+
+
+def widget_locale_controller(widget: object) -> LocaleController | None:
+    """Resolve the active app's locale controller for a leaf widget or screen.
+
+    None when the widget is detached or the hosting app is not a ChrysApp
+    (bare test hosts): Textual types ``widget.app`` as a plain ``App``.
+    """
+    if not isinstance(widget, _AppNode):
+        return None
+    try:
+        app = widget.app
+    except RuntimeError:
+        return None
+    return app.locale_controller if isinstance(app, LocalizedApp) else None
+
+
 def widget_localizer(widget: object) -> Localizer:
     """Resolve the active-app localizer for a leaf widget or screen.
 
@@ -79,11 +110,7 @@ def widget_localizer(widget: object) -> Localizer:
     when the widget is detached or the hosting app is not a ChrysApp (bare
     test hosts).
     """
-    try:
-        app = getattr(widget, "app", None)
-    except RuntimeError:
-        app = None
-    controller = getattr(app, "locale_controller", None)
+    controller = widget_locale_controller(widget)
     return Localizer(DEFAULT_LOCALE) if controller is None else controller.localizer
 
 

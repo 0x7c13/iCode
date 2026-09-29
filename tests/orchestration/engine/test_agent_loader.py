@@ -230,7 +230,9 @@ async def test_terminal_ready_subscriber_can_admit_a_user_message_inline(
 
     bus = EventBus()
     client = MockChatClient(responses=[MockResponse(text="admitted")])
-    monkeypatch.setattr(builder_module, "create_client", lambda *args, **kwargs: client)
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=client)
+    )
     engine = agent_engine(bus, settings=Settings())
     observed = []
 

@@ -6,12 +6,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static, TabbedContent
 
 from chrys.app.tui.theme import TuiVariableDefaultsMixin
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.workflow.output import WorkflowOutputText, WorkflowOutputView, WorkflowStatusOutput
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
 from tests.support.pilot_barrier import screen_is_settled
@@ -52,8 +52,8 @@ async def test_run_input_and_output_text_keep_a_column_from_each_side() -> None:
         views = panel.query_one("#workflow-run", TabbedContent)
 
         views.active = "workflow-input-tab"
-        run_input = panel.query_one("#workflow-run-input", Static)
-        run_input.update(Text(_LONG_TEXT))
+        run_input = panel.query_one("#workflow-run-input", VirtualizedMarkdown)
+        run_input.update(_LONG_TEXT)
         input_scroll = panel.query_one("#workflow-input-scroll", VerticalScroll)
         # The scrollbar appears one layout before the text is laid out again beside it, so the
         # text keeps its full width until the screen settles.

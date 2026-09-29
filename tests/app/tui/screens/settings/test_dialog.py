@@ -4,12 +4,16 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import pytest
 from textual.containers import VerticalGroup, VerticalScroll
 from textual.pilot import Pilot
 from textual.widgets import Button, Checkbox, Input, Select, Static, TabbedContent
 from textual.widgets._select import SelectOverlay
 
+import chrys.app.tui.screens.settings.dialog as dialog_module
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.settings import GENERAL_TAB_ID, NOTIFICATIONS_TAB_ID, SettingsDialog
 from chrys.app.tui.screens.settings.dialog import pane_id
@@ -18,8 +22,9 @@ from chrys.app.tui.screens.settings.rows import SettingRow
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.i18n.formatting import format_message
-from tests.app.tui.screens.settings.support import Host, StubPorts, env_origin
-from tests.support.waiting import wait_for
+from tests.app.tui.screens.settings.support import ROW_COUNT, Host, StubPorts, env_origin, wait_for_every_tab
+from tests.support.tui_helpers import click_when_settled
+from tests.support.waiting import wait_for, wait_until
 
 
 def _rows(dialog: SettingsDialog) -> dict[str, SettingRow]:
@@ -34,9 +39,15 @@ def _badges(row: SettingRow) -> str:
     return str(row.query_one(".settings-row-badges", Static).render())
 
 
-async def _open(app: Host, ports: StubPorts, *, initial_tab: str = GENERAL_TAB_ID) -> SettingsDialog:
+async def _open(pilot: Pilot[None], ports: StubPorts, *, initial_tab: str = GENERAL_TAB_ID) -> SettingsDialog:
+    """Open the dialog on *initial_tab* and return once every tab shows its rows.
+
+    Only the opening tab mounts with the dialog; the rest mount one per frame
+    after it, and ``pilot.pause()`` does not wait for them.
+    """
     dialog = SettingsDialog(ports, initial_tab=initial_tab)
-    await app.push_screen(dialog)
+    await pilot.app.push_screen(dialog)
+    await wait_for_every_tab(dialog, pilot)
     return dialog
 
 
@@ -60,16 +71,18 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports)
+        dialog = await _open(pilot, ports)
         theme = _rows(dialog)["ui.theme"].query_one(Select)
         await wait_for(lambda: dialog.focused is theme, pilot=pilot, description="initial theme control focus")
 
+        # ``_open`` waited for the tabs behind the opening one too; mounting them writes nothing either.
         assert ports.persisted == []
         assert ports.live == []
         assert ports.confirms == []
+        assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == 31
+        assert len(rows) == ROW_COUNT == 31
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 
@@ -80,7 +93,7 @@ async def test_settings_theme_choices_group_users_first_with_a_nonselectable_div
     ports.themes = ["textual-dark", *users, "chrys-legacy", "chrys"]
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports)
+        dialog = await _open(pilot, ports)
         selector = _rows(dialog)["ui.theme"].query_one(Select)
         await wait_for(lambda: dialog.focused is selector, pilot=pilot)
         await pilot.press("enter")
@@ -108,7 +121,7 @@ async def test_opens_on_the_requested_tab_and_falls_back_for_unknown_ids() -> No
     app = Host()
     # 85% of 46 rows: the tallest tab still fits without scrolling.
     async with app.run_test(size=(100, 46)) as pilot:
-        dialog = await _open(app, StubPorts(), initial_tab=NOTIFICATIONS_TAB_ID)
+        dialog = await _open(pilot, StubPorts(), initial_tab=NOTIFICATIONS_TAB_ID)
         enabled = dialog.query_one("#notifications-enabled", Checkbox)
         # Mount schedules focus after refresh, then Widget.focus queues another
         # app callback. A single Pilot.pause snapshot need not drain both.
@@ -126,10 +139,81 @@ async def test_opens_on_the_requested_tab_and_falls_back_for_unknown_ids() -> No
         assert pane.query_one("#notifications-test", Button).region.height == 1
         await dialog.dismiss(None)
 
-        dialog = await _open(app, StubPorts(), initial_tab="does-not-exist")
+        dialog = await _open(pilot, StubPorts(), initial_tab="does-not-exist")
         theme = _rows(dialog)["ui.theme"].query_one(Select)
         await wait_for(lambda: dialog.focused is theme, pilot=pilot, description="fallback general tab control focus")
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
+
+
+class _HeldFocusDialog(SettingsDialog):
+    """Holds the opening focus until the test runs it, as a slow first refresh would."""
+
+    # A relative CSS_PATH resolves next to the defining module.
+    CSS_PATH = Path(dialog_module.__file__).with_name("settings.tcss")
+
+    def __init__(self, ports: StubPorts) -> None:
+        super().__init__(ports)
+        self.held_focus: list[str] = []
+
+    def _focus_first_control(self, tab_id: str) -> None:
+        self.held_focus.append(tab_id)
+
+    def run_held_focus(self) -> None:
+        for tab_id in self.held_focus:
+            super()._focus_first_control(tab_id)
+
+
+@pytest.mark.asyncio
+async def test_a_tab_picked_before_the_opening_focus_lands_stays_active() -> None:
+    """The opening focus waits for a refresh; a tab picked before it lands keeps the view.
+
+    Focus inside the opening tab's pane makes the TabbedContent activate that
+    pane, so a late opening focus would switch back to it.
+    """
+    app = Host()
+    async with app.run_test(size=(100, 40)) as pilot:
+        dialog = _HeldFocusDialog(StubPorts())
+        await app.push_screen(dialog)
+        await wait_for(
+            lambda: dialog.held_focus == [GENERAL_TAB_ID], pilot=pilot, description="the opening focus is held"
+        )
+        tabs = dialog.query_one(TabbedContent)
+        await click_when_settled(pilot, f"#--content-tab-{pane_id('tools')}")
+        await wait_for(lambda: tabs.active == pane_id("tools"), pilot=pilot, description="the picked tab is active")
+
+        dialog.run_held_focus()
+        assert not await wait_until(lambda: tabs.active != pane_id("tools"), pilot=pilot, timeout=0.5)
+        assert not isinstance(dialog.focused, Select)
+
+        # Back on the opening tab, the same held focus lands on its first control.
+        await click_when_settled(pilot, f"#--content-tab-{pane_id(GENERAL_TAB_ID)}")
+        await wait_for(
+            lambda: tabs.active == pane_id(GENERAL_TAB_ID), pilot=pilot, description="the opening tab is active again"
+        )
+        dialog.run_held_focus()
+        theme = _rows(dialog)["ui.theme"].query_one(Select)
+        await wait_for(lambda: dialog.focused is theme, pilot=pilot, description="the held focus lands on the theme")
+
+
+@pytest.mark.asyncio
+async def test_an_opening_focus_that_lands_after_the_dialog_closed_does_nothing() -> None:
+    """Textual runs a pending ``call_after_refresh`` on whichever screen is on top when it lands."""
+    app = Host()
+    async with app.run_test(size=(100, 40)) as pilot:
+        dialog = _HeldFocusDialog(StubPorts())
+        await app.push_screen(dialog)
+        await wait_for(
+            lambda: dialog.held_focus == [GENERAL_TAB_ID], pilot=pilot, description="the opening focus is held"
+        )
+        await dialog.dismiss(None)
+        await wait_for(lambda: not dialog.is_attached, pilot=pilot, description="the dialog is removed")
+        landed = asyncio.Event()
+
+        app.screen.call_after_refresh(dialog.run_held_focus)
+        app.screen.call_after_refresh(landed.set)
+        await wait_for(landed.is_set, pilot=pilot, description="the held focus ran on the screen below")
+
+        assert app.is_running
 
 
 @pytest.mark.asyncio
@@ -137,7 +221,7 @@ async def test_bool_row_persists_reload_keys_and_live_applies_live_keys() -> Non
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports)
+        dialog = await _open(pilot, ports)
         await pilot.pause()
         rows = _rows(dialog)
 
@@ -156,7 +240,7 @@ async def test_search_ignore_checkbox_persists_in_tools_tab() -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 46)) as pilot:
-        dialog = await _open(app, ports, initial_tab="tools")
+        dialog = await _open(pilot, ports, initial_tab="tools")
         checkbox = _rows(dialog)["tools.search.respect_gitignore"].query_one(Checkbox)
         await wait_for(lambda: dialog.focused is checkbox, pilot=pilot, description="initial tools control focus")
         assert checkbox.value is True
@@ -177,7 +261,7 @@ async def test_select_row_injects_the_current_value_when_it_is_not_a_choice() ->
     ports = StubPorts(Settings(theme="retired-theme", default_agent="ghost"))
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports)
+        dialog = await _open(pilot, ports)
         await pilot.pause()
         rows = _rows(dialog)
 
@@ -206,7 +290,7 @@ async def test_approval_mode_row_hides_bypass_and_confirms_only_the_move_to_auto
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="security")
         await pilot.pause()
         rows = _rows(dialog)
         select = rows["approval.default_mode"].query_one(Select)
@@ -230,7 +314,7 @@ async def test_dangerous_bool_confirms_when_enabling_and_reverts_when_declined()
     ports.confirm_answer = False
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="security")
         await pilot.pause()
         rows = _rows(dialog)
         checkbox = rows["log.raw_http_capture"].query_one(Checkbox)
@@ -297,7 +381,7 @@ async def test_input_rows_commit_through_the_field_coercer(
     ports = StubPorts(Settings(max_transient_retries=9, buddy_model="old-model", ask_user_timeout_seconds=45))
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab=tab)
+        dialog = await _open(pilot, ports, initial_tab=tab)
         await pilot.pause()
         row = _rows(dialog)[key]
         field = row.query_one(Input)
@@ -319,7 +403,7 @@ async def test_closing_commits_a_pending_input_edit_then_tells_the_ports() -> No
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="sessions")
+        dialog = await _open(pilot, ports, initial_tab="sessions")
         await pilot.pause()
         row = _rows(dialog)["rollback.snapshots_keep"]
         row.query_one(Input).value = "7"
@@ -336,7 +420,7 @@ async def test_greyed_provenance_disables_the_control_and_explains_why() -> None
     ports = StubPorts(Settings(theme="chrys-legacy"), provenance={"ui.theme": env_origin()})
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports)
+        dialog = await _open(pilot, ports)
         locale = _rows(dialog)["ui.locale"].query_one(Select)
         await wait_for(lambda: dialog.focused is locale, pilot=pilot, description="focus skips disabled theme control")
         row = _rows(dialog)["ui.theme"]
@@ -353,7 +437,7 @@ async def test_badges_and_status_follow_apply_kind_and_pending_state() -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="security")
         await pilot.pause()
         rows = _rows(dialog)
         container = dialog.query_one("#settings-container", VerticalGroup)
@@ -387,7 +471,7 @@ async def test_reproject_repaints_values_without_writing() -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports)
+        dialog = await _open(pilot, ports)
         await pilot.pause()
         rows = _rows(dialog)
 
@@ -406,7 +490,7 @@ async def test_the_buddy_model_is_picked_from_the_registered_model_ids() -> None
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="models")
+        dialog = await _open(pilot, ports, initial_tab="models")
         await pilot.pause()
         select = _rows(dialog)["model.role.buddy_model_id"].query_one(Select)
 
@@ -419,7 +503,7 @@ async def test_the_buddy_model_is_picked_from_the_registered_model_ids() -> None
 
         # A blank retry cap shows the frontend default it falls back to.
         retries = _rows(dialog)["llm.retry.max_transient"].query_one(Input)
-        assert retries.value == "" and retries.placeholder == "7"
+        assert retries.value == "" and retries.placeholder == "10"
 
 
 @pytest.mark.asyncio
@@ -430,9 +514,11 @@ async def test_locale_refresh_repaints_tabs_sections_rows_and_status_in_place() 
     async with app.run_test(size=(100, 40)) as pilot:
         dialog = SettingsDialog(ports, locale_controller=controller)
         await app.push_screen(dialog)
-        await pilot.pause()
+        # Every tab is mounted, so each one is repainted in place rather than built in the new locale.
+        await wait_for_every_tab(dialog, pilot)
         rows = _rows(dialog)
         theme_select = rows["ui.theme"].query_one(Select)
+        notifications_enabled = dialog.query_one(NotificationsPane).query_one("#notifications-enabled", Checkbox)
         tabs = dialog.query_one(TabbedContent)
         assert str(tabs.get_tab(pane_id(GENERAL_TAB_ID)).label) == "General"
 
@@ -447,8 +533,9 @@ async def test_locale_refresh_repaints_tabs_sections_rows_and_status_in_place() 
         assert rows["ui.theme"].query_one(Select) is theme_select
         assert theme_select.value == "chrys"
         assert (
-            dialog.query_one(NotificationsPane).query_one("#notifications-enabled", Checkbox).label.plain == "启用通知"
+            dialog.query_one(NotificationsPane).query_one("#notifications-enabled", Checkbox) is notifications_enabled
         )
+        assert notifications_enabled.label.plain == "启用通知"
         assert ports.live == [] and ports.persisted == []
 
 
@@ -457,7 +544,7 @@ async def test_a_projection_landing_mid_edit_does_not_wipe_the_typed_text() -> N
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="sessions")
+        dialog = await _open(pilot, ports, initial_tab="sessions")
         field = await _focus_rollback_input(dialog, pilot)
         field.value = "7777"
 
@@ -489,7 +576,7 @@ async def test_a_failed_write_snaps_a_focused_input_back_to_the_value_in_force()
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="sessions")
+        dialog = await _open(pilot, ports, initial_tab="sessions")
         field = await _focus_rollback_input(dialog, pilot)
         in_force = field.value
         field.value = " 7777 "
@@ -555,7 +642,7 @@ async def test_cli_and_sealed_provenance_stay_editable_with_a_badge() -> None:
     )
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="models")
+        dialog = await _open(pilot, ports, initial_tab="models")
         await pilot.pause()
         agent = _rows(dialog)["agent.default_profile"]
         assert agent.query_one(Select).disabled is False
@@ -580,7 +667,7 @@ async def test_an_env_pinned_bypass_shows_as_the_current_choice_without_writing(
     )
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="security")
         await pilot.pause()
         select = _rows(dialog)["approval.default_mode"].query_one(Select)
 
@@ -610,7 +697,7 @@ async def test_a_dormant_project_file_swaps_the_project_gate_hint_until_the_gate
     )
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="security")
         await pilot.pause()
         row = _rows(dialog)["project.config_enabled"]
 
@@ -629,7 +716,7 @@ async def test_commit_pending_lands_a_focused_edit_without_closing() -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="sessions")
+        dialog = await _open(pilot, ports, initial_tab="sessions")
         field = await _focus_rollback_input(dialog, pilot)
         field.value = "7"
 
@@ -671,7 +758,7 @@ async def test_a_pane_keeps_its_content_width_when_the_scrollbar_appears() -> No
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 60)) as pilot:
-        dialog = await _open(app, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="security")
         await pilot.pause()
         pane = dialog.query_one(f"#{pane_id('security')}")
         scroll = pane.query_one(VerticalScroll)
@@ -702,7 +789,7 @@ async def test_profile_display_names_are_literal_text_not_markup() -> None:
     ports.agent_profiles = [("ops", "Ops [/oops]"), ("work", "Code [Work]"), ("plain [odd]", "plain [odd]")]
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="models")
+        dialog = await _open(pilot, ports, initial_tab="models")
         await pilot.pause()
         select = _rows(dialog)["agent.default_profile"].query_one(Select)
 
@@ -732,7 +819,7 @@ async def test_a_select_shows_its_placeholder_when_the_projected_value_is_blank(
     ports = StubPorts(Settings(default_agent=""))
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
-        dialog = await _open(app, ports, initial_tab="models")
+        dialog = await _open(pilot, ports, initial_tab="models")
         await pilot.pause()
         rows = _rows(dialog)
 

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import WorkflowRollbackRequest, WorkflowRollbackResult
 from chrys.foundation.models.mutation_scope import WorkflowRunScope
-from chrys.orchestration.invoker.resources import finish_close
+from chrys.foundation.util.once_close import finish_close
 from chrys.service.mutations.coordination import ATTRIBUTION_DIR_NAME, MutationCoordinator
 from chrys.service.mutations.store import SnapshotPolicy, SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker

@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -125,7 +126,7 @@ def _make_settings_and_models() -> tuple[Settings, ModelProfileRegistry]:
 
 
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch, clients: list[MockChatClient], tools: list[FunctionTool]) -> None:
-    def _patched_create_client(_settings: Any = None, **kwargs: Any) -> MockChatClient:
+    async def _patched_create_client(_settings: Any = None, **kwargs: Any) -> MockChatClient:
         client = clients.pop(0)
         client._on_intermediate_text_async = kwargs.get("on_intermediate_text_async")
         client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
@@ -143,7 +144,7 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch, clients: list[MockChatClient
 def _hand_out_sub_agent_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClient) -> None:
     """The parent's delegation creates the child's client through the sub-agent module."""
 
-    def create_client(
+    async def create_client(
         model_profile: ModelProfile,
         *,
         on_intermediate_text_async: Callable[[str], Awaitable[None]],
@@ -490,7 +491,7 @@ def test_headless_run_event_types_include_hosted_lifecycle_events() -> None:
 
 @pytest.mark.asyncio
 async def test_session_host_streams_startup_failure_before_raising(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    def _raise_create_client(_settings: Any = None, **_kwargs: Any) -> MockChatClient:
+    async def _raise_create_client(_settings: Any = None, **_kwargs: Any) -> MockChatClient:
         msg = "client boom"
         raise RuntimeError(msg)
 
@@ -808,7 +809,7 @@ async def test_session_host_restore_startup_failure_raises_without_hanging(
     finally:
         await first.shutdown()
 
-    def _raise_create_client(_settings: Any = None, **_kwargs: Any) -> MockChatClient:
+    async def _raise_create_client(_settings: Any = None, **_kwargs: Any) -> MockChatClient:
         msg = "restore client boom"
         raise RuntimeError(msg)
 
@@ -1556,8 +1557,9 @@ async def test_session_host_hides_ask_user_from_delegated_agent(monkeypatch: pyt
     sub_agent_client = MockChatClient(responses=[MockResponse(text="inspection complete")])
     _patch_runtime(monkeypatch, [parent_client], [ask_user, _make_tool()])
     monkeypatch.setattr(
-        "chrys.orchestration.sub_agents.tools.create_client",
-        lambda *_args, **_kwargs: sub_agent_client,
+        sub_agent_module,
+        "create_client",
+        create_autospec(sub_agent_module.create_client, return_value=sub_agent_client),
     )
     settings, model_registry = _make_settings_and_models()
     parent_profile = _make_profile(approval_default="skip")

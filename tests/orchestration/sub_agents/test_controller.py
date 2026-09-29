@@ -265,24 +265,33 @@ async def test_transient_error_auto_retries_then_succeeds():
     paused_events = await _collect(bus, InvocationPaused)
     retry_events = await _collect(bus, InvocationRetryAttempt)
 
-    class TransientError(Exception):
-        pass
+    class TransientError(ConnectionError):
+        """Retryable through the classifier's builtin transient layer."""
 
-    # Mark TransientError as retryable via name match — hijack the
-    # shared classifier so we don't have to depend on SDK names.
-    from chrys.foundation import errors
-
-    original = errors.RETRYABLE_TYPE_NAMES
-    with patch.object(errors, "RETRYABLE_TYPE_NAMES", original | {"TransientError"}):
-        agent = _ScriptedAgent(outcomes=[TransientError("blip"), "done"])
-        ctrl = _make_controller(agent, bus, run_kwargs={"options": {"store": True}})
-        result = await ctrl.run()
+    agent = _ScriptedAgent(outcomes=[TransientError("blip"), "done"])
+    ctrl = _make_controller(agent, bus, run_kwargs={"options": {"store": True}})
+    result = await ctrl.run()
 
     assert result == "done"
     assert ctrl.status == SubAgentStatus.COMPLETED
     assert paused_events == []
     assert len(retry_events) == 1
     assert retry_events[0].origin.invocation_id == "inv-1"
+
+
+@pytest.mark.asyncio
+async def test_a_stall_retry_notice_names_the_stall_as_the_main_turn_does():
+    bus = EventBus()
+    retry_events = await _collect(bus, InvocationRetryAttempt)
+
+    agent = _ScriptedAgent(outcomes=[StreamStall("no streaming updates received for 60s"), "done"])
+    ctrl = _make_controller(agent, bus, run_kwargs={"options": {"store": True}})
+
+    assert await ctrl.run() == "done"
+    [retry] = retry_events
+    assert retry.message == "Stream stalled"
+    assert retry.display_message is not None
+    assert (retry.display_message.definition.key, retry.display_hint) == ("retry.stream_stalled", None)
 
 
 @pytest.mark.asyncio
@@ -1135,8 +1144,8 @@ async def test_committed_inner_work_disables_automatic_sub_agent_retry() -> None
     bus = EventBus()
     recorder = LoopRecorder()
 
-    class TransientError(Exception):
-        pass
+    class TransientError(ConnectionError):
+        """Retryable through the classifier's builtin transient layer."""
 
     def commit_then_fail(_prompt: object, _kwargs: object) -> TransientError:
         call = Content.from_function_call("inner-call", "write_file", arguments={})
@@ -1146,13 +1155,9 @@ async def test_committed_inner_work_disables_automatic_sub_agent_retry() -> None
         return TransientError("provider failed after commit")
 
     agent = _ScriptedAgent(outcomes=[commit_then_fail, "must not auto-retry"])
-    from chrys.foundation import errors
-
-    original = errors.RETRYABLE_TYPE_NAMES
-    with patch.object(errors, "RETRYABLE_TYPE_NAMES", original | {"TransientError"}):
-        ctrl = _make_controller(agent, bus, loop_recorder=recorder)
-        run_task = asyncio.create_task(ctrl.run())
-        await _wait_until(lambda: ctrl.status == SubAgentStatus.PAUSED)
+    ctrl = _make_controller(agent, bus, loop_recorder=recorder)
+    run_task = asyncio.create_task(ctrl.run())
+    await _wait_until(lambda: ctrl.status == SubAgentStatus.PAUSED)
 
     assert len(agent.calls) == 1
     assert recorder.committed_count == 1
@@ -1165,14 +1170,14 @@ async def test_committed_inner_work_vetoes_stored_mode_retry_at_non_default_budg
     """The commit gate wins over a positive injected budget inside the automatic retry loop.
 
     Stored mode is what routes failures through the L0 retry loop at all;
-    the retryable-type patch would let the loop replay the run were the gate
+    the retryable error would let the loop replay the run were the gate
     not consulted."""
     bus = EventBus()
     retry_events = await _collect(bus, InvocationRetryAttempt)
     recorder = LoopRecorder()
 
-    class TransientError(Exception):
-        pass
+    class TransientError(ConnectionError):
+        """Retryable through the classifier's builtin transient layer."""
 
     def commit_then_fail(_prompt: object, _kwargs: object) -> TransientError:
         call = Content.from_function_call("inner-call", "write_file", arguments={})
@@ -1182,20 +1187,16 @@ async def test_committed_inner_work_vetoes_stored_mode_retry_at_non_default_budg
         return TransientError("provider failed after commit")
 
     agent = _ScriptedAgent(outcomes=[commit_then_fail, "must not auto-retry"])
-    from chrys.foundation import errors
-
-    original = errors.RETRYABLE_TYPE_NAMES
-    with patch.object(errors, "RETRYABLE_TYPE_NAMES", original | {"TransientError"}):
-        ctrl = _make_controller(
-            agent,
-            bus,
-            loop_recorder=recorder,
-            max_retries=3,
-            run_kwargs={"options": {"store": True}},
-        )
-        assert ctrl.policy._service_storage is True
-        run_task = asyncio.create_task(ctrl.run())
-        await _wait_until(lambda: ctrl.status == SubAgentStatus.PAUSED)
+    ctrl = _make_controller(
+        agent,
+        bus,
+        loop_recorder=recorder,
+        max_retries=3,
+        run_kwargs={"options": {"store": True}},
+    )
+    assert ctrl.policy._service_storage is True
+    run_task = asyncio.create_task(ctrl.run())
+    await _wait_until(lambda: ctrl.status == SubAgentStatus.PAUSED)
 
     assert len(agent.calls) == 1
     assert recorder.committed_count == 1

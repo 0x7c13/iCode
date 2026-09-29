@@ -46,6 +46,7 @@ from tests.app.tui.screens._agent_config_support import (
     _wait_for_selectors,
     make_profile,
     open_agent_config,
+    press_and_answer_confirm,
     registry_with,
 )
 from tests.support.waiting import wait_for
@@ -265,7 +266,7 @@ async def test_agent_config_invalid_mcp_text_change_still_marks_dirty() -> None:
 
 
 @pytest.mark.parametrize(
-    ("tab", "profile_fields", "extra_profiles", "cards_selector", "delete_selector", "card_count"),
+    ("tab", "profile_fields", "extra_profiles", "cards_selector", "delete_selector", "card_count", "asks_first"),
     [
         pytest.param(
             "mcp",
@@ -278,6 +279,7 @@ async def test_agent_config_invalid_mcp_text_change_still_marks_dirty() -> None:
             "#mcp-cards",
             "#mcp-delete-btn-0",
             1,
+            True,
             id="mcp_server",
         ),
         pytest.param(
@@ -287,6 +289,7 @@ async def test_agent_config_invalid_mcp_text_change_still_marks_dirty() -> None:
             "#sa-cards",
             "#sa-delete-btn-0",
             1,
+            False,
             id="sub_agent",
         ),
         pytest.param(
@@ -296,6 +299,7 @@ async def test_agent_config_invalid_mcp_text_change_still_marks_dirty() -> None:
             "#mem-files",
             "#mem-delete-btn-0",
             2,
+            False,
             id="memory_file",
         ),
         pytest.param(
@@ -305,6 +309,7 @@ async def test_agent_config_invalid_mcp_text_change_still_marks_dirty() -> None:
             "#sk-dirs",
             "#sk-delete-btn-0",
             2,
+            False,
             id="skill_path",
         ),
     ],
@@ -316,6 +321,7 @@ async def test_agent_config_delete_card_marks_draft_dirty(
     cards_selector: str,
     delete_selector: str,
     card_count: int,
+    asks_first: bool,
 ) -> None:
     """Removing a card on any list-shaped tab marks the draft dirty and enables Save."""
     registry = registry_with(
@@ -343,7 +349,11 @@ async def test_agent_config_delete_card_marks_draft_dirty(
         cards = screen.query_one(cards_selector)
         assert len(list(cards.query(".agent-config-card"))) == card_count
 
-        cards.query_one(delete_selector, Button).press()
+        delete_button = cards.query_one(delete_selector, Button)
+        if asks_first:
+            await press_and_answer_confirm(pilot, delete_button)
+        else:
+            delete_button.press()
         await wait_for(
             lambda: (
                 len(list(cards.query(".agent-config-card"))) == card_count - 1

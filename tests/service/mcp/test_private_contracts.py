@@ -21,8 +21,10 @@ exercised in ``test_http_transport.py``.
 
 from __future__ import annotations
 
+import ast
 import contextvars
 import inspect
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -247,3 +249,69 @@ def test_streamable_http_private_post_hook_contract() -> None:
     ]
     for name in helper_names:
         assert hasattr(StreamableHTTPTransport, name), f"MCP SDK removed StreamableHTTPTransport.{name}"
+
+
+# --------------------------------------------------------------------------- #
+# mcp client side — error text the SDK makes up reaches the model
+# --------------------------------------------------------------------------- #
+
+# Every ErrorData message the SDK builds outside ``mcp/server``, as (module,
+# message source). ``MCPTool`` hands an McpError's message to the model as the
+# server's own error text; the SDK's client-side errors pass as well because
+# none of these messages interpolates local detail — exception text, paths,
+# stderr, URLs or headers. (Chrys's own HTTP transport marks its synthesized
+# errors with ``LOCAL_HTTP_FAILURE_ERROR_DATA`` for that reason.)
+_SDK_CLIENT_SIDE_ERROR_MESSAGES = {
+    ("client/experimental/task_handlers.py", "'Task-augmented elicitation not supported'"),
+    ("client/experimental/task_handlers.py", "'Task-augmented sampling not supported'"),
+    ("client/experimental/task_handlers.py", "'tasks/cancel not supported'"),
+    ("client/experimental/task_handlers.py", "'tasks/get not supported'"),
+    ("client/experimental/task_handlers.py", "'tasks/list not supported'"),
+    ("client/experimental/task_handlers.py", "'tasks/result not supported'"),
+    ("client/session.py", "'Elicitation not supported'"),
+    ("client/session.py", "'List roots not supported'"),
+    ("client/session.py", "'Sampling not supported'"),
+    ("client/session_group.py", "'Provided session is not managed or already disconnected.'"),
+    ("client/session_group.py", "f'{matching_prompts} already exist in group prompts.'"),
+    ("client/session_group.py", "f'{matching_resources} already exist in group resources.'"),
+    ("client/session_group.py", "f'{matching_tools} already exist in group tools.'"),
+    ("client/streamable_http.py", "'Session terminated'"),
+    ("shared/exceptions.py", "message"),
+    ("shared/experimental/tasks/capabilities.py", "'Client does not support task-augmented elicitation'"),
+    ("shared/experimental/tasks/capabilities.py", "'Client does not support task-augmented sampling'"),
+    ("shared/experimental/tasks/helpers.py", "f'Task not found: {task_id}'"),
+    ("shared/experimental/tasks/helpers.py", "f\"Cannot cancel task in terminal state '{task.status}'\""),
+    ("shared/session.py", "'Connection closed'"),
+    ("shared/session.py", "'Invalid request parameters'"),
+    ("shared/session.py", "'Request cancelled'"),
+    (
+        "shared/session.py",
+        "f'Timed out while waiting for response to {request.__class__.__name__}. Waited {timeout} seconds.'",
+    ),
+}
+
+
+def _sdk_client_side_error_messages() -> set[tuple[str, str]]:
+    import mcp
+
+    root = Path(mcp.__file__).parent
+    found: set[tuple[str, str]] = set()
+    for path in root.rglob("*.py"):
+        module = path.relative_to(root).as_posix()
+        if module.startswith(("server/", "cli/")):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name != "ErrorData":
+                continue
+            message = next((keyword.value for keyword in node.keywords if keyword.arg == "message"), None)
+            found.add((module, ast.unparse(message) if message is not None else "<positional>"))
+    return found
+
+
+def test_sdk_client_side_error_messages_carry_no_local_detail() -> None:
+    """A new or changed SDK error message fails here until someone checks it can't leak local detail."""
+    assert _sdk_client_side_error_messages() == _SDK_CLIENT_SIDE_ERROR_MESSAGES

@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from chrys.orchestration.invoker.resources import finish_close
+from chrys.foundation.util.once_close import finish_close
 from chrys.service.session.sub_agent_logs import (
     SUB_AGENT_TRANSCRIPT_OCCURRENCE_IDENTITY,
     SubAgentLogStats,

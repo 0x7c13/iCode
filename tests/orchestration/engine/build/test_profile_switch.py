@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -177,7 +178,7 @@ async def test_profile_switch_preserves_history_and_events(
     # We use a list of clients so each rebuild gets a fresh one with responses.
     mock_clients: list[MockChatClient] = []
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         client = MockChatClient(
             responses=[
                 MockResponse(text=f"Response #{len(mock_clients)}"),
@@ -326,7 +327,7 @@ async def test_profile_switch_preserves_todo_list(tmp_path: Path, agent_engine, 
 
     state_store = JsonFileStateStore(tmp_path)
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -395,7 +396,7 @@ async def test_session_restore_after_profile_switches(tmp_path: Path, agent_engi
     state_store = JsonFileStateStore(tmp_path)
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="Mock response")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -496,7 +497,7 @@ async def test_switch_to_same_profile_is_noop(tmp_path: Path, agent_engine, monk
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -530,7 +531,7 @@ async def test_profile_switch_failure_publishes_agent_load_failed(
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -604,7 +605,7 @@ async def test_user_message_waits_for_profile_switch_rebuild(monkeypatch: pytest
     response_texts = ["old executor response", "new executor response"]
     clients: list[MockChatClient] = []
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         text = response_texts[len(clients)] if len(clients) < len(response_texts) else "extra response"
         client = MockChatClient(responses=[MockResponse(text=text)])
         clients.append(client)
@@ -672,7 +673,7 @@ async def test_user_interrupt_does_not_wait_for_profile_switch_rebuild(
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -729,7 +730,7 @@ async def test_settings_reload_recovers_after_startup_failure(monkeypatch: pytes
     registry = _make_registry()
     calls = 0
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -771,13 +772,13 @@ async def test_reload_and_profile_switch_rebuilds_thread_updated_transient_budge
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok") for _ in range(4)])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
     engine = agent_engine(bus, settings=settings, agent_registry=registry)
     await engine.start(_CODE)
-    assert engine.current.loaded.bindings._max_retries_override == 7
+    assert engine.current.loaded.bindings._max_retries_override == 10
 
     monkeypatch.setenv("CHRYS_MAX_TRANSIENT_RETRIES", "9")
     pre_reload = engine.current.loaded.bindings
@@ -827,7 +828,10 @@ async def test_session_ready_and_restored_payloads_include_workspace_roots(
     monkeypatch.setattr(
         builder_module,
         "create_client",
-        lambda s=None, **kw: MockChatClient(responses=[MockResponse(text="ok")]),
+        create_autospec(
+            builder_module.create_client,
+            side_effect=lambda s=None, **kw: MockChatClient(responses=[MockResponse(text="ok")]),
+        ),
     )
 
     primary = tmp_path / "primary"
@@ -905,7 +909,7 @@ async def test_session_file_structure_after_switches(tmp_path: Path, agent_engin
     state_store = JsonFileStateStore(tmp_path)
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="reply")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -981,7 +985,7 @@ async def test_consecutive_switches_merge_markers(tmp_path: Path, agent_engine, 
     state_store = JsonFileStateStore(tmp_path)
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="response")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -1061,7 +1065,7 @@ async def test_switch_chat_switch_switch_chat_produces_correct_markers(
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -1145,7 +1149,7 @@ async def test_consecutive_switch_back_to_origin_cancels_out(
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="response")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -1215,7 +1219,7 @@ async def test_consecutive_triple_switch_back_to_origin_cancels_out(
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="response")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -1276,7 +1280,7 @@ async def test_switch_chat_switch_back_creates_separate_records(
     settings = Settings()
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -1364,7 +1368,7 @@ async def test_settings_reload_uses_registry_refreshed_profile(
     registry = AgentProfileRegistry()
     registry.register(old_code)
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="ok")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)
@@ -1410,7 +1414,7 @@ async def test_session_restore_missing_profile_keeps_current(
     state_store = JsonFileStateStore(tmp_path)
     registry = _make_registry()
 
-    def _mock_create_client(s=None, **kw):
+    async def _mock_create_client(s=None, **kw):
         return MockChatClient(responses=[MockResponse(text="Mock response")])
 
     monkeypatch.setattr(builder_module, "create_client", _mock_create_client)

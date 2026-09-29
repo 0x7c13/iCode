@@ -11,15 +11,25 @@ These tests pin the row-level cache behavior so neither regression returns.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
+from markdown_it import MarkdownIt
+from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.content import Content, Span
 from textual.events import Resize
 from textual.geometry import Region, Size
 from textual.strip import Strip
 
-from chrys.app.tui.widgets.markdown.parser import _FENCE_CLOSED_META, _create_markdown_parser
-from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown, _content_slice
+from chrys.app.tui.widgets.markdown import widget as widget_module
+from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock
+from chrys.app.tui.widgets.markdown.parser import (
+    _FENCE_CLOSED_META,
+    _create_markdown_parser,
+    create_line_break_markdown_parser,
+)
+from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown, _content_slice, _line_ranges
 
 
 def _fence_markdown(n_lines: int) -> str:
@@ -58,6 +68,23 @@ def test_fence_tokens_record_whether_the_source_closed(source: str, closed: bool
     token = next(token for token in _create_markdown_parser().parse(source) if token.type == "fence")
 
     assert token.meta[_FENCE_CLOSED_META] is closed
+
+
+@pytest.mark.parametrize("parser_factory", [_create_markdown_parser, create_line_break_markdown_parser])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Here is the code:\n```py\nprint(1)\n```",
+        "> quoted line\n> ```py\n> print(1)\n> ```",
+        "- item line\n  ```py\n  print(1)\n  ```",
+    ],
+)
+def test_fence_right_after_a_line_of_text_starts_a_code_block(
+    source: str, parser_factory: Callable[[], MarkdownIt]
+) -> None:
+    fences = [token for token in parser_factory().parse(source) if token.type == "fence"]
+
+    assert [(token.info, token.content) for token in fences] == [("py", "print(1)\n")]
 
 
 def test_content_slice_preserves_overlapping_unsorted_spans() -> None:
@@ -325,9 +352,14 @@ async def test_long_block_strip_cache_invalidates_on_update() -> None:
         md._frame_visible_height = 5
         md._render_block_line(block, info, info.start_line, width)
         assert md._block_strips, "expected long-block strips after first render"
+        stale = dict(md._block_strips)
 
         await md.update("replacement paragraph")
-        assert not md._block_strips, "update() should drop cached long-block strips"
+        # A refresh may render the new document before the awaiter resumes, so
+        # the check is for the old document's strips only.
+        assert all(md._block_strips.get(index) is not strips for index, strips in stale.items()), (
+            "update() should drop cached long-block strips"
+        )
 
 
 async def test_converge_layout_relayouts_when_scrollbar_shifts_width(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -536,10 +568,86 @@ async def test_block_style_cache_invalidates_on_update() -> None:
         md = app.widget
         assert md is not None
 
-        # Prime the cache.
+        # Prime the cache with entries no render of the new document can produce.
+        stale = Style(italic=True)
         for index, block in enumerate(md._blocks):
             md._get_block_style_cached(index, block)
+            md._block_style_cache[index] = stale
         assert md._block_style_cache
 
         await md.update("# Different\n\nentirely new content\n")
-        assert not md._block_style_cache, "update() should drop block-style cache"
+        # A refresh may render the new document before the awaiter resumes and
+        # cache its own styles, so the check is for the old entries only.
+        assert all(style is not stale for style in md._block_style_cache.values()), (
+            "update() should drop block-style cache"
+        )
+
+
+_FENCE_HEIGHT_PROBE_LINES = (
+    "",
+    "short",
+    "x" * 19,
+    "x" * 20,
+    "x" * 21,
+    "界" * 9 + "x",
+    "界" * 10,
+    "界" * 10 + "x",
+    "a\tb",
+    "\t\tindented",
+    "word " * 5,
+    "trailing" + " " * 16,
+    "😀" * 10,
+    "😀" * 11,
+    "é" * 20,
+    "alpha beta gamma delta epsilon zeta",
+)
+
+
+def _probe_fence_block(markdown: VirtualizedMarkdown) -> MarkdownBlock:
+    body = "\n".join(_FENCE_HEIGHT_PROBE_LINES)
+    blocks = markdown._build_blocks(f"```text\n{body}\n```\n")
+    return next(block for block in blocks if block.block_type == "fence")
+
+
+@pytest.mark.parametrize(
+    ("width", "line_pad"),
+    # Content itself cannot wrap to a zero-cell width, so every case keeps a
+    # positive width once both line pads are taken off.
+    [(1, 0), (2, 0), (7, 0), (20, 0), (21, 0), (40, 0), (3, 1), (7, 1), (22, 1), (40, 1)],
+)
+def test_fence_layout_rows_match_content_wrapping(width: int, line_pad: int) -> None:
+    """The one-row shortcut agrees with Content's own wrap on every probe line."""
+    markdown = VirtualizedMarkdown()
+    block = _probe_fence_block(markdown)
+    rules = {"line_pad": line_pad}
+    text = block.content.plain
+
+    expected_starts: list[int] = []
+    row = 0
+    for start, end in _line_ranges(text):
+        expected_starts.append(row)
+        row += max(1, Content(text[start:end], strip_control_codes=False).get_height(rules, width))
+
+    layout = markdown._build_fence_layout(block, width, rules)
+
+    assert layout.line_starts == expected_starts
+    assert layout.total_height == row
+
+
+def test_fence_layout_builds_content_only_for_lines_that_may_wrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measuring a fence must not build a Content for every line that fits."""
+    markdown = VirtualizedMarkdown()
+    overlong = "y" * 90
+    body = "\n".join([*(f"fits_{index} = {index}" for index in range(50)), overlong, "a\tb"])
+    block = next(block for block in markdown._build_blocks(f"```python\n{body}\n```\n") if block.block_type == "fence")
+    built: list[str] = []
+
+    def counting_content(text: str, *args: object, **kwargs: bool) -> Content:
+        built.append(text)
+        return Content(text, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(widget_module, "Content", counting_content)
+    layout = markdown._build_fence_layout(block, 40, {})
+
+    assert built == [overlong, "a\tb"]
+    assert layout.total_height == 50 + Content(overlong).get_height({}, 40) + 1

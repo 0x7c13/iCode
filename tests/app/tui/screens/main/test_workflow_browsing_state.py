@@ -31,6 +31,7 @@ from ._workflow_support import (
     open_workflow,
     save_workflow_session,
     switch_mode,
+    workflow_notice_text,
     workflow_selection,
 )
 
@@ -65,6 +66,9 @@ async def test_failed_selection_keeps_the_committed_preview_ready_to_start(
         )
         if failure == "load":
             await click_when_settled(pilot, "#workflow-confirm-yes")
+            await wait_for(
+                lambda: "broken selection" in workflow_notice_text(main), pilot=pilot, timeout=ENGINE_TURN_TIMEOUT
+            )
             await dismiss_workflow_notice(main, pilot, "broken selection")
         else:
             await pilot.press("escape")
@@ -104,6 +108,7 @@ async def test_following_draft_reconciles_workspace_changes_received_in_chat(
         await wait_for(
             lambda: main._workflow.project_cwd == str(other) and not main._workflow.browser.workspace_busy,
             pilot=pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
         )
         assert main._workflow.browser.draft.follows_workspace
         assert main._workflow.browser.loaded is not None

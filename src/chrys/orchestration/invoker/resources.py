@@ -15,25 +15,14 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
+from chrys.foundation.util.once_close import finish_close
+
 from .attempts import AttemptTaskHandle
 from .contracts import AbortCause, OperationBinding, PreparedClosed, Unbind
 
 logger = logging.getLogger(__name__)
 
 type Release = Callable[[], Awaitable[object]]
-
-
-async def finish_close(task: asyncio.Task[None]) -> None:
-    """Drain an owned cleanup task even after repeated waiter cancellation."""
-    cancelled: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            cancelled = exc
-    task.result()
-    if cancelled is not None:
-        raise cancelled
 
 
 async def rollback_resources(owner: ResourceScope) -> None:
@@ -66,6 +55,26 @@ class ResourceScope:
         if self.closing:
             raise PreparedClosed("Resource owner is closing")
         self._releases.append(release)
+
+    async def own_or_release(self, release: Release) -> None:
+        """Register *release* for a resource acquired across an ``await``.
+
+        This owner may start closing during that ``await``. It then refuses the
+        registration, so *release* runs here, drained even when this caller is
+        cancelled, and :class:`PreparedClosed` still propagates.
+        """
+        try:
+            self.own(release)
+        except PreparedClosed:
+
+            async def close_refused() -> None:
+                await release()
+
+            try:
+                await finish_close(asyncio.create_task(close_refused()))
+            except Exception:
+                logger.exception("Error releasing a resource its closing owner refused")
+            raise
 
     def retain[T](self, resource: T) -> T:
         """Keep private in-memory state reachable until this scope drains."""

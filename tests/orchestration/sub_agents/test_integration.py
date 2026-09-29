@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -60,9 +61,11 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.tool_kinds import KIND_SKILL
 from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
+from chrys.kernel import Content
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.state.machine import EngineState
 from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
+from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import (
@@ -77,12 +80,12 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.schema import DEFAULT_MAX_OUTPUT_TOKENS, ModelProfile
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom, HostedMockResponse, hosted_image_result
-from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, await_run_task_chain
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -186,6 +189,9 @@ async def _make_ctx(
     search_respect_gitignore: bool = True,
     sub_skills: SkillsConfig | None = None,
     sub_responses_store: bool = False,
+    sub_compaction: CompactionConfig | None = None,
+    sub_max_context_tokens: int = 100_000,
+    sub_max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     agent_engine,
 ) -> _SubAgentPipelineCtx:
     """Build a parent+sub-agent engine with independent mock clients.
@@ -237,7 +243,8 @@ async def _make_ctx(
         api_style="responses" if sub_responses_store else "chat_completions",
         model_id="gpt-sub" if sub_responses_store else "mock",
         stream=sub_stream,
-        max_context_tokens=100_000,
+        max_context_tokens=sub_max_context_tokens,
+        max_output_tokens=sub_max_output_tokens,
         chat_options='{"store": true}' if sub_responses_store else "",
     )
     model_registry.register(main_profile)
@@ -268,7 +275,7 @@ async def _make_ctx(
         tools=ToolsConfig(builtins=sub_builtins or []),
         skills=sub_skills or SkillsConfig(auto_load_user_agents_skills=False, auto_load_cwd_agents_skills=False),
         approval=ApprovalConfig(default="auto"),
-        compaction=CompactionConfig(enabled=False),
+        compaction=sub_compaction or CompactionConfig(enabled=False),
         # Pin sub-agent to its own model profile so create_client routes correctly.
         model=ModelConfig(profile_id="sub-mock-profile"),
     )
@@ -279,7 +286,7 @@ async def _make_ctx(
     main_client = ErrorMockChatClient(outcomes=main_outcomes)
     sub_client = ErrorMockChatClient(outcomes=sub_outcomes)
 
-    def _patched_create_client(p: Any = None, **kw: Any) -> MockChatClient:
+    async def _patched_create_client(p: Any = None, **kw: Any) -> MockChatClient:
         # Route by resolved ModelProfile id.  Both clients get the
         # intermediate-text callbacks installed so streaming callbacks
         # behave identically to the real path (main is non-streaming in
@@ -935,6 +942,69 @@ async def test_pause_retry_continues_after_completed_sub_agent_tool(
 
 
 @pytest.mark.asyncio
+async def test_pause_retry_from_completed_work_still_compacts_the_child_turn(
+    tmp_path: Path,
+    fast_sub_agent_controller: None,
+    agent_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry that continues from the child's own history sends no new input,
+    so the stored opener is the last user message the reminder middleware
+    rebuilds.  Compaction must still resolve that turn and drop its work
+    instead of silently sending an over-trigger request."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[
+            _sub_tool_call("gather evidence"),
+            MockResponse(text="Parent saw the compacted child finish."),
+        ],
+        sub_outcomes=[
+            MockResponse(tool_calls=[("sleep", "sleep-1", {"seconds": 0, "reason": "evidence " * 30_000})]),
+            MockResponse(text="finished from the note"),
+        ],
+        sub_builtins=["sleep"],
+        sub_compaction=CompactionConfig(),
+        sub_max_context_tokens=30_000,
+        sub_max_output_tokens=3_000,
+        agent_engine=agent_engine,
+    )
+    # The first pass fails before its second request reaches the client, so
+    # compaction first sees the oversized turn on the retry.
+    fail_nested_before_response_on_nth(monkeypatch, 2, main=ctx.engine.current.loaded.bindings._response_validation)
+
+    async def generate(self: LastWordsGenerator, *_args: Any, **_kwargs: Any) -> str:
+        return "Collected the evidence with one sleep call. Next, report the findings."
+
+    generate_call = create_autospec(LastWordsGenerator.generate, side_effect=generate)
+    monkeypatch.setattr(LastWordsGenerator, "generate", generate_call)
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (paused,) = await ctx.wait_for_event(InvocationPaused)
+        assert generate_call.call_count == 0
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=paused.origin.invocation_id))
+        await ctx.wait_for_event(InvocationResumed)
+        await ctx.wait_for_idle()
+
+        assert generate_call.call_count == 1
+        assert ctx.sub_client.call_count == 2
+        retry_messages = ctx.sub_client.call_history[1][0]
+        assert not any(
+            content.call_id == "sleep-1"
+            for message in retry_messages
+            for content in message.contents
+            if content.type in ("function_call", "function_result")
+        )
+        (opener,) = [m for m in retry_messages if m.role == "user"]
+        assert opener.text.startswith("gather evidence")
+        assert "[LAST_WORDS] " in opener.text
+        assert "Collected the evidence with one sleep call." in opener.text
+        assert _explore_result(ctx).result == "finished from the note"
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_repeated_pause_retry_preserves_sub_agent_tool_order(
     tmp_path: Path,
     fast_sub_agent_controller: None,
@@ -1192,6 +1262,114 @@ async def test_store_true_repeated_pause_retry_clears_each_stale_conversation(
             if (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn") and e.tool_name == "Explore"
         ]
         assert tool_results and "continued after both stored sleeps" in tool_results[-1].result
+    finally:
+        await ctx.cleanup()
+
+
+def _retried_pass_settled(ctx: _SubAgentPipelineCtx) -> list[Event]:
+    """Pauses and the parent's Explore result, in order: a retried pass ends in one or the other."""
+    return [
+        e
+        for e in ctx.events
+        if isinstance(e, InvocationPaused)
+        or (isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn" and e.tool_name == "Explore")
+    ]
+
+
+def _options_tokens(ctx: _SubAgentPipelineCtx) -> list[object]:
+    return [options.get("continuation_token") for _messages, options in ctx.sub_client.call_history]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_automatic_retry", [False, True], ids=["first-request", "after-automatic-retry"])
+async def test_retry_that_polls_an_empty_background_response_never_creates_its_hosted_work_again(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, after_automatic_retry: bool
+) -> None:
+    """Retry polls the response the failed pass left running; when the poll comes back empty, a new request would
+    run the response's hosted call again, so the sub-agent pauses again instead. An automatic retry before the
+    response started replaces the request options, and the poll still counts as resuming that response."""
+    leading: list[MockResponse | BaseException] = (
+        [ConnectionResetError("connection reset by peer")] if after_automatic_retry else []
+    )
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("file the issue"), MockResponse(text="Parent saw the failure.")],
+        sub_outcomes=[
+            *leading,
+            HostedMockResponse(
+                hosted=[Content.from_mcp_server_tool_call("mc1", "create_issue")],
+                continuation_token={"response_id": "resp_sub_1"},
+                error_after_hosted=FrameworkBoom("stream dropped"),
+            ),
+            MockResponse(text=""),
+            MockResponse(text="created again"),
+        ],
+        sub_stream=True,
+        sub_responses_store=True,
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (first_pause,) = await ctx.wait_for_event(InvocationPaused)
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=first_pause.origin.invocation_id))
+        await wait_for(
+            lambda: len(_retried_pass_settled(ctx)) >= 2,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the retried pass settled",
+        )
+        second_pause = _retried_pass_settled(ctx)[1]
+        assert isinstance(second_pause, InvocationPaused)
+        assert _options_tokens(ctx) == [*([None] if after_automatic_retry else []), None, {"response_id": "resp_sub_1"}]
+
+        await ctx.bus.publish(InvocationAbortRequested(invocation_id=second_pause.origin.invocation_id))
+        await ctx.wait_for_event(InvocationAborted)
+        await ctx.wait_for_idle()
+        assert ctx.sub_client.call_count == len(leading) + 2
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_an_ended_background_response_keeps_its_transient_retries(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    """The poll that ended the background response settled its hosted work: the user's Retry sends a new request,
+    and a connection failure before any new hosted work is retried as usual."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("file the issue"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            HostedMockResponse(
+                hosted=[Content.from_mcp_server_tool_call("mc1", "create_issue")],
+                continuation_token={"response_id": "resp_sub_1"},
+                error_after_hosted=ConnectionResetError("connection reset by peer"),
+            ),
+            # The automatic retry polls the response, which ends empty: the pass pauses.
+            MockResponse(text=""),
+            ConnectionResetError("connection reset by peer"),
+            MockResponse(text="Filed the issue."),
+        ],
+        sub_stream=True,
+        sub_responses_store=True,
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        (first_pause,) = await ctx.wait_for_event(InvocationPaused)
+        assert _options_tokens(ctx) == [None, {"response_id": "resp_sub_1"}]
+
+        await ctx.bus.publish(InvocationRetryRequested(invocation_id=first_pause.origin.invocation_id))
+        await wait_for(
+            lambda: len(_retried_pass_settled(ctx)) >= 2,
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the retried pass settled",
+        )
+        assert not isinstance(_retried_pass_settled(ctx)[1], InvocationPaused)
+        await ctx.wait_for_idle()
+
+        assert _explore_result(ctx).result == "Filed the issue."
+        assert _options_tokens(ctx) == [None, {"response_id": "resp_sub_1"}, None, None]
     finally:
         await ctx.cleanup()
 

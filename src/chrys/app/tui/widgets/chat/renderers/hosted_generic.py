@@ -13,6 +13,7 @@ from rich.text import Text
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.widgets.chat.tool_call import ToolCall, fmt_duration
 from chrys.app.tui.widgets.chat.tool_renderers import hosted_failure_display_text, hosted_family_display_title
 from chrys.foundation.hosted_tools import HostedToolStatus, normalize_hosted_tool_status
@@ -223,7 +224,9 @@ class HostedToolCall(ToolCall):
         preview = sanitize_legacy_block(_bounded_text("\n".join(lines)))
         self._body_pinned = bool(preview)
         with suppress(Exception):
-            self.query_one("#tc-body", Static).update(Text(preview) if preview else self._render_spinner())
+            update_static_in_place(
+                self.query_one("#tc-body", Static), Text(preview) if preview else self._render_spinner()
+            )
 
     def _truncate_result(self, text: str) -> str:
         """Keep hosted result details intentionally compact."""

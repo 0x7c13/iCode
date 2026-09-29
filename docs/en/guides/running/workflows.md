@@ -21,7 +21,7 @@ After selecting the example, explore these tabs:
 - **Workflow**: Shows the execution graph, including nodes, connections, and execution states. When the graph is larger than the panel, drag it with the mouse to move around. After a run starts, click a node to view its input and output. Tabs under each one switch between “Markdown” (the default), “Plain text” (the text unformatted), “Data” (structured data as fields) and “Progress messages” (what the node reported while it ran); only the tabs with content appear. Agent nodes also have a “Transcript” tab for model responses and tool calls.
 - **Info**: Shows the workflow name, description, script location, execution environment, and node configuration, including agents and models.
 - **Source**: Shows the Python code that defines the workflow. Both “Workflow” and “Source” are read-only; to change a workflow, edit its Python source file.
-- **Input**: Shows the input submitted for the run after it starts.
+- **Input**: Shows the input submitted for the run after it starts, with Markdown formatting. Click “copy” to copy the input exactly as it was submitted.
 - **Output**: Updates node states and progress messages during execution, and shows the final output.
 
 ### Run and observe the workflow
@@ -31,7 +31,7 @@ Agents in a workflow use the same tool approval process as Chat mode. Before run
 1. On the “Workflow” tab, click “▶ Start” to open the “Start Workflow” dialog. Confirm the working directory and default model under “Run Settings”.
 2. Optionally describe what you want to learn about the project, such as `Explain this project's entry points and main modules. Answer in English.` Leave the input empty to use the example's default task. Click “▶ Start” in the dialog.
 
-The example first asks how deeply to read the project. Answer `deep` to try parallel analysis by multiple agents, or `quick` for a quick reading by one agent with fewer calls.
+The example first asks how deeply to read the project. Choose `deep` to try parallel analysis by multiple agents, or `quick` for a quick reading by one agent with fewer calls.
 
 During execution, watch the graph to see which nodes are running, completed, or skipped. To stop the workflow, click “⏹ Cancel” and confirm.
 
@@ -169,6 +169,24 @@ Save the changes, reopen the workflow in the TUI, preview the updated source, an
 
 `ctx.ask()` asks the user a question and returns a string after receiving an answer. It must be called with `await`, so define the node function with `async def`. Workflows that ask the user questions must run in the TUI; unattended CLI execution does not support them.
 
+A question can also offer options, and one dialog can ask several questions. Pass `Question` objects instead of a string. Add `Question` to the `from chrys.workflows import ...` line at the top of the file, then replace `describe()` again:
+
+```python
+async def describe(value: WorkflowValue, ctx: NodeContext) -> str:
+    title, extras = await ctx.ask(
+        [
+            Question("Please give this fruit list a title.", header="Title"),
+            Question("What else goes on the list?", header="Extras", options=["milk", "bread", "eggs"], multi_select=True),
+        ]
+    )
+    items = value.data["items"] + list(extras.selected)
+    return f"{title.text}: {len(items)} items: {', '.join(items)}"
+```
+
+A list of questions returns one `Answer` per question, in order. `selected` holds the option labels the user picked, and `text` holds what they typed. Run it with the same input. The dialog shows one tab per question: enter `Shopping List` on the “Title” tab and click “Answer & Next”, check `milk` and `eggs` on the “Extras” tab and click “Answer & Review”, then click “Submit answers”. The output should be `Shopping List: 5 items: apple, banana, pear, milk, eggs`.
+
+For single-select questions, what an answer contains, and how to pass a selection downstream, see [Workflow reference: `NodeContext.ask`](../../reference/workflows.md#nodecontextask).
+
 ## Define agent nodes
 
 ### Use an iCode agent
@@ -277,7 +295,7 @@ Each attempt is limited to 120 seconds, with at most three attempts including th
 
 Set `timeout=None` for no execution deadline. Time spent waiting for user answers or tool approval counts toward the timeout, which is why the earlier question example uses `timeout=None`.
 
-Retrying may repeat model calls, tool calls, or file writes. Operations that have already occurred are not automatically undone. Not every error is retried automatically; see [Workflow reference: Timeouts and retries](../../reference/workflows.md#timeouts-and-retries).
+Retrying may repeat model calls, file writes, or an external ACP agent's tool calls. When a non-ACP agent's attempt fails or times out, the retry continues its conversation, so tool calls that already finished do not run again. Operations that have already occurred are not automatically undone. Not every error is retried automatically; see [Workflow reference: Timeouts and retries](../../reference/workflows.md#timeouts-and-retries).
 
 ## Define conditional branches
 

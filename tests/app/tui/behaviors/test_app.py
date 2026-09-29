@@ -23,6 +23,7 @@ from chrys.foundation.config.spec import Source
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import SettingsReload, Warning
 from chrys.foundation.i18n import Localizer
+from chrys.service.approval.policy import ApprovalMode
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_app_harness import (
     EmptyAgentRegistry,
@@ -184,6 +185,8 @@ async def test_locale_switch_avoids_backend_global_ui_transcript_and_gc_work(
     from chrys.app.tui.widgets.chat.panel import ChatPanel
 
     class _Engine:
+        approval_mode = ApprovalMode.MANUAL
+
         def __init__(self) -> None:
             self.rebuild_calls = 0
 

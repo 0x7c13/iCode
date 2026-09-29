@@ -273,7 +273,7 @@ async def create_test_engine(
     # Monkey-patch create_client to return our mock with callbacks forwarded.
     # The engine passes on_intermediate_text_async/sync to create_client;
     # we forward them to the mock client so batch_id boundaries work.
-    def _patched_create_client(s: Any = None, **kw: Any) -> MockChatClient:
+    async def _patched_create_client(s: Any = None, **kw: Any) -> MockChatClient:
         mock_client._on_intermediate_text_async = kw.get("on_intermediate_text_async")
         mock_client._on_intermediate_text_sync = kw.get("on_intermediate_text_sync")
         return mock_client

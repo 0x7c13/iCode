@@ -16,6 +16,7 @@ from chrys.foundation.events.types import (
     InvocationPaused,
 )
 from chrys.foundation.platform.files import atomic_write_owner_only_text
+from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.kernel import Message
 from chrys.orchestration.invoker.contracts import (
@@ -48,7 +49,6 @@ from chrys.service.tools.result_metadata import record_tool_failure
 from .shell import SubAgentToolShell
 
 logger = logging.getLogger(__name__)
-_BACKOFF = (3, 7, 15, 30, 60)
 
 
 class AcpSubAgentPolicy:
@@ -67,7 +67,7 @@ class AcpSubAgentPolicy:
         translator_callback: Callable[[AcpUpdateTranslator], Awaitable[None]] | None = None,
         pause_callback: Callable[[], Awaitable[None]] | None = None,
         max_connect_retries: int = 5,
-        backoff_schedule: tuple[int, ...] = _BACKOFF,
+        backoff_schedule: tuple[int, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS,
         persist_dir: Path | None = None,
         parent_provider_call_id: str = "",
         parent_event_call_id: str = "",

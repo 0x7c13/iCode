@@ -79,9 +79,13 @@ class ShellModeController:
         if self._state.shell.active:
             self._set_shell_mode_state(False)
 
+    def keeps_panel_focus(self) -> bool:
+        """Whether focus that lands on a display-only panel stays there instead of returning to the input."""
+        return self._state.shell.active or self._state.shell.fullscreen_terminal
+
     def on_descendant_focus(self, widget: object) -> None:
         """Redirect display-only panel focus back to the input bar."""
-        if self._state.shell.active or self._state.shell.fullscreen_terminal:
+        if self.keeps_panel_focus():
             return
         has_class = getattr(widget, "has_class", None)
         if callable(has_class) and has_class("status-action-btn"):

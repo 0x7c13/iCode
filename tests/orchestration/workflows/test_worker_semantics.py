@@ -13,6 +13,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.orchestration.workflows.worker_client import (
     AskUnavailable,
     AttemptTimeout,
@@ -290,6 +291,12 @@ FORK_THEN_DIE = python_workflow(
     "fn",
 )
 WIDE_ASK = python_workflow("async def fn(value, ctx):\n    return await ctx.ask('x' * (17 * 1024 * 1024))\n", "fn")
+SYNC_ASK = python_workflow(
+    "import asyncio\n"
+    "from chrys.workflows import Question\n"
+    "def fn(value, ctx):\n    return asyncio.run(ctx.ask(Question('?', options=['a']))).text\n",
+    "fn",
+)
 ASYNC_CONDITIONS = b"""
 from chrys.workflows import WorkflowBuilder
 async def verdict(value):
@@ -459,7 +466,7 @@ async def test_lone_surrogates_fail_the_attempt_instead_of_hanging_it(launch: La
     with pytest.raises(WorkerRpcError) as ask_failure:
         await client.run_python(ref("ask_fn"), WorkflowValue(text=""), blocking=False, timeout=5.0)
     assert ask_failure.value.code == ErrorCode.USER_EXCEPTION
-    assert "ctx.ask() prompt is not valid Unicode" in ask_failure.value.message
+    assert "Question.question is not valid Unicode" in ask_failure.value.message
 
     printed = await client.run_python(ref("print_fn"), WorkflowValue(text="kept"), blocking=False, timeout=5.0)
     assert printed.value.text == "kept"
@@ -801,7 +808,7 @@ async def test_cancelling_a_task_before_its_first_step_closes_its_coroutine(laun
 async def test_a_giant_ask_error_still_reaches_the_worker(launch: Launcher, workspace: Path) -> None:
     """An oversized error reply must be bounded, not silently dropped, or the worker's ctx.ask hangs forever."""
 
-    async def refuse(ref_: AttemptRef, prompt: str) -> str:
+    async def refuse(ref_: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         raise AskUnavailable("x" * (17 * 1024 * 1024))
 
     client = await _loaded(launch, workspace, ASK_ONCE, ask_handler=refuse)
@@ -854,6 +861,17 @@ async def test_worker_death_is_noticed_while_a_forked_child_holds_its_pipes(laun
     with pytest.raises(WorkerLostError, match="status 7"):
         await asyncio.wait_for(client.run_python(ref("fn"), WorkflowValue(text=""), blocking=False), timeout=20)
     await client.close(grace=0.3)
+
+
+async def test_ask_from_a_sync_body_is_unavailable(launch: Launcher, workspace: Path) -> None:
+    async def never(ref_: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
+        raise AssertionError("a sync body's ask must not reach the main process")
+
+    client = await _loaded(launch, workspace, SYNC_ASK, ask_handler=never)
+    with pytest.raises(WorkerRpcError) as failure:
+        await client.run_python(ref("fn"), WorkflowValue(text=""), blocking=False, timeout=5.0)
+    assert failure.value.code == ErrorCode.ASK_UNAVAILABLE
+    assert "inside an async def node body" in failure.value.message
 
 
 async def test_ask_prompt_is_checked_before_it_reaches_the_wire(launch: Launcher, workspace: Path) -> None:

@@ -47,14 +47,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 from uuid import uuid4
 
-from chrys.foundation.errors import _iter_exception_chain, clean_error_message, is_retryable
+from chrys.foundation.errors import clean_error_message, is_retryable, may_be_context_overflow
 from chrys.foundation.models.turns import is_continuation_message
-from chrys.foundation.retry import RetryAttemptInfo
+from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, RetryAttemptInfo
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
 from chrys.foundation.trajectory.event_types import RetryMode, RetryReason
-from chrys.kernel import TOOL_CALL_CONTENT_TYPES, Content, LastWordsToolCallError, Message, TokenizerProtocol
+from chrys.kernel import (
+    TOOL_CALL_CONTENT_TYPES,
+    Content,
+    LastWordsToolCallError,
+    Message,
+    TokenizerProtocol,
+    report_wire_progress,
+)
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
 from chrys.service.llm.responses import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
@@ -71,19 +78,6 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.schema import ModelProfile
 
 _log = logging.getLogger(__name__)
-
-# Provider context-window rejection markers (OpenAI, Anthropic, DeepSeek,
-# and common gateway phrasings).  A side call rejected for size cannot
-# succeed by retrying the same scoped request — it demotes straight to the
-# reconstruction fallback.
-_CONTEXT_WINDOW_PHRASES = (
-    "context_length_exceeded",
-    "context window",
-    "maximum context length",
-    "prompt is too long",
-    "input is too long",
-    "too many tokens",
-)
 
 _COMPLETER_MAX_RETRIES = 2
 _SLICE_SAFETY_MARGIN_TOKENS = 2_048
@@ -116,15 +110,6 @@ _FALLBACK_ALLOWED_OPTION_KEYS = frozenset(
         "top_p",
     }
 )
-
-
-def _is_context_window_error(e: BaseException) -> bool:
-    """Detect a provider context-window rejection anywhere in the exception chain."""
-    for exc in _iter_exception_chain(e):
-        text = str(exc).lower()
-        if any(phrase in text for phrase in _CONTEXT_WINDOW_PHRASES):
-            return True
-    return False
 
 
 _BASE_GUIDANCE = """\
@@ -598,7 +583,7 @@ class LastWordsGenerator:
 
     _MAX_RETRIES: int = 5
     _MAX_CORRECTIVE_RETRIES: int = 5
-    _BACKOFF_SCHEDULE: tuple[float, ...] = (3, 7, 15, 30, 60)
+    _BACKOFF_SCHEDULE: tuple[float, ...] = TRANSIENT_RETRY_BACKOFF_SECONDS
     # A LAST_WORDS note replaces an entire amputated turn, and Phase 4 only
     # fires on a near-full context — there is always substantial work to
     # record, so a fragmentary note is worse than a retry.  Observed live
@@ -643,6 +628,8 @@ class LastWordsGenerator:
         # garbage-collected before delivering.
         self._detached_publishes: set[asyncio.Future] = set()
         self._client = None
+        self._client_lock = asyncio.Lock()
+        self._closed = False
         self._chat_options: dict | None = None
 
     def _report_side_call_usage(self, usage_details: Mapping[str, Any]) -> None:
@@ -660,19 +647,30 @@ class LastWordsGenerator:
         except Exception:
             _log.debug("side-call usage report failed", exc_info=True)
 
-    def _get_client(self):
+    async def _get_client(self):
         # Fallback-only: the lazily created separate client (and its derived
         # route_kind="last-words" session) never serves the completer path.
-        if self._client is None:
-            from chrys.service.llm.clients import create_client
+        async with self._client_lock:
+            if self._closed:
+                raise LastWordsGenerationError("last-words generator is closed")
+            if self._client is None:
+                from chrys.service.llm.clients import create_client
 
-            self._client = create_client(
-                self._profile,
-                session_id=self._session_id,
-                parent_session_id=self._parent_session_id,
-                session_dir=self._session_dir,
-            )
-        return self._client
+                self._client = await create_client(
+                    self._profile,
+                    session_id=self._session_id,
+                    parent_session_id=self._parent_session_id,
+                    session_dir=self._session_dir,
+                )
+            return self._client
+
+    async def aclose(self) -> None:
+        """Close the fallback client, if one was created; later generations are refused."""
+        self._closed = True
+        async with self._client_lock:
+            client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
 
     def _profile_chat_options(self) -> dict:
         """Parsed profile chat options, cached (fallback options + budget math)."""
@@ -1079,7 +1077,9 @@ class LastWordsGenerator:
             try:
                 output_text = await self._generate_once(list(candidate.messages), max_tokens=send_max_tokens)
             except Exception as exc:
-                if _is_context_window_error(exc):
+                # A false positive only shrinks the candidate; a miss would resend
+                # the same oversized candidate until the retry budget runs out.
+                if may_be_context_overflow(exc):
                     last_context_error = exc
                     candidate_index += 1
                     _log.warning(
@@ -1370,7 +1370,7 @@ class LastWordsGenerator:
                     )
                 )
             except Exception as exc:
-                if _is_context_window_error(exc):
+                if may_be_context_overflow(exc):
                     _log.warning(
                         "LAST_WORDS side call rejected for context-window size, demoting to fallback: %s",
                         clean_error_message(exc),
@@ -1601,10 +1601,11 @@ class LastWordsGenerator:
         return None
 
     async def _generate_once(self, messages: list[Message], *, max_tokens: int) -> str:
-        client = self._get_client()
+        client = await self._get_client()
         profile_options = self._profile_chat_options()
         options = {key: value for key, value in profile_options.items() if key in _FALLBACK_ALLOWED_OPTION_KEYS}
         options["max_tokens"] = max_tokens
+        report_wire_progress()
         with side_call_scope(ActorRole.COMPACTION):
             response = await get_final_response(
                 client,

@@ -578,6 +578,8 @@ class InvocationRetryAttempt(InvocationEvent):
     inside the live compaction card instead of a transcript-level error banner."""
     display_message: MessageRef | None = None
     """Locale-neutral display reference when this retry has migrated prose."""
+    display_hint: MessageRef | None = None
+    """Shown after ``display_message`` (e.g. "seems offline"); never without it."""
     detail: str = ""
     """Raw untranslated diagnostic component separated from a fixed wrapper."""
 
@@ -597,6 +599,9 @@ class InvocationPaused(InvocationEvent):
     reason: str = ""
     """One of ``stream_stall``, ``last_words``, ``framework_exc``, ``acp_transport``."""
     last_error: str = ""
+    last_error_display: MessageRef | None = None
+    """What ``last_error`` means to the user; the raw text still follows it."""
+    last_error_hint: MessageRef | None = None
     retry_attempts: int = 0
     diagnostic_path: str | None = None
     """UI-only diagnostic file path; never interpolate into model-visible errors."""
@@ -910,6 +915,8 @@ class Error(Event):
     """Pre-rendered English retained byte-for-byte for compatibility consumers."""
     recoverable: bool = True
     display_message: MessageRef | None = None
+    display_hint: MessageRef | None = None
+    """Shown after ``display_message``; never without it."""
 
 
 @dataclass
@@ -1036,6 +1043,8 @@ class AgentLoadFailed(Event):
     """Pre-rendered English retained byte-for-byte for compatibility consumers."""
     display_message: MessageRef | None = None
     """Locale-neutral display reference for future migrated failure producers."""
+    display_hint: MessageRef | None = None
+    """Shown after ``display_message``; never without it."""
 
 
 @dataclass
@@ -1418,13 +1427,13 @@ class WorkflowCancelRequest(Event):
 
 @dataclass
 class WorkflowNodeAnswer(Event):
-    """User answers a node's ``ctx.ask`` (frontend → backend)."""
+    """User answers a node's ``ctx.ask`` (frontend → backend): one answer per question, in order."""
 
     run_id: str = ""
     node_id: str = ""
     activation_id: str = ""
     request_id: str = ""
-    answer: str = ""
+    answers: tuple[AskUserAnswer, ...] = ()
 
 
 @dataclass
@@ -1526,7 +1535,11 @@ class WorkflowNodeOutput(Event):
 
 @dataclass
 class WorkflowNodeAskUser(Event):
-    """A python node is waiting on ``ctx.ask``; answer with ``WorkflowNodeAnswer``."""
+    """A python node is waiting on ``ctx.ask``; answer with ``WorkflowNodeAnswer``.
+
+    Live events carry the full questions; a replayed one carries the stored
+    summary as a single open question.
+    """
 
     seq: int = 0
     run_id: str = ""
@@ -1534,12 +1547,12 @@ class WorkflowNodeAskUser(Event):
     activation_id: str = ""
     attempt: int = 0
     request_id: str = ""
-    prompt: str = ""
+    questions: tuple[AskUserQuestion, ...] = ()
 
 
 @dataclass
 class WorkflowNodeAnswered(Event):
-    """An accepted answer, journaled before the waiting attempt resumes."""
+    """An accepted answer, journaled before the waiting attempt resumes; ``answer`` is its summary."""
 
     seq: int = 0
     run_id: str = ""

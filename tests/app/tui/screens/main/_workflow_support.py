@@ -92,6 +92,7 @@ async def open_workflow(main: MainScreen, pilot: Pilot, workflow_id: str) -> Wor
                 and not main._workflow.browser.workspace_busy
             ),
             pilot=pilot,
+            timeout=ENGINE_TURN_TIMEOUT,
         )
     preview = await main._workflow.browser.catalog.preview(workflow_id, trust=True)
     main._workflow.browser.catalog.confirm(preview)

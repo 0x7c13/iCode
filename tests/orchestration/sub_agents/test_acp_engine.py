@@ -93,7 +93,7 @@ async def _start_acp_engine(
         ]
     )
 
-    def create_client(_profile: Any = None, **kwargs: Any) -> MockChatClient:
+    async def create_client(_profile: Any = None, **kwargs: Any) -> MockChatClient:
         main_client._on_intermediate_text_async = kwargs.get("on_intermediate_text_async")
         main_client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
         return main_client

@@ -5,11 +5,12 @@
 from pathlib import Path
 
 import pytest
-from textual.widgets import Static, TabbedContent
+from textual.widgets import TabbedContent
 
 from chrys.app.tui.screens.dialogs.workflow_input import WorkflowInputDialog
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.editor import MessageEditor
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from tests.app.tui.screens.main._workflow_support import (
@@ -66,7 +67,13 @@ async def test_cancel_preserves_draft_submit_preserves_text_and_chat(
         await bus.publish(events.WorkflowRunFinished(run_id="run1", outcome="completed"))
         tabs = main._workflow_panel.query_one("#workflow-run", TabbedContent)
         tabs.active = "workflow-input-tab"
-        await wait_for(lambda: str(main.query_one("#workflow-run-input", Static).content) == draft, pilot=pilot)
+        await wait_for(lambda: main.query_one("#workflow-run-input", VirtualizedMarkdown).source == draft, pilot=pilot)
+        # The pane renders the input as markdown; its copy action returns it exactly as submitted.
+        copied: list[str] = []
+        monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+        await click_when_settled(pilot, "#workflow-input-actions > MessageCopyButton")
+        await wait_for(lambda: copied == [draft], pilot=pilot)
+        assert app.clipboard == draft
         assert not main.query("#workflow-reuse-input")
         await select_workflow_view(main, pilot, "graph")
         await click_when_settled(pilot, "#workflow-start")

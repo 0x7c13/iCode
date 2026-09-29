@@ -18,7 +18,7 @@ from typing import Any, Final
 
 from chrys.foundation.events.types import WorkflowRunRequest
 from chrys.foundation.models.workflow_session import WorkflowPins, WorkflowTarget
-from chrys.orchestration.invoker.resources import finish_close
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.workflows.worker_client import (
     AskHandler,
     CapturedOutput,

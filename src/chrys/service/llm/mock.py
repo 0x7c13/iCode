@@ -99,6 +99,9 @@ class _LoopInnerAdapter(_PreparedRequestObserverClient):
     def __init__(self, mock: MockChatClient) -> None:
         self._mock = mock
 
+    async def aclose(self) -> None:
+        """Nothing to release: the adapter closes the mock's own internal cycle."""
+
     def get_response(
         self,
         messages: Sequence[Message],

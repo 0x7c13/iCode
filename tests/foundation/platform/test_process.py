@@ -30,7 +30,7 @@ from chrys.foundation.platform.process import (
     wait_for_subprocess,
     windows_hidden_subprocess_kwargs,
 )
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 def _process_state(pid: int) -> str | None:
@@ -392,7 +392,7 @@ async def test_posix_managed_process_group_terminates_surviving_descendant(tmp_p
         limit=64 * 1024,
     )
     try:
-        await wait_for(ready.exists, description="surviving descendant startup")
+        await wait_for(ready.exists, description="surviving descendant startup", timeout=ENGINE_TURN_TIMEOUT)
         process.terminate_tree()
         await wait_for(terminated.exists, description="surviving descendant termination")
         await process.wait()

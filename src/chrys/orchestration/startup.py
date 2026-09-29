@@ -194,9 +194,9 @@ def bootstrap_runtime(
     Args:
         eval_context: The frontend's own policy, passed *into* the load rather
             than substituted afterwards. ``chrys run`` raises the transient
-            retry default to 15, and that number is an input to the project
-            layer's tighten/loosen verdicts — replacing it after the fact would
-            arrive after the decisions it informs.
+            retry default, and that number is an input to the project layer's
+            tighten/loosen verdicts — replacing it after the fact would arrive
+            after the decisions it informs.
         project_root: The workspace root whose project trust domain the loaded
             settings live under. The TUI and ``chrys run`` pass their working
             directory — except a ``chrys run --session`` restore, which passes

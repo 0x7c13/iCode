@@ -6,26 +6,36 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import inspect
+import logging
 import weakref
 from contextlib import suppress
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from rich.text import Text
+from textual._node_list import NodeList
 from textual.app import App, ComposeResult
+from textual.pilot import Pilot
 from textual.strip import Strip
+from textual.widgets import Static
 
 from chrys.app.tui.screens.main import screen as screen_module
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.suggestions import SuggestionHandler
+from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.support.gc_freeze import (
     DetachedFifoCache,
     DetachedLruCache,
+    GcAbsorbReason,
     GcAbsorbRequested,
     GcFreezeBlockReason,
     GcFreezeCoordinator,
+    GcReclaimReason,
     GcReclaimRequested,
+    abort_textual_screen_gc_freeze,
     after_textual_screen_gc_freeze,
     prepare_textual_screen_for_gc,
 )
@@ -36,6 +46,7 @@ from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolCall, ToolGroup
 from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.waiting import wait_for
 
 
@@ -159,16 +170,122 @@ def test_main_screen_reports_every_gc_renewal_failure(monkeypatch: pytest.Monkey
     ]
 
 
-@pytest.mark.asyncio
-async def test_textual_screen_cache_hooks_clear_compositor_and_renew_cyclic_lrus() -> None:
-    class _ScreenCacheApp(App):
-        def compose(self) -> ComposeResult:
-            yield ChatPanel()
+class _ScreenCacheApp(App):
+    def compose(self) -> ComposeResult:
+        yield ChatPanel()
 
+
+class _LinkedRingLruCache:
+    """Upstream Textual's LRU layout: entries linked into a ring that ``clear()`` abandons."""
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = maxsize
+        self._links: dict[object, list[Any]] = {}
+        self._head: list[Any] = []
+
+    def __setitem__(self, key: object, value: object) -> None:
+        head = self._head
+        if not head:
+            head[:] = [head, head, key, value]
+        else:
+            self._head = [head[0], head, key, value]
+            head[0][1] = self._head
+            head[0] = self._head
+        self._links[key] = self._head
+        if len(self._links) > self._maxsize:
+            head = self._head
+            oldest = head[0]
+            oldest[0][1] = head
+            head[0] = oldest[0]
+            del self._links[oldest[2]]
+
+    def get(self, key: object, default: object = None) -> object:
+        link = self._links.get(key)
+        return default if link is None else link[3]
+
+    def clear(self) -> None:
+        self._links.clear()
+        self._head = []
+
+
+def test_textual_cache_probe_accepts_the_installed_acyclic_caches() -> None:
+    assert gc_freeze.textual_screen_caches_acyclic.__wrapped__() is True
+    assert gc_freeze.textual_screen_caches_acyclic() is True
+    assert gc.isenabled() is True
+
+
+def test_textual_cache_probe_rejects_a_linked_ring_lru(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gc_freeze, "LRUCache", _LinkedRingLruCache)
+
+    assert gc_freeze.textual_screen_caches_acyclic.__wrapped__() is False
+    assert gc.isenabled() is True
+
+
+def test_textual_cache_probe_failure_keeps_the_detach_path(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _ChangedFifoCache:
+        def __init__(self, maxsize: int) -> None:
+            raise TypeError(f"unexpected FIFOCache signature for maxsize={maxsize}")
+
+    monkeypatch.setattr(gc_freeze, "FIFOCache", _ChangedFifoCache)
+
+    with caplog.at_level(logging.WARNING, logger=gc_freeze.__name__):
+        assert gc_freeze.textual_screen_caches_acyclic.__wrapped__() is False
+    assert gc.isenabled() is True
+    assert "keeps detaching screen caches" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_textual_screen_cache_hooks_leave_acyclic_caches_and_layout_in_place() -> None:
     app = _ScreenCacheApp()
     async with app.run_test() as pilot:
-        await pilot.pause()
         screen = app.screen
+        await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot, description="settled screen layout")
+        installed = [
+            (widget, widget._box_model_cache, widget._query_one_cache, widget._arrangement_cache)
+            for widget in screen.walk_children(with_self=True)
+        ]
+        placed = set(screen._compositor.widgets)
+        assert placed
+
+        prepare_textual_screen_for_gc(screen)
+        after_textual_screen_gc_freeze(screen)
+        abort_textual_screen_gc_freeze(screen)
+
+        assert set(screen._compositor.widgets) == placed
+        for widget, box_cache, query_cache, arrangement_cache in installed:
+            assert widget._box_model_cache is box_cache
+            assert widget._query_one_cache is query_cache
+            assert widget._arrangement_cache is arrangement_cache
+        assert screen._layout_required is False
+
+
+def test_screen_caches_freeze_in_place_only_while_a_removal_clears_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert gc_freeze.textual_screen_caches_freeze_in_place() is True
+
+    monkeypatch.setattr(NodeList, "_remove", inspect.unwrap(NodeList._remove))
+
+    assert gc_freeze.textual_screen_caches_freeze_in_place() is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback", ["cyclic-caches", "stock-removal"])
+async def test_textual_screen_cache_hooks_clear_compositor_and_renew_cyclic_lrus(
+    monkeypatch: pytest.MonkeyPatch,
+    fallback: str,
+) -> None:
+    if fallback == "cyclic-caches":
+        monkeypatch.setattr(gc_freeze, "textual_screen_caches_acyclic", lambda: False)
+    else:
+        # A removal that leaves stale lookups behind needs the detach path to drop them.
+        monkeypatch.setattr(NodeList, "_remove", inspect.unwrap(NodeList._remove))
+    app = _ScreenCacheApp()
+    async with app.run_test() as pilot:
+        screen = app.screen
+        await wait_for(lambda: screen_is_settled(app, screen), pilot=pilot, description="settled screen layout")
+        assert screen._layout_required is False
         old_box_cache = screen._box_model_cache
         old_query_cache = screen._query_one_cache
         old_arrangement_cache = screen._arrangement_cache
@@ -621,53 +738,170 @@ async def test_cancelled_inflight_index_to_thread_drops_payload_while_frozen() -
         gc.collect()
 
 
+class _ManualClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class _ToolGroupGcApp(App):
+    """Chat panel under a real coordinator whose own freeze hooks are inert."""
+
+    def __init__(self) -> None:
+        self.clock = _ManualClock()
+        self.coordinator = GcFreezeCoordinator(self, enabled=True, clock=self.clock)
+        self.reclaim_requests: list[GcReclaimRequested] = []
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        yield ChatPanel()
+
+    def freeze_block_reason(self) -> GcFreezeBlockReason | None:
+        return None
+
+    def prepare_for_gc_freeze(self) -> None:
+        return
+
+    def after_gc_freeze(self) -> None:
+        return
+
+    def on_gc_absorb_requested(self, event: GcAbsorbRequested) -> None:
+        self.coordinator.request_absorb(
+            reason=event.reason,
+            terminal_boundary=event.terminal_boundary,
+            requested_at=event.time,
+        )
+
+    def on_gc_reclaim_requested(self, event: GcReclaimRequested) -> None:
+        self.reclaim_requests.append(event)
+        self.coordinator.request_reclaim(
+            reason=event.reason,
+            prompt=event.prompt,
+            requested_at=event.time,
+            removed=event.removed,
+        )
+
+    def on_unmount(self) -> None:
+        self.coordinator.close()
+
+
+def _unreachable(reference: weakref.ReferenceType[ToolCall]) -> bool:
+    """Collect young garbage, then report whether *reference*'s target is gone."""
+    gc.collect()
+    return reference() is None
+
+
+async def _freeze_then_build_a_tool_turn(app: _ToolGroupGcApp, pilot: Pilot[None]) -> ToolGroup:
+    """Freeze the empty transcript, then build one completed tool turn under the new epoch."""
+    panel = app.query_one(ChatPanel)
+    app.coordinator.start()
+    await wait_for(
+        lambda: app.coordinator.frozen,
+        pilot=pilot,
+        description="GC coordinator freezes the empty transcript",
+    )
+    await panel.add_user_message("tools")
+    await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
+    await panel.add_tool_result("tool1", "plain_tool", "done", 10)
+    return panel.query_one(ToolGroup)
+
+
+async def _collapse_and_drain_prune(group: ToolGroup, pilot: Pilot[None]) -> None:
+    group.collapsed = True
+    await wait_for(lambda: not group._content_mounted, pilot=pilot, description="collapsed tool subtree is removed")
+    removal_drained = asyncio.Event()
+    assert group.call_later(removal_drained.set)
+    await wait_for(removal_drained.is_set, pilot=pilot, description="tool group removal callback drains")
+
+
+async def _terminal_absorb(app: _ToolGroupGcApp, group: ToolGroup, pilot: Pilot[None]) -> str:
+    previous_metrics = app.coordinator.last_action_metrics
+    group.post_message(GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True))
+    await wait_for(
+        lambda: app.coordinator.last_action_metrics is not previous_metrics,
+        pilot=pilot,
+        description="turn-end absorb completes",
+    )
+    metrics = app.coordinator.last_action_metrics
+    assert metrics is not None
+    return metrics.action
+
+
+@pytest.mark.asyncio
+async def test_young_completed_tool_subtree_needs_no_reclaim_once_unreachable() -> None:
+    """A subtree built and pruned between two freezes is young garbage, not frozen state."""
+    app = _ToolGroupGcApp()
+    async with app.run_test() as pilot:
+        group = await _freeze_then_build_a_tool_turn(app, pilot)
+        absorbs_before_turn = app.coordinator._absorbs_since_reclaim
+        descendant_ref = _tool_call_weakref(group, "tool1")
+        await _collapse_and_drain_prune(group, pilot)
+
+        assert [request.reason for request in app.reclaim_requests] == [GcReclaimReason.STABLE_CONTENT_REMOVED]
+        assert app.reclaim_requests[0].removed is not None
+        assert app.coordinator._idle_reclaim_pending is False
+        # The spinner's cancelled interval handle keeps the card reachable from the
+        # event loop until its deadline passes; production turns end long after that.
+        await wait_for(
+            lambda: _unreachable(descendant_ref),
+            pilot=pilot,
+            description="pruned tool card becomes unreachable",
+        )
+
+        assert await _terminal_absorb(app, group, pilot) == "absorb"
+        assert app.coordinator._absorbs_since_reclaim == absorbs_before_turn + 1
+        assert app.coordinator._idle_reclaim_pending is False
+        assert app.coordinator._idle_reclaim_reasons == set()
+
+
+def _tool_body_weakref(group: ToolGroup, call_id: str) -> weakref.ReferenceType[Static]:
+    """Build a weakref to a tool card's body without retaining it in an async test frame."""
+    descendant = group.get_tool(call_id)
+    assert isinstance(descendant, ToolCall)
+    return weakref.ref(descendant.query_one("#tc-body", Static))
+
+
+@pytest.mark.asyncio
+async def test_young_tool_subtree_still_held_at_the_next_absorb_dies_on_its_idle_full_reclaim() -> None:
+    """A young removed node something still holds when the next freeze runs is frozen, so it earns the reclaim."""
+    app = _ToolGroupGcApp()
+    async with app.run_test() as pilot:
+        group = await _freeze_then_build_a_tool_turn(app, pilot)
+        card_ref = _tool_call_weakref(group, "tool1")
+        body_ref = _tool_body_weakref(group, "tool1")
+        holder = [body_ref()]
+        await _collapse_and_drain_prune(group, pilot)
+        assert app.coordinator._idle_reclaim_pending is False
+        await wait_for(lambda: _unreachable(card_ref), pilot=pilot, description="pruned tool card becomes unreachable")
+        assert _weakref_is_alive(body_ref)
+
+        assert await _terminal_absorb(app, group, pilot) == "absorb"
+        assert app.coordinator._idle_reclaim_pending is True
+        assert app.coordinator._idle_reclaim_reasons == {GcReclaimReason.STABLE_CONTENT_REMOVED}
+
+        holder.clear()
+        gc.collect()
+        assert _weakref_is_alive(body_ref)
+        app.clock.advance(4.0)
+        app.coordinator.on_tick()
+        await wait_for(
+            lambda: not app.coordinator._idle_reclaim_pending,
+            pilot=pilot,
+            description="idle GC reclaim completes",
+        )
+
+        assert app.coordinator.last_action_metrics is not None
+        assert app.coordinator.last_action_metrics.action == "full"
+        assert not _weakref_is_alive(body_ref)
+
+
 @pytest.mark.asyncio
 async def test_frozen_completed_tool_subtree_dies_on_its_idle_full_reclaim() -> None:
-    class _Clock:
-        def __init__(self) -> None:
-            self.value = 0.0
-
-        def __call__(self) -> float:
-            return self.value
-
-        def advance(self, seconds: float) -> None:
-            self.value += seconds
-
-    class _ToolGroupGcApp(App):
-        def __init__(self) -> None:
-            self.clock = _Clock()
-            self.coordinator = GcFreezeCoordinator(self, enabled=True, clock=self.clock)
-            super().__init__()
-
-        def compose(self) -> ComposeResult:
-            yield ChatPanel()
-
-        def freeze_block_reason(self) -> GcFreezeBlockReason | None:
-            return None
-
-        def prepare_for_gc_freeze(self) -> None:
-            return
-
-        def after_gc_freeze(self) -> None:
-            return
-
-        def on_gc_absorb_requested(self, event: GcAbsorbRequested) -> None:
-            self.coordinator.request_absorb(
-                reason=event.reason,
-                terminal_boundary=event.terminal_boundary,
-                requested_at=event.time,
-            )
-
-        def on_gc_reclaim_requested(self, event: GcReclaimRequested) -> None:
-            self.coordinator.request_reclaim(
-                reason=event.reason,
-                prompt=event.prompt,
-                requested_at=event.time,
-            )
-
-        def on_unmount(self) -> None:
-            self.coordinator.close()
-
     app = _ToolGroupGcApp()
     async with app.run_test() as pilot:
         panel = app.query_one(ChatPanel)
@@ -693,6 +927,9 @@ async def test_frozen_completed_tool_subtree_dies_on_its_idle_full_reclaim() -> 
         )
         assert group._content_mounted is False
         assert app.coordinator._idle_reclaim_pending is True
+        assert [(request.reason, request.prompt, request.removed) for request in app.reclaim_requests] == [
+            (GcReclaimReason.STABLE_CONTENT_REMOVED, False, None)
+        ]
         gc.collect()
         assert _weakref_is_alive(descendant_ref)
 

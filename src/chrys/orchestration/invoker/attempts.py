@@ -32,7 +32,7 @@ from chrys.foundation.trajectory.envelope import Link, MeasurementSource, measur
 from chrys.foundation.trajectory.event_types import EventType as TrajectoryEventType
 from chrys.foundation.trajectory.event_types import ModelRunEndReason, RetryMode, RetryReason
 from chrys.foundation.trajectory.ids import new_analytics_id
-from chrys.kernel import is_retry_boundary_update, resolve_storage_mode_and_handles
+from chrys.kernel import is_retry_boundary_update, resolve_storage_mode_and_handles, wire_progress_scope
 from chrys.service.agent_middleware.response_validation import (
     RetryableResponseValidationError,
     hosted_commits_from_error,
@@ -83,12 +83,19 @@ def _validation_retry_exemption(exc: BaseException) -> RetryAttemptInfo | None:
     )
 
 
-def _has_live_continuation_token(run_kwargs: Mapping[str, object] | None) -> bool:
+def has_live_continuation_token(run_kwargs: Mapping[str, object] | None) -> bool:
     """True when the retry-owned options still reference a live background response."""
     if run_kwargs is None:
         return False
     options = run_kwargs.get("options")
-    return isinstance(options, dict) and options.get("continuation_token") is not None
+    return is_string_keyed_dict(options) and options.get("continuation_token") is not None
+
+
+def drop_continuation_token(run_kwargs: AgentRunKwargs) -> None:
+    """Forget the retry-owned options' background response, so the next request starts a new one."""
+    options = run_kwargs.get("options")
+    if is_string_keyed_dict(options):
+        options.pop("continuation_token", None)
 
 
 def continuation_token_observer_for(run_kwargs: AgentRunKwargs) -> Callable[[Any], None]:
@@ -103,12 +110,11 @@ def continuation_token_observer_for(run_kwargs: AgentRunKwargs) -> Callable[[Any
     """
 
     def _observe(token: Any) -> None:
+        if token is None:
+            drop_continuation_token(run_kwargs)
+            return
         raw_options = run_kwargs.get("options")
         options = raw_options if is_string_keyed_dict(raw_options) else None
-        if token is None:
-            if options is not None:
-                options.pop("continuation_token", None)
-            return
         if options is None:
             options = {}
             run_kwargs["options"] = options
@@ -648,7 +654,7 @@ class AttemptRunner:
         hosted = hosted_commits_from_error(exc)
         if not hosted:
             hosted = self._hosted_commits_probe()
-        if hosted and not _has_live_continuation_token(run_kwargs):
+        if hosted and not has_live_continuation_token(run_kwargs):
             logger.warning(
                 "Not retrying failed attempt: provider-hosted tool call(s) already executed (%s)",
                 ", ".join(hosted),
@@ -825,14 +831,42 @@ class AttemptRunner:
             self._before_attempt()
 
         # Tracks the last point at which our per-chunk watchdog (re)armed
-        # its ``wait_for``.  Updated after each successful ``__anext__()``
-        # and after the stream is fully drained (before the finalize
-        # ``wait_for``).  Used below to distinguish a genuine stall — our
+        # its timer.  Updated after each successful ``__anext__()``, on each
+        # progress report, and after the stream is fully drained (before
+        # the finalize wait).  Used below to distinguish a genuine stall — our
         # timer actually elapsed — from a ``TimeoutError`` bubbling up
         # from inside the stream/transport (e.g. httpx or SDK internals),
         # which would otherwise be mis-labelled "Stream stalled" and
         # retried with the wrong error message.
         last_wait_start = _time.monotonic()
+
+        async def _watched[T](awaitable: Awaitable[T]) -> T:
+            # Idle timing: work a pull waits on before its next chunk (a
+            # compaction pass and its LAST_WORDS side call) reports progress,
+            # and every report restarts the stall timer.  The pull stays in
+            # this task: its telemetry ContextVars are set and reset here.
+            timeout = self._stream_timeout()
+            if timeout <= 0:
+                # wait_for stalls a non-positive timeout even when the pull
+                # would finish without suspending; asyncio.timeout does not.
+                return await asyncio.wait_for(awaitable, timeout=timeout)
+            event_loop = asyncio.get_running_loop()
+            watching = True
+            async with asyncio.timeout(timeout) as deadline:
+
+                def _on_progress() -> None:
+                    nonlocal last_wait_start
+                    # A task the pull spawned can report after the pull
+                    # settled, or while the stall is already cancelling it.
+                    if watching and not deadline.expired():
+                        last_wait_start = _time.monotonic()
+                        deadline.reschedule(event_loop.time() + timeout)
+
+                try:
+                    with wire_progress_scope(_on_progress):
+                        return await awaitable
+                finally:
+                    watching = False
 
         async def _iterate_and_finalize() -> AgentResponse[Any]:
             nonlocal last_wait_start
@@ -853,7 +887,8 @@ class AttemptRunner:
                 observer = self._stream_observer() if self._stream_observer is not None else None
 
                 # Per-chunk watchdog: each __anext__() gets the stall timeout
-                # individually, so the timer resets whenever a chunk arrives.
+                # individually, so the timer resets whenever a chunk arrives
+                # (or the work before it reports progress).
                 # This measures stream-idle time (matching httpx read-timeout
                 # semantics) — tool executions between chunks don't count.
                 #
@@ -873,10 +908,7 @@ class AttemptRunner:
                         if not watchdog or expecting_tool_result:
                             update = await aiter.__anext__()
                         else:
-                            update = await asyncio.wait_for(
-                                aiter.__anext__(),
-                                timeout=self._stream_timeout(),
-                            )
+                            update = await _watched(aiter.__anext__())
                     except StopAsyncIteration:
                         break
                     last_wait_start = _time.monotonic()
@@ -915,7 +947,7 @@ class AttemptRunner:
                 last_wait_start = _time.monotonic()
                 if not watchdog:
                     return await stream.get_final_response()
-                return await asyncio.wait_for(stream.get_final_response(), timeout=self._stream_timeout())
+                return await _watched(stream.get_final_response())
             except TimeoutError:
                 if not watchdog:
                     raise

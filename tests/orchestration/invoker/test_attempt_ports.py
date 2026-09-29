@@ -297,7 +297,6 @@ async def test_progressive_text_precedes_explicit_finalize(
     assert executor.state.run_failed is False
     assert order == [
         "iterator exhausted",
-        "progressive:first\n",
         "progressive:first\nlast",
         "explicit finalize",
         "final:first\nlast",

@@ -5,8 +5,11 @@
 ``ToolLoopLayer`` owns per-run middleware pipelines, dispatch, result assembly,
 continuation state and interrupt-recovery recording. Approval middleware
 controls tool admission; ``MiddlewareTermination`` stops execution.
-Execution exceptions return short messages, while argument-validation errors
-include safe schema guidance without echoing the full argument payload.
+A tool that raises answers the model with a fixed ``Error: Function failed.``
+unless it raised ``ModelVisibleToolError``, whose message the model reads;
+argument-validation errors include safe schema guidance without echoing the
+full argument payload. Every failed result also records the exception tree in
+its ``exception`` field, which never goes on the wire.
 
 The loop owns invocation logs and per-tool spans. Raw arguments and results
 are logged only when ``TELEMETRY_GATE.sensitive_data`` is set; spans require
@@ -42,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
 
 from pydantic import BaseModel, ValidationError
 
-from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors import clean_error_message, invalidates_continuation_token
 from chrys.foundation.observability.gate import TELEMETRY_GATE
 from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.retry import StreamStall
@@ -115,7 +118,8 @@ from ._types import (
     Message,
     ResponseStream,
 )
-from .client import _wire_message_view, resolve_storage_mode_and_handles
+from .client import _wire_message_view, resolve_storage_mode_and_handles, start_with_wire_progress
+from .exceptions import ChrysException, tool_error_result_text
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
 from .instrumentation import (
@@ -140,7 +144,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterable, Awaitable, Callable, Container, Coroutine
 
     from ._content import UsageDetails
-    from .middleware import ChatMiddleware, FunctionInvocationContext, FunctionMiddleware
+    from .middleware import ChatMiddleware, ChatMiddlewareLayer, FunctionInvocationContext, FunctionMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -489,6 +493,7 @@ class LoopRecorder:
         self._last_checkpoint_key: tuple[int, str] | None = None
         self._sealed_exchanges: list[_SealedExchange] = []
         self._pending_exchange: _PendingExchange | None = None
+        self._landed_response: tuple[Message, ...] | None = None
         self._committed_count = 0
         self._barrier_degraded = False
         self._barrier_unconfigured = False
@@ -502,6 +507,7 @@ class LoopRecorder:
         self._last_checkpoint_key = None
         self._sealed_exchanges = []
         self._pending_exchange = None
+        self._landed_response = None
         self._committed_count = 0
         self._barrier_degraded = False
         self._barrier_warned = False
@@ -521,6 +527,8 @@ class LoopRecorder:
         self._captured = None if snapshot.captured is None else list(snapshot.captured)
         self._service_loop_messages = list(snapshot.service_loop_messages)
         self._last_checkpoint_key = snapshot.last_checkpoint_key
+        # The retried attempt sends its request again.
+        self._landed_response = None
         pending = self._pending_exchange
         if pending is not None and not any(slot.fill_kind in ("raw", "final") for slot in pending.slots):
             self._pending_exchange = None
@@ -572,6 +580,15 @@ class LoopRecorder:
         return None if self._captured is None else len(self._captured)
 
     @property
+    def landed_response(self) -> tuple[Message, ...] | None:
+        """The newest request's response messages as the loop landed them; ``None`` while it is in flight.
+
+        Their Content objects are the ones history keeps, so they tell that request's own exchange apart
+        from earlier ones reusing its call ids.
+        """
+        return self._landed_response
+
+    @property
     def loop_messages(self) -> list[Message] | None:
         """Messages from completed tool loop iterations, or ``None``.
 
@@ -621,6 +638,7 @@ class LoopRecorder:
 
     async def record_pre_call(self, messages: list[Message]) -> None:
         """Snapshot the prepped message list before a wire call."""
+        self._landed_response = None
         if self._initial_count is None:
             self._initial_count = len(messages)
         prev_len = len(self._captured) if self._captured else 0
@@ -643,9 +661,16 @@ class LoopRecorder:
             len(self._captured),
             len(self._captured) - self._initial_count,
         )
-        await self._run_pre_wire_barrier()
-        if self._on_result_checkpoint is not None and not self._should_suppress_checkpoint():
-            await self._on_result_checkpoint()
+        barrier_persisted = await self._run_pre_wire_barrier()
+        if self._on_result_checkpoint is None:
+            return
+        # A persisted barrier already made this pre-call state durable; the
+        # best-effort checkpoint would only build and write it again. Suppression
+        # still runs first: it records this prefix as checkpointed, so a retry of
+        # the same request stays suppressed after a later barrier failure.
+        if self._should_suppress_checkpoint() or barrier_persisted:
+            return
+        await self._on_result_checkpoint()
 
     def record_response(self, response: ChatResponse) -> None:
         """Record assistant function-call messages from a parsed response.
@@ -653,6 +678,7 @@ class LoopRecorder:
         The loop owns the parsed ``ChatResponse`` for both stream modes, so the
         stream ``result_hook`` side channel of the middleware era is gone.
         """
+        self._landed_response = tuple(response.messages)
         if not self._capture_service_loop_messages:
             return
         for msg in response.messages:
@@ -787,23 +813,24 @@ class LoopRecorder:
         )
         self._fill_slot(exchange, slot, result, fill_kind="interrupted")
 
-    async def _run_pre_wire_barrier(self) -> None:
+    async def _run_pre_wire_barrier(self) -> bool:
+        """Strictly persist committed tool work; True only when the barrier reports it persisted."""
         if self._committed_count == 0 or self._barrier_degraded or self._barrier_unconfigured:
-            return
+            return False
         callback = self._on_pre_wire_barrier
         if callback is None:
             self._barrier_unconfigured = True
-            return
+            return False
         for _attempt in range(2):
             try:
                 outcome = await callback()
             except Exception:
                 outcome = RecoveryPersistOutcome.FAILED
             if outcome is RecoveryPersistOutcome.PERSISTED:
-                return
+                return True
             if outcome is RecoveryPersistOutcome.UNCONFIGURED:
                 self._barrier_unconfigured = True
-                return
+                return False
         self._barrier_degraded = True
         if not self._barrier_warned:
             self._barrier_warned = True
@@ -811,6 +838,7 @@ class LoopRecorder:
                 "Recovery sidecar persistence failed twice after committed tool work; "
                 "continuing with the in-memory journal."
             )
+        return False
 
     def _kick_result_checkpoint(self) -> None:
         callback = self._on_result_checkpoint
@@ -1548,6 +1576,91 @@ def _stamp_call_provenance(function_call: Content, tool: FunctionTool) -> None:
         props[TOOL_CALL_CONTEXT_METADATA_KEY] = dict(static)
 
 
+# The failure record is saved with the session and exported to telemetry: a long
+# cause chain, a large exception group or a message that embeds a response body
+# must not bloat either. Each message is clipped before the record is joined, the
+# exception cap also bounds the record's recursion, and the total cap is the backstop.
+_FAILURE_RECORD_MAX_EXCEPTIONS = 16
+_FAILURE_RECORD_MAX_MESSAGE_CHARS = 1000
+_FAILURE_RECORD_MAX_CHARS = 4000
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
+def _exception_message(exc: BaseException) -> str:
+    """Return *exc*'s own message, clipped for the failure record.
+
+    ``str()`` of a ChrysException built with an ``inner_exception`` is the repr
+    of its args tuple, and a KeyError's is quoted; both hold the message itself
+    as their first argument. A ``__str__`` that raises must not stop the call
+    from becoming a failed result, so it records what a traceback would.
+    """
+    if isinstance(exc, ChrysException | KeyError) and exc.args and isinstance(exc.args[0], str):
+        message = exc.args[0]
+    else:
+        try:
+            message = str(exc)
+        except Exception:
+            message = "<exception str() failed>"
+    return _clip(message.strip(), _FAILURE_RECORD_MAX_MESSAGE_CHARS)
+
+
+def _exception_causes(exc: BaseException) -> list[BaseException]:
+    """Return what *exc* was explicitly raised from and, when it differs, the ``inner_exception`` a ChrysException wraps."""
+    causes = [] if exc.__cause__ is None else [exc.__cause__]
+    if isinstance(exc, ChrysException) and len(exc.args) > 1:
+        inner = exc.args[1]
+        if isinstance(inner, BaseException) and inner is not exc.__cause__:
+            causes.append(inner)
+    return causes
+
+
+def _failure_record_text(exc: BaseException) -> str:
+    """Return the ``exception`` a failed result records: ``Type: message`` for *exc* and everything it came from.
+
+    The record is a tree, ``Type: message [member; …] (caused by cause; …)``:
+    an exception group lists its members in brackets (its ``str()`` only
+    counts them), and the causes are ``raise … from`` plus a ChrysException's
+    ``inner_exception`` when that is a different exception. It follows only
+    these explicit links, never the implicit ``__context__`` of whatever was
+    being handled when the tool raised — unlike ``foundation.errors``' linear
+    chain walk, which reads that context to classify retryable errors.
+
+    The record is for people reading a saved session, never for the model. It
+    is never empty: readers take a non-empty record to mean the call failed.
+    """
+    seen: set[int] = set()
+
+    def describe(current: BaseException) -> str:
+        seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            message = _clip(current.message.strip(), _FAILURE_RECORD_MAX_MESSAGE_CHARS)
+            members = describe_each(current.exceptions)
+        else:
+            message = _exception_message(current)
+            members = ""
+        text = f"{type(current).__name__}: {message}" if message else type(current).__name__
+        if members:
+            text = f"{text} [{members}]"
+        causes = describe_each(_exception_causes(current))
+        return f"{text} (caused by {causes})" if causes else text
+
+    def describe_each(exceptions: Sequence[BaseException]) -> str:
+        parts: list[str] = []
+        for member in exceptions:
+            if id(member) in seen:
+                continue
+            if len(seen) >= _FAILURE_RECORD_MAX_EXCEPTIONS:
+                parts.append("…")
+                break
+            parts.append(describe(member))
+        return "; ".join(parts)
+
+    return _clip(describe(exc), _FAILURE_RECORD_MAX_CHARS)
+
+
 def _result_additional_properties(
     function_call: Content,
     invocation_context: FunctionInvocationContext | None = None,
@@ -1729,8 +1842,10 @@ async def _invoke_function_call(
 ) -> Content:
     """Invoke one model-requested function call through the middleware pipeline.
 
-    Execution exceptions use short messages. Argument-validation failures
-    include safe schema guidance so the model can repair its next call.
+    A raised exception answers the model with ``tool_error_result_text``: a
+    fixed line, or a ``ModelVisibleToolError``'s own message. Argument-validation
+    failures include safe schema guidance so the model can repair its next call.
+    Each failed result records ``_failure_record_text`` as its ``exception``.
     """
     from .middleware import FunctionInvocationContext
 
@@ -1749,7 +1864,7 @@ async def _invoke_function_call(
         result = Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
             result=f"Error: {message}",
-            exception=str(exc),
+            exception=_failure_record_text(exc),
             additional_properties=additional,
         )
         await _record_unexecuted_tool_operation(
@@ -1855,7 +1970,7 @@ async def _invoke_function_call(
         result = Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
             result=f"Error: {message}",
-            exception=str(exc),
+            exception=_failure_record_text(exc),
             additional_properties=additional,
         )
         await _record_unexecuted_tool_operation(
@@ -2067,8 +2182,10 @@ async def _invoke_function_call(
         )
         return Content.from_function_result(
             call_id=function_call.call_id,  # type: ignore[arg-type]
-            result="Error: Function failed.",
-            exception=str(exc),
+            result=tool_error_result_text(exc),
+            # Never None: it marks the result failed for the consecutive-error
+            # count and the providers' error flag, whatever the model reads.
+            exception=_failure_record_text(exc),
             additional_properties=_result_additional_properties(function_call, context),
         )
     finally:
@@ -2280,7 +2397,7 @@ class ToolLoopLayer:
 
     def __init__(
         self,
-        inner: Any,
+        inner: ChatMiddlewareLayer,
         *,
         middleware: FunctionMiddleware | Sequence[FunctionMiddleware] | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
@@ -2307,6 +2424,9 @@ class ToolLoopLayer:
         if name == "inner":
             raise AttributeError(name)
         return getattr(self.inner, name)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
 
     def get_response(
         self,
@@ -2801,7 +2921,7 @@ class ToolLoopLayer:
                     raise
                 except Exception as exc:
                     _trajectory_close_exchange(ExchangeOutcome.ERROR, exc=exc)
-                    if getattr(exc, "invalidates_continuation_token", False):
+                    if invalidates_continuation_token(exc):
                         # The failure judged a terminal response: a retry must
                         # issue a fresh request, never re-poll the completed
                         # (immutable) one.
@@ -2826,11 +2946,25 @@ class ToolLoopLayer:
                     )
 
         async def _watchdog_await(awaitable: Awaitable[Any], timeout: float | None, label: str) -> Any:
+            # Idle timing: a pull whose first byte waits on compaction (and
+            # its LAST_WORDS side call) stays alive while that work reports
+            # progress, and stalls after *timeout* without any.
             if timeout is None:
                 return await awaitable
-            task = asyncio.ensure_future(awaitable)
+            event_loop = asyncio.get_running_loop()
+            last_progress = event_loop.time()
+
+            def _on_progress() -> None:
+                nonlocal last_progress
+                last_progress = event_loop.time()
+
+            task = start_with_wire_progress(awaitable, _on_progress)
             try:
-                done, _ = await asyncio.wait((task,), timeout=timeout)
+                while not task.done():
+                    idle_budget = last_progress + timeout - event_loop.time()
+                    if idle_budget <= 0:
+                        break
+                    await asyncio.wait((task,), timeout=idle_budget)
             except asyncio.CancelledError:
                 # The pull task may still be running INSIDE the stream's
                 # generator; closing that stream before the task settles
@@ -2838,7 +2972,7 @@ class ToolLoopLayer:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 raise
-            if task in done:
+            if task.done():
                 return task.result()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -2929,7 +3063,7 @@ class ToolLoopLayer:
                                 await inner_stream.aclose()
                             except Exception:
                                 logger.debug("Failed to close abandoned provider stream", exc_info=True)
-                        if getattr(exc, "invalidates_continuation_token", False):
+                        if invalidates_continuation_token(exc):
                             # The failure judged a terminal response: a retry
                             # must issue a fresh request, never re-poll the
                             # completed (immutable) one.

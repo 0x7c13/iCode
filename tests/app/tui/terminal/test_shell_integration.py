@@ -145,6 +145,12 @@ def test_a_path_with_spaces_that_exists_is_a_program_not_a_command_line(tmp_path
     assert launch.argv == [str(program), "-NoExit", "-Command", launch.argv[-1]]
 
 
+def test_a_quoted_program_path_with_spaces_is_one_argument_without_its_quotes() -> None:
+    launch = prepare_shell_launch('"/opt/My Shells/nu" --login', {})
+
+    assert launch == ShellLaunch(["/opt/My Shells/nu", "--login"])
+
+
 def test_the_shell_is_recognized_by_its_file_name_whatever_the_directory_or_case() -> None:
     fish = prepare_shell_launch(str(Path("/opt/zsh-tools/bin/FISH")), {})
     unknown = prepare_shell_launch("/opt/bash-tools/bin/nu --login", {})

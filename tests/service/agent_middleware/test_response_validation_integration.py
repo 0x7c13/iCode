@@ -775,7 +775,7 @@ class TestMainAgentStreaming:
         ctx = await create_test_engine(
             [
                 MockResponse(text=""),  # empty — invalid
-                MockResponse(text="line1\nline2\n"),  # valid, multi-chunk
+                MockResponse(text="line1\nline2\n"),  # valid
             ],
             tmp_path,
             stream=True,
@@ -792,9 +792,8 @@ class TestMainAgentStreaming:
                 and not e.is_final
                 and not e.is_intermediate
             ]
-            # Every streamed chunk must come from the good response —
-            # i.e. contain content from "line1\nline2\n".
-            assert stream_chunks == ["line1\n", "line1\nline2\n"]
+            # The one streamed snapshot is the good response's text.
+            assert stream_chunks == ["line1\nline2\n"]
             # Final event is the good full response.
             assert extract_final_messages(ctx.events) == ["line1\nline2\n"]
             assert ctx.mock_client.call_count == 2
@@ -1183,7 +1182,7 @@ async def _make_sub_agent_ctx(
     main_client = MockChatClient(responses=main_responses)
     sub_client = MockChatClient(responses=sub_responses)
 
-    def _patched_create(p: Any = None, **kw: Any) -> MockChatClient:
+    async def _patched_create(p: Any = None, **kw: Any) -> MockChatClient:
         profile_id = getattr(p, "id", "") or ""
         client = sub_client if profile_id == "sub-mock" else main_client
         client._on_intermediate_text_async = kw.get("on_intermediate_text_async")

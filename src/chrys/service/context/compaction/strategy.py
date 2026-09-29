@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+from chrys.foundation.trajectory.context import current_trajectory
+from chrys.foundation.trajectory.event_types import CompactionSkipReason
 from chrys.kernel import (
     Message,
     annotate_message_groups,
@@ -57,6 +59,7 @@ from chrys.service.trajectory.compaction import (
     TOKEN_MEASUREMENT_SOURCE,
     CompactionRunTrace,
     bind_compaction_operation,
+    record_compaction_skipped,
     reset_compaction_operation,
 )
 
@@ -152,7 +155,9 @@ class UnifiedContextStrategy:
     **Compaction** (4-phase, budget-triggered):
 
     1. Estimate context usage as ``(included_tokens * ratio) / max_context``.
-    2. If usage < ``trigger_pct``, no-op.
+    2. If usage < ``trigger_pct``, no-op. Past it, a call that cannot start a
+       pass (compaction disabled, no resolvable turn) logs and records
+       ``compaction.skipped`` once per stretch above the trigger.
     3. **Phase 1-4**: trim old tools, compress old text turns, then drop
        current-turn tool work only as the final fallback.
 
@@ -210,6 +215,10 @@ class UnifiedContextStrategy:
         # The trajectory run of the compaction pass in flight (one per
         # triggered ``__call__``); phases report into it.
         self._trajectory_run: CompactionRunTrace | None = None
+        # The skip (reason, session) already reported for the current
+        # stretch above the trigger; cleared when usage drops below it or a
+        # pass starts.
+        self._reported_skip: tuple[str, str | None] | None = None
         self._on_context_pressure = on_context_pressure
         self._spill_quota = spill_quota
         self._spill_root = spill_root
@@ -668,20 +677,23 @@ class UnifiedContextStrategy:
         self._reset_stale_exclusions(messages)
         self._reinject_compressed_context_summaries(messages)
         current = self._annotate_and_count(messages)
-
-        if not self._compaction_enabled:
-            return compressions_processed
-
         usage = self._usage_pct(current)
 
         if usage < self.trigger_pct:
+            self._reported_skip = None
+            return compressions_processed
+
+        if not self._compaction_enabled:
+            self._report_skip(CompactionSkipReason.DISABLED, current)
             return compressions_processed
 
         tokens_before = current
         resolved = _resolve_turns(messages, self._state)
 
         if not resolved.spans:
+            self._report_skip(CompactionSkipReason.TURNS_UNRESOLVED, current)
             return compressions_processed
+        self._reported_skip = None
 
         # Only REAL previous turns are eligible for P1/P2 mechanical
         # truncation — mid-turn user messages (injections, nudges) no longer
@@ -722,6 +734,35 @@ class UnifiedContextStrategy:
         if run is not None:
             await run.finished(tokens_before=tokens_before, tokens_after=self._last_included_tokens)
         return changed or compressions_processed
+
+    def _report_skip(self, reason_code: str, included: int) -> None:
+        """Say why usage past the trigger started no pass, once per stretch above it."""
+        # Per session too: a restore that keeps this strategy starts a
+        # session whose trajectory has not been told yet.
+        trajectory = current_trajectory()
+        skip = (reason_code, trajectory.session_id if trajectory is not None else None)
+        if self._reported_skip == skip:
+            return
+        self._reported_skip = skip
+        estimated = self._calibration.estimated_tokens(included)
+        # round(): the derived fraction is trigger_tokens / window, and ceil()
+        # would turn its float error into one token too many.
+        trigger_tokens = round(self.trigger_pct * self.max_context_tokens)
+        _log.log(
+            logging.INFO if reason_code == CompactionSkipReason.DISABLED else logging.WARNING,
+            "Compaction skipped past its trigger: reason=%s, estimated_input_tokens=%d, trigger_tokens=%d, "
+            "max_context_tokens=%d",
+            reason_code,
+            estimated,
+            trigger_tokens,
+            self.max_context_tokens,
+        )
+        record_compaction_skipped(
+            reason_code=reason_code,
+            estimated_input_tokens=estimated,
+            trigger_tokens=trigger_tokens,
+            max_context_tokens=self.max_context_tokens,
+        )
 
     async def _run_queued_compressions(self, messages: list[Message]) -> bool:
         return await self._compression.run_queued(messages)

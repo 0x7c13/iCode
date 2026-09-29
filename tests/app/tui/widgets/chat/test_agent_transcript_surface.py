@@ -89,7 +89,7 @@ async def test_input_intermediate_tools_and_final_keep_their_order(archived: boo
     async with LocalizedWidgetApp(lambda: surface).run_test() as pilot:
         await wait_for(lambda: len(surface.query(AgentMessage)) == 3, pilot=pilot)
         assert [message._text for message in surface.query(UserMessage)] == ["Review [literal] input"]
-        assert [message._text for message in surface.query(AgentMessage)] == [
+        assert [message.text for message in surface.query(AgentMessage)] == [
             "Inspection 0.",
             "Inspection 1.",
             "Final answer.",
@@ -128,7 +128,7 @@ async def test_terminal_status_settles_tools_and_rejects_late_activity(cancelled
             assert not any(isinstance(op, TranscriptResumedOp) for op in journal.operations)
         else:
             await wait_for(lambda: bool(surface.query(AgentMessage)) and not surface.query(ErrorMessage), pilot=pilot)
-            assert surface.query_one(AgentMessage)._text == "Recovered"
+            assert surface.query_one(AgentMessage).text == "Recovered"
         reopened = AgentTranscriptSurface(journal)
         await surface.remove()
         await pilot.app.mount(reopened)
@@ -185,7 +185,7 @@ async def test_replay_tail_adds_status_after_archived_content() -> None:
     async with LocalizedWidgetApp(lambda: surface).run_test() as pilot:
         await wait_for(lambda: bool(surface.query(ErrorMessage)), pilot=pilot)
         assert [type(child) for child in surface.direct_children()] == [AgentMessage, ErrorMessage]
-        assert surface.query_one(AgentMessage)._text == "Saved prefix"
+        assert surface.query_one(AgentMessage).text == "Saved prefix"
         assert surface.query_one(ErrorMessage)._text == "Saved failure"
         assert journal.operations == ()
 

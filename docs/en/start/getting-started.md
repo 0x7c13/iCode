@@ -109,6 +109,8 @@ Analyze the task list implementation and propose a plan for adding a "Clear comp
 
 Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards. After completing its analysis, the agent presents an implementation plan.
 
+Your messages and the agent's replies are shown with Markdown formatting. To copy a message exactly as it was written, click **copy** next to its header. Text you select with the mouse is copied as it is displayed.
+
 ### Use Code Agent
 
 Code Agent handles tasks that require **modifying files, running commands, and validating results**. It reads the relevant code first, then implements, debugs, or refactors it as requested.

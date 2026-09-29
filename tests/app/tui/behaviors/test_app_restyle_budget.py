@@ -13,7 +13,9 @@ from textual.widgets import Static, TextArea
 
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for, wait_until_quiet
 
 
@@ -487,3 +489,49 @@ async def test_input_and_status_state_changes_do_not_relayout_large_transcript(
         assert status.region == status_region
         assert input_bar.region == input_region
         assert layout_refreshes == []
+
+
+async def test_chat_sidebar_tab_clicks_do_not_bounce_focus_over_a_populated_transcript(tmp_path: Path) -> None:
+    """Sidebar tab clicks must not bounce focus through the tab strip.
+
+    Chat mode hands sidebar focus straight back to the input bar, so a focusable tab strip
+    costs every click a focus/blur pair: whole-screen repaints and binding refreshes.
+    """
+    from textual.widget import Widget
+    from textual.widgets import TabbedContent, Tabs
+
+    from chrys.app.tui.widgets.chat.panel import ChatPanel
+    from chrys.app.tui.widgets.chrome.input_bar import InputBar
+    from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
+
+    app = make_chrys_app(tmp_path)
+    async with app.run_test(size=(120, 36)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        await main.query_one(ChatPanel).mount(*(Static(f"Transcript row {index}") for index in range(256)))
+        chat_input = main.query_one(InputBar).query_one("#chat-input")
+        await wait_for(lambda: main.focused is chat_input, pilot=pilot, description="chat input owns focus")
+        tabs = main.query_one(SidebarPanel).query_one(TabbedContent)
+        targets = ("tab-debug", "tab-tasks")
+        focus_changes: list[Widget | None] = []
+
+        def record_focus(focused: Widget | None) -> None:
+            focus_changes.append(focused)
+
+        main.watch(main, "focused", record_focus, init=False)
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled main screen")
+        with (
+            patch.object(main, "refresh", autospec=True, side_effect=main.refresh) as refresh,
+            patch.object(main, "refresh_bindings", autospec=True, side_effect=main.refresh_bindings) as bindings,
+        ):
+            for target in targets:
+                await click_when_settled(pilot, tabs.get_tab(target))
+                await wait_for(lambda target=target: tabs.active == target, pilot=pilot)
+            await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled main screen")
+
+        refresh.assert_not_called()
+        # Each activation refreshes the bindings once; a focus bounce adds several per click.
+        assert bindings.call_count <= len(targets)
+        assert focus_changes == []
+        assert main.focused is chat_input
+        assert not tabs.query_one(Tabs).can_focus

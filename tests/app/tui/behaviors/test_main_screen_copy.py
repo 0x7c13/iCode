@@ -18,9 +18,9 @@ from textual.widgets.text_area import Selection as TextAreaSelection
 from chrys.app.tui.behaviors import right_click_copy
 from chrys.app.tui.screens.main.screen import MainScreen, _parse_copy_arguments
 from chrys.app.tui.widgets.chat.messages import (
-    AgentCopyButton,
-    AgentHeaderRow,
     AgentMessage,
+    MessageCopyButton,
+    MessageHeaderRow,
     UserMessage,
     _UserImagePreview,
 )
@@ -97,7 +97,22 @@ async def _maximize_chat_panel_for_selection_test(app: _MainScreenApp, pilot: Pi
     await pilot.pause()
 
 
-def _click_agent_copy_button(copy_button: AgentCopyButton) -> None:
+async def _rendered_user_body(pilot: Pilot[None], message: UserMessage) -> VirtualizedMarkdown:
+    body = message.query_one(VirtualizedMarkdown)
+    await wait_for(
+        lambda: body.get_selection(SELECT_ALL) is not None,
+        pilot=pilot,
+        description="the user message body has rendered",
+    )
+    return body
+
+
+def _select_all_in(widget: Widget) -> dict[Widget, Selection]:
+    """What Textual's select-all records: the widget and every descendant."""
+    return dict.fromkeys([widget, *widget.query("*")], SELECT_ALL)
+
+
+def _click_copy_button(copy_button: MessageCopyButton) -> None:
     copy_button.on_click(
         Click(
             copy_button,
@@ -166,8 +181,9 @@ async def test_right_click_copies_chat_selection_then_clears_it(monkeypatch: pyt
         await pilot.pause()
 
         message = app.main_screen.query_one(UserMessage)
+        body = await _rendered_user_body(pilot, message)
         screen = app.main_screen
-        screen.selections = {message: Selection(Offset(0, 1), Offset(len(text), 1))}
+        screen.selections = {body: Selection(Offset(0, 0), Offset(len(text), 0))}
         click_x = message.region.x + 1
         click_y = message.region.y + 1
 
@@ -231,7 +247,8 @@ async def test_right_click_input_selection_wins_over_stale_chat_selection(monkey
         input_area.selection = TextAreaSelection((0, 0), (0, 5))
 
         message = app.main_screen.query_one(UserMessage)
-        app.main_screen.selections = {message: Selection(Offset(0, 1), Offset(4, 1))}
+        body = await _rendered_user_body(pilot, message)
+        app.main_screen.selections = {body: Selection(Offset(0, 0), Offset(4, 0))}
         click_x, click_y = await _click_coords_when_settled(pilot, input_area)
 
         app.post_message(
@@ -342,12 +359,13 @@ async def test_screen_copy_skips_tool_renderers_and_descendants() -> None:
         await pilot.pause()
 
         message = app.main_screen.query_one(UserMessage)
+        body = await _rendered_user_body(pilot, message)
         tool_group = app.main_screen.query_one(ToolGroup)
         tool_container = app.main_screen.query_one("#ft-content", Widget)
         screen = app.main_screen
 
         screen.selections = {
-            message: Selection(Offset(0, 1), Offset(len(text), 1)),
+            body: Selection(Offset(0, 0), Offset(len(text), 0)),
             tool_group: SELECT_ALL,
             tool_container: SELECT_ALL,
         }
@@ -611,13 +629,15 @@ async def test_screen_copy_embedded_image_user_message_uses_text_not_preview() -
         await pilot.pause()
 
         message = app.main_screen.query_one(UserMessage)
+        await _rendered_user_body(pilot, message)
         preview = message.query_one(_UserImagePreview)
         screen = app.main_screen
 
         screen.selections = {preview: SELECT_ALL}
         assert screen.get_selected_text() is None
 
-        screen.selections = {message: SELECT_ALL, preview: SELECT_ALL}
+        screen.selections = _select_all_in(message)
+        assert preview in screen.selections
         assert screen.get_selected_text() == f"[You]\n{text}"
 
 
@@ -664,7 +684,7 @@ async def test_sub_agent_final_result_is_tool_copy_only_not_inline_selection_cop
 
         assert is_tool_copy_excluded(inner_feed)
         assert final_result in card.format_tool_execution_copy()
-        assert all(message._text != final_result for message in inner_feed.query(AgentMessage))
+        assert all(message.text != final_result for message in inner_feed.query(AgentMessage))
 
 
 @pytest.mark.asyncio
@@ -686,13 +706,15 @@ async def test_screen_copy_filters_tool_group_when_selection_crosses_it() -> Non
         await pilot.pause()
 
         first_message, second_message = list(app.main_screen.query(UserMessage))[:2]
+        first_body = await _rendered_user_body(pilot, first_message)
+        second_body = await _rendered_user_body(pilot, second_message)
         tool_group = app.main_screen.query_one(ToolGroup)
         tool_widgets = [tool_group, *list(tool_group.query("*"))]
 
         app.main_screen.selections = {
-            first_message: Selection(Offset(0, 1), None),
+            first_body: Selection(Offset(0, 0), None),
             **dict.fromkeys(tool_widgets, SELECT_ALL),
-            second_message: Selection(None, Offset(len(second), 1)),
+            second_body: Selection(None, Offset(len(second), 0)),
         }
 
         selected = app.main_screen.get_selected_text()
@@ -714,15 +736,16 @@ async def test_screen_copy_formats_chat_speaker_labels() -> None:
         await pilot.pause()
 
         user = app.main_screen.query_one(UserMessage)
+        await _rendered_user_body(pilot, user)
         agent = app.main_screen.query_one(AgentMessage)
-        agent_row = agent.query_one(AgentHeaderRow)
+        agent_row = agent.query_one(MessageHeaderRow)
         agent_header = agent.query_one(".agent-header", Static)
-        agent_copy_button = agent.query_one(AgentCopyButton)
+        agent_copy_button = agent.query_one(MessageCopyButton)
         agent_body = agent.query_one(VirtualizedMarkdown)
         screen = app.main_screen
 
         screen.selections = {
-            user: SELECT_ALL,
+            **_select_all_in(user),
             agent: SELECT_ALL,
             agent_row: SELECT_ALL,
             agent_header: SELECT_ALL,
@@ -767,14 +790,38 @@ async def test_agent_copy_button_copies_raw_final_response(monkeypatch: pytest.M
         await panel.add_agent_message("hi **there**")
         await pilot.pause()
 
-        button = app.main_screen.query_one(AgentCopyButton)
+        button = app.main_screen.query_one(MessageCopyButton)
         assert button.display is True
 
-        _click_agent_copy_button(button)
+        _click_copy_button(button)
         await pilot.pause()
 
         assert app.clipboard == "hi **there**"
         assert copied[-1] == "hi **there**"
+
+
+@pytest.mark.asyncio
+async def test_user_copy_button_copies_the_message_as_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _MainScreenApp()
+    async with app.run_test() as pilot:
+        copied: list[str] = []
+        monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+
+        panel = app.main_screen.query_one(ChatPanel)
+        text = "fix `List<String>` in <file>\n\tthen **ship**"
+        await panel.add_user_message(text)
+        await pilot.pause()
+
+        message = app.main_screen.query_one(UserMessage)
+        await _rendered_user_body(pilot, message)
+        button = message.query_one(MessageCopyButton)
+        assert button.display is True
+
+        _click_copy_button(button)
+        await pilot.pause()
+
+        assert app.clipboard == text
+        assert copied[-1] == text
 
 
 @pytest.mark.asyncio
@@ -785,13 +832,13 @@ async def test_agent_copy_button_only_shows_after_streaming_finalizes() -> None:
         await panel.add_agent_message("partial", is_final=False)
         await pilot.pause()
 
-        button = app.main_screen.query_one(AgentCopyButton)
+        button = app.main_screen.query_one(MessageCopyButton)
         assert button.display is False
 
         await panel.add_agent_message("full response", is_final=True)
         await pilot.pause()
 
-        button = app.main_screen.query_one(AgentCopyButton)
+        button = app.main_screen.query_one(MessageCopyButton)
         assert button.display is True
 
 
@@ -803,7 +850,7 @@ async def test_agent_copy_button_hidden_for_intermediate_agent_text() -> None:
         await panel.add_agent_message("working", is_final=True, is_intermediate=True)
         await pilot.pause()
 
-        button = app.main_screen.query_one(AgentCopyButton)
+        button = app.main_screen.query_one(MessageCopyButton)
         assert button.display is False
 
 

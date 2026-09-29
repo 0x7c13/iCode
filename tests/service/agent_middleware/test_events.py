@@ -34,7 +34,8 @@ from chrys.foundation.util.sub_agent_context import (
     sub_agent_parent_call_id,
     sub_agent_parent_result_metadata,
 )
-from chrys.kernel import Content
+from chrys.kernel import Content, FunctionInvocationContext, FunctionTool
+from chrys.kernel.exceptions import ModelVisibleToolError
 from chrys.service.agent_middleware import (
     _APPROVAL_MODIFIED_ARGS_KEY,
     IntermediateTextBuffer,
@@ -680,6 +681,24 @@ async def test_tool_event_middleware_empty_exception_message_publishes_readable_
 
     assert len(results) == 1
     assert results[0].result == "Error: Read timed out (ReadTimeout)"
+
+
+async def test_tool_card_shows_the_model_visible_error_the_model_read() -> None:
+    """The card shows the message the model read, not the cause that message was written to replace."""
+    bus = EventBus()
+    mw = ToolEventMiddleware(bus, session_id="test", origin=InvocationOrigin("turn", "test", "turn-test", None))
+    results = await capture_events(bus, InvocationToolCallResult)
+    clash = ValueError("Duplicate tool name 'remote'. Tool names must be unique.")
+    raised = ModelVisibleToolError("Cannot load 'remote': another tool already has that name.", inner_exception=clash)
+    raised.__cause__ = clash
+
+    async def call_next_error() -> None:
+        raise raised
+
+    with pytest.raises(ModelVisibleToolError):
+        await mw.process(FunctionInvocationContext(FunctionTool(name="test_tool"), {}), call_next_error)
+
+    assert [result.result for result in results] == ["Error: Cannot load 'remote': another tool already has that name."]
 
 
 async def test_tool_event_middleware_hooks_modify_args_before_start_event(tmp_path) -> None:

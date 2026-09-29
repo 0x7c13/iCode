@@ -19,6 +19,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcFreezeCoordinator,
     GcReclaimReason,
     GcReclaimRequested,
+    GcRemovedContent,
 )
 
 
@@ -236,6 +237,36 @@ def test_full_reclaim_wins_over_absorb_and_clears_both_intents(
     assert coordinator._prompt_reclaim_pending is False
     assert coordinator._absorb_reasons == set()
     assert coordinator._prompt_reclaim_reasons == set()
+
+
+def test_every_freeze_action_advances_the_freeze_epoch_before_freezing(
+    monkeypatch: pytest.MonkeyPatch,
+    coordinators: Callable[..., tuple[GcFreezeCoordinator, _Host, _Clock]],
+    gc_recorder: _GcRecorder,
+) -> None:
+    epochs_seen_by_freeze: list[int] = []
+
+    def _freeze_and_read_epoch() -> None:
+        epochs_seen_by_freeze.append(gc_freeze.current_gc_freeze_epoch())
+        gc_recorder.freeze()
+
+    monkeypatch.setattr(gc_freeze.gc, "freeze", _freeze_and_read_epoch)
+    coordinator, host, clock = coordinators()
+    start = gc_freeze.current_gc_freeze_epoch()
+
+    _start_and_freeze(coordinator, host, gc_recorder)
+    assert gc_freeze.current_gc_freeze_epoch() == start + 1
+    coordinator.request_absorb(reason=GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True, requested_at=clock())
+    host.run_settle_barrier()
+    assert gc_freeze.current_gc_freeze_epoch() == start + 2
+    coordinator.request_reclaim(reason=GcReclaimReason.SESSION_READY, prompt=True, requested_at=clock())
+    host.run_settle_barrier()
+    assert gc_freeze.current_gc_freeze_epoch() == start + 3
+    coordinator.close()
+
+    assert gc_recorder.operations == ["collect", "freeze", "unfreeze", "collect", "freeze", "unfreeze", "collect"]
+    assert epochs_seen_by_freeze == [start + 1, start + 2, start + 3]
+    assert gc_freeze.current_gc_freeze_epoch() == start + 3
 
 
 def test_absorb_before_initial_freeze_is_inert(
@@ -555,6 +586,156 @@ def test_successful_absorb_at_soft_threshold_places_idle_periodic_reclaim(
     assert coordinator._absorbs_since_reclaim == 2
     assert coordinator._idle_reclaim_pending is True
     assert coordinator._idle_reclaim_reasons == {GcReclaimReason.PERIODIC}
+
+
+class _RemovedNode:
+    """Weakly referenceable stand-in for one node of a removed widget subtree."""
+
+
+def _young_removal(*nodes: object) -> GcRemovedContent:
+    return GcRemovedContent.watch(built_at_epoch=gc_freeze.current_gc_freeze_epoch(), nodes=nodes)
+
+
+def _request_removal_reclaim(coordinator: GcFreezeCoordinator, clock: _Clock, removed: GcRemovedContent) -> None:
+    coordinator.request_reclaim(
+        reason=GcReclaimReason.STABLE_CONTENT_REMOVED,
+        prompt=False,
+        requested_at=clock(),
+        removed=removed,
+    )
+
+
+def _terminal_absorb(coordinator: GcFreezeCoordinator, host: _Host, clock: _Clock) -> None:
+    coordinator.request_absorb(reason=GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True, requested_at=clock())
+    host.run_settle_barrier()
+
+
+def test_removed_content_holds_its_nodes_weakly() -> None:
+    node = _RemovedNode()
+    removed = _young_removal(node)
+
+    assert [ref() for ref in removed.nodes] == [node]
+    del node
+    assert [ref() for ref in removed.nodes] == [None]
+
+
+def test_young_removal_freed_by_the_next_freeze_collection_needs_no_reclaim(
+    monkeypatch: pytest.MonkeyPatch,
+    coordinators: Callable[..., tuple[GcFreezeCoordinator, _Host, _Clock]],
+    gc_recorder: _GcRecorder,
+) -> None:
+    coordinator, host, clock = coordinators()
+    _start_and_freeze(coordinator, host, gc_recorder)
+    reachable = [_RemovedNode(), _RemovedNode()]
+    _request_removal_reclaim(coordinator, clock, _young_removal(*reachable))
+    assert coordinator._idle_reclaim_pending is False
+    assert host.callbacks == []
+
+    def _collect_frees_the_removed_subtree() -> int:
+        reachable.clear()
+        return gc_recorder.collect()
+
+    monkeypatch.setattr(gc_freeze.gc, "collect", _collect_frees_the_removed_subtree)
+    _terminal_absorb(coordinator, host, clock)
+
+    assert gc_recorder.operations == ["collect", "freeze"]
+    assert coordinator._idle_reclaim_pending is False
+    assert coordinator._idle_reclaim_reasons == set()
+    assert coordinator._removal_watch == {}
+
+
+def test_young_removal_alive_at_the_next_absorb_becomes_an_idle_reclaim(
+    coordinators: Callable[..., tuple[GcFreezeCoordinator, _Host, _Clock]],
+    gc_recorder: _GcRecorder,
+) -> None:
+    coordinator, host, clock = coordinators()
+    _start_and_freeze(coordinator, host, gc_recorder)
+    held = _RemovedNode()
+    _request_removal_reclaim(coordinator, clock, _young_removal(_RemovedNode(), held))
+
+    _terminal_absorb(coordinator, host, clock)
+
+    assert gc_recorder.operations == ["collect", "freeze"]
+    assert coordinator._idle_reclaim_pending is True
+    assert coordinator._idle_reclaim_reasons == {GcReclaimReason.STABLE_CONTENT_REMOVED}
+    assert coordinator._removal_watch == {}
+    gc_recorder.operations.clear()
+
+    del held
+    clock.advance(gc_freeze._RECLAIM_INPUT_IDLE_SECONDS)
+    coordinator.on_tick()
+    host.run_settle_barrier()
+
+    assert gc_recorder.operations == ["unfreeze", "collect", "freeze"]
+    assert coordinator._idle_reclaim_pending is False
+
+
+def test_young_removal_alive_through_a_full_reclaim_requests_another_idle_reclaim(
+    coordinators: Callable[..., tuple[GcFreezeCoordinator, _Host, _Clock]],
+    gc_recorder: _GcRecorder,
+) -> None:
+    coordinator, host, clock = coordinators()
+    _start_and_freeze(coordinator, host, gc_recorder)
+    held = _RemovedNode()
+    _request_removal_reclaim(coordinator, clock, _young_removal(held))
+
+    coordinator.request_reclaim(reason=GcReclaimReason.SESSION_READY, prompt=True, requested_at=clock())
+    host.run_settle_barrier()
+
+    assert gc_recorder.operations == ["unfreeze", "collect", "freeze"]
+    assert coordinator._prompt_reclaim_pending is False
+    assert coordinator._prompt_reclaim_reasons == set()
+    assert coordinator._idle_reclaim_pending is True
+    assert coordinator._idle_reclaim_reasons == {GcReclaimReason.STABLE_CONTENT_REMOVED}
+    assert coordinator._removal_watch == {}
+
+
+@pytest.mark.parametrize("prompt", [False, True], ids=["idle", "prompt"])
+def test_removal_built_before_the_last_freeze_keeps_its_reclaim(
+    coordinators: Callable[..., tuple[GcFreezeCoordinator, _Host, _Clock]],
+    gc_recorder: _GcRecorder,
+    prompt: bool,
+) -> None:
+    coordinator, host, clock = coordinators()
+    _start_and_freeze(coordinator, host, gc_recorder)
+    node = _RemovedNode()
+    removed = _young_removal(node)
+    _terminal_absorb(coordinator, host, clock)
+    assert coordinator._idle_reclaim_pending is False
+
+    coordinator.request_reclaim(
+        reason=GcReclaimReason.STABLE_CONTENT_REMOVED,
+        prompt=prompt,
+        requested_at=clock(),
+        removed=removed,
+    )
+
+    assert coordinator._removal_watch == {}
+    assert coordinator._prompt_reclaim_pending is prompt
+    assert coordinator._idle_reclaim_pending is not prompt
+    reasons = coordinator._prompt_reclaim_reasons if prompt else coordinator._idle_reclaim_reasons
+    assert reasons == {GcReclaimReason.STABLE_CONTENT_REMOVED}
+
+
+def test_removal_watch_drops_freed_nodes_as_it_grows_and_clears_on_close(
+    coordinators: Callable[..., tuple[GcFreezeCoordinator, _Host, _Clock]],
+    gc_recorder: _GcRecorder,
+) -> None:
+    coordinator, host, clock = coordinators()
+    _start_and_freeze(coordinator, host, gc_recorder)
+    freed = _RemovedNode()
+    _request_removal_reclaim(coordinator, clock, _young_removal(freed))
+    del freed
+    held = _RemovedNode()
+    _request_removal_reclaim(coordinator, clock, _young_removal(held))
+
+    watched = coordinator._removal_watch[GcReclaimReason.STABLE_CONTENT_REMOVED]
+    assert [ref() for ref in watched] == [held]
+
+    coordinator.close()
+
+    assert coordinator._removal_watch == {}
+    assert coordinator._idle_reclaim_pending is False
 
 
 def test_whole_app_calibrated_reclaim_cadence_is_pinned() -> None:

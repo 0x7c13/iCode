@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from chrys.foundation.errors import clean_error_message
+from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
     AgentThinking,
     Error,
@@ -27,8 +28,8 @@ from chrys.foundation.events.types import (
     ProvisionalPresentation,
 )
 from chrys.foundation.hosted_tools import HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY, HostedToolStatus
-from chrys.foundation.i18n import msg
 from chrys.foundation.retry import (
+    TRANSIENT_RETRY_BACKOFF_SECONDS,
     StreamStall,
 )
 from chrys.foundation.trajectory.envelope import Link, LinkRelation
@@ -115,11 +116,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RETRY_STREAM_STALLED = msg(
-    "retry.stream_stalled",
-    fallback="Stream stalled",
-)
-
 
 class _AssistantMessageEventKwargs(TypedDict, total=False):
     """Optional timestamp forwarded to ``InvocationMessage``."""
@@ -150,7 +146,7 @@ class TurnBindings:
     # and the loop lives in :mod:`chrys.foundation.retry` so sub-agents share
     # the same policy without reaching back into this class.
     _MAX_RETRIES = 5
-    _BACKOFF_SCHEDULE = (3, 7, 15, 30, 60)
+    _BACKOFF_SCHEDULE = TRANSIENT_RETRY_BACKOFF_SECONDS
     # Fallback when no per-run stream_attempt_timeout is supplied (e.g. tests).
     # Production callers pass ModelProfile.http_read_timeout so stall detection
     # matches the HTTP client's read timeout.
@@ -303,7 +299,7 @@ class TurnBindings:
             compaction_strategy=compaction_strategy,
             recorder=loop_recorder,
             hosted_observed=hosted_commits_probe,
-            start_hooks=tuple(run_cycle_start_hooks),
+            start_hooks=(*run_cycle_start_hooks, self._begin_hosted_baseline),
             failure_disposition=FailureDisposition.CALLER_DECISION,
         )
 
@@ -348,6 +344,12 @@ class TurnBindings:
         # reaching their normal reset paths.
         self.inputs.pending_continuation_token = None
         self._interrupt.reset()
+
+    def _begin_hosted_baseline(self) -> None:
+        if self._response_validation is not None:
+            self._response_validation.begin_pass_hosted_baseline(
+                resumes_background_response=self.inputs.pending_continuation_token is not None
+            )
 
     def _resolve_service_storage(self) -> bool:
         """Return whether the first request uses provider-side history."""
@@ -712,8 +714,16 @@ class TurnBindings:
         logger.error("Turn error: %s", err_msg)
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected(err_msg)
+        display_message, display_hint = display_fields(e)
         await self._emitter.publish(
-            Error(code="executor_error", message=err_msg, recoverable=True, session_id=self._session_id)
+            Error(
+                code="executor_error",
+                message=err_msg,
+                recoverable=True,
+                session_id=self._session_id,
+                display_message=display_message,
+                display_hint=display_hint,
+            )
         )
         logger.debug("Turn traceback:\n%s", tb)
 
@@ -806,6 +816,7 @@ class TurnBindings:
     ) -> None:
         if self._hosted_bridge is not None and self.inputs.pending_continuation_token is None:
             await self._hosted_bridge.attempt_rejected(message)
+        display_message, display_hint = display_fields(exc, retry_notice=True)
         await self._emitter.publish(
             InvocationRetryAttempt(
                 origin=self._emitter.origin,
@@ -815,7 +826,8 @@ class TurnBindings:
                 max_attempts=max_attempts,
                 delay_seconds=delay_seconds,
                 session_id=self._session_id,
-                display_message=_RETRY_STREAM_STALLED.bind() if isinstance(exc, StreamStall) else None,
+                display_message=display_message,
+                display_hint=display_hint,
             )
         )
 
@@ -1023,11 +1035,12 @@ class _MainStreamObserver:
     response start has released, then checks the batch once more after
     iteration as a safety net for a last tool response with no following
     update. It emits the final
-    response's remaining text progressively by line as cumulative
-    ``InvocationMessage(is_final=False)`` events, including one last emission for
-    an unterminated tail, before ``_publish_response_text`` emits
-    ``is_final=True``. When the hosted bridge owns the text, this observer
-    discards its buffer and emits no text; interruption also suppresses emission.
+    response's remaining text as one cumulative ``InvocationMessage(is_final=False)``
+    snapshot before ``_publish_response_text`` emits ``is_final=True``. The text
+    was buffered whole, so replaying it line by line only fakes streaming: every
+    line would publish the whole text so far through the bus and every subscriber.
+    When the hosted bridge owns the text, this observer discards its buffer and
+    emits no text; interruption also suppresses emission.
     """
 
     def __init__(self, executor: TurnBindings) -> None:
@@ -1070,14 +1083,8 @@ class _MainStreamObserver:
         # without one releases it here.
         await executor.tool_events.release_intermediate_text()
         if self._buffer and not self._bridge_owns_text and not executor._interrupt.is_interrupted:
-            lines = self._buffer.splitlines(keepends=True)
-            emitted = ""
-            for i, line in enumerate(lines):
-                emitted += line
-                is_last = i == len(lines) - 1
-                if (line and line[-1] in ("\n", "\r")) or is_last:
-                    await self._emitter.publish(
-                        InvocationMessage(
-                            origin=self._emitter.origin, text=emitted, is_final=False, session_id=executor._session_id
-                        )
-                    )
+            await self._emitter.publish(
+                InvocationMessage(
+                    origin=self._emitter.origin, text=self._buffer, is_final=False, session_id=executor._session_id
+                )
+            )

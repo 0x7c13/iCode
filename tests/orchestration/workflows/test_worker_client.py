@@ -19,6 +19,7 @@ import psutil
 import pytest
 
 import chrys.orchestration.workflows.worker_client as worker_client_module
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
 from chrys.orchestration.workflows.worker_client import (
     AskUnavailable,
     AttemptTimeout,
@@ -34,11 +35,24 @@ from chrys.service.workflows.sdk import WorkflowValue
 from chrys.service.workflows.sdk_artifact import SdkArtifact
 from chrys.service.workflows.values import canonical_json
 from tests.orchestration.workflows.conftest import FAKE_WORKER, Launcher, prepared_environment
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import create_venv, python_workflow
 
 FIXTURE = Path(__file__).resolve().parents[2] / "service" / "workflows" / "fixtures" / "code-review.py"
 
+STRUCTURED_ASK_WORKFLOW = python_workflow(
+    "import json\n"
+    "from chrys.workflows import Option, Question\n"
+    "async def fn(value, ctx):\n"
+    "    answers = await ctx.ask([\n"
+    "        Question('Branch?', header='Branch', options=[Option('main', 'the default'), 'release']),\n"
+    "        Question('Areas?', options=['API', 'Storage', ' UI '], multi_select=True),\n"
+    "        Question('Branch name?', options=['main']),\n"
+    "        Question('Anything else?'),\n"
+    "    ])\n"
+    "    return json.dumps([[list(a.selected), a.text] for a in answers])\n",
+    "fn",
+)
 ASK_WORKFLOW = python_workflow(
     "async def fn(value, ctx):\n    answer = await ctx.ask('color?')\n    return 'answer=' + answer\n",
     "fn",
@@ -103,11 +117,11 @@ async def test_hello_load_manifest_golden(launch: Launcher, interpreter: str, wo
 
 
 async def test_run_python_ask_roundtrip(launch: Launcher, interpreter: str, workspace: Path) -> None:
-    asked: list[tuple[str, str]] = []
+    asked: list[tuple[str, tuple[AskUserQuestion, ...]]] = []
 
-    async def answer(attempt: AttemptRef, prompt: str) -> str:
-        asked.append((attempt.activation_id, prompt))
-        return "blue"
+    async def answer(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
+        asked.append((attempt.activation_id, questions))
+        return (AskUserAnswer(values=("blue",)),)
 
     client = await launch(interpreter=interpreter, ask_handler=answer)
     await client.load(ASK_WORKFLOW, filename=str(workspace / "wf.py"), workspace=workspace)
@@ -115,7 +129,47 @@ async def test_run_python_ask_roundtrip(launch: Launcher, interpreter: str, work
     result = await client.run_python(ref("fn"), text("x"), blocking=False)
 
     assert result.value.text == "answer=blue"
-    assert asked == [("fn@iter#1", "color?")]
+    assert asked == [("fn@iter#1", (AskUserQuestion("color?"),))]
+
+
+async def test_run_python_structured_ask_roundtrip(launch: Launcher, interpreter: str, workspace: Path) -> None:
+    """Questions reach the handler as chat ask-user questions; its answers come back as SDK Answers."""
+    asked: list[tuple[AskUserQuestion, ...]] = []
+
+    async def answer(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
+        asked.append(questions)
+        return (
+            AskUserAnswer(values=("main",), note="be quick"),
+            AskUserAnswer(values=("UI", "API")),
+            AskUserAnswer(values=("release candidate",)),
+            AskUserAnswer(),
+        )
+
+    client = await launch(interpreter=interpreter, ask_handler=answer)
+    await client.load(STRUCTURED_ASK_WORKFLOW, filename=str(workspace / "wf.py"), workspace=workspace)
+
+    result = await client.run_python(ref("fn"), text("x"), blocking=False)
+
+    assert json.loads(result.value.text) == [
+        [["main"], "be quick"],
+        [["API", "UI"], ""],
+        [[], "release candidate"],
+        [[], ""],
+    ]
+    assert asked == [
+        (
+            AskUserQuestion(
+                "Branch?", header="Branch", options=(AskUserOption("main", "the default"), AskUserOption("release"))
+            ),
+            AskUserQuestion(
+                "Areas?",
+                options=(AskUserOption("API"), AskUserOption("Storage"), AskUserOption("UI")),
+                multi_select=True,
+            ),
+            AskUserQuestion("Branch name?", options=(AskUserOption("main"),)),
+            AskUserQuestion("Anything else?"),
+        )
+    ]
 
 
 async def test_ask_without_handler_is_ask_unavailable(launch: Launcher, workspace: Path) -> None:
@@ -296,6 +350,7 @@ async def test_cancelled_launch_reaps_the_worker_it_spawned(sdk: SdkArtifact, wo
     await wait_for(
         lambda: launching.done() or bool(pid_file.exists() and pid_file.read_text(encoding="utf-8")),
         description="sleepy host wrote its pid",
+        timeout=ENGINE_TURN_TIMEOUT,
     )
     if launching.done():
         await launching
@@ -376,10 +431,10 @@ async def test_fence_drops_late_emits_for_a_terminal_attempt(fake: Any) -> None:
 async def test_fence_answers_a_late_ask_with_attempt_terminated(fake: Any) -> None:
     asked = False
 
-    async def answer(attempt: AttemptRef, prompt: str) -> str:
+    async def answer(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         nonlocal asked
         asked = True
-        return "never"
+        return (AskUserAnswer(values=("never",)),)
 
     client = await fake(ask_handler=answer)
     await client.run_python(ref("late_ask"), text(), blocking=False)
@@ -426,10 +481,10 @@ async def test_emit_handler_failure_does_not_stall_the_barrier(fake: Any) -> Non
 
 
 async def test_ask_roundtrip_and_ask_handler_exception(fake: Any) -> None:
-    async def answer(attempt: AttemptRef, prompt: str) -> str:
+    async def answer(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         if attempt.activation_id == "boom":
             raise RuntimeError("handler exploded")
-        return f"{prompt}!"
+        return (AskUserAnswer(values=(f"{questions[0].question}!",)),)
 
     client = await fake(ask_handler=answer)
     result = await client.run_python(ref("ask"), text(), blocking=False)
@@ -444,14 +499,14 @@ async def test_cancel_terminates_exactly_one_attempt_and_its_ask(fake: Any) -> N
     entered = asyncio.Event()
     cancelled = asyncio.Event()
 
-    async def blocking(attempt: AttemptRef, prompt: str) -> str:
+    async def blocking(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         entered.set()
         try:
             await asyncio.sleep(3600)
         except asyncio.CancelledError:
             cancelled.set()
             raise
-        return "never"
+        return (AskUserAnswer(values=("never",)),)
 
     client = await fake(ask_handler=blocking)
     first = asyncio.create_task(client.run_python(ref("ask_then_hang", attempt=1), text(), blocking=False))
@@ -480,7 +535,7 @@ async def test_close_waits_for_ask_handlers_to_finish_cleaning_up(fake: Any) -> 
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     cleaned = False
 
-    async def blocking(attempt: AttemptRef, prompt: str) -> str:
+    async def blocking(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         nonlocal cleaned
         entered.set()
         try:
@@ -489,7 +544,7 @@ async def test_close_waits_for_ask_handlers_to_finish_cleaning_up(fake: Any) -> 
             cleaning.set()
             await release.wait()
             cleaned = True
-        return "never"
+        return (AskUserAnswer(values=("never",)),)
 
     client = await fake(ask_handler=blocking)
     body = asyncio.create_task(client.run_python(ref("ask_then_hang"), text(), blocking=False))
@@ -513,10 +568,10 @@ async def test_an_ask_from_a_worker_just_marked_lost_starts_no_handler(
     """The frame that exhausts the run budget marks the worker lost; if it is an ask, no handler may start (close waits for them)."""
     entered = asyncio.Event()
 
-    async def blocking(attempt: AttemptRef, prompt: str) -> str:
+    async def blocking(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         entered.set()
         await asyncio.sleep(3600)
-        return "never"
+        return (AskUserAnswer(values=("never",)),)
 
     client = await fake(ask_handler=blocking)
     # The request fits; the ask it draws is one frame over the budget.
@@ -535,7 +590,7 @@ async def test_concurrent_closes_share_one_close_and_survive_a_cancelled_waiter(
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     cleaned = False
 
-    async def blocking(attempt: AttemptRef, prompt: str) -> str:
+    async def blocking(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         nonlocal cleaned
         entered.set()
         try:
@@ -544,7 +599,7 @@ async def test_concurrent_closes_share_one_close_and_survive_a_cancelled_waiter(
             cleaning.set()
             await release.wait()
             cleaned = True
-        return "never"
+        return (AskUserAnswer(values=("never",)),)
 
     client = await fake(ask_handler=blocking)
     body = asyncio.create_task(client.run_python(ref("ask_then_hang"), text(), blocking=False))
@@ -570,13 +625,13 @@ async def test_worker_exit_rejects_outstanding_and_cancels_asks(fake: Any) -> No
     entered = asyncio.Event()
     cancelled = asyncio.Event()
 
-    async def blocking(attempt: AttemptRef, prompt: str) -> str:
+    async def blocking(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         entered.set()
         try:
             await asyncio.sleep(3600)
         finally:
             cancelled.set()
-        return "never"
+        return (AskUserAnswer(values=("never",)),)
 
     client = await fake(ask_handler=blocking)
     hanging = [
@@ -616,10 +671,11 @@ async def test_worker_loss_while_emits_wait_for_projection_is_reported_as_lost(f
 
 @pytest.mark.parametrize("shape", ["answer", "error"])
 async def test_unframeable_ask_answers_and_errors_still_get_a_reply(fake: Any, shape: str) -> None:
-    async def bad(attempt: AttemptRef, prompt: str) -> str:
+    async def bad(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
         if shape == "error":
             raise AskUnavailable("x" * LIMITS.max_frame_bytes)
-        return "x" * LIMITS.max_frame_bytes
+        # A well-formed answer that is too big to frame, not one the answer mapping rejects.
+        return (AskUserAnswer(values=("x" * LIMITS.max_frame_bytes,)),)
 
     client = await fake(ask_handler=bad)
     with pytest.raises(WorkerRpcError) as failure:
@@ -686,6 +742,32 @@ async def test_unknown_reverse_request_is_answered_not_fatal(fake: Any) -> None:
     assert result.value.text == "bogus"
     replies = [frame for frame in await probe(client) if frame.get("id") == 2 and "method" not in frame]
     assert replies and replies[0]["error"]["code"] == ErrorCode.UNKNOWN_METHOD
+
+
+async def test_malformed_ask_questions_lose_the_worker(fake: Any) -> None:
+    asked = False
+
+    async def answer(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
+        nonlocal asked
+        asked = True
+        return (AskUserAnswer(),)
+
+    client = await fake(ask_handler=answer)
+    with pytest.raises(WorkerLostError, match="protocol error: ask option is malformed"):
+        await client.run_python(ref("malformed_ask"), text(), blocking=False)
+    assert asked is False
+
+
+async def test_mapping_failure_still_answers_the_worker(fake: Any) -> None:
+    """An answer that does not fit its questions is answered ask_unavailable instead of leaving the worker waiting."""
+
+    async def unfit(attempt: AttemptRef, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...]:
+        return (AskUserAnswer(), AskUserAnswer())
+
+    client = await fake(ask_handler=unfit)
+    with pytest.raises(WorkerRpcError) as failure:
+        await asyncio.wait_for(client.run_python(ref("ask"), text(), blocking=False), timeout=ENGINE_TURN_TIMEOUT)
+    assert failure.value.code == ErrorCode.ASK_UNAVAILABLE
 
 
 async def test_protocol_garbage_loses_the_worker(fake: Any) -> None:

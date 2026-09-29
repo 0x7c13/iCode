@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.errors.display import describe_error
 from chrys.foundation.trajectory.context import (
     TRAJECTORY_EXCHANGE_KWARG,
     ExchangeTrace,
@@ -36,7 +38,11 @@ from chrys.kernel import (
     SessionContext,
     internal_side_call_scope,
 )
-from chrys.kernel.exceptions import ChatClientContentFilterException, ChatClientInvalidRequestException
+from chrys.kernel.exceptions import (
+    ChatClientContentFilterException,
+    ChatClientInvalidRequestException,
+    ChatClientInvalidResponseException,
+)
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.llm.instrumented import (
     _compose_client_stack,
@@ -188,12 +194,19 @@ def test_ensure_choices_passes_with_empty_list() -> None:
     _ensure_openai_response_has_choices(resp)
 
 
+def _invalid_response_text(exc_info: pytest.ExceptionInfo[ChatClientException]) -> str:
+    """The raw boundary's shape: the typed invalid-response error is the cause, and carries the text."""
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, ChatClientInvalidResponseException)
+    return str(cause)
+
+
 def test_ensure_choices_raises_when_none_and_includes_body() -> None:
     body = '{"error": "rate limit exceeded"}'
     resp = SimpleNamespace(choices=None, model_dump_json=lambda: body)
     with pytest.raises(ChatClientException) as exc_info:
         _ensure_openai_response_has_choices(resp)
-    msg = str(exc_info.value)
+    msg = _invalid_response_text(exc_info)
     assert "missing the required 'choices' array" in msg
     assert "rate limit exceeded" in msg
 
@@ -204,7 +217,7 @@ def test_ensure_choices_raises_when_not_a_list() -> None:
     resp = SimpleNamespace(choices="oops", model_dump_json=lambda: body)
     with pytest.raises(ChatClientException) as exc_info:
         _ensure_openai_response_has_choices(resp)
-    msg = str(exc_info.value)
+    msg = _invalid_response_text(exc_info)
     assert "'choices' is str; expected an array" in msg
     assert body in msg
 
@@ -214,7 +227,20 @@ def test_ensure_choices_truncates_long_body() -> None:
     resp = SimpleNamespace(choices=None, model_dump_json=lambda: big)
     with pytest.raises(ChatClientException) as exc_info:
         _ensure_openai_response_has_choices(resp)
-    assert "[truncated]" in str(exc_info.value)
+    assert "[truncated]" in _invalid_response_text(exc_info)
+
+
+def test_ensure_choices_failure_speaks_for_the_model_service() -> None:
+    """No route reaches this failure: the typed cause alone says the model service answered."""
+    body = '{"error": {"message": "This model\'s maximum context length is 128000 tokens."}}'
+    resp = SimpleNamespace(choices=None, model_dump_json=lambda: body)
+    with pytest.raises(ChatClientException) as exc_info:
+        _ensure_openai_response_has_choices(resp)
+
+    description = describe_error(exc_info.value, route_probe=lambda: None)
+
+    assert description is not None
+    assert description.kind is ErrorKind.CONTEXT_OVERFLOW
 
 
 def test_ensure_choices_falls_back_to_repr_on_dump_failure() -> None:

@@ -20,7 +20,7 @@ from markdown_it.token import Token
 from textual._cells import cell_len
 from textual._slug import slug_for_tcss_id
 from textual.content import Content, Span
-from textual.highlight import highlight
+from textual.highlight import guess_language, highlight
 from textual.style import Style
 
 from chrys.app.tui.widgets.markdown.blocks import BULLETS, MarkdownBlock
@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 _ZERO_WIDTH_JOINER = "\u200d"
 _LINKIFY_SOURCE_META = "_chrys_linkify_source"
 _FENCE_CLOSED_META = "_chrys_fence_closed"
+_HTML_LINE_BREAK_RULE = "chrys_html_line_break"
+_HTML_LINE_BREAK = re.compile(r"<br\s*/?>[ \t]*(?:\n[ \t]*)?", re.IGNORECASE)
 # CJK sentence punctuation (fullwidth/halfwidth variants and their vertical and
 # small presentation forms included), the ellipsis leaders CJK prose typically
 # doubles, and the full set of CJK/fullwidth paired delimiters (both sides of
@@ -303,6 +305,17 @@ def _installed_rule_fn(ruler: Ruler[Any], name: str) -> Callable[..., Any] | Non
     return None
 
 
+def _replace_rule_fn(ruler: Ruler[Any], name: str, fn: Callable[..., Any]) -> None:
+    """Swap rule *name*'s function, keeping the rules it may interrupt.
+
+    ``Ruler.at`` resets ``alt`` unless given one; a fence that lost its
+    ``alt`` no longer interrupts a paragraph, so a code block right after a
+    line of text would parse as that paragraph's text.
+    """
+    alt = next(list(rule.alt) for rule in ruler.__rules__ if rule.name == name)
+    ruler.at(name, fn, {"alt": alt})
+
+
 def _configure_markdown_parser(parser: MarkdownIt) -> MarkdownIt:
     """Instrument a MarkdownIt parser to preserve raw auto-link spellings.
 
@@ -313,11 +326,11 @@ def _configure_markdown_parser(parser: MarkdownIt) -> MarkdownIt:
     links simply render without boundary splitting.
     """
     if _installed_rule_fn(parser.inline.ruler, "linkify") is _markdown_it_inline_linkify:
-        parser.inline.ruler.at("linkify", _inline_linkify_with_source)
+        _replace_rule_fn(parser.inline.ruler, "linkify", _inline_linkify_with_source)
     if _installed_rule_fn(parser.core.ruler, "linkify") is _markdown_it_core_linkify:
-        parser.core.ruler.at("linkify", _core_linkify_with_source)
+        _replace_rule_fn(parser.core.ruler, "linkify", _core_linkify_with_source)
     if _installed_rule_fn(parser.block.ruler, "fence") is _markdown_it_block_fence:
-        parser.block.ruler.at("fence", _block_fence_with_closed_meta)
+        _replace_rule_fn(parser.block.ruler, "fence", _block_fence_with_closed_meta)
     return parser
 
 
@@ -344,9 +357,36 @@ def _restore_ipv6_link_targets(state: StateCore) -> None:
                 child.attrSet(attribute, _restore_ipv6_authority(target))
 
 
+def _html_line_break(state: StateInline, silent: bool) -> bool:
+    """Read ``<br>`` as a line break, the one HTML tag with a meaning in plain text.
+
+    Models write it for line breaks inside table cells. Like a newline, it
+    takes the spaces around it and the newline after it, so ``one<br>``
+    followed by a new line breaks once, not twice. One that ends the text
+    breaks nothing, as in a browser, instead of adding an empty row.
+    """
+    if state.src[state.pos] != "<":
+        return False
+    match = _HTML_LINE_BREAK.match(state.src, state.pos, state.posMax)
+    if match is None:
+        return False
+    if not silent:
+        state.pending = state.pending.rstrip(" ")
+        if match.end() < state.posMax:
+            state.push("hardbreak", "br", 0)
+    state.pos = match.end()
+    return True
+
+
 def _create_markdown_parser() -> MarkdownIt:
-    """Create the default Markdown parser used by the TUI."""
-    parser = MarkdownIt("gfm-like")
+    """Create the default Markdown parser used by the TUI.
+
+    HTML stays text: the renderer draws none, and ``List<String>`` or
+    ``<file>`` mean those characters, so reading them as tags would drop them
+    along with the text an HTML block holds. Only ``<br>`` breaks the line.
+    """
+    parser = MarkdownIt("gfm-like", {"html": False})
+    parser.inline.ruler.before("html_inline", _HTML_LINE_BREAK_RULE, _html_line_break)
     parser.core.ruler.after("linkify", "chrys_ipv6_links", _restore_ipv6_link_targets)
     if parser.linkify is not None:
         # Bare filenames and identifiers can also be valid domain names.
@@ -368,6 +408,16 @@ def create_line_break_markdown_parser() -> MarkdownIt:
     """The default parser, keeping each newline inside a paragraph as a line break."""
     parser = _create_markdown_parser()
     parser.core.ruler.push("chrys_hard_line_breaks", _hard_line_breaks)
+    return parser
+
+
+def create_user_text_markdown_parser() -> MarkdownIt:
+    """The line-break parser for text a person typed, where ``<br>`` stays text too.
+
+    A person typing ``<br>`` means those characters, as with any other tag.
+    """
+    parser = create_line_break_markdown_parser()
+    parser.inline.ruler.disable(_HTML_LINE_BREAK_RULE)
     return parser
 
 
@@ -488,6 +538,25 @@ def _token_to_content(
 
     content = Content("".join(tokens), spans=spans)
     return content
+
+
+_FENCE_GUESS_SAMPLE_CHARS = 2048
+"""An unlabeled code block guesses its language from at most this much leading code.
+
+Pygments' ``guess_lexer`` scores every lexer's ``analyse_text`` over its whole
+input: on a long bare fence (a log, command output) that is hundreds of
+milliseconds of GIL-held time on every parse of the message. The deciding
+signals (shebangs, doctypes, leading keywords) sit at the top, and a block
+that fits in the sample is guessed exactly as before.
+"""
+
+
+def _guess_code_language(code: str) -> str:
+    """Return the lexer name for an unlabeled code block, guessed from a line-aligned prefix."""
+    if len(code) > _FENCE_GUESS_SAMPLE_CHARS:
+        cut = code.rfind("\n", 0, _FENCE_GUESS_SAMPLE_CHARS)
+        code = code[: cut if cut > 0 else _FENCE_GUESS_SAMPLE_CHARS]
+    return guess_language(code, None)
 
 
 def _get_list_indent(stack: list[dict]) -> int:
@@ -831,7 +900,7 @@ def _parse_tokens(
                     )
                     continue
 
-            highlighted = highlight(code, language=language or None, theme=NoErrorHighlightTheme)
+            highlighted = highlight(code, language=language or _guess_code_language(code), theme=NoErrorHighlightTheme)
 
             indent = 0
             prefix = ""
@@ -965,6 +1034,11 @@ def _cell_wrapped_height(text: str, width: int) -> int:
 def _is_cluster_continuation(current: str, char: str) -> bool:
     """Return whether ``char`` should stay attached to the current cluster."""
     return char == _ZERO_WIDTH_JOINER or current.endswith(_ZERO_WIDTH_JOINER) or cell_len(char) == 0
+
+
+def _cell_natural_width(text: str) -> int:
+    """Return the width a cell needs unwrapped: its widest line (``<br>`` splits lines)."""
+    return max(cell_len(line) for line in text.split("\n"))
 
 
 def _cell_min_width(text: str) -> int:

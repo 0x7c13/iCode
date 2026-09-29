@@ -42,12 +42,7 @@ from chrys.foundation.text.images import is_image_media_type
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY
 from chrys.foundation.trajectory_timing import trajectory_timing_from_metadata
 from chrys.foundation.util.time import parse_created_at
-from chrys.kernel import (
-    GROUP_ANNOTATION_KEY,
-    SUMMARY_OF_GROUP_IDS_KEY,
-    Content,
-    Message,
-)
+from chrys.kernel import Content, Message
 from chrys.kernel.exchanges import (
     LEGACY_CALL_CONTENT_TYPE,
     TOOL_CALL_CONTENT_TYPES,
@@ -74,8 +69,10 @@ from chrys.service.mutations.tool_names import _FILE_TOOLS
 from chrys.service.session.message_metadata import (
     MESSAGE_CREATED_AT_KEY,
     TOOL_RESULT_METADATA_KEY,
+    is_compaction_tool_summary,
     persisted_tool_call_kind,
 )
+from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
 
 if TYPE_CHECKING:
     from textual.widget import Widget
@@ -259,6 +256,10 @@ class HistoryReplayPlanner:
         file_snapshots: dict[str, list[Any]] | None = None,
         suppress_marker_text: bool = False,
     ) -> ReplayPlan:
+        # Compaction tool summaries are the model's context and never render.
+        # Drop them before pairing and merging, so a hidden summary cannot
+        # split or join the tool groups around it.
+        messages = [message for message in messages if not is_compaction_tool_summary(message)]
         pairings, standalone_hosted_results, annotations = self._pair_tool_calls(
             messages,
             file_snapshots=file_snapshots,
@@ -1042,18 +1043,7 @@ class HistoryReplayRenderer:
     ) -> str:
         """Render a compressed block through the canonical replay planner."""
         replay_widgets = widgets if widgets is not None else []
-        serialized_messages: list[dict[str, Any]] = []
-        for message in block.messages:
-            serialized = message.to_dict()
-            group = _message_extra(serialized).get(GROUP_ANNOTATION_KEY) or {}
-            if (
-                serialized.get("role") == "assistant"
-                and isinstance(group, dict)
-                and group.get(SUMMARY_OF_GROUP_IDS_KEY)
-            ):
-                continue
-            serialized_messages.append(serialized)
-
+        serialized_messages = [message.to_dict() for message in block.messages]
         plan = self._planner.build_plan(serialized_messages, suppress_marker_text=True)
         plan.apply_compatibility_annotations()
         seen_user_in_turn = False
@@ -1143,12 +1133,12 @@ class HistoryReplayRenderer:
     ) -> None:
         """Replay a single assistant message, preserving text/tool-call order."""
         replay_widgets = widgets if widgets is not None else []
-        pending_text: list[str] = []
+        pending_text: list[tuple[str, str | None]] = []
         pending_tools: list[ReplayToolCall | dict[str, Any]] = []
         timestamp = "" if is_intermediate else format_message_created_at(created_at)
 
         async def flush_text() -> None:
-            text = "\n".join(pending_text).strip()
+            text = join_text_blocks(reconstruct_text_blocks(pending_text)).strip()
             pending_text.clear()
             if text and process_think_tags(text, intermediate=is_intermediate):
                 replay_widgets.append(
@@ -1279,10 +1269,12 @@ class HistoryReplayRenderer:
                     await flush_tools()
                 if isinstance(content, dict) and content.get("type") == "text":
                     text = content.get("text", "")
-                    if text:
-                        pending_text.append(text)
+                    block_id = text_block_id(content.get("additional_properties"))
+                    # Even an empty fragment can separate different item IDs.
+                    # Suppress empty blocks only after reconstruction.
+                    pending_text.append((text or "", block_id))
                 elif isinstance(content, str):
-                    pending_text.append(content)
+                    pending_text.append((content, None))
 
         await flush_tools()
         await flush_text()
@@ -1564,9 +1556,9 @@ def _visible_text_variants(contents: list[Any]) -> list[str]:
     variants: list[str] = []
     all_parts: list[str] = []
     segment_parts: list[str] = []
-    # Replay renders visible text parts with newlines, but the session writer
-    # suppresses duplicate _intermediate_text by comparing parts joined without
-    # separators. Keep both forms so replay and persistence share the contract.
+    # Legacy replay inserted newlines between every fragment, while live text
+    # and session sidecar suppression concatenated without separators. Recognize
+    # both historical forms for backward-compatible _intermediate_text matching.
     for content in contents:
         if isinstance(content, dict) and content.get("type") == "text":
             text = str(content.get("text", ""))

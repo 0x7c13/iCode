@@ -11,8 +11,14 @@ from pathlib import Path
 import pytest
 
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import WorkflowOutputSummary, WorkflowRunFinished
+from chrys.foundation.events.types import (
+    WorkflowNodeAnswered,
+    WorkflowNodeAskUser,
+    WorkflowOutputSummary,
+    WorkflowRunFinished,
+)
 from chrys.foundation.events.workflow import WORKFLOW_RUN_EVENTS
+from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
 from chrys.foundation.platform.files import atomic_write_basename_budget
 from chrys.service.workflows import store as store_module
 from chrys.service.workflows.journal import WorkflowJournal
@@ -38,6 +44,8 @@ from chrys.service.workflows.store import (
 from tests.service.workflows.test_store import header
 from tests.support.event_capture import capture_event_sequence
 from tests.support.secure_files import plant_owner_only_bytes
+
+CONTINUE = AskUserQuestion(question="Continue?")
 
 
 async def test_large_input_and_spec_leave_a_small_write_once_listing_header(tmp_path: Path) -> None:
@@ -77,8 +85,8 @@ async def test_codec_preserves_attempt_iteration_notice_question_and_answer_iden
             await journal.run_started()
             await journal.node_state(ref, "running", iteration=5, failure_phase="until")
             await journal.node_output(ref, "emit", 7, "partial")
-            await journal.node_ask(ref, "question", "Continue?")
-            await journal.node_answer(ref, "question", "Yes")
+            await journal.node_ask(ref, "question", (CONTINUE,))
+            await journal.node_answer(ref, "question", (CONTINUE,), (AskUserAnswer(values=("Yes",)),))
             await journal.loop_iteration(ref, 5, "exit")
             await journal.run_notice(ref.node_id, ref.activation_id, "notice", "Visible")
             await journal.finish(RunOutcome.NODE_FAILED, node_id=ref.node_id, error="failure", reason="reason")
@@ -89,6 +97,46 @@ async def test_codec_preserves_attempt_iteration_notice_question_and_answer_iden
             assert replace(restored, timestamp=observed.timestamp, event_id=observed.event_id) == observed
     finally:
         await store.close()
+
+
+async def test_a_structured_ask_is_stored_and_replayed_as_its_bounded_summary(tmp_path: Path) -> None:
+    identity = header()
+    store = WorkflowRunStore.open(
+        tmp_path, header=identity, spec=RunSpec({"nodes": []}, {}), input_text="go", source=b""
+    )
+    bus = EventBus()
+    journal = WorkflowJournal(store, bus, session_id=identity.session_id)
+    ref = AttemptRef(identity.run_id, "pick", "pick@iter#1", 1)
+    questions = (
+        AskUserQuestion(
+            question="Branch?", header="Branch", options=(AskUserOption(label="main"), AskUserOption(label="rc"))
+        ),
+        AskUserQuestion(
+            question="Areas?", options=(AskUserOption(label="API"), AskUserOption(label="UI")), multi_select=True
+        ),
+    )
+    answers = (AskUserAnswer(values=("main",)), AskUserAnswer(values=("API", "UI"), note="both"))
+    try:
+        async with capture_event_sequence(bus, WorkflowNodeAskUser, WorkflowNodeAnswered) as live:
+            await journal.node_ask(ref, "q", questions)
+            await journal.node_answer(ref, "q", questions, answers)
+    finally:
+        await store.close()
+    records = [
+        r for r in read_run_events(tmp_path).events if r.event_type in {RunRecord.NODE_ASK, RunRecord.NODE_ANSWER}
+    ]
+    identity_payload = {"node": "pick", "activation": "pick@iter#1", "attempt": 1, "request": "q"}
+    # The stored payload keeps its pre-structured shape: older runs replay here, and these runs replay there.
+    assert [dict(record.payload) for record in records] == [
+        {**identity_payload, "prompt": "Branch: Branch?\nQ2: Areas?"},
+        {**identity_payload, "answer": "Branch: main\nQ2: API, UI — both"},
+    ]
+    ask, answered = live
+    assert isinstance(ask, WorkflowNodeAskUser) and ask.questions == questions
+    replayed_ask, replayed_answer = (decode_run_event(record, directory=tmp_path) for record in records)
+    assert isinstance(replayed_ask, WorkflowNodeAskUser)
+    assert replayed_ask.questions == (AskUserQuestion(question="Branch: Branch?\nQ2: Areas?"),)
+    assert replace(replayed_answer, timestamp=answered.timestamp, event_id=answered.event_id) == answered
 
 
 @pytest.mark.parametrize("damage", ["", "missing", "count", "attempt"])

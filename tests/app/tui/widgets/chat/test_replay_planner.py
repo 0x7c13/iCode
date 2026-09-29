@@ -1205,3 +1205,53 @@ def test_planner_separates_none_and_empty_id_queues() -> None:
         ("", "none-result"),
         ("", "empty-result"),
     ]
+
+
+def _tool_summary(text: str, group_id: str) -> dict[str, Any]:
+    return _assistant(
+        [_text(text)],
+        _group={
+            "id": group_id,
+            "kind": "assistant_text",
+            "_summary_of_message_ids": [f"msg_{group_id}"],
+            "_summary_of_group_ids": [group_id],
+        },
+    )
+
+
+def test_planner_skips_compaction_tool_summaries_but_keeps_same_text_answers() -> None:
+    """A summary never renders or splits the tool groups around it; an answer
+    with the same text but no summary annotation still renders.
+
+    Compressed blocks keep summaries beside their originals, so a summary
+    must not break how calls pair with their results; that matters for
+    hosted cards, the only tool cards a compressed block shows.
+    """
+    summary_text = '[Tool call: read_file(path="a.py") → contents]'
+    transcript = [
+        _user_msg("inspect"),
+        _assistant([_fc("c1", "read_file")]),
+        _tool([_fr("c1", "contents")]),
+        _assistant([_fc("c2")]),
+        _tool([_fr("c2")]),
+        _assistant([_text(summary_text)]),
+    ]
+    with_summaries = [
+        transcript[0],
+        _tool_summary(summary_text, "group_1"),
+        *transcript[1:3],
+        _tool_summary(summary_text, "group_2"),
+        *transcript[3:],
+    ]
+
+    plan = HistoryReplayPlanner().build_plan(with_summaries)
+
+    assert plan.entries == HistoryReplayPlanner().build_plan(transcript).entries
+    assert [
+        content["text"]
+        for entry in plan.entries
+        if isinstance(entry, ReplayAgentMessage)
+        for content in entry.contents
+        if isinstance(content, dict) and content.get("type") == "text"
+    ] == [summary_text]
+    assert [tool.call_id for tool in _planned_tools(with_summaries)] == ["c1", "c2"]

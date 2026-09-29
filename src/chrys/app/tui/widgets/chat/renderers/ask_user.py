@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
+from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
@@ -22,6 +23,8 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
+from chrys.app.tui.util.removal import finish_shielded
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets import (
     ASK_USER_INPUT_MAX_HEIGHT,
     AskUserActiveQuestionChanged,
@@ -64,6 +67,7 @@ _ASK_USER_WAITING = msg("tui.tool_card.ask_user.waiting", fallback="waiting")
 if TYPE_CHECKING:
     from rich.console import RenderableType
     from textual.app import ComposeResult
+    from textual.await_remove import AwaitRemove
 
 _USER_RESPONSE_PREFIX = "User response:"
 _INLINE_PANEL_FRAME_ROWS = 2
@@ -111,6 +115,11 @@ def _questions_markdown(questions: tuple[AskUserQuestion, ...]) -> str:
     if len(questions) == 1:
         return questions[0].question
     return "\n".join(f"{index}. {question.question}" for index, question in enumerate(questions, start=1))
+
+
+def _questions_display_markdown(questions: tuple[AskUserQuestion, ...]) -> str:
+    """The card's question block; copy keeps :func:`_questions_markdown`'s raw text."""
+    return sanitize_source_text(_questions_markdown(questions))
 
 
 def _answers_from_result(result: str, questions: tuple[AskUserQuestion, ...]) -> tuple[AskUserAnswer, ...] | None:
@@ -282,6 +291,8 @@ class AskUserToolCall(BaseToolCard):
         self._chat_viewport_height = 0
         self._inline_resize_generation = 0
         self._inline_scheduled_sync_generation: int | None = None
+        self._inline_mount_generation = 0
+        """Advanced by every show and clear; a prompt waiting for its predecessor to go mounts only if still current."""
 
     def _label_text(self, duration_ms: int = 0) -> Text:
         t = Text()
@@ -295,7 +306,7 @@ class AskUserToolCall(BaseToolCard):
         yield ToolCardHeader(self._label_text(), id="ask-label")
 
         panel = VerticalScroll(
-            VirtualizedMarkdown(_questions_markdown(self._questions), id="ask-question"),
+            VirtualizedMarkdown(_questions_display_markdown(self._questions), id="ask-question"),
             id="ask-panel",
             can_focus=False,
         )
@@ -368,11 +379,28 @@ class AskUserToolCall(BaseToolCard):
         self._question = questions[0].question if questions else ""
         self._inline_request_id = request_id
         self._inline_submitted = False
+        self._inline_mount_generation += 1
         try:
             panel = self.query_one("#ask-panel")
-            with suppress(Exception):
-                self.query_one("#ask-inline").remove()
-            panel.mount(prompt)
+            # A previous prompt keeps its id until its removal completes, even
+            # one removed already: this one mounts once it is gone.
+            previous = list(panel.query_children("#ask-inline"))
+            if previous:
+                # A partial, not a coroutine: a later show can cancel this worker
+                # before it starts, and a coroutine never awaited warns.
+                self.run_worker(
+                    partial(
+                        self._mount_inline_prompt_after,
+                        panel.remove_children(previous),
+                        panel,
+                        prompt,
+                        self._inline_mount_generation,
+                    ),
+                    group="ask-inline-mount",
+                    exclusive=True,
+                )
+            else:
+                panel.mount(prompt)
         except Exception:
             self._inline_request_id = ""
             return False
@@ -389,11 +417,23 @@ class AskUserToolCall(BaseToolCard):
         self._update_active_question(prompt.active_index)
         return True
 
+    async def _mount_inline_prompt_after(
+        self, removal: AwaitRemove, panel: Widget, prompt: AskUserPrompt, generation: int
+    ) -> None:
+        await finish_shielded(removal)
+        # A later show or clear took over meanwhile, or the card is going.
+        if generation != self._inline_mount_generation or not panel.is_attached or panel._pruning:
+            return
+        panel.mount(prompt)
+        self._schedule_inline_layout_sync()
+        self._update_active_question(prompt.active_index)
+
     def clear_inline_prompt(self) -> None:
         """Remove any active inline answer controls."""
         self.remove_class("-inline")
         self._inline_request_id = ""
         self._inline_submitted = False
+        self._inline_mount_generation += 1
         self._inline_last_width = 0
         self._inline_resize_generation += 1
         self._inline_scheduled_sync_generation = None
@@ -604,7 +644,7 @@ class AskUserToolCall(BaseToolCard):
         of the card (it remains in ``result_text`` for the copy payload).
         """
         questions = _extract_questions(self.args_summary, self.args)
-        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_markdown(questions))
+        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_display_markdown(questions))
         self.add_class("-interrupted")
         self.query_one("#ask-panel").border_subtitle = render_text(widget_localizer(self), TOOL_CARD_INTERRUPTED.bind())
         self.query_one("#ask-answer", Static).update(Text(""))
@@ -612,10 +652,9 @@ class AskUserToolCall(BaseToolCard):
     def _render_completed(self, result: str) -> None:
         questions = _extract_questions(self.args_summary, self.args)
         answers = _answers_from_result(result, questions)
-        question_markdown = _questions_markdown(questions)
-        self.query_one("#ask-question", VirtualizedMarkdown).update(question_markdown)
+        self.query_one("#ask-question", VirtualizedMarkdown).update(_questions_display_markdown(questions))
         if answers is None:
-            self.query_one("#ask-answer", Static).update(Text(_answer_from_result(result)))
+            self.query_one("#ask-answer", Static).update(Text(sanitize_source_text(_answer_from_result(result))))
             return
         self.set_class(len(questions) > 1, "-multi")
         unanswered = render_str(widget_localizer(self), ASK_USER_NOT_ANSWERED_REF.bind())
@@ -629,7 +668,7 @@ class AskUserToolCall(BaseToolCard):
             question_style = self.get_component_rich_style("askuser-answer--question", partial=True)
             rows: list[tuple[str, RenderableType]] = []
             for index, (question, answer) in enumerate(zip(questions, answers, strict=True), start=1):
-                rows.append((f"{index}. ", Text(question.question, style=question_style)))
+                rows.append((f"{index}. ", Text(sanitize_source_text(question.question), style=question_style)))
                 rows.append(("", ask_user_hanging_answer(answer, unanswered=unanswered)))
             rendered = ask_user_hanging_grid(rows)
         else:

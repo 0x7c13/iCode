@@ -90,7 +90,12 @@ class ObservedRun:
     nodes: dict[str, events.WorkflowNodeStateChanged] = field(default_factory=dict)
     attempts: dict[tuple[str, int], events.WorkflowNodeStateChanged] = field(default_factory=dict)
     iterations: dict[str, events.WorkflowLoopIteration] = field(default_factory=dict)
-    journals: dict[str, AgentTranscriptJournal] = field(default_factory=dict)
+    journals: dict[tuple[str, int], AgentTranscriptJournal] = field(default_factory=dict)
+    """One live transcript per agent invocation attempt: a retry resumes one or starts over, never mixes them."""
+    prompts: dict[str, str] = field(default_factory=dict)
+    """Each invocation's opening prompt, which an attempt starting over shows again."""
+    unseeded: set[tuple[str, int]] = field(default_factory=set)
+    """Retry attempts whose first fact has yet to tell whether they resume the previous attempt."""
     questions: dict[str, events.WorkflowNodeAskUser] = field(default_factory=dict)
     question_history: dict[str, events.WorkflowNodeAskUser] = field(default_factory=dict)
     question_states: dict[str, str] = field(default_factory=dict)
@@ -151,7 +156,6 @@ class WorkflowProjector:
         run.facts.append(event)
         run.fact_count += 1
         if isinstance(event, events.WorkflowNodeStateChanged):
-            previous_node = run.nodes.get(event.node_id)
             previous = run.attempts.get((event.activation_id, event.attempt))
             if previous is not None and not event.invocation_id:
                 event = replace(event, invocation_id=previous.invocation_id)
@@ -166,18 +170,18 @@ class WorkflowProjector:
                         del run.questions[key]
             if event.invocation_id:
                 run.usage.setdefault(event.invocation_id, NodeUsage())
-                journal = run.journals.setdefault(event.invocation_id, AgentTranscriptJournal())
+                key = (event.invocation_id, event.attempt)
+                journal = run.journals.get(key)
+                if journal is None:
+                    if any(invocation == event.invocation_id for invocation, _attempt in run.journals):
+                        run.unseeded.add(key)
+                    journal = run.journals[key] = AgentTranscriptJournal()
                 if event.state == "cancelled":
+                    _seed_attempt(run, key, None)
                     journal.record(TranscriptInterruptedOp(text.CANCELLED.bind()))
                 elif event.state in {"failed", "retrying", "awaiting_retry"}:
+                    _seed_attempt(run, key, None)
                     journal.record(TranscriptErrorOp(event.error or text.FAILED.bind()))
-                elif (
-                    event.state == "running"
-                    and previous_node is not None
-                    and previous_node.invocation_id == event.invocation_id
-                    and previous_node.state in {"failed", "retrying", "awaiting_retry"}
-                ):
-                    journal.record(TranscriptResumedOp())
         elif isinstance(event, events.WorkflowLoopIteration):
             run.iterations[event.loop_id] = event
         elif isinstance(event, events.WorkflowRunFinished):
@@ -204,16 +208,43 @@ class WorkflowProjector:
         if event.origin.kind != "workflow_node":
             return
         invocation_id = event.origin.invocation_id
+        key = (invocation_id, event.origin.attempt)
         for run in (self.current, self.previous):
-            if run is not None and invocation_id in run.journals:
+            journal = run.journals.get(key) if run is not None else None
+            if run is not None and journal is not None:
+                if isinstance(event, events.InvocationStarted) and event.opening_prompt:
+                    run.prompts.setdefault(invocation_id, event.opening_prompt)
                 if isinstance(event, events.InvocationProgress):
                     run.usage[invocation_id] = NodeUsage(
                         event.tool_call_count, event.total_usage_tokens, event.usage_unreported_attempts
                     )
+                _seed_attempt(run, key, event)
                 operation = transcript_operation(event)
                 if operation is not None:
-                    run.journals[invocation_id].record(operation)
+                    journal.record(operation)
                 return
+
+
+def _seed_attempt(run: ObservedRun, key: tuple[str, int], first: events.InvocationEvent | None) -> None:
+    """Open a retry attempt's transcript from its first fact.
+
+    An attempt that resumes announces it first and carries on the previous attempt's transcript; any other
+    attempt starts over, from the prompt, in a new session or a fresh history.
+    """
+    if key not in run.unseeded:
+        return
+    run.unseeded.discard(key)
+    journal = run.journals[key]
+    invocation_id, attempt = key
+    earlier = [number for invocation, number in run.journals if invocation == invocation_id and number < attempt]
+    if isinstance(first, events.InvocationResumed):
+        if earlier:
+            journal.continue_from(run.journals[invocation_id, max(earlier)])
+    elif not isinstance(first, events.InvocationStarted) and (prompt := run.prompts.get(invocation_id)):
+        journal.record(TranscriptUserOp(prompt))
+    # Earlier attempts display their archives, and their late facts are dropped with them.
+    for number in earlier:
+        del run.journals[invocation_id, number]
 
 
 def transcript_operation(event: events.InvocationEvent) -> AgentTranscriptOp | None:
@@ -267,14 +298,20 @@ def transcript_operation(event: events.InvocationEvent) -> AgentTranscriptOp | N
             event.compaction_id, event.outcome, event.duration_ms, event.format_violation, event.failure_reason
         )
     if isinstance(event, events.InvocationRetryAttempt):
+        if event.scope == "compaction":
+            return TranscriptRetryOp(
+                event.detail or event.message,
+                event.attempt,
+                event.max_attempts,
+                event.delay_seconds,
+                compaction=True,
+            )
         return TranscriptRetryOp(
-            (event.detail or event.message)
-            if event.scope == "compaction"
-            else (event.display_message or event.message),
+            event.message if event.display_message is None else event.display_message,
             event.attempt,
             event.max_attempts,
             event.delay_seconds,
-            compaction=event.scope == "compaction",
+            hint=None if event.display_message is None else event.display_hint,
         )
     if isinstance(event, events.InvocationPaused):
         return TranscriptErrorOp(event.last_error or text.AWAITING_RETRY.bind())

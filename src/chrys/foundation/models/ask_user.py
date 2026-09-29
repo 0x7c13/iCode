@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from chrys.foundation.util.unicode_scalars import find_unpaired_surrogate, replace_unpaired_surrogates
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 MAX_ASK_USER_QUESTIONS: Final[int] = 5
 MAX_ASK_USER_OPTIONS: Final[int] = 8
@@ -405,10 +408,10 @@ def validate_request_input_response(
     if cancelled or "answers" not in payload_dict:
         return Cancelled()
     raw_answers = payload_dict["answers"]
-    if type(raw_answers) is not list or len(raw_answers) != len(questions):
+    if type(raw_answers) is not list:
         return Cancelled()
     answers: list[AskUserAnswer] = []
-    for raw_answer, question in zip(cast("list[object]", raw_answers), questions, strict=True):
+    for raw_answer in cast("list[object]", raw_answers):
         if type(raw_answer) is not dict:
             return Cancelled()
         answer_dict = cast("dict[str, object]", raw_answer)
@@ -420,18 +423,46 @@ def validate_request_input_response(
             return Cancelled()
         if type(raw_note) is not str:
             return Cancelled()
-        # The wire check above rejected lone surrogates; this joins the pairs
-        # a JSON decoder would have joined so the values encode strictly.
-        values = tuple(_plain_string(value, strip=True) or "" for value in cast("list[str]", raw_values))
+        answers.append(AskUserAnswer(values=tuple(cast("list[str]", raw_values)), note=raw_note))
+    validated = validate_ask_user_answers(tuple(answers), questions=questions)
+    return Cancelled() if validated is None else validated
+
+
+def validate_ask_user_answers(
+    answers: Sequence[AskUserAnswer],
+    *,
+    questions: tuple[AskUserQuestion, ...],
+) -> tuple[AskUserAnswer, ...] | None:
+    """Normalize one positional answer per question, or return None when any breaks the contract.
+
+    Values are stripped, non-empty and unique; a single-select question takes
+    at most one value; several values must all be offered labels; a note only
+    accompanies values that are all labels.
+    """
+    if not isinstance(answers, (list, tuple)) or len(answers) != len(questions):
+        return None
+    validated: list[AskUserAnswer] = []
+    for answer, question in zip(answers, questions, strict=True):
+        if (
+            not isinstance(answer, AskUserAnswer)
+            or not isinstance(answer.values, tuple)
+            or not all(isinstance(value, str) for value in answer.values)
+            or not isinstance(answer.note, str)
+        ):
+            return None
+        # Lone surrogates are repaired (the ACP wire check already rejected
+        # them there); this also joins the pairs a JSON decoder would have
+        # joined, so the values encode strictly.
+        values = tuple(_plain_string(value, strip=True) or "" for value in answer.values)
         if any(not value for value in values) or len(set(values)) != len(values):
-            return Cancelled()
+            return None
         labels = {option.label for option in question.options}
         if not question.multi_select and len(values) > 1:
-            return Cancelled()
+            return None
         if len(values) > 1 and any(value not in labels for value in values):
-            return Cancelled()
-        note = _plain_string(raw_note, strip=True) or ""
+            return None
+        note = _plain_string(answer.note, strip=True) or ""
         if note and (not values or any(value not in labels for value in values)):
-            return Cancelled()
-        answers.append(AskUserAnswer(values=values, note=note))
-    return tuple(answers)
+            return None
+        validated.append(AskUserAnswer(values=values, note=note))
+    return tuple(validated)

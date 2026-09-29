@@ -22,7 +22,14 @@ from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.foundation.events.types import ProvisionalPresentation
 from chrys.foundation.models.ask_user import AskUserOption, AskUserQuestion
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.kernel import Content, Message
+from chrys.kernel import (
+    GROUP_ANNOTATION_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    Content,
+    Message,
+    set_excluded,
+)
 from chrys.service.context.providers.history import CompressedBlock
 
 
@@ -282,8 +289,9 @@ class _FakeSubAgentWidget:
         last_error: str,
         retry_attempts: int,
         diagnostic_path: str | None = None,
+        last_error_display: str | None = None,
     ) -> None:
-        self.events.append(("paused", reason, last_error, retry_attempts, diagnostic_path))
+        self.events.append(("paused", reason, last_error, retry_attempts, diagnostic_path, last_error_display))
 
     def set_resumed_after_pause(self) -> None:
         self.events.append(("resumed",))
@@ -433,14 +441,14 @@ def test_tool_registry_routes_sub_agent_progress_retry_and_pause() -> None:
 
     registry.update_sub_agent_progress("inv-b", 3, 120, 145, 1)
     registry.sub_agent_retry_attempt("inv-b", "rate limited", 2, 4, 8)
-    registry.sub_agent_paused("inv-b", "retry exhausted", "timeout", 4)
+    registry.sub_agent_paused("inv-b", "retry exhausted", "timeout", 4, None, "Timed out waiting.")
     registry.sub_agent_paused("missing", "ignored", "ignored", 0)
 
     assert first.events == []
     assert second.events == [
         ("progress", 3, 120, 145, 1),
         ("retry", "rate limited", 2, 4, 8),
-        ("paused", "retry exhausted", "timeout", 4, None),
+        ("paused", "retry exhausted", "timeout", 4, None, "Timed out waiting."),
     ]
     assert group.collapsed is False
     assert group.collapse_locked is True
@@ -1209,7 +1217,7 @@ async def test_live_renderer_derives_checkmark_for_successful_structured_only_ou
 
     messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(messages) == 1
-    assert messages[0]._text == "✓"
+    assert messages[0].text == "✓"
     assert messages[0]._is_structured_completion is True
 
 
@@ -1231,7 +1239,7 @@ async def test_live_renderer_normalizes_whitespace_structured_completion_to_chec
 
     messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(messages) == 1
-    assert messages[0]._text == "✓"
+    assert messages[0].text == "✓"
     assert messages[0]._is_structured_completion is True
 
 
@@ -1580,6 +1588,73 @@ async def test_replay_compressed_block_keeps_local_tools_hidden() -> None:
 
 
 @pytest.mark.asyncio
+async def test_replay_compressed_block_skips_tool_summary_but_keeps_archived_originals() -> None:
+    """A compressed block archives its turns as they were, including a
+    compaction tool summary beside the excluded originals it replaced.
+
+    Unlike the session transcript, which loads without excluded messages,
+    the block renders those originals by its own rules: their narration
+    shows and local tool cards stay hidden. Only the summary is skipped; a
+    real answer that reads exactly like it still renders.
+    """
+    calls: list[str] = []
+    mount = _FakeMount(calls)
+    renderer = HistoryReplayRenderer(
+        mount,
+        _FakeUi(calls),
+        TurnTocModel(),
+        lambda _name: "",
+        default_profile=lambda: "Code",
+    )
+    summary_text = '[Tool call: read_file(path="a.py") → contents]'
+    summary = Message(
+        "assistant",
+        [Content.from_text(summary_text)],
+        additional_properties={
+            GROUP_ANNOTATION_KEY: {
+                "id": "group_1",
+                "kind": "assistant_text",
+                SUMMARY_OF_MESSAGE_IDS_KEY: ["msg_1", "msg_2"],
+                SUMMARY_OF_GROUP_IDS_KEY: ["group_1"],
+            }
+        },
+    )
+    originals = [
+        Message(
+            "assistant",
+            [
+                Content.from_text("Reading a.py first."),
+                Content.from_function_call("c1", "read_file", arguments={"path": "a.py"}),
+            ],
+        ),
+        Message("tool", [Content.from_function_result("c1", result="contents")]),
+    ]
+    for original in originals:
+        set_excluded(original, excluded=True, reason="budget_tool_compaction")
+    block = CompressedBlock(
+        compressed_context_id="ctx-summary",
+        messages=[
+            _block_user("inspect"),
+            summary,
+            *originals,
+            Message("assistant", [Content.from_text(summary_text)]),
+        ],
+    )
+
+    await renderer.replay_history(
+        [_compressed_fold_message("ctx-summary")],
+        compressed_blocks={"ctx-summary": block},
+    )
+
+    assert [widget._text for widget in mount.widgets if isinstance(widget, UserMessage)] == ["inspect"]
+    assert [widget.text for widget in mount.widgets if isinstance(widget, AgentMessage)] == [
+        "Reading a.py first.",
+        summary_text,
+    ]
+    assert not any(isinstance(widget, ToolGroup) for widget in mount.widgets)
+
+
+@pytest.mark.asyncio
 async def test_replay_derives_checkmark_for_turn_ending_structured_only_output() -> None:
     calls: list[str] = []
     mount = _FakeMount(calls)
@@ -1617,7 +1692,7 @@ async def test_replay_derives_checkmark_for_turn_ending_structured_only_output()
 
     agent_messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(agent_messages) == 1
-    assert agent_messages[0]._text == "✓"
+    assert agent_messages[0].text == "✓"
     assert agent_messages[0]._is_structured_completion is True
 
 

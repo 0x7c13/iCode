@@ -10,14 +10,17 @@ embedding surfaces are intentionally not ported.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable, Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeGuard, TypeIs, cast, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeGuard, TypeIs, cast, overload
 
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace, side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
@@ -30,6 +33,49 @@ if TYPE_CHECKING:
 
 
 _log = logging.getLogger(__name__)
+
+# A streamed wire pull's stall watchdog also times the work that runs before
+# the provider's first byte: compaction and its LAST_WORDS side call.  That
+# work reports liveness through this callback, which the watchdog installs in
+# the context it times, so the watchdog times idle gaps instead of the whole
+# pull.  Outside a watchdog it is None.
+_WIRE_PROGRESS: ContextVar[Callable[[], None] | None] = ContextVar("chrys_wire_progress", default=None)
+
+
+def report_wire_progress() -> None:
+    """Restart the enclosing stall watchdog's idle timer, if one is running."""
+    callback = _WIRE_PROGRESS.get()
+    if callback is not None:
+        callback()
+
+
+@contextmanager
+def wire_progress_scope(on_progress: Callable[[], None]) -> Iterator[None]:
+    """Report progress from the block, and every task it spawns, to *on_progress*.
+
+    Spawned tasks copy the context, so they can report after the block
+    exits: the callback must tolerate a report once its timer is gone.
+    """
+    token = _WIRE_PROGRESS.set(on_progress)
+    try:
+        yield
+    finally:
+        _WIRE_PROGRESS.reset(token)
+
+
+def start_with_wire_progress(awaitable: Awaitable[Any], on_progress: Callable[[], None]) -> asyncio.Future[Any]:
+    """Schedule *awaitable* as a task whose context reports progress to *on_progress*.
+
+    The task copies the context at creation, so the callback reaches
+    everything the task runs and nothing the caller runs afterwards.
+    """
+    with wire_progress_scope(on_progress):
+        return asyncio.ensure_future(awaitable)
+
+
+def _report_side_call_update(_update: ChatResponseUpdate) -> None:
+    report_wire_progress()
+
 
 # Output-cap spellings in provider conflict-priority order. The canonical
 # ``max_tokens`` alias wins when more than one is supplied.
@@ -382,6 +428,19 @@ def _thinking_budget_tokens(options: Mapping[str, Any], client_kwargs: Mapping[s
     return 0
 
 
+# Headroom for estimate drift since the last calibration: the calibrated
+# input estimate can trail the provider's count by a few tokens, and
+# input + output past the window is a hard 400.
+_ADMISSION_SAFETY_MARGIN_MIN_TOKENS = 256
+_ADMISSION_SAFETY_MARGIN_PCT = 1
+# The margin never squeezes a cap below this, and never lifts one past the room.
+_ADMISSION_MIN_USEFUL_OUTPUT_TOKENS = 1_024
+
+
+def _admission_safety_margin(max_context_tokens: int) -> int:
+    return max(_ADMISSION_SAFETY_MARGIN_MIN_TOKENS, math.ceil(max_context_tokens * _ADMISSION_SAFETY_MARGIN_PCT / 100))
+
+
 def _clamp_output_cap_for_context(
     options: Mapping[str, Any],
     *,
@@ -390,7 +449,13 @@ def _clamp_output_cap_for_context(
     client_kwargs: Mapping[str, Any],
     provider_min_output_cap_tokens: int = 1,
 ) -> dict[str, Any]:
-    """Clamp present output caps to the calibrated room left in the context."""
+    """Clamp present output caps to the calibrated room left in the context.
+
+    The admitted cap keeps a safety margin inside the room while the room is
+    wide; when it is narrow, the margin yields down to a minimum useful output
+    but the cap still never exceeds the room (only a provider's legal minimum
+    can).
+    """
     from .compaction import CompactionAdmissionState
 
     copied = dict(options)
@@ -404,9 +469,11 @@ def _clamp_output_cap_for_context(
     overhead = max(strategy.system_overhead_tokens, request_overhead_tokens)
     estimated_input = math.ceil((strategy.last_included_tokens + overhead) * strategy.calibration_ratio)
     room = strategy.max_context_tokens - estimated_input
+    margin = _admission_safety_margin(strategy.max_context_tokens)
+    guarded_room = min(room, max(room - margin, _ADMISSION_MIN_USEFUL_OUTPUT_TOKENS))
     thinking_budget = _thinking_budget_tokens(copied, client_kwargs)
     min_legal = max(provider_min_output_cap_tokens, thinking_budget + 1 if thinking_budget else 1)
-    admitted_cap = max(room, min_legal)
+    admitted_cap = max(guarded_room, min_legal)
     clamped: list[tuple[str, int, int]] = []
     for alias in present_aliases:
         value = copied[alias]
@@ -416,10 +483,11 @@ def _clamp_output_cap_for_context(
     if clamped:
         _log.warning(
             "Clamped model output cap for context admission: estimated_input=%d, max_context_tokens=%d, "
-            "room=%d, min_legal=%d, caps=%s",
+            "room=%d, margin=%d, min_legal=%d, caps=%s",
             estimated_input,
             strategy.max_context_tokens,
             room,
+            margin,
             min_legal,
             ", ".join(f"{key}:{old}->{new}" for key, old, new in clamped),
         )
@@ -572,6 +640,10 @@ class _ClientLastWordsCompleter:
             )
         }
         _scrub_side_call_extra_body(forwarded_kwargs)
+        # A streamed note arrives chunk by chunk: every chunk (and each
+        # attempt's dispatch) restarts the live call's stall watchdog, which
+        # still cancels a side call that goes idle.
+        report_wire_progress()
         with internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
             result = self._client._inner_get_response(
                 messages=side_messages,
@@ -581,10 +653,15 @@ class _ClientLastWordsCompleter:
             )
             response: ChatResponse[Any]
             if _is_chat_response_stream(result):
-                response = await result.get_final_response()
+                response = await result.with_transform_hook(_report_side_call_update).get_final_response()
             else:
                 awaited = await result
-                response = await awaited.get_final_response() if isinstance(awaited, ResponseStream) else awaited
+                response = (
+                    await awaited.with_transform_hook(_report_side_call_update).get_final_response()
+                    if isinstance(awaited, ResponseStream)
+                    else awaited
+                )
+        report_wire_progress()
         # Report spend before any acceptance decision: a response the guard
         # rejects below still consumed real provider tokens.
         if on_usage is not None and response.usage_details:
@@ -596,6 +673,12 @@ class _ClientLastWordsCompleter:
         # Verbatim, not ``.text``: outer whitespace (leading indentation in
         # particular) is meaningful to the structured-note validator.
         return response.raw_text
+
+
+class SupportsAclose(Protocol):
+    """A chat client stack's one close entry; each layer forwards it inward."""
+
+    async def aclose(self) -> None: ...
 
 
 class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
@@ -624,6 +707,9 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
         self.compaction_strategy = compaction_strategy
         self.tokenizer = tokenizer
         super().__init__()
+
+    async def aclose(self) -> None:
+        """Release provider resources; clients that own none keep this no-op."""
 
     def to_dict(self, *, exclude: set[str] | None = None, exclude_none: bool = True) -> dict[str, Any]:
         """Serialize the client, lifting additional properties to the root."""
@@ -831,6 +917,8 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
             client_kwargs=sanitized_client_kwargs,
             provider_min_output_cap_tokens=type(self).MIN_OUTPUT_CAP_TOKENS,
         )
+        # The provider's time to first byte starts now, not when compaction did.
+        report_wire_progress()
         return wire_messages, wire_options
 
     @abstractmethod

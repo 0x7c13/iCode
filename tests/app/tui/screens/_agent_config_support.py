@@ -15,6 +15,7 @@ from typing import Any
 from textual.app import App
 from textual.css.query import NoMatches
 from textual.pilot import Pilot
+from textual.screen import Screen
 from textual.widgets import Button, Input, OptionList, TabbedContent
 
 from chrys.app.tui.screens.agents.config import AgentsConfigScreen
@@ -137,6 +138,15 @@ async def _wait_for_confirm_button(app: App, pilot, timeout: float = _DEFAULT_WA
         if loop.time() > deadline:
             raise AssertionError(f"confirm dialog did not open (active screen: {app.screen!r})")
         await pilot.pause(0.05)
+
+
+async def press_and_answer_confirm(pilot: Pilot, button: Button, *, confirm: bool = True) -> Screen:
+    """Press ``button``, wait for the ConfirmDialog it opens, answer it and return that dialog."""
+    button.press()
+    yes = await _wait_for_confirm_button(pilot.app, pilot)
+    dialog = pilot.app.screen
+    (yes if confirm else dialog.query_one("#confirm-no", Button)).press()
+    return dialog
 
 
 async def _wait_for_active_screen(app: App, pilot, screen, timeout: float = _DEFAULT_WAIT_TIMEOUT) -> None:

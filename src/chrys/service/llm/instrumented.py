@@ -81,7 +81,6 @@ if TYPE_CHECKING:
     from anthropic.types.beta import BetaMessageDeltaUsage, BetaUsage
 
 from chrys.kernel import ChatMiddlewareLayer, ChatTelemetryLayer, ToolLoopLayer, in_internal_side_call
-from chrys.kernel.exceptions import ChatClientException
 from chrys.kernel.instrumentation import _stream_abandoned, _stream_error_of
 from chrys.kernel.types import (
     ChatResponse,
@@ -241,11 +240,15 @@ def _ensure_openai_response_has_choices(response: Any) -> None:
     crashes ``_parse_response_from_openai`` with the cryptic
     ``'NoneType' object is not iterable``. The SDK's ``BaseModel`` uses
     ``extra="allow"``, so the gateway's actual error fields are preserved on
-    the parsed object and surface in ``model_dump_json()``.
+    the parsed object and surface in ``model_dump_json()``.  It raises the
+    raw boundary's two-level shape, whose typed inner error marks the failure
+    as the model service's answer.
     """
     choices = response.choices
     if isinstance(choices, list):
         return
+    from chrys.service.llm._chat_stream_validation import _raise_invalid_chat_completion_response
+
     try:
         payload = response.model_dump_json()
     except Exception:
@@ -257,7 +260,7 @@ def _ensure_openai_response_has_choices(response: Any) -> None:
         problem = "is missing the required 'choices' array"
     else:
         problem = f"'choices' is {type(choices).__name__}; expected an array"
-    raise ChatClientException(f"OpenAI Chat Completions response {problem}. Parsed payload: {payload}")
+    _raise_invalid_chat_completion_response(f"OpenAI Chat Completions response {problem}. Parsed payload: {payload}")
 
 
 def _drop_unsigned_anthropic_thinking_blocks(message: dict[str, Any]) -> dict[str, Any]:

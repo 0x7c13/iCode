@@ -631,6 +631,8 @@ async def test_start_from_history_preserves_the_bound_workflow_version(
                 )
                 await wait_for(lambda: bool(app.screen.query("#workflow-confirm-yes")), pilot=pilot)
                 await click_when_settled(pilot, "#workflow-confirm-yes")
+            # The preview loads on a throwaway worker, as when the workflow was first opened.
+            await wait_for(lambda: panel.preview is not None, pilot=pilot, timeout=ENGINE_TURN_TIMEOUT)
             await wait_for(lambda: bool(requests), pilot=pilot)
             assert len(requests) == 1
             assert requests[0].session_id == session_id

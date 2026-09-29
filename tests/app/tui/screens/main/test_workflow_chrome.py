@@ -368,6 +368,8 @@ async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
             "Debug",
             "Buddy",
         ]
+        # Workflow mode keeps sidebar focus, so its tab strip stays keyboard-navigable.
+        assert tabs.query_one(Tabs).can_focus
         sidebar.focus_tab("tab-tasks")
         assert tabs.active == expected
         sidebar.focus_tab("tab-context")
@@ -379,6 +381,7 @@ async def test_workflow_sidebar_hides_chat_tabs_and_restores_selection(
         await wait_for(lambda: tabs.active == chat_tab and tabs.get_pane(chat_tab).display, pilot=pilot)
         assert tabs.get_tab("tab-toc").display and tabs.get_tab("tab-tasks").display
         assert tabs.get_tab("tab-context").display
+        assert not tabs.query_one(Tabs).can_focus
 
 
 async def test_slow_source_read_does_not_switch_back_to_code_tab(

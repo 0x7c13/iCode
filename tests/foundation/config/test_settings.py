@@ -142,7 +142,7 @@ def test_effective_max_transient_retries_uses_interactive_frontend_default(
     monkeypatch.delenv("CHRYS_MAX_TRANSIENT_RETRIES", raising=False)
     settings = Settings.from_env()
 
-    assert settings.effective_max_transient_retries() == DEFAULT_MAX_TRANSIENT_RETRIES == 7
+    assert settings.effective_max_transient_retries() == DEFAULT_MAX_TRANSIENT_RETRIES == 10
 
 
 def test_effective_max_transient_retries_uses_custom_frontend_default() -> None:
@@ -151,7 +151,7 @@ def test_effective_max_transient_retries_uses_custom_frontend_default() -> None:
         frontend_default_max_transient_retries=HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES,
     )
 
-    assert settings.effective_max_transient_retries() == HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES == 15
+    assert settings.effective_max_transient_retries() == HEADLESS_DEFAULT_MAX_TRANSIENT_RETRIES == 18
 
 
 def test_effective_max_transient_retries_env_value_wins_over_frontend_default() -> None:

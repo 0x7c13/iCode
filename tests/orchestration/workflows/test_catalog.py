@@ -29,7 +29,7 @@ from chrys.service.workflows.protocol import LIMITS
 from chrys.service.workflows.store import NODE_RECORD_INPUT, NODE_RECORD_OUTPUT, RunSpec, WorkflowRunStore
 from tests.orchestration.workflows._hosting import make_project, write_workflow
 from tests.service.workflows.test_store import header
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import python_workflow
 
 SOURCE = python_workflow("def fn(text):\n    return text\n", "fn")
@@ -230,6 +230,7 @@ async def test_preview_waits_for_cleanup_on_deadline_or_cancellation(
         await wait_for(
             lambda: (marker.exists() and marker.stat().st_size > 0) or caller.done(),
             description="preview worker loading",
+            timeout=ENGINE_TURN_TIMEOUT,
         )
         if caller.done():
             await caller

@@ -16,6 +16,8 @@ from textual.timer import Timer
 from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import render_str, render_text, widget_localizer
+from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.tool_call import (
     TOOL_CARD_COMPLETED,
     TOOL_CARD_ERRORED,
@@ -198,10 +200,13 @@ class SleepToolCall(BaseToolCard):
         if self.status != "running":
             return
         self._spin_idx = (self._spin_idx + 1) % len(self._SPINNERS)
+        # Only a shown card repaints (see ``ToolCall._spin``); the first tick after it shows paints it.
+        if not is_widget_shown_on_active_screen(self):
+            return
         with suppress(Exception):
             self.query_one("#sleep-panel").border_subtitle = self._spinner_title()
             self.query_one("#sleep-label", Static).update(self._running_label_text())
-            self.query_one("#sleep-countdown", Static).update(self._countdown_text())
+            update_static_in_place(self.query_one("#sleep-countdown", Static), self._countdown_text())
 
     def _spinner_title(self) -> Text:
         t = Text()

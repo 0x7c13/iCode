@@ -102,7 +102,7 @@ def _group_sizes(cp: ChatPanel) -> list[int]:
 
 
 def _intermediate_texts(cp: ChatPanel) -> list[str]:
-    return [m._text for m in cp.query(AgentMessageWidget) if m._is_intermediate]
+    return [m.text for m in cp.query(AgentMessageWidget) if m._is_intermediate]
 
 
 # ---------------------------------------------------------------------------
@@ -1023,5 +1023,5 @@ async def _run_replay(raw_messages: list[dict[str, Any]]) -> dict[str, Any]:
             ],
             "agent_message_count": len(agent_msgs),
             "intermediate_count": len(intermediates),
-            "intermediate_texts": [m._text for m in intermediates],
+            "intermediate_texts": [m.text for m in intermediates],
         }
