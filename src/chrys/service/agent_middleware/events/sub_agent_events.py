@@ -646,6 +646,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                 tool_kind=tool_kind,
                 args=args,
                 call_id=call_id,
+                session_id=self._session_id,
             )
         )
         if self._hosted_bridge is not None:
@@ -895,6 +896,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                             image_contents=result_images,
                             duration_ms=duration_ms,
                             metadata=metadata,
+                            session_id=self._session_id,
                         )
                     )
                     if trajectory is not None:

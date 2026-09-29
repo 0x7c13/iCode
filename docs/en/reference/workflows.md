@@ -750,7 +750,7 @@ Run the specified workflow and output its results when it finishes.
 #### Arguments
 
 ```shell
-icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeout SECONDS] [--json]
+icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeout SECONDS] [--json] [-q]
 ```
 
 | Argument | Default and purpose |
@@ -761,11 +761,12 @@ icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeou
 | `--trust` | Trust the current custom source and environment; unnecessary for built-in workflows |
 | `--timeout SECONDS` | No overall limit by default; must be a finite positive number. Covers preview, workflow loading, and execution, but excludes session restoration, some initialization, and cleanup. After a timeout, the command still waits for cleanup to finish |
 | `--json` | Use JSON output |
+| `-q` / `--quiet` | Do not show progress on stderr; warnings, errors, load output, output outside nodes, and final outputs are still shown |
 | `-h` / `--help` | Show help |
 
 #### Text output
 
-Without `--json`, text mode writes final outputs to stdout in declaration order, separated by a blank line. Node states, `ctx.emit()` progress, load output, unattributed output, and other run diagnostics go to stderr.
+Without `--json`, text mode writes final outputs to stdout in declaration order, separated by a blank line. Progress goes to stderr, one line per step: node states, agent-node tool calls and the notes an agent node writes between them, `ctx.emit()` progress, loop iterations, and a closing `✓ Workflow completed` line when the run succeeds. Load output, output outside nodes, and other run diagnostics also go to stderr. `--quiet` hides the progress but keeps warnings, errors, load output, and output outside nodes.
 
 #### JSON output
 

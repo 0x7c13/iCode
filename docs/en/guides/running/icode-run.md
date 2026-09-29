@@ -1,8 +1,8 @@
 # Run headless tasks with icode run
 
-`icode run` runs a task in the terminal and returns the agent's final response when it finishes. It does not open the terminal user interface (TUI) or display tool calls, making it suitable for one-off tasks, scripts, and automated workflows.
+`icode run` runs a task in the terminal and returns the agent's final response when it finishes. It does not open the terminal user interface (TUI). While the task runs, it shows what the agent is doing, one line at a time, making it suitable for one-off tasks, scripts, and automated workflows.
 
-This guide explains how to specify a task, agent, model, working directory, and session for `icode run`, and how to obtain JSON output for use in programs.
+This guide explains how to specify a task, agent, model, working directory, and session for `icode run`, how to read or hide its progress, and how to obtain JSON output for use in programs.
 
 ## Before you begin
 
@@ -26,7 +26,21 @@ Run the command in your project directory and specify an agent with `-a` or `--a
 icode run "Summarize this project's directory structure and main modules" --agent QA
 ```
 
-When the task finishes, the terminal displays the agent's final response. Control characters in the response that could change your terminal are shown as `�`; when you redirect the output to a file or another program, or add `--json`, the response is kept exactly as written. If the task fails, the error message is written to standard error (`stderr`), and the command exits with a nonzero status. When iCode can tell why a model request failed, the message says so, and a `detail:` line below it shows the original error text.
+While the task runs, iCode shows its progress. When the task finishes, it shows a summary line and then the agent's final response. For example:
+
+```text
+• Q&A Agent ready · Example Model · session 8de5057d58ff · ~/projects/demo
+I'll start with the top-level layout.
+→ shell  ls
+  ✓ 0.1s
+→ read   README.md
+  ✓ 0.0s
+
+✓ Done · 8.2s · 2 tool calls · session 8de5057d58ff
+The project has three main parts: ...
+```
+
+See [Read the progress](#read-the-progress) for what each line means. Control characters in the response that could change your terminal are shown as `�`; when you redirect the output to a file or another program, or add `--json`, the response is kept exactly as written. If the task fails, the error message is written to standard error (`stderr`), and the command exits with a nonzero status. When iCode can tell why a model request failed, the message says so, and a `detail:` line below it shows the original error text.
 
 Use `Code` when you need the agent to modify or verify code:
 
@@ -37,6 +51,34 @@ icode run "Fix the login form validation error and run the relevant tests" --age
 These tasks may modify files in the working directory and execute commands. Before running one, check that the prompt, agent, and current directory are what you intend.
 
 Run `icode run -h` or `icode run --help` to see the options supported by the current version.
+
+## Read the progress
+
+Progress lines are written to standard error (`stderr`); the final response is written to standard output (`stdout`). In a terminal you see both. When you save the response with `>` or pass it to another program, only the response goes there:
+
+```shell
+icode run "Write release notes for the latest changes" --agent QA > notes.md
+```
+
+Each line shows one step:
+
+| Line | Meaning |
+| --- | --- |
+| `• Q&A Agent ready · …` | The agent has started, with its model, session and working directory. |
+| Plain text | What the agent says between steps. |
+| `→ read   README.md` | The agent calls a tool: here, it reads a file. |
+| `✓ 0.1s` or `✗ exit 1 · 2.5s` | The tool finished, or failed with the reason, and how long it took. |
+| `↳ Explore → grep   TODO` | A sub-agent's step, named after the sub-agent. |
+| `↻ … Retrying in 7s (attempt 2/18)` | A model request failed for a temporary reason and will be tried again. |
+| `Todo 1/3 · → Running tests` | The agent's to-do list changed. |
+| `Warning: …` | Something worth knowing that does not stop the task. |
+| `✓ Done · 8.2s · 2 tool calls · session …` | The task finished: its duration, how many tools the agent called, and its session. |
+
+To see only warnings, errors and the final response, add `-q` or `--quiet`:
+
+```shell
+icode run "Summarize this project" --agent QA --quiet
+```
 
 ## Specify a working directory
 
@@ -87,7 +129,7 @@ The `*` in the `Active` column marks the model profile that is active by default
 
 ## Get JSON output
 
-With `--json`, successful results are written as JSON objects to standard output (`stdout`), and errors and warnings are written as JSON objects to standard error (`stderr`). For example:
+With `--json`, successful results are written as JSON objects to standard output (`stdout`), and errors and warnings are written as JSON objects to standard error (`stderr`). No progress is shown. For example:
 
 ```shell
 icode run "hello" -a QA --json

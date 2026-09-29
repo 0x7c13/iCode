@@ -18,20 +18,13 @@ from rich.table import Table
 from rich.text import Text
 
 from chrys.app.cli import headless
+from chrys.app.cli.headless import PreparedRuntime
+from chrys.app.cli.progress import ProgressWriter, WorkflowProgress, guarded, progress_console
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
-from chrys.foundation.events.types import (
-    WORKFLOW_NOTICE_DATA_DROPPED,
-    WORKFLOW_OUTPUT_EMIT,
-    Event,
-    WorkflowLoopIteration,
-    WorkflowNodeOutput,
-    WorkflowNodeStateChanged,
-    WorkflowRunAccepted,
-    WorkflowRunNotice,
-)
-from chrys.foundation.i18n.formatting import sanitize_legacy_scalar, sanitize_terminal_block
+from chrys.foundation.events.types import WorkflowRunAccepted
+from chrys.foundation.i18n.formatting import sanitize_terminal_block
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.orchestration.session_host import (
@@ -57,8 +50,6 @@ from chrys.service.workflows.store import read_run_output
 
 EXIT_TIMEOUT: Final = 124
 EXIT_INTERRUPTED: Final = 130
-_QUIET_NOTICES: Final = frozenset({WORKFLOW_NOTICE_DATA_DROPPED})
-"""Notice codes retained in run events and records but omitted from CLI progress."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,6 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Limit workflow preview, loading and execution to this many seconds (exit code 124)",
     )
     run_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    run_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help=(
+            "Do not show progress on stderr; only warnings, errors, captured load output and output outside nodes,"
+            " and the outputs are printed"
+        ),
+    )
     return parser
 
 
@@ -181,10 +181,21 @@ def _print_workflows(rows: list[_WorkflowRow]) -> None:
     console.print(table)
 
 
+def _workflow_progress(args: argparse.Namespace, runtime: PreparedRuntime) -> WorkflowProgress | None:
+    """Progress on stderr (only its warnings for quiet output); nothing for JSON."""
+    if args.json:
+        return None
+    writer = ProgressWriter(
+        progress_console(), reported_warnings=headless.reported_warning_keys(runtime), quiet=args.quiet
+    )
+    return WorkflowProgress(writer, render=runtime.localizer.render)
+
+
 async def _run_command(args: argparse.Namespace) -> int:
     session_id = (args.session or "").strip()
     runtime = headless.prepare_runtime(restoring_session=bool(session_id))
     headless.write_pending_warnings(runtime, as_json=args.json)
+    progress = _workflow_progress(args, runtime)
     loaded = runtime.loaded
     host = ChrysSessionHost(
         profile_name=loaded.settings.default_agent.strip() or DEFAULT_AGENT_PROFILE,
@@ -197,6 +208,8 @@ async def _run_command(args: argparse.Namespace) -> int:
             await host.load_workflow_session(session_id)
         target = host.workflow_target(args.workflow_id)
         timeout = args.timeout or 0.0
+        if progress is not None:
+            progress.starting(args.workflow_id, checking=args.trust)
         if args.trust:
             preview_started = time.monotonic()
             preview_deadline = asyncio.timeout(timeout or None)
@@ -211,21 +224,25 @@ async def _run_command(args: argparse.Namespace) -> int:
                 host.confirm_workflow(prepared)
             for warning in prepared.preview.warnings:
                 headless.write_warning(warning.message, as_json=args.json, code=warning.code)
+                if progress is not None:
+                    progress.reported(warning.code, warning.message)
             target = prepared
             if timeout:
                 timeout -= time.monotonic() - preview_started
                 if timeout <= 0:
                     raise WorkflowRunTimeoutError("Workflow run timed out during preview.")
         run_id = ""
+        on_event = None if progress is None else guarded(progress.handle)
         async for event in host.iter_workflow_events(
             target,
             input_text=args.input,
             timeout=timeout,
+            include_node_activity=progress is not None,
         ):
             if isinstance(event, WorkflowRunAccepted):
                 run_id = event.run_id
-            elif not args.json:
-                _write_progress(event)
+            if on_event is not None:
+                on_event(event)
         result = host.engine.workflows.result(run_id)
         if result is None:
             error_message = "Workflow run ended without a recorded result."
@@ -236,36 +253,20 @@ async def _run_command(args: argparse.Namespace) -> int:
                 diagnostics = await asyncio.to_thread(read_run_output, run_dir(host.workflow_session_dir, run_id))
             except (OSError, ValueError) as exc:
                 diagnostics = {"error": str(exc)}
+        duration = time.monotonic() - started
+        if progress is not None and diagnostics:
+            progress.captured(diagnostics)
+        if progress is not None and result.outcome is RunOutcome.COMPLETED:
+            progress.succeeded(duration=duration)
         return _report(
             result,
             session_id=host.workflow_session_id,
             as_json=args.json,
-            duration=time.monotonic() - started,
+            duration=duration,
             diagnostics=diagnostics,
         )
     finally:
         await host.shutdown()
-
-
-def _write_progress(event: Event) -> None:
-    """Write text-mode progress to stderr, omitting notice codes listed in ``_QUIET_NOTICES``."""
-    if isinstance(event, WorkflowNodeStateChanged):
-        line = f"[{event.node_id}] {event.state}"
-        if event.error:
-            line = f"{line}: {event.error}"
-    elif isinstance(event, WorkflowNodeOutput):
-        if event.kind != WORKFLOW_OUTPUT_EMIT:
-            return
-        line = f"[{event.node_id}] {event.summary_text}"
-    elif isinstance(event, WorkflowLoopIteration):
-        line = f"[{event.loop_id}] iteration {event.iteration}: {event.verdict}"
-    elif isinstance(event, WorkflowRunNotice):
-        if event.code in _QUIET_NOTICES:
-            return
-        line = f"Notice: {event.message}"
-    else:
-        return
-    sys.stderr.write(f"{sanitize_legacy_scalar(line)}\n")
 
 
 def _report(
@@ -276,7 +277,10 @@ def _report(
     duration: float,
     diagnostics: dict[str, Any] | None = None,
 ) -> int:
-    """Write the outputs (text or JSON), then the outcome when the run did not complete."""
+    """Write the outputs (text or JSON), then the outcome when the run did not complete.
+
+    Text mode's ``diagnostics`` were already written to stderr (``WorkflowProgress.captured``); JSON carries them.
+    """
     outcome = result.outcome.value
     if as_json:
         headless.write_json(
@@ -308,15 +312,6 @@ def _report(
             text = sanitize_terminal_block(text)
         if text:
             sys.stdout.write(text if text.endswith("\n") else f"{text}\n")
-    if not as_json and diagnostics:
-        for key, label in (("load", "Load output"), ("native", "Unattributed output")):
-            captured = diagnostics.get(key, {})
-            if captured.get("text"):
-                sys.stderr.write(f"{label}:\n{sanitize_legacy_scalar(captured['text'])}\n")
-            if captured.get("truncated") or captured.get("dropped_bytes"):
-                sys.stderr.write(f"{label}: some output was omitted by the capture limit.\n")
-        if diagnostics.get("error"):
-            sys.stderr.write(f"{sanitize_legacy_scalar(diagnostics['error'])}\n")
     if result.outcome is not RunOutcome.COMPLETED:
         headless.write_error(_outcome_message(result), as_json=as_json, code=outcome, session_id=session_id)
     return _exit_code(result)

@@ -179,6 +179,27 @@ async def test_empty_values_and_documents_say_so() -> None:
         assert [str(widget.content) for widget in view.query(Static)] == ["No record available."]
 
 
+class _NoViewTabsHarness(App[None]):
+    def compose(self) -> ComposeResult:
+        yield WorkflowValueView(None, view_tabs=False)
+
+
+async def test_a_view_without_view_tabs_shows_its_first_tab_below_the_notice() -> None:
+    app = _NoViewTabsHarness()
+    async with app.run_test(size=(100, 40)):
+        view = app.query_one(WorkflowValueView)
+        await view.show(ValueDocument((ShownValue("## Findings", {"count": 2}),), notice="Only the summary is shown."))
+        assert not view.query(Tabs)
+        [notice] = view.header.children
+        assert isinstance(notice, Static) and str(notice.content) == "Only the summary is shown."
+        assert view.body.query_one(VirtualizedMarkdown).source == "## Findings"
+        await view.show(ValueDocument((ShownValue(data=[1, "two"]),)))
+        assert not view.query(Tabs) and not view.header.children
+        assert view.shown_tab is ValueTab.DATA
+        [body] = _body(view)
+        assert isinstance(body.content, Syntax)
+
+
 async def test_join_sources_render_in_boxes_titled_by_node_on_every_tab() -> None:
     app = _Harness()
     async with app.run_test(size=(100, 40)):

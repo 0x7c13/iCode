@@ -1,0 +1,14 @@
+WorkflowResultDialog { align: center middle; background: $background 60%; }
+WorkflowResultDialog #workflow-result-frame {
+    width: 90%; height: 90%;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-subtitle-color: $primary;
+    border-subtitle-align: right;
+    background: $surface; padding: 0;
+}
+WorkflowResultDialog TabbedContent, WorkflowResultDialog ContentSwitcher, WorkflowResultDialog TabPane { height: 1fr; }
+WorkflowResultDialog TabbedContent, WorkflowResultDialog TabPane { padding: 0; }
+/* Scrollbars sit against the dialog border; the right margin of the scrolled content keeps its gap. */
+WorkflowResultDialog .workflow-value-scroll { padding: 0 0 0 1; }
+WorkflowResultDialog .workflow-value-scroll > .workflow-value-body { height: auto; margin: 0 1 1 0; }

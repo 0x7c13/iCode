@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.27.1\n"
+"Project-Id-Version: Chrys 0.27.2\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -13289,11 +13289,11 @@ msgstr "节点状态已加载：{loaded}/{total}"
 msgid "tui.workflow.output.load"
 msgstr "加载输出"
 
-#. English: Unattributed output
-#. chrys-meta={"fingerprint":"6081ce007b89ede2e7688ccff41ea84624cfb9097787ed370c7ff5cc1fe2e2ee","multiline":false,"placeholders":[]}
+#. English: Output outside nodes
+#. chrys-meta={"fingerprint":"e66a1b1975b04b448f178638e9695f7a52190f4f187007e3834c9235ac6d2b14","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.output.native"
-msgstr "未归属输出"
+msgstr "节点外输出"
 
 #. English: Next
 #. chrys-meta={"fingerprint":"76ab483aafbabc91744a0cdfe3b807ec08274c2076d659bdf6285be63be19921","multiline":false,"placeholders":[]}
@@ -13349,6 +13349,18 @@ msgstr "工作流预览超时。"
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.restore.fallback"
 msgstr "最近一次运行不可用。正在显示最新的可读运行：{run_id}。"
+
+#. English: Result
+#. chrys-meta={"fingerprint":"26e6b71d0b6f7f7005eaeef64cfb341a12d773a71146d47e74b8fd377399b911","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.result"
+msgstr "结果"
+
+#. English: Result · {node}
+#. chrys-meta={"fingerprint":"d3006ffdaaa91451a581996f15696adf72c8a5e44f7ecf0147f8b191437dd942","multiline":false,"placeholders":["node"]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.result_title"
+msgstr "结果 · {node}"
 
 #. English: Copied run input
 #. chrys-meta={"fingerprint":"9238ceb7d6f01f800a8fe73398a4e754623c9a6e256b0c2ebdc68fa541981a7b","multiline":false,"placeholders":[]}

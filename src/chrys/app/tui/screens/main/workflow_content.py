@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.app.tui.widgets.workflow import text
 from chrys.app.tui.widgets.workflow.output import WorkflowOutputText
+from chrys.app.tui.widgets.workflow.records import stored_output_value
 from chrys.service.workflows.artifacts import read_node_output, read_run_source
 from chrys.service.workflows.discovery import read_source
 from chrys.service.workflows.layout import run_dir
@@ -211,13 +212,7 @@ class WorkflowContent:
                         if directory
                         else None
                     )
-                    if value is None:
-                        full_text = output.summary_text
-                    else:
-                        body = value.get("value")
-                        if not isinstance(body, dict) or not isinstance(body.get("text"), str):
-                            raise ValueError("Invalid workflow output record: expected a text value.")
-                        full_text = body["text"]
+                    full_text = output.summary_text if value is None else stored_output_value(value)["text"]
                 except (OSError, ValueError) as exc:
                     # A damaged result must not hide the other output nodes.
                     parts.append(WorkflowOutputText(output.node_id, str(exc)))

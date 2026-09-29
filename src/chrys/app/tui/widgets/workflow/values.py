@@ -118,7 +118,8 @@ class WorkflowValueView(Vertical):
     """Value tabs over the shown tab's content; each view keeps the reader's tab while its records change.
 
     With ``scroll`` the tab bar stays put above a scrolling area holding the content, followed by
-    ``trailing`` widgets that the view never rebuilds.
+    ``trailing`` widgets that the view never rebuilds. Without ``view_tabs`` there is no tab bar: the view
+    shows its first tab (Markdown, or Data for a value that has only data).
     """
 
     DEFAULT_CSS = """
@@ -149,11 +150,17 @@ class WorkflowValueView(Vertical):
     """
 
     def __init__(
-        self, locale: LocaleController | None, *trailing: Widget, scroll: bool = False, id: str | None = None
+        self,
+        locale: LocaleController | None,
+        *trailing: Widget,
+        scroll: bool = False,
+        view_tabs: bool = True,
+        id: str | None = None,
     ) -> None:
         super().__init__(id=id, classes="-scroll" if scroll else "")
         self._locale = locale
         self._trailing = trailing
+        self._view_tabs = view_tabs
         self.header = VerticalGroup(classes="workflow-value-header")
         """The notice and the tab bar."""
         self.body = VerticalGroup(classes="workflow-value-body")
@@ -245,7 +252,7 @@ class WorkflowValueView(Vertical):
         widgets: list[Widget] = []
         if document.notice:
             widgets.append(Static(Text(document.notice), classes="workflow-value-notice"))
-        if tab is not None:
+        if tab is not None and self._view_tabs:
             tabs = [
                 Tab(Text(self._text(_TAB_LABELS[option].bind())), id=_TAB_ID_PREFIX + option)
                 for option in value_tabs(document)

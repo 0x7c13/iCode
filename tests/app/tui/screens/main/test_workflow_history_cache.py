@@ -74,10 +74,11 @@ async def test_previous_history_is_cached_without_hiding_current_output(
             pilot=pilot,
         )
         assert not dialog.query_one("#workflow-node-previous").display
-        assert bool(str(dialog.query_one("#workflow-node-error", Static).content)) == (history_state == "corrupt")
         await dialog.load_records(dialog._generation, dialog.selected).wait()
         await dialog.load_records(dialog._generation, dialog.selected).wait()
         read.assert_called_once()
+        # The error area is written after every pane has shown; the cached history keeps its read error.
+        assert bool(str(dialog.query_one("#workflow-node-error", Static).content)) == (history_state == "corrupt")
         if history_state == "corrupt":
             # Reopening starts a fresh cache; a repaired archive becomes readable.
             previous_output.write_text('{"value": "Repaired previous output"}', encoding="utf-8")

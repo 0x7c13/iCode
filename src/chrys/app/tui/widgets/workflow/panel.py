@@ -25,7 +25,7 @@ from chrys.app.tui.util.logo import WORKFLOW_LOGO
 from chrys.app.tui.util.message_gate import messages_disabled
 from chrys.app.tui.util.removal import finish_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
-from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
+from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen, set_widget_visibility_without_layout
 from chrys.app.tui.widgets.chat.messages import COPY_MESSAGE_BUTTON, MessageCopyButton, MessageHeaderRow
 from chrys.app.tui.widgets.dialog_buttons import DialogButtonRow, DialogButtonSpec
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
@@ -113,10 +113,12 @@ class WorkflowPanel(Vertical):
     }
     WorkflowPanel #workflow-controls Button { min-width: 16; width: auto; height: 3; margin: 0 1 0 0; }
     WorkflowPanel #workflow-controls #workflow-stop { margin-right: 0; }
+    WorkflowPanel #workflow-controls #workflow-result { margin: 0 0 0 1; visibility: hidden; }
     WorkflowPanel.-empty #workflow-controls { margin-top: 2; }
     WorkflowPanel.-empty #workflow-new { margin-right: 0; }
     WorkflowPanel.-empty #workflow-start,
-    WorkflowPanel.-empty #workflow-stop { display: none; }
+    WorkflowPanel.-empty #workflow-stop,
+    WorkflowPanel.-empty #workflow-result { display: none; }
     WorkflowPanel #workflow-code-scroll { height: 1fr; overflow: auto auto; scrollbar-size: 1 1; }
     WorkflowPanel #workflow-info-scroll { height: 1fr; padding: 0; scrollbar-size: 1 1; }
     WorkflowPanel #workflow-input-scroll { height: 1fr; scrollbar-size-vertical: 1; }
@@ -138,6 +140,9 @@ class WorkflowPanel(Vertical):
         pass
 
     class StopRequested(Message):
+        pass
+
+    class ResultRequested(Message):
         pass
 
     class ViewChanged(Message):
@@ -209,6 +214,11 @@ class WorkflowPanel(Vertical):
                         variant="error",
                         disabled=True,
                     ),
+                    DialogButtonSpec(
+                        Text(text.render(text.RESULT.bind(), self.locale_controller)),
+                        id="workflow-result",
+                        variant="warning",
+                    ),
                     id="workflow-controls",
                 )
                 yield WorkflowScrollBar(graph)
@@ -253,6 +263,9 @@ class WorkflowPanel(Vertical):
         # Textual's CSS parser rejects line-pad: 0; the public style accepts it.
         for button in self.query("#workflow-controls Button"):
             button.styles.line_pad = 0
+        # Result keeps its slot while hidden, so showing it moves no other button and needs no layout.
+        # Its local rule is the one the selected run flips.
+        self.query_one("#workflow-result", Button).styles.set_rule("visibility", "hidden")
         if self.locale_controller is not None:
             self.locale_controller.register_surface(self)
 
@@ -276,6 +289,7 @@ class WorkflowPanel(Vertical):
         self._graph_dirty = True
         self.post_message(self.ViewChanged())
         self.query_one("#workflow-stop", Button).label = Text(text.render(text.STOP.bind(), self.locale_controller))
+        self.query_one("#workflow-result", Button).label = Text(text.render(text.RESULT.bind(), self.locale_controller))
         for number, tab in enumerate(self.query_one("#workflow-run-tabs", Tabs).query(Tab), 1):
             tab.label = Content.from_text(
                 text.render(text.RUN_TAB.bind(number=number), self.locale_controller), markup=False
@@ -369,6 +383,9 @@ class WorkflowPanel(Vertical):
         self.query_one("#workflow-code-source", Static).update(Text(""))
         self.query_one("#workflow-info-scroll", VerticalScroll).scroll_home(animate=False)
         self.clear_outputs()
+        if run_id != self.run_id:
+            # Result belongs to the selected run; a refreshed preview that keeps it keeps Result too.
+            set_widget_visibility_without_layout(self.query_one("#workflow-result", Button), False)
         self.run_id = run_id
         self._select_run_tab()
         self._graph_run_id = None
@@ -483,6 +500,10 @@ class WorkflowPanel(Vertical):
         )
         self.query_one("#workflow-stop", Button).disabled = not (workflow_active if can_stop is None else can_stop)
         self.query_one("#workflow-new", Button).disabled = busy or starting
+        set_widget_visibility_without_layout(
+            self.query_one("#workflow-result", Button),
+            run is not None and run.finished is not None and bool(run.finished.outputs),
+        )
         input_text = run.started.input_text if run else ""
         if input_text != self._painted_input:
             self._painted_input = input_text
@@ -602,6 +623,12 @@ class WorkflowPanel(Vertical):
         event.stop()
         self.screen.set_focus(None)
         self.post_message(self.StopRequested())
+
+    @on(Button.Pressed, "#workflow-result")
+    def result_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.screen.set_focus(None)
+        self.post_message(self.ResultRequested())
 
     @on(Button.Pressed, "#workflow-layout")
     def layout_pressed(self, event: Button.Pressed) -> None:

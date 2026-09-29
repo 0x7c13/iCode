@@ -14,8 +14,11 @@ from chrys.foundation.events.types import (
     WORKFLOW_NOTICE_DATA_DROPPED,
     ApprovalRequest,
     ApprovalResponse,
+    Event,
     InvocationMessage,
     InvocationStarted,
+    InvocationToolCallResult,
+    InvocationToolCallStart,
     SetApprovalMode,
     WorkflowLoopIteration,
     WorkflowNodeAnswer,
@@ -30,6 +33,7 @@ from chrys.foundation.events.types import (
     WorkflowRunStarted,
 )
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.orchestration.session_host import WorkflowRunRejectedError
 from chrys.orchestration.workflows.catalog import WorkflowNotFoundError
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -201,6 +205,57 @@ async def test_an_agent_node_runs_on_the_bound_profile_and_its_invocation_is_pin
         assert read_node_value(record, review_states[0].activation_id, 1, NODE_RECORD_INPUT) == {
             "value": {"text": "draft", "data": None}
         }
+    finally:
+        await host.shutdown()
+
+
+async def test_node_activity_reaches_the_stream_only_on_request_and_only_for_this_runs_invocations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path)
+    reference = project / "reference.txt"
+    reference.write_text("reference", encoding="utf-8")
+
+    def reviewer() -> MockChatClient:
+        return MockChatClient(
+            responses=[
+                MockResponse(text="Reading it.", tool_calls=[("read_file", "call_1", {"path": str(reference)})]),
+                MockResponse(text="LGTM"),
+            ]
+        )
+
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), reviewer(), reviewer()], builtin_tools=True)
+    write_workflow(project, "review", _agent_workflow())
+    host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.read"])])
+    try:
+        await confirm(host, "review")
+        _result, plain = await run(host, "review", input_text="diff")
+        assert not of_type(plain, InvocationToolCallStart)
+
+        streamed: list[Event] = []
+        async for event in host.iter_workflow_events(
+            host.workflow_target("review"), input_text="diff", include_node_activity=True
+        ):
+            streamed.append(event)
+            if isinstance(event, WorkflowRunStarted):
+                # Same session and a node-rooted origin, but no state change of this run announced it.
+                assert event.session_id is not None
+                stranger = InvocationOrigin("workflow_node", event.session_id, "stranger", None, 1)
+                await host.event_bus.publish(
+                    InvocationToolCallStart(
+                        origin=stranger, session_id=event.session_id, call_id="x", tool_name="read_file"
+                    )
+                )
+
+        announced = {e.invocation_id for e in of_type(streamed, WorkflowNodeStateChanged) if e.invocation_id}
+        starts = of_type(streamed, InvocationToolCallStart)
+        assert [(e.tool_name, e.origin.root.invocation_id in announced) for e in starts] == [("read_file", True)]
+        assert [e.call_id for e in of_type(streamed, InvocationToolCallResult)] == [starts[0].call_id]
+        commentary = [e.text for e in of_type(streamed, InvocationMessage) if e.is_intermediate]
+        assert commentary == ["Reading it."]
+        # Node activity arrives between the node's running and completed states.
+        kinds = [type(e) for e in streamed if isinstance(e, WorkflowNodeStateChanged | InvocationToolCallStart)]
+        assert kinds.index(InvocationToolCallStart) > kinds.index(WorkflowNodeStateChanged)
     finally:
         await host.shutdown()
 

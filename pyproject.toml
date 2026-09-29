@@ -1,6 +1,6 @@
 [project]
 name = "chrys"
-version = "0.27.1"
+version = "0.27.2"
 description = "A general-purpose extensible agent platform for rapidly building and evolving custom agents."
 requires-python = ">=3.14"
 license = "Apache-2.0"

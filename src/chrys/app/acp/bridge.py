@@ -476,9 +476,12 @@ class AcpEventBridge:
                     calls[event.call_id] = result_blocks
                 else:
                     calls.pop(event.call_id, None)
+            # Each note replaces the parent card's content, and a nested result can be a whole file: the card
+            # shows its first line, and the extension notification carries the full result.
+            preview = _result_preview(event.result)
             return self._sub_agent_note(
                 event.origin.invocation_id,
-                f"Sub-agent {event.agent_name} completed tool {event.tool_name}: {event.result}",
+                f"Sub-agent {event.agent_name} completed tool {event.tool_name}" + (f": {preview}" if preview else "."),
             )
         if isinstance(event, InvocationProgress):
             usage_parts: list[str] = []
@@ -604,6 +607,11 @@ _TITLE_MAX_CHARS = 160
 
 def _clamp_title(text: str) -> str:
     return text if len(text) <= _TITLE_MAX_CHARS else text[: _TITLE_MAX_CHARS - 1] + "…"
+
+
+def _result_preview(result: str) -> str:
+    """A nested tool result's first non-empty line, clamped like a title."""
+    return _clamp_title(next((line.strip() for line in result.splitlines() if line.strip()), ""))
 
 
 def tool_call_title(tool_name: str, tool_kind: str, args: object, *, intent_summary: str = "") -> str:

@@ -63,6 +63,7 @@ from chrys.foundation.events.types import (
     UserMessage,
     Warning,
     WorkflowCancelRequest,
+    WorkflowNodeStateChanged,
     WorkflowRunAccepted,
     WorkflowRunFinished,
     WorkflowRunRejected,
@@ -180,6 +181,22 @@ def allows_headless_event(event: Event) -> bool:
     if event.origin.root.kind == "workflow_node":
         return False
     return event.origin.kind == "turn" or not isinstance(
+        event, InvocationMessage | InvocationPresentationAttemptAccepted | InvocationPresentationAttemptRejected
+    )
+
+
+def allows_workflow_node_event(event: Event) -> bool:
+    """Whether a workflow agent node's own activity may reach a headless workflow stream that asked for it.
+
+    The complement of what :func:`allows_headless_event` drops for workflow-rooted invocations: tool calls,
+    retries, compaction and sub-agent lifecycle, and the node's own prose. A node's sub-agents keep their prose
+    private, as a chat turn's do.
+    """
+    if not isinstance(event, InvocationEvent) or not isinstance(event, _HEADLESS_RUN_EVENT_TYPES):
+        return False
+    if event.origin.root.kind != "workflow_node":
+        return False
+    return event.origin.kind == "workflow_node" or not isinstance(
         event, InvocationMessage | InvocationPresentationAttemptAccepted | InvocationPresentationAttemptRejected
     )
 
@@ -596,17 +613,21 @@ class ChrysSessionHost:
         *,
         timeout: float | None = None,
         keep_events: bool = False,
+        on_event: Callable[[Event], None] | None = None,
     ) -> HeadlessRunResult:
         """Run one user turn and return the final assistant response.
 
         The turn's streamed events are retained in ``HeadlessRunResult.events``
         only with *keep_events*: a long turn streams many deltas nobody reads.
+        *on_event* sees every event as it streams, before the next one is read.
         """
 
         async def _run() -> HeadlessRunResult:
             events: list[Event] = []
             final: InvocationMessage | None = None
             async for event in self.iter_run_events(message):
+                if on_event is not None:
+                    on_event(event)
                 if keep_events:
                     events.append(event)
                 if (
@@ -718,6 +739,7 @@ class ChrysSessionHost:
         *,
         input_text: str = "",
         timeout: float = 0.0,
+        include_node_activity: bool = False,
     ) -> AsyncIterator[Event]:
         """Run one workflow and yield backend events until its ``WorkflowRunFinished``.
 
@@ -731,6 +753,11 @@ class ChrysSessionHost:
         ``timeout`` is in seconds and covers admission and execution. Expiry before acceptance
         raises :class:`WorkflowRunTimeoutError`; an accepted run finishes as
         cancelled with reason ``deadline_exceeded``. Both paths await cleanup.
+
+        With ``include_node_activity`` the stream also carries this run's agent-node activity
+        (:func:`allows_workflow_node_event`), admitted only for invocations one of this run's
+        ``WorkflowNodeStateChanged`` events announced: the runner binds an activation's invocation id before
+        publishing ``running``, so a same-session invocation from any other run is never yielded.
         """
         if self._run_lock.locked():
             error_message = "Concurrent runs are not supported for a ChrysSessionHost."
@@ -746,6 +773,7 @@ class ChrysSessionHost:
             )
             run_id: str | None = None
             execution_session_id: str | None = None
+            owned_invocations: set[str] = set()
             rejected = False
             finished = False
             timed_out = False
@@ -768,7 +796,8 @@ class ChrysSessionHost:
                 # the run was admitted, and a cancellation landing there must still give the run up below.
                 await self._bus.publish(request)
                 async for event in stream:
-                    if not allows_headless_event(event):
+                    node_activity = include_node_activity and allows_workflow_node_event(event)
+                    if not node_activity and not allows_headless_event(event):
                         continue
                     if isinstance(event, WorkflowRunAccepted | WorkflowRunRejected) and event.request_id != request_id:
                         continue  # the reply to someone else's request, a replayed acceptance included
@@ -792,6 +821,14 @@ class ChrysSessionHost:
                             WORKFLOW_RUN_EVENTS,
                         )
                         and event.run_id != run_id
+                    ):
+                        continue
+                    if isinstance(event, WorkflowNodeStateChanged) and event.invocation_id:
+                        owned_invocations.add(event.invocation_id)
+                    if (
+                        node_activity
+                        and isinstance(event, InvocationEvent)
+                        and event.origin.root.invocation_id not in owned_invocations
                     ):
                         continue
                     yield event

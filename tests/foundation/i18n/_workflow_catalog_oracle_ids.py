@@ -130,6 +130,8 @@ WORKFLOW_MESSAGE_IDS = frozenset(
         "tui.workflow.output.summary_only",
         "tui.workflow.pick_hint",
         "tui.workflow.preview_timeout",
+        "tui.workflow.result",
+        "tui.workflow.result_title",
         "tui.workflow.shadowed",
         "tui.workflow.source.builtin",
         "tui.workflow.source.global",

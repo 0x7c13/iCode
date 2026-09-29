@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.27.1\n"
+"Project-Id-Version: Chrys 0.27.2\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -13140,8 +13140,8 @@ msgstr ""
 msgid "tui.workflow.output.load"
 msgstr ""
 
-#. English: Unattributed output
-#. chrys-meta={"fingerprint":"6081ce007b89ede2e7688ccff41ea84624cfb9097787ed370c7ff5cc1fe2e2ee","multiline":false,"placeholders":[]}
+#. English: Output outside nodes
+#. chrys-meta={"fingerprint":"e66a1b1975b04b448f178638e9695f7a52190f4f187007e3834c9235ac6d2b14","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.output.native"
 msgstr ""
@@ -13199,6 +13199,18 @@ msgstr ""
 #. chrys-meta={"fingerprint":"da2a10131684dd1413e30fd877b7c7da374dc3dee6714f0fc8fe1e520b9e5c5d","multiline":false,"placeholders":["run_id"]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.restore.fallback"
+msgstr ""
+
+#. English: Result
+#. chrys-meta={"fingerprint":"26e6b71d0b6f7f7005eaeef64cfb341a12d773a71146d47e74b8fd377399b911","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.result"
+msgstr ""
+
+#. English: Result · {node}
+#. chrys-meta={"fingerprint":"d3006ffdaaa91451a581996f15696adf72c8a5e44f7ecf0147f8b191437dd942","multiline":false,"placeholders":["node"]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.result_title"
 msgstr ""
 
 #. English: Copied run input

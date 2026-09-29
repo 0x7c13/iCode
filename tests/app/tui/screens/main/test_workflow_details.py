@@ -50,6 +50,7 @@ from ._workflow_support import (
     open_workflow,
     run_store,
     shown_texts,
+    value_settled,
     value_text,
     value_texts,
 )
@@ -187,7 +188,8 @@ async def test_value_tabs_switch_only_their_own_pane_by_click_or_key(tmp_path: P
 
         await pilot.press("right")
         await wait_for(
-            lambda: value_texts(input_view) == ["score  3"],
+            # The rebuild scrolls the new tab home once its mount completes.
+            lambda: value_texts(input_view) == ["score  3"] and value_settled(input_view),
             pilot=pilot,
             description="the input pane shows its data fields",
         )
@@ -811,7 +813,11 @@ async def test_node_records_attempts_previous_output_and_transcript(
             assert attempts.region.bottom == dialog.query_one(TabbedContent).region.y
             assert rounds.region.x == attempts.region.x == dialog.query_one("#workflow-node").region.x + 1
             await click_when_settled(pilot, attempts.get_tab("workflow-attempt-0"))
-            await wait_for(lambda: "full 1/1" in _pane_text(dialog, "output"), pilot=pilot)
+            output_view = dialog.query_one("#workflow-node-output", WorkflowValueView)
+            # The next round restarts the records load, which must find this attempt already shown.
+            await wait_for(
+                lambda: "full 1/1" in _pane_text(dialog, "output") and value_settled(output_view), pilot=pilot
+            )
             # New rounds must not pull a reader away from an older attempt.
             ref = AttemptRef(run_id, "fn", "opaque-retry", 1)
             store.append_node_emit(ref.activation_id, 1, 1, "streamed 4/1")
@@ -853,6 +859,17 @@ async def test_node_records_attempts_previous_output_and_transcript(
             await wait_for(lambda: dialog.selected is not None and dialog.selected.state == "completed", pilot=pilot)
             assert str(dialog.query_one("#workflow-node").border_subtitle) == "completed"
             await wait_for(lambda: "full 4/1" in _pane_text(dialog, "output"), pilot=pilot)
+            # The load fills the diagnostics after every pane has shown.
+            await wait_for(
+                lambda: (
+                    not any(
+                        worker.node is dialog and worker.group == "workflow-node-records" and not worker.is_finished
+                        for worker in app.workers
+                    )
+                ),
+                pilot=pilot,
+                description="the completed round's records finish loading",
+            )
             # The streamed message moved behind its own tab once the output arrived.
             output_view = dialog.query_one("#workflow-node-output", WorkflowValueView)
             assert [tab.label_text for tab in output_view.header.query(Tab)] == [

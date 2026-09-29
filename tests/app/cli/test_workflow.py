@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
+import sys
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
@@ -27,12 +29,16 @@ from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalResponse,
     Event,
+    InvocationCompactionFinished,
+    Warning,
     WorkflowNodeStateChanged,
     WorkflowRunAccepted,
     WorkflowRunNotice,
     WorkflowRunRejected,
+    WorkflowRunStarted,
 )
 from chrys.foundation.i18n import Localizer
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.workflow_session import WorkflowIdentity, WorkflowSessionSelection, WorkspaceSnapshot
 from chrys.orchestration.session_host import (
     ChrysSessionHost,
@@ -70,6 +76,7 @@ from tests.orchestration.workflows._hosting import (
     run,
     write_workflow,
 )
+from tests.support.streams import FailingTextStream
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 from tests.support.workflow_workers import CONDITIONAL_LOOP_WORKFLOW, python_workflow
 
@@ -239,12 +246,24 @@ def _result(outcome: RunOutcome, *, reason: str = "", error: str = "", node_id: 
     )
 
 
+_DURATION = re.compile(r"\b\d+\.\ds\b")
+_SHORT_ID = re.compile(r"\b(run|session) [0-9a-z]{1,12}\b")
+
+
+def _progress(err: str) -> list[str]:
+    """Progress lines on stderr, with durations and short ids replaced by placeholders."""
+    return [_SHORT_ID.sub(r"\1 <id>", _DURATION.sub("<dur>", line)) for line in err.splitlines()]
+
+
 class FakeHost:
     """A ``ChrysSessionHost`` stand-in: a scripted run that either fails to start or ends with ``result``."""
 
     instances: ClassVar[list[FakeHost]] = []
     failure: ClassVar[Callable[[], BaseException] | None] = None
     result: ClassVar[WorkflowRunResult | None] = None
+    session_dir: ClassVar[Path | None] = None
+    run_events: ClassVar[list[Event]] = []
+    """Events the scripted run yields after its acceptance."""
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -252,7 +271,7 @@ class FakeHost:
         self.shutdown_called = False
         self.session_id = None
         self.workflow_session_id = "session-1"
-        self.workflow_session_dir = None
+        self.workflow_session_dir = type(self).session_dir
         self.loaded_workflow_session = ""
         self.run_kwargs: dict[str, Any] | None = None
         self.engine = SimpleNamespace(workflows=SimpleNamespace(result=self._result))
@@ -288,6 +307,8 @@ class FakeHost:
                 WorkspaceSnapshot("/project"),
             ),
         )
+        for event in type(self).run_events:
+            yield event
 
     async def shutdown(self) -> None:
         self.shutdown_called = True
@@ -298,6 +319,8 @@ def fake_host(monkeypatch: pytest.MonkeyPatch) -> type[FakeHost]:
     FakeHost.instances.clear()
     FakeHost.failure = None
     FakeHost.result = None
+    FakeHost.session_dir = None
+    FakeHost.run_events = []
     monkeypatch.setattr(workflow_cli, "ChrysSessionHost", FakeHost)
     return FakeHost
 
@@ -346,7 +369,7 @@ def test_run_passes_the_request_through_and_prints_outputs(
 
     captured = capsys.readouterr()
     assert captured.out == "the report\n"
-    assert captured.err == ""
+    assert _progress(captured.err) == ["• Starting workflow chain…", "✓ Workflow completed · <dur>"]
     (host,) = fake_host.instances
     assert not host.started and host.shutdown_called
     assert "session_id" not in host.kwargs
@@ -355,7 +378,89 @@ def test_run_passes_the_request_through_and_prints_outputs(
         "workflow_id": "chain",
         "input_text": "hello",
         "timeout": 2.5,
+        "include_node_activity": True,
     }
+
+
+def test_run_quiet_prints_only_outputs_and_warnings(
+    fake_host: type[FakeHost], capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_host.result = _result(RunOutcome.COMPLETED)
+    warning = Warning(message="node build: web tools unavailable", code="web_tools_unavailable")
+    node = InvocationOrigin("workflow_node", "session-1", "inv-1", None, 1)
+    fake_host.run_events = [
+        warning,
+        WorkflowRunStarted(run_id="run-1", workflow_id="chain"),
+        WorkflowNodeStateChanged(
+            run_id="run-1", node_id="build", activation_id="a1", attempt=1, state="running", invocation_id="inv-1"
+        ),
+        InvocationCompactionFinished(origin=node, outcome="failed", failure_reason="too big"),
+        warning,
+    ]
+
+    assert workflow_cli.main(["run", "chain", "-q"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == "the report\n"
+    # Node activity still streams so a node's own warnings reach stderr; the activity itself does not print.
+    assert captured.err == (
+        "Warning: node build: web tools unavailable\n  [build] Warning: compaction failed (too big)\n"
+    )
+    run_kwargs = fake_host.instances[0].run_kwargs
+    assert run_kwargs is not None
+    assert run_kwargs["include_node_activity"] is True
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_run_captured_output_precedes_the_summary_line(
+    fake_host: type[FakeHost],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    quiet: bool,
+) -> None:
+    fake_host.result = _result(RunOutcome.COMPLETED)
+    diagnostics = {
+        "load": {"text": "loading\n  step 2 \x1b[2Jdone\n", "truncated": True},
+        "native": {"text": "stray print"},
+    }
+    read = create_autospec(workflow_cli.read_run_output, return_value=diagnostics)
+    monkeypatch.setattr(workflow_cli, "read_run_output", read)
+    fake_host.session_dir = tmp_path
+
+    assert workflow_cli.main(["run", "chain", *(["-q"] if quiet else [])]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == "the report\n"
+    captured_lines = [
+        "Load output:",
+        "loading",
+        "  step 2 �[2Jdone",
+        "Load output: some output was omitted by the capture limit.",
+        "Output outside nodes:",
+        "stray print",
+    ]
+    expected = (
+        captured_lines if quiet else ["• Starting workflow chain…", *captured_lines, "✓ Workflow completed · <dur>"]
+    )
+    assert _progress(captured.err) == expected
+    read.assert_called_once_with(tmp_path / "workflows" / "run-1")
+
+
+def test_run_with_a_closed_stderr_still_writes_the_report(
+    fake_host: type[FakeHost], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    fake_host.result = _result(RunOutcome.COMPLETED)
+    read = create_autospec(workflow_cli.read_run_output, return_value={"native": {"text": "stray print"}})
+    monkeypatch.setattr(workflow_cli, "read_run_output", read)
+    fake_host.session_dir = tmp_path
+    stderr = FailingTextStream()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    assert workflow_cli.main(["run", "chain"]) == 0
+
+    assert capsys.readouterr().out == "the report\n"
+    assert stderr.writes == 1
 
 
 def test_run_json_reports_the_full_result(fake_host: type[FakeHost], capsys: pytest.CaptureFixture[str]) -> None:
@@ -403,8 +508,11 @@ def test_run_maps_every_outcome_to_an_exit_code(
     assert workflow_cli.main(["run", "chain"]) == exit_code
     captured = capsys.readouterr()
     assert captured.out == "the report\n"
-    assert captured.err.startswith("Error: ")
-    assert message in captured.err
+    # A run that does not complete prints no success summary: the error is the last line.
+    starting, error = captured.err.splitlines()
+    assert starting == "• Starting workflow chain…"
+    assert error.startswith("Error: ")
+    assert message in error
 
     assert workflow_cli.main(["run", "chain", "--json"]) == exit_code
     captured = capsys.readouterr()
@@ -437,7 +545,7 @@ def test_run_reports_failures_with_typed_codes(
 ) -> None:
     fake_host.failure = failure
 
-    assert workflow_cli.main(["run", "chain"]) == 1
+    assert workflow_cli.main(["run", "chain", "--quiet"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("Error: ")
@@ -458,7 +566,7 @@ def test_run_reports_an_interrupt_with_exit_code_130(
     fake_host.failure = KeyboardInterrupt
 
     assert workflow_cli.main(["run", "chain"]) == 130
-    assert capsys.readouterr().err == "Error: Interrupted by user.\n"
+    assert capsys.readouterr().err == "• Starting workflow chain…\nError: Interrupted by user.\n"
     assert fake_host.instances[-1].shutdown_called
 
 
@@ -469,7 +577,7 @@ def test_a_deadline_before_acceptance_reports_exit_code_124(
     message = f"Workflow run timed out during {phase}."
     fake_host.failure = lambda: WorkflowRunTimeoutError(message)
 
-    assert workflow_cli.main(["run", "chain"]) == 124
+    assert workflow_cli.main(["run", "chain", "--quiet"]) == 124
     assert capsys.readouterr().err == f"Error: {message}\n"
     assert workflow_cli.main(["run", "chain", "--json"]) == 124
     captured = capsys.readouterr()
@@ -527,11 +635,14 @@ def test_the_headless_loop_lists_confirms_runs_and_prints_outputs(
     assert workflow_cli.main(["run", "chain", "--input", "hello", "--trust"]) == 0
     captured = capsys.readouterr()
     assert captured.out == "HELLO!\n"
-    assert captured.err.splitlines() == [
-        "[upper] running",
-        "[upper] completed",
-        "[exclaim] running",
-        "[exclaim] completed",
+    assert _progress(captured.err) == [
+        "• Checking workflow chain…",
+        "Workflow t (chain) · run <id> · session <id>",
+        "▸ [upper] running",
+        "✓ [upper] completed · <dur>",
+        "▸ [exclaim] running",
+        "✓ [exclaim] completed · <dur>",
+        "✓ Workflow completed · <dur>",
     ]
 
     # Confirmed once, the file runs without --trust from then on.
@@ -546,7 +657,12 @@ def test_the_headless_loop_lists_confirms_runs_and_prints_outputs(
     assert workflow_cli.main(["run", "emits", "--trust"]) == 0
     captured = capsys.readouterr()
     assert captured.out == "done\n"
-    assert captured.err.splitlines() == ["[fn] running", "[fn] halfway", "[fn] completed"]
+    assert _progress(captured.err)[2:] == [
+        "▸ [fn] running",
+        "  [fn] halfway",
+        "✓ [fn] completed · <dur>",
+        "✓ Workflow completed · <dur>",
+    ]
 
     assert len(hosts) == 4
     assert all(host.engine.execution().kind == "idle" for host in hosts)
@@ -734,9 +850,13 @@ async def test_the_text_cli_keeps_data_boundary_notices_in_events_but_omits_them
     captured = capsys.readouterr()
     assert captured.out == "read\n"
     assert [event.code for event in events] == [WORKFLOW_NOTICE_DATA_DROPPED]
-    assert "[reader] running" in captured.err.splitlines()
-    assert "[reader] completed" in captured.err.splitlines()
-    assert not any(line.startswith("Notice:") for line in captured.err.splitlines())
+    assert _progress(captured.err)[2:] == [
+        "▸ [tag] running",
+        "✓ [tag] completed · <dur>",
+        "▸ [reader] running",
+        "✓ [reader] completed · <dur>",
+        "✓ Workflow completed · <dur>",
+    ]
     assert events[0].message not in captured.err
     assert host.engine.execution().kind == "idle"
 

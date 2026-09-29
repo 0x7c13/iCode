@@ -15,9 +15,11 @@ from textual.widgets import Button, Static
 from chrys.app.tui.screens.dialogs.workflow_confirm import WorkflowConfirmDialog
 from chrys.app.tui.screens.dialogs.workflow_node import WorkflowNodeDialog
 from chrys.app.tui.screens.dialogs.workflow_picker import WorkflowPickerDialog
+from chrys.app.tui.screens.dialogs.workflow_result import WorkflowResultDialog
 from chrys.app.tui.widgets.chat.agent_transcript_surface import TranscriptAssistantOp, TranscriptToolResultOp
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
 from chrys.app.tui.widgets.workflow.selection import WorkflowList, WorkflowRow
@@ -318,6 +320,21 @@ async def test_builtin_demo_runs_from_selection_to_persisted_outputs(
             assert tour_text in str(output)
             assert all(client.call_count == 1 for client in agents)
             assert not main.query_one(ChatPanel).query("AgentMessage")
+            # A quick tour has one output; Result, beside Cancel on the Graph tab, reads its stored value in full.
+            await select_workflow_view(main, pilot, "graph")
+            result = panel.query_one("#workflow-result", Button)
+            assert result.visible
+            await click_when_settled(pilot, result)
+            await wait_for(
+                lambda: (
+                    isinstance(app.screen, WorkflowResultDialog)
+                    and app.screen.is_mounted
+                    and bool(app.screen.query(VirtualizedMarkdown))
+                ),
+                pilot=pilot,
+            )
+            assert str(app.screen.query_one("#workflow-result-frame").border_title) == "Result · render_tour"
+            assert tour_text in app.screen.query_one(VirtualizedMarkdown).source
     finally:
         await host.shutdown()
 

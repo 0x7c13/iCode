@@ -1,8 +1,8 @@
 # 使用 icode run 执行无界面任务
 
-`icode run` 在终端中执行任务，完成后返回智能体的最终回复。它不打开终端用户界面（Terminal User Interface，TUI），也不显示工具调用过程，适合一次性任务、脚本和自动化流程。
+`icode run` 在终端中执行任务，完成后返回智能体的最终回复。它不打开终端用户界面（Terminal User Interface，TUI）；任务运行期间，会逐行显示智能体正在做什么，适合一次性任务、脚本和自动化流程。
 
-本指南介绍 `icode run` 如何指定任务、智能体、模型、工作目录和会话，以及如何取得适合程序处理的 JSON 输出。
+本指南介绍 `icode run` 如何指定任务、智能体、模型、工作目录和会话，如何查看或隐藏运行进度，以及如何取得适合程序处理的 JSON 输出。
 
 ## 开始前
 
@@ -26,7 +26,21 @@
 icode run "概述这个项目的目录结构和主要模块" --agent QA
 ```
 
-任务完成后，终端会显示智能体的最终回复。回复中可能改动终端显示的控制字符会显示为 `�`；将输出重定向到文件或其他程序，或添加 `--json` 时，回复保持原样。若任务失败，错误信息写入标准错误（`stderr`），命令以非零状态退出。iCode 能判断模型请求失败的原因时，错误信息会说明原因，下方的 `detail:` 行显示原始错误信息。
+任务运行期间，iCode 会显示运行进度；任务完成后，先显示一行汇总，再显示智能体的最终回复。例如：
+
+```text
+• Q&A Agent ready · Example Model · session 8de5057d58ff · ~/projects/demo
+I'll start with the top-level layout.
+→ shell  ls
+  ✓ 0.1s
+→ read   README.md
+  ✓ 0.0s
+
+✓ Done · 8.2s · 2 tool calls · session 8de5057d58ff
+The project has three main parts: ...
+```
+
+各行的含义请参阅[查看运行进度](#查看运行进度)。回复中可能改动终端显示的控制字符会显示为 `�`；将输出重定向到文件或其他程序，或添加 `--json` 时，回复保持原样。若任务失败，错误信息写入标准错误（`stderr`），命令以非零状态退出。iCode 能判断模型请求失败的原因时，错误信息会说明原因，下方的 `detail:` 行显示原始错误信息。
 
 需要让智能体修改或验证代码时，可使用 `Code`：
 
@@ -37,6 +51,34 @@ icode run "修复登录表单的验证错误，并运行相关测试" --agent Co
 这类任务可能修改工作目录中的文件并执行命令；运行前应确认提示词、智能体和当前目录都符合预期。
 
 运行 `icode run -h` 或 `icode run --help` 可以查看当前版本支持的参数。
+
+## 查看运行进度
+
+进度行写入标准错误（`stderr`），最终回复写入标准输出（`stdout`）。在终端中两者都会显示；使用 `>` 保存回复或将回复交给其他程序时，只有回复会写入：
+
+```shell
+icode run "为最近的改动撰写发布说明" --agent QA > notes.md
+```
+
+每一行表示一个步骤：
+
+| 行 | 含义 |
+| --- | --- |
+| `• Q&A Agent ready · …` | 智能体已启动，并显示其模型、会话和工作目录。 |
+| 普通文本 | 智能体在步骤之间说明的内容。 |
+| `→ read   README.md` | 智能体调用工具，此处为读取文件。 |
+| `✓ 0.1s` 或 `✗ exit 1 · 2.5s` | 工具已完成，或已失败并附原因，以及耗时。 |
+| `↳ Explore → grep   TODO` | 子智能体的步骤，以子智能体名称开头。 |
+| `↻ … Retrying in 7s (attempt 2/18)` | 模型请求因临时原因失败，将重试。 |
+| `Todo 1/3 · → Running tests` | 智能体的待办列表已更新。 |
+| `Warning: …` | 值得注意但不会中止任务的情况。 |
+| `✓ Done · 8.2s · 2 tool calls · session …` | 任务已完成，显示耗时、智能体调用工具的次数和会话。 |
+
+如只需查看警告、错误和最终回复，可添加 `-q` 或 `--quiet`：
+
+```shell
+icode run "概述这个项目" --agent QA --quiet
+```
 
 ## 指定工作目录
 
@@ -87,7 +129,7 @@ Active  ID            Name           Provider  API   Model          Context  Fla
 
 ## 取得 JSON 输出
 
-添加 `--json` 后，成功结果以 JSON 对象写入标准输出（`stdout`），错误和警告以 JSON 对象写入标准错误（`stderr`）。例如：
+添加 `--json` 后，成功结果以 JSON 对象写入标准输出（`stdout`），错误和警告以 JSON 对象写入标准错误（`stderr`），不显示运行进度。例如：
 
 ```shell
 icode run "hello" -a QA --json

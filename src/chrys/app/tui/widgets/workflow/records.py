@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from chrys.app.tui.widgets.workflow.projector import ObservedRun, WorkflowProjector
 from chrys.foundation.events import types as events
@@ -18,7 +18,17 @@ from chrys.service.workflows.transcript import read_node_usage
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from chrys.service.workflows.artifacts import WorkflowRunRecord
+
+
+def stored_output_value(record: Mapping[str, Any]) -> dict[str, Any]:
+    """An output node's stored ``{text, data}`` value; a record without one is damaged (``ValueError``)."""
+    value = record.get("value")
+    if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+        raise ValueError("Invalid workflow output record: expected a text value.")
+    return value
 
 
 def read_observed_run(record: WorkflowRunRecord) -> ObservedRun:

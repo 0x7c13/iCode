@@ -264,3 +264,13 @@ def value_texts(view: WorkflowValueView) -> list[str]:
 
 def value_text(view: WorkflowValueView) -> str:
     return "\n".join(value_texts(view))
+
+
+def value_settled(view: WorkflowValueView) -> bool:
+    """Whether *view*'s rebuild of its document has finished.
+
+    Mounting puts a widget's text in the DOM before the mount completes, and a rebuild mounts
+    the notice before the value, so text alone doesn't prove the rebuild finished: a rebuild
+    cancelled at that point runs again, from an empty body, when the document is next shown.
+    """
+    return view._shown == (view.document, view.shown_tab)

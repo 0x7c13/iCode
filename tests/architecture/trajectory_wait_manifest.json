@@ -20758,7 +20758,7 @@
       "primitive": "async_context",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 19,
-      "source_line": 503,
+      "source_line": 520,
       "wrapper_target": null
     },
     {
@@ -20778,7 +20778,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 16,
-      "source_line": 522,
+      "source_line": 539,
       "wrapper_target": null
     },
     {
@@ -20798,7 +20798,7 @@
       "primitive": "multi_wait",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 37,
-      "source_line": 533,
+      "source_line": 550,
       "wrapper_target": null
     },
     {
@@ -20818,7 +20818,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 550,
+      "source_line": 567,
       "wrapper_target": null
     },
     {
@@ -20838,7 +20838,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 27,
-      "source_line": 554,
+      "source_line": 571,
       "wrapper_target": null
     },
     {
@@ -20858,7 +20858,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 556,
+      "source_line": 573,
       "wrapper_target": null
     },
     {
@@ -20878,7 +20878,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 558,
+      "source_line": 575,
       "wrapper_target": null
     },
     {
@@ -20898,7 +20898,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 27,
-      "source_line": 562,
+      "source_line": 579,
       "wrapper_target": null
     },
     {
@@ -20918,7 +20918,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 564,
+      "source_line": 581,
       "wrapper_target": null
     },
     {
@@ -20938,7 +20938,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 577,
+      "source_line": 594,
       "wrapper_target": null
     },
     {
@@ -20958,7 +20958,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 584,
+      "source_line": 601,
       "wrapper_target": null
     },
     {
@@ -20978,7 +20978,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 28,
-      "source_line": 585,
+      "source_line": 602,
       "wrapper_target": null
     },
     {
@@ -20998,7 +20998,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost._iter_run_events_locked",
       "source_column": 24,
-      "source_line": 591,
+      "source_line": 608,
       "wrapper_target": null
     },
     {
@@ -21018,7 +21018,7 @@
       "primitive": "sleep",
       "qualname": "ChrysSessionHost._iter_run_events_locked._event_task_ready_after_checkpoint",
       "source_column": 16,
-      "source_line": 517,
+      "source_line": 534,
       "wrapper_target": null
     },
     {
@@ -21038,7 +21038,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._iter_run_events_locked._publish_user_turn",
       "source_column": 16,
-      "source_line": 509,
+      "source_line": 526,
       "wrapper_target": null
     },
     {
@@ -21058,7 +21058,7 @@
       "primitive": "sync_primitive",
       "qualname": "ChrysSessionHost._iter_turn_events",
       "source_column": 19,
-      "source_line": 462,
+      "source_line": 479,
       "wrapper_target": null
     },
     {
@@ -21078,7 +21078,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost._iter_turn_events",
       "source_column": 12,
-      "source_line": 465,
+      "source_line": 482,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events_locked"
     },
     {
@@ -21098,7 +21098,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost._resolve_restore_session_id",
       "source_column": 19,
-      "source_line": 873,
+      "source_line": 910,
       "wrapper_target": null
     },
     {
@@ -21118,7 +21118,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.cancel_current_turn",
       "source_column": 8,
-      "source_line": 471,
+      "source_line": 488,
       "wrapper_target": null
     },
     {
@@ -21138,7 +21138,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.cancel_workflow",
       "source_column": 12,
-      "source_line": 839,
+      "source_line": 876,
       "wrapper_target": null
     },
     {
@@ -21158,7 +21158,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.iter_run_events",
       "source_column": 8,
-      "source_line": 450,
+      "source_line": 467,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"
     },
     {
@@ -21178,7 +21178,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.iter_turn_events",
       "source_column": 8,
-      "source_line": 455,
+      "source_line": 472,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"
     },
     {
@@ -21198,7 +21198,7 @@
       "primitive": "sync_primitive",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 19,
-      "source_line": 738,
+      "source_line": 765,
       "wrapper_target": null
     },
     {
@@ -21218,7 +21218,7 @@
       "primitive": "async_context",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 35,
-      "source_line": 738,
+      "source_line": 765,
       "wrapper_target": null
     },
     {
@@ -21238,7 +21238,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 12,
-      "source_line": 740,
+      "source_line": 767,
       "wrapper_target": null
     },
     {
@@ -21258,7 +21258,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 16,
-      "source_line": 769,
+      "source_line": 797,
       "wrapper_target": null
     },
     {
@@ -21278,7 +21278,7 @@
       "primitive": "async_iteration",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 16,
-      "source_line": 770,
+      "source_line": 798,
       "wrapper_target": null
     },
     {
@@ -21298,7 +21298,7 @@
       "primitive": "future",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 24,
-      "source_line": 805,
+      "source_line": 842,
       "wrapper_target": null
     },
     {
@@ -21318,7 +21318,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 24,
-      "source_line": 810,
+      "source_line": 847,
       "wrapper_target": null
     },
     {
@@ -21338,7 +21338,7 @@
       "primitive": "shield",
       "qualname": "ChrysSessionHost.iter_workflow_events",
       "source_column": 20,
-      "source_line": 811,
+      "source_line": 848,
       "wrapper_target": null
     },
     {
@@ -21358,7 +21358,7 @@
       "primitive": "sleep",
       "qualname": "ChrysSessionHost.iter_workflow_events.enforce_deadline",
       "source_column": 16,
-      "source_line": 755,
+      "source_line": 783,
       "wrapper_target": null
     },
     {
@@ -21378,7 +21378,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.load_workflow_session",
       "source_column": 15,
-      "source_line": 660,
+      "source_line": 681,
       "wrapper_target": null
     },
     {
@@ -21398,7 +21398,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.load_workflow_session",
       "source_column": 16,
-      "source_line": 671,
+      "source_line": 692,
       "wrapper_target": null
     },
     {
@@ -21418,7 +21418,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.preview_workflow",
       "source_column": 18,
-      "source_line": 700,
+      "source_line": 721,
       "wrapper_target": null
     },
     {
@@ -21438,7 +21438,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 28,
-      "source_line": 400,
+      "source_line": 417,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost._resolve_restore_session_id"
     },
     {
@@ -21458,7 +21458,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 407,
+      "source_line": 424,
       "wrapper_target": null
     },
     {
@@ -21478,7 +21478,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 421,
+      "source_line": 438,
       "wrapper_target": null
     },
     {
@@ -21498,7 +21498,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 8,
-      "source_line": 422,
+      "source_line": 439,
       "wrapper_target": null
     },
     {
@@ -21518,7 +21518,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 424,
+      "source_line": 441,
       "wrapper_target": null
     },
     {
@@ -21538,7 +21538,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 437,
+      "source_line": 454,
       "wrapper_target": null
     },
     {
@@ -21558,7 +21558,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 439,
+      "source_line": 456,
       "wrapper_target": null
     },
     {
@@ -21578,7 +21578,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.restore_session",
       "source_column": 12,
-      "source_line": 440,
+      "source_line": 457,
       "wrapper_target": null
     },
     {
@@ -21598,7 +21598,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.run_until_final",
       "source_column": 19,
-      "source_line": 625,
+      "source_line": 646,
       "wrapper_target": null
     },
     {
@@ -21618,7 +21618,7 @@
       "primitive": "timeout",
       "qualname": "ChrysSessionHost.run_until_final",
       "source_column": 15,
-      "source_line": 626,
+      "source_line": 647,
       "wrapper_target": null
     },
     {
@@ -21638,7 +21638,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.run_until_final._run",
       "source_column": 12,
-      "source_line": 609,
+      "source_line": 628,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.iter_run_events"
     },
     {
@@ -21658,7 +21658,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.run_workflow_until_final",
       "source_column": 8,
-      "source_line": 822,
+      "source_line": 859,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.iter_workflow_events"
     },
     {
@@ -21678,7 +21678,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.shutdown",
       "source_column": 8,
-      "source_line": 843,
+      "source_line": 880,
       "wrapper_target": null
     },
     {
@@ -21698,7 +21698,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSessionHost.start",
       "source_column": 12,
-      "source_line": 388,
+      "source_line": 405,
       "wrapper_target": "chrys.orchestration.session_host.ChrysSessionHost.restore_session"
     },
     {
@@ -21718,7 +21718,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSessionHost.start",
       "source_column": 12,
-      "source_line": 395,
+      "source_line": 412,
       "wrapper_target": null
     },
     {
@@ -35471,7 +35471,7 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.publish(InvocationToolCallStart(origin=origin, agent_name=self._agent_name, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id))",
+      "expression": "await self._bus.publish(InvocationToolCallStart(origin=origin, agent_name=self._agent_name, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id, session_id=self._session_id))",
       "identity": "chrys.service.agent_middleware.events.sub_agent_events:SubAgentEventMiddleware._process_tool_call:2",
       "module": "chrys.service.agent_middleware.events.sub_agent_events",
       "ordinal": 2,
@@ -35498,7 +35498,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 12,
-      "source_line": 652,
+      "source_line": 653,
       "wrapper_target": null
     },
     {
@@ -35518,7 +35518,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 16,
-      "source_line": 692,
+      "source_line": 693,
       "wrapper_target": null
     },
     {
@@ -35538,7 +35538,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 16,
-      "source_line": 698,
+      "source_line": 699,
       "wrapper_target": null
     },
     {
@@ -35558,7 +35558,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 12,
-      "source_line": 713,
+      "source_line": 714,
       "wrapper_target": null
     },
     {
@@ -35578,7 +35578,7 @@
       "primitive": "wrapper",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 41,
-      "source_line": 797,
+      "source_line": 798,
       "wrapper_target": "chrys.service.mutations.pipeline.finalize_mutation_tracking"
     },
     {
@@ -35598,7 +35598,7 @@
       "primitive": "wrapper",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 36,
-      "source_line": 853,
+      "source_line": 854,
       "wrapper_target": "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"
     },
     {
@@ -35611,14 +35611,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata))",
+      "expression": "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata, session_id=self._session_id))",
       "identity": "chrys.service.agent_middleware.events.sub_agent_events:SubAgentEventMiddleware._process_tool_call:9",
       "module": "chrys.service.agent_middleware.events.sub_agent_events",
       "ordinal": 9,
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 20,
-      "source_line": 888,
+      "source_line": 889,
       "wrapper_target": null
     },
     {
@@ -35638,7 +35638,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 24,
-      "source_line": 903,
+      "source_line": 905,
       "wrapper_target": null
     },
     {
@@ -35658,7 +35658,7 @@
       "primitive": "awaitable",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 24,
-      "source_line": 912,
+      "source_line": 914,
       "wrapper_target": null
     },
     {
@@ -35678,7 +35678,7 @@
       "primitive": "wrapper",
       "qualname": "SubAgentEventMiddleware._process_tool_call",
       "source_column": 20,
-      "source_line": 920,
+      "source_line": 922,
       "wrapper_target": "chrys.service.agent_middleware.events.sub_agent_events.SubAgentEventMiddleware._publish_progress"
     },
     {

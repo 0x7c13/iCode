@@ -9,6 +9,8 @@ import io
 import json
 import logging
 import os
+import re
+import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,9 +26,22 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsWarning, load_settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.config.warnings import settings_warning_events
-from chrys.foundation.events.types import Error, Warning
+from chrys.foundation.events.bus import EventBus
+from chrys.foundation.events.types import (
+    AGENT_LOAD_PHASE_MCP,
+    AGENT_LOAD_STATUS_RUNNING,
+    AgentLoadFinished,
+    AgentLoadProgress,
+    AgentRuntimeDetails,
+    Error,
+    Event,
+    InvocationToolCallStart,
+    RuntimeModelDetails,
+    Warning,
+)
 from chrys.foundation.i18n import DisplaySequence, Localizer
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.orchestration import session_host as session_host_module
 from chrys.orchestration import startup as startup_module
 from chrys.orchestration.session_host import (
@@ -37,6 +52,7 @@ from chrys.orchestration.session_host import (
     SessionNotFoundError,
 )
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.streams import FailingTextStream
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +66,10 @@ class FakeHost:
 
     instances: ClassVar[list[FakeHost]] = []
     restored_loaded: ClassVar[LoadedSettings | None] = None
+    run_events: ClassVar[list[Event]] = []
+    """Events handed to ``on_event`` during the fake turn, in order."""
+    start_events: ClassVar[list[Event]] = []
+    """Events published on the host bus while ``start()`` runs."""
 
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -57,19 +77,35 @@ class FakeHost:
         self.started = False
         self.session_id = "session-1"
         self.model_profile_pinned = False
+        self.event_bus = EventBus()
         self.engine = SimpleNamespace(
             pin_model_profile=lambda: setattr(self, "model_profile_pinned", True),
             loaded_settings=type(self).restored_loaded or LoadedSettings(settings=Settings(), provenance={}),
+            runtime_details=AgentRuntimeDetails(model=RuntimeModelDetails(name="Fake Model")),
+            workspace=None,
         )
+        self.on_event: Callable[[Event], None] | None = None
         FakeHost.instances.append(self)
 
     async def start(self) -> None:
         self.started = True
+        for event in type(self).start_events:
+            await self.event_bus.publish(event)
 
-    async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+    async def run_until_final(
+        self,
+        prompt: str,
+        *,
+        timeout: float | None = None,
+        on_event: Callable[[Event], None] | None = None,
+    ) -> HeadlessRunResult:
         self.prompt = prompt
         self.timeout = timeout
+        self.on_event = on_event
         self.run_cwd = Path.cwd()
+        if on_event is not None:
+            for event in type(self).run_events:
+                on_event(event)
         return HeadlessRunResult(text="final text", session_id="session-1", events=[])
 
     async def shutdown(self) -> None:
@@ -103,6 +139,8 @@ class FakeModelRegistry:
 def _patch_host(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeHost.instances.clear()
     FakeHost.restored_loaded = None
+    FakeHost.run_events = []
+    FakeHost.start_events = []
     monkeypatch.setattr(run_cli, "ChrysSessionHost", FakeHost)
 
 
@@ -149,7 +187,13 @@ def _run_in_locales(
 
 def _patch_failure_host(monkeypatch: pytest.MonkeyPatch, failure_factory) -> None:
     class FailureHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             self.prompt = prompt
             self.timeout = timeout
             raise failure_factory()
@@ -197,15 +241,20 @@ def test_run_command_configures_null_logging_when_unconfigured() -> None:
         root.handlers[:] = original_handlers
 
 
-def test_run_command_prints_final_text(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+@pytest.mark.parametrize("quiet", (False, True), ids=("progress", "quiet"))
+def test_run_command_prints_final_text(monkeypatch: pytest.MonkeyPatch, capsys, quiet: bool) -> None:
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["hello", "--agent", "Headless"])
+    rc = run_cli.main(["hello", "--agent", "Headless", *(["--quiet"] if quiet else [])])
 
     out = capsys.readouterr()
     assert rc == 0
+    # The answer alone goes to stdout; progress, when shown, ends with the summary on stderr.
     assert out.out == "final text\n"
-    assert out.err == ""
+    if quiet:
+        assert out.err == ""
+    else:
+        assert re.fullmatch(r"\n✓ Done · \d+\.\ds · 0 tool calls · session session1\n", out.err)
     assert FakeHost.instances[0].kwargs["profile_name"] == "Headless"
     assert FakeHost.instances[0].kwargs["session_id"] is None
     assert FakeHost.instances[0].kwargs["on_successful_turn"] is run_cli.on_buddy_successful_turn
@@ -238,7 +287,7 @@ def test_run_command_model_sets_active_profile(
     )
     _patch_model_registry(monkeypatch)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "--model", "Friendly Model"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "--model", "Friendly Model", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -294,7 +343,7 @@ def test_run_command_reads_task_file_as_prompt(monkeypatch: pytest.MonkeyPatch, 
     task.write_bytes(b"first line\nsecond line\n")
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["--task", str(task), "--agent", "Headless"])
+    rc = run_cli.main(["--task", str(task), "--agent", "Headless", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -311,7 +360,7 @@ def test_run_command_accepts_short_task_flag_and_non_utf8_file(
     task.write_bytes("cafe\u0301\n".encode("utf-16"))
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["-t", str(task), "--agent", "Headless"])
+    rc = run_cli.main(["-t", str(task), "--agent", "Headless", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -324,7 +373,7 @@ def test_run_command_task_file_strips_utf8_bom(monkeypatch: pytest.MonkeyPatch, 
     task.write_bytes(b"\xef\xbb\xbfhello")
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["--task", str(task), "--agent", "Headless"])
+    rc = run_cli.main(["--task", str(task), "--agent", "Headless", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -341,7 +390,7 @@ def test_run_command_empty_task_file_passes_empty_prompt(
     task.write_bytes(b"")
     _patch_runtime(monkeypatch)
 
-    rc = run_cli.main(["--task", str(task), "--agent", "Headless"])
+    rc = run_cli.main(["--task", str(task), "--agent", "Headless", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -364,7 +413,7 @@ def test_run_command_task_file_resolves_relative_to_workdir(
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)
 
-    rc = run_cli.main(["--task", "tasks/x.md", "--agent", "Headless"])
+    rc = run_cli.main(["--task", "tasks/x.md", "--agent", "Headless", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -372,7 +421,7 @@ def test_run_command_task_file_resolves_relative_to_workdir(
     assert FakeHost.instances[0].prompt == "outside"
 
     FakeHost.instances.clear()
-    rc = run_cli.main(["--task", "tasks/x.md", "--agent", "Headless", "-C", str(workdir)])
+    rc = run_cli.main(["--task", "tasks/x.md", "--agent", "Headless", "-C", str(workdir), "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -398,7 +447,7 @@ def test_run_command_changes_directory_before_bootstrapping(
     workdir.mkdir()
     monkeypatch.chdir(tmp_path)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-C", str(workdir)])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-C", str(workdir), "--quiet"])
 
     assert rc == 0
     assert capsys.readouterr().err == ""
@@ -430,7 +479,9 @@ def test_run_command_bootstrap_warning_text_mode(monkeypatch: pytest.MonkeyPatch
     out = capsys.readouterr()
     assert rc == 0
     assert out.out == "final text\n"
-    assert out.err == "Warning: NO_PROXY is invalid for httpx.\n"
+    lines = out.err.splitlines()
+    assert lines[0] == "Warning: NO_PROXY is invalid for httpx."
+    assert lines[-1].startswith("✓ Done · ")
 
 
 def test_prepare_runtime_applies_headless_retry_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -560,8 +611,33 @@ def test_run_command_writes_the_target_roots_warnings_in_text_mode(
     assert rc == 0
     assert out.out == "final text\n"
     (expected,) = settings_warning_events(restored_loaded)
-    assert out.err == f"Warning: {expected.message}\n"
+    lines = out.err.splitlines()
+    assert lines[:3] == [
+        "• Restoring session abc…",
+        f"Warning: {expected.message}",
+        "• Restored session session1 · Fake Model",
+    ]
+    assert lines[3] == ""
+    assert lines[4].startswith("✓ Done · ")
+    assert len(lines) == 5
     assert FakeHost.instances[0].started
+
+
+def test_run_command_quiet_restore_writes_only_the_target_roots_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _patch_runtime(monkeypatch)
+    restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
+    FakeHost.restored_loaded = restored_loaded
+
+    rc = run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"])
+
+    out = capsys.readouterr()
+    assert rc == 0
+    assert out.out == "final text\n"
+    (expected,) = settings_warning_events(restored_loaded)
+    assert out.err == f"Warning: {expected.message}\n"
 
 
 def test_run_command_writes_the_target_roots_warnings_in_json_mode(
@@ -590,7 +666,7 @@ def test_run_command_without_a_session_does_not_drive_an_early_start(
     _patch_runtime(monkeypatch)
     FakeHost.restored_loaded = LoadedSettings(settings=Settings(), provenance={}, warnings=(_project_rejection(),))
 
-    rc = run_cli.main(["hello", "--agent", "Headless"])
+    rc = run_cli.main(["hello", "--agent", "Headless", "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -739,7 +815,13 @@ def test_run_command_json_warning_does_not_corrupt_stdout(monkeypatch: pytest.Mo
 
 def test_run_command_reports_headless_error(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     class ErrorHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             self.prompt = prompt
             self.timeout = timeout
             event = Error(code="boom", message="failed", session_id="session-1")
@@ -758,7 +840,13 @@ def test_run_command_reports_headless_error(monkeypatch: pytest.MonkeyPatch, cap
 
 def test_run_command_reports_headless_error_as_json(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     class ErrorHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             self.prompt = prompt
             self.timeout = timeout
             event = Error(code="boom", message='quote "and" newline\n', session_id="session-1")
@@ -783,7 +871,13 @@ def test_run_command_json_error_omits_session_id_when_absent(monkeypatch: pytest
     # session_id field — the key is present only when a runner can actually
     # use it to locate a persisted trajectory.
     class NoSessionErrorHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             self.prompt = prompt
             self.timeout = timeout
             event = Error(code="boom", message="failed early", session_id=None)
@@ -803,7 +897,13 @@ def test_run_command_json_error_omits_session_id_when_absent(monkeypatch: pytest
 
 def test_run_command_reports_session_not_found_with_typed_code(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     class SessionNotFoundHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             raise SessionNotFoundError("Session not found: deadbeef. Recent sessions: aabbcc")
 
     _patch_runtime(monkeypatch)
@@ -824,7 +924,13 @@ def test_run_command_reports_session_not_found_with_typed_code(monkeypatch: pyte
 
 def test_run_command_reports_session_ambiguous_with_typed_code(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     class AmbiguousHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             raise AmbiguousSessionIdError("Session id 'abc' is ambiguous.")
 
     _patch_runtime(monkeypatch)
@@ -844,7 +950,13 @@ def test_run_command_reports_session_ambiguous_with_typed_code(monkeypatch: pyte
 
 def test_run_command_reports_profile_not_found_with_typed_code(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     class ProfileMissingHost(FakeHost):
-        async def run_until_final(self, prompt: str, *, timeout: float | None = None) -> HeadlessRunResult:
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
             raise AgentProfileNotFoundError("Agent profile not found: Missing. Available profiles: Headless")
 
     _patch_runtime(monkeypatch)
@@ -868,7 +980,7 @@ def test_run_command_changes_working_directory(monkeypatch: pytest.MonkeyPatch, 
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "--workdir", str(workdir)])
+    rc = run_cli.main(["hello", "--agent", "Headless", "--workdir", str(workdir), "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -883,7 +995,7 @@ def test_run_command_accepts_short_workdir(monkeypatch: pytest.MonkeyPatch, tmp_
     _patch_runtime(monkeypatch)
     monkeypatch.chdir(tmp_path)
 
-    rc = run_cli.main(["hello", "--agent", "Headless", "-C", str(workdir)])
+    rc = run_cli.main(["hello", "--agent", "Headless", "-C", str(workdir), "--quiet"])
 
     out = capsys.readouterr()
     assert rc == 0
@@ -1049,6 +1161,153 @@ def test_run_command_reports_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch,
     assert rc == 130
     assert out.out == ""
     assert out.err == "Error: Interrupted by user.\n"
+
+
+def test_run_command_restore_progress_shows_what_the_start_publishes_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_runtime(monkeypatch)
+    refused = Warning(code="mcp.connect_failed", message="github: refused")
+    FakeHost.start_events = [
+        AgentLoadProgress(phase=AGENT_LOAD_PHASE_MCP, status=AGENT_LOAD_STATUS_RUNNING, subject="github"),
+        refused,
+        AgentLoadFinished(agent_profile="Headless", display_name="Reviewer"),
+    ]
+    # The turn's stream repeats the start's warning and ready event; neither prints twice.
+    FakeHost.run_events = [
+        Warning(code=refused.code, message=refused.message),
+        AgentLoadFinished(agent_profile="Headless", session_id="session-1"),
+    ]
+
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc"]) == 0
+
+    out = capsys.readouterr()
+    assert out.out == "final text\n"
+    lines = out.err.splitlines()
+    assert lines[:4] == [
+        "• Restoring session abc…",
+        "• Connecting MCP server github…",
+        "Warning: github: refused",
+        "• Restored session session1 · Reviewer · Fake Model",
+    ]
+    assert lines[4:5] == [""]
+    assert lines[5].startswith("✓ Done · ")
+    assert len(lines) == 6
+
+
+def test_run_command_quiet_restore_shows_a_warning_the_start_publishes_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_runtime(monkeypatch)
+    refused = Warning(code="mcp.connect_failed", message="github: refused")
+    FakeHost.start_events = [
+        AgentLoadProgress(phase=AGENT_LOAD_PHASE_MCP, status=AGENT_LOAD_STATUS_RUNNING, subject="github"),
+        refused,
+        AgentLoadFinished(agent_profile="Headless", display_name="Reviewer"),
+    ]
+    FakeHost.run_events = [Warning(code=refused.code, message=refused.message)]
+
+    assert run_cli.main(["hello", "--agent", "Headless", "-s", "abc", "--quiet"]) == 0
+
+    out = capsys.readouterr()
+    assert out.out == "final text\n"
+    assert out.err == "Warning: github: refused\n"
+    assert FakeHost.instances[0].started
+
+
+@pytest.mark.parametrize("raw", ["invalid", "75"])
+def test_progress_counts_the_retry_warning_reported_under_either_wording(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raw: str
+) -> None:
+    monkeypatch.setenv("CHRYS_MAX_TRANSIENT_RETRIES", raw)
+    _patch_host(monkeypatch)
+    monkeypatch.setattr(headless, "bootstrap_runtime", _fake_bootstrap())
+    prepared = headless.prepare_runtime()
+    (pending,) = prepared.pending_warnings
+    # What an engine start composes for the same verdict: the generic wording, not the compatibility one.
+    generic = settings_warning_events(prepared.loaded)
+    assert generic
+    assert all(event.message != pending.message for event in generic)
+    FakeHost.run_events = list(generic)
+
+    assert run_cli.main(["hello", "--agent", "Headless"]) == 0
+
+    warnings = [line for line in capsys.readouterr().err.splitlines() if line.startswith("Warning: ")]
+    assert warnings == [f"Warning: {pending.message}"]
+
+
+@pytest.mark.parametrize("flag", ["--quiet", "--json"])
+def test_quiet_output_keeps_the_warnings_a_run_publishes_and_json_keeps_stderr_as_before(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flag: str
+) -> None:
+    _patch_runtime(monkeypatch)
+    _patch_host(monkeypatch)
+    origin = InvocationOrigin("turn", "session-1", "turn-1", None)
+    warning = Warning(message="github: refused", code="mcp.connect_failed")
+    FakeHost.run_events = [
+        warning,
+        InvocationToolCallStart(origin=origin, call_id="c1", tool_name="shell", args={"command": "x"}),
+        Warning(message="github: refused", code="mcp.connect_failed"),
+    ]
+
+    assert run_cli.main(["hello", "--agent", "Headless", flag]) == 0
+
+    err = capsys.readouterr().err
+    # Quiet shows no activity, but a warning published mid-run still reaches stderr, once.
+    assert err == ("Warning: github: refused\n" if flag == "--quiet" else "")
+
+
+@pytest.mark.parametrize(("flag", "streamed"), [(None, False), (None, True), ("--quiet", True)])
+def test_a_closed_stderr_still_gets_the_answer_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flag: str | None, streamed: bool
+) -> None:
+    _patch_runtime(monkeypatch)
+    origin = InvocationOrigin("turn", "session-1", "turn-1", None)
+    # Without streamed events the success summary is the first write to fail.
+    FakeHost.run_events = (
+        [
+            Warning(message="github: refused", code="mcp.connect_failed"),
+            InvocationToolCallStart(origin=origin, call_id="c1", tool_name="shell", args={"command": "x"}),
+        ]
+        if streamed
+        else []
+    )
+    stderr = FailingTextStream()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    assert run_cli.main(["hello", "--agent", "Headless", *([flag] if flag else [])]) == 0
+
+    assert capsys.readouterr().out == "final text\n"
+    # The first failed write ends progress; nothing retries the closed stream.
+    assert stderr.writes == 1
+
+
+def test_an_interrupted_run_ends_its_progress_with_the_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class InterruptedHost(FakeHost):
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
+            assert on_event is not None
+            origin = InvocationOrigin("turn", "session-1", "turn-1", None)
+            on_event(InvocationToolCallStart(origin=origin, call_id="c1", tool_name="shell", args={"command": "x"}))
+            raise KeyboardInterrupt
+
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(run_cli, "ChrysSessionHost", InterruptedHost)
+
+    assert run_cli.main(["hello", "--agent", "Headless"]) == 130
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    # No success summary: the error is the last line.
+    assert out.err == "→ shell\nError: Interrupted by user.\n"
+    assert InterruptedHost.instances[-1].shutdown_called
 
 
 def test_run_command_requires_agent() -> None:

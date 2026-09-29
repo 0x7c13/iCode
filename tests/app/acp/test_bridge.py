@@ -1218,6 +1218,33 @@ def test_bridge_folds_sub_agent_updates_into_parent_tool_call() -> None:
     assert "1 unreported attempt" in progress.raw_output
 
 
+@pytest.mark.parametrize(
+    ("result", "note"),
+    [
+        ("\n  first line\nsecond line", "Sub-agent Explore completed tool read_file: first line"),
+        ("x" * 500, "Sub-agent Explore completed tool read_file: " + "x" * 159 + "…"),
+        ("", "Sub-agent Explore completed tool read_file."),
+    ],
+)
+def test_a_nested_tool_result_shows_only_its_first_line_on_the_parent_card(result: str, note: str) -> None:
+    """Each note replaces the card's content; the full result travels in the extension notification."""
+    bridge = AcpEventBridge()
+    origin = InvocationOrigin("sub_agent", "", "i1", None)
+    bridge.updates_for_event(
+        InvocationStarted(agent_name="Explore", tool_name="explore", parent_call_id="parent", origin=origin)
+    )
+
+    [update] = bridge.updates_for_event(
+        InvocationToolCallResult(
+            agent_name="Explore", tool_name="read_file", call_id="c1", result=result, origin=origin
+        )
+    )
+
+    assert update.tool_call_id == "parent"
+    assert update.raw_output == note
+    assert [block.content.text for block in update.content] == [note]
+
+
 def test_bridge_folds_sub_agent_compaction_into_parent_tool_call() -> None:
     bridge = AcpEventBridge()
     bridge.updates_for_event(

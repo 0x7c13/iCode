@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from chrys.app.tui.screens.dialogs.workflow_node import WorkflowNodeDialog
+from chrys.app.tui.screens.dialogs.workflow_result import WorkflowResultDialog
 from chrys.app.tui.screens.main.workflow_browser import DraftSettings
 from chrys.app.tui.screens.main.workflow_content import WorkflowContent
 from chrys.app.tui.screens.main.workflow_flow import FlowToken, WorkflowFlow
@@ -265,6 +266,21 @@ class WorkflowSessionView:
         self.host.panel.show_history(run, preview=preview)
         self.content.view_changed()
         self.host.request_refresh()
+
+    def open_result(self) -> None:
+        """Show the selected run's final outputs; a finished run's outputs never change, so nothing refreshes."""
+        run, directory = self.view_run(), self._session_dir()
+        if run is None or run.finished is None or not run.finished.outputs:
+            return
+        self.host.panel.app.push_screen(
+            WorkflowResultDialog(
+                tuple(run.finished.outputs),
+                kinds={node["id"]: node["kind"] for node in run.started.manifest.get("nodes", [])},
+                directory=run_dir(directory, run.started.run_id) if directory is not None else None,
+                outcome=run.finished.outcome,
+                locale_controller=self.host.locale_controller,
+            )
+        )
 
     def open_node(self, node_id: str) -> None:
         panel, directory = self.host.panel, self._session_dir()

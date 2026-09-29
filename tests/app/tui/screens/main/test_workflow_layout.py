@@ -84,7 +84,10 @@ async def test_layout_button_preserves_live_state_and_retry_controls(
             assert toggle.content_size.width >= cell_len(str(toggle.label))
             assert toggle.render_line(0).text.strip() == str(toggle.label)
             assert toggle.region.right <= panel.content_region.right
-            assert all(button.region.height == 3 for button in panel.query("#workflow-controls Button"))
+            buttons = list(panel.query("#workflow-controls Button"))
+            # Result stays hidden until a run finishes with outputs; a hidden button has no region.
+            assert [button.id for button in buttons if not button.visible] == ["workflow-result"]
+            assert all(button.region.height == 3 for button in buttons if button.visible)
             first, second = graph.geometry["first"], graph.geometry["second"]
             assert (second.x > first.x) if direction == Direction.LEFT_RIGHT else (second.y > first.y)
             assert graph.selected_node == "second" and graph._views == states
