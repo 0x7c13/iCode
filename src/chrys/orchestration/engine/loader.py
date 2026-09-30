@@ -37,7 +37,7 @@ from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.orchestration.invoker.resources import PreparedAgent
 from chrys.orchestration.session_hooks import SessionHookFactory
-from chrys.service.agent_middleware.system_reminder import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
@@ -594,14 +594,14 @@ class AgentLoader:
                 preserved_state = _preserved_history_state(raw)
                 if self._current.loaded is not None:
                     catalog_pointer_record_count = (
-                        self._current.loaded.reminder_middleware.get_catalog_pointer_record_count_state()
+                        self._current.loaded.reminder_middleware.sources.archive_pointer.record_count_state()
                     )
                     if catalog_pointer_record_count is not None:
                         preserved_state = preserved_state or {}
                         preserved_state[CATALOG_POINTER_RECORD_COUNT_STATE_KEY] = catalog_pointer_record_count
 
             old_pending_switch = (
-                self._current.loaded.reminder_middleware.snapshot_pending_switch()
+                self._current.loaded.reminder_middleware.sources.profile_switch.snapshot_pending_switch()
                 if self._current.loaded is not None
                 else None
             )
@@ -687,14 +687,13 @@ class AgentLoader:
                     )
             if new_profile.name != old_profile_name and self._current.loaded is not None:
                 new_label = new_profile.display_name or new_profile.name
+                set_profile_switch = self._current.loaded.reminder_middleware.sources.profile_switch.set_profile_switch
                 if is_consecutive and old_pending_switch is not None:
                     if old_pending_switch["from"] != new_label:
-                        self._current.loaded.reminder_middleware.set_profile_switch(
-                            old_pending_switch["from"], new_label
-                        )
+                        set_profile_switch(old_pending_switch["from"], new_label)
                 else:
                     old_label = old_display_name or old_profile_name
-                    self._current.loaded.reminder_middleware.set_profile_switch(old_label, new_label)
+                    set_profile_switch(old_label, new_label)
 
             if preserved_state is not None:
                 last_usage = preserved_state.get("last_usage")

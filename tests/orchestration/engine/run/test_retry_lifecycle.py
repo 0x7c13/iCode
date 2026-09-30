@@ -12,6 +12,7 @@ engine coverage lives in ``test_retry_integration.py``.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
@@ -32,6 +33,8 @@ from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.session.history import SessionHistoryManager
 from tests.support.components import make_current, make_turn_state
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
+from tests.support.reminder_goldens import manifest_entry
+from tests.support.reminder_stack import reminder_pair
 from tests.support.turn_services import make_turn_coordinator, make_turn_retry, make_turn_runner
 
 # ---------------------------------------------------------------------------
@@ -121,6 +124,7 @@ class _Executor:
         self.running = False
         self.on_resume = None
         self.history_state: dict[str, object] = {}
+        self.input_properties: dict[str, object] | None = None
         self.trajectory_context = None
         self.opening_item_ids: list[str | None] = []
         self.reset_counter_calls: list[bool] = []
@@ -191,8 +195,11 @@ class _History:
         *,
         kind: UserMessageKind = "opener",
         item_id: str | None = None,
+        reminder_source: Mapping[str, Any] | None = None,
     ) -> None:
-        self._input_history.ensure_user_message(text, created_at, contents, kind=kind, item_id=item_id)
+        self._input_history.ensure_user_message(
+            text, created_at, contents, kind=kind, item_id=item_id, reminder_source=reminder_source
+        )
 
     def tag_last_user_message(self, key: str, value: str) -> None:
         self.tags.append((key, value))
@@ -242,14 +249,24 @@ class _RuntimeMeta:
         self.last_usage_details = {"input_token_count": 7}
 
 
+class _ProfileSwitch:
+    def __init__(self) -> None:
+        self.consumed_switch_to: str | None = None
+
+
+class _Sources:
+    def __init__(self) -> None:
+        self.profile_switch = _ProfileSwitch()
+
+
 class _Reminder:
     def __init__(self) -> None:
         self.prepare_calls: list[dict[str, object]] = []
-        self.consumed_switch_to: str | None = None
+        self.sources = _Sources()
 
     def prepare_turn(self, **kwargs: object) -> None:
         self.prepare_calls.append(kwargs)
-        self.consumed_switch_to = None
+        self.sources.profile_switch.consumed_switch_to = None
 
     def take_undelivered_file_change(self) -> str | None:
         return None
@@ -578,7 +595,7 @@ class TestRetryLifecycleApprovalContext:
         host = _Host([Message("user", ["after switch"])])
 
         def _consume_switch() -> None:
-            host.current.loaded.reminder_middleware.consumed_switch_to = "Explore Agent"
+            host.current.loaded.reminder_middleware.sources.profile_switch.consumed_switch_to = "Explore Agent"
 
         host.current.loaded.bindings.on_resume = _consume_switch
 
@@ -642,8 +659,8 @@ async def test_pending_retry_dispatch_strips_trailing_markers_before_task() -> N
 
 async def test_later_retry_after_interrupted_finalization_preserves_last_words_and_turn_reminders() -> None:
     """A retry dispatched after an interrupted finalization still observes the
-    interrupted run's last words and its stable turn reminders."""
-    reminder_middleware = SystemReminderMiddleware()
+    interrupted run's last words, its dropped-tool manifest and its stable turn reminders."""
+    reminder_middleware, last_words = reminder_pair()
     host = _Host(
         [Message("user", ["original request"])],
         reminder_middleware=reminder_middleware,
@@ -660,9 +677,10 @@ async def test_later_retry_after_interrupted_finalization_preserves_last_words_a
     # ``TurnResumePolicy.retry_request`` — capture it there, from the retry's own turn.
     observed: dict[str, object] = {}
     host.current.loaded.bindings.on_resume = lambda: observed.update(
-        last_words=reminder_middleware.get_last_words(),
+        last_words=last_words.get_last_words(),
+        manifest=last_words.get_last_words_manifest(),
         turn_reminders=reminder_middleware._build_reminders(),
-        last_words_reminders=reminder_middleware._build_last_words_reminders(),
+        last_words_reminders=last_words.render(),
     )
 
     reminder_scope = reminder_middleware.create_current_run_scope()
@@ -675,14 +693,16 @@ async def test_later_retry_after_interrupted_finalization_preserves_last_words_a
     host._turn_state.lease.open_injection_admission(run_scope)
     reminder_middleware.prepare_turn(reminder_scope=reminder_scope)
     reminder_middleware.queue_hook_reminders(["stable turn reminder"])
-    reminder_middleware.set_last_words("[progress before interrupt]")
+    last_words.set_last_words("[progress before interrupt]")
+    dropped = manifest_entry(1, 1, "read_file", "src/a.py")
+    last_words.append_manifest([dropped])
 
     finalization_task = asyncio.create_task(post_run(host))
     host._turn_state.lease.run_task = finalization_task
     await finalization_task
 
     assert host._turn_state.lease.current_run_scope == run_scope
-    assert reminder_middleware.get_last_words() == "[progress before interrupt]"
+    assert last_words.get_last_words() == "[progress before interrupt]"
 
     await on_user_retry(host, UserRetry(text="retry note"))
     assert host._turn_state.lease.run_task is not None
@@ -691,6 +711,7 @@ async def test_later_retry_after_interrupted_finalization_preserves_last_words_a
     assert host.current.loaded.bindings.resume_texts == ["retry note"]
     assert host.current.loaded.bindings.reset_counter_calls == [False]
     assert observed["last_words"] == "[progress before interrupt]"
+    assert observed["manifest"] == [dropped.to_state()]
     assert "stable turn reminder" in observed["turn_reminders"]
     assert any("[progress before interrupt]" in reminder for reminder in observed["last_words_reminders"])
     assert host._turn_state.current_input.text == ""

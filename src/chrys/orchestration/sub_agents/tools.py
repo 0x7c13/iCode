@@ -94,9 +94,9 @@ from chrys.service.agent_middleware import (
     SubAgentEventMiddleware,
     SubAgentStatsMiddleware,
 )
-from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.turn_context import TurnContextHolder
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
 from chrys.service.context.compaction.spill import COMPACTIONS_DIR_NAME, sub_agent_dropped_turn_relative_path
 from chrys.service.context.manager import ContextManager
 from chrys.service.context.middleware.usage import UsageTrackingMiddleware

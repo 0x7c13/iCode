@@ -371,7 +371,7 @@ async def test_reminder_debug_dump_written_on_compaction(tmp_path):
     messages = _build_multi_turn(3, groups_per_turn=2, result_size=2000)
     total = _estimate_tokens(messages)
     reminder = StubReminderMiddleware()
-    reminder.set_last_words("[dump-me progress note]")
+    reminder.last_words.set_last_words("[dump-me progress note]")
     debug_dir = tmp_path / "compactions" / "debug"
     strategy = _make_strategy(
         max_context_tokens=total + 50,

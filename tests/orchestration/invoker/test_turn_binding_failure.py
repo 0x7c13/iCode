@@ -179,6 +179,11 @@ async def test_close_after_promotion_before_binding_finalizes(
                 assert history[1:] == [
                     (guidance, "injected", opening_ids[0], guidance_time.isoformat(timespec="microseconds"))
                 ]
+                for messages in (engine_services(engine).history.messages, loaded["messages"]):
+                    opener, note = [m for m in messages if m.role == "user"]
+                    assert opener.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY]
+                    # Never sent, so it carries no reminders: not the opener's either.
+                    assert HistoryMarkerKind.SYSTEM_REMINDERS_KEY not in note.additional_properties
             else:
                 assert history == original_users
         expected_input = history[-1]

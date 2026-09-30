@@ -797,6 +797,42 @@ async def test_model_config_saves_http_header_values_as_strings_when_json_like()
     assert json.loads(saved.http_headers) == {"X-Config": '{"nested": true}'}
 
 
+async def test_model_config_reload_keeps_quoted_option_strings_as_strings() -> None:
+    """A string that reads as JSON, or that the form's trim would change, reopens quoted, so the next Save
+    keeps it the same string and passes validation."""
+    options = {
+        "user": "12345",
+        "flag": "true",
+        "effort": "high",
+        "note": "\u00a05",
+        "top_k": 5,
+        "extra_body": {"thinking": "on"},
+    }
+    headers = {"X-Config": '{"nested": true}', "X-Count": "3"}
+    registry, profile = single_profile_registry(chat_options=json.dumps(options), http_headers=json.dumps(headers))
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
+        await _wait_for_kv_rows(screen.query_one("#mc-options-list"), pilot, len(options))
+        await _wait_for_kv_rows(screen.query_one("#mc-headers-list"), pilot, len(headers))
+        option_values = [
+            row.query_one(".mc-kv-value-input", Input).value
+            for row in screen.query_one("#mc-options-list").query(".mc-kv-item-row")
+        ]
+        captured = _capture_notifications(screen)
+        screen.query_one("#mc-save", Button).press()
+        await wait_for(
+            lambda: ("information", "Model profile saved") in captured,
+            pilot=pilot,
+            description="profile saved again unchanged",
+        )
+        saved = registry.get(profile.id)
+
+    assert option_values == ['"12345"', '"true"', "high", '"\\u00a05"', "5", '{"thinking": "on"}']
+    assert saved is not None
+    assert json.loads(saved.chat_options) == options
+    assert json.loads(saved.http_headers) == headers
+
+
 async def test_model_config_add_button_appends_another_editable_row() -> None:
     """Add creates another editable row instead of committing the current row."""
 

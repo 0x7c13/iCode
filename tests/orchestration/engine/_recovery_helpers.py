@@ -108,6 +108,7 @@ class _HistoryStateExecutor:
 
     def __init__(self, state: dict[str, Any] | None = None) -> None:
         self.history_state: dict[str, Any] = state if state is not None else {}
+        self.input_properties: dict[str, Any] | None = None
 
     @property
     def backend(self):

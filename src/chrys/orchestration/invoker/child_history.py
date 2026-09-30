@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.models.history_markers import copy_reminder_record
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.kernel import Message, resolve_storage_mode_and_handles
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
@@ -89,5 +90,10 @@ class ChildHistory:
             return seed()
         if any(messages[j].role in ("assistant", "tool") for j in range(user_idx + 1, len(messages))):
             return []
-        messages.pop(user_idx)
-        return seed()
+        anchor = messages.pop(user_idx)
+        seeded = seed()
+        # The seed rebuilds the anchor it replaces: it carries the reminders
+        # the anchor was sent with, so the replay re-renders them unchanged.
+        if len(seeded) == 1 and isinstance(seeded[0], Message):
+            copy_reminder_record(anchor.additional_properties, seeded[0].additional_properties)
+        return seeded

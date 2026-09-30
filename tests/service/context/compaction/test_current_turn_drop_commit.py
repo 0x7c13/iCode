@@ -21,12 +21,12 @@ from chrys.kernel import (
     EXCLUDE_REASON_KEY,
     included_token_count,
 )
-from chrys.service.agent_middleware.system_reminder import ManifestEntry, SystemReminderMiddleware
 from chrys.service.context import compaction as compaction_mod
 from chrys.service.context.compaction import (
     CompactionInfo,
 )
 from chrys.service.context.compaction.current_turn_drop import CurrentTurnDropRound
+from chrys.service.context.compaction.last_words_state import ManifestEntry
 from chrys.service.context.compaction.spill import (
     SpillBatchResult,
     SpillManifestItem,
@@ -40,6 +40,7 @@ from tests.service.context.compaction._compaction_helpers import (
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support.phase4_stubs import StubLastWordsGenerator, StubReminderMiddleware
+from tests.support.reminder_stack import reminder_pair
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 
@@ -76,7 +77,7 @@ async def test_phase4_commit_marks_quota_evicted_manifest_records_unavailable(
 ) -> None:
     reminder = StubReminderMiddleware()
     evicted_path = "compactions/dropped/turn001/001_old_00000001.md"
-    reminder.append_manifest(
+    reminder.last_words.append_manifest(
         [
             ManifestEntry(
                 record_id="old-record",
@@ -123,7 +124,7 @@ async def test_phase4_commit_marks_quota_evicted_manifest_records_unavailable(
 
     assert await strategy(messages)
 
-    manifest = reminder.get_last_words_manifest()
+    manifest = reminder.last_words.get_last_words_manifest()
     assert manifest[0]["relative_path"] == evicted_path
     assert manifest[0]["available"] is False
     assert manifest[1]["record_id"] == "new-record"
@@ -183,12 +184,12 @@ async def test_phase4_unexpected_spill_io_commits_only_with_true_durability(
     assert generator.committed_publishes == (1 if commits else 0)
     if commits:
         assert durability_calls == 1
-        assert reminder.get_last_words() is not None
-        assert reminder.get_last_words_manifest()[0]["no_record_reason"] == "I/O failure"
+        assert reminder.last_words.get_last_words() is not None
+        assert reminder.last_words.get_last_words_manifest()[0]["no_record_reason"] == "I/O failure"
     else:
-        assert reminder.get_last_words() is None
-        assert reminder.get_last_words_manifest() == []
-        breaker = reminder.get_drop_round_breaker()
+        assert reminder.last_words.get_last_words() is None
+        assert reminder.last_words.get_last_words_manifest() == []
+        breaker = reminder.last_words.get_drop_round_breaker()
         assert (breaker.attempts, breaker.consecutive_no_progress, breaker.tail_override) == (1, 1, True)
 
 
@@ -248,15 +249,15 @@ async def test_phase4_precommit_cancellation_retains_persisted_accounting_withou
     with pytest.raises(asyncio.CancelledError):
         await strategy(messages)
 
-    breaker = reminder.get_drop_round_breaker()
+    breaker = reminder.last_words.get_drop_round_breaker()
     assert breaker.attempts == 1
     assert breaker.side_call_tokens == 123
     assert breaker.consecutive_no_progress == 0
     assert breaker.tail_override is False
     assert breaker.disabled is False
     assert pressure_events == []
-    assert reminder.get_last_words() is None
-    assert reminder.get_last_words_manifest() == []
+    assert reminder.last_words.get_last_words() is None
+    assert reminder.last_words.get_last_words_manifest() == []
     assert not any(message.additional_properties.get(EXCLUDE_REASON_KEY) == "current_turn_drop" for message in messages)
     if cancellation_point == "persist_recovery":
         assert catalog_live_records(tmp_path)
@@ -292,7 +293,7 @@ async def test_phase4_cancel_during_committed_publish_leaves_commit_finalized() 
 
     excluded = [m for m in messages if m.additional_properties.get(EXCLUDE_REASON_KEY) == "current_turn_drop"]
     assert excluded
-    assert reminder.get_last_words() == "[note]"
+    assert reminder.last_words.get_last_words() == "[note]"
     assert len(strategy._excluded_anchors) == len(excluded)
     assert strategy._last_included_tokens == included_token_count(messages)
     # The on_compaction notification (ToolCompacted for the main agent) must
@@ -488,14 +489,14 @@ async def test_retry_state_restores_phase4_content_but_keeps_breaker_monotonic(t
     spill_quota = SpillQuota()
     baseline_path = "compactions/dropped/turn001/baseline.md"
     spill_quota.initialize(1, available_relative_paths=[baseline_path])
-    reminder = SystemReminderMiddleware(
+    reminder, last_words = reminder_pair(
         session_root=tmp_path,
         spill_quota=spill_quota,
         todo_state_provider=lambda: todo[0],
     )
     reminder.prepare_turn()
-    reminder.set_last_words("[baseline note]")
-    reminder.append_manifest(
+    last_words.set_last_words("[baseline note]")
+    last_words.append_manifest(
         [
             ManifestEntry(
                 record_id="baseline-record",
@@ -519,6 +520,7 @@ async def test_retry_state_restores_phase4_content_but_keeps_breaker_monotonic(t
         messages,
         last_words_generator=StubLastWordsGenerator(text="[attempt note]"),
         reminder_middleware=reminder,
+        last_words=last_words,
         spill_root=tmp_path,
         spill_quota=spill_quota,
         spill_session_id="phase4-retry",
@@ -527,27 +529,27 @@ async def test_retry_state_restores_phase4_content_but_keeps_breaker_monotonic(t
     todo[0] = "[TODO] changed during attempt"
 
     assert await strategy(messages)
-    attempt_breaker = reminder.get_drop_round_breaker()
+    attempt_breaker = last_words.get_drop_round_breaker()
     assert attempt_breaker.attempts == 1
-    assert reminder.get_last_words() == "[attempt note]"
-    assert len(reminder.get_last_words_manifest()) > 1
-    assert reminder.claim_context_pressure_notification()
+    assert last_words.get_last_words() == "[attempt note]"
+    assert len(last_words.get_last_words_manifest()) > 1
+    assert last_words.claim_context_pressure_notification()
     # The provider-side catalog can evict a record while this attempt is in
     # flight; retry restore must revalidate the snapshotted row via SpillQuota.
     spill_quota.initialize(0, available_relative_paths=[])
 
     strategy.restore_retry_state(retry_snapshot)
 
-    assert reminder.get_last_words() == "[baseline note]"
-    restored_manifest = reminder.get_last_words_manifest()
+    assert last_words.get_last_words() == "[baseline note]"
+    restored_manifest = last_words.get_last_words_manifest()
     assert [row["record_id"] for row in restored_manifest] == ["baseline-record"]
     assert restored_manifest[0]["available"] is False
-    rendered = reminder.render_last_words_reminder_text()
+    rendered = last_words.render_last_words_reminder_text()
     assert rendered is not None
     assert "[TODO] baseline" in rendered
     assert "changed during attempt" not in rendered
-    assert reminder.get_drop_round_breaker() == attempt_breaker
-    assert not reminder.claim_context_pressure_notification()
+    assert last_words.get_drop_round_breaker() == attempt_breaker
+    assert not last_words.claim_context_pressure_notification()
 
 
 async def test_phase4_cancel_after_catalog_flush_leaves_catalog_visible_and_reminder_silent(
@@ -574,8 +576,8 @@ async def test_phase4_cancel_after_catalog_flush_leaves_catalog_visible_and_remi
         await strategy(messages)
 
     assert catalog_live_records(tmp_path)
-    assert reminder.get_last_words() is None
-    assert reminder.get_last_words_manifest() == []
+    assert reminder.last_words.get_last_words() is None
+    assert reminder.last_words.get_last_words_manifest() == []
     assert not any(message.additional_properties.get(EXCLUDE_REASON_KEY) == "current_turn_drop" for message in messages)
 
 
@@ -583,7 +585,7 @@ async def test_phase4_archives_superseded_note_record_alongside_group_records(tm
     """A later round's merge archives the pre-merge note verbatim on disk."""
     generator = StubLastWordsGenerator(text="[note v2]")
     reminder = StubReminderMiddleware()
-    reminder.set_last_words("[note v1]")
+    reminder.last_words.set_last_words("[note v1]")
     messages = _build_single_turn(4, result_size=1000)
     strategy = _forced_phase4(
         messages,
@@ -596,12 +598,7 @@ async def test_phase4_archives_superseded_note_record_alongside_group_records(tm
 
     assert await strategy(messages)
 
-    manifest = reminder.get_last_words_manifest()
-    # The stub middleware stores rows without validating; every row must also
-    # survive the REAL middleware's from_state, or it would silently vanish
-    # from the rendered reminder (regression: empty note group_id).
-    for row in manifest:
-        assert ManifestEntry.from_state(row) is not None, row
+    manifest = reminder.last_words.get_last_words_manifest()
     note_rows = [row for row in manifest if row["tool"] == "last_words"]
     assert len(note_rows) == 1
     note_row = note_rows[0]
@@ -611,6 +608,9 @@ async def test_phase4_archives_superseded_note_record_alongside_group_records(tm
     assert record.startswith("# Superseded LAST_WORDS note\n")
     assert "[note v1]" in record
     kinds = {record.record_id: record.kind for record in catalog_live_records(tmp_path)}
+    # The state drops rows it cannot parse, so every record must still be listed
+    # (regression: an empty note group_id made the note row vanish).
+    assert {row["record_id"] for row in manifest} == set(kinds)
     assert kinds.pop(note_row["record_id"]) == "note"
     assert set(kinds.values()) == {"group"}
 
@@ -628,8 +628,8 @@ async def test_phase4_first_drop_without_previous_note_writes_no_note_record(tmp
 
     assert await strategy(messages)
 
-    assert reminder.get_last_words() is not None
-    assert all(row["tool"] != "last_words" for row in reminder.get_last_words_manifest())
+    assert reminder.last_words.get_last_words() is not None
+    assert all(row["tool"] != "last_words" for row in reminder.last_words.get_last_words_manifest())
     assert all(record.kind == "group" for record in catalog_live_records(tmp_path))
 
 

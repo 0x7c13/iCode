@@ -50,10 +50,6 @@ from chrys.kernel import (
     annotate_token_counts,
     included_token_count,
 )
-from chrys.service.agent_middleware.system_reminder import (
-    DropRoundBreakerState,
-    Phase4RetrySnapshot,
-)
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 from chrys.service.trajectory.compaction import (
     TOKEN_MEASUREMENT_SOURCE,
@@ -85,6 +81,7 @@ from .groups import (
     _ordered_group_ids,
     _tool_groups_in_range,
 )
+from .last_words_state import DropRoundBreakerState, LastWordsState, Phase4RetrySnapshot
 from .scoped import ScopedGroup
 from .spill import SpillQuota
 from .summaries import _compact_group, _remove_group
@@ -127,6 +124,16 @@ class LastWordsGeneratorLike(Protocol):
     async def publish_committed(self) -> None: ...
 
 
+class ReminderMiddlewareLike(Protocol):
+    """Strategy-facing contract of ``SystemReminderMiddleware`` (mirrored by test stubs)."""
+
+    def renders_last_words(self, state: object) -> bool: ...
+
+    def refresh_last_words_reminder(self, messages: list[Any]) -> int | None: ...
+
+    def restore_folded_reminders(self, messages: list[Message]) -> int | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CompactionRetrySnapshot:
     """Attempt rollback state split by compaction lifetime.
@@ -134,8 +141,8 @@ class CompactionRetrySnapshot:
     Cross-turn folds published after ``published_fold_count`` are monotonic
     commits and get silently replayed onto restored history.  Phase-4 note
     content is attempt-local and rolls back.  Breaker/pressure accounting is
-    intentionally owned by the reminder middleware's logical-turn state and
-    is not represented here.
+    intentionally owned by the LAST_WORDS state's logical-turn slot and is
+    not represented here.
     """
 
     anchors: tuple[_ExclusionAnchor, ...]
@@ -233,7 +240,8 @@ class UnifiedContextStrategy:
         self._last_included_tokens: int = 0
         # Phase 4 LAST_WORDS collaborators (wired post-construction by
         # AgentBuilder so ContextManager can keep a simple signature).
-        self._reminder_middleware: Any | None = None
+        self._reminder_middleware: ReminderMiddlewareLike | None = None
+        self._last_words_state: LastWordsState | None = None
         self._last_words_generator: LastWordsGeneratorLike | None = None
         self._persist_recovery_now: Callable[[], Awaitable[bool]] | None = None
         # Detached on_compaction deliveries scheduled when cancellation
@@ -338,9 +346,17 @@ class UnifiedContextStrategy:
     # Phase 4 wiring (called by AgentBuilder after middleware + generator exist)
     # ------------------------------------------------------------------
 
-    def set_reminder_middleware(self, middleware: Any) -> None:
-        """Bind the ``SystemReminderMiddleware`` that carries LAST_WORDS."""
+    def bind_reminder(self, middleware: ReminderMiddlewareLike, last_words: LastWordsState) -> None:
+        """Bind the ``SystemReminderMiddleware`` and the LAST_WORDS state it renders, together.
+
+        Phase 4 writes its note to *last_words* and drops history only when
+        both are bound, so the next request carries the note in place of the
+        dropped history.  A state the middleware does not render is refused.
+        """
+        if not middleware.renders_last_words(last_words):
+            raise ValueError("The reminder middleware does not render this LAST_WORDS state.")
         self._reminder_middleware = middleware
+        self._last_words_state = last_words
 
     def set_last_words_generator(self, generator: LastWordsGeneratorLike) -> None:
         """Bind the ``LastWordsGenerator`` used by Phase 4."""
@@ -356,10 +372,10 @@ class UnifiedContextStrategy:
         Owner-only (0600) like the spill records: the rendered reminder
         carries the progress note, which summarises session content.
         """
-        if self._debug_log_dir is None or self._reminder_middleware is None:
+        if self._debug_log_dir is None or self._last_words_state is None:
             return
         try:
-            text = self._reminder_middleware.render_last_words_reminder_text()
+            text = self._last_words_state.render_last_words_reminder_text()
             if not text:
                 return
             import os
@@ -548,9 +564,7 @@ class UnifiedContextStrategy:
         dropped by Phase 4 and therefore rolls back with those messages.
         Breaker and pressure accounting remain monotonic per logical turn.
         """
-        phase4 = (
-            self._reminder_middleware.snapshot_phase4_retry_state() if self._reminder_middleware is not None else None
-        )
+        phase4 = self._last_words_state.snapshot_phase4_retry_state() if self._last_words_state is not None else None
         return CompactionRetrySnapshot(
             anchors=self._exclusions.snapshot_retry_state(),
             published_fold_count=self._compression.published_fold_count(),
@@ -567,8 +581,8 @@ class UnifiedContextStrategy:
         executor-restored provider state.
         """
         self._exclusions.restore_retry_state(snapshot.anchors)
-        if self._reminder_middleware is not None and snapshot.phase4 is not None:
-            self._reminder_middleware.restore_phase4_retry_state(snapshot.phase4)
+        if self._last_words_state is not None and snapshot.phase4 is not None:
+            self._last_words_state.restore_phase4_retry_state(snapshot.phase4)
         self._compression.replay_published_folds(snapshot.published_fold_count)
         if self._state is not None:
             self._exclusions.discard_unreferenced_summaries(self._state.get("messages", []))
@@ -674,6 +688,10 @@ class UnifiedContextStrategy:
             max(context.request_overhead_tokens, context.tool_definition_tokens) if context is not None else 0
         )
         compressions_processed = await self._run_queued_compressions(messages)
+        if compressions_processed:
+            refreshed_index = self._restore_folded_reminders(messages)
+            if refreshed_index is not None:
+                annotate_token_counts(messages, tokenizer=self._tokenizer, from_index=refreshed_index)
         self._reset_stale_exclusions(messages)
         self._reinject_compressed_context_summaries(messages)
         current = self._annotate_and_count(messages)
@@ -766,6 +784,15 @@ class UnifiedContextStrategy:
 
     async def _run_queued_compressions(self, messages: list[Message]) -> bool:
         return await self._compression.run_queued(messages)
+
+    def _restore_folded_reminders(self, messages: list[Message]) -> int | None:
+        """Re-attach catalog reminders whose carrier a fold just excluded.
+
+        Returns the rebuilt index; token counts from there on are stale.
+        """
+        if self._reminder_middleware is None:
+            return None
+        return self._reminder_middleware.restore_folded_reminders(messages)
 
     def _reset_stale_exclusions(self, messages: list[Message]) -> None:
         # ---- Step 1: Handle stale _excluded flags ----
@@ -971,6 +998,7 @@ class UnifiedContextStrategy:
                     continue
                 p3_count += 1
                 changed = True
+                self._restore_folded_reminders(messages)
                 _dedup_message_ids(messages)
                 annotate_message_groups(messages, force_reannotate=True)
                 annotate_token_counts(messages, tokenizer=self._tokenizer, force_retokenize=True)

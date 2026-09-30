@@ -82,6 +82,7 @@ class _Executor:
         self.trajectory_context = None
         self.injection = InjectionMiddleware()
         self.approval_context: list[str] = []
+        self.injected_reminders: list[tuple[str, ...]] = []
 
     def inject(
         self,
@@ -92,6 +93,7 @@ class _Executor:
         preparation: PreparationTrace | None = None,
         target_turn_id: str | None = None,
     ) -> None:
+        self.injected_reminders.append(reminders)
         self.injection.queue(
             text,
             created_at=created_at,
@@ -185,27 +187,8 @@ class _Reminder:
     ) -> bool:
         return True
 
-    def queue_hook_reminders_for_current_run(
-        self,
-        _target: CurrentRunReminderTarget,
-        reminders: list[str],
-    ) -> bool:
-        if reminders:
-            self.queued.append((reminders, False))
-        return True
-
-    def remove_hook_reminders_for_current_run(
-        self,
-        _target: CurrentRunReminderTarget,
-        reminders: list[str],
-    ) -> bool:
-        for reminder in reminders:
-            for queued_reminders, _next_turn in self.queued:
-                if reminder in queued_reminders:
-                    queued_reminders.remove(reminder)
-                    break
-        self.queued = [entry for entry in self.queued if entry[0]]
-        return True
+    def queue_drained_injection_reminders(self, reminders: list[str]) -> None:
+        self.queued.append((reminders, False))
 
     def expire_current_run_scope(self, reminder_scope: CurrentRunReminderScope) -> None:
         self._scopes.discard(reminder_scope)
@@ -347,7 +330,9 @@ async def test_cancel_removes_queued_injection_and_approval_context() -> None:
     try:
         await on_user_message(host, UserMessage(text="change of plans", injection_id="inj-1"))
         assert host.current.loaded.bindings.approval_context == ["change of plans"]
-        assert host.current.loaded.reminder_middleware.queued == [(["hook context"], False)]
+        # The reminders travel with the queued text until a call drains it.
+        assert host.current.loaded.reminder_middleware.queued == []
+        assert host.current.loaded.bindings.injected_reminders == [("hook context",)]
 
         await on_user_inject_cancel(host, UserInjectCancel(injection_id="inj-1"))
     finally:
@@ -355,7 +340,7 @@ async def test_cancel_removes_queued_injection_and_approval_context() -> None:
 
     assert host.current.loaded.bindings.injection.drain_pending() == []
     assert host.current.loaded.bindings.approval_context == []
-    # The commit-time hook reminders are withdrawn together with the text.
+    # The reminders leave with the text: none was ever queued for a call.
     assert host.current.loaded.reminder_middleware.queued == []
     assert [(r.consumed, r.injection_id, r.text) for r in results] == [(False, "inj-1", "change of plans")]
     # The queued-phase removal resolves the cancel mark immediately.

@@ -8080,6 +8080,38 @@ msgstr "第 {page} 页，共 {pages} 页"
 msgid "tui.page_navigator.previous"
 msgstr "上一页"
 
+#. English: Add and Save
+#. chrys-meta={"fingerprint":"0e3c287cdfdcc38b1350911647fbf3c00f713b8864bb944c687ab90fcb78ecaa","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/prompt_cache.py
+msgid "tui.prompt_cache.button.add_and_save"
+msgstr "添加并保存"
+
+#. English: Save as Is
+#. chrys-meta={"fingerprint":"4db9538e5a40885c39f0ddd80a0c42f1710c16850d10f41fe73a4a2cd2b392e7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/prompt_cache.py
+msgid "tui.prompt_cache.button.save_as_is"
+msgstr "直接保存"
+
+#. English: Claude models on the Anthropic protocol cache a prompt only when
+#. the request asks for it, and this profile doesn't. Without caching, every
+#. model call pays full price for the whole conversation again.  Add and Save
+#. puts {option} into the extra_body chat option. Reading from the cache costs
+#. a tenth of the normal input price or less; writing to it costs 25% more. If
+#. your endpoint rejects the field, remove it from extra_body.
+#. chrys-meta={"fingerprint":"eaab5d15caa54a4472be84df6c8fad6500ea83f2fd8efecbba5e26c72e924318","multiline":true,"placeholders":["option"]}
+#: src/chrys/app/tui/screens/dialogs/prompt_cache.py
+msgid "tui.prompt_cache.message"
+msgstr ""
+"Anthropic 协议下的 Claude 模型只在请求要求时才缓存提示词，而此配置没有要求。不开启缓存，每次模型调用都要为整段对话重新按全价计费。\n"
+"\n"
+"“添加并保存”会把 {option} 加入 extra_body Chat 选项。从缓存读取的费用为正常输入价格的十分之一或更低；写入缓存则贵 25%。如果你的端点不接受该字段，请从 extra_body 中删除它。"
+
+#. English: Prompt Caching Is Off
+#. chrys-meta={"fingerprint":"b8373aa9bc011a2a3d9126a450d89abf4ae93becf12d3fd701945ff5882395f8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/prompt_cache.py
+msgid "tui.prompt_cache.title"
+msgstr "提示词缓存未开启"
+
 #. English: Retry not started
 #. chrys-meta={"fingerprint":"7db136937dd3eb95b5c20273a433b782ffdd84353028e636f4d66a547f509d8b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/event_handlers.py

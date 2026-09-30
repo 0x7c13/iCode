@@ -25,6 +25,7 @@ from chrys.orchestration.engine.build.builder import _render_todo_reminder
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.todos.reminder import format_todo_reminder
 from chrys.service.todos.tracker import TodoTracker
+from tests.support.reminder_stack import reminder_pair
 
 # ---------------------------------------------------------------------------
 # format_todo_reminder
@@ -111,9 +112,10 @@ class TestTierOneTodoReminder:
         assert first == second
         assert "original item" in first[0]
 
-    def test_preserving_retry_keeps_reminder_byte_identical(self) -> None:
-        """A retry (preserve_turn_reminders) must not re-snapshot the tracker —
-        the request prefix has to stay byte-identical for KV-cache continuity."""
+    def test_preserving_retry_keeps_the_turns_todo_snapshot(self) -> None:
+        """A retry (preserve_turn_reminders) keeps the turn's todo snapshot
+        instead of re-reading the tracker; what the retried request sends is
+        the opener's reminder record (``test_system_reminder_record.py``)."""
         tracker = _tracker_with("step one")
         mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
@@ -146,10 +148,10 @@ class TestLastWordsReminderWording:
     "the above request" would anchor the agent on the wrong message."""
 
     def test_task_anchored_wording_and_prefix_stability(self) -> None:
-        mw = SystemReminderMiddleware()
+        mw, lw = reminder_pair()
         mw.prepare_turn(usage={})
-        mw.set_last_words("[progress note]")
-        reminders = mw._build_last_words_reminders()
+        lw.set_last_words("[progress note]")
+        reminders = lw.render()
         assert len(reminders) == 1
         text = reminders[0]
         # The prefix is load-bearing: refresh strips reminder contents by
@@ -166,10 +168,10 @@ class TestLastWordsReminderWording:
 class TestLastWordsTodoSection:
     def test_todo_section_rides_inside_last_words_block(self) -> None:
         tracker = _tracker_with("current task")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
-        mw.set_last_words("[progress note]")
-        reminders = mw._build_last_words_reminders()
+        lw.set_last_words("[progress note]")
+        reminders = lw.render()
         assert len(reminders) == 1
         # One string: the todo section must live INSIDE the [LAST_WORDS]-
         # prefixed text (refresh strips only that prefix; a separate block
@@ -180,54 +182,55 @@ class TestLastWordsTodoSection:
 
     def test_no_todo_section_without_note(self) -> None:
         tracker = _tracker_with("current task")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
-        assert mw._build_last_words_reminders() == []
+        assert lw.render() == []
 
     def test_captured_at_set_not_read_live(self) -> None:
         """A todo_write AFTER set_last_words must not change the rendered
         block until the next refresh (KV-cache: the builder runs per call)."""
         tracker = _tracker_with("captured state")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
-        mw.set_last_words("[note]")
-        before = mw._build_last_words_reminders()
+        lw.set_last_words("[note]")
+        before = lw.render()
         tracker._items = (TodoItem(content="post-capture change"),)
-        after = mw._build_last_words_reminders()
+        after = lw.render()
         assert after == before
         assert "captured state" in after[0]
         assert "post-capture change" not in after[0]
 
     def test_recaptured_when_note_refreshed(self) -> None:
         tracker = _tracker_with("first state")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
-        mw.set_last_words("[note v1]")
+        lw.set_last_words("[note v1]")
         tracker._items = (TodoItem(content="second state"),)
-        mw.set_last_words("[note v2]")
-        reminders = mw._build_last_words_reminders()
+        lw.set_last_words("[note v2]")
+        reminders = lw.render()
         assert "second state" in reminders[0]
         assert "first state" not in reminders[0]
 
     def test_clearing_note_drops_captured_todo(self) -> None:
         tracker = _tracker_with("task")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
-        mw.set_last_words("[note]")
-        mw.set_last_words(None)
-        assert mw._build_last_words_reminders() == []
-        state = mw._current_turn_state()
+        lw.set_last_words("[note]")
+        lw.set_last_words(None)
+        assert lw.render() == []
+        state = mw._turns.current()
         assert state is not None
-        assert state.last_words_todo is None
+        assert state.last_words is not None
+        assert state.last_words.todo is None
 
     def test_captured_todo_survives_preserving_retry(self) -> None:
         tracker = _tracker_with("captured state")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
         mw.prepare_turn(usage={})
-        mw.set_last_words("[note]")
+        lw.set_last_words("[note]")
         tracker._items = (TodoItem(content="mid-attempt change"),)
         mw.prepare_turn(usage={}, preserve_last_words=True)
-        reminders = mw._build_last_words_reminders()
+        reminders = lw.render()
         assert len(reminders) == 1
         assert "captured state" in reminders[0]
         assert "mid-attempt change" not in reminders[0]
@@ -236,10 +239,10 @@ class TestLastWordsTodoSection:
         """Session restore hydrates ``chrys_todos`` BEFORE restore_last_words;
         the restored note re-captures its todo section from that tracker."""
         tracker = _tracker_with("restored task")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
-        mw.restore_last_words("[persisted note]")
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
+        lw.restore_last_words("[persisted note]")
         mw.prepare_turn(usage={}, preserve_last_words=True)
-        reminders = mw._build_last_words_reminders()
+        reminders = lw.render()
         assert len(reminders) == 1
         assert "[persisted note]" in reminders[0]
         assert "- [ ] restored task" in reminders[0]
@@ -248,19 +251,19 @@ class TestLastWordsTodoSection:
         """Restore → save-without-resume still renders the captured section
         (mirrors get_last_words falling back to the restored note)."""
         tracker = _tracker_with("restored task")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
-        mw.restore_last_words("[persisted note]")
-        reminders = mw._build_last_words_reminders()
+        _, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
+        lw.restore_last_words("[persisted note]")
+        reminders = lw.render()
         assert len(reminders) == 1
         assert "- [ ] restored task" in reminders[0]
 
     def test_fresh_turn_discards_restored_capture(self) -> None:
         tracker = _tracker_with("restored task")
-        mw = SystemReminderMiddleware(todo_state_provider=partial(_render_todo_reminder, tracker))
-        mw.restore_last_words("[persisted note]")
+        mw, lw = reminder_pair(todo_state_provider=partial(_render_todo_reminder, tracker))
+        lw.restore_last_words("[persisted note]")
         mw.prepare_turn(usage={})
-        assert mw._build_last_words_reminders() == []
-        assert mw._restored_last_words_todo is None
+        assert lw.render() == []
+        assert lw._restored_last_words_todo is None
 
 
 # ---------------------------------------------------------------------------

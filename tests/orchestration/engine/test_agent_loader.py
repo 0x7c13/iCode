@@ -24,13 +24,13 @@ from chrys.orchestration.engine import assembly as assembly_module
 from chrys.orchestration.engine import loader as loader_module
 from chrys.orchestration.engine.build.construction import StagedBuild
 from chrys.orchestration.engine.build.loaded import CompletedBuild
-from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.coordination import MutationCoordinator
 from chrys.service.profiles.agents.schema import AgentProfile, CompactionConfig, ToolsConfig
 from tests.orchestration.engine.build.test_lifecycle_close import _fresh_approval, _make_build_result
 from tests.support.loaded_agents import make_loaded_agent, make_manifest
+from tests.support.reminder_stack import reminder_pair
 from tests.support.waiting import await_run_task_chain
 
 
@@ -38,7 +38,7 @@ def _candidate_result(bus):
     result = _make_build_result(_fresh_approval(bus))
     result.bindings.backend.service_session_id = ""
     result.bindings.backend.service_session_storage_enabled = False
-    result.reminder_middleware = SystemReminderMiddleware()
+    result.reminder_middleware, result.last_words = reminder_pair()
     return result
 
 

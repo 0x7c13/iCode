@@ -15,7 +15,6 @@ from chrys.kernel import (
     included_token_count,
 )
 from chrys.kernel import compaction as chrys_compaction
-from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState, SystemReminderMiddleware
 from chrys.service.context.compaction import (
     _MAX_DROP_ROUNDS_PER_TURN,
     _REASON_CURRENT_TURN_DROP,
@@ -23,6 +22,7 @@ from chrys.service.context.compaction import (
     UnifiedContextStrategy,
 )
 from chrys.service.context.compaction.last_words import LastWordsSpendBudgetExceeded
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
 from tests.service.context.compaction._compaction_helpers import (
     _async_appender,
     _build_multi_turn,
@@ -36,6 +36,7 @@ from tests.service.context.compaction._compaction_helpers import (
     _user,
 )
 from tests.support.phase4_stubs import StubLastWordsGenerator, StubReminderMiddleware
+from tests.support.reminder_stack import reminder_pair
 
 # ---------------------------------------------------------------------------
 # Drop-all and the LAST_WORDS generator / reminder contract
@@ -92,7 +93,7 @@ async def test_phase4_invokes_last_words_generator():
     assert call["previous_last_words"] is None  # first invocation in the turn
     assert any(any(c.type == "function_call" for c in message.contents) for message in _scoped_messages(call))
     # LAST_WORDS must be stashed on the middleware
-    assert reminder.get_last_words() == "[stub progress note]"
+    assert reminder.last_words.get_last_words() == "[stub progress note]"
     # The round committed (spill + note + exclusions), so the post-commit
     # committed signal fires exactly once.
     assert generator.committed_publishes == 1
@@ -111,11 +112,12 @@ async def test_phase4_outgoing_user_message_carries_fresh_note_with_real_middlew
     messages = _build_single_turn(4, result_size=1000)
 
     generator = StubLastWordsGenerator(text="[stub progress note]")
-    middleware = SystemReminderMiddleware()
+    middleware, last_words = reminder_pair()
     strategy = _forced_phase4(
         messages,
         last_words_generator=generator,
         reminder_middleware=middleware,
+        last_words=last_words,
     )
     changed = await strategy(messages)
     assert changed
@@ -141,7 +143,7 @@ async def test_phase4_refreshed_note_updates_token_annotations():
     note = "progress so far: " + "read another module and recorded its collaborators. " * 60
     note_tokens = _tokenizer.count_tokens(note)
     generator = StubLastWordsGenerator(text=note)
-    middleware = SystemReminderMiddleware()
+    middleware, last_words = reminder_pair()
 
     messages = _build_single_turn(4, result_size=1000)
     original_user = messages[0]
@@ -151,6 +153,7 @@ async def test_phase4_refreshed_note_updates_token_annotations():
         messages,
         last_words_generator=generator,
         reminder_middleware=middleware,
+        last_words=last_words,
         on_compaction=_async_appender(received),
     )
     changed = await strategy(messages)
@@ -178,7 +181,7 @@ async def test_phase4_regenerates_with_previous_last_words():
     """Subsequent Phase 4 rounds feed the previous note back into the generator."""
     generator = StubLastWordsGenerator(text="[note v2]")
     reminder = StubReminderMiddleware()
-    reminder.set_last_words("[note v1]")  # simulate prior Phase 4 in this turn
+    reminder.last_words.set_last_words("[note v1]")  # simulate prior Phase 4 in this turn
 
     messages = _build_single_turn(4, result_size=1000)
 
@@ -190,7 +193,7 @@ async def test_phase4_regenerates_with_previous_last_words():
     await strategy(messages)
 
     assert generator.calls[0]["previous_last_words"] == "[note v1]"
-    assert reminder.get_last_words() == "[note v2]"
+    assert reminder.last_words.get_last_words() == "[note v2]"
 
 
 async def test_phase4_passes_only_current_scoped_timeline_and_completer():
@@ -252,12 +255,12 @@ async def test_phase4_does_not_drop_when_generator_yields_nothing(prior_note: st
 
     reminder = StubReminderMiddleware()
     if prior_note is not None:
-        reminder.set_last_words(prior_note)
+        reminder.last_words.set_last_words(prior_note)
     messages = _build_single_turn(4, result_size=1000)
     strategy = _forced_phase4(messages, last_words_generator=_EmptyGenerator(), reminder_middleware=reminder)
     changed = await strategy(messages)
     assert not changed
-    assert reminder.get_last_words() == prior_note
+    assert reminder.last_words.get_last_words() == prior_note
     assert not any(m.additional_properties.get(EXCLUDE_REASON_KEY) == "current_turn_drop" for m in messages)
 
 
@@ -307,9 +310,9 @@ async def test_phase4_propagates_generator_exception() -> None:
 
     # No note set, and no group excluded — the strategy raised before
     # applying Phase 4 exclusions, so retry sees a clean state.
-    assert reminder.get_last_words() is None
+    assert reminder.last_words.get_last_words() is None
     assert not any(m.additional_properties.get(EXCLUDE_REASON_KEY) == "current_turn_drop" for m in messages)
-    breaker = reminder.get_drop_round_breaker()
+    breaker = reminder.last_words.get_drop_round_breaker()
     assert breaker.attempts == 1
     assert breaker.consecutive_no_progress == 1
     assert breaker.tail_override is True
@@ -374,7 +377,7 @@ async def test_phase4_noop_when_collaborators_unbound() -> None:
         trigger_pct=0.90,
         target_pct=0.01,
     )
-    # No set_reminder_middleware / set_last_words_generator calls.
+    # No bind_reminder / set_last_words_generator calls.
     changed = await strategy(messages)
     # Either unchanged, or only phases 1/2 fired.  Phase 4 must not have
     # produced any current_turn_drop exclusions.
@@ -414,11 +417,11 @@ async def test_phase4_same_turn_retry_observes_failed_attempt_count() -> None:
 
     with pytest.raises(RuntimeError, match="first failure"):
         await strategy(messages)
-    assert reminder.get_drop_round_breaker().attempts == 1
+    assert reminder.last_words.get_drop_round_breaker().attempts == 1
 
     assert await strategy(messages)
-    assert reminder.get_drop_round_breaker().attempts == 2
-    assert reminder.get_drop_round_breaker().consecutive_no_progress == 0
+    assert reminder.last_words.get_drop_round_breaker().attempts == 2
+    assert reminder.last_words.get_drop_round_breaker().consecutive_no_progress == 0
 
 
 async def test_phase4_side_call_budget_trips_before_attempt_and_records_failed_attempt() -> None:
@@ -442,7 +445,7 @@ async def test_phase4_side_call_budget_trips_before_attempt_and_records_failed_a
 
     assert not await strategy(messages)
 
-    breaker = reminder.get_drop_round_breaker()
+    breaker = reminder.last_words.get_drop_round_breaker()
     assert breaker.attempts == 1
     assert breaker.side_call_tokens == 100
     assert breaker.consecutive_no_progress == 1
@@ -464,17 +467,17 @@ async def test_phase4_second_no_progress_disables_and_publishes_pressure_event()
     )
 
     assert not await strategy(messages)
-    first = reminder.get_drop_round_breaker()
+    first = reminder.last_words.get_drop_round_breaker()
     assert first.tail_override is True and first.disabled is False
     assert not await strategy(messages)
-    second = reminder.get_drop_round_breaker()
+    second = reminder.last_words.get_drop_round_breaker()
     assert second.consecutive_no_progress == 2
     assert second.disabled is True
     assert events and events[-1][0] == "generation_failure"
 
     assert not await strategy(messages)
     assert len(generator.calls) == 2
-    assert reminder.get_drop_round_breaker().attempts == 2
+    assert reminder.last_words.get_drop_round_breaker().attempts == 2
     assert len(events) == 1
 
 
@@ -502,7 +505,7 @@ async def test_phase4_breaker_refusal_publishes_pressure_once_before_generator_c
     the generator; later triggers re-enter through "disabled" and stay silent."""
     generator = StubLastWordsGenerator()
     reminder = StubReminderMiddleware()
-    reminder.set_drop_round_breaker(make_breaker())
+    reminder.last_words.set_drop_round_breaker(make_breaker())
     events: list[str] = []
     messages = _build_single_turn(2, result_size=1_000)
     strategy = _forced_phase4(
@@ -515,7 +518,7 @@ async def test_phase4_breaker_refusal_publishes_pressure_once_before_generator_c
     assert not await strategy(messages)
 
     assert generator.calls == []
-    assert reminder.get_drop_round_breaker().disabled is True
+    assert reminder.last_words.get_drop_round_breaker().disabled is True
     assert events == [expected_event]
     # The first round-limit trip surfaces one terminal failure card with the reason.
     assert generator.breaker_trips == expected_trips
@@ -538,7 +541,7 @@ async def test_phase4_success_freeing_less_than_five_points_sets_tail_override()
 
     assert await strategy(messages)
 
-    breaker = reminder.get_drop_round_breaker()
+    breaker = reminder.last_words.get_drop_round_breaker()
     assert breaker.attempts == 1
     assert breaker.consecutive_no_progress == 1
     assert breaker.tail_override is True
@@ -548,7 +551,7 @@ async def test_phase4_success_freeing_less_than_five_points_sets_tail_override()
 async def test_phase4_unlimited_budget_never_refuses_spend_or_entry() -> None:
     generator = StubLastWordsGenerator(text="[note]")
     reminder = StubReminderMiddleware()
-    reminder.set_drop_round_breaker(DropRoundBreakerState(side_call_tokens=10_000_000))
+    reminder.last_words.set_drop_round_breaker(DropRoundBreakerState(side_call_tokens=10_000_000))
     messages = _build_single_turn(2, result_size=1_000)
     strategy = _forced_phase4(
         messages,
@@ -561,5 +564,5 @@ async def test_phase4_unlimited_budget_never_refuses_spend_or_entry() -> None:
     assert len(generator.calls) == 1
     # Spend still accumulates for observability but never refuses.
     assert strategy._spend_side_call_tokens(5_000) is True
-    assert reminder.get_drop_round_breaker().side_call_tokens == 10_005_000
+    assert reminder.last_words.get_drop_round_breaker().side_call_tokens == 10_005_000
     assert generator.breaker_trips == []

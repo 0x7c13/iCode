@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from unittest.mock import MagicMock
 
 from chrys.foundation.models.invocations import PassHandle
 from chrys.kernel import Agent, Content, Message
@@ -13,6 +14,7 @@ from chrys.orchestration.invoker.evidence import ZERO_COUNT, PassEvidence
 from chrys.orchestration.invoker.resources import Conversation
 from chrys.orchestration.invoker.runtime import KernelRuntime
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.manager import ContextManager
 
 
@@ -84,6 +86,7 @@ def runtime_for_shell(
     """Keep a shell test's explicitly supplied runtime rather than a production fallback."""
 
     def create(owner: Conversation, invocation_id: str) -> KernelRuntime:
-        return KernelRuntime(owner, agent, context, reminder)  # type: ignore[arg-type]
+        # Shells never read the Phase 4 state; the spec'd stand-in only fills the field.
+        return KernelRuntime(owner, agent, context, reminder, MagicMock(spec=LastWordsState))  # type: ignore[arg-type]
 
     return create

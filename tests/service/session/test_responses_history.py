@@ -25,7 +25,6 @@ from chrys.orchestration.invoker.attempts import HistoryRollback
 from chrys.service.agent_middleware import ToolEventMiddleware
 from chrys.service.agent_middleware.control.approval import ApprovalRetrySnapshot
 from chrys.service.agent_middleware.events.tool_events import ToolBatchRecord
-from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.context.providers.history import (
     PRE_OUTPUT_HISTORY_LEN_STATE_KEY,
     CompressibleHistoryProvider,
@@ -578,7 +577,6 @@ async def test_post_run_clears_in_memory_service_session_after_failed_turn() -> 
                 injection=SimpleNamespace(drain_pending=list),
                 intermediate_texts={},
                 consumed_injections=[],
-                reminder_middleware=SystemReminderMiddleware(),
             ),
             manifest=make_manifest(),
         ),
@@ -647,7 +645,6 @@ async def test_post_run_uses_phase3_pre_output_floor_for_metadata_and_backfill()
                 injection=SimpleNamespace(drain_pending=list),
                 intermediate_texts={},
                 consumed_injections=[],
-                reminder_middleware=SystemReminderMiddleware(),
             ),
             manifest=make_manifest(),
         ),
@@ -732,7 +729,6 @@ async def test_post_run_uses_refreshed_floor_after_force_compress_rewrites_phase
                 injection=SimpleNamespace(drain_pending=list),
                 intermediate_texts={},
                 consumed_injections=[],
-                reminder_middleware=SystemReminderMiddleware(),
             ),
             manifest=make_manifest(),
         ),

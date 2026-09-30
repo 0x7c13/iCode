@@ -61,7 +61,17 @@ def _assert_same_live(engine, before, *, engine_services):
 
 
 @pytest.mark.parametrize(
-    "preparation", ["settings", "wiring", "history_restore", "history_ids", "manifest", "calibration", "workspace"]
+    "preparation",
+    [
+        "settings",
+        "wiring",
+        "last_words_restore",
+        "pointer_restore",
+        "history_ids",
+        "manifest",
+        "calibration",
+        "workspace",
+    ],
 )
 async def test_preparation_failure_closes_candidates_and_preserves_all_live_values(
     preparation, monkeypatch, agent_engine, tmp_path, *, engine_services
@@ -110,8 +120,10 @@ async def test_preparation_failure_closes_candidates_and_preserves_all_live_valu
             PropertyMock(side_effect=RuntimeError("preparation failed")),
             raising=False,
         )
-    elif preparation == "history_restore":
-        monkeypatch.setattr(candidate.reminder_middleware, "restore_phase4_state", fail)
+    elif preparation == "last_words_restore":
+        monkeypatch.setattr(candidate.last_words, "restore", fail)
+    elif preparation == "pointer_restore":
+        monkeypatch.setattr(candidate.reminder_middleware.sources.archive_pointer, "restore_record_count", fail)
     elif preparation == "history_ids":
         monkeypatch.setattr(construction, "stamp_history_item_ids", fail)
     elif preparation == "manifest":

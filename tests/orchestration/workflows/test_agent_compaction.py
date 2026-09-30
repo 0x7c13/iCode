@@ -168,14 +168,14 @@ async def test_parallel_node_compactions_archive_reduce_context_and_publish_node
         strategy = shell._parts.compaction
         assert strategy._debug_log_dir == shell._archive.log_dir
         assert strategy._on_context_pressure is not None
-        await strategy._on_context_pressure("round_limit", strategy._reminder_middleware.get_drop_round_breaker(), 123)
+        await strategy._on_context_pressure("round_limit", strategy._last_words_state.get_drop_round_breaker(), 123)
         before = strategy._annotate_and_count(messages)
         assert before > model.max_context_tokens
         assert await strategy(messages)
         assert included_token_count(messages) < before / 2
         assert not await strategy(messages)  # the next exchange is below the trigger
-        assert not strategy._reminder_middleware.get_drop_round_breaker().disabled
-        manifest = strategy._reminder_middleware.get_last_words_manifest()
+        assert not strategy._last_words_state.get_drop_round_breaker().disabled
+        manifest = strategy._last_words_state.get_last_words_manifest()
         assert len(manifest) == 1 and manifest[0]["available"]
         archive = tmp_path / manifest[0]["relative_path"]
         assert original in archive.read_text()

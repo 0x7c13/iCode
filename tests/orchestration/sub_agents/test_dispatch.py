@@ -235,15 +235,13 @@ async def test_parallel_sub_agent_invocations_prepare_independent_runtime_snapsh
             self.prepare_calls: list[dict[str, object]] = []
             self._next_runtime_id = 0
             self._runtime_label = ""
+            monkeypatch.setattr(self.sources.runtime_env, "snapshot", lambda: self._runtime_label)
 
         def prepare_turn(self, **kwargs: object) -> None:
             self._next_runtime_id += 1
             self._runtime_label = f"runtime-{self._next_runtime_id}"
             self.prepare_calls.append(kwargs)
             super().prepare_turn(**kwargs)
-
-        def _format_runtime_hint(self) -> str:
-            return self._runtime_label
 
     @dataclass
     class _Agent:
@@ -267,12 +265,13 @@ async def test_parallel_sub_agent_invocations_prepare_independent_runtime_snapsh
 
         async def execute(self) -> str:
             nonlocal started
-            initial = self.agent.reminder._build_reminders()[0]
+            # The runtime environment is the last reminder this turn offers.
+            initial = self.agent.reminder._build_reminders()[-1]
             started += 1
             if started == 2:
                 ready.set()
             await ready.wait()
-            after_overlap = self.agent.reminder._build_reminders()[0]
+            after_overlap = self.agent.reminder._build_reminders()[-1]
             observations.append((self.prompt, initial, after_overlap))
             return after_overlap
 

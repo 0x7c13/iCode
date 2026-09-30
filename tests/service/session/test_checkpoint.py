@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.trajectory.metadata import ensure_analytics_item_id, read_analytics_item_id
 from chrys.kernel import Content, LoopRecorder, Message
 from chrys.service.agent_middleware.injection import ConsumedInjection, InjectionAnchor
-from chrys.service.agent_middleware.system_reminder import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.session.checkpoint import build_recovery_state
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
@@ -386,6 +389,7 @@ def test_checkpoint_recorder_dedup_preserves_consumed_injection_timestamp() -> N
                 anchor=InjectionAnchor.from_message(opener),
                 created_at="2026-07-14T13:46:00+00:00",
                 consumption_id="inj-1",
+                wire_properties={HistoryMarkerKind.SYSTEM_REMINDERS_KEY: [{"kind": "event", "text": "hook"}]},
             )
         ],
     )
@@ -394,6 +398,7 @@ def test_checkpoint_recorder_dedup_preserves_consumed_injection_timestamp() -> N
     notes = [message for message in recovered["messages"] if message.text == "note"]
     assert len(notes) == 1
     assert notes[0].additional_properties[MESSAGE_CREATED_AT_KEY] == "2026-07-14T13:46:00.000000+00:00"
+    assert notes[0].additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] == [{"kind": "event", "text": "hook"}]
 
 
 def test_checkpoint_replays_injection_that_carries_its_live_preparation_trace() -> None:
@@ -409,6 +414,7 @@ def test_checkpoint_replays_injection_that_carries_its_live_preparation_trace() 
         anchor=InjectionAnchor.from_message(opener),
         consumption_id="inj-1",
         preparation=trace,
+        wire_properties={HistoryMarkerKind.SYSTEM_REMINDERS_KEY: [{"kind": "event", "text": "hook"}]},
     )
 
     recovered = build_recovery_state(
@@ -426,6 +432,7 @@ def test_checkpoint_replays_injection_that_carries_its_live_preparation_trace() 
     notes = [message for message in recovered["messages"] if message.text == "note"]
     assert len(notes) == 1
     assert notes[0].additional_properties[HistoryMarkerKind.INJECTION_ID_KEY] == "inj-1"
+    assert notes[0].additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] == [{"kind": "event", "text": "hook"}]
     assert injection.preparation is trace
 
 
@@ -471,6 +478,42 @@ def test_checkpoint_fresh_run_opener_stays_unflagged() -> None:
     user_messages = [m for m in recovered["messages"] if m.role == "user"]
     assert len(user_messages) == 1
     assert not _injected_flag(user_messages[0])
+
+
+def test_checkpoint_recovered_opener_keeps_the_reminders_it_was_sent_with() -> None:
+    """A crash before the opener was stored recovers it with the record the
+    request wrote, so the resumed turn re-renders the same reminders, and
+    with the item id the trajectory already announced for it."""
+    live_state = {"messages": [], "compressed_msgs": [], "turn_counter": 0}
+    sent: dict[str, Any] = {
+        HistoryMarkerKind.SYSTEM_REMINDERS_KEY: [
+            {"kind": "turn", "text": "runtime"},
+            {"kind": "catalog", "text": "skills"},
+        ]
+    }
+    live_item_id = ensure_analytics_item_id(sent)
+
+    recovered = build_recovery_state(
+        live_state,
+        _recorder(Message("user", ["hello"])),
+        mutation_tracker=None,
+        runtime_meta=SessionRuntimeMetadata(),
+        user_text="hello",
+        user_contents=None,
+        user_created_at=None,
+        user_reminder_source=sent,
+    )
+
+    assert recovered is not None
+    (opener,) = [m for m in recovered["messages"] if m.role == "user"]
+    assert read_analytics_item_id(opener.additional_properties) == live_item_id
+    record = opener.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY]
+    assert record == sent[HistoryMarkerKind.SYSTEM_REMINDERS_KEY]
+    # The writer thread gets its own copy of the live record.
+    assert record is not sent[HistoryMarkerKind.SYSTEM_REMINDERS_KEY]
+    assert all(
+        entry is not source for entry, source in zip(record, sent[HistoryMarkerKind.SYSTEM_REMINDERS_KEY], strict=True)
+    )
 
 
 def test_checkpoint_guidance_worded_like_opener_appends_second_flagged_message() -> None:

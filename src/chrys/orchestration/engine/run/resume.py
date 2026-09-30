@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, copy_reminder_record
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.turns import (
     UserMessageKind,
@@ -108,6 +108,12 @@ class TurnResumePolicy:
         self.pending_continuation_token: Any = None
         self.recovery_input_recorder: RecoveryInputRecorder | None = None
         self._opening_item_id: str | None = None
+        # Live ``additional_properties`` of the message the last request sent
+        # as new input (fresh opener, retry note or replayed anchor); None for
+        # an empty-input continuation. The reminder middleware records what
+        # the message carried there once a request is established, so every
+        # rebuilt copy (failure fallback, recovery checkpoint) takes it over.
+        self.input_properties: dict[str, Any] | None = None
 
     def set_opening_item_id(self, item_id: str | None) -> None:
         """Pre-assign the analytics item id the next opening user message takes."""
@@ -119,6 +125,7 @@ class TurnResumePolicy:
         self.outcome = None
         self.evidence = InvocationEvidence(self.origin.invocation_id)
         self.pending_continuation_token = None
+        self.input_properties = None
 
     def _take_opening_item_id(self) -> str | None:
         item_id = self._opening_item_id
@@ -131,6 +138,7 @@ class TurnResumePolicy:
         request = RunRequest([user_message], RunIntent.FRESH, self.origin)
         self.backend.validate(request)
         self._take_opening_item_id()
+        self.input_properties = user_message.additional_properties
         return request
 
     def continuation_request(self, messages: list[Message]) -> RunRequest:
@@ -165,6 +173,7 @@ class TurnResumePolicy:
         always clean (no ``<system-reminder>`` tags), so no stripping is
         needed on resume.
         """
+        self.input_properties = None
         self.backend.validate(self.continuation_request([]))
         state = self.backend.session.state.get("chrys_history", {})
         messages = state.get("messages", [])
@@ -179,9 +188,9 @@ class TurnResumePolicy:
             # response would silently ignore it.
             self.pending_continuation_token = None
             opening_item_id = self._take_opening_item_id()
-            yield self.continuation_request(
-                [_make_injected_message([additional_text], created_at, item_id=opening_item_id)]
-            )
+            note = _make_injected_message([additional_text], created_at, item_id=opening_item_id)
+            self.input_properties = note.additional_properties
+            yield self.continuation_request([note])
 
             # Belt-and-suspenders: if the agent run errored before
             # persisting the user input, ensure the note survives so the
@@ -196,7 +205,9 @@ class TurnResumePolicy:
                 start = current_turn_start(messages)
                 has_note = any(user_text_matches(m, additional_text, kind="injected") for m in messages[start:])
                 if not has_note:
-                    messages.append(_make_injected_message([additional_text], created_at, item_id=opening_item_id))
+                    fallback_note = _make_injected_message([additional_text], created_at, item_id=opening_item_id)
+                    copy_reminder_record(note.additional_properties, fallback_note.additional_properties)
+                    messages.append(fallback_note)
             return
 
         # Find the last real user input. Legacy synthetic nudges stay in
@@ -245,6 +256,11 @@ class TurnResumePolicy:
             for key in HistoryMarkerKind.MID_TURN_USER_KEYS:
                 if popped.additional_properties.get(key):
                     replay_msg.additional_properties[key] = popped.additional_properties[key]
+            # The replay is the same message re-sent: it renders the reminders
+            # the original carried, not a fresh set (after a restart the turn's
+            # reminders can no longer be rebuilt byte-identically).
+            copy_reminder_record(popped.additional_properties, replay_msg.additional_properties)
+            self.input_properties = replay_msg.additional_properties
             replay_kind: UserMessageKind = (
                 "injected" if popped.additional_properties.get(HistoryMarkerKind.INJECTED_KEY) else "opener"
             )
@@ -279,4 +295,5 @@ class TurnResumePolicy:
                     fallback_msg = _replay_user_message(contents, original_created_at, item_id=popped_item_id)
                     if replay_kind == "injected":
                         fallback_msg.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
+                    copy_reminder_record(replay_msg.additional_properties, fallback_msg.additional_properties)
                     messages.append(fallback_msg)

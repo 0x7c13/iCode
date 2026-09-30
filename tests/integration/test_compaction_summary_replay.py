@@ -42,7 +42,8 @@ class _AcpClient:
 def _strategy(**kwargs: Any) -> UnifiedContextStrategy:
     strategy = UnifiedContextStrategy(**kwargs)
     strategy.set_last_words_generator(StubLastWordsGenerator())
-    strategy.set_reminder_middleware(StubReminderMiddleware())
+    reminder = StubReminderMiddleware()
+    strategy.bind_reminder(reminder, reminder.last_words)
     return strategy
 
 

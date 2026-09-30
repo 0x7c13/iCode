@@ -10,10 +10,13 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import SESSION_CLOSED_MESSAGE, HistoryMarkerKind
-from chrys.service.agent_middleware.system_reminder import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.foundation.trajectory.metadata import read_analytics_item_id
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from chrys.foundation.models.turns import UserMessageKind
     from chrys.kernel import LoopRecorder
     from chrys.service.agent_middleware.injection import ConsumedInjection
@@ -69,6 +72,7 @@ def build_recovery_state(
     user_contents: list[Any] | None,
     user_created_at: datetime | str | None,
     user_kind: UserMessageKind = "opener",
+    user_reminder_source: Mapping[str, Any] | None = None,
     consumed_injections: list[ConsumedInjection] | None = None,
     insert_index: int | None = None,
     last_words: str | None = None,
@@ -125,18 +129,23 @@ def build_recovery_state(
     stamp_history_item_ids(copied)
     manager.bind(copied)
     if user_text or user_contents:
-        # The recorded prompt contents are the live turn's objects.
+        # The recorded prompt contents are the live turn's objects; the
+        # reminder record is copied entry by entry. The live input's item id
+        # is the one the trajectory announced, so the rebuilt copy keeps it.
         manager.ensure_user_message(
             user_text or "",
             created_at=user_created_at,
             contents=copy.deepcopy(user_contents),
             kind=user_kind,
+            item_id=read_analytics_item_id(user_reminder_source),
+            reminder_source=user_reminder_source,
         )
     # Consumed injections reach history only at finalization, so a mid-run
     # checkpoint must replay them or a hard crash loses them. Replay belongs
     # after recorder merge but before trimming and terminal markers. They need
     # no copy: replay reads their immutable text, ids and timestamps into
-    # messages it mints, and never merges an injection object itself.
+    # messages it mints, copies their live reminder record entry by entry,
+    # and never merges an injection object itself.
     shape_checkpoint_interruption(
         manager,
         loop_recorder,

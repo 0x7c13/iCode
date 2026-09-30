@@ -283,6 +283,50 @@ def responses_store_continuation_warning(profile: ModelProfile) -> str | None:
     )
 
 
+# Anthropic automatic prompt caching: one breakpoint the service places on the
+# last cacheable block of each request.
+ANTHROPIC_PROMPT_CACHE_CONTROL: Mapping[str, str] = {"type": "ephemeral"}
+
+
+def is_anthropic_claude_profile(profile: ModelProfile) -> bool:
+    """Return whether *profile* sends a Claude model over the Anthropic protocol."""
+    return profile.provider == "anthropic" and "claude" in profile.model_id.casefold()
+
+
+def lacks_anthropic_prompt_cache_option(profile: ModelProfile) -> bool:
+    """Return whether a Claude profile on the Anthropic protocol never asks for prompt caching.
+
+    Anthropic caches a prompt prefix only when the request carries
+    ``cache_control``, and Chrys does not add one itself (some gateways
+    reject the field), so such a profile pays full input price on every
+    call.  Either spelling counts: the top-level option or the same key
+    inside ``extra_body``.  Reads the raw options like the other save-time
+    checks; a value this helper cannot merge into (options that are not a
+    JSON object, an ``extra_body`` that is not one) returns False, since the
+    one-click fix could not apply.
+    """
+    if not is_anthropic_claude_profile(profile):
+        return False
+    raw = profile.chat_options
+    if not raw:
+        return True
+    try:
+        options = json.loads(raw)
+    except json.JSONDecodeError, TypeError:
+        return False
+    if not isinstance(options, dict) or "cache_control" in options:
+        return False
+    extra_body = options.get("extra_body")
+    if extra_body is None:
+        return True
+    return isinstance(extra_body, Mapping) and "cache_control" not in extra_body
+
+
+def with_anthropic_prompt_cache_option(extra_body: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return *extra_body* plus Anthropic's automatic prompt-caching switch."""
+    return {**(extra_body or {}), "cache_control": dict(ANTHROPIC_PROMPT_CACHE_CONTROL)}
+
+
 def protected_chat_option_keys_warning_structured(profile: ModelProfile) -> ProtectedChatOptionsWarning | None:
     """Return protected option paths for a profile warning."""
     raw = profile.chat_options

@@ -10,9 +10,8 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState
-
 from .last_words import SPEND_BUDGET_FAILURE_REASON
+from .last_words_state import DropRoundBreakerState
 
 if TYPE_CHECKING:
     from .strategy import UnifiedContextStrategy
@@ -48,10 +47,10 @@ class DropBreakerController:
         ``(None, reason)`` when the breaker refused entry (the breaker is
         force-disabled and the pressure event fires as a side effect).
         """
-        reminder = self._strategy._reminder_middleware
-        if reminder is None:
+        last_words = self._strategy._last_words_state
+        if last_words is None:
             return None, ""
-        breaker = reminder.get_drop_round_breaker()
+        breaker = last_words.get_drop_round_breaker()
         reason = ""
         if breaker.disabled:
             reason = "disabled"
@@ -61,11 +60,11 @@ class DropBreakerController:
             reason = "side_call_budget"
         if reason:
             disabled = replace(breaker, disabled=True)
-            reminder.set_drop_round_breaker(disabled)
+            last_words.set_drop_round_breaker(disabled)
             self.emit_context_pressure(reason, disabled)
             return None, reason
         entered = replace(breaker, attempts=breaker.attempts + 1)
-        reminder.set_drop_round_breaker(entered)
+        last_words.set_drop_round_breaker(entered)
         return entered, ""
 
     async def publish_trip(self, reason: str) -> None:
@@ -87,22 +86,22 @@ class DropBreakerController:
         Always accumulates the estimate for observability; an unlimited
         budget (negative) never refuses.
         """
-        reminder = self._strategy._reminder_middleware
-        if reminder is None:
+        last_words = self._strategy._last_words_state
+        if last_words is None:
             return False
-        breaker = reminder.get_drop_round_breaker()
+        breaker = last_words.get_drop_round_breaker()
         charged = replace(breaker, side_call_tokens=breaker.side_call_tokens + max(0, estimated_tokens))
-        reminder.set_drop_round_breaker(charged)
+        last_words.set_drop_round_breaker(charged)
         if self._strategy._phase4_side_call_token_budget < 0:
             return True
         return charged.side_call_tokens < self._strategy._phase4_side_call_token_budget
 
     def record_no_progress(self, reason: str) -> DropRoundBreakerState | None:
         """Record one failed or low-yield round and apply escalation."""
-        reminder = self._strategy._reminder_middleware
-        if reminder is None:
+        last_words = self._strategy._last_words_state
+        if last_words is None:
             return None
-        breaker = reminder.get_drop_round_breaker()
+        breaker = last_words.get_drop_round_breaker()
         consecutive = breaker.consecutive_no_progress + 1
         updated = replace(
             breaker,
@@ -110,7 +109,7 @@ class DropBreakerController:
             tail_override=True,
             disabled=breaker.disabled or consecutive >= 2,
         )
-        reminder.set_drop_round_breaker(updated)
+        last_words.set_drop_round_breaker(updated)
         if updated.disabled:
             self.emit_context_pressure(reason, updated)
         return updated
@@ -119,26 +118,26 @@ class DropBreakerController:
         """Update progress state from the synchronous post-drop sample."""
         if entry_usage_pct - post_usage_pct < _DROP_MIN_PROGRESS_PCT:
             return self.record_no_progress("no_progress")
-        reminder = self._strategy._reminder_middleware
-        if reminder is None:
+        last_words = self._strategy._last_words_state
+        if last_words is None:
             return None
-        breaker = reminder.get_drop_round_breaker()
+        breaker = last_words.get_drop_round_breaker()
         updated = replace(breaker, consecutive_no_progress=0)
-        reminder.set_drop_round_breaker(updated)
+        last_words.set_drop_round_breaker(updated)
         return updated
 
     def emit_context_pressure(self, reason: str, breaker: DropRoundBreakerState) -> None:
         """Schedule a pressure event without awaiting inside a state commit."""
         callback = self._strategy._on_context_pressure
-        reminder = self._strategy._reminder_middleware
-        if callback is None or reminder is None:
+        last_words = self._strategy._last_words_state
+        if callback is None or last_words is None:
             return
-        if not reminder.claim_context_pressure_notification():
+        if not last_words.claim_context_pressure_notification():
             return
         try:
             pending = callback(reason, breaker, self._strategy._phase4_side_call_token_budget)
         except Exception:
-            reminder.release_context_pressure_notification()
+            last_words.release_context_pressure_notification()
             _log.debug("Failed to create context-pressure event", exc_info=True)
             return
         if pending is None or not inspect.isawaitable(pending):

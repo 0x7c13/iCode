@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import uuid
+import weakref
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
@@ -35,6 +37,70 @@ if TYPE_CHECKING:
     from chrys.service.context.providers.history import CompressedBlock
 
     from .strategy import UnifiedContextStrategy
+
+
+@dataclass(frozen=True, slots=True)
+class _FoldMatch:
+    """Recognizes a wire message as the per-call copy of a folded state message.
+
+    Tiers: the same contents list (legacy same-object lists), only the fold's
+    content objects (the kernel's per-call wire views: fresh wrapper and
+    contents list), the same ``additional_properties`` (the reminder
+    middleware's enriched user messages: fresh contents, the original's dict)
+    or a summary of a folded occurrence.  Every fold site matches through
+    this one predicate so a new copy shape can't reach only some of them.
+    """
+
+    contents: WeakIdentityRegistry | set[int]
+    content_objects: WeakIdentityRegistry | set[int]
+    properties_ids: set[int]
+    summary_ids: set[str] | frozenset[str]
+
+    @classmethod
+    def of_range(cls, fold_range: list[Message], summary_ids: set[str] | frozenset[str]) -> _FoldMatch:
+        """Frame-local match for a fold range still held by the caller.
+
+        The ``additional_properties`` ids are safe keys: the fold flags these
+        very dicts excluded afterwards, so a wire message sharing one leaves
+        the request either way; matching it only places the summary where the
+        range starts.
+        """
+        return cls(
+            contents={id(message.contents) for message in fold_range},
+            content_objects=_content_object_ids(fold_range),
+            properties_ids={id(message.additional_properties) for message in fold_range},
+            summary_ids=summary_ids,
+        )
+
+    @classmethod
+    def of_cached(cls, cached: CachedCompressedContextSummary) -> _FoldMatch:
+        """Match for a cached fold whose originals may have been collected.
+
+        The ``additional_properties`` ids are read now from the originals
+        still alive, so none is the recycled id of a collected dict.
+        """
+        return cls(
+            contents=cached.folded_contents,
+            content_objects=cached.folded_content_objects,
+            properties_ids={
+                id(message.additional_properties) for ref in cached.folded_messages if (message := ref()) is not None
+            },
+            summary_ids=cached.folded_summary_ids,
+        )
+
+    def matches(self, message: Message) -> bool:
+        contents = self.contents
+        same_contents = (
+            message.contents in contents
+            if isinstance(contents, WeakIdentityRegistry)
+            else id(message.contents) in contents
+        )
+        return (
+            same_contents
+            or _carries_only(message, self.content_objects)
+            or id(message.additional_properties) in self.properties_ids
+            or (bool(self.summary_ids) and _matches_summary_id(message, self.summary_ids))
+        )
 
 
 def _fold_tokens(fold_range: list[Message]) -> int:
@@ -178,20 +244,15 @@ class CompressionEngine:
     ) -> int | None:
         """Exclude the wire projection for a fold under explicit site policy.
 
-        Match wire-list entries against the fold range (state objects):
-        contents-list identity for legacy same-object lists, shared content-object
-        identity for the kernel's per-call wire views (fresh wrapper + fresh
-        contents list).
+        Match wire-list entries against the fold range (state objects) with
+        :class:`_FoldMatch`; summary references count only when
+        *match_summary_refs* is set.
         """
-        fold_contents_ids = {id(message.contents) for message in fold_range}
-        fold_content_ids = _content_object_ids(fold_range)
+        fold = _FoldMatch.of_range(fold_range, fold_summary_ids if match_summary_refs else frozenset())
         for idx, message in enumerate(messages):
             if skip_already_excluded and message.additional_properties.get(EXCLUDED_KEY, False):
                 continue
-            should_exclude = id(message.contents) in fold_contents_ids or _carries_only(message, fold_content_ids)
-            if not should_exclude and match_summary_refs and fold_summary_ids:
-                should_exclude = _matches_summary_id(message, fold_summary_ids)
-            if not should_exclude:
+            if not fold.matches(message):
                 continue
             if insertion_index is None:
                 insertion_index = idx
@@ -223,6 +284,7 @@ class CompressionEngine:
             folded_contents=folded_contents,
             folded_summary_ids=frozenset(fold_summary_ids),
             folded_content_objects=folded_content_objects,
+            folded_messages=tuple(weakref.ref(folded) for folded in fold_range),
         )
 
     async def run_queued(self, messages: list[Message]) -> bool:
@@ -423,14 +485,8 @@ class CompressionEngine:
             if not fold_range or not self._fold_range_has_content(fold_range):
                 return self._discard_state_marker(candidate), False
 
-            fold_contents_ids = {id(message.contents) for message in fold_range}
-            fold_content_ids = _content_object_ids(fold_range)
-            fold_summary_ids = _fold_summary_ids(fold_range)
             candidate_insertion_index = self._visible_fold_insertion_index(
-                messages,
-                fold_contents_ids=fold_contents_ids,
-                fold_content_ids=fold_content_ids,
-                fold_summary_ids=fold_summary_ids,
+                messages, _FoldMatch.of_range(fold_range, _fold_summary_ids(fold_range))
             )
             if candidate_insertion_index is None:
                 continue
@@ -524,22 +580,12 @@ class CompressionEngine:
             message.additional_properties.get(HistoryMarkerKind.KEY) != HistoryMarkerKind.TURN for message in fold_range
         )
 
-    def _visible_fold_insertion_index(
-        self,
-        messages: list[Message],
-        *,
-        fold_contents_ids: set[int],
-        fold_content_ids: set[int],
-        fold_summary_ids: set[str],
-    ) -> int | None:
+    def _visible_fold_insertion_index(self, messages: list[Message], fold: _FoldMatch) -> int | None:
         """Return where a visible compressed summary should be inserted."""
         for idx, message in enumerate(messages):
             if message.additional_properties.get(EXCLUDED_KEY, False):
                 continue
-            should_exclude = id(message.contents) in fold_contents_ids or _carries_only(message, fold_content_ids)
-            if not should_exclude and fold_summary_ids:
-                should_exclude = _matches_summary_id(message, fold_summary_ids)
-            if should_exclude:
+            if fold.matches(message):
                 return idx
         return None
 
@@ -631,13 +677,9 @@ class CompressionEngine:
                 continue
 
             insertion_index: int | None = None
-            folded_summary_ids = cached.folded_summary_ids
+            fold = _FoldMatch.of_cached(cached)
             for idx, message in enumerate(messages):
-                if (
-                    message.contents in cached.folded_contents
-                    or _carries_only(message, cached.folded_content_objects)
-                    or (folded_summary_ids and _matches_summary_id(message, folded_summary_ids))
-                ):
+                if fold.matches(message):
                     insertion_index = idx
                     break
 

@@ -9,24 +9,33 @@ import json
 from contextvars import Context
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import Content, Message
-from chrys.service.agent_middleware import system_reminder as reminder_mod
-from chrys.service.agent_middleware.system_reminder import (
+from chrys.kernel.middleware import ChatContext
+from chrys.orchestration.invoker.runtime import restore_phase4_state
+from chrys.service.agent_middleware.reminders.archive_pointer import (
     CATALOG_POINTER_RECORD_COUNT_STATE_KEY,
-    DropRoundBreakerState,
-    ManifestEntry,
-    SystemReminderMiddleware,
+    _catalog_pointer_text,
 )
+from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.agent_middleware.system_reminder import (
+    wrap_system_reminder as _wrap,
+)
+from chrys.service.context.compaction import last_words_state as last_words_mod
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, ManifestEntry
 from chrys.service.context.compaction.spill import (
     CATALOG_RELATIVE_PATH,
     NOTE_RECORD_GROUP_ID,
     NOTE_RECORD_TOOL_NAME,
     SpillQuota,
 )
+from tests.support.reminder_calls import enrich_call
+from tests.support.reminder_stack import reminder_pair
 
 
 def _user(text: str) -> Message:
@@ -64,21 +73,21 @@ def _manifest_entry(
 
 class TestLastWordsRoundTrip:
     def test_set_and_get(self) -> None:
-        mw = SystemReminderMiddleware()
-        assert mw.get_last_words() is None
-        mw.set_last_words("[note]")
-        assert mw.get_last_words() == "[note]"
+        _, lw = reminder_pair()
+        assert lw.get_last_words() is None
+        lw.set_last_words("[note]")
+        assert lw.get_last_words() == "[note]"
 
     def test_set_empty_clears(self) -> None:
         """Empty/None text clears the note — prevents falsey strings
         slipping through as valid notes."""
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[note]")
-        mw.set_last_words("")
-        assert mw.get_last_words() is None
-        mw.set_last_words("[note2]")
-        mw.set_last_words(None)
-        assert mw.get_last_words() is None
+        _, lw = reminder_pair()
+        lw.set_last_words("[note]")
+        lw.set_last_words("")
+        assert lw.get_last_words() is None
+        lw.set_last_words("[note2]")
+        lw.set_last_words(None)
+        assert lw.get_last_words() is None
 
     def test_prepare_turn_clears_last_words(self) -> None:
         """A new user turn must not inherit the previous turn's LAST_WORDS.
@@ -86,26 +95,26 @@ class TestLastWordsRoundTrip:
         If we didn't clear here, the note from turn N would silently leak
         into turn N+1's user message — confusing the model with stale state.
         """
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[turn N note]")
+        mw, lw = reminder_pair()
+        lw.set_last_words("[turn N note]")
         mw.prepare_turn(usage={})
-        assert mw.get_last_words() is None
+        assert lw.get_last_words() is None
 
     async def test_last_words_child_task_update_survives_for_retry(self) -> None:
         """Phase 4 writes LAST_WORDS inside the agent task; retry runs in another task."""
-        mw = SystemReminderMiddleware()
+        mw, lw = reminder_pair()
         mw.prepare_turn(usage={})
 
         async def _phase4_child_task() -> None:
-            mw.set_last_words("[progress from child task]")
+            lw.set_last_words("[progress from child task]")
 
         await asyncio.create_task(_phase4_child_task())
-        assert mw.get_last_words() == "[progress from child task]"
+        assert lw.get_last_words() == "[progress from child task]"
 
         async def _retry_task() -> None:
             mw.prepare_turn(usage={}, preserve_last_words=True)
-            assert mw.get_last_words() == "[progress from child task]"
-            appended = mw._build_last_words_reminders()
+            assert lw.get_last_words() == "[progress from child task]"
+            appended = lw.render()
             assert len(appended) == 1
             assert "[progress from child task]" in appended[0]
 
@@ -119,54 +128,54 @@ class TestLastWordsRestore:
 
     def test_preserving_prepare_turn_consumes_restored_note(self) -> None:
         """Post-restart Continue (run_retry) re-injects the persisted note."""
-        mw = SystemReminderMiddleware()
-        mw.restore_last_words("[persisted note]")
+        mw, lw = reminder_pair()
+        lw.restore_last_words("[persisted note]")
         mw.prepare_turn(usage={}, preserve_last_words=True)
-        assert mw.get_last_words() == "[persisted note]"
-        appended = mw._build_last_words_reminders()
+        assert lw.get_last_words() == "[persisted note]"
+        appended = lw.render()
         assert len(appended) == 1
         assert "[persisted note]" in appended[0]
 
     def test_fresh_turn_discards_restored_note(self) -> None:
         """A new user turn after restore drops the note — same as in-process —
         and a later retry must not resurrect it."""
-        mw = SystemReminderMiddleware()
-        mw.restore_last_words("[persisted note]")
+        mw, lw = reminder_pair()
+        lw.restore_last_words("[persisted note]")
         mw.prepare_turn(usage={})
-        assert mw.get_last_words() is None
+        assert lw.get_last_words() is None
         mw.prepare_turn(usage={}, preserve_last_words=True)
-        assert mw.get_last_words() is None
+        assert lw.get_last_words() is None
 
     def test_get_last_words_falls_back_to_restored_note_before_any_turn(self) -> None:
         """Saving a restored session that was never resumed must still see the
         note — otherwise restore → quit would erase it from disk."""
-        mw = SystemReminderMiddleware()
-        mw.restore_last_words("[persisted note]")
-        assert mw.get_last_words() == "[persisted note]"
+        _, lw = reminder_pair()
+        lw.restore_last_words("[persisted note]")
+        assert lw.get_last_words() == "[persisted note]"
 
     def test_live_turn_note_wins_over_restored_note(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.restore_last_words("[stale persisted note]")
-        mw.set_last_words("[fresh phase4 note]")
-        assert mw.get_last_words() == "[fresh phase4 note]"
+        _, lw = reminder_pair()
+        lw.restore_last_words("[stale persisted note]")
+        lw.set_last_words("[fresh phase4 note]")
+        assert lw.get_last_words() == "[fresh phase4 note]"
 
     def test_restore_empty_clears_pending_note(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.restore_last_words("[persisted note]")
-        mw.restore_last_words("")
-        assert mw.get_last_words() is None
+        mw, lw = reminder_pair()
+        lw.restore_last_words("[persisted note]")
+        lw.restore_last_words("")
+        assert lw.get_last_words() is None
         mw.prepare_turn(usage={}, preserve_last_words=True)
-        assert mw.get_last_words() is None
+        assert lw.get_last_words() is None
 
     def test_in_process_note_preferred_over_restored_on_retry(self) -> None:
         """When a live turn already carries a note, a preserving prepare_turn
         keeps carrying it; the restored stash never overrides it."""
-        mw = SystemReminderMiddleware()
+        mw, lw = reminder_pair()
         mw.prepare_turn(usage={})
-        mw.set_last_words("[in-process note]")
-        mw.restore_last_words("[persisted note]")
+        lw.set_last_words("[in-process note]")
+        lw.restore_last_words("[persisted note]")
         mw.prepare_turn(usage={}, preserve_last_words=True)
-        assert mw.get_last_words() == "[in-process note]"
+        assert lw.get_last_words() == "[in-process note]"
 
 
 class TestRefreshLastWordsReminder:
@@ -177,8 +186,8 @@ class TestRefreshLastWordsReminder:
     next call's enrichment will produce."""
 
     def test_appends_note_and_replaces_list_entry_without_mutating_original(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[fresh note]")
+        mw, lw = reminder_pair()
+        lw.set_last_words("[fresh note]")
         original = _user("please do X")
         assistant = Message(role="assistant", contents=[Content.from_text("ok")])
         messages: list[Message] = [original, assistant]
@@ -196,16 +205,16 @@ class TestRefreshLastWordsReminder:
         assert "[fresh note]" in texts[-1]
 
     def test_replaces_stale_note_block_keeping_turn_reminders(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[old note]")
+        mw, lw = reminder_pair()
+        lw.set_last_words("[old note]")
         enriched = SystemReminderMiddleware._create_enriched(
             _user("please do X"),
             ["[runtime]"],
-            mw._build_last_words_reminders(),
+            lw.render(),
         )
         messages: list[Message] = [enriched]
 
-        mw.set_last_words("[new note]")
+        lw.set_last_words("[new note]")
         assert mw.refresh_last_words_reminder(messages) == 0
 
         texts = [c.text or "" for c in messages[0].contents if c.type == "text"]
@@ -222,14 +231,14 @@ class TestRefreshLastWordsReminder:
         assert messages[0] is original
 
     def test_noop_without_user_message(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[note]")
+        mw, lw = reminder_pair()
+        lw.set_last_words("[note]")
         messages: list[Message] = [Message(role="assistant", contents=[Content.from_text("hi")])]
         assert mw.refresh_last_words_reminder(messages) is None
 
     def test_targets_last_user_message(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[note]")
+        mw, lw = reminder_pair()
+        lw.set_last_words("[note]")
         first = _user("first")
         last = _user("last")
         messages: list[Message] = [first, Message(role="assistant", contents=[Content.from_text("ok")]), last]
@@ -238,41 +247,52 @@ class TestRefreshLastWordsReminder:
         assert messages[0] is first
         assert "LAST_WORDS" in (messages[2].contents[-1].text or "")
 
-    def test_rendering_matches_next_call_enrichment(self) -> None:
+    async def test_rendering_matches_next_call_enrichment(self) -> None:
         """Byte-stability: the refreshed message must equal what the next
-        call's enrichment produces from the pristine original — otherwise
-        the user-message tail changes between consecutive requests and the
-        provider prefix cache re-misses on it."""
-        mw = SystemReminderMiddleware()
+        call sends for the same original — otherwise the user-message tail
+        changes between consecutive requests and the provider prefix cache
+        re-misses on it."""
+        mw, lw = reminder_pair()
         mw.prepare_turn(usage={})
         original = _user("please do X")
-        turn_reminders = mw._build_reminders()
-        # The compacting call was enriched before the note existed…
-        enriched = SystemReminderMiddleware._create_enriched(original, turn_reminders, [])
-        messages: list[Message] = [enriched]
-        # …then Phase 4 sets the note and refreshes the outgoing message.
-        mw.set_last_words("[phase4 note]")
-        assert mw.refresh_last_words_reminder(messages) == 0
+        compacting = ChatContext(client=None, messages=[original], options=None)
 
-        next_call = SystemReminderMiddleware._create_enriched(
-            original,
-            turn_reminders,
-            mw._build_last_words_reminders(),
-        )
-        assert [c.text for c in messages[0].contents] == [c.text for c in next_call.contents]
+        async def _deliver_compact_and_send() -> None:
+            # The compacting call was enriched and delivered before the note
+            # existed; Phase 4 then sets it and refreshes the outgoing message
+            # before the provider request delivers it again.
+            for observer in compacting.request_message_observers:
+                observer(compacting.messages)
+            lw.set_last_words("[phase4 note]")
+            assert mw.refresh_last_words_reminder(compacting.messages) == 0
+            for observer in compacting.request_message_observers:
+                observer(compacting.messages)
+
+        await mw.process(compacting, _deliver_compact_and_send)
+        next_call = ChatContext(client=None, messages=[original], options=None)
+
+        async def _send() -> None:
+            for observer in next_call.request_message_observers:
+                observer(next_call.messages)
+
+        await mw.process(next_call, _send)
+        refreshed = compacting.messages[0]
+        sent_next = next_call.messages[0]
+        assert "[phase4 note]" in (refreshed.contents[-1].text or "")
+        assert [c.text for c in refreshed.contents] == [c.text for c in sent_next.contents]
 
 
 class TestAppendReminders:
     """LAST_WORDS rendering: the pending note as an injected ``<system-reminder>`` block."""
 
-    def test_build_last_words_reminders_empty_by_default(self) -> None:
-        mw = SystemReminderMiddleware()
-        assert mw._build_last_words_reminders() == []
+    def test_render_is_empty_by_default(self) -> None:
+        _, lw = reminder_pair()
+        assert lw.render() == []
 
-    def test_build_last_words_reminders_contains_note(self) -> None:
-        mw = SystemReminderMiddleware()
-        mw.set_last_words("[progress]")
-        appended = mw._build_last_words_reminders()
+    def test_render_contains_note(self) -> None:
+        _, lw = reminder_pair()
+        lw.set_last_words("[progress]")
+        appended = lw.render()
         assert len(appended) == 1
         # Note body must appear in the appended reminder text.
         assert "[progress]" in appended[0]
@@ -280,14 +300,15 @@ class TestAppendReminders:
         assert "LAST_WORDS" in appended[0]
 
     def test_render_last_words_reminder_text_matches_injected_blocks(self) -> None:
-        from chrys.service.agent_middleware.system_reminder import REMINDER_TAG_OPEN, _wrap
+        from chrys.service.agent_middleware.system_reminder import REMINDER_TAG_OPEN
+        from chrys.service.agent_middleware.system_reminder import wrap_system_reminder as _wrap
 
-        mw = SystemReminderMiddleware()
-        assert mw.render_last_words_reminder_text() is None
-        mw.set_last_words("[progress] with a literal <system-reminder> tag")
-        rendered = mw.render_last_words_reminder_text()
+        _, lw = reminder_pair()
+        assert lw.render_last_words_reminder_text() is None
+        lw.set_last_words("[progress] with a literal <system-reminder> tag")
+        rendered = lw.render_last_words_reminder_text()
         # Wire fidelity: same envelope + tag-escaping as the enrichment path.
-        assert rendered == "\n\n".join(_wrap(r) for r in mw._build_last_words_reminders())
+        assert rendered == "\n\n".join(_wrap(r) for r in lw.render())
         assert "[progress]" in rendered
         assert rendered.startswith("<system-reminder>\n")
         assert rendered.endswith("\n</system-reminder>")
@@ -313,7 +334,7 @@ class TestDroppedRecordManifestState:
             is None
         )
         assert ManifestEntry.from_state({**entry.to_state(), "tool": "x" * 4_097}) is None
-        overlong_argument = "x" * (reminder_mod.MANIFEST_DISPLAY_ARGUMENT_MAX_CHARS + 1)
+        overlong_argument = "x" * (last_words_mod.MANIFEST_DISPLAY_ARGUMENT_MAX_CHARS + 1)
         assert ManifestEntry.from_state({**entry.to_state(), "display_argument": overlong_argument}) is None
         assert ManifestEntry.from_state({**entry.to_state(), "size_chars": 1 << 63}) is None
         assert DropRoundBreakerState.from_state({**DropRoundBreakerState().to_state(), "version": True}) is None
@@ -344,23 +365,23 @@ class TestDroppedRecordManifestState:
         record = tmp_path / entry.relative_path
         record.parent.mkdir(parents=True)
         record.write_text("record", encoding="utf-8")
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True)
-        mw.restore_last_words_manifest([entry.to_state()])
-        mw.restore_last_words_breaker(breaker.to_state())
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=True)
+        lw.restore_last_words_manifest([entry.to_state()])
+        lw.restore_last_words_breaker(breaker.to_state())
 
         mw.prepare_turn(usage={}, preserve_last_words=True)
 
-        assert mw.get_last_words_manifest() == [entry.to_state()]
-        assert mw.get_drop_round_breaker() == breaker
+        assert lw.get_last_words_manifest() == [entry.to_state()]
+        assert lw.get_drop_round_breaker() == breaker
 
     def test_restore_availability_sweep_marks_missing_without_render_io(self, tmp_path: Path) -> None:
         entry = _manifest_entry(1)
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True)
-        mw.restore_last_words_manifest([entry.to_state()], available_relative_paths=frozenset())
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=True)
+        lw.restore_last_words_manifest([entry.to_state()], available_relative_paths=frozenset())
         mw.prepare_turn(usage={}, preserve_last_words=True)
 
         with patch.object(Path, "is_file", side_effect=AssertionError("render touched filesystem")):
-            rendered = mw._build_last_words_reminders()[0]
+            rendered = lw.render()[0]
 
         assert "(record missing)" in rendered
         assert "read the listed file with read_file" not in rendered
@@ -378,35 +399,35 @@ class TestDroppedRecordManifestState:
             (dropped / "turn012").symlink_to(redirected, target_is_directory=True)
         except OSError as exc:
             pytest.skip(f"directory symlinks unavailable: {exc}")
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True)
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=True)
 
-        mw.restore_last_words_manifest([entry.to_state()])
+        lw.restore_last_words_manifest([entry.to_state()])
         mw.prepare_turn(usage={}, preserve_last_words=True)
 
-        assert mw.get_last_words_manifest()[0]["available"] is False
-        assert "read the listed file with read_file" not in mw._build_last_words_reminders()[0]
+        assert lw.get_last_words_manifest()[0]["available"] is False
+        assert "read the listed file with read_file" not in lw.render()[0]
 
     def test_quota_eviction_marks_existing_manifest_record_unavailable(self, tmp_path: Path) -> None:
         entry = _manifest_entry(1)
         quota = SpillQuota()
         quota.initialize(10, {entry.relative_path})
-        mw = SystemReminderMiddleware(
+        mw, lw = reminder_pair(
             session_root=tmp_path,
             file_read_available=True,
             spill_quota=quota,
         )
         mw.prepare_turn()
-        mw.append_manifest([entry])
+        lw.append_manifest([entry])
 
         quota.reclaim(10, relative_path=entry.relative_path)
 
-        assert mw.get_last_words_manifest()[0]["available"] is False
-        assert "(record missing)" in mw._build_last_words_reminders()[0]
+        assert lw.get_last_words_manifest()[0]["available"] is False
+        assert "(record missing)" in lw.render()[0]
 
     def test_manifest_rendering_has_call_assistant_policy_and_no_read_affordance(self, tmp_path: Path) -> None:
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=False)
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=False)
         mw.prepare_turn()
-        mw.append_manifest(
+        lw.append_manifest(
             [
                 _manifest_entry(1),
                 _manifest_entry(2, assistant_text=True),
@@ -414,7 +435,7 @@ class TestDroppedRecordManifestState:
             ]
         )
 
-        rendered = mw._build_last_words_reminders()[0]
+        rendered = lw.render()[0]
 
         expected_dir = (tmp_path / "compactions/dropped/turn012").resolve().as_posix()
         assert f"--- Dropped this turn (records under {expected_dir}/) ---" in rendered
@@ -439,11 +460,11 @@ class TestDroppedRecordManifestState:
             outcome="merged",
             size_chars=1234,
         )
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True)
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=True)
         mw.prepare_turn()
-        mw.append_manifest([_manifest_entry(1), note_entry])
+        lw.append_manifest([_manifest_entry(1), note_entry])
 
-        rendered = mw._build_last_words_reminders()[0]
+        rendered = lw.render()[0]
 
         assert "r2 004 last_words(superseded by this round's note) → merged" in rendered
         assert "004_last_words_ab12cd34.md" in rendered
@@ -467,16 +488,16 @@ class TestDroppedRecordManifestState:
             "available": True,
             "no_record_reason": "",
         }
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True)
-        mw.restore_last_words_manifest(
+        _, lw = reminder_pair(session_root=tmp_path, file_read_available=True)
+        lw.restore_last_words_manifest(
             [legacy_row],
             available_relative_paths={legacy_row["relative_path"]},
         )
 
-        restored = mw.get_last_words_manifest()
+        restored = lw.get_last_words_manifest()
         assert len(restored) == 1
         assert restored[0]["group_id"] == NOTE_RECORD_GROUP_ID
-        rendered = mw._build_last_words_reminders()[0]
+        rendered = lw.render()[0]
         assert "r2 006 last_words(superseded by this round's note) → merged" in rendered
         assert "006_last_words_5437c317.md" in rendered
 
@@ -484,49 +505,49 @@ class TestDroppedRecordManifestState:
         entry_state = _manifest_entry(1).to_state()
         entry_state["group_id"] = ""
 
-        assert reminder_mod.ManifestEntry.from_state(entry_state) is None
+        assert last_words_mod.ManifestEntry.from_state(entry_state) is None
 
     def test_manifest_persisted_and_render_budgets_keep_most_recent(self) -> None:
-        mw = SystemReminderMiddleware(file_read_available=True)
+        mw, lw = reminder_pair(file_read_available=True)
         mw.prepare_turn()
-        mw.append_manifest([_manifest_entry(index) for index in range(1, 551)])
+        lw.append_manifest([_manifest_entry(index) for index in range(1, 551)])
 
-        state = mw.get_last_words_manifest()
-        rendered = mw._build_last_words_reminders()[0]
-        manifest = mw._render_manifest(mw._current_manifest_entries())
+        state = lw.get_last_words_manifest()
+        rendered = lw.render()[0]
+        manifest = lw._render_manifest(lw._current_manifest_entries())
 
-        assert len(state) == reminder_mod._MANIFEST_MAX_PERSISTED == 500
+        assert len(state) == last_words_mod._MANIFEST_MAX_PERSISTED == 500
         assert state[0]["sequence"] == 51
-        assert len(manifest.splitlines()) <= reminder_mod._MANIFEST_MAX_LINES
-        assert len(rendered.split("--- Dropped this turn", 1)[-1]) <= reminder_mod._MANIFEST_MAX_CHARS
+        assert len(manifest.splitlines()) <= last_words_mod._MANIFEST_MAX_LINES
+        assert len(rendered.split("--- Dropped this turn", 1)[-1]) <= last_words_mod._MANIFEST_MAX_CHARS
         assert "… and 453 earlier records — see manifest.md" in rendered
         assert "file-550.txt" in rendered
         assert "file-51.txt" not in rendered
 
     def test_breaker_writes_without_note_and_resets_at_real_turn_boundary(self) -> None:
-        mw = SystemReminderMiddleware()
+        mw, lw = reminder_pair()
         mw.prepare_turn()
         breaker = DropRoundBreakerState(attempts=1, consecutive_no_progress=1, tail_override=True, side_call_tokens=55)
 
-        mw.set_drop_round_breaker(breaker)
+        lw.set_drop_round_breaker(breaker)
 
-        assert mw.get_last_words() is None
-        assert mw.get_last_words_breaker_state() == breaker.to_state()
+        assert lw.get_last_words() is None
+        assert lw.get_last_words_breaker_state() == breaker.to_state()
         mw.prepare_turn(preserve_last_words=True, preserve_turn_reminders=True)
-        assert mw.get_drop_round_breaker() == breaker
+        assert lw.get_drop_round_breaker() == breaker
         mw.prepare_turn()
-        assert mw.get_drop_round_breaker() == DropRoundBreakerState()
+        assert lw.get_drop_round_breaker() == DropRoundBreakerState()
 
     def test_context_pressure_notification_is_preserved_only_across_retry(self) -> None:
-        mw = SystemReminderMiddleware()
+        mw, lw = reminder_pair()
         mw.prepare_turn()
 
-        assert mw.claim_context_pressure_notification()
-        assert not mw.claim_context_pressure_notification()
+        assert lw.claim_context_pressure_notification()
+        assert not lw.claim_context_pressure_notification()
         mw.prepare_turn(preserve_last_words=True)
-        assert not mw.claim_context_pressure_notification()
+        assert not lw.claim_context_pressure_notification()
         mw.prepare_turn()
-        assert mw.claim_context_pressure_notification()
+        assert lw.claim_context_pressure_notification()
 
 
 class TestDroppedRecordCatalogPointer:
@@ -591,21 +612,25 @@ class TestDroppedRecordCatalogPointer:
 
         mw.prepare_turn()
 
-        assert mw.get_catalog_pointer_record_count_state() == 1
+        assert mw.sources.archive_pointer.record_count_state() == 1
         assert not any("Earlier context compaction" in reminder for reminder in mw._build_reminders())
 
-    def test_pointer_coexists_with_live_manifest_and_refresh_keeps_pointer(self, tmp_path: Path) -> None:
+    async def test_pointer_coexists_with_live_manifest_and_refresh_keeps_pointer(self, tmp_path: Path) -> None:
         quota = self._write_catalog(tmp_path, 1)
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True, spill_quota=quota)
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=True, spill_quota=quota)
         mw.prepare_turn()
-        original = _user("continue")
-        messages = [SystemReminderMiddleware._create_enriched(original, mw._build_reminders(), [])]
-        mw.set_last_words("[turn two note]")
-        mw.append_manifest([_manifest_entry(2)])
+        context = ChatContext(client=None, messages=[_user("continue")], options=None)
 
-        assert mw.refresh_last_words_reminder(messages) == 0
+        async def _deliver_and_refresh() -> None:
+            for observer in context.request_message_observers:
+                observer(context.messages)
+            lw.set_last_words("[turn two note]")
+            lw.append_manifest([_manifest_entry(2)])
+            assert mw.refresh_last_words_reminder(cast("list[Message]", context.messages)) == 0
 
-        rendered = "\n".join(content.text or "" for content in messages[0].contents)
+        await mw.process(context, _deliver_and_refresh)
+
+        rendered = "\n".join(content.text or "" for content in context.messages[0].contents)
         assert "Earlier context compaction archived 1 record" in rendered
         assert "--- Dropped this turn" in rendered
         assert "[turn two note]" in rendered
@@ -636,8 +661,10 @@ class TestDroppedRecordCatalogPointer:
         ]
         catalog.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
         quota = self._quota_for_records(records)
-        mw = SystemReminderMiddleware(session_root=tmp_path, file_read_available=True, spill_quota=quota)
-        mw.restore_phase4_state(
+        mw, lw = reminder_pair(session_root=tmp_path, file_read_available=True, spill_quota=quota)
+        restore_phase4_state(
+            mw,
+            lw,
             {
                 "last_words": "[active note]",
                 "last_words_manifest": [active_entry.to_state()],
@@ -649,7 +676,7 @@ class TestDroppedRecordCatalogPointer:
 
         pointer = next(item for item in mw._build_reminders() if "Earlier context compaction" in item)
         assert "archived 1 record from previous turns" in pointer
-        last_words = "\n".join(mw._build_last_words_reminders())
+        last_words = "\n".join(lw.render())
         assert active_entry.relative_path.rsplit("/", 1)[-1] in last_words
 
     def test_restored_retry_reuses_persisted_pointer_before_current_turn_records(self, tmp_path: Path) -> None:
@@ -688,12 +715,14 @@ class TestDroppedRecordCatalogPointer:
         catalog = tmp_path / CATALOG_RELATIVE_PATH
         catalog.parent.mkdir(parents=True)
         catalog.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
-        mw = SystemReminderMiddleware(
+        mw, lw = reminder_pair(
             session_root=tmp_path,
             file_read_available=True,
             spill_quota=self._quota_for_records(records),
         )
-        mw.restore_phase4_state(
+        restore_phase4_state(
+            mw,
+            lw,
             {
                 "last_words": "[active note]",
                 "last_words_manifest": [active_entry.to_state()],
@@ -706,21 +735,21 @@ class TestDroppedRecordCatalogPointer:
 
         pointer = next(item for item in mw._build_reminders() if "Earlier context compaction" in item)
         assert "archived 1 record from previous turns" in pointer
-        assert mw.get_catalog_pointer_record_count_state() == 1
+        assert mw.sources.archive_pointer.record_count_state() == 1
 
     def test_restored_retry_suppresses_pointer_when_spill_storage_is_unavailable(self, tmp_path: Path) -> None:
         quota = self._write_catalog(tmp_path, 1)
         quota.disable_storage()
-        mw = SystemReminderMiddleware(
+        mw, lw = reminder_pair(
             session_root=tmp_path,
             file_read_available=True,
             spill_quota=quota,
         )
-        mw.restore_phase4_state({CATALOG_POINTER_RECORD_COUNT_STATE_KEY: 1})
+        restore_phase4_state(mw, lw, {CATALOG_POINTER_RECORD_COUNT_STATE_KEY: 1})
 
         mw.prepare_turn(preserve_last_words=True, preserve_turn_reminders=True)
 
-        assert mw.get_catalog_pointer_record_count_state() == 1
+        assert mw.sources.archive_pointer.record_count_state() == 1
         assert not any("Earlier context compaction" in item for item in mw._build_reminders())
 
     def test_pointer_count_and_catalog_cover_main_assistant_and_subagent_records(self, tmp_path: Path) -> None:
@@ -756,3 +785,45 @@ class TestDroppedRecordCatalogPointer:
         assert "archived 2 records" in reminder
         assert catalog.resolve().as_posix() in reminder
         assert "tool calls" not in reminder
+
+    async def test_pointer_is_resent_only_when_its_count_changes(self, tmp_path: Path) -> None:
+        """The pointer is standing context: a moved session renders it at its own catalog without resending it."""
+        root = tmp_path / "session"
+        mw = SystemReminderMiddleware(
+            session_root=root, file_read_available=True, spill_quota=self._write_catalog(root, 2)
+        )
+        mw.prepare_turn()
+        opener = _user("first")
+        first = await enrich_call(mw, [opener])
+
+        pointer = _catalog_pointer_text(2, (root / CATALOG_RELATIVE_PATH).resolve().as_posix())
+        assert [content.text for content in first[0].contents] == ["first", _wrap(pointer)]
+        assert opener.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] == [
+            {"kind": "catalog", "text": pointer, "name": "archive"}
+        ]
+
+        moved_root = tmp_path / "moved"
+        moved = SystemReminderMiddleware(
+            session_root=moved_root, file_read_available=True, spill_quota=self._write_catalog(moved_root, 2)
+        )
+        moved.prepare_turn()
+        history = [opener, Message(role="assistant", contents=["a"]), _user("second")]
+        same_count = await enrich_call(moved, history)
+
+        moved_catalog = (moved_root / CATALOG_RELATIVE_PATH).resolve().as_posix()
+        assert [content.text for content in same_count[0].contents] == [
+            "first",
+            _wrap(_catalog_pointer_text(2, moved_catalog)),
+        ]
+        assert [content.text for content in same_count[2].contents] == ["second"]
+
+        grown = SystemReminderMiddleware(
+            session_root=moved_root, file_read_available=True, spill_quota=self._write_catalog(moved_root, 3)
+        )
+        grown.prepare_turn()
+        more = await enrich_call(grown, [*history, Message(role="assistant", contents=["b"]), _user("third")])
+
+        assert [content.text for content in more[-1].contents] == [
+            "third",
+            _wrap(_catalog_pointer_text(3, moved_catalog)),
+        ]

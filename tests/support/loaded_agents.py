@@ -6,11 +6,13 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from types import MappingProxyType, SimpleNamespace
+from typing import Any, Unpack
 from unittest.mock import MagicMock
 
 from chrys.orchestration.engine.build.loaded import AgentManifest, LoadedAgent
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.invoker.resources import Conversation, PreparedAgent
+from chrys.orchestration.invoker.runtime import ReminderInputs, create_reminder
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 
@@ -27,14 +29,33 @@ def make_loaded_agent(**overrides) -> LoadedAgent:
         "consumed_injections": [],
         "intermediate_texts": {},
         "loop_recorder": MagicMock(),
-        "reminder_middleware": SystemReminderMiddleware(),
+        **reminder_resources(),
         "approval_judge": MagicMock(),
         "sub_agent_tools": None,
         "skills_provider": None,
         "mcp_adapter": None,
     }
     values.update(overrides)
-    return LoadedAgent(**values)
+    return _require_reminder_pair(LoadedAgent(**values))
+
+
+def _require_reminder_pair(loaded: LoadedAgent) -> LoadedAgent:
+    """Refuse a real reminder middleware installed without the LAST_WORDS state it renders.
+
+    Construction, restore and Phase 4 reach the note through both fields, so a
+    half-replaced pair tests a build production never makes; pass both, for
+    example ``**reminder_resources()``.  Stub middlewares are not checked.
+    """
+    middleware = loaded.reminder_middleware
+    if isinstance(middleware, SystemReminderMiddleware) and not middleware.renders_last_words(loaded.last_words):
+        raise TypeError("reminder_middleware and last_words must be one pair: pass **reminder_resources()")
+    return loaded
+
+
+def reminder_resources(**inputs: Unpack[ReminderInputs]) -> dict[str, Any]:
+    """``LoadedAgent`` fields for a reminder middleware and the LAST_WORDS state it renders."""
+    reminder_middleware, last_words = create_reminder(inputs)
+    return {"reminder_middleware": reminder_middleware, "last_words": last_words}
 
 
 def make_manifest(**overrides) -> AgentManifest:
@@ -61,7 +82,7 @@ def install_loaded_agent(engine, *, loaded=..., manifest=..., **overrides) -> No
         elif current.loaded is None:
             current.loaded = make_loaded_agent(**resources)
         else:
-            current.loaded = replace(current.loaded, **resources)
+            current.loaded = _require_reminder_pair(replace(current.loaded, **resources))
     if manifest is not ...:
         current.manifest = manifest
     elif details:

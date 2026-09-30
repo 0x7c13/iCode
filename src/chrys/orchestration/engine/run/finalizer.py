@@ -18,7 +18,6 @@ from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import TurnEndReason
 from chrys.orchestration.engine.execution import CurrentRunScope
 from chrys.orchestration.engine.run import sub_agent_coordination as sub_agents
-from chrys.orchestration.engine.run.active_injection import withdraw_committed_injection_reminders
 from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.service.context.providers.history import PRE_OUTPUT_HISTORY_LEN_STATE_KEY
@@ -216,15 +215,6 @@ class TurnFinalizer:
         """Close and publish unconsumed injections unless shutdown owns notification."""
         abandoned: list[QueuedInjection] = self._current.require_loaded().injection.drain_pending()
         for injection in abandoned:
-            # The text never reached the model, so its commit-time reminders
-            # must not either — a pending retry preserves turn reminders and
-            # would otherwise carry them into the next model call.
-            loaded = self._current.loaded
-            withdraw_committed_injection_reminders(
-                loaded.reminder_middleware if loaded is not None else None,
-                self._turn_state.lease.current_run_scope,
-                injection,
-            )
             if injection.preparation is not None:
                 injection.preparation.finished_soon(
                     outcome=PreparationOutcome.TARGET_STALE,

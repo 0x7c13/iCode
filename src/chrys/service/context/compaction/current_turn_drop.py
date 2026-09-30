@@ -8,18 +8,18 @@ import asyncio
 import logging
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import Message, annotate_token_counts, included_token_count, set_excluded
-from chrys.service.agent_middleware.system_reminder import ManifestEntry
 
 from .breaker import DropBreakerController
 from .events import _REASON_CURRENT_TURN_DROP, CompactionInfo
 from .exclusions import ExclusionLedger
 from .groups import _tool_call_name
 from .last_words import LastWordsSpendBudgetExceeded
+from .last_words_state import LastWordsState, ManifestEntry
 from .scoped import ScopedGroup, build_scoped_group_timeline
 from .spill import SpillBatchResult, SpillManifestItem, SpillQuota, turn_directory_name, write_spill_batch
 from .turns import _resolve_turns
@@ -123,6 +123,8 @@ class CurrentTurnDropRound:
         degraded_opener: bool,
         has_continuation_nudges: bool,
         context: CompactionCallContext | None,
+        generator: LastWordsGeneratorLike,
+        last_words: LastWordsState,
     ) -> str:
         # max() folds the retained legacy ``tool_definition_tokens`` spelling.
         request_overhead_tokens = (
@@ -130,7 +132,7 @@ class CurrentTurnDropRound:
         )
         failure_recorded = False
         try:
-            new_last_words = await cast("LastWordsGeneratorLike", self._strategy._last_words_generator).generate(
+            new_last_words = await generator.generate(
                 timeline_groups,
                 previous,
                 degraded_opener=degraded_opener,
@@ -146,7 +148,7 @@ class CurrentTurnDropRound:
             breaker = self._breaker.record_no_progress("side_call_budget")
             if breaker is not None and not breaker.disabled:
                 disabled = replace(breaker, disabled=True)
-                cast("Any", self._strategy._reminder_middleware).set_drop_round_breaker(disabled)
+                last_words.set_drop_round_breaker(disabled)
                 self._breaker.emit_context_pressure("side_call_budget", disabled)
             failure_recorded = True
             _log.warning("Phase 4 side-call spend budget exhausted; retaining current-turn groups")
@@ -207,8 +209,8 @@ class CurrentTurnDropRound:
         # ---- Phase 4: Drop ALL current-turn tool calls + inline agent text ----
         # One shot: collect every current-turn group that is still included,
         # hand them to the LAST_WORDS LLM summariser, exclude them, and set
-        # the updated note on the reminder middleware so it's appended to
-        # the user message on every subsequent LLM call until the turn ends.
+        # the updated note on the LAST_WORDS state, whose reminder is appended
+        # to the user message on every subsequent LLM call until the turn ends.
         # Generator failures (SDK error, empty response) are retried inside
         # the generator against the same LAST_WORDS prompt — we never drop
         # current-turn work without a note in hand.
@@ -238,12 +240,16 @@ class CurrentTurnDropRound:
             has_tool_call = any(group.kind == "tool_call" for group in timeline.groups)
 
             if current_groups and has_tool_call:
-                if self._strategy._last_words_generator is None or self._strategy._reminder_middleware is None:
+                reminder_middleware = self._strategy._reminder_middleware
+                last_words_state = self._strategy._last_words_state
+                last_words_generator = self._strategy._last_words_generator
+                if last_words_generator is None or reminder_middleware is None or last_words_state is None:
                     _log.warning(
                         "Phase 4 SKIPPED drop: fresh-note collaborators unbound "
-                        "(reminder_middleware=%s, last_words_generator=%s)",
-                        "bound" if self._strategy._reminder_middleware is not None else "None",
-                        "bound" if self._strategy._last_words_generator is not None else "None",
+                        "(reminder_middleware=%s, last_words_state=%s, last_words_generator=%s)",
+                        "bound" if reminder_middleware is not None else "None",
+                        "bound" if last_words_state is not None else "None",
+                        "bound" if last_words_generator is not None else "None",
                     )
                 else:
                     # Step 1: synchronous entry check and attempt count, before
@@ -272,7 +278,7 @@ class CurrentTurnDropRound:
                         # Step 2: only a non-empty note produced by THIS round
                         # authorizes the later drop. A stale note is inherited
                         # input, never authorization for a new delta.
-                        previous = self._strategy._reminder_middleware.get_last_words()
+                        previous = last_words_state.get_last_words()
                         has_continuation_nudges = any(
                             is_continuation_message(message) for group in timeline.groups for message in group.messages
                         )
@@ -282,6 +288,8 @@ class CurrentTurnDropRound:
                             degraded_opener=timeline.degraded_opener,
                             has_continuation_nudges=has_continuation_nudges,
                             context=context,
+                            generator=last_words_generator,
+                            last_words=last_words_state,
                         )
 
                         if new_last_words:
@@ -301,13 +309,11 @@ class CurrentTurnDropRound:
                                 # Steps 4-5: synchronous commit through
                                 # exclusion and the post-round usage sample.
                                 # Do not insert an await anywhere in this block.
-                                self._strategy._reminder_middleware.mark_manifest_records_unavailable(
-                                    spill_result.evicted_relative_paths
-                                )
-                                self._strategy._reminder_middleware.set_last_words(new_last_words)
-                                self._strategy._reminder_middleware.append_manifest(manifest_entries)
+                                last_words_state.mark_manifest_records_unavailable(spill_result.evicted_relative_paths)
+                                last_words_state.set_last_words(new_last_words)
+                                last_words_state.append_manifest(manifest_entries)
                                 p4_last_words_generated = True
-                                self._strategy._reminder_middleware.refresh_last_words_reminder(messages)
+                                reminder_middleware.refresh_last_words_reminder(messages)
                                 annotate_token_counts(
                                     messages,
                                     tokenizer=self._strategy._tokenizer,
@@ -348,7 +354,7 @@ class CurrentTurnDropRound:
                                 # (the finished-ok signal fired pre-commit
                                 # and can belong to an abandoned round).
                                 try:
-                                    await self._strategy._last_words_generator.publish_committed()
+                                    await last_words_generator.publish_committed()
                                 except asyncio.CancelledError:
                                     # The commit above is durable, but the
                                     # end-of-pass on_compaction notification

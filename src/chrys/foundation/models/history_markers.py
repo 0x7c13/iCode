@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.i18n import msg
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # Persisted status-marker writer audit (closed set): fixed semantic statuses are
 # interruption/failure fallbacks, checkpoint closure, and reload discard; dynamic
@@ -73,6 +76,11 @@ class HistoryMarkerKind:
     # distinguish a persisted copy of this consumption from a distinct
     # earlier injection that happens to share the text.
     INJECTION_ID_KEY: Final[str] = "_injection_id"
+    # System reminders a user message carried on an established provider
+    # request, as ``[{"kind": ..., "text": ...}]``.  The reminder middleware
+    # re-renders them on every later call so the conversation prefix stays
+    # byte-identical across turns; the message's own contents never hold them.
+    SYSTEM_REMINDERS_KEY: Final[str] = "_chrys_system_reminders"
 
     TURN: Final[str] = "turn"
     SUMMARY: Final[str] = "summary"
@@ -82,3 +90,17 @@ class HistoryMarkerKind:
     STATUS_MARKERS: Final[frozenset[str]] = frozenset({INTERRUPTED, AWAITING_SUB_AGENTS})
     SESSION_COUNT_EXCLUDED: Final[frozenset[str]] = frozenset({TURN, INTERRUPTED, AWAITING_SUB_AGENTS})
     LAST_WORDS_EXCLUDED: Final[frozenset[str]] = frozenset({TURN, SUMMARY, INTERRUPTED})
+
+
+def copy_reminder_record(source: Mapping[str, Any] | None, target: dict[str, Any]) -> None:
+    """Carry *source*'s reminder record onto *target*, another copy of the same user message.
+
+    A rebuilt copy that lost the record would render bare on later requests
+    and change the cached prefix from there on, so every site that rebuilds
+    a user message calls this: the persisted injection copy, retry replay and
+    its failure fallback, the crash-recovery checkpoint and a child's retry
+    seed.  Entries are copied fresh: the source dict may still be live.
+    """
+    record = source.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY) if source is not None else None
+    if isinstance(record, list) and record:
+        target[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = [dict(entry) for entry in record if isinstance(entry, dict)]

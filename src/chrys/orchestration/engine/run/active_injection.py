@@ -24,14 +24,12 @@ from chrys.service.trajectory.preparation import PreparationOutcome, Preparation
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import RuntimeSkillDetails
-    from chrys.orchestration.engine.execution import CurrentRunScope, PreAdmissionPreparationTracker
+    from chrys.orchestration.engine.execution import PreAdmissionPreparationTracker
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
     from chrys.orchestration.engine.state.machine import EngineStateMachine
-    from chrys.service.agent_middleware.injection import QueuedInjection
-    from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
     from chrys.service.hooks.schema import HookDecision
 
 
@@ -348,11 +346,10 @@ class ActiveTurnInjector:
                 staged.skill_catalog,
             ):
                 return await _abandon()
-            if not target.reminder_middleware.queue_hook_reminders_for_current_run(target.reminder_target, reminders):
-                return await _abandon()
             committed = self._commit_staged_runtime_skills(staged)
-            # Carry the queued reminders on the injection so a later cancel
-            # can withdraw them together with the text.
+            # The reminders travel with the injection and join the turn's
+            # reminders only when a model call drains it, so they land on the
+            # injected message and a cancelled injection leaves none behind.
             target.bindings.inject(
                 text,
                 created_at=created_at,
@@ -420,26 +417,3 @@ class ActiveTurnInjector:
         if reference is None:
             return None
         return format_skill_reference_reminder(reference)
-
-
-def withdraw_committed_injection_reminders(
-    reminder_middleware: SystemReminderMiddleware | None,
-    current_run_scope: CurrentRunScope | None,
-    injection: QueuedInjection,
-) -> None:
-    """Withdraw the commit-time hook/skill reminders of an undelivered injection.
-
-    Valid whenever the injection's queue entry was still present (an explicit
-    cancel or the finalizer's abandoned drain): no model call has consumed the
-    entry since its commit, so its reminders are provably undelivered. When
-    the scope is already gone or expired, the reminders die with it and there
-    is nothing to withdraw.
-    """
-    if not injection.reminders:
-        return
-    if reminder_middleware is None or current_run_scope is None:
-        return
-    target = reminder_middleware.capture_current_run_target(current_run_scope.reminder_scope)
-    if target is None:
-        return
-    reminder_middleware.remove_hook_reminders_for_current_run(target, list(injection.reminders))

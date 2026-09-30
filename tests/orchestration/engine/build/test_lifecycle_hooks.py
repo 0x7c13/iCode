@@ -24,12 +24,9 @@ from chrys.orchestration.engine.build.loaded import CompletedBuild
 from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
-from chrys.service.agent_middleware.system_reminder import (
-    CATALOG_POINTER_RECORD_COUNT_STATE_KEY,
-    DropRoundBreakerState,
-    ManifestEntry,
-    SystemReminderMiddleware,
-)
+from chrys.orchestration.invoker.runtime import restore_phase4_state
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, ManifestEntry
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.loader import merge_hooks_files
 from chrys.service.hooks.manager import HookManager
@@ -38,6 +35,7 @@ from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.session import SessionTrajectory
 from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, make_manifest
+from tests.support.reminder_stack import reminder_pair
 from tests.support.waiting import wait_until
 
 
@@ -683,8 +681,9 @@ async def test_soft_restart_rearms_preserved_phase4_state(
         "last_words_manifest": [entry.to_state()],
         "last_words_breaker": breaker.to_state(),
     }
-    install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
-    engine.current.loaded.reminder_middleware.restore_catalog_pointer_record_count(7)
+    reminder, last_words = reminder_pair()
+    install_loaded_agent(engine, reminder_middleware=reminder, last_words=last_words)
+    engine.current.loaded.reminder_middleware.sources.archive_pointer.restore_record_count(7)
 
     async def _fake_build_agent(
         _profile: AgentProfile,
@@ -695,12 +694,13 @@ async def test_soft_restart_rearms_preserved_phase4_state(
     ) -> CompletedBuild:
         candidate = _completed_build(engine, staged, engine_services=engine_services)
         candidate = replace(candidate, loaded=replace(candidate.loaded, bindings=_FakeExecutor()))
-        install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
+        displaced_reminder, displaced_last_words = reminder_pair()
+        install_loaded_agent(engine, reminder_middleware=displaced_reminder, last_words=displaced_last_words)
         # Mirror the real commit tail: the preserved conversation and phase-4
         # state go live with the executor, and the manager binds that dict.
         if preserved_history is not None:
             candidate.loaded.bindings.backend.history_state = preserved_history
-            candidate.loaded.reminder_middleware.restore_phase4_state(preserved_history)
+            restore_phase4_state(candidate.loaded.reminder_middleware, candidate.loaded.last_words, preserved_history)
         return candidate
 
     monkeypatch.setattr(engine.loader, "build", _fake_build_agent)
@@ -708,19 +708,20 @@ async def test_soft_restart_rearms_preserved_phase4_state(
     await engine.loader.reload(profile, operation="model_switch")
 
     middleware = engine.current.loaded.reminder_middleware
+    state = engine.current.loaded.last_words
     assert middleware is not None
-    assert middleware.get_last_words() == "[LAST_WORDS] resume from step 3"
-    assert middleware.get_last_words_manifest()[0]["record_id"] == "r1"
-    assert middleware.get_drop_round_breaker() == breaker
-    assert middleware.get_catalog_pointer_record_count_state() == 7
+    assert state.get_last_words() == "[LAST_WORDS] resume from step 3"
+    assert state.get_last_words_manifest()[0]["record_id"] == "r1"
+    assert state.get_drop_round_breaker() == breaker
+    assert middleware.sources.archive_pointer.record_count_state() == 7
     assert engine.current.loaded.bindings.backend.history_state[CATALOG_POINTER_RECORD_COUNT_STATE_KEY] == 7
 
     middleware.prepare_turn(usage={}, preserve_last_words=True)
 
-    assert middleware.get_last_words() == "[LAST_WORDS] resume from step 3"
-    assert middleware.get_last_words_manifest()[0]["record_id"] == "r1"
-    assert middleware.get_drop_round_breaker() == breaker
-    assert middleware.get_catalog_pointer_record_count_state() == 7
+    assert state.get_last_words() == "[LAST_WORDS] resume from step 3"
+    assert state.get_last_words_manifest()[0]["record_id"] == "r1"
+    assert state.get_drop_round_breaker() == breaker
+    assert middleware.sources.archive_pointer.record_count_state() == 7
 
 
 @pytest.mark.asyncio

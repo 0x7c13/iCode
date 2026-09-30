@@ -20,9 +20,9 @@ from chrys.service.hooks.events import HookEvent
 if TYPE_CHECKING:
     from chrys.foundation.retry import RetryAttemptInfo
     from chrys.orchestration.invoker.origin import BoundEmitter
-    from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState
     from chrys.service.context.compaction import PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
+    from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
     from chrys.service.context.compaction.strategy import CompactionRetrySnapshot, UnifiedContextStrategy
     from chrys.service.hooks.manager import HookManager
 

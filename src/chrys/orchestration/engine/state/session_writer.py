@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from chrys.foundation.recovery import RecoveryPersistOutcome
-from chrys.service.agent_middleware.system_reminder import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
 from chrys.service.session import checkpoint as session_checkpoint
 from chrys.service.session.persistence import has_real_messages
@@ -170,23 +170,23 @@ class SessionWriter:
         # re-inject it — the compacted turn's tool-call history is already
         # dropped from ``messages``, and the note is its only replacement.
         if self._current.loaded is not None:
-            last_words = self._current.loaded.reminder_middleware.get_last_words()
+            last_words = self._current.loaded.last_words.get_last_words()
             if last_words:
                 self._current.loaded.bindings.backend.history_state["last_words"] = last_words
             else:
                 self._current.loaded.bindings.backend.history_state.pop("last_words", None)
-            manifest = self._current.loaded.reminder_middleware.get_last_words_manifest()
+            manifest = self._current.loaded.last_words.get_last_words_manifest()
             if manifest:
                 self._current.loaded.bindings.backend.history_state["last_words_manifest"] = manifest
             else:
                 self._current.loaded.bindings.backend.history_state.pop("last_words_manifest", None)
-            breaker = self._current.loaded.reminder_middleware.get_last_words_breaker_state()
+            breaker = self._current.loaded.last_words.get_last_words_breaker_state()
             if breaker:
                 self._current.loaded.bindings.backend.history_state["last_words_breaker"] = breaker
             else:
                 self._current.loaded.bindings.backend.history_state.pop("last_words_breaker", None)
             catalog_pointer_record_count = (
-                self._current.loaded.reminder_middleware.get_catalog_pointer_record_count_state()
+                self._current.loaded.reminder_middleware.sources.archive_pointer.record_count_state()
             )
             if catalog_pointer_record_count is not None:
                 self._current.loaded.bindings.backend.history_state[CATALOG_POINTER_RECORD_COUNT_STATE_KEY] = (
@@ -270,6 +270,12 @@ class SessionWriter:
         ):
             return None
         current_input = self._turn_state.current_input
+        # The reminder record lands on the input when its request is
+        # established, after the pre-call and injection checkpoints were taken;
+        # the next checkpoint (a tool result) carries it. A hard crash in
+        # between recovers the input without one: the retry rebuilds the turn's
+        # reminders (one prompt-cache miss at the tail), while an injection's
+        # hook reminders, which lived only in the lost process, are not re-sent.
         return session_checkpoint.build_recovery_state(
             self._current.loaded.bindings.backend.history_state,
             self._current.loaded.loop_recorder,
@@ -279,23 +285,20 @@ class SessionWriter:
             user_contents=current_input.contents,
             user_created_at=current_input.created_at,
             user_kind=current_input.kind,
+            user_reminder_source=self._current.loaded.bindings.inputs.input_properties,
             consumed_injections=list(self._current.loaded.consumed_injections),
             insert_index=self._turn_state.history_start_index,
-            last_words=self._current.loaded.reminder_middleware.get_last_words()
-            if self._current.loaded is not None
-            else None,
+            last_words=self._current.loaded.last_words.get_last_words() if self._current.loaded is not None else None,
             last_words_manifest=(
-                self._current.loaded.reminder_middleware.get_last_words_manifest()
-                if self._current.loaded is not None
-                else None
+                self._current.loaded.last_words.get_last_words_manifest() if self._current.loaded is not None else None
             ),
             last_words_breaker=(
-                self._current.loaded.reminder_middleware.get_last_words_breaker_state()
+                self._current.loaded.last_words.get_last_words_breaker_state()
                 if self._current.loaded is not None
                 else None
             ),
             catalog_pointer_record_count=(
-                self._current.loaded.reminder_middleware.get_catalog_pointer_record_count_state()
+                self._current.loaded.reminder_middleware.sources.archive_pointer.record_count_state()
                 if self._current.loaded is not None
                 else None
             ),
