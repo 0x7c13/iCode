@@ -406,8 +406,8 @@ async def test_final_save_mark_stays_with_owned_task_after_successor_install() -
 
 
 @pytest.mark.asyncio
-async def test_drained_abandoned_injection_withdraws_committed_reminders() -> None:
-    """An abandoned injection's hook reminders must not survive into a retry."""
+async def test_drained_abandoned_injection_leaves_no_reminders() -> None:
+    """An undelivered injection never queued its hook reminders, so a retry cannot carry them."""
     order: list[str] = []
     host = _Host(order)
     reminder = host.current.loaded.reminder_middleware
@@ -421,8 +421,6 @@ async def test_drained_abandoned_injection_withdraws_committed_reminders() -> No
     host._turn_state.lease.open_injection_admission(run_scope)
     host._turn_state.lease.close_injection_admission(run_scope)
     reminder.prepare_turn(reminder_scope=reminder_scope)
-    target = reminder.capture_current_run_target(reminder_scope)
-    assert target is not None
 
     class _RecordingPreparation:
         def __init__(self) -> None:
@@ -436,8 +434,7 @@ async def test_drained_abandoned_injection_withdraws_committed_reminders() -> No
             self.terminals.append((outcome, target_turn_id))
 
     preparation = _RecordingPreparation()
-    # Mirror an active-turn injection commit: reminders queued, text pending.
-    assert reminder.queue_hook_reminders_for_current_run(target, ["hook note for withdrawn text"]) is True
+    # Mirror an active-turn injection commit: the text is pending with its reminders.
     host.current.loaded.injection.pending = [
         QueuedInjection(
             text="never delivered",
@@ -468,7 +465,7 @@ async def test_drained_abandoned_injection_withdraws_committed_reminders() -> No
 
     assert "hook note for withdrawn text" not in reminder._build_reminders()
     assert preparation.terminals == [(PreparationOutcome.TARGET_STALE, "turn-1")]
-    # The retry path preserves turn reminders; the withdrawn one must not resurface.
+    # The retry path preserves turn reminders; the undelivered one is not among them.
     reminder.prepare_turn(reminder_scope=reminder_scope, preserve_turn_reminders=True)
     assert "hook note for withdrawn text" not in reminder._build_reminders()
 

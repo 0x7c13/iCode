@@ -304,7 +304,7 @@ async def test_real_stdio_parent_and_sub_agent_share_connection_but_not_wrappers
     model_registry.register(ModelProfile(id="mock-model", name="mock", provider="mock", model_id="mock"))
 
     class _FakeCompactionStrategy:
-        def set_reminder_middleware(self, _middleware: object) -> None:
+        def bind_reminder(self, _middleware: object, _last_words: object) -> None:
             return None
 
         def set_last_words_generator(self, _generator: object) -> None:
@@ -456,7 +456,7 @@ async def test_real_build_wires_mcp_instructions_provider(tmp_path: Path) -> Non
     model_registry.register(ModelProfile(id="mock-model", name="mock", provider="mock", model_id="mock"))
 
     class _FakeCompactionStrategy:
-        def set_reminder_middleware(self, _middleware: object) -> None:
+        def bind_reminder(self, _middleware: object, _last_words: object) -> None:
             return None
 
         def set_last_words_generator(self, _generator: object) -> None:
@@ -515,7 +515,7 @@ async def test_real_build_wires_mcp_instructions_provider(tmp_path: Path) -> Non
 
     try:
         assert result.mcp_adapter is not None
-        provider = result.reminder_middleware._mcp_instructions_provider
+        provider = result.reminder_middleware.sources.mcp._provider
         # The exact bound method, not a stale pre-rendered string.
         assert provider == result.mcp_adapter.render_instructions_reminder
         rendered = provider()

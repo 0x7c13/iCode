@@ -131,6 +131,15 @@ def _make_registry() -> AgentProfileRegistry:
     return registry
 
 
+def _assert_one_reminder_pair(engine: AgentEngine) -> None:
+    """The installed build renders, compacts into and restores one LAST_WORDS state."""
+    loaded = engine.current.require_loaded()
+    strategy = loaded.bindings._compaction_strategy
+    assert loaded.reminder_middleware.renders_last_words(loaded.last_words)
+    assert strategy._reminder_middleware is loaded.reminder_middleware
+    assert strategy._last_words_state is loaded.last_words
+
+
 def _filter(events: list, cls: type) -> list:
     return [e for e in events if isinstance(e, cls)]
 
@@ -202,6 +211,7 @@ async def test_profile_switch_preserves_history_and_events(
     assert engine.current.loaded is not None
     assert engine.current.loaded.bindings._compaction_strategy._spill_quota is spill_quota
     assert engine.current.loaded.bindings._compaction_strategy._persist_recovery_now == engine.writer.persist_now
+    _assert_one_reminder_pair(engine)
 
     ready_events = _filter(events, SessionReady)
     assert len(ready_events) == 1
@@ -222,6 +232,7 @@ async def test_profile_switch_preserves_history_and_events(
     assert engine.session.spill_quota is spill_quota
     assert engine.current.loaded is not None
     assert engine.current.loaded.bindings._compaction_strategy._spill_quota is spill_quota
+    _assert_one_reminder_pair(engine)
 
     switched_events = _filter(events, ProfileSwitched)
     assert len(switched_events) == 1

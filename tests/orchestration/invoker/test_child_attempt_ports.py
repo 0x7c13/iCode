@@ -13,6 +13,7 @@ import pytest
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationPaused, InvocationRetryAttempt
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.retry import StreamRetryLoop
 from chrys.foundation.trajectory.event_types import EventType
@@ -485,3 +486,37 @@ def test_child_service_restore_clears_session_and_preserves_retry_inputs(
             expected_client_kwargs["extra_body"]["background"] = True
     assert "client_kwargs" in ctrl.policy._run_kwargs
     assert ctrl.policy._run_kwargs["client_kwargs"] == expected_client_kwargs
+
+
+@pytest.mark.parametrize("recorded", [True, False], ids=["recorded-anchor", "bare-anchor"])
+def test_child_retry_seed_replays_the_reminders_its_anchor_was_sent_with(recorded: bool) -> None:
+    session = AgentSession()
+    ctrl = kernel_shell(
+        conversation=Conversation(),
+        parent_origin=None,
+        invocation_id="seed-invocation",
+        tool_name="Explore",
+        agent_name="Explore",
+        agent=Agent(client=MockChatClient()),
+        session=session,
+        loop_recorder=LoopRecorder(),
+        prompt="explore the tree",
+        run_kwargs={},
+        event_bus=None,
+    )
+    anchor = ctrl.policy._seed_input()[0]
+    record = [{"kind": "turn", "text": "<system-reminder>\nsent context\n</system-reminder>"}]
+    if recorded:
+        anchor.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = record
+    session.state["chrys_history"] = {"messages": [anchor]}
+
+    ctrl.policy._prepare_retry_input()
+
+    assert session.state["chrys_history"]["messages"] == []
+    [seed] = ctrl.policy._next_run_input
+    assert seed is not anchor
+    if recorded:
+        assert seed.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] == record
+        assert seed.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] is not record
+    else:
+        assert HistoryMarkerKind.SYSTEM_REMINDERS_KEY not in seed.additional_properties

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from chrys.kernel import Message
-from chrys.service.agent_middleware.system_reminder import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.session.message_metadata import stamp_message_created_at
 from chrys.service.state.serializers import (

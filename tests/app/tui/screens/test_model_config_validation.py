@@ -238,6 +238,10 @@ async def test_model_config_validate_rejects_known_typed_chat_options() -> None:
         value_input.value = "1.5"
         seed_errors = screen._validate()
 
+        # Past Python's integer digit limit json.loads raises a plain ValueError.
+        value_input.value = "1" * 5000
+        oversized_seed_errors = screen._validate()
+
         key_input.value = "store"
         value_input.value = '"true"'
         bool_errors = screen._validate()
@@ -270,6 +274,7 @@ async def test_model_config_validate_rejects_known_typed_chat_options() -> None:
     )
     assert "Chat Options row 1: 'top_p' must be a JSON number between 0.0 and 1.0." in top_p_errors
     assert "Chat Options row 1: 'seed' must be a JSON integer." in seed_errors
+    assert "Chat Options row 1: 'seed' must be a JSON integer." in oversized_seed_errors
     assert "Chat Options row 1: 'store' must be a JSON boolean (true or false)." in bool_errors
     assert (
         "Chat Options row 1: 'logit_bias' value for token '42' must be a JSON number between -100 and 100."

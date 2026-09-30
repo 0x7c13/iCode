@@ -17,6 +17,7 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.build.builder import AgentBuildResult
 from chrys.orchestration.engine.build.loaded import AgentManifest, CompletedBuild, LoadedAgent
 from chrys.orchestration.invoker.resources import rollback_resources
+from chrys.orchestration.invoker.runtime import restore_phase4_state
 from chrys.service.agent_middleware import IntermediateTextBuffer
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.mutations.coordination import ATTRIBUTION_DIR_NAME, MutationCoordinator
@@ -352,7 +353,7 @@ async def build_agent(
             # next save persists over the real one.
             result.bindings.backend.history_state = preserved_history
             if result.reminder_middleware is not None:
-                result.reminder_middleware.restore_phase4_state(preserved_history)
+                restore_phase4_state(result.reminder_middleware, result.last_words, preserved_history)
         stamp_history_item_ids(result.bindings.backend.history_state)
         manifest = AgentManifest.from_build(result)
         if result.compaction_strategy is not None:
@@ -377,6 +378,7 @@ async def build_agent(
                 intermediate_texts=intermediate_texts,
                 loop_recorder=result.loop_recorder,
                 reminder_middleware=result.reminder_middleware,
+                last_words=result.last_words,
                 approval_judge=approval_judge,
                 sub_agent_tools=result.sub_agent_tools,
                 skills_provider=result.skills_provider,

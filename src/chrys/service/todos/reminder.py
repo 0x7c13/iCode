@@ -17,10 +17,12 @@ _STATUS_MARKS: Final[dict[str, str]] = {
 
 
 def format_todo_reminder(items: tuple[TodoItem, ...]) -> str | None:
-    """Render *items* as the per-turn reminder text, or ``None`` when empty.
+    """Render *items* as the todo-list reminder text, or ``None`` when empty.
 
     Empty means cleared-on-purpose or never used — no "list is empty" nudge
-    (completed items stay in the list, so finished work still renders).
+    (completed items stay in the list, so finished work still renders); the
+    reminder middleware only tells the model once that an earlier list it
+    still shows no longer applies.
     """
     if not items:
         return None

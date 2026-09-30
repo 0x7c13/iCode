@@ -127,7 +127,7 @@ The following settings have no corresponding environment variables.
 
 | YAML key | Default | Type, values, and effect |
 | --- | --- | --- |
-| `context.warn_threshold_pct` | `0.5` | Number; from `0` to `1`, representing the fraction of the context window in use. When the threshold is reached, the agent is notified of high context usage. The default threshold is 50%; this does not change when automatic compaction is triggered |
+| `context.warn_threshold_pct` | `0.5` | Number; from `0` to `1`, representing the fraction of the context window in use. When usage reaches the threshold, the agent is told once that context usage is high, and again only after usage has dropped below the threshold and reached it again. The default threshold is 50%; this does not change when automatic compaction is triggered |
 | `trajectory.verify_commands` | Built-in list of common test and check commands | String; comma-separated command terms that trajectory analysis uses to identify verification operations, such as `"pytest,ruff,npm test"`. A custom value replaces the entire list. This affects only analysis categories; it does not run the commands |
 
 ### Notifications

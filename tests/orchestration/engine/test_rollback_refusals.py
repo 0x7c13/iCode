@@ -14,7 +14,6 @@ from chrys.foundation.events.types import RollbackResult, UserMessage, UserRollb
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.util.lock import FileLock
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
-from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.state.store import JsonFileStateStore, atomic_copy_file
 from tests.orchestration.engine._rollback_helpers import (
     _collect_events,
@@ -23,7 +22,7 @@ from tests.orchestration.engine._rollback_helpers import (
     fake_restore_factory,
 )
 from tests.support.event_capture import assert_display_message
-from tests.support.loaded_agents import install_loaded_agent
+from tests.support.loaded_agents import install_loaded_agent, reminder_resources
 
 # ===========================================================================
 # _on_user_rollback — refusal paths
@@ -95,7 +94,7 @@ class TestRollbackRefusals:
             await run_release.wait()
 
         install_loaded_agent(engine, bindings=_PromptExecutor())  # type: ignore[assignment]
-        install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
+        install_loaded_agent(engine, **reminder_resources())
         monkeypatch.setattr(engine._turns, "reject_text_only_prepared_contents", _accept_prepared_contents)
         monkeypatch.setattr(engine.turns, "run_and_save", run_and_save)
 

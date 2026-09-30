@@ -46,6 +46,7 @@ from chrys.foundation.util.lock import FileLock
 from chrys.orchestration.engine.state import lifecycle_permits
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.invoker.contracts import AbortCause
+from chrys.orchestration.invoker.runtime import restore_phase4_state
 from chrys.service.context.compaction.spill import SpillReconciliationResult, reconcile_spill_storage
 from chrys.service.mutations.store import SnapshotPolicy, SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
@@ -1264,7 +1265,8 @@ class SessionLifecycle:
                 state["chrys_todos"] = copy.deepcopy(todo_state)
             self._current.loaded.bindings.backend.history_state = state
             if self._current.loaded is not None:
-                self._current.loaded.reminder_middleware.restore_phase4_state(state)
+                loaded = self._current.loaded
+                restore_phase4_state(loaded.reminder_middleware, loaded.last_words, state)
             stamp_history_item_ids(self._current.loaded.bindings.backend.history_state)
             self._history.bind(self._current.loaded.bindings.backend.history_state)
 
@@ -1658,8 +1660,9 @@ class SessionLifecycle:
             self._session.mutation_tracker = MutationTracker.deserialize(state["chrys_mutations"], snapshot_store)
         else:
             self._session.mutation_tracker = MutationTracker(snapshot_store)
-        # Hydrate todos before ``restore_last_words`` below: the reminder
-        # middleware re-captures the todo section from the tracker at restore.
+        # Hydrate todos before ``restore_phase4_state`` below:
+        # ``LastWordsState.restore_last_words`` re-captures the restored note's
+        # todo section from the tracker.
         self._session.todo_tracker = TodoTracker()
         if state:
             await self._session.todo_tracker.restore(state.get("chrys_todos"))
@@ -1690,7 +1693,7 @@ class SessionLifecycle:
                     _rollback_reapplied_model_profile(rollback_token)
                 raise
             if profile_switch is not None and self._current.loaded is not None:
-                self._current.loaded.reminder_middleware.set_profile_switch(*profile_switch)
+                self._current.loaded.reminder_middleware.sources.profile_switch.set_profile_switch(*profile_switch)
         else:
             # Nothing to build, so no commit will install the staged load; this
             # degenerate path installs it directly, like a reload with nothing
@@ -1712,7 +1715,10 @@ class SessionLifecycle:
         if self._current.loaded is not None and state:
             self._current.loaded.bindings.backend.history_state = state
             if self._current.loaded is not None:
-                self._current.loaded.reminder_middleware.restore_phase4_state(
+                loaded = self._current.loaded
+                restore_phase4_state(
+                    loaded.reminder_middleware,
+                    loaded.last_words,
                     state,
                     available_relative_paths=spill_reconciliation.available_relative_paths,
                 )

@@ -1,0 +1,79 @@
+{
+ "scenario": "g10_legacy_records",
+ "about": "Legacy records replay verbatim, malformed entries are dropped, a legacy ``name`` survives a rewrite.",
+ "steps": [
+  {
+   "step": "legacy records replay; the target's record is rewritten",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Old turn.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-01-01 08:00:00 CST\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /old\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 3 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>",
+      "<system-reminder>\nAn unnamed legacy catalog.\n</system-reminder>",
+      "<system-reminder>\nlegacy\n</system-reminder>"
+     ]
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Old answer."
+     ],
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "New turn.",
+      "<system-reminder>\nlegacy\n</system-reminder>",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 3 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "2": [
+     {
+      "kind": "event",
+      "text": "legacy",
+      "name": "old-name"
+     },
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC"
+     },
+     {
+      "kind": "catalog",
+      "text": "[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared",
+      "name": "runtime"
+     },
+     {
+      "kind": "catalog",
+      "text": "Current todo list:\n- [ ] pin the reminder goldens",
+      "name": "todo"
+     },
+     {
+      "kind": "catalog",
+      "text": "Earlier context compaction archived 3 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).",
+      "name": "archive"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": null,
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 3
+   }
+  }
+ ]
+}

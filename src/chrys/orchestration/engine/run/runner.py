@@ -181,7 +181,11 @@ class TurnRunner:
             or self._current.require_loaded().bindings.state.was_interrupted
         ):
             self._history.ensure_user_message(
-                text, created_at=created_at, contents=contents, item_id=self._opening_item_id
+                text,
+                created_at=created_at,
+                contents=contents,
+                item_id=self._opening_item_id,
+                reminder_source=self._current.require_loaded().bindings.inputs.input_properties,
             )
         self._tag_consumed_profile_switch()
         await self.finalize_current_run()
@@ -198,6 +202,10 @@ class TurnRunner:
     ) -> None:
         """Resume the agent from current state and finalize it."""
         _ = injection_window
+        # Retry keeps the invocation, not its input: until retry_request binds
+        # this pass's message, a recovery checkpoint must not lend the previous
+        # input's reminder record to unsent guidance.
+        self._current.require_loaded().bindings.inputs.input_properties = None
         try:
             await self.pre_run(
                 reset_batch_id=False,
@@ -301,7 +309,9 @@ class TurnRunner:
             # bind, or any other pre-yield admission failure) never reaches
             # that fallback, so mirror the fresh path here. ensure_user_message
             # is kind-aware and scoped to the current turn, so the post-yield
-            # and pre-executor-interrupt appends stay single-copy.
+            # and pre-executor-interrupt appends stay single-copy. A note sent
+            # to the model was appended after the yield with its reminder
+            # record; one rejected here was never sent and carries none.
             self._history.ensure_user_message(
                 additional_text, created_at=created_at, kind="injected", item_id=self._opening_item_id
             )
@@ -553,12 +563,12 @@ class TurnRunner:
 
     def _tag_consumed_profile_switch(self) -> None:
         """Tag the last user message when the reminder middleware consumed a profile switch."""
-        if self._current.loaded is None or not self._current.require_loaded().reminder_middleware.consumed_switch_to:
+        if self._current.loaded is None:
             return
-        self._history.tag_last_user_message(
-            HistoryMarkerKind.PROFILE_SWITCH_TO_KEY,
-            self._current.require_loaded().reminder_middleware.consumed_switch_to,
-        )
+        switched_to = self._current.require_loaded().reminder_middleware.sources.profile_switch.consumed_switch_to
+        if not switched_to:
+            return
+        self._history.tag_last_user_message(HistoryMarkerKind.PROFILE_SWITCH_TO_KEY, switched_to)
 
     def _queue_skill_reference_reminder(self, text: str, *, for_next_turn: bool) -> None:
         """Queue a system reminder when *text* starts with a loaded skill reference."""

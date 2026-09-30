@@ -38,10 +38,7 @@ from chrys.orchestration.engine.execution import (
 )
 from chrys.orchestration.engine.loader import AgentLoader
 from chrys.orchestration.engine.run import sub_agent_coordination
-from chrys.orchestration.engine.run.active_injection import (
-    ActiveTurnInjector,
-    withdraw_committed_injection_reminders,
-)
+from chrys.orchestration.engine.run.active_injection import ActiveTurnInjector
 from chrys.orchestration.engine.run.attachments import (
     AttachmentDiscoveryResult,
     discover_image_mentions,
@@ -717,11 +714,6 @@ class TurnCoordinator:
                 self._turn_state.mark_injection_cancelled(injection_id)
             return
         executor.approval.remove_user_message(removed.text)
-        withdraw_committed_injection_reminders(
-            self._current.loaded.reminder_middleware if self._current.loaded is not None else None,
-            self._turn_state.lease.current_run_scope,
-            removed,
-        )
         if removed.preparation is not None:
             removed.preparation.finished_soon(
                 outcome=PreparationOutcome.CANCELLED,

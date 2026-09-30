@@ -1,0 +1,407 @@
+{
+ "scenario": "g04_fold",
+ "about": "Folds: catalogs return before LAST_WORDS; a folded current-turn carrier re-sends turn, event and switch.",
+ "steps": [
+  {
+   "step": "turn 1: catalogs on the opener",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Read the code.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nTIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>",
+      "<system-reminder>\n<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "0": [
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC"
+     },
+     {
+      "kind": "catalog",
+      "text": "[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared",
+      "name": "runtime"
+     },
+     {
+      "kind": "catalog",
+      "text": "TIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.",
+      "name": "sub_agents"
+     },
+     {
+      "kind": "catalog",
+      "text": "Current todo list:\n- [ ] pin the reminder goldens",
+      "name": "todo"
+     },
+     {
+      "kind": "catalog",
+      "text": "<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>",
+      "name": "skills"
+     },
+     {
+      "kind": "catalog",
+      "text": "<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>",
+      "name": "mcp"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": null,
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 0
+   }
+  },
+  {
+   "step": "turn 2: a fold drops turn 1; its catalogs return before LAST_WORDS",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Read the code.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nTIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>",
+      "<system-reminder>\n<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>\n</system-reminder>"
+     ],
+     "excluded": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Read."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Summarise it.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:03:03 CST | UTC time: 2026-09-30 01:03:03 UTC\n[Context Usage] current: 40.0% (80,000/200,000)\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nTIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>",
+      "<system-reminder>\n<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>\n</system-reminder>",
+      "<system-reminder>\n[LAST_WORDS] You previously made progress on the current task (the user's request and any follow-up messages above) but ran out of context, so your earlier tool-call history for this task has been dropped.  The note below is your own updated progress record — read it and resume from where you left off.  Do NOT redo work that the note says is already done.  If the note says the work is finished but you have not yet delivered the final reply to the user, do not re-gather anything — compose and deliver that reply now from the note.\n\nProgress: read three files.\n\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "2": [
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:03:03 CST | UTC time: 2026-09-30 01:03:03 UTC\n[Context Usage] current: 40.0% (80,000/200,000)"
+     },
+     {
+      "kind": "catalog",
+      "text": "[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared",
+      "name": "runtime"
+     },
+     {
+      "kind": "catalog",
+      "text": "TIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.",
+      "name": "sub_agents"
+     },
+     {
+      "kind": "catalog",
+      "text": "Current todo list:\n- [ ] pin the reminder goldens",
+      "name": "todo"
+     },
+     {
+      "kind": "catalog",
+      "text": "<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>",
+      "name": "skills"
+     },
+     {
+      "kind": "catalog",
+      "text": "<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>",
+      "name": "mcp"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": "Progress: read three files.",
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 0
+   }
+  },
+  {
+   "step": "turn 2: the next call renders them from the record",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Read the code."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Read."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Summarise it.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:03:03 CST | UTC time: 2026-09-30 01:03:03 UTC\n[Context Usage] current: 40.0% (80,000/200,000)\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nTIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>",
+      "<system-reminder>\n<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>\n</system-reminder>",
+      "<system-reminder>\n[LAST_WORDS] You previously made progress on the current task (the user's request and any follow-up messages above) but ran out of context, so your earlier tool-call history for this task has been dropped.  The note below is your own updated progress record — read it and resume from where you left off.  Do NOT redo work that the note says is already done.  If the note says the work is finished but you have not yet delivered the final reply to the user, do not re-gather anything — compose and deliver that reply now from the note.\n\nProgress: read three files.\n\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>"
+     ]
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "<function_call read_file({\"path\": \"src/b.py\"})>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "tool",
+     "texts": [
+      "<function_result b>"
+     ],
+     "kept": true
+    }
+   ],
+   "recorded": {},
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": "Progress: read three files.",
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 0
+   }
+  },
+  {
+   "step": "turn 3: turn line, switch and hook",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Read the code."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Read."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Summarise it.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:03:03 CST | UTC time: 2026-09-30 01:03:03 UTC\n[Context Usage] current: 40.0% (80,000/200,000)\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nTIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>",
+      "<system-reminder>\n<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>\n</system-reminder>"
+     ]
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "<function_call read_file({\"path\": \"src/b.py\"})>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "tool",
+     "texts": [
+      "<function_result b>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Summarised."
+     ],
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Review it.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:04:03 CST | UTC time: 2026-09-30 01:04:03 UTC\n[Context Usage] current: 45.0% (90,000/200,000)\n</system-reminder>",
+      "<system-reminder>\n[Agent profile switched from 'Code' to 'QA']\nSystem instructions may also have changed; read and follow your current instructions carefully. Earlier conversation may include tool-call records created by the previous agent. Your currently available tools are: read_file, shell, todo_write. You may only use tools that are currently available to you; treat earlier tool calls as reference and context only.\n</system-reminder>",
+      "<system-reminder>\nhook: before turn 3\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "6": [
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:04:03 CST | UTC time: 2026-09-30 01:04:03 UTC\n[Context Usage] current: 45.0% (90,000/200,000)"
+     },
+     {
+      "kind": "switch",
+      "text": "[Agent profile switched from 'Code' to 'QA']\nSystem instructions may also have changed; read and follow your current instructions carefully. Earlier conversation may include tool-call records created by the previous agent. Your currently available tools are: read_file, shell, todo_write. You may only use tools that are currently available to you; treat earlier tool calls as reference and context only."
+     },
+     {
+      "kind": "event",
+      "text": "hook: before turn 3"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": "QA",
+    "warning_armed": true,
+    "held": null,
+    "last_words": null,
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 0
+   }
+  },
+  {
+   "step": "turn 3: the carrier was folded; the injected message carries them again",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Read the code."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Read."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Summarise it.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:03:03 CST | UTC time: 2026-09-30 01:03:03 UTC\n[Context Usage] current: 40.0% (80,000/200,000)\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nTIP: Sub-agents are available (`Explore`, `General`). Prefer delegating to a sub-agent for context-heavy but simple or repeated tasks (file searches, exploration, bulk edits). Each sub-agent runs in its own context window, keeping the main conversation lean. This is especially important when context usage is high.\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>",
+      "<system-reminder>\n<mcp_instructions>\n  <server name=\"docs\">Search before fetching a page.</server>\n</mcp_instructions>\n</system-reminder>"
+     ]
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "<function_call read_file({\"path\": \"src/b.py\"})>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "tool",
+     "texts": [
+      "<function_result b>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "Summarised."
+     ],
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Review it."
+     ],
+     "excluded": true,
+     "kept": true
+    },
+    {
+     "role": "assistant",
+     "texts": [
+      "<function_call read_file({\"path\": \"src/c.py\"})>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "tool",
+     "texts": [
+      "<function_result c>"
+     ],
+     "kept": true
+    },
+    {
+     "role": "user",
+     "texts": [
+      "Check the tests too.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:04:03 CST | UTC time: 2026-09-30 01:04:03 UTC\n[Context Usage] current: 45.0% (90,000/200,000)\n</system-reminder>",
+      "<system-reminder>\n[Agent profile switched from 'Code' to 'QA']\nSystem instructions may also have changed; read and follow your current instructions carefully. Earlier conversation may include tool-call records created by the previous agent. Your currently available tools are: read_file, shell, todo_write. You may only use tools that are currently available to you; treat earlier tool calls as reference and context only.\n</system-reminder>",
+      "<system-reminder>\nhook: before turn 3\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "9": [
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:04:03 CST | UTC time: 2026-09-30 01:04:03 UTC\n[Context Usage] current: 45.0% (90,000/200,000)"
+     },
+     {
+      "kind": "switch",
+      "text": "[Agent profile switched from 'Code' to 'QA']\nSystem instructions may also have changed; read and follow your current instructions carefully. Earlier conversation may include tool-call records created by the previous agent. Your currently available tools are: read_file, shell, todo_write. You may only use tools that are currently available to you; treat earlier tool calls as reference and context only."
+     },
+     {
+      "kind": "event",
+      "text": "hook: before turn 3"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": "QA",
+    "warning_armed": true,
+    "held": null,
+    "last_words": null,
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 0
+   }
+  }
+ ]
+}

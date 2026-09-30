@@ -93,7 +93,7 @@ def _state_correspondence(messages: list[Message], state_messages: list[Message]
     and skip the tier.  The third tier matches wrappers REBUILT with fresh
     contents but the original's ``additional_properties`` dict — the
     sanctioned write-through channel, kept by the reminder middleware's
-    enriched last user message and the LAST_WORDS refresh.  Without it a
+    enriched user messages and the LAST_WORDS refresh.  Without it a
     stored opener that is also the last user message (a child continuing
     from its own history) drops out of the history segment and the turn
     resolves to nothing.  The dict must belong to exactly one state message

@@ -48,18 +48,23 @@ from chrys.service.profiles.models.options import (
     OUTPUT_CAP_OPTION_ALIASES,
     PROTECTED_EXTRA_BODY_CHAT_OPTION_KEYS,
     PROTECTED_TOP_LEVEL_CHAT_OPTION_KEYS,
+    is_anthropic_claude_profile,
+    lacks_anthropic_prompt_cache_option,
+    with_anthropic_prompt_cache_option,
 )
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
     API_STYLE_RESPONSES,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    is_model_profile_selectable,
     is_responses_wire_dialect,
 )
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+    from chrys.app.tui.screens.dialogs.prompt_cache import PromptCacheDialogResult
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
 
@@ -439,12 +444,21 @@ def _next_uid() -> int:
     return _uid_counter
 
 
+def _loads_or(text: str, default: object) -> object:
+    """Return ``json.loads(text)``, or *default* for any text JSON rejects.
+
+    Catches ``ValueError``, not only ``JSONDecodeError``: an integer past
+    Python's digit limit raises the plain base class.
+    """
+    try:
+        return json.loads(text)
+    except ValueError:
+        return default
+
+
 def _parse_chat_option_value_for_validation(raw: str) -> object:
     """Parse a Chat Options value for validation."""
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return _CHAT_OPTION_INVALID_JSON_VALUE
+    return _loads_or(raw, _CHAT_OPTION_INVALID_JSON_VALUE)
 
 
 def _validate_chat_option_object(
@@ -748,6 +762,9 @@ class ModelConfigScreen(BaseDialog[str]):
         # the runtime-effective model.
         self._saved_anything = False
         self._requires_runtime_reload = False
+        # Set while the prompt-caching reminder is pushed or showing: a second
+        # Save pressed before it mounts would push a second reminder.
+        self._prompt_cache_offer_open = False
         super().__init__()
 
     # ── Compose ──────────────────────────────────────────────────────
@@ -1315,7 +1332,7 @@ class ModelConfigScreen(BaseDialog[str]):
         self.query_one("#mc-vision", Checkbox).value = profile.vision
 
         # Populate key-value lists
-        headers = _parse_json_dict(profile.http_headers)
+        headers = _parse_json_dict(profile.http_headers, parse_values=False)
         self._populate_kv_list("mc-headers-list", headers, "h")
 
         options = _parse_json_dict(profile.chat_options)
@@ -1644,7 +1661,7 @@ class ModelConfigScreen(BaseDialog[str]):
     @on(Button.Pressed, "#mc-save")
     async def _on_save(self, _event: Button.Pressed) -> None:
         """Save the form without changing the runtime-effective pointer."""
-        if self._read_only:
+        if self._read_only or self._prompt_cache_offer_open:
             return
         errors = self._validate()
         if errors:
@@ -1656,6 +1673,12 @@ class ModelConfigScreen(BaseDialog[str]):
                 markup=False,
             )
             return
+        if self._should_offer_prompt_cache():
+            self._offer_prompt_cache()
+            return
+        await self._save_and_report()
+
+    async def _save_and_report(self) -> None:
         try:
             profile = await self._save_only()
         except Exception as exc:
@@ -1675,6 +1698,59 @@ class ModelConfigScreen(BaseDialog[str]):
             markup=False,
         )
         self._notify_unsupported_options(profile)
+
+    def _should_offer_prompt_cache(self) -> bool:
+        """Whether this save makes the profile a Claude profile that never asks for prompt caching.
+
+        A profile already saved as a complete Claude profile on the Anthropic
+        protocol has had its answer; one saved as something else since (another
+        provider or model) is asked again when a save makes it one.
+        """
+        if not lacks_anthropic_prompt_cache_option(self._build_profile_from_form()):
+            return False
+        previous = self._registry.get(self._selected_profile_id)
+        return previous is None or not (is_model_profile_selectable(previous) and is_anthropic_claude_profile(previous))
+
+    def _offer_prompt_cache(self) -> None:
+        from chrys.app.tui.screens.dialogs.prompt_cache import ADD_AND_SAVE_RESULT, PromptCacheDialog
+
+        async def _on_choice(choice: PromptCacheDialogResult) -> None:
+            self._prompt_cache_offer_open = False
+            if choice is None or not self.is_attached:
+                return
+            if choice == ADD_AND_SAVE_RESULT:
+                await self._add_prompt_cache_option()
+            await self._save_and_report()
+
+        self._prompt_cache_offer_open = True
+        self.app.push_screen(PromptCacheDialog(locale_controller=widget_locale_controller(self)), callback=_on_choice)
+
+    async def _add_prompt_cache_option(self) -> None:
+        """Merge Anthropic's prompt-caching switch into the form's ``extra_body`` option.
+
+        Edits the existing ``extra_body`` row, else fills the first blank
+        row, else mounts a new one; the save then reads the form as usual.
+        """
+        container = self.query_one("#mc-options-list", Vertical)
+        rows = list(container.query(".mc-kv-item-row"))
+        blank: tuple[Input, Input] | None = None
+        for row in rows:
+            key_input = row.query_one(".mc-kv-key-input", Input)
+            value_input = row.query_one(".mc-kv-value-input", Input)
+            key = key_input.value.strip()
+            if key == "extra_body":
+                raw = value_input.value.strip()
+                value_input.value = json.dumps(with_anthropic_prompt_cache_option(json.loads(raw) if raw else None))
+                return
+            if blank is None and not key and not value_input.value.strip():
+                blank = (key_input, value_input)
+        value = json.dumps(with_anthropic_prompt_cache_option(None))
+        if blank is not None:
+            blank[0].value = "extra_body"
+            blank[1].value = value
+            return
+        add_row = self.query_one("#mc-oadd-row", Horizontal)
+        await container.mount(self._compose_kv_row("extra_body", value, "o"), before=add_row)
 
     @on(Button.Pressed, "#mc-cancel")
     def _on_cancel(self, _event: Button.Pressed) -> None:
@@ -1919,13 +1995,16 @@ class ModelConfigScreen(BaseDialog[str]):
         return render_str(widget_localizer(self), reference)
 
 
-def _parse_json_dict(raw: str) -> dict[str, str]:
+def _parse_json_dict(raw: str, *, parse_values: bool = True) -> dict[str, str]:
     """Parse a JSON string into a dict, returning empty dict on failure.
 
     Non-string values (objects, arrays, booleans, numbers) are
     re-serialised via ``json.dumps`` so that ``_kv_to_json`` can
     parse them back losslessly (e.g. ``True`` → ``"true"``, not
-    Python's ``"True"``).
+    Python's ``"True"``). With *parse_values* (``_kv_to_json``'s
+    default), a string that would read back as JSON (``"1"``,
+    ``"true"``) or that the form's whitespace trim would change is
+    shown quoted too, so saving the form again keeps it the same string.
     """
     if not raw:
         return {}
@@ -1934,11 +2013,20 @@ def _parse_json_dict(raw: str) -> dict[str, str]:
         if isinstance(parsed, dict):
             result: dict[str, str] = {}
             for k, v in parsed.items():
-                result[str(k)] = v if isinstance(v, str) else json.dumps(v)
+                if not isinstance(v, str) or (parse_values and (v != v.strip() or _reads_as_json(v))):
+                    v = json.dumps(v)
+                result[str(k)] = v
             return result
     except json.JSONDecodeError, TypeError:
         pass
     return {}
+
+
+_NOT_JSON = object()
+
+
+def _reads_as_json(text: str) -> bool:
+    return _loads_or(text, _NOT_JSON) is not _NOT_JSON
 
 
 def _kv_to_json(kv: dict[str, str], *, parse_values: bool = True) -> str:
@@ -1952,10 +2040,4 @@ def _kv_to_json(kv: dict[str, str], *, parse_values: bool = True) -> str:
         return ""
     if not parse_values:
         return json.dumps(kv)
-    out: dict[str, object] = {}
-    for k, v in kv.items():
-        try:
-            out[k] = json.loads(v)
-        except json.JSONDecodeError, ValueError:
-            out[k] = v
-    return json.dumps(out)
+    return json.dumps({k: _loads_or(v, v) for k, v in kv.items()})

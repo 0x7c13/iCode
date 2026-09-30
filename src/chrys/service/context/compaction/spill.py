@@ -29,11 +29,6 @@ from chrys.foundation.tool_execution_stamp import (
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.foundation.util.filenames import bounded_safe_stem, safe_platform_basename
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, Content, is_image_content
-from chrys.service.agent_middleware.system_reminder import (
-    DISPLAY_ARGUMENT_DEFAULT_MAX_CHARS,
-    DISPLAY_ARGUMENT_PATH_MAX_CHARS,
-    DISPLAY_ARGUMENT_REASON_MAX_CHARS,
-)
 
 if TYPE_CHECKING:
     from chrys.service.context.compaction.scoped import ScopedGroup
@@ -114,7 +109,7 @@ class CatalogRecord:
 
 @dataclass(frozen=True, slots=True)
 class SpillManifestItem:
-    """Neutral spill result converted to reminder-owned ``ManifestEntry`` state."""
+    """Neutral spill result converted to ``last_words_state.ManifestEntry`` state."""
 
     record_id: str
     group_id: str
@@ -822,7 +817,7 @@ def _write_note_record(
     quota.commit(reserved, len(payload), relative_path=relative_path.as_posix(), catalog_record=record)
     return SpillManifestItem(
         record_id=record_id,
-        # Synthetic marker: reminder-side ManifestEntry.from_state requires a
+        # Synthetic marker: last_words_state.ManifestEntry.from_state requires a
         # non-empty group_id, and an empty one would silently drop the entry
         # from the rendered manifest.
         group_id=NOTE_RECORD_GROUP_ID,
@@ -1834,6 +1829,16 @@ _DISPLAY_ARG_KEYS_BY_TOOL: dict[str, tuple[str, ...]] = {
 _EXTRA_DISPLAY_ARG_KEYS_BY_TOOL: dict[str, tuple[str, ...]] = {
     tool: ("reason",) for tool, keys in _DISPLAY_ARG_KEYS_BY_TOOL.items() if keys == ("command",)
 }
+# Catalog-line argument preview caps, sized to keep whole commands, paths, and
+# shell intents visible; the LAST_WORDS manifest's overall char/line budget
+# evicts oldest entries when a long listing overflows, so a longer preview
+# trades tail entries, not correctness.  ``last_words_state`` derives its
+# stored-field bound from them.
+DISPLAY_ARGUMENT_DEFAULT_MAX_CHARS = 120
+# Paths middle-truncate (``D:\Repos\…\test.py``) so the filename tail stays.
+DISPLAY_ARGUMENT_PATH_MAX_CHARS = 256
+# Shell tools append the model-stated ``reason="…"`` after the command.
+DISPLAY_ARGUMENT_REASON_MAX_CHARS = 80
 _DISPLAY_ARGUMENT_KEY_CAPS = {
     "path": DISPLAY_ARGUMENT_PATH_MAX_CHARS,
     "file_path": DISPLAY_ARGUMENT_PATH_MAX_CHARS,

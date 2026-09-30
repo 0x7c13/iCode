@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,14 +14,17 @@ import pytest
 
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import WorkingDir, Workspace
-from chrys.foundation.platform import PlatformInfo, ShellInfo, get_platform
+from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.kernel import Content, Message
 from chrys.kernel.middleware import ChatContext, ChatMiddleware, ChatMiddlewarePipeline
 from chrys.service.agent_middleware import system_reminder as reminder_module
+from chrys.service.agent_middleware.reminders import runtime_env
+from chrys.service.agent_middleware.reminders.turn_line import TurnLineSource
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware, escape_system_reminder_tags
 from chrys.service.context.compaction.spill import CATALOG_RELATIVE_PATH, SpillQuota
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
+from tests.support.reminder_calls import establish_request
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -44,10 +45,7 @@ async def _direct_llm_user_contents(middleware: SystemReminderMiddleware, text: 
     context = ChatContext(client=None, messages=[history_message], options=None)
 
     async def _call_next() -> None:
-        # Mirror the pipeline's final-handler boundary: request observers fire
-        # immediately before the provider request is established.
-        for observer in context.request_message_observers:
-            observer(context.messages)
+        await establish_request(context)
 
     await middleware.process(context, _call_next)
     assert history_message.text == text
@@ -55,67 +53,8 @@ async def _direct_llm_user_contents(middleware: SystemReminderMiddleware, text: 
     return [content.text for content in model_message.contents if content.type == "text" and content.text]
 
 
-def _exe(path: Path) -> Path:
-    """Return *path* with a platform-appropriate executable suffix.
-
-    On Windows, ``shutil.which`` only matches files whose suffix is in
-    ``PATHEXT`` (``.exe``/``.bat``/…), so a stub file created as bare
-    ``uv`` or ``python3`` is invisible to the production discovery code.
-    The production path itself is fine — real installs ship ``uv.exe``
-    and friends — so the suffix only needs to be added inside the test
-    scaffolding when constructing the stub paths.
-    """
-    if sys.platform == "win32" and not path.suffix:
-        return path.with_name(path.name + ".exe")
-    return path
-
-
-def _make_executable(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("", encoding="utf-8")
-    path.chmod(0o755)
-
-
 def _user(text: str) -> Message:
     return Message(role="user", contents=[Content.from_text(text)])
-
-
-def _linux_runtime(tmp_path: Path) -> SessionEnvironment:
-    platform = PlatformInfo(
-        os_name="linux",
-        os_version="test",
-        arch="amd64",
-        shell=ShellInfo(name="bash", path="/bin/bash", args=["-c"]),
-        config_dir=tmp_path,
-        data_dir=tmp_path,
-    )
-    return SessionEnvironment(cwd=str(tmp_path), platform=platform)
-
-
-def _patch_executable_lookup(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    runtime_python: Path,
-    which: dict[str, str],
-) -> None:
-    monkeypatch.setattr(reminder_module.sys, "executable", str(runtime_python))
-    if sys.platform == "win32":
-        # Pin PATHEXT so shutil.which returns ".exe" (lowercase) — matching
-        # the case _exe() writes on disk. Without this the GHA runner's
-        # default ".EXE"-cased PATHEXT would make shutil.which return
-        # uppercase-suffixed paths and our string assertions would fail.
-        monkeypatch.setenv("PATHEXT", ".exe")
-    path_dirs = [str(runtime_python.parent)]
-    for raw_path in which.values():
-        executable = Path(raw_path)
-        _make_executable(executable)
-        path_dirs.append(str(executable.parent))
-    monkeypatch.setenv("PATH", os.pathsep.join(dict.fromkeys(path_dirs)))
-
-
-def _runtime_python_line(path: Path) -> str:
-    version = reminder_module.sys.version_info
-    return f"    - your runtime Python ({version.major}.{version.minor}.{version.micro}): {path}"
 
 
 # ---------------------------------------------------------------------------
@@ -155,14 +94,14 @@ async def test_file_change_fresh_and_preserving_turns_drain_once(tmp_path: Path)
 
     middleware = SystemReminderMiddleware(runtime=_direct_runtime(tmp_path), file_change_provider=_provider)
     middleware.prepare_turn(usage={})
-    first_state = middleware._current_turn_state()
+    first_state = middleware._turns.current()
     assert first_state is not None
     first_turn_reminders = first_state.turn_reminders
     first = await _direct_llm_user_contents(middleware, "hello")
     assert sum("first workspace notice" in content for content in first) == 1
 
     middleware.prepare_turn(usage={}, preserve_turn_reminders=True)
-    retry_state = middleware._current_turn_state()
+    retry_state = middleware._turns.current()
     assert retry_state is not None
     assert retry_state.turn_reminders == first_turn_reminders
     second = await _direct_llm_user_contents(middleware, "hello")
@@ -371,6 +310,11 @@ async def test_llm_receives_runtime_reminder(tmp_path: Path):
     reminders = [text for text in user_contents if text.startswith("<system-reminder>")]
     assert reminders, f"Expected reminder tag, got: {user_contents}"
     assert any("Working directory" in text or "working directory" in text.lower() for text in reminders)
+    # The time rides the per-turn line, so the runtime block stays the same from turn to turn.
+    [clock] = [text for text in reminders if "[Turn Start]" in text]
+    assert "Local time: " in clock
+    assert "UTC time: " in clock
+    assert not any("Local time" in text for text in reminders if "[Runtime Environment]" in text)
 
 
 async def test_runtime_reminder_renders_safe_copy_of_complete_dynamic_block(
@@ -394,7 +338,7 @@ async def test_runtime_reminder_renders_safe_copy_of_complete_dynamic_block(
         working_dirs=(WorkingDir(path=raw_extra, label=raw_label),),
     )
     monkeypatch.setattr(
-        reminder_module,
+        runtime_env,
         "_format_python_execution_paths_hint",
         lambda: [f"    - your runtime Python: {raw_python_path}"],
     )
@@ -451,17 +395,17 @@ async def test_tool_loop_uses_stable_turn_reminders_after_profile_switch(
     """Runtime and profile-switch reminders should be stable for a full tool loop."""
     runtime_calls = 0
 
-    def _runtime_hint(_self: SystemReminderMiddleware) -> str:
+    def _runtime_hint(_self: runtime_env.RuntimeEnvSource) -> str:
         nonlocal runtime_calls
         runtime_calls += 1
         return f"[Runtime Environment]\n  Runtime marker: {runtime_calls}"
 
-    monkeypatch.setattr(SystemReminderMiddleware, "_format_runtime_hint", _runtime_hint)
+    monkeypatch.setattr(runtime_env.RuntimeEnvSource, "snapshot", _runtime_hint)
     middleware = SystemReminderMiddleware(
         runtime=_direct_runtime(tmp_path),
         tool_names=["echo", "compress_context", "load_skill", "read_skill_resource", "run_skill_script"],
     )
-    middleware.set_profile_switch("Code Agent", "Explore Agent")
+    middleware.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
     middleware.prepare_turn(usage={})
 
     first_reminders: list[str] | None = None
@@ -493,8 +437,8 @@ async def test_tool_loop_uses_stable_turn_reminders_after_profile_switch(
 async def test_consecutive_switch_llm_sees_merged_reminder(tmp_path: Path):
     """Consecutive switches (A→B→C) should show A→C in the LLM's reminder, not intermediate steps."""
     middleware = SystemReminderMiddleware(runtime=_direct_runtime(tmp_path))
-    middleware.set_profile_switch("Code Agent", "Explore Agent")
-    middleware.update_profile_switch_to("Docs Agent")
+    middleware.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
+    middleware.sources.profile_switch.update_profile_switch_to("Docs Agent")
     middleware.prepare_turn(usage={})
 
     user_contents = await _direct_llm_user_contents(middleware, "q2")
@@ -512,7 +456,7 @@ async def test_switch_chat_switch_back_llm_sees_both_reminders(tmp_path: Path):
     """A→B (chat) B→A: LLM should see BOTH switch reminders on the respective turns."""
     middleware = SystemReminderMiddleware(runtime=_direct_runtime(tmp_path))
 
-    middleware.set_profile_switch("Code Agent", "Explore Agent")
+    middleware.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
     middleware.prepare_turn(usage={})
     user_contents_q2 = await _direct_llm_user_contents(middleware, "q2")
     reminder_q2 = [text for text in user_contents_q2 if "switched" in text.lower()]
@@ -520,7 +464,7 @@ async def test_switch_chat_switch_back_llm_sees_both_reminders(tmp_path: Path):
     assert "Code Agent" in reminder_q2[0]
     assert "Explore Agent" in reminder_q2[0]
 
-    middleware.set_profile_switch("Explore Agent", "Code Agent")
+    middleware.sources.profile_switch.set_profile_switch("Explore Agent", "Code Agent")
     middleware.prepare_turn(usage={})
     user_contents_q3 = await _direct_llm_user_contents(middleware, "q3")
     reminder_q3 = [text for text in user_contents_q3 if "switched" in text.lower()]
@@ -622,67 +566,78 @@ async def test_mcp_instructions_refresh_per_turn_and_preserve_on_retry(tmp_path:
 
 
 class TestStableTurnReminders:
+    @pytest.fixture(autouse=True)
+    def _fixed_clock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(TurnLineSource, "clock", staticmethod(lambda: "clock"))
+
     def test_prepare_turn_freezes_runtime_reminder(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
 
-        with patch.object(mw, "_format_runtime_hint", side_effect=["runtime one", "runtime two"]) as fmt:
+        with (
+            patch.object(mw.sources.runtime_env, "snapshot", side_effect=["runtime one", "runtime two"]) as fmt,
+            patch.object(mw.sources.turn_line, "clock", side_effect=["clock one", "clock two"]) as clock,
+        ):
             mw.prepare_turn()
             first = mw._build_reminders()
             second = mw._build_reminders()
 
-        assert first == ["runtime one"]
-        assert second == ["runtime one"]
+        assert first == ["clock one", "runtime one"]
+        assert second == ["clock one", "runtime one"]
         assert fmt.call_count == 1
+        assert clock.call_count == 1
 
     def test_prepare_turn_can_preserve_turn_reminders_for_retry(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
 
-        with patch.object(mw, "_format_runtime_hint", side_effect=["runtime one", "runtime two"]) as fmt:
+        with (
+            patch.object(mw.sources.runtime_env, "snapshot", side_effect=["runtime one", "runtime two"]) as fmt,
+            patch.object(mw.sources.turn_line, "clock", side_effect=["clock one", "clock two"]),
+        ):
             mw.prepare_turn()
             first = mw._build_reminders()
             mw.prepare_turn(preserve_turn_reminders=True)
             retry = mw._build_reminders()
 
-        assert first == ["runtime one"]
-        assert retry == ["runtime one"]
+        assert first == ["clock one", "runtime one"]
+        assert retry == ["clock one", "runtime one"]
         assert fmt.call_count == 1
 
     def test_prepare_turn_preserve_turn_reminders_without_prior_state_snapshots_normally(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime") as fmt:
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime") as fmt:
             mw.prepare_turn(preserve_turn_reminders=True)
             reminders = mw._build_reminders()
 
-        assert reminders == ["runtime"]
+        assert reminders == ["clock", "runtime"]
         assert fmt.call_count == 1
 
     def test_hook_reminder_can_queue_for_next_turn(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
             mw.queue_hook_reminders(["from hook"], for_next_turn=True)
             mw.prepare_turn()
             reminders = mw._build_reminders()
 
-        assert reminders == ["runtime", "from hook"]
+        assert reminders == ["clock", "from hook", "runtime"]
 
     def test_hook_reminder_can_update_current_turn(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
             mw.queue_hook_reminders(["current hook"])
             reminders = mw._build_reminders()
 
-        assert reminders == ["runtime", "current hook"]
+        assert reminders == ["clock", "current hook", "runtime"]
 
     def test_profile_switch_reminder_is_stable_for_turn(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
-        mw.set_profile_switch("Code Agent", "Explore Agent")
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
             first = mw._build_reminders()
             second = mw._build_reminders()
@@ -692,16 +647,16 @@ class TestStableTurnReminders:
         assert len(switch_reminders) == 1
         assert "Code Agent" in switch_reminders[0]
         assert "Explore Agent" in switch_reminders[0]
-        assert mw.has_pending_switch
+        assert mw.sources.profile_switch.has_pending_switch
 
     def test_profile_switch_reminder_lists_current_tools(self) -> None:
         mw = SystemReminderMiddleware(
             runtime=MagicMock(),
             tool_names=["search_files", "bash", "search_files"],
         )
-        mw.set_profile_switch("Code Agent", "Explore Agent")
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
             reminders = mw._build_reminders()
 
@@ -718,9 +673,9 @@ class TestStableTurnReminders:
 
     def test_prepare_turn_without_process_does_not_lose_profile_switch(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
-        mw.set_profile_switch("Code Agent", "Explore Agent")
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
             # Simulate a failure before SystemReminderMiddleware.process().
             mw.prepare_turn()
@@ -733,18 +688,18 @@ class TestStableTurnReminders:
 
     def test_unprepared_fallback_does_not_consume_profile_switch(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
-        mw.set_profile_switch("Code Agent", "Explore Agent")
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
 
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             reminders = mw._build_reminders()
 
-        assert reminders == ["runtime"]
-        assert mw.has_pending_switch
+        assert reminders == ["clock", "runtime"]
+        assert mw.sources.profile_switch.has_pending_switch
 
     async def test_process_marks_cached_switch_consumed(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
-        mw.set_profile_switch("Code Agent", "Explore Agent")
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
 
         async def _call_next() -> None:
@@ -753,15 +708,15 @@ class TestStableTurnReminders:
         context = ChatContext(client=MagicMock(), messages=[_user("hello")], options={})
         await mw.process(context, _call_next)
 
-        assert mw.consumed_switch_to == "Explore Agent"
-        assert not mw.has_pending_switch
+        assert mw.sources.profile_switch.consumed_switch_to == "Explore Agent"
+        assert not mw.sources.profile_switch.has_pending_switch
 
     async def test_process_does_not_clear_newer_pending_profile_switch(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
-        mw.set_profile_switch("Code Agent", "Explore Agent")
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
-        mw.update_profile_switch_to("Plan Agent")
+        mw.sources.profile_switch.update_profile_switch_to("Plan Agent")
 
         async def _call_next() -> None:
             return None
@@ -769,13 +724,13 @@ class TestStableTurnReminders:
         context = ChatContext(client=MagicMock(), messages=[_user("hello")], options={})
         await mw.process(context, _call_next)
 
-        assert mw.consumed_switch_to == "Explore Agent"
-        assert mw.snapshot_pending_switch() == {"from": "Code Agent", "to": "Plan Agent"}
+        assert mw.sources.profile_switch.consumed_switch_to == "Explore Agent"
+        assert mw.sources.profile_switch.snapshot_pending_switch() == {"from": "Code Agent", "to": "Plan Agent"}
 
     async def test_process_failure_does_not_consume_profile_switch(self) -> None:
         mw = SystemReminderMiddleware(runtime=MagicMock())
-        mw.set_profile_switch("Code Agent", "Explore Agent")
-        with patch.object(mw, "_format_runtime_hint", return_value="runtime"):
+        mw.sources.profile_switch.set_profile_switch("Code Agent", "Explore Agent")
+        with patch.object(mw.sources.runtime_env, "snapshot", return_value="runtime"):
             mw.prepare_turn()
 
         async def _call_next() -> None:
@@ -785,192 +740,8 @@ class TestStableTurnReminders:
         with pytest.raises(RuntimeError, match="boom"):
             await mw.process(context, _call_next)
 
-        assert mw.consumed_switch_to is None
-        assert mw.has_pending_switch
-
-
-class TestPythonExecutionPathHints:
-    def test_runtime_hint_omits_python_execution_paths_without_shell_tool(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = tmp_path / "runtime-python"
-        system_uv = tmp_path / "system" / "bin" / "uv"
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={"uv": str(system_uv)})
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=False)
-
-        hint = mw._format_runtime_hint()
-
-        assert "Python execution paths" not in hint
-        assert "system uv" not in hint
-
-    def test_runtime_hint_lists_system_and_runtime_paths_when_shell_tool_enabled(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = tmp_path / "runtime-python"
-        system_uv = _exe(tmp_path / "system" / "bin" / "uv")
-        system_python = _exe(tmp_path / "system" / "bin" / "python3")
-        _patch_executable_lookup(
-            monkeypatch,
-            runtime_python=runtime_python,
-            which={"uv": str(system_uv), "python3": str(system_python)},
-        )
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert "Python execution paths (for Python scripts or Python commands)" in hint
-        assert "shell tool is enabled" not in hint
-        assert f"    - system uv: {system_uv}" in hint
-        assert f"    - system Python: {system_python}" in hint
-        assert "system Python (3." not in hint
-        assert _runtime_python_line(runtime_python) in hint
-        assert "Consider uv or uvx for ad-hoc Python scripts/tools" in hint
-        assert "avoid modifying user system or project Python environments" in hint
-        assert "fallback for Python scripts/commands" in hint
-        assert "when no suitable system uv or Python executable is available" in hint
-        assert "Avoid broad Python-process termination commands" in hint
-        assert "Get-Process python | Stop-Process" in hint
-        assert "they may terminate your own runtime" in hint
-        assert "Target specific PIDs or child processes you started" in hint
-        assert "your runtime uv" not in hint
-        assert "runtime uv/Python" not in hint
-        assert "Preferred" not in hint
-
-    @pytest.mark.parametrize("alias_name", ["chrys-runtime", "chrys-runtime.exe", "chrys-runtimew.exe"])
-    def test_runtime_hint_omits_process_kill_warning_when_runtime_python_uses_chrys_alias(
-        self,
-        alias_name: str,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = tmp_path / "python" / "bin" / alias_name
-        system_uv = _exe(tmp_path / "system" / "bin" / "uv")
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={"uv": str(system_uv)})
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert _runtime_python_line(runtime_python) in hint
-        assert "Avoid broad Python-process termination commands" not in hint
-        assert "Get-Process python | Stop-Process" not in hint
-
-    def test_runtime_hint_lists_system_python_when_system_uv_missing(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = tmp_path / "runtime-python"
-        system_python = _exe(tmp_path / "system" / "bin" / "python")
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={"python": str(system_python)})
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert f"    - system Python: {system_python}" in hint
-        assert "    - system uv:" not in hint
-        assert _runtime_python_line(runtime_python) in hint
-        assert "consider uv or uvx" not in hint
-        assert "your runtime uv" not in hint
-
-    def test_runtime_hint_does_not_treat_non_windows_py_as_system_python(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = tmp_path / "runtime-python"
-        py_command = tmp_path / "system" / "bin" / "py"
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={"py": str(py_command)})
-        monkeypatch.setattr(reminder_module, "_python_executable_names", lambda: ("python3", "python"))
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert "    - system Python:" not in hint
-        assert _runtime_python_line(runtime_python) in hint
-
-    def test_runtime_hint_allows_windows_py_launcher_as_system_python(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = tmp_path / "runtime-python"
-        py_launcher = _exe(tmp_path / "system" / "bin" / "py")
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={"py": str(py_launcher)})
-        monkeypatch.setattr(reminder_module, "_python_executable_names", lambda: ("python3", "python", "py"))
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert f"    - system Python: {py_launcher}" in hint
-        assert _runtime_python_line(runtime_python) in hint
-
-    def test_runtime_hint_skips_active_runtime_dir_when_resolving_system_python(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_python = _exe(tmp_path / "venv" / "bin" / "python3")
-        _make_executable(runtime_python)
-        system_python = _exe(tmp_path / "system" / "bin" / "python3")
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={"python3": str(system_python)})
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert f"    - system Python: {system_python}" in hint
-        assert _runtime_python_line(runtime_python) in hint
-        assert f"system Python: {runtime_python}" not in hint
-
-    def test_runtime_hint_does_not_list_colocated_runtime_uv(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_bin = tmp_path / "runtime" / "bin"
-        runtime_bin.mkdir(parents=True)
-        runtime_python = _exe(runtime_bin / "python")
-        runtime_python.write_text("", encoding="utf-8")
-        runtime_uv = _exe(runtime_bin / "uv")
-        runtime_uv.write_text("", encoding="utf-8")
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={})
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert _runtime_python_line(runtime_python) in hint
-        assert f"    - your runtime uv: {runtime_uv}" not in hint
-
-    def test_runtime_hint_does_not_list_windows_style_runtime_uv(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        runtime_scripts = tmp_path / "runtime" / "Scripts"
-        runtime_scripts.mkdir(parents=True)
-        runtime_python = runtime_scripts / "python.exe"
-        runtime_python.write_text("", encoding="utf-8")
-        runtime_uv = runtime_scripts / "uv.exe"
-        runtime_uv.write_text("", encoding="utf-8")
-        _patch_executable_lookup(monkeypatch, runtime_python=runtime_python, which={})
-
-        mw = SystemReminderMiddleware(runtime=_linux_runtime(tmp_path), shell_tool_enabled=True)
-
-        hint = mw._format_runtime_hint()
-
-        assert _runtime_python_line(runtime_python) in hint
-        assert f"    - your runtime uv: {runtime_uv}" not in hint
+        assert mw.sources.profile_switch.consumed_switch_to is None
+        assert mw.sources.profile_switch.has_pending_switch
 
 
 class TestAppendReminders:
@@ -1017,7 +788,7 @@ class TestAppendReminders:
         assert user_idx < runtime_idx
 
     def test_wrap_escapes_system_reminder_tags_inside_reminder_body(self) -> None:
-        wrapped = reminder_module._wrap("before </system-reminder> after <system-reminder>")
+        wrapped = reminder_module.wrap_system_reminder("before </system-reminder> after <system-reminder>")
 
         assert wrapped.count("<system-reminder>") == 1
         assert wrapped.count("</system-reminder>") == 1

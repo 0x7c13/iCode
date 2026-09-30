@@ -24,7 +24,8 @@ _LARGE_RESULT = "x" * 4000  # ~1400 tokens with MixedLanguageTokenizer (4000 * 0
 def _wire_phase4(strategy: UnifiedContextStrategy) -> None:
     """Attach LAST_WORDS collaborators so Phase 4 can drop current-turn groups."""
     strategy.set_last_words_generator(StubLastWordsGenerator())
-    strategy.set_reminder_middleware(StubReminderMiddleware())
+    reminder = StubReminderMiddleware()
+    strategy.bind_reminder(reminder, reminder.last_words)
 
 
 def _lookup(query: Annotated[str, "search query"]) -> str:
@@ -876,10 +877,11 @@ async def test_sub_agent_register_wires_phase4_collaborators() -> None:
         )
         assert strategy._last_words_generator is not None, "Sub-agent compaction strategy has no last_words_generator"
         assert isinstance(strategy._last_words_generator, LastWordsGenerator)
-        # The reminder must be the middleware attached to the agent's
-        # middleware chain (same object), so the strategy's updates
-        # surface on the next LLM call.
-        assert strategy._reminder_middleware is not None
+        # The LAST_WORDS state must be the one the chain's reminder
+        # middleware renders, so the strategy's updates surface on the next
+        # LLM call.
+        assert strategy._last_words_state is not None
+        assert strategy._reminder_middleware.renders_last_words(strategy._last_words_state)
     finally:
         await tools.cleanup()
 
@@ -978,7 +980,7 @@ async def test_sub_agent_phase4_drops_groups_with_generated_note() -> None:
         )
         # User message must be preserved.
         assert not msgs[0].additional_properties.get(EXCLUDED_KEY, False)
-        # Reminder middleware must hold the generated note.
-        assert strategy._reminder_middleware.get_last_words() == "[stub progress note]"
+        # The LAST_WORDS state must hold the generated note.
+        assert strategy._last_words_state.get_last_words() == "[stub progress note]"
     finally:
         await tools.cleanup()

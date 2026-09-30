@@ -55,6 +55,7 @@ from chrys.service.trajectory.preparation import PreparationOutcome, Preparation
 from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
 from tests.support.components import make_current, make_turn_state
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
+from tests.support.reminder_calls import establish_request
 from tests.support.turn_services import make_turn_coordinator, make_turn_runner
 from tests.support.waiting import wait_for
 
@@ -168,6 +169,7 @@ class _Executor:
         self.last_error = None
         self.service_session_id = ""
         self.history_state: dict[str, object] = {}
+        self.input_properties: dict[str, object] | None = None
         self.trajectory_context = None
         self.opening_item_ids: list[str | None] = []
         self.reset_counter_calls: list[bool] = []
@@ -772,10 +774,7 @@ async def _deliver_reminders(middleware: SystemReminderMiddleware, text: str) ->
     context = ChatContext(client=None, messages=[history_message], options=None)
 
     async def _call_next() -> None:
-        # Mirror the pipeline's final-handler boundary: request observers fire
-        # immediately before the provider request is established.
-        for observer in context.request_message_observers:
-            observer(context.messages)
+        await establish_request(context)
 
     await middleware.process(context, _call_next)
     model_message = next(message for message in reversed(context.messages) if message.role == "user")

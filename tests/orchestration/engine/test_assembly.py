@@ -29,10 +29,7 @@ from chrys.orchestration.engine.state.current_agent import CurrentAgent
 from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
 from chrys.orchestration.engine.state.session_writer import SessionWriter
 from chrys.orchestration.engine.usage import UsagePublisher
-from chrys.service.agent_middleware.system_reminder import (
-    CurrentRunReminderScope,
-    SystemReminderMiddleware,
-)
+from chrys.service.agent_middleware.system_reminder import CurrentRunReminderScope
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
@@ -40,6 +37,7 @@ from tests.orchestration.engine.test_agent_loader import _profile
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support.loaded_agents import install_loaded_agent
 from tests.support.pipeline_helpers import make_mock_settings_and_registry
+from tests.support.reminder_stack import reminder_pair
 
 
 def _components(engine):
@@ -147,9 +145,9 @@ async def test_agent_engine_owns_turn_coordinator_state() -> None:
 
 async def test_engine_owner_clocks_and_transition_reset_expire_reminder_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = assemble_agent_engine(EventBus(), settings=Settings())
-    reminder = SystemReminderMiddleware()
+    reminder, last_words = reminder_pair()
     scope_token = reminder.create_current_run_scope()
-    install_loaded_agent(engine, reminder_middleware=reminder)
+    install_loaded_agent(engine, reminder_middleware=reminder, last_words=last_words)
     loaded = engine.current.loaded
     assert loaded is not None
     calls: list[tuple[str, CurrentRunReminderScope]] = []

@@ -12,11 +12,14 @@ from chrys.foundation.util.chrys_headers import MODEL_ID_HEADER, SESSION_ID_HEAD
 from chrys.foundation.util.env_templates import EnvVarResolutionError
 from chrys.service.profiles.models.options import (
     effective_chat_options,
+    is_anthropic_claude_profile,
+    lacks_anthropic_prompt_cache_option,
     parse_chat_options,
     protected_chat_option_keys_warning,
     protected_chat_option_keys_warning_structured,
     responses_store_continuation_warning,
     uses_responses_compact_continuation,
+    with_anthropic_prompt_cache_option,
 )
 from chrys.service.profiles.models.schema import ModelProfile, uses_responses_wire_dialect
 
@@ -471,3 +474,64 @@ def test_responses_store_continuation_warning_tolerates_unresolvable_templates_a
     # Malformed options never enable store mode, so no warning either.
     assert responses_store_continuation_warning(profile("not json")) is None
     assert responses_store_continuation_warning(profile('["store"]')) is None
+
+
+# ---------------------------------------------------------------------------
+# Anthropic prompt caching
+# ---------------------------------------------------------------------------
+
+
+def _anthropic(
+    model_id: str = "claude-sonnet-5-5", chat_options: str = "", provider: str = "anthropic"
+) -> ModelProfile:
+    return ModelProfile(id="p", name="Profile", provider=provider, model_id=model_id, chat_options=chat_options)
+
+
+@pytest.mark.parametrize(
+    ("provider", "model_id", "expected"),
+    [
+        ("anthropic", "claude-sonnet-5-5", True),
+        ("anthropic", "anthropic/Claude-Opus-5-5", True),
+        ("anthropic", "kimi-k2", False),
+        ("openai", "claude-sonnet-5-5", False),
+    ],
+)
+def test_is_anthropic_claude_profile(provider: str, model_id: str, expected: bool) -> None:
+    assert is_anthropic_claude_profile(_anthropic(model_id, provider=provider)) is expected
+
+
+@pytest.mark.parametrize(
+    ("chat_options", "expected"),
+    [
+        pytest.param("", True, id="no-options"),
+        pytest.param('{"temperature": 0.2}', True, id="other-options"),
+        pytest.param('{"extra_body": {"top_k": 5}}', True, id="extra-body-without-it"),
+        pytest.param('{"extra_body": null}', True, id="null-extra-body"),
+        pytest.param('{"cache_control": {"type": "ephemeral"}}', False, id="top-level"),
+        pytest.param('{"extra_body": {"cache_control": {"type": "ephemeral"}}}', False, id="in-extra-body"),
+        pytest.param('{"extra_body": "raw"}', False, id="extra-body-not-an-object"),
+        pytest.param("[1, 2]", False, id="options-not-an-object"),
+        pytest.param("{not json", False, id="malformed"),
+    ],
+)
+def test_lacks_anthropic_prompt_cache_option(chat_options: str, expected: bool) -> None:
+    assert lacks_anthropic_prompt_cache_option(_anthropic(chat_options=chat_options)) is expected
+
+
+def test_lacks_anthropic_prompt_cache_option_ignores_other_profiles() -> None:
+    assert lacks_anthropic_prompt_cache_option(_anthropic("kimi-k2")) is False
+    assert lacks_anthropic_prompt_cache_option(_anthropic(provider="openai")) is False
+
+
+def test_with_anthropic_prompt_cache_option_merges_without_mutating() -> None:
+    extra_body = {"top_k": 5, "cache_control": {"type": "persistent"}}
+
+    merged = with_anthropic_prompt_cache_option(extra_body)
+
+    assert merged == {"top_k": 5, "cache_control": {"type": "ephemeral"}}
+    assert extra_body == {"top_k": 5, "cache_control": {"type": "persistent"}}
+    assert with_anthropic_prompt_cache_option(None) == {"cache_control": {"type": "ephemeral"}}
+    # Each call hands out its own dict: an edit to one result never reaches the next.
+    first = with_anthropic_prompt_cache_option(None)
+    first["cache_control"]["ttl"] = "1h"
+    assert with_anthropic_prompt_cache_option(None) == {"cache_control": {"type": "ephemeral"}}

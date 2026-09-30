@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,6 +33,8 @@ from chrys.kernel.loop import ConsumedInjectionMessageProbe, LoopRecorder
 from chrys.kernel.middleware import ChatMiddleware, ChatMiddlewareLayer
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
+from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.agent_middleware.system_reminder import wrap_system_reminder as _wrap
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
 
@@ -1065,6 +1068,57 @@ async def test_backoff_queued_injection_joins_retry_while_cancelled_one_stays_ab
 
     assert _injected_texts(wire.calls[0]) == ["original"]
     assert _injected_texts(wire.calls[1]) == ["original", "joined"]
+
+
+@pytest.mark.asyncio
+async def test_retry_replays_an_injection_with_the_reminders_it_carried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A replayed injection keeps its reminder even when a later injection becomes the last user message."""
+    injection = InjectionMiddleware()
+    reminder = SystemReminderMiddleware(runtime=MagicMock())
+    monkeypatch.setattr(reminder.sources.runtime_env, "snapshot", lambda: "runtime")
+    monkeypatch.setattr(reminder.sources.turn_line, "clock", lambda: "clock")
+    reminder.prepare_turn()
+    reminder.queue_hook_reminders(["hook note"])
+    opener = _user()
+    # The opener carried the turn line and the runtime environment on an earlier call.
+    opener.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] = [
+        {"kind": "turn", "text": "clock"},
+        {"kind": "catalog", "text": "runtime", "name": "runtime"},
+    ]
+    injection.queue("first note", injection_id="first")
+    policy = _Policy(
+        before_retry_hook=injection.restore_for_retry,
+        sleep_hook=lambda: injection.queue("second note", injection_id="second"),
+    )
+    probe = ConsumedInjectionMessageProbe(
+        injection.drain_consumed_injection_messages,
+        injection.commit_logical_call,
+    )
+    wire = _ScriptedWire([ConnectionError("retry"), _text_response("done")])
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[injection, reminder]))
+
+    injection.begin_retry()
+    try:
+        await layer.get_response(
+            [opener],
+            client_kwargs={
+                "wire_retry_policy": policy,
+                "consumed_injection_message_probe": probe,
+            },
+        )
+    finally:
+        injection.end_retry()
+
+    def _injected_blocks(call: dict[str, Any]) -> list[list[str | None]]:
+        return [
+            [content.text for content in message.contents]
+            for message in call["messages"]
+            if message.additional_properties.get(HistoryMarkerKind.INJECTED_KEY) is True
+        ]
+
+    carried = ["first note", _wrap("hook note")]
+    assert _injected_blocks(wire.calls[0]) == [carried]
+    assert _injected_blocks(wire.calls[1]) == [carried, ["second note"]]
 
 
 @pytest.mark.asyncio

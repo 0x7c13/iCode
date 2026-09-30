@@ -41,6 +41,7 @@ from tests.service.context.compaction._compaction_helpers import (
     _wire_view,
 )
 from tests.support.phase4_stubs import StubLastWordsGenerator
+from tests.support.reminder_stack import reminder_pair
 
 
 def _spans(resolved) -> list[tuple[int, int]]:
@@ -643,11 +644,12 @@ async def test_phase4_injections_and_nudge_survive_note_rides_last_user():
     ]
 
     generator = StubLastWordsGenerator(text="[stub progress note]")
-    middleware = SystemReminderMiddleware()
+    middleware, last_words = reminder_pair()
     strategy = _forced_phase4(
         messages,
         last_words_generator=generator,
         reminder_middleware=middleware,
+        last_words=last_words,
     )
     changed = await strategy(messages)
     assert changed

@@ -16,7 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Hashable
+from collections.abc import Hashable, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -25,6 +25,7 @@ from chrys.foundation.models.history_markers import (
     AWAITING_SUB_AGENTS_MESSAGE,
     EXECUTION_INTERRUPTED_MESSAGE,
     HistoryMarkerKind,
+    copy_reminder_record,
 )
 from chrys.foundation.models.turns import (
     UserMessageKind,
@@ -619,6 +620,7 @@ class SessionHistoryManager:
         *,
         kind: UserMessageKind = "opener",
         item_id: str | None = None,
+        reminder_source: Mapping[str, Any] | None = None,
     ) -> None:
         """Ensure the user message is present in session state.
 
@@ -652,6 +654,11 @@ class SessionHistoryManager:
         the real opener ``_injected`` would stop it opening the turn.
         Recovery never synthesizes a ``"continuation"`` kind — bare-resume
         nudge branches clear the recovery input instead.
+
+        *reminder_source* is the properties of the copy the request sent: an
+        appended message carries its reminder record, so later requests
+        re-render the reminders it went out with.  A matched message keeps
+        its own record.
         """
         state = self._state
         if state is None:
@@ -674,6 +681,7 @@ class SessionHistoryManager:
             msg.additional_properties[HistoryMarkerKind.INJECTED_KEY] = True
         stamp_message_created_at(msg, created_at)
         ensure_analytics_item_id(msg.additional_properties, item_id=item_id)
+        copy_reminder_record(reminder_source, msg.additional_properties)
         messages.append(msg)
 
     def tag_last_user_message(self, key: str, value: Any) -> None:
@@ -1507,9 +1515,7 @@ class SessionHistoryManager:
             if existing is None:
                 missing.append(injection)
             else:
-                ensure_analytics_item_id(existing.additional_properties, item_id=injection.analytics_item_id)
-                if injection.created_at is not None:
-                    stamp_message_created_at(existing, injection.created_at)
+                _stamp_consumption(existing, injection)
         _insert_consumed_injection_messages(messages, missing)
 
     def replay_consumed_injections(self, injections: list[ConsumedInjection]) -> None:
@@ -1563,10 +1569,16 @@ class SessionHistoryManager:
             if existing is None:
                 missing.append(injection)
             else:
-                ensure_analytics_item_id(existing.additional_properties, item_id=injection.analytics_item_id)
-                if injection.created_at is not None:
-                    stamp_message_created_at(existing, injection.created_at)
+                _stamp_consumption(existing, injection)
         _insert_consumed_injection_messages(messages, missing)
+
+
+def _stamp_consumption(message: Message, injection: ConsumedInjection) -> None:
+    """Give a persisted copy of *injection* the identity, time and reminders its consumption had."""
+    ensure_analytics_item_id(message.additional_properties, item_id=injection.analytics_item_id)
+    if injection.created_at is not None:
+        stamp_message_created_at(message, injection.created_at)
+    copy_reminder_record(injection.wire_properties, message.additional_properties)
 
 
 def _insert_consumed_injection_messages(messages: list[Message], injections: list[ConsumedInjection]) -> None:
@@ -1594,9 +1606,7 @@ def _insert_consumed_injection_messages(messages: list[Message], injections: lis
             # Per-consumption identity: replay_consumed_injections dedups on
             # this stamp, never on text alone.
             inj_msg.additional_properties[HistoryMarkerKind.INJECTION_ID_KEY] = injection.consumption_id
-        ensure_analytics_item_id(inj_msg.additional_properties, item_id=injection.analytics_item_id)
-        if injection.created_at is not None:
-            stamp_message_created_at(inj_msg, injection.created_at)
+        _stamp_consumption(inj_msg, injection)
         insertions.append((insert_idx, queue_order, inj_msg))
 
     insertions.sort(key=lambda t: (t[0], t[1]), reverse=True)

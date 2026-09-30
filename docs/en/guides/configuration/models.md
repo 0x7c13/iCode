@@ -32,6 +32,7 @@ While a task is running, the "Model Configuration" window opens in read-only mod
 - The profile name identifies the model profile in the interface and is not sent to the model service. It cannot be empty or duplicate an existing name (case-insensitive). Names can contain Chinese characters, spaces, letters, numbers, and common symbols.
 - A profile with missing required information, such as the model ID or token limits, does not appear in the model selection list.
 - If no usable model profile existed before, the new profile automatically becomes the current model profile after you save it and close the window. If another model profile is already in use, saving a new profile does not automatically switch models.
+- To set reasoning effort, prompt caching, or other request fields, use "Chat Options" in the "Extra Options" section. See [Chat Options](./chat-options.md), which also lists settings for common model services. When a save makes a profile a Claude profile on the Anthropic protocol without a cache setting, iCode offers to add one.
 
 ### Provide an API key through an environment variable
 
@@ -109,7 +110,7 @@ iCode should respond with a greeting. If the model service returns an error, fir
 
 If the error persists, compare the symptoms against the following cases:
 
-- **The error message contains `The Chat Completions client supports only n=1`**: With the Chat Completions style, iCode processes only one response per request and does not support multiple candidate responses, so the `n` parameter must be omitted or set to the integer `1`. Remove the value or set it to `1` in the profile's "Chat Options", including when it was set indirectly through `extra_body`.
+- **The error message contains `The Chat Completions client supports only n=1`**: With the Chat Completions style, iCode processes only one response per request and does not support multiple candidate responses, so the `n` parameter must be omitted or set to the integer `1`. Remove the value or set it to `1` in the profile's ["Chat Options"](./chat-options.md), including when it was set indirectly through `extra_body`.
 - **The response has an `HTTP 200` status but is not a valid model reply**: for example a `text/html` Content-Type with an error page, an error JSON body, or an empty body. This means a gateway or proxy wrapped a backend error as a successful response; check that the selected API style matches the model service address, and review the proxy route.
 
 ### If iCode can't reach the model service

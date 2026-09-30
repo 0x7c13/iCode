@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import weakref
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -187,4 +188,14 @@ class CachedCompressedContextSummary:
     lists defeat ``folded_contents``; the content objects stay shared.
     Usage contents are deliberately included — fold evidence must keep
     seeing them.
+    """
+
+    folded_messages: tuple[weakref.ref[Message], ...]
+    """Weak references to the folded state messages themselves.
+
+    Matches the reminder middleware's enriched user messages, which carry
+    fresh contents and share only the original's ``additional_properties``
+    dict. A plain dict can't be weakly referenced, so the dicts are read off
+    the still-live originals at match time; their ids are therefore always
+    those of live objects.
     """

@@ -21,6 +21,7 @@ from chrys.service.context.compaction import (
     _group_messages_by_id,
     _ordered_group_ids,
 )
+from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.providers.history import (
     CompressibleHistoryProvider,
 )
@@ -106,13 +107,15 @@ def _make_strategy(
     *,
     last_words_generator: object | None = None,
     reminder_middleware: object | None = None,
+    last_words: LastWordsState | None = None,
     **kwargs,
 ) -> UnifiedContextStrategy:
     """Create a strategy with Phase 4 collaborators stubbed by default.
 
     Tests that want to observe the LAST_WORDS pipeline can pass their own
     stub instances; tests that don't care still get drop-all Phase 4
-    behaviour out of the box.
+    behaviour out of the box.  A real middleware comes with the state it
+    renders (``reminder_pair``/``make_reminder_stack``), passed as *last_words*.
     """
     defaults = {
         "max_context_tokens": 100_000,
@@ -122,7 +125,13 @@ def _make_strategy(
     defaults.update(kwargs)
     strategy = UnifiedContextStrategy(**defaults)
     strategy.set_last_words_generator(last_words_generator or StubLastWordsGenerator())
-    strategy.set_reminder_middleware(reminder_middleware or StubReminderMiddleware())
+    if reminder_middleware is None:
+        reminder_middleware = StubReminderMiddleware(last_words)
+    if last_words is None:
+        if not isinstance(reminder_middleware, StubReminderMiddleware):
+            raise TypeError("A real reminder middleware needs the LAST_WORDS state it renders: pass last_words=.")
+        last_words = reminder_middleware.last_words
+    strategy.bind_reminder(reminder_middleware, last_words)
     return strategy
 
 

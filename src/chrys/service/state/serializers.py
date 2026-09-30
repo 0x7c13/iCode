@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from chrys.kernel import Message
-from chrys.service.agent_middleware.system_reminder import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.context.providers.history import CompressedBlock
 from chrys.service.session.runtime_metadata import (
     CONTEXT_CALIBRATION_KEY,

@@ -759,75 +759,42 @@ async def test_middleware_streaming_no_usage_from_non_stream_result():
 # ---------------------------------------------------------------------------
 
 
-def test_format_usage_hint_basic_context_line() -> None:
-    from chrys.service.context.middleware.usage import format_usage_hint
+def test_format_usage_line_basic_context_line() -> None:
+    from chrys.service.agent_middleware.reminders.context_usage import format_usage_line
 
-    hint = format_usage_hint(
-        {"total_token_count": 12_500},
-        max_context_tokens=100_000,
-        warn_threshold_pct=0.8,
-    )
+    line = format_usage_line({"total_token_count": 12_500}, max_context_tokens=100_000)
 
-    assert hint == "[Context Usage] current: 12.5% (12,500/100,000)"
+    assert line == "[Context Usage] current: 12.5% (12,500/100,000)"
 
 
-def test_format_usage_hint_includes_message_and_call_counts() -> None:
-    from chrys.service.context.middleware.usage import format_usage_hint
+def test_context_usage_warning_starts_at_the_threshold() -> None:
+    from chrys.service.agent_middleware.reminders.context_usage import CONTEXT_USAGE_WARNING
+    from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 
-    hint = format_usage_hint(
-        {"total_token_count": 1_000},
-        max_context_tokens=10_000,
-        warn_threshold_pct=0.8,
-        msg_count=7,
-        call_count=3,
-    )
+    def warns(total: int) -> bool:
+        middleware = SystemReminderMiddleware(max_context_tokens=1_000, warn_threshold_pct=0.5)
+        middleware.prepare_turn(usage={"total_token_count": total})
+        return CONTEXT_USAGE_WARNING in middleware._build_reminders()
 
-    assert "history_messages=7" in hint
-    assert "model_call#3_this_turn" in hint
-
-
-def test_format_usage_hint_warn_threshold_boundary() -> None:
-    from chrys.service.context.middleware.usage import format_usage_hint
-
-    def hint(total: int) -> str:
-        return format_usage_hint(
-            {"total_token_count": total},
-            max_context_tokens=1_000,
-            warn_threshold_pct=0.5,
-        )
-
-    assert "WARNING:" not in hint(499)
-    assert "WARNING:" in hint(500)
-    assert "WARNING:" in hint(501)
+    assert not warns(499)
+    assert warns(500)
+    assert warns(501)
 
 
-def test_format_usage_hint_lists_sub_agents_only_when_available() -> None:
-    from chrys.service.context.middleware.usage import format_usage_hint
+def test_sub_agent_tip_lists_sub_agents_only_when_available() -> None:
+    from chrys.service.agent_middleware.reminders.sub_agents import SubAgentsSource
 
-    with_agents = format_usage_hint(
-        {"total_token_count": 1_000},
-        max_context_tokens=10_000,
-        warn_threshold_pct=0.8,
-        sub_agent_names=["Explore", "Plan"],
-    )
-    without_agents = format_usage_hint(
-        {"total_token_count": 1_000},
-        max_context_tokens=10_000,
-        warn_threshold_pct=0.8,
-        sub_agent_names=[],
-    )
+    tip = SubAgentsSource(["Explore", "General"]).snapshot()
 
-    assert "Sub-agents are available (`Explore`, `Plan`)" in with_agents
-    assert "TIP:" not in without_agents
+    assert tip is not None
+    assert tip.startswith("TIP: Sub-agents are available (`Explore`, `General`).")
+    assert SubAgentsSource([]).snapshot() is None
+    assert SubAgentsSource(None).snapshot() is None
 
 
-def test_format_usage_hint_falls_back_to_input_plus_output() -> None:
-    from chrys.service.context.middleware.usage import format_usage_hint
+def test_format_usage_line_falls_back_to_input_plus_output() -> None:
+    from chrys.service.agent_middleware.reminders.context_usage import format_usage_line
 
-    hint = format_usage_hint(
-        {"input_token_count": 2_000, "output_token_count": 500},
-        max_context_tokens=10_000,
-        warn_threshold_pct=0.8,
-    )
+    line = format_usage_line({"input_token_count": 2_000, "output_token_count": 500}, max_context_tokens=10_000)
 
-    assert hint == "[Context Usage] current: 25.0% (2,500/10,000)"
+    assert line == "[Context Usage] current: 25.0% (2,500/10,000)"

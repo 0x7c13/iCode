@@ -1,0 +1,54 @@
+{
+ "scenario": "g15_sub_agent",
+ "about": "The sub-agent shape: no archive pointer, no usage line, no switch.",
+ "steps": [
+  {
+   "step": "sub-agent task",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Summarise src/.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\n<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "0": [
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC"
+     },
+     {
+      "kind": "catalog",
+      "text": "[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared",
+      "name": "runtime"
+     },
+     {
+      "kind": "catalog",
+      "text": "Current todo list:\n- [ ] pin the reminder goldens",
+      "name": "todo"
+     },
+     {
+      "kind": "catalog",
+      "text": "<available_skills>\n  <skill>\n    <name>review</name>\n  </skill>\n</available_skills>",
+      "name": "skills"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": null,
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 0
+   }
+  }
+ ]
+}

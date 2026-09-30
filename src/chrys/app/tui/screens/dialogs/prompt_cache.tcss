@@ -1,0 +1,38 @@
+PromptCacheDialog {
+    align: center middle;
+}
+
+#prompt-cache-container {
+    width: 72;
+    max-width: 90%;
+    height: auto;
+    max-height: 85%;
+    background: $surface;
+    border: round $tui-border-warning $border-opacity;
+    border-title-color: $warning;
+    border-title-style: bold;
+}
+
+#prompt-cache-inner {
+    width: 100%;
+    height: auto;
+    max-height: 100%;
+    background: $surface;
+    padding: 1 2;
+}
+
+#prompt-cache-message {
+    width: 100%;
+    height: auto;
+}
+
+#prompt-cache-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1;
+}
+
+#prompt-cache-buttons > Button {
+    margin: 0 1;
+}

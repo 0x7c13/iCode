@@ -146,10 +146,12 @@ class _Executor:
         self.running = running
         self.trajectory_context = None
         self.injected: list[str] = []
+        self.injected_reminders: list[tuple[str, ...]] = []
         self.approval_context: list[str] = []
 
-    def inject(self, text: str, **_kwargs: object) -> None:
+    def inject(self, text: str, *, reminders: tuple[str, ...] = (), **_kwargs: object) -> None:
         self.injected.append(text)
+        self.injected_reminders.append(reminders)
 
     def append_user_message(self, text: str) -> None:
         self.approval_context.append(text)
@@ -1222,7 +1224,9 @@ async def test_user_inject_allowed_by_user_prompt_submit_hook() -> None:
     assert errors == []
     assert host.current.loaded.bindings.injected == ["inject context"]
     assert host.current.loaded.bindings.approval_context == ["inject context"]
-    assert host.current.loaded.reminder_middleware.queued == [(["current turn note"], False)]
+    # The reminders travel with the injection until a model call drains it.
+    assert host.current.loaded.bindings.injected_reminders == [("current turn note",)]
+    assert host.current.loaded.reminder_middleware.queued == []
     assert host.session.hook_manager.payloads[0]["injected"] is True
 
 

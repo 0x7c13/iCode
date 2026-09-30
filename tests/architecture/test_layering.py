@@ -405,12 +405,22 @@ def test_dynamic_subpackage_import_is_classified() -> None:
 
 
 def test_system_reminder_scoped_current_run_api_stays_service_owned_and_typed() -> None:
-    """Scoped reminder tokens must stay service-owned and explicitly typed."""
-    path = SRC / "service" / "agent_middleware" / "system_reminder.py"
-    tree = _parse(path)
+    """Scoped reminder tokens must stay service-owned and explicitly typed.
+
+    The reminder core, its content sources and the LAST_WORDS state it
+    renders never import orchestration, not even under TYPE_CHECKING.
+    """
+    sources = sorted((SRC / "service" / "agent_middleware" / "reminders").rglob("*.py"))
+    assert sources, "reminders/ holds the reminder sources"
+    paths = [
+        SRC / "service" / "agent_middleware" / "system_reminder.py",
+        *sources,
+        SRC / "service" / "context" / "compaction" / "last_words_state.py",
+    ]
     orchestration_imports = [
-        target
-        for target in _import_targets_including_type_checking(path, tree)
+        (path.relative_to(SRC).as_posix(), target)
+        for path in paths
+        for target in _import_targets_including_type_checking(path, _parse(path))
         if target == "chrys.orchestration" or target.startswith("chrys.orchestration.")
     ]
     assert orchestration_imports == []

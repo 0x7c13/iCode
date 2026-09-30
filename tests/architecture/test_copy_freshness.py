@@ -31,9 +31,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.retry import restore_message_properties, snapshot_message_properties
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.kernel import AgentSession, LoopRecorder
@@ -52,6 +54,8 @@ from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.engine.session_lifecycle import _reset_restore_history_state
 from chrys.orchestration.invoker.attempts import HistoryRollback
 from chrys.service.agent_middleware.injection import ConsumedInjection, InjectionAnchor
+from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.compaction.scoped import clone_for_slice
 from chrys.service.context.providers.history import _TURN_ID_KEY, _compress_state
 from chrys.service.session import checkpoint as session_checkpoint
@@ -59,6 +63,7 @@ from chrys.service.session.checkpoint import _DetachedLoopRecorder, build_recove
 from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from tests.support.ci import CI_LINUX_ONLY
+from tests.support.reminder_stack import reminder_pair
 
 # Platform-independent copy-semantics pins: the Linux CI job covers them.
 pytestmark = CI_LINUX_ONLY
@@ -322,6 +327,7 @@ class _RecoveryInputs:
     mutation_tracker: _RetainingMutationTracker
     runtime_meta: _RetainingRuntimeMetadata
     user_contents: list[Content]
+    user_reminder_source: dict[str, Any]
     consumed_injections: list[ConsumedInjection]
     last_words_manifest: list[dict[str, Any]]
     last_words_breaker: dict[str, Any]
@@ -358,12 +364,18 @@ class _RecoveryInputs:
                 context_calibration={"v": 2, "calibration_ratio": 1.0},
             ),
             user_contents=[Content.from_text("do work")],
+            user_reminder_source={
+                HistoryMarkerKind.SYSTEM_REMINDERS_KEY: [{"kind": "turn", "text": "runtime"}],
+            },
             consumed_injections=[
                 ConsumedInjection(
                     text="mid-run note",
                     anchor=InjectionAnchor.from_message(assistant),
                     created_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
                     consumption_id="inj-1",
+                    wire_properties={
+                        HistoryMarkerKind.SYSTEM_REMINDERS_KEY: [{"kind": "event", "text": "hook note"}],
+                    },
                 )
             ],
             last_words_manifest=[{"tool": "write_file", "paths": ["a.py"]}],
@@ -378,6 +390,7 @@ class _RecoveryInputs:
             self.mutation_tracker,
             self.runtime_meta,
             self.user_contents,
+            self.user_reminder_source,
             self.consumed_injections,
             self.last_words_manifest,
             self.last_words_breaker,
@@ -393,6 +406,7 @@ class _RecoveryInputs:
             user_text="do work",
             user_contents=self.user_contents,
             user_created_at="2026-01-01T00:00:00+00:00",
+            user_reminder_source=self.user_reminder_source,
             consumed_injections=self.consumed_injections,
             last_words="note",
             last_words_manifest=self.last_words_manifest,
@@ -429,6 +443,12 @@ class TestRecoverySnapshotIsolation:
         texts = [message.text for message in recovered["messages"]]
         assert "do work" in texts
         assert "mid-run note" in texts
+        records = {
+            message.text: message.additional_properties.get(HistoryMarkerKind.SYSTEM_REMINDERS_KEY)
+            for message in recovered["messages"]
+        }
+        assert records["do work"] == [{"kind": "turn", "text": "runtime"}]
+        assert records["mid-run note"] == [{"kind": "event", "text": "hook note"}]
         assert any(
             content.type == "function_result" and content.result == "written"
             for message in recovered["messages"]
@@ -799,3 +819,87 @@ class TestMiddlewareOwnedCopies:
 
         message.contents.append(Content.from_text("client mutation"))
         assert [item.text for item in retained.contents] == ["injected"]
+
+
+# ---------------------------------------------------------------------------
+# System-reminder per-call rebuilds: fresh wrapper/list, shared props dict
+# ---------------------------------------------------------------------------
+
+
+class TestSystemReminderRebuilds:
+    """Copy class: the reminder middleware's per-call user-message rebuild
+    (``SystemReminderMiddleware._rebuild``), used by enrichment, the
+    LAST_WORDS refresh and the fold restore. Each replaces a list entry with a
+    fresh wrapper and contents list — the original may be the live history
+    message — while ``additional_properties`` stays THE original's dict, the
+    write-through channel for exclusion flags and the reminder record."""
+
+    @staticmethod
+    def _middleware(monkeypatch: pytest.MonkeyPatch, *, catalog: str | None = None) -> SystemReminderMiddleware:
+        return TestSystemReminderRebuilds._middleware_pair(monkeypatch, catalog=catalog)[0]
+
+    @staticmethod
+    def _middleware_pair(
+        monkeypatch: pytest.MonkeyPatch, *, catalog: str | None = None
+    ) -> tuple[SystemReminderMiddleware, LastWordsState]:
+        middleware, last_words = reminder_pair(
+            runtime=MagicMock(),
+            skill_catalog_provider=(lambda: catalog) if catalog is not None else None,
+        )
+        monkeypatch.setattr(middleware.sources.runtime_env, "snapshot", lambda: "runtime hint")
+        middleware.prepare_turn()
+        return middleware, last_words
+
+    def test_enrichment_rebuilds_text_and_shares_other_contents_and_props(self) -> None:
+        text = Content.from_text("question")
+        image = Content.from_uri("data:image/png;base64,AAA", media_type="image/png")
+        message = Message("user", [text, image], message_id="msg_1")
+        message.additional_properties["marker"] = True
+
+        enriched = SystemReminderMiddleware._create_enriched(message, ["turn reminder"], [])
+
+        assert enriched is not message
+        assert type(enriched.contents) is ContentList
+        assert enriched.contents is not message.contents
+        # User text is re-minted escaped; any other content is shared.
+        assert enriched.contents[0] is not text
+        assert enriched.contents[1] is image
+        assert enriched.additional_properties is message.additional_properties
+        assert enriched.message_id == "msg_1"
+        assert list(message.contents) == [text, image]
+
+    def test_last_words_refresh_shares_kept_contents_and_props(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        middleware, last_words = self._middleware_pair(monkeypatch)
+        last_words.set_last_words("progress note")
+        content = Content.from_text("question")
+        message = Message("user", [content])
+        message.additional_properties["marker"] = True
+        messages = [message]
+
+        assert middleware.refresh_last_words_reminder(messages) == 0
+
+        rebuilt = messages[0]
+        assert rebuilt is not message
+        assert type(rebuilt.contents) is ContentList
+        assert rebuilt.contents is not message.contents
+        assert rebuilt.contents[0] is content
+        assert rebuilt.additional_properties is message.additional_properties
+        assert list(message.contents) == [content]
+
+    def test_fold_restore_shares_kept_contents_and_records_through_props(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        middleware = self._middleware(monkeypatch, catalog="skills catalog")
+        content = Content.from_text("question")
+        message = Message("user", [content])
+        messages = [message]
+
+        assert middleware.restore_folded_reminders(messages) == 0
+
+        rebuilt = messages[0]
+        assert rebuilt is not message
+        assert type(rebuilt.contents) is ContentList
+        assert rebuilt.contents is not message.contents
+        assert rebuilt.contents[0] is content
+        assert rebuilt.additional_properties is message.additional_properties
+        assert list(message.contents) == [content]
+        # The record lands on the shared dict, so the history message keeps it.
+        assert HistoryMarkerKind.SYSTEM_REMINDERS_KEY in message.additional_properties

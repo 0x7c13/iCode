@@ -1,0 +1,222 @@
+{
+ "scenario": "g08_phase4",
+ "about": "LAST_WORDS: set, refreshed below the middleware, evictions, and a todo list captured at set time.",
+ "steps": [
+  {
+   "step": "turn start: two archived records",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Refactor the parser.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 2 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {
+    "0": [
+     {
+      "kind": "turn",
+      "text": "[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC"
+     },
+     {
+      "kind": "catalog",
+      "text": "[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared",
+      "name": "runtime"
+     },
+     {
+      "kind": "catalog",
+      "text": "Current todo list:\n- [ ] pin the reminder goldens",
+      "name": "todo"
+     },
+     {
+      "kind": "catalog",
+      "text": "Earlier context compaction archived 2 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).",
+      "name": "archive"
+     }
+    ]
+   },
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": null,
+    "manifest": [],
+    "breaker": null,
+    "pointer_count": 2
+   }
+  },
+  {
+   "step": "note and manifest; the todo list is the one captured at set time",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Refactor the parser.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 2 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>",
+      "<system-reminder>\n[LAST_WORDS] You previously made progress on the current task (the user's request and any follow-up messages above) but ran out of context, so your earlier tool-call history for this task has been dropped.  The note below is your own updated progress record — read it and resume from where you left off.  Do NOT redo work that the note says is already done.  If the note says the work is finished but you have not yet delivered the final reply to the user, do not re-gather anything — compose and deliver that reply now from the note.\n\nProgress: the grammar is parsed; the tokenizer remains.\n\nCurrent todo list:\n- [ ] pin the reminder goldens\n\n--- Dropped this turn (records under {root_a}/compactions/dropped/turn002/) ---\nr1 001 read_file(src/parser.py) → ok, 1.2k chars — 001_read_file_00020001.md\nr1 002 shell(uv run pytest tests/parser) → exit 1, 18.4k chars — 002_shell_00020002.md\nTo inspect archived input/output, read the listed file with read_file; capped records contain an explicit middle-truncation marker.\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {},
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": "Progress: the grammar is parsed; the tokenizer remains.",
+    "manifest": [
+     [
+      "compactions/dropped/turn002/001_read_file_00020001.md",
+      true
+     ],
+     [
+      "compactions/dropped/turn002/002_shell_00020002.md",
+      true
+     ]
+    ],
+    "breaker": null,
+    "pointer_count": 2
+   }
+  },
+  {
+   "step": "Phase 4 below the middleware: the block is rewritten",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Refactor the parser.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 2 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>",
+      "<system-reminder>\n[LAST_WORDS] You previously made progress on the current task (the user's request and any follow-up messages above) but ran out of context, so your earlier tool-call history for this task has been dropped.  The note below is your own updated progress record — read it and resume from where you left off.  Do NOT redo work that the note says is already done.  If the note says the work is finished but you have not yet delivered the final reply to the user, do not re-gather anything — compose and deliver that reply now from the note.\n\nProgress: the tokenizer is done; emitting remains.\n\nCurrent todo list:\n- [x] pin the reminder goldens\n- [ ] run the gates\n\n--- Dropped this turn (records under {root_a}/compactions/dropped/turn002/) ---\nr1 001 read_file(src/parser.py) → ok, 1.2k chars — 001_read_file_00020001.md\nr1 002 shell(uv run pytest tests/parser) → exit 1, 18.4k chars — 002_shell_00020002.md\nr1 003 assistant text, 640 chars — 003_assistant_00020003.md\nr1 004 web_fetch(https://example.test/spec) → ok, 1.2k chars — (no record: over the record cap)\nTo inspect archived input/output, read the listed file with read_file; capped records contain an explicit middle-truncation marker.\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {},
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": "Progress: the tokenizer is done; emitting remains.",
+    "manifest": [
+     [
+      "compactions/dropped/turn002/001_read_file_00020001.md",
+      true
+     ],
+     [
+      "compactions/dropped/turn002/002_shell_00020002.md",
+      true
+     ],
+     [
+      "compactions/dropped/turn002/003_assistant_00020003.md",
+      true
+     ],
+     [
+      "",
+      true
+     ]
+    ],
+    "breaker": null,
+    "pointer_count": 2
+   }
+  },
+  {
+   "step": "evicted records show as missing",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Refactor the parser.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 2 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>",
+      "<system-reminder>\n[LAST_WORDS] You previously made progress on the current task (the user's request and any follow-up messages above) but ran out of context, so your earlier tool-call history for this task has been dropped.  The note below is your own updated progress record — read it and resume from where you left off.  Do NOT redo work that the note says is already done.  If the note says the work is finished but you have not yet delivered the final reply to the user, do not re-gather anything — compose and deliver that reply now from the note.\n\nProgress: the tokenizer is done; emitting remains.\n\nCurrent todo list:\n- [x] pin the reminder goldens\n- [ ] run the gates\n\n--- Dropped this turn (records under {root_a}/compactions/dropped/turn002/) ---\nr1 001 read_file(src/parser.py) → ok, 1.2k chars — 001_read_file_00020001.md (record missing)\nr1 002 shell(uv run pytest tests/parser) → exit 1, 18.4k chars — 002_shell_00020002.md (record missing)\nr1 003 assistant text, 640 chars — 003_assistant_00020003.md\nr1 004 web_fetch(https://example.test/spec) → ok, 1.2k chars — (no record: over the record cap)\nTo inspect archived input/output, read the listed file with read_file; capped records contain an explicit middle-truncation marker.\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {},
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": "Progress: the tokenizer is done; emitting remains.",
+    "manifest": [
+     [
+      "compactions/dropped/turn002/001_read_file_00020001.md",
+      false
+     ],
+     [
+      "compactions/dropped/turn002/002_shell_00020002.md",
+      false
+     ],
+     [
+      "compactions/dropped/turn002/003_assistant_00020003.md",
+      true
+     ],
+     [
+      "",
+      true
+     ]
+    ],
+    "breaker": null,
+    "pointer_count": 2
+   }
+  },
+  {
+   "step": "no readable record left: the read affordance goes",
+   "call": [
+    {
+     "role": "user",
+     "texts": [
+      "Refactor the parser.",
+      "<system-reminder>\n[Turn Start] Local time: 2026-09-30 09:02:03 CST | UTC time: 2026-09-30 01:02:03 UTC\n</system-reminder>",
+      "<system-reminder>\n[Runtime Environment]\n  Working directory: /work/golden\n  OS: linux (amd64)\n  Shell: bash 5.2.21 (/usr/bin/bash)\n  Shell: zsh 5.9 (/usr/bin/zsh)\n  Working directories:\n    - /work/golden [app] (primary)\n    - /work/shared\n</system-reminder>",
+      "<system-reminder>\nCurrent todo list:\n- [ ] pin the reminder goldens\n</system-reminder>",
+      "<system-reminder>\nEarlier context compaction archived 2 records from previous turns; catalog: {root_a}/compactions/dropped/catalog.jsonl (contains each record's relative path).\n</system-reminder>",
+      "<system-reminder>\n[LAST_WORDS] You previously made progress on the current task (the user's request and any follow-up messages above) but ran out of context, so your earlier tool-call history for this task has been dropped.  The note below is your own updated progress record — read it and resume from where you left off.  Do NOT redo work that the note says is already done.  If the note says the work is finished but you have not yet delivered the final reply to the user, do not re-gather anything — compose and deliver that reply now from the note.\n\nProgress: the tokenizer is done; emitting remains.\n\nCurrent todo list:\n- [x] pin the reminder goldens\n- [ ] run the gates\n\n--- Dropped this turn (records under {root_a}/compactions/dropped/turn002/) ---\nr1 001 read_file(src/parser.py) → ok, 1.2k chars — 001_read_file_00020001.md (record missing)\nr1 002 shell(uv run pytest tests/parser) → exit 1, 18.4k chars — 002_shell_00020002.md (record missing)\nr1 003 assistant text, 640 chars — 003_assistant_00020003.md (record missing)\nr1 004 web_fetch(https://example.test/spec) → ok, 1.2k chars — (no record: over the record cap)\n</system-reminder>"
+     ]
+    }
+   ],
+   "recorded": {},
+   "state": {
+    "pending_switch": null,
+    "consumed_switch_to": null,
+    "warning_armed": true,
+    "held": null,
+    "last_words": "Progress: the tokenizer is done; emitting remains.",
+    "manifest": [
+     [
+      "compactions/dropped/turn002/001_read_file_00020001.md",
+      false
+     ],
+     [
+      "compactions/dropped/turn002/002_shell_00020002.md",
+      false
+     ],
+     [
+      "compactions/dropped/turn002/003_assistant_00020003.md",
+      false
+     ],
+     [
+      "",
+      true
+     ]
+    ],
+    "breaker": null,
+    "pointer_count": 2
+   }
+  }
+ ]
+}

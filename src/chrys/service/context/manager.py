@@ -23,8 +23,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
     from typing import Any
 
-    from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState
     from chrys.service.context.compaction import CompactionInfo, CompressInfo, PreCompactInfo
+    from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
     from chrys.service.context.compaction.spill import SpillQuota
     from chrys.service.profiles.models.schema import ModelProfile
 

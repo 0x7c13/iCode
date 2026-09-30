@@ -15,9 +15,11 @@ from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from chrys.kernel import Agent, AgentSession
 from chrys.service.agent_middleware import ApprovalMiddleware, AskUserMiddleware
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
-from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
+from chrys.service.agent_middleware.system_reminder import ReminderTurns, SystemReminderMiddleware
 from chrys.service.context.compaction.last_words import LastWordsGenerator
+from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.manager import ContextManager
 from chrys.service.vision import image_stub_middleware_for_model
 
@@ -33,12 +35,12 @@ if TYPE_CHECKING:
     from chrys.kernel.client import BaseChatClient
     from chrys.kernel.middleware import ChatMiddleware
     from chrys.service.agent_middleware.injection import InjectionMiddleware
-    from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.context.compaction import CompactionInfo, CompressInfo, PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
+    from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
     from chrys.service.context.compaction.spill import SpillQuota
     from chrys.service.hooks.manager import HookManager
     from chrys.service.profiles.agents.schema import CompactionConfig
@@ -178,6 +180,7 @@ class KernelRuntime:
     agent: Agent
     context: ContextManager
     reminder: SystemReminderMiddleware
+    last_words: LastWordsState
     injection: InjectionMiddleware | None = None
     validation: ResponseValidationMiddleware | None = None
 
@@ -187,6 +190,34 @@ class KernelRuntime:
 
 def create_context(inputs: ContextInputs) -> ContextManager:
     return ContextManager(**inputs)
+
+
+def create_reminder(inputs: ReminderInputs) -> tuple[SystemReminderMiddleware, LastWordsState]:
+    """Build the reminder middleware and the LAST_WORDS state it renders, on one shared turn holder."""
+    turns = ReminderTurns()
+    last_words = LastWordsState(
+        turns,
+        spill_quota=inputs.get("spill_quota"),
+        session_root=inputs.get("session_root"),
+        file_read_available=inputs.get("file_read_available", False),
+        todo_provider=inputs.get("todo_state_provider"),
+    )
+    return SystemReminderMiddleware(**inputs, last_words=last_words), last_words
+
+
+def restore_phase4_state(
+    reminder: SystemReminderMiddleware,
+    last_words: LastWordsState,
+    state: Mapping[str, Any] | None,
+    *,
+    available_relative_paths: frozenset[str] | set[str] | None = None,
+) -> None:
+    """Restore persisted Phase 4 state: the LAST_WORDS slot and the catalog pointer's record count."""
+    if not reminder.renders_last_words(last_words):
+        raise ValueError("restore_phase4_state needs the LAST_WORDS state this reminder middleware renders")
+    state = state or {}
+    last_words.restore(state, available_relative_paths=available_relative_paths)
+    reminder.sources.archive_pointer.restore_record_count(state.get(CATALOG_POINTER_RECORD_COUNT_STATE_KEY))
 
 
 def create_runtime(
@@ -204,16 +235,17 @@ def create_runtime(
     When context is supplied, recipe.context is not used to create a context.
     """
     ctx = create_context(recipe.context) if context is None else context
-    reminder = SystemReminderMiddleware(**recipe.reminder)
-    ctx.compaction_strategy.set_reminder_middleware(reminder)
+    reminder, last_words = create_reminder(recipe.reminder)
+    ctx.compaction_strategy.bind_reminder(reminder, last_words)
     if isinstance(recipe, MainRecipe) and recipe.persist_recovery is not None:
         ctx.compaction_strategy.set_recovery_persistence_callback(recipe.persist_recovery)
-    last_words = LastWordsGenerator(**recipe.last_words)
-    owner.own(last_words.aclose)
-    ctx.compaction_strategy.set_last_words_generator(last_words)
+    generator = LastWordsGenerator(**recipe.last_words)
+    owner.own(generator.aclose)
+    ctx.compaction_strategy.set_last_words_generator(generator)
     validation = recipe.validation(owner) if isinstance(recipe, MainRecipe) else None
     if isinstance(recipe, MainRecipe):
         injection = owner.retain(recipe.injection() if injection is None else injection)
+        injection.set_on_drained_reminders(reminder.queue_drained_injection_reminders)
     chain: list[ChatMiddleware] = []
     if isinstance(recipe, MainRecipe):
         chain.extend(ctx.middleware)
@@ -238,7 +270,13 @@ def create_runtime(
     )
     return owner.retain(
         KernelRuntime(
-            owner=owner, agent=agent, context=ctx, reminder=reminder, injection=injection, validation=validation
+            owner=owner,
+            agent=agent,
+            context=ctx,
+            reminder=reminder,
+            last_words=last_words,
+            injection=injection,
+            validation=validation,
         )
     )
 

@@ -46,6 +46,8 @@ topics:
     children:
       - id: models
         path: guides/configuration/models.md
+      - id: chat_options
+        path: guides/configuration/chat-options.md
       - id: agents
         path: guides/configuration/agents.md
       - id: tools

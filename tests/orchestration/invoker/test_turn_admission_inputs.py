@@ -168,12 +168,15 @@ async def test_entrance_validate_rejection_keeps_retry_input(
             assert read_analytics_item_id(users[0].additional_properties) == opener_id
             assert users[0].additional_properties[MESSAGE_CREATED_AT_KEY] == opener_time
             assert not users[0].additional_properties.get(HistoryMarkerKind.INJECTED_KEY)
+            assert users[0].additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY]
             if guidance:
                 assert len(opening_ids) == 1 and opening_ids[0] is not None
                 note = users[1]
                 assert note.additional_properties[HistoryMarkerKind.INJECTED_KEY] is True
                 assert note.additional_properties[MESSAGE_CREATED_AT_KEY] == guidance_time
                 assert read_analytics_item_id(note.additional_properties) == opening_ids[0]
+                # Never sent, so it carries no reminders: not the opener's either.
+                assert HistoryMarkerKind.SYSTEM_REMINDERS_KEY not in note.additional_properties
     finally:
         await engine.shutdown()
 

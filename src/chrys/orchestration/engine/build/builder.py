@@ -75,8 +75,9 @@ from chrys.service.agent_middleware import (
     TodoMiddleware,
 )
 from chrys.service.agent_middleware.injection import InjectionMiddleware
-from chrys.service.agent_middleware.system_reminder import DropRoundBreakerState, SystemReminderMiddleware
+from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, LastWordsState
 from chrys.service.context.compaction.spill import COMPACTIONS_DIR_NAME
 from chrys.service.context.memory_loader import load_memory_content, memory_truncated_warning
 from chrys.service.llm.clients import create_client, effective_model_base_url
@@ -218,6 +219,7 @@ class AgentBuildResult:
     runtime: SessionEnvironment
     loop_recorder: LoopRecorder
     reminder_middleware: SystemReminderMiddleware
+    last_words: LastWordsState
     sub_agent_tools: SubAgentTools | None
     mcp_adapter: MCPAdapter | None
     skills_provider: ChrysSkillsProvider | None
@@ -942,6 +944,7 @@ async def build_agent(
             raise RuntimeError("The main agent assembly requires response validation middleware.")
         agent = assembled.agent
         reminder_middleware = assembled.reminder
+        last_words = assembled.last_words
         await agent.__aenter__()
         # Register agent cleanup BEFORE anything below can fail — an un-exited
         # Agent leaks its transport/session.
@@ -1029,6 +1032,7 @@ async def build_agent(
             runtime=runtime,
             loop_recorder=loop_recorder,
             reminder_middleware=reminder_middleware,
+            last_words=last_words,
             sub_agent_tools=sub_agent_tools,
             mcp_adapter=mcp_adapter,
             skills_provider=skills_provider,

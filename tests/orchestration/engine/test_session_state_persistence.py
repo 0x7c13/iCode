@@ -31,12 +31,8 @@ from chrys.orchestration.engine.build.builder import _render_todo_reminder
 from chrys.orchestration.engine.build.construction import StagedBuild
 from chrys.orchestration.engine.build.loaded import CompletedBuild
 from chrys.service.agent_middleware.injection import ConsumedInjection, InjectionAnchor
-from chrys.service.agent_middleware.system_reminder import (
-    CATALOG_POINTER_RECORD_COUNT_STATE_KEY,
-    DropRoundBreakerState,
-    ManifestEntry,
-    SystemReminderMiddleware,
-)
+from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
+from chrys.service.context.compaction.last_words_state import DropRoundBreakerState, ManifestEntry
 from chrys.service.context.compaction.spill import CATALOG_RELATIVE_PATH
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
@@ -55,7 +51,7 @@ from tests.orchestration.engine._recovery_helpers import (
     _tracker_with_todos,
 )
 from tests.support.event_capture import collect_events
-from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent
+from tests.support.loaded_agents import install_loaded_agent, make_loaded_agent, reminder_resources
 
 
 async def test_save_session_sets_and_pops_workspace_baseline(tmp_path: Path, *, engine_services) -> None:
@@ -101,15 +97,15 @@ async def test_save_session_persists_last_words_note(tmp_path: Path) -> None:
             {"messages": [Message("user", ["hi"])], "compressed_msgs": [], "turn_counter": 1}
         ),
     )
-    install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
-    engine.current.loaded.reminder_middleware.set_last_words("[LAST_WORDS] resume from step 3")
+    install_loaded_agent(engine, **reminder_resources())
+    engine.current.loaded.last_words.set_last_words("[LAST_WORDS] resume from step 3")
 
     assert await engine.writer.save_current_session() is True
     loaded = await store.load_session("lw_save")
     assert loaded is not None
     assert loaded["last_words"] == "[LAST_WORDS] resume from step 3"
 
-    engine.current.loaded.reminder_middleware.set_last_words(None)
+    engine.current.loaded.last_words.set_last_words(None)
     assert await engine.writer.save_current_session() is True
     loaded = await store.load_session("lw_save")
     assert loaded is not None
@@ -127,8 +123,8 @@ async def test_save_session_persists_manifest_and_breaker_without_note(tmp_path:
             {"messages": [Message("user", ["hi"])], "compressed_msgs": [], "turn_counter": 1}
         ),
     )
-    install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
-    engine.current.loaded.reminder_middleware.append_manifest(
+    install_loaded_agent(engine, **reminder_resources())
+    engine.current.loaded.last_words.append_manifest(
         [
             ManifestEntry(
                 record_id="r1",
@@ -146,8 +142,8 @@ async def test_save_session_persists_manifest_and_breaker_without_note(tmp_path:
         ]
     )
     breaker = DropRoundBreakerState(attempts=1, consecutive_no_progress=1, tail_override=True, side_call_tokens=42)
-    engine.current.loaded.reminder_middleware.set_drop_round_breaker(breaker)
-    engine.current.loaded.reminder_middleware.restore_catalog_pointer_record_count(0)
+    engine.current.loaded.last_words.set_drop_round_breaker(breaker)
+    engine.current.loaded.reminder_middleware.sources.archive_pointer.restore_record_count(0)
 
     assert await engine.writer.save_current_session() is True
 
@@ -177,13 +173,15 @@ async def test_save_erasure_protects_note_and_manifest_but_not_breaker(tmp_path:
             }
         ),
     )
-    reminder = SimpleNamespace(
+    last_words = SimpleNamespace(
         get_last_words=lambda: "keep note",
         get_last_words_manifest=lambda: manifest,
         get_last_words_breaker_state=lambda: None,
-        get_catalog_pointer_record_count_state=lambda: None,
     )
-    install_loaded_agent(engine, reminder_middleware=reminder)
+    reminder = SimpleNamespace(
+        sources=SimpleNamespace(archive_pointer=SimpleNamespace(record_count_state=lambda: None))
+    )
+    install_loaded_agent(engine, reminder_middleware=reminder, last_words=last_words)
 
     assert await engine.writer.save_current_session() is True
 
@@ -199,8 +197,8 @@ async def test_recovery_checkpoint_persists_last_words_note(tmp_path: Path) -> N
 
     store = JsonFileStateStore(tmp_path)
     engine = _seed_checkpoint_engine(store, "lw_sidecar")
-    install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
-    engine.current.loaded.reminder_middleware.set_last_words("[LAST_WORDS] mid-turn progress")
+    install_loaded_agent(engine, **reminder_resources())
+    engine.current.loaded.last_words.set_last_words("[LAST_WORDS] mid-turn progress")
 
     await engine.writer.save_checkpoint()
     await engine.writer.flush()
@@ -214,7 +212,7 @@ async def test_recovery_checkpoint_carries_manifest_and_breaker(tmp_path: Path) 
 
     store = JsonFileStateStore(tmp_path)
     engine = _seed_checkpoint_engine(store, "lw_family_sidecar")
-    install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
+    install_loaded_agent(engine, **reminder_resources())
     entry = ManifestEntry(
         record_id="r1",
         group_id="g1",
@@ -228,10 +226,10 @@ async def test_recovery_checkpoint_carries_manifest_and_breaker(tmp_path: Path) 
         outcome="unknown",
         size_chars=10,
     )
-    engine.current.loaded.reminder_middleware.append_manifest([entry])
+    engine.current.loaded.last_words.append_manifest([entry])
     breaker = DropRoundBreakerState(attempts=2, side_call_tokens=333)
-    engine.current.loaded.reminder_middleware.set_drop_round_breaker(breaker)
-    engine.current.loaded.reminder_middleware.restore_catalog_pointer_record_count(0)
+    engine.current.loaded.last_words.set_drop_round_breaker(breaker)
+    engine.current.loaded.reminder_middleware.sources.archive_pointer.restore_record_count(0)
 
     await engine.writer.save_checkpoint()
     await engine.writer.flush()
@@ -306,6 +304,7 @@ async def test_restore_rearms_persisted_last_words_for_retry(
             "compressed_msgs": [],
             "turn_counter": 1,
             "last_words": "[LAST_WORDS] resume from step 3",
+            CATALOG_POINTER_RECORD_COUNT_STATE_KEY: 4,
         },
         agent_profile=profile.name,
     )
@@ -326,7 +325,7 @@ async def test_restore_rearms_persisted_last_words_for_retry(
     ) -> None:
         _ = start_profile, operation
         install_loaded_agent(engine, bindings=_HistoryStateExecutor())  # type: ignore[assignment]
-        install_loaded_agent(engine, reminder_middleware=SystemReminderMiddleware())
+        install_loaded_agent(engine, **reminder_resources())
 
     monkeypatch.setattr(engine.lifecycle, "shutdown", fake_shutdown)
     monkeypatch.setattr(engine.lifecycle, "close_session", fake_shutdown)
@@ -340,12 +339,15 @@ async def test_restore_rearms_persisted_last_words_for_retry(
 
     assert len(events) == 1
     mw = engine.current.loaded.reminder_middleware
+    lw = engine.current.loaded.last_words
     assert mw is not None
     # The note is visible to an idle save (restore → quit must not erase it)...
-    assert mw.get_last_words() == "[LAST_WORDS] resume from step 3"
+    assert lw.get_last_words() == "[LAST_WORDS] resume from step 3"
+    # The pointer's turn-start count comes back with it, for that retry to reuse.
+    assert mw.sources.archive_pointer.record_count_state() == 4
     # ...and a post-restart retry (Continue) injects it into the next request.
     mw.prepare_turn(usage={}, preserve_last_words=True)
-    appended = mw._build_last_words_reminders()
+    appended = lw.render()
     assert len(appended) == 1
     assert "[LAST_WORDS] resume from step 3" in appended[0]
 
@@ -437,7 +439,7 @@ async def test_restore_reconciles_spill_quota_manifest_and_availability(
         install_loaded_agent(engine, bindings=_HistoryStateExecutor())  # type: ignore[assignment]
         install_loaded_agent(
             engine,
-            reminder_middleware=SystemReminderMiddleware(
+            **reminder_resources(
                 session_root=engine.session.session_dir,
                 file_read_available=True,
             ),
@@ -458,10 +460,11 @@ async def test_restore_reconciles_spill_quota_manifest_and_availability(
     assert "stale projection" not in manifest_projection.read_text(encoding="utf-8")
     assert live_path.name in manifest_projection.read_text(encoding="utf-8")
     mw = engine.current.loaded.reminder_middleware
+    lw = engine.current.loaded.last_words
     assert mw is not None
     mw.prepare_turn(usage={}, preserve_last_words=True)
-    assert mw.get_drop_round_breaker() == breaker
-    rendered = mw._build_last_words_reminders()[0]
+    assert lw.get_drop_round_breaker() == breaker
+    rendered = lw.render()[0]
     assert live_path.name in rendered
     assert "002_tool_22222222.md (record missing)" in rendered
 
@@ -597,7 +600,7 @@ async def test_restore_hydrates_todo_tracker_before_last_words(
         # which _hydrate_restored_session must have populated already.
         install_loaded_agent(
             engine,
-            reminder_middleware=SystemReminderMiddleware(
+            **reminder_resources(
                 todo_state_provider=partial(_render_todo_reminder, engine.session.todo_tracker),
             ),
         )
@@ -621,9 +624,10 @@ async def test_restore_hydrates_todo_tracker_before_last_words(
     assert tracker is not None
     assert tracker.serialize() == _TODOS
     mw = engine.current.loaded.reminder_middleware
+    lw = engine.current.loaded.last_words
     assert mw is not None
     mw.prepare_turn(usage={}, preserve_last_words=True)
-    appended = mw._build_last_words_reminders()
+    appended = lw.render()
     assert len(appended) == 1
     assert "[LAST_WORDS] resume from step 3" in appended[0]
     assert "- [>] implement" in appended[0]

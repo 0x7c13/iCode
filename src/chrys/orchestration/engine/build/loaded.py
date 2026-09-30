@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.context.compaction import UnifiedContextStrategy
+    from chrys.service.context.compaction.last_words_state import LastWordsState
     from chrys.service.mcp.adapter import MCPAdapter
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
@@ -48,6 +49,7 @@ class LoadedAgent:
     intermediate_texts: dict[int, str]
     loop_recorder: LoopRecorder
     reminder_middleware: SystemReminderMiddleware
+    last_words: LastWordsState
     approval_judge: ApprovalJudge
     sub_agent_tools: SubAgentTools | None
     skills_provider: ChrysSkillsProvider | None

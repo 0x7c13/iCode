@@ -24,12 +24,12 @@ import hashlib
 import json
 import weakref
 from copy import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import HistoryMarkerKind, copy_reminder_record
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
 from chrys.kernel import Content, Message
@@ -86,8 +86,9 @@ class QueuedInjection:
     created_at: datetime | str | None = None
     injection_id: str | None = None
     reminders: tuple[str, ...] = ()
-    """Hook/skill reminders queued alongside this injection at commit time,
-    kept so a cancel can withdraw them before the next model call."""
+    """Hook/skill reminders for this injection. They join the turn's reminders
+    only when a call drains it, so they ride the very call that sends the text;
+    a cancelled or undelivered injection never queues them."""
     consumption_id: str | None = None
     """Stable persistence identity after the first retryable consumption."""
     analytics_item_id: str | None = None
@@ -241,6 +242,13 @@ class ConsumedInjection:
     analytics_item_id: str | None = None
     preparation: PreparationTrace | None = None
     target_turn_id: str | None = None
+    wire_properties: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    """The consumed wire message's live ``additional_properties``.
+
+    The reminder middleware records the reminders the message carried there
+    once a request is established — after consumption — and persistence
+    copies that record onto the history copy it builds.
+    """
 
 
 @dataclass(frozen=True)
@@ -249,6 +257,14 @@ class _InjectionBatch:
 
     injections: tuple[QueuedInjection, ...]
     anchor: InjectionAnchor
+    wire_properties: tuple[dict[str, Any], ...] = ()
+    """The live ``additional_properties`` of the wire messages this batch was
+    last consumed as, one per injection (empty before the first consumption).
+
+    A retry replays each injection as a fresh message; it takes over the
+    reminder record the reminder middleware wrote there once that request
+    was established, so the replay re-sends the same bytes.
+    """
 
 
 class InjectionMiddleware(ChatMiddleware):
@@ -274,6 +290,11 @@ class InjectionMiddleware(ChatMiddleware):
         self._consumed_injection_messages: list[Message] = []
         self._on_consumed: Callable[[ConsumedInjection], Awaitable[None]] | None = None
         self._on_consumed_batch: Callable[[tuple[ConsumedInjection, ...]], Awaitable[None]] | None = None
+        self._on_drained_reminders: Callable[[list[str]], None] | None = None
+
+    def set_on_drained_reminders(self, callback: Callable[[list[str]], None]) -> None:
+        """Set the synchronous sink for the reminders of freshly drained injections."""
+        self._on_drained_reminders = callback
 
     def set_on_consumed_batch(
         self,
@@ -398,6 +419,13 @@ class InjectionMiddleware(ChatMiddleware):
                 for injection in self._pending
             )
             batches.append(_InjectionBatch(injections, current_anchor))
+            # Queue before any await: an injection committed while this call
+            # awaits its checkpoint is not in this batch, so its reminders
+            # must not ride this call either. A replayed batch queued its
+            # reminders when it was first drained.
+            drained_reminders = [reminder for injection in injections for reminder in injection.reminders]
+            if drained_reminders and self._on_drained_reminders is not None:
+                self._on_drained_reminders(drained_reminders)
 
         self._retry_replay = []
         self._pending.clear()
@@ -405,6 +433,7 @@ class InjectionMiddleware(ChatMiddleware):
             mutable: list[Any] = list(context.messages)
             consumed_transaction: list[ConsumedInjection] = []
             for batch in batches:
+                batch_properties: list[dict[str, Any]] = []
                 stable_injections = tuple(
                     replace(
                         injection,
@@ -413,7 +442,7 @@ class InjectionMiddleware(ChatMiddleware):
                     )
                     for injection in batch.injections
                 )
-                for injection in stable_injections:
+                for index, injection in enumerate(stable_injections):
                     # Every consumption gets a per-consumption identity — it
                     # travels on the wire copy, the ConsumedInjection mirror, and
                     # the persisted history copy, so crash-recovery replay dedups
@@ -437,6 +466,9 @@ class InjectionMiddleware(ChatMiddleware):
                         msg.additional_properties,
                         item_id=injection.analytics_item_id,
                     )
+                    if index < len(batch.wire_properties):
+                        copy_reminder_record(batch.wire_properties[index], msg.additional_properties)
+                    batch_properties.append(msg.additional_properties)
                     mutable.append(msg)
                     # Retain a structural copy, never the wire object: the
                     # client receives ``msg`` on this very call and may mutate
@@ -458,13 +490,16 @@ class InjectionMiddleware(ChatMiddleware):
                             analytics_item_id=injection.analytics_item_id,
                             preparation=injection.preparation,
                             target_turn_id=injection.target_turn_id,
+                            wire_properties=msg.additional_properties,
                         )
                     )
                 # Register the complete batch before the first callback await.
                 # Cancellation can therefore replay all messages or none; it
                 # cannot strand the unvisited tail of a multi-message drain.
                 if self._retry_active:
-                    self._retry_consumed.append(_InjectionBatch(stable_injections, batch.anchor))
+                    self._retry_consumed.append(
+                        _InjectionBatch(stable_injections, batch.anchor, tuple(batch_properties))
+                    )
             context.messages = mutable
             if self._on_consumed_batch is not None:
                 await self._on_consumed_batch(tuple(consumed_transaction))
