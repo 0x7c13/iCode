@@ -70,6 +70,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "builder.memory_truncated",
     "builder.protected_chat_options_stripped",
     "construction.global_hooks_invalid",
+    "construction.hook_skipped",
     "construction.project_hooks_invalid",
     "construction.service_session_incompatible",
     "construction.trajectory_activation_failed",

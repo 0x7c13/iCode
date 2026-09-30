@@ -259,7 +259,8 @@ def test_deepseek_drops_foreign_encrypted_reasoning_instead_of_crashing() -> Non
     prepared = _deepseek_client()._prepare_messages_for_openai(_foreign_responses_reasoning_history())
 
     assert all("reasoning_details" not in message for message in prepared)
-    assert all("reasoning_content" not in message for message in prepared)
+    # The foreign reasoning is not replayed; thinking mode still gets the empty field it requires.
+    assert [message.get("reasoning_content") for message in prepared] == [None, "", None, None]
 
 
 def test_anthropic_drops_foreign_responses_reasoning_and_keeps_own_thinking() -> None:

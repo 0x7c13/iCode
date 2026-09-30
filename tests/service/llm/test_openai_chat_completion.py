@@ -13,12 +13,14 @@ can never 400 a request Chrys itself constructs.
 from __future__ import annotations
 
 import gzip
+import json
 from collections.abc import AsyncIterator
 from types import MappingProxyType
 from typing import Any
 
 import httpx
 import pytest
+from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
@@ -33,6 +35,7 @@ from chrys.service.llm._chat_stream_validation import (
     _strip_leading_bom_from_decoded_bytes,
 )
 from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
+from chrys.service.llm.instrumented import create_instrumented_openai_client
 from chrys.service.llm.openai_chat_completion import (
     RawOpenAIChatCompletionClient,
     _bounded_response_body_preview,
@@ -833,6 +836,160 @@ def test_cache_write_tokens_absent_omits_both_keys() -> None:
     assert "prompt/cache_write_tokens" not in details
     assert "cache_creation_input_token_count" not in details
     assert details["cache_read_input_token_count"] == 3
+
+
+# ─────────────── Kimi: choice-level stream usage, top-level cached_tokens ───────────────
+
+
+def _kimi_usage(**extra: Any) -> dict[str, Any]:
+    return {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, **extra}
+
+
+def _kimi_chunk(*, choice_usage: Any = None, chunk_usage: Any = None) -> ChatCompletionChunk:
+    choice: dict[str, Any] = {"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}
+    if choice_usage is not None:
+        choice["usage"] = choice_usage
+    return ChatCompletionChunk.model_validate(
+        {
+            "id": "chunk-kimi",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "kimi-k2",
+            "choices": [choice],
+            "usage": chunk_usage,
+        }
+    )
+
+
+def _usage_contents(update: Any) -> list[Content]:
+    return [content for content in update.contents if content.type == "usage"]
+
+
+def test_choice_level_stream_usage_is_reported() -> None:
+    update = _client()._parse_response_update_from_openai(_kimi_chunk(choice_usage=_kimi_usage(cached_tokens=64)))
+
+    [usage] = _usage_contents(update)
+    assert usage.usage_details == {
+        "input_token_count": 100,
+        "output_token_count": 20,
+        "total_token_count": 120,
+        "prompt/cached_tokens": 64,
+        "cache_read_input_token_count": 64,
+    }
+    assert update.text == "done"
+
+
+def test_chunk_level_stream_usage_wins_over_the_choice_level_copy() -> None:
+    chunk = _kimi_chunk(
+        choice_usage=_kimi_usage(),
+        chunk_usage={"prompt_tokens": 7, "completion_tokens": 1, "total_tokens": 8},
+    )
+
+    [usage] = _usage_contents(_client()._parse_response_update_from_openai(chunk))
+
+    assert usage.usage_details is not None
+    assert usage.usage_details["input_token_count"] == 7
+
+
+@pytest.mark.parametrize("choice_usage", ["n/a", {"prompt_tokens": "many"}, {"prompt_tokens": 1}])
+def test_malformed_choice_level_usage_is_ignored(choice_usage: Any) -> None:
+    update = _client()._parse_response_update_from_openai(_kimi_chunk(choice_usage=choice_usage))
+
+    assert _usage_contents(update) == []
+    assert update.text == "done"
+
+
+@pytest.mark.parametrize("cached_tokens", [64, 0])
+def test_top_level_cached_tokens_is_the_cache_read_count(cached_tokens: int) -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(cached_tokens=cached_tokens))
+
+    details = _client()._parse_usage_from_openai(usage)
+
+    assert details["prompt/cached_tokens"] == cached_tokens
+    assert details["cache_read_input_token_count"] == cached_tokens
+
+
+def test_prompt_tokens_details_cached_tokens_win_over_the_top_level_field() -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(cached_tokens=64, prompt_tokens_details={"cached_tokens": 3}))
+
+    details = _client()._parse_usage_from_openai(usage)
+
+    assert details["prompt/cached_tokens"] == 3
+    assert details["cache_read_input_token_count"] == 3
+
+
+@pytest.mark.parametrize("cached_tokens", ["64", True, None])
+def test_non_integer_top_level_cached_tokens_is_not_reported(cached_tokens: Any) -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(cached_tokens=cached_tokens))
+
+    details = _client()._parse_usage_from_openai(usage)
+
+    assert "prompt/cached_tokens" not in details
+    assert "cache_read_input_token_count" not in details
+
+
+def test_deepseek_cache_usage_is_unchanged() -> None:
+    usage = CompletionUsage.model_validate(
+        _kimi_usage(
+            prompt_cache_hit_tokens=40,
+            prompt_cache_miss_tokens=60,
+            prompt_tokens_details={"cached_tokens": 40},
+        )
+    )
+
+    assert _deepseek()._parse_usage_from_openai(usage) == {
+        "input_token_count": 100,
+        "output_token_count": 20,
+        "total_token_count": 120,
+        "prompt/cached_tokens": 40,
+        "cache_read_input_token_count": 40,
+        "deepseek.prompt_cache_hit_tokens": 40,
+    }
+
+
+@pytest.mark.parametrize(
+    "trailing_frames",
+    [
+        pytest.param([], id="choice-level-only"),
+        # Kimi K3 (api.kimi.com) also honors ``include_usage``: after the finish
+        # chunk it sends a ``choices: []`` chunk repeating the same usage.
+        pytest.param([{"choices": [], "usage": _kimi_usage(cached_tokens=64)}], id="then-top-level-repeat"),
+    ],
+)
+async def test_kimi_stream_usage_reaches_the_final_response(trailing_frames: list[dict[str, Any]]) -> None:
+    """The SDK keeps the choice-level ``usage`` in ``model_extra``; the instrumented stack reports it once."""
+    frames = [
+        {"choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hi"}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop", "usage": _kimi_usage(cached_tokens=64)}]},
+        *trailing_frames,
+    ]
+    body = "".join(
+        f"data: {json.dumps({'id': 'kimi-1', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'kimi-k2', **frame})}\n\n"
+        for frame in frames
+    )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=(body + "data: [DONE]\n\n").encode()
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle_request)) as http_client:
+        client: Any = create_instrumented_openai_client(
+            model_id="kimi-k2",
+            client=AsyncOpenAI(api_key="sk-test", base_url="https://kimi.test/v1", http_client=http_client),
+        )
+        stream = client.get_response([Message("user", ["hi"])], stream=True, options={})
+        updates = [update async for update in stream]
+        response = await stream.get_final_response()
+
+    # Each usage-carrying chunk is streamed as its own snapshot of the one call.
+    assert sum(len(_usage_contents(update)) for update in updates) == 1 + len(trailing_frames)
+    assert response.text == "Hi"
+    assert response.usage_details is not None
+    assert response.usage_details["input_token_count"] == 100
+    assert response.usage_details["output_token_count"] == 20
+    assert response.usage_details["total_token_count"] == 120
+    assert response.usage_details["cache_read_input_token_count"] == 64
 
 
 def _completion_choice(*, content: Any, refusal: Any = None) -> Choice:

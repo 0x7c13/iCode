@@ -118,6 +118,13 @@ msgstr ""
 msgid "construction.global_hooks_invalid"
 msgstr ""
 
+#. English: Hook '{hook_id}' in {path} was skipped: {detail}. The other hooks
+#. in this file still run.
+#. chrys-meta={"fingerprint":"6c1b213cf96ec7699a2fe2c1db21bfad8e0ac0d17705553d1484138428ee9e4e","multiline":true,"placeholders":["detail","hook_id","path"]}
+#: src/chrys/orchestration/session_hooks.py
+msgid "construction.hook_skipped"
+msgstr ""
+
 #. English: Project hooks config could not be loaded: {detail}. Project hooks
 #. disabled; global hooks unaffected.
 #. chrys-meta={"fingerprint":"9839468e9ee83c7dc2f6f497db1b93d2ffe39523039e736b1af7248098a200f4","multiline":true,"placeholders":["detail"]}

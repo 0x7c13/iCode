@@ -207,6 +207,23 @@ def _is_path_within_directory(path: str, directory: str) -> bool:
         return False
 
 
+def is_contained_skill_path(path: str, skill_dir: str) -> bool:
+    """Whether *path* lies under *skill_dir* with no symlink or junction below it.
+
+    The scan admits only such files; a reader re-checks before opening one,
+    since the tree may have changed since the scan. The window between this
+    check and the open stays: a process that can swap files in the skill
+    directory while a read is in flight could as well copy any file it can
+    read into it.
+    """
+    root = str(Path(skill_dir).absolute())
+    full_path = str(Path(os.path.normpath(path)).absolute())
+    try:
+        return _is_path_within_directory(full_path, root) and not _has_symlink_in_path(full_path, root)
+    except OSError:
+        return False
+
+
 def _has_symlink_in_path(path: str, directory: str) -> bool:
     """Detect symlinks or NT junctions in the segments of *path* below *directory*.
 
@@ -231,7 +248,7 @@ def _scan_skill_files(
     exclude_skill_file: bool,
     skill_name: str,
     file_filter: Callable[[str, str], bool] | None = None,
-) -> list[str]:
+) -> list[tuple[str, str]]:
     """Recursively scan a skill directory for files matching *extensions*.
 
     ``search_depth=1`` scans only the skill root; ``2`` scans the root plus
@@ -239,7 +256,11 @@ def _scan_skill_files(
     are skipped with a warning. Nested ``SKILL.md`` files do not create a new
     skill boundary during this per-skill scan: their sibling resources and
     scripts belong to the parent, while every ``SKILL.md`` remains excluded.
-    Returns sorted skill-relative forward-slash paths.
+    Returns ``(name, full_path)`` pairs sorted by name: the skill-relative
+    forward-slash display name and the absolute path that passed the checks.
+    Readers use that path, never one rebuilt from the name: on POSIX a
+    backslash is an ordinary file-name character, so ``..\\x`` would
+    rebuild into a path outside the skill.
     """
     if search_depth < 1:
         raise ValueError(f"search_depth must be >= 1, got {search_depth}")
@@ -247,7 +268,7 @@ def _scan_skill_files(
     skill_dir = Path(skill_dir_path).absolute()
     root_directory = str(skill_dir)
     normalized_extensions = {e.lower() for e in extensions}
-    found: list[str] = []
+    found: list[tuple[str, str]] = []
 
     def scan_directory(target_dir: Path, current_depth: int) -> None:
         if current_depth > search_depth:
@@ -305,7 +326,7 @@ def _scan_skill_files(
             if file_filter is not None and not file_filter(skill_name, rel_path):
                 continue
 
-            found.append(rel_path)
+            found.append((rel_path, full_path))
 
         if current_depth < search_depth:
             for subdir in subdirectories:
@@ -361,8 +382,8 @@ def load_file_skill(
         )
 
     resources = [
-        SkillResource(name=rel, full_path=os.path.normpath(os.path.join(skill_dir, rel)))
-        for rel in _scan_skill_files(
+        SkillResource(name=rel, full_path=full_path)
+        for rel, full_path in _scan_skill_files(
             skill_dir,
             resource_extensions,
             search_depth=search_depth,
@@ -372,8 +393,8 @@ def load_file_skill(
         )
     ]
     scripts = [
-        SkillScript(name=rel, full_path=os.path.normpath(os.path.join(skill_dir, rel)))
-        for rel in _scan_skill_files(
+        SkillScript(name=rel, full_path=full_path)
+        for rel, full_path in _scan_skill_files(
             skill_dir,
             script_extensions,
             search_depth=search_depth,

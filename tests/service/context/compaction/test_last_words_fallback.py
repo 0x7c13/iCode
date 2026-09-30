@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from chrys.kernel import Content, Message
@@ -17,6 +19,7 @@ from chrys.service.context.compaction.last_words import (
 )
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.service.context.compaction._compaction_helpers import _anthropic_fetched_pdf_exchange
 from tests.service.context.compaction._last_words_helpers import (
     FailingFallbackClient,
     FakeCompleter,
@@ -302,6 +305,70 @@ async def test_fallback_uses_three_scoped_blocks_and_interleaves_followups(tmp_p
     assert "<prior_conversation>" not in prompt
     assert "<injected_followups>" not in prompt
     assert "- user said: also test it" in prompt
+
+
+async def test_fallback_renders_an_image_result_as_a_placeholder_not_base64(tmp_path):
+    from chrys.service.context.compaction.last_words import LastWordsGenerator
+    from chrys.service.profiles.models.resolver import default_profile
+
+    captured: dict = {}
+
+    class _Client:
+        async def get_response(self, messages, *_args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["prompt"] = messages[1].text
+
+            class _Response:
+                usage_details = None
+                raw_text = structured_note()
+
+            return _Response()
+
+    image = Content.from_data(data=b"\x89PNG" + b"\x00" * 3000, media_type="image/png")
+    dropped = [
+        Message("assistant", [Content.from_function_call("call-1", "read_file", arguments={"path": "shot.png"})]),
+        Message(
+            "tool",
+            [Content.from_function_result("call-1", result=[Content.from_text("Read shot.png"), image])],
+        ),
+    ]
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(gen, user_request="look at it", previous_last_words=None, dropped_messages=dropped)
+
+    prompt = captured["prompt"]
+    assert "  result[read_file]: Read shot.png\n[image/png image]" in prompt
+    assert image.uri is not None
+    assert image.uri.split(",", 1)[1][:64] not in prompt
+
+
+@pytest.mark.parametrize("restored", [False, True], ids=["live", "restored"])
+async def test_fallback_renders_a_hosted_base64_document_as_a_placeholder(tmp_path, restored):
+    from chrys.service.context.compaction.last_words import LastWordsGenerator
+    from chrys.service.profiles.models.resolver import default_profile
+
+    captured: dict = {}
+
+    class _Client:
+        async def get_response(self, messages, *_args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["prompt"] = messages[1].text
+
+            class _Response:
+                usage_details = None
+                raw_text = structured_note()
+
+            return _Response()
+
+    payload = base64.b64encode(b"%PDF-1.7\n" + b"binary-payload" * 150).decode()
+    dropped = _anthropic_fetched_pdf_exchange(payload)
+    if restored:
+        dropped = [Message.from_dict(message.to_dict()) for message in dropped]
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(gen, user_request="read the paper", previous_last_words=None, dropped_messages=dropped)
+
+    prompt = captured["prompt"]
+    assert "[application/pdf artifact]" in prompt
+    assert payload[:64] not in prompt
 
 
 async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path):

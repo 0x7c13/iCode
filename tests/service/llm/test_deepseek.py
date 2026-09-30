@@ -16,6 +16,7 @@ from openai.types.chat.chat_completion_message_function_tool_call import ChatCom
 from chrys.kernel import ChatMiddlewareLayer, ChatResponse, Content, FunctionTool, Message
 from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
+from tests.service.llm._instrumented_clients import make_chat_client
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
 
@@ -678,3 +679,173 @@ async def test_tool_loop_replays_reasoning_content_after_parallel_function_resul
         "call_read": "contents of foo.py",
         "call_grep": "matches for needle",
     }
+
+
+def _foreign_tool_history() -> list[Message]:
+    """A tool exchange another model wrote: no reasoning on either assistant message."""
+    return [
+        Message("user", ["Inspect the file"]),
+        Message(
+            "assistant",
+            [
+                Content.from_text("I will inspect it."),
+                Content.from_function_call(call_id="call_abc", name="read_file", arguments='{"path":"foo.py"}'),
+            ],
+        ),
+        Message("tool", [Content.from_function_result(call_id="call_abc", result="file contents")]),
+        Message("assistant", ["It defines foo."]),
+        Message("user", ["Follow-up"]),
+    ]
+
+
+def test_prepare_messages_sends_empty_reasoning_content_for_another_models_tool_history() -> None:
+    messages = _foreign_tool_history()
+
+    prepared = _client()._prepare_messages_for_openai(messages)
+
+    assistants = [message for message in prepared if message["role"] == "assistant"]
+    assert [message["reasoning_content"] for message in assistants] == ["", ""]
+    assert assistants[0]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert all("reasoning_content" not in message for message in prepared if message["role"] != "assistant")
+    assert all("reasoning_content" not in message.additional_properties for message in messages)
+
+
+def test_prepare_messages_fills_only_assistant_messages_missing_reasoning_content() -> None:
+    messages = _foreign_tool_history()
+    messages[3] = Message(
+        "assistant",
+        [
+            Content.from_text("It defines foo."),
+            Content.from_text_reasoning(
+                text=None,
+                protected_data=json.dumps("DeepSeek reasoning"),
+                additional_properties={"openai_reasoning_format": "reasoning_content"},
+            ),
+        ],
+    )
+
+    prepared = _client()._prepare_messages_for_openai(messages)
+
+    assert [message["reasoning_content"] for message in prepared if message["role"] == "assistant"] == [
+        "",
+        "DeepSeek reasoning",
+    ]
+
+
+def test_prepare_messages_adds_no_reasoning_content_without_tool_interaction() -> None:
+    messages = [Message("user", ["Hi"]), Message("assistant", ["Hello"]), Message("user", ["Again"])]
+
+    prepared = _client()._prepare_messages_for_openai(messages)
+
+    assert all("reasoning_content" not in message for message in prepared)
+
+
+def _request_capturing_client(captured_requests: list[dict[str, Any]]) -> InvariantCheckedToolLoopLayer:
+    """A tool-loop DeepSeek client whose SDK records each request and answers without a tool call."""
+
+    class _FakeCompletions:
+        async def create(self, stream: bool = False, **kwargs: Any) -> ChatCompletion:
+            captured_requests.append(kwargs)
+            return ChatCompletion(
+                id="resp-1",
+                object="chat.completion",
+                created=1234567890,
+                model="deepseek-reasoner",
+                choices=[
+                    Choice(
+                        index=0,
+                        message=ChatCompletionMessage(role="assistant", content="Done.", reasoning_content="ok"),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeCompletions()
+
+    class _FakeAsyncOpenAI:
+        base_url = "https://api.deepseek.test"
+
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    return InvariantCheckedToolLoopLayer(
+        ChatMiddlewareLayer(DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_FakeAsyncOpenAI()))
+    )
+
+
+async def test_request_after_another_models_tool_history_carries_empty_reasoning_content() -> None:
+    captured_requests: list[dict[str, Any]] = []
+    client = _request_capturing_client(captured_requests)
+
+    await client.get_response(_foreign_tool_history())
+
+    [request] = captured_requests
+    assistants = [message for message in request["messages"] if message["role"] == "assistant"]
+    assert [message["reasoning_content"] for message in assistants] == ["", ""]
+
+
+def test_instrumented_client_keeps_the_empty_reasoning_content() -> None:
+    """The production client canonicalizes each message first; the fill must survive it."""
+    chat_client: Any = make_chat_client(chat_client_cls=DeepSeekChatCompletionClient)
+
+    prepared = chat_client._prepare_messages_for_openai(_foreign_tool_history())
+
+    assert [message["reasoning_content"] for message in prepared if message["role"] == "assistant"] == ["", ""]
+
+
+def _history_without_tool_calls() -> list[Message]:
+    """Turns answered without a tool call: one by DeepSeek with reasoning, one by another model."""
+    return [
+        Message("user", ["First question"]),
+        Message(
+            "assistant",
+            [
+                Content.from_text("First answer"),
+                Content.from_text_reasoning(
+                    text=None,
+                    protected_data=json.dumps("DeepSeek reasoning"),
+                    additional_properties={"openai_reasoning_format": "reasoning_content"},
+                ),
+            ],
+        ),
+        Message("user", ["Second question"]),
+        Message("assistant", ["Second answer"]),
+        Message("user", ["Follow-up"]),
+    ]
+
+
+def test_prepare_messages_replays_reasoning_content_for_a_request_with_tools() -> None:
+    """With tools, thinking mode wants every turn's reasoning back, tool call or not."""
+    prepared = _client()._prepare_messages_for_openai(_history_without_tool_calls(), request_has_tools=True)
+
+    assert [message.get("reasoning_content") for message in prepared if message["role"] == "assistant"] == [
+        "DeepSeek reasoning",
+        "",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("with_tools", "expected"),
+    [(True, ["DeepSeek reasoning", ""]), (False, [None, None])],
+    ids=["with-tools", "without-tools"],
+)
+async def test_request_replays_reasoning_content_when_it_carries_tools(
+    with_tools: bool, expected: list[str | None]
+) -> None:
+    captured_requests: list[dict[str, Any]] = []
+    client = _request_capturing_client(captured_requests)
+
+    def read_file(path: str) -> str:
+        return f"contents of {path}"
+
+    tool = FunctionTool(name="read_file", description="Read a file", func=read_file)
+
+    await client.get_response(_history_without_tool_calls(), options={"tools": [tool]} if with_tools else None)
+
+    [request] = captured_requests
+    assert ("tools" in request) is with_tools
+    assert [message.get("reasoning_content") for message in request["messages"] if message["role"] == "assistant"] == (
+        expected
+    )

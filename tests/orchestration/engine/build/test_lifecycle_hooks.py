@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AGENT_LOAD_STATUS_DONE, AgentLoadProgress, Warning
-from chrys.foundation.i18n import DisplayBlock, Localizer
+from chrys.foundation.i18n import DisplayBlock, DisplayPath, Localizer
 from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration import session_hooks
 from chrys.orchestration.engine.assembly import assemble_agent_engine
@@ -489,6 +490,68 @@ async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
     assert reference is not None
     assert reference.definition.key == expected_key
     assert dict(reference.args) == {"detail": DisplayBlock(expected_detail)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["global", "project"])
+async def test_hook_with_an_invalid_regex_is_skipped_with_a_warning_naming_it_and_its_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    config_dir = tmp_path / "config"
+    project_root = tmp_path / "project"
+    hooks_dir = config_dir / "hooks" if source == "global" else project_root / ".chrys" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    project_root.mkdir(exist_ok=True)
+    hooks_path = hooks_dir / "hooks.yaml"
+    hooks_path.write_text(
+        "version: 1\n"
+        "hooks:\n"
+        "  - id: guard\n"
+        "    event: before_tool_call\n"
+        "    match: {args: {command: {regex: 'rm (-rf'}}}\n"
+        "    run: {type: command, argv: [/bin/true]}\n"
+        "  - id: guard-sudo\n"
+        "    event: before_tool_call\n"
+        "    match: {args: {command: {regex: '^sudo '}}}\n"
+        "    run: {type: command, argv: [/bin/true]}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(re.error) as regex_error:
+        re.compile("rm (-rf")
+    reason = f"match.args.command.regex is not a valid regular expression: {regex_error.value}"
+    engine = _Engine(project_root)
+    warnings: list[Warning] = []
+
+    async def _capture(event: Warning) -> None:
+        warnings.append(event)
+
+    def _fake_get_platform() -> SimpleNamespace:
+        return SimpleNamespace(config_dir=config_dir)
+
+    await engine.event_bus.subscribe(Warning, _capture)
+    monkeypatch.setattr(session_hooks, "get_platform", _fake_get_platform)
+
+    manager = await engine.loader.build_hook_manager(project_root=str(project_root))
+
+    assert manager is not None
+    assert [hook.id for hook in manager.file.hooks] == ["guard-sudo"]
+    assert [(warning.code, warning.message, warning.session_id) for warning in warnings] == [
+        (
+            "hook_skipped",
+            f"Hook 'guard' in {hooks_path} was skipped: {reason}. The other hooks in this file still run.",
+            "session-1",
+        )
+    ]
+    reference = warnings[0].display_message
+    assert reference is not None
+    assert reference.definition.key == "construction.hook_skipped"
+    assert dict(reference.args) == {
+        "hook_id": "guard",
+        "path": DisplayPath(str(hooks_path)),
+        "detail": DisplayBlock(reason),
+    }
 
 
 @pytest.mark.asyncio

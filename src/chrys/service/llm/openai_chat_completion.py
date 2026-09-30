@@ -25,7 +25,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompletionMessageCustomToolCall
 from openai.types.chat.completion_create_params import WebSearchOptions
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from typing_extensions import TypedDict
 
 from chrys.foundation.util.once_close import OnceClose
@@ -406,6 +406,19 @@ def _drain_openai_tool_calls(
     if not contents:
         return None
     return ChatResponseUpdate(contents=contents)
+
+
+def _choice_level_usage(chunk: ChatCompletionChunk) -> CompletionUsage | None:
+    """Usage a compatible provider (Kimi) streams on a choice instead of on the chunk."""
+    for choice in chunk.choices:
+        raw = (choice.model_extra or {}).get("usage")
+        if not raw:
+            continue
+        try:
+            return CompletionUsage.model_validate(raw)
+        except ValidationError:
+            logger.debug("Ignoring malformed choice-level usage on stream chunk %s", chunk.id)
+    return None
 
 
 def _parse_reasoning_details_payload(protected_data: str) -> Any | None:
@@ -855,9 +868,16 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             k: v for k, v in options.items() if v is not None and k not in {"instructions", "tools", "conversation_id"}
         }
 
+        # Tools resolve before the messages: whether reasoning replays can
+        # depend on the request carrying any.
+        tools = options.get("tools")
+        tool_options = self._prepare_tools_for_openai(tools) if tools is not None else {}
+
         # messages
         if messages and "messages" not in run_options:
-            run_options["messages"] = self._prepare_messages_for_openai(messages)
+            run_options["messages"] = self._prepare_messages_for_openai(
+                messages, request_has_tools=bool(tool_options.get("tools"))
+            )
         if "messages" not in run_options:
             raise ChatClientInvalidRequestException("Messages are required for chat completions")
 
@@ -879,9 +899,7 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             run_options["model"] = self.model
 
         # tools
-        tools = options.get("tools")
-        if tools is not None:
-            run_options.update(self._prepare_tools_for_openai(tools))
+        run_options.update(tool_options)
         # Only include tool_choice and parallel_tool_calls if tools are present
         if not run_options.get("tools"):
             run_options.pop("parallel_tool_calls", None)
@@ -1006,9 +1024,9 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
 
         # Gemini can send usage alongside text or tool content. Process both
         # parts of the chunk so usage handling never drops the response content.
-        if chunk.usage:
+        if usage := chunk.usage or _choice_level_usage(chunk):
             contents.append(
-                Content.from_usage(usage_details=self._parse_usage_from_openai(chunk.usage), raw_representation=chunk)
+                Content.from_usage(usage_details=self._parse_usage_from_openai(usage), raw_representation=chunk)
             )
 
         for choice in chunk.choices:
@@ -1100,6 +1118,13 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             if (tokens := getattr(usage.prompt_tokens_details, "cache_write_tokens", None)) is not None:
                 details["prompt/cache_write_tokens"] = tokens  # type: ignore[typeddict-unknown-key]
                 details["cache_creation_input_token_count"] = tokens
+        if "cache_read_input_token_count" not in details:
+            # Kimi reports cache reads as a top-level ``cached_tokens`` instead.
+            # Explicit 0 is preserved.
+            tokens = (usage.model_extra or {}).get("cached_tokens")
+            if isinstance(tokens, int) and not isinstance(tokens, bool):
+                details["prompt/cached_tokens"] = tokens  # type: ignore[typeddict-unknown-key]
+                details["cache_read_input_token_count"] = tokens
         return details
 
     def _parse_text_contents_from_openai(self, choice: Choice | ChunkChoice) -> list[Content]:
@@ -1276,6 +1301,8 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
         chat_messages: Sequence[Message],
         role_key: str = "role",
         content_key: str = "content",
+        *,
+        request_has_tools: bool = False,
     ) -> list[dict[str, Any]]:
         """Prepare the chat history for an OpenAI request.
 
@@ -1291,19 +1318,20 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
             chat_messages: The chat history to prepare.
             role_key: The key name for the role/author.
             content_key: The key name for the content/message.
+            request_has_tools: Whether the request sends a ``tools`` array.
 
         Returns:
             prepared_chat_history (Any): The prepared chat history for a request.
         """
         chat_messages = self._degrade_cross_provider_hosted_history(chat_messages)
-        replay_reasoning = self._should_replay_reasoning(chat_messages)
+        replay_reasoning = self._should_replay_reasoning(chat_messages, request_has_tools=request_has_tools)
         list_of_list = [
             self._prepare_message_for_openai(message, replay_reasoning=replay_reasoning) for message in chat_messages
         ]
         # Flatten the list of lists into a single list
         return self._insert_synthetic_image_messages(list(chain.from_iterable(list_of_list)))
 
-    def _should_replay_reasoning(self, chat_messages: Sequence[Message]) -> bool:
+    def _should_replay_reasoning(self, chat_messages: Sequence[Message], *, request_has_tools: bool = False) -> bool:
         """Whether historical raw reasoning fields are re-sent on this request.
 
         The base replays unconditionally: endpoints that document preserved
@@ -1311,7 +1339,7 @@ class RawOpenAIChatCompletionClient(BaseChatClient):
         request, and Kimi — which runs on the plain ``openai`` provider —
         documents that each historical assistant message must keep its
         ``reasoning_content``. Subclasses narrow this (DeepSeek replays only
-        once a tool interaction exists).
+        on a request that sends tools or follows a tool interaction).
 
         Replay cannot be scoped by provider (Kimi and native OpenAI share
         the ``openai`` provider, differing only in base URL) and does not

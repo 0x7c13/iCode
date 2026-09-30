@@ -16,6 +16,8 @@ from chrys.service.skills.loader import (
     load_file_skill,
 )
 from chrys.service.skills.model import Skill, SkillLoadFailure, SkillResource
+from chrys.service.skills.provider import ChrysSkillsProvider
+from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -494,6 +496,67 @@ def test_nested_skill_boundary_does_not_weaken_symlink_escape_guard(tmp_path: Pa
 
     assert isinstance(skill, Skill)
     assert [resource.name for resource in skill.resources] == ["child/safe.md"]
+
+
+def _backslash_escape_skill(tmp_path: Path) -> tuple[Path, Path]:
+    """A skill whose file names rebuild, with ``\\`` read as a separator, into a path outside it."""
+    secret = tmp_path / "secret.md"
+    secret.write_text("outside content", encoding="utf-8")
+    skill_dir = _write_skill(tmp_path / "skills", "bslash")
+    (skill_dir / "..\\..\\secret.md").write_text("inside resource", encoding="utf-8")
+    (skill_dir / "..\\..\\run.py").write_text("print('inside')", encoding="utf-8")
+    return skill_dir, secret
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a path separator on Windows")
+def test_backslash_named_files_keep_the_path_that_passed_the_checks(tmp_path: Path) -> None:
+    skill_dir, _secret = _backslash_escape_skill(tmp_path)
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert [(r.name, r.full_path) for r in skill.resources] == [
+        ("../../secret.md", str(skill_dir / "..\\..\\secret.md"))
+    ]
+    assert [(s.name, s.full_path) for s in skill.scripts] == [("../../run.py", str(skill_dir / "..\\..\\run.py"))]
+
+
+async def _read_resource(skill: Skill, resource_name: str) -> str:
+    async def load_skills() -> list[Skill]:
+        return [skill]
+
+    skills_provider = ChrysSkillsProvider(load_skills)
+    await skills_provider.initialize()
+    return await skills_provider._read_skill_resource(skills_provider._skills, skill.name, resource_name)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a path separator on Windows")
+async def test_backslash_named_resource_reads_the_file_inside_the_skill(tmp_path: Path) -> None:
+    skill_dir, _secret = _backslash_escape_skill(tmp_path)
+    skill = _load(skill_dir)
+    assert isinstance(skill, Skill)
+
+    assert await _read_resource(skill, "../../secret.md") == "inside resource"
+
+
+async def test_resource_swapped_for_a_symlink_after_loading_is_not_read(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.md"
+    secret.write_text("outside content", encoding="utf-8")
+    skill_dir = _write_skill(tmp_path, "swapped")
+    (skill_dir / "references").mkdir()
+    guide = skill_dir / "references" / "guide.md"
+    guide.write_text("inside", encoding="utf-8")
+    skill = _load(skill_dir)
+    assert isinstance(skill, Skill)
+    assert await _read_resource(skill, "references/guide.md") == "inside"
+
+    guide.unlink()
+    symlink_or_skip(guide, secret)
+    result = await _read_resource(skill, "references/guide.md")
+
+    assert result.startswith("Error: ")
+    assert "outside content" not in result
+    assert "resolves outside skill 'swapped'" in result
 
 
 # ---------------------------------------------------------------------------

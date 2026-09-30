@@ -17,6 +17,7 @@ Owns the full skills surface on top of the chrys skill model
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -38,6 +39,7 @@ from chrys.service.skills.constants import (
     DEFAULT_SCRIPT_RESULT_MAX_TOKENS,
     RUN_SKILL_SCRIPT_TOOL_NAME,
 )
+from chrys.service.skills.loader import is_contained_skill_path
 from chrys.service.skills.model import Skill, SkillResource, SkillScript
 from chrys.service.tools.result_metadata import tool_error
 
@@ -512,6 +514,17 @@ class ChrysSkillsProvider(ContextProvider):
             return tool_error(
                 "resource_not_found",
                 f"Resource '{resource_name}' not found in skill '{skill_name}'.",
+                details={"skill_name": skill_name, "resource_name": resource_name},
+            )
+
+        if (
+            resource.full_path
+            and skill.path
+            and not await asyncio.to_thread(is_contained_skill_path, resource.full_path, skill.path)
+        ):
+            return tool_error(
+                "resource_path_outside_skill",
+                f"Resource '{resource_name}' resolves outside skill '{skill_name}'.",
                 details={"skill_name": skill_name, "resource_name": resource_name},
             )
 

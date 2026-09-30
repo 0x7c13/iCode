@@ -2346,7 +2346,9 @@ class RawOpenAIChatClient(BaseChatClient):
                     "id": fc_id,
                     "type": "function_call",
                     "name": content.name,
-                    "arguments": content.arguments,
+                    # History may hold dict arguments (Anthropic tool_use input, an
+                    # approval-edited call); the Responses API takes only a string.
+                    "arguments": self._stringify_arguments(content.arguments),
                 }
                 if status := content.additional_properties.get("status"):
                     function_call_obj["status"] = status
@@ -2401,7 +2403,7 @@ class RawOpenAIChatClient(BaseChatClient):
                     "id": content.call_id,
                     "server_label": content.server_name or "",
                     "name": content.tool_name or "",
-                    "arguments": self._stringify_mcp_arguments(content.arguments),
+                    "arguments": self._stringify_arguments(content.arguments),
                 }
             case "mcp_server_tool_result":
                 if not content.call_id:
@@ -2620,8 +2622,8 @@ class RawOpenAIChatClient(BaseChatClient):
         return contents
 
     @staticmethod
-    def _stringify_mcp_arguments(arguments: Any) -> str:
-        """Render hosted-MCP tool-call arguments as a JSON string for the Responses API."""
+    def _stringify_arguments(arguments: Any) -> str:
+        """Render function or hosted-MCP call arguments as the JSON string the Responses API takes."""
         if arguments is None:
             return ""
         if isinstance(arguments, str):

@@ -68,6 +68,7 @@ from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_T
 from chrys.service.trajectory.compaction import current_compaction_operation_id
 from chrys.service.trajectory.retries import RetryBackoffTrace
 
+from .groups import _render_tool_result_value
 from .scoped import DEGRADED_SCOPED_PREAMBLE, ScopedGroup, prepare_scoped_slice
 
 if TYPE_CHECKING:
@@ -1899,24 +1900,9 @@ def _result_payload_text(content: Content) -> str:
         value = content.output
     else:
         value = content.outputs
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = [_render_payload_value(item) for item in value]
-        return "\n".join(part for part in parts if part)
-    return _render_payload_value(value)
-
-
-def _render_payload_value(value: object) -> str:
-    if isinstance(value, Content):
-        if value.type == "text":
-            return value.text or ""
-        if value.type == "shell_command_output":
-            return "\n".join(part for part in (value.stdout, value.stderr) if part)
-        return json.dumps(value.to_dict(), ensure_ascii=False, default=str)
-    if isinstance(value, Mapping | list):
-        return json.dumps(value, ensure_ascii=False, default=str)
-    return "" if value is None else str(value)
+    # The compaction renderer: an image or other binary payload becomes a short
+    # placeholder, never its base64 data.
+    return _render_tool_result_value(value)
 
 
 def _user_authored_text(message: Message) -> str:

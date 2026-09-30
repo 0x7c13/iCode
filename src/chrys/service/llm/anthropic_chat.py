@@ -1144,6 +1144,14 @@ class RawAnthropicClient(BaseChatClient):
                 if event.content_block.type in ("mcp_tool_use", "server_tool_use"):
                     stream_state.hosted_tool_indices.add(event.index)
                 contents = self._parse_contents_from_anthropic([event.content_block])
+                if event.content_block.type == "thinking":
+                    # Some gateways omit ``signature`` on the start event. Start the
+                    # block with "" as the official start event does: otherwise it
+                    # merges into the previous signed thinking block and its own
+                    # signature is dropped on replay.
+                    for content in contents:
+                        if content.type == "text_reasoning" and content.protected_data is None:
+                            content.protected_data = ""
                 if event.index in stream_state.hosted_tool_indices:
                     hosted_call = next(
                         (content for content in contents if content.provider_hosted and content.call_id),

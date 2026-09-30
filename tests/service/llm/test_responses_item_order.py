@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from chrys.kernel import ChatResponse, Content, Message
+from chrys.service.llm.deepseek import DeepSeekResponsesClient
 from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.session.history import SessionHistoryManager
 
 
 class _FakeAsyncOpenAI:
@@ -442,3 +445,69 @@ def test_consecutive_streamed_output_messages_replay_as_distinct_items(persisted
             "content": [{"type": "output_text", "text": "done", "annotations": []}],
         },
     ]
+
+
+_DIALECTS = pytest.mark.parametrize(
+    "client_type", [RawOpenAIChatClient, DeepSeekResponsesClient], ids=["openai", "deepseek"]
+)
+
+
+def _function_call_items(client_type: type[RawOpenAIChatClient], messages: list[Message]) -> list[dict[str, object]]:
+    client = client_type(model="test-model", async_client=_FakeAsyncOpenAI())
+    prepared = client._prepare_messages_for_openai(messages, request_uses_service_side_storage=False)
+    return [item for item in prepared if item["type"] == "function_call"]
+
+
+def _exchange(arguments: str | dict[str, object]) -> list[Message]:
+    return [
+        Message("user", ["read it"]),
+        Message("assistant", [Content.from_function_call(call_id="call_1", name="read_file", arguments=arguments)]),
+        Message("tool", [Content.from_function_result(call_id="call_1", result="ok")]),
+    ]
+
+
+@_DIALECTS
+@pytest.mark.parametrize("persisted", [False, True], ids=["live", "persisted"])
+def test_dict_function_call_arguments_go_out_as_a_json_string(
+    client_type: type[RawOpenAIChatClient], persisted: bool
+) -> None:
+    """Dict arguments (an Anthropic tool_use input) replay as the string the Responses API requires."""
+    messages = _exchange({"path": "a.py", "limit": 20})
+    if persisted:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+
+    [item] = _function_call_items(client_type, messages)
+
+    assert isinstance(item["arguments"], str)
+    assert json.loads(item["arguments"]) == {"path": "a.py", "limit": 20}
+
+
+@_DIALECTS
+def test_string_function_call_arguments_go_out_byte_for_byte(client_type: type[RawOpenAIChatClient]) -> None:
+    raw = '{ "path":"a.py" }'
+
+    [item] = _function_call_items(client_type, _exchange(raw))
+
+    assert item["arguments"] == raw
+
+
+@_DIALECTS
+def test_approval_edited_arguments_replay_as_a_json_string(client_type: type[RawOpenAIChatClient]) -> None:
+    """An approval edit writes dict arguments into history; the next Responses request still sends a string."""
+    messages = _exchange('{"prompt": "old prompt"}')
+    history = SessionHistoryManager()
+    history.bind({"messages": messages})
+    history.persist_approval_decisions(
+        [
+            {
+                "request_id": "req-1",
+                "tool_name": "read_file",
+                "status": "user_approved",
+                "modified_args": '{"prompt": "new prompt"}',
+            }
+        ]
+    )
+
+    [item] = _function_call_items(client_type, messages)
+
+    assert json.loads(item["arguments"]) == {"prompt": "new prompt"}

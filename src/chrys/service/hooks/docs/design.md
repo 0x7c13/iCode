@@ -231,9 +231,10 @@ comparison. A missing arg fails the match.
 > from known kinds with a warning. `match.args` keys are ordinary tool
 > argument names and are not kind-normalized.
 
-Invalid regex patterns log a one-time warning and the hook stops firing for
-the rest of the session — a typo in one hook does not crash dispatch for
-other hooks.
+An enabled hook whose regex does not compile is left out at load time and
+reported with a `hook_skipped` warning naming it and its file; the other hooks
+in the file still load. The matcher still treats an uncompilable pattern as a
+miss (logged once), so dispatch never raises on one.
 
 ---
 

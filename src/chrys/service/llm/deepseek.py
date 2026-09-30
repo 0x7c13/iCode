@@ -16,12 +16,16 @@ DeepSeek-specific policy:
   OpenAI-legacy ``max_tokens`` field, not ``max_completion_tokens``
   (https://api-docs.deepseek.com/api/create-chat-completion).
 - ``_should_replay_reasoning``: DeepSeek thinking mode emits an extra
-  ``reasoning_content`` field on each assistant message.  In plain
-  multi-turn chat this is informational only, but once the conversation
-  contains a tool interaction DeepSeek's API requires the same
-  ``reasoning_content`` to be replayed on the next request — otherwise
-  the gateway returns HTTP 400 (see
-  https://api-docs.deepseek.com/guides/thinking_mode).
+  ``reasoning_content`` field on each assistant message.  Its docs
+  (https://api-docs.deepseek.com/guides/thinking_mode) say a request
+  without ``tools`` ignores the field, while one that sends ``tools``
+  must replay every historical ``reasoning_content`` — turns without a
+  tool call included — or get HTTP 400.  The live API has been seen
+  accepting such requests anyway; the client follows the documented
+  contract, not observed rejections.  A request after a tool interaction
+  replays too.  An assistant message with no reasoning of its own
+  (another model's history) then goes out with an empty
+  ``reasoning_content``.
 - A strict message assembler: DeepSeek's schema wants consecutive
   same-role fragments merged into one wire message, plain-string
   content, and an explicit ``content: ""`` on assistant messages that
@@ -107,28 +111,42 @@ class DeepSeekChatCompletionClient(RawOpenAIChatCompletionClient):
         """
         return _add_deepseek_cache_usage(super()._parse_usage_from_openai(usage), usage)
 
-    def _should_replay_reasoning(self, chat_messages: Sequence[Message]) -> bool:
-        """Replay historical reasoning only once tool calls are in play.
+    def _should_replay_reasoning(self, chat_messages: Sequence[Message], *, request_has_tools: bool = False) -> bool:
+        """Replay historical reasoning only once tools are in play.
 
-        DeepSeek rejects requests that omit ``reasoning_content`` from an
-        assistant message carrying ``tool_calls``, but treats it as purely
-        informational in plain multi-turn chat — so we keep those requests
-        lean instead of replaying unconditionally like the base client.
+        DeepSeek's thinking-mode docs require every historical assistant
+        message to carry its ``reasoning_content`` on a request that sends
+        ``tools`` (even one without a tool call) and on an assistant message
+        carrying ``tool_calls``, and say a request with neither ignores the
+        field. Such a request stays lean instead of replaying
+        unconditionally like the base client.
         """
-        return self._has_tool_interaction(chat_messages)
+        return request_has_tools or self._has_tool_interaction(chat_messages)
 
     def _prepare_messages_for_openai(
         self,
         chat_messages: Sequence[Message],
         role_key: str = "role",
         content_key: str = "content",
+        *,
+        request_has_tools: bool = False,
     ) -> list[dict[str, Any]]:
         chat_messages = self._degrade_cross_provider_hosted_history(chat_messages)
-        replay_reasoning = self._should_replay_reasoning(chat_messages)
+        replay_reasoning = self._should_replay_reasoning(chat_messages, request_has_tools=request_has_tools)
         list_of_list = [
             self._prepare_message_for_openai(message, replay_reasoning=replay_reasoning) for message in chat_messages
         ]
-        return self._insert_synthetic_image_messages(list(chain.from_iterable(list_of_list)))
+        wire_messages = list(chain.from_iterable(list_of_list))
+        if replay_reasoning:
+            # Once tools are in play, the thinking-mode docs require
+            # ``reasoning_content`` on every assistant message. History
+            # another model wrote (or DeepSeek with thinking off) has none:
+            # send it empty on the wire only, leaving the stored history as
+            # it is.
+            for wire_message in wire_messages:
+                if wire_message.get("role") == "assistant" and "reasoning_content" not in wire_message:
+                    wire_message["reasoning_content"] = ""
+        return self._insert_synthetic_image_messages(wire_messages)
 
     def _prepare_message_for_openai(
         self,

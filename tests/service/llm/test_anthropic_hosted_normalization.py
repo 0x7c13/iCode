@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from anthropic.types.beta import BetaMessage
+from anthropic.types.beta import BetaMessage, BetaThinkingBlock
 
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message
 from chrys.service.llm.anthropic_chat import (
@@ -123,6 +123,50 @@ def test_streamed_redacted_and_ordinary_thinking_round_trip_separately(redacted_
     }
     redacted = next(block for block in prepared if block["type"] == "redacted_thinking")
     assert redacted == {"type": "redacted_thinking", "data": "opaque-redacted"}
+
+
+@pytest.mark.parametrize("start_signature", [None, ""], ids=["start-without-signature", "start-with-empty-signature"])
+@pytest.mark.parametrize("texts", [("A", "B"), ("", "")], ids=["thinking", "omitted"])
+def test_streamed_adjacent_thinking_blocks_keep_their_own_signatures(
+    start_signature: str | None, texts: tuple[str, str]
+) -> None:
+    """A gateway that omits ``signature`` on the start event must not merge two thinking blocks."""
+    client = _client()
+    state = _AnthropicStreamState(
+        pending_function_calls={},
+        hosted_tool_indices=set(),
+        hosted_tool_calls={},
+        hosted_argument_deltas={},
+        deferred_updates={},
+        defer_from_index=None,
+    )
+    start_fields = {} if start_signature is None else {"signature": start_signature}
+    events: list[Any] = []
+    for index, (text, signature) in enumerate(zip(texts, ("S1", "S2"), strict=True)):
+        block = BetaThinkingBlock.model_construct(type="thinking", thinking="", **start_fields)
+        events.append(SimpleNamespace(type="content_block_start", index=index, content_block=block))
+        if text:
+            events.append(
+                SimpleNamespace(
+                    type="content_block_delta", index=index, delta=SimpleNamespace(type="thinking_delta", thinking=text)
+                )
+            )
+        events.append(
+            SimpleNamespace(
+                type="content_block_delta",
+                index=index,
+                delta=SimpleNamespace(type="signature_delta", signature=signature),
+            )
+        )
+    updates = [update for event in events if (update := client._process_stream_event(event, state)) is not None]
+
+    response = ChatResponse.from_updates(updates)
+    prepared = client._prepare_message_for_anthropic(response.messages[0])["content"]
+
+    assert prepared == [
+        {"type": "thinking", "thinking": texts[0], "signature": "S1"},
+        {"type": "thinking", "thinking": texts[1], "signature": "S2"},
+    ]
 
 
 def _stream_parse(client: RawAnthropicClient, blocks: list[Any]) -> ChatResponse:

@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "1ce584421bfa4e0290eea7912fd776491f37800616ea3c5717c2d798dc63e195",
+  "inventory_sha256": "94c9aef9a3ea851ea62f96eccfac9e689db914571fec60a395ad3a2acf4353f9",
   "nodes": [
     {
       "cases": [
@@ -20698,7 +20698,7 @@
       "primitive": "awaitable",
       "qualname": "SessionHookFactory.__call__",
       "source_column": 12,
-      "source_line": 58,
+      "source_line": 64,
       "wrapper_target": null
     },
     {
@@ -20718,7 +20718,27 @@
       "primitive": "awaitable",
       "qualname": "SessionHookFactory.__call__",
       "source_column": 12,
-      "source_line": 74,
+      "source_line": 80,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._bus.publish(Warning(code='hook_skipped', message=f\"Hook '{skipped.id}' in {loaded.source} was skipped: {skipped.reason}. The other hooks in this file still run.\", display_message=_CONSTRUCTION_HOOK_SKIPPED.bind(hook_id=skipped.id, path=DisplayPath(loaded.source), detail=DisplayBlock(skipped.reason)), session_id=session_id, request_id=request_id))",
+      "identity": "chrys.orchestration.session_hooks:SessionHookFactory.__call__:3",
+      "module": "chrys.orchestration.session_hooks",
+      "ordinal": 3,
+      "primitive": "awaitable",
+      "qualname": "SessionHookFactory.__call__",
+      "source_column": 16,
+      "source_line": 98,
       "wrapper_target": null
     },
     {
@@ -38158,7 +38178,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate",
       "source_column": 29,
-      "source_line": 946,
+      "source_line": 947,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_completer"
     },
     {
@@ -38178,7 +38198,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate",
       "source_column": 15,
-      "source_line": 961,
+      "source_line": 962,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_fallback"
     },
     {
@@ -38198,7 +38218,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_once",
       "source_column": 17,
-      "source_line": 1604,
+      "source_line": 1605,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._get_client"
     },
     {
@@ -38218,7 +38238,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_once",
       "source_column": 23,
-      "source_line": 1610,
+      "source_line": 1611,
       "wrapper_target": "chrys.service.llm.responses.get_final_response"
     },
     {
@@ -38238,7 +38258,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1365,
+      "source_line": 1366,
       "wrapper_target": null
     },
     {
@@ -38258,7 +38278,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 16,
-      "source_line": 1412,
+      "source_line": 1413,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38278,7 +38298,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 16,
-      "source_line": 1418,
+      "source_line": 1419,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38298,7 +38318,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1480,
+      "source_line": 1481,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38318,7 +38338,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1486,
+      "source_line": 1487,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38338,7 +38358,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 12,
-      "source_line": 1521,
+      "source_line": 1522,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38358,7 +38378,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 12,
-      "source_line": 1522,
+      "source_line": 1523,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38378,7 +38398,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 30,
-      "source_line": 1078,
+      "source_line": 1079,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_once"
     },
     {
@@ -38398,7 +38418,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 16,
-      "source_line": 1128,
+      "source_line": 1129,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38418,7 +38438,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 16,
-      "source_line": 1135,
+      "source_line": 1136,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38438,7 +38458,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 20,
-      "source_line": 1188,
+      "source_line": 1189,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38458,7 +38478,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 20,
-      "source_line": 1195,
+      "source_line": 1196,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38478,7 +38498,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 12,
-      "source_line": 1275,
+      "source_line": 1276,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38498,7 +38518,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 12,
-      "source_line": 1282,
+      "source_line": 1283,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38518,7 +38538,7 @@
       "primitive": "sync_primitive",
       "qualname": "LastWordsGenerator._get_client",
       "source_column": 19,
-      "source_line": 653,
+      "source_line": 654,
       "wrapper_target": null
     },
     {
@@ -38538,7 +38558,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._get_client",
       "source_column": 31,
-      "source_line": 659,
+      "source_line": 660,
       "wrapper_target": "chrys.service.llm.clients.create_client"
     },
     {
@@ -38558,7 +38578,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._publish_retry_attempt",
       "source_column": 12,
-      "source_line": 1554,
+      "source_line": 1555,
       "wrapper_target": null
     },
     {
@@ -38578,7 +38598,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._publish_status_cancellable",
       "source_column": 12,
-      "source_line": 873,
+      "source_line": 874,
       "wrapper_target": null
     },
     {
@@ -38598,7 +38618,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 12,
-      "source_line": 1571,
+      "source_line": 1572,
       "wrapper_target": null
     },
     {
@@ -38618,7 +38638,7 @@
       "primitive": "sleep",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 8,
-      "source_line": 1572,
+      "source_line": 1573,
       "wrapper_target": null
     },
     {
@@ -38638,7 +38658,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 12,
-      "source_line": 1574,
+      "source_line": 1575,
       "wrapper_target": null
     },
     {
@@ -38658,7 +38678,7 @@
       "primitive": "sync_primitive",
       "qualname": "LastWordsGenerator.aclose",
       "source_column": 19,
-      "source_line": 670,
+      "source_line": 671,
       "wrapper_target": null
     },
     {
@@ -38678,7 +38698,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator.aclose",
       "source_column": 12,
-      "source_line": 673,
+      "source_line": 674,
       "wrapper_target": null
     },
     {
@@ -38698,7 +38718,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 12,
-      "source_line": 811,
+      "source_line": 812,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38718,7 +38738,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 24,
-      "source_line": 812,
+      "source_line": 813,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"
     },
     {
@@ -38738,7 +38758,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 16,
-      "source_line": 846,
+      "source_line": 847,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38758,7 +38778,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.publish_breaker_trip",
       "source_column": 8,
-      "source_line": 918,
+      "source_line": 919,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38778,7 +38798,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.publish_breaker_trip",
       "source_column": 8,
-      "source_line": 919,
+      "source_line": 920,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38798,7 +38818,7 @@
       "primitive": "shield",
       "qualname": "LastWordsGenerator.publish_committed",
       "source_column": 8,
-      "source_line": 902,
+      "source_line": 903,
       "wrapper_target": null
     },
     {
@@ -40378,7 +40398,7 @@
       "primitive": "awaitable",
       "qualname": "DeepSeekResponsesClient._prepare_options",
       "source_column": 15,
-      "source_line": 372,
+      "source_line": 387,
       "wrapper_target": null
     },
     {
@@ -40658,7 +40678,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._close_sdk_client",
       "source_column": 8,
-      "source_line": 556,
+      "source_line": 569,
       "wrapper_target": null
     },
     {
@@ -40678,7 +40698,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._get_response",
       "source_column": 40,
-      "source_line": 774,
+      "source_line": 787,
       "wrapper_target": null
     },
     {
@@ -40698,7 +40718,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._get_response",
       "source_column": 31,
-      "source_line": 779,
+      "source_line": 792,
       "wrapper_target": null
     },
     {
@@ -40718,7 +40738,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 44,
-      "source_line": 693,
+      "source_line": 706,
       "wrapper_target": null
     },
     {
@@ -40738,7 +40758,7 @@
       "primitive": "wrapper",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 33,
-      "source_line": 696,
+      "source_line": 709,
       "wrapper_target": "chrys.service.llm._chat_stream_validation._validate_chat_completion_stream_response"
     },
     {
@@ -40758,7 +40778,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 37,
-      "source_line": 699,
+      "source_line": 712,
       "wrapper_target": null
     },
     {
@@ -40778,7 +40798,7 @@
       "primitive": "async_iteration",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 20,
-      "source_line": 701,
+      "source_line": 714,
       "wrapper_target": null
     },
     {
@@ -40798,7 +40818,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
       "source_column": 36,
-      "source_line": 761,
+      "source_line": 774,
       "wrapper_target": null
     },
     {
@@ -40818,7 +40838,7 @@
       "primitive": "awaitable",
       "qualname": "RawOpenAIChatCompletionClient.aclose",
       "source_column": 8,
-      "source_line": 553,
+      "source_line": 566,
       "wrapper_target": null
     },
     {
@@ -46058,7 +46078,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._create_tools._load",
       "source_column": 19,
-      "source_line": 594,
+      "source_line": 607,
       "wrapper_target": null
     },
     {
@@ -46078,7 +46098,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider._create_tools._read_resource",
       "source_column": 19,
-      "source_line": 617,
+      "source_line": 630,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._read_skill_resource"
     },
     {
@@ -46098,7 +46118,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider._create_tools._run_script",
       "source_column": 19,
-      "source_line": 657,
+      "source_line": 670,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._run_skill_script_chrys"
     },
     {
@@ -46111,14 +46131,34 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await resource.read()",
+      "expression": "await asyncio.to_thread(is_contained_skill_path, resource.full_path, skill.path)",
       "identity": "chrys.service.skills.provider:ChrysSkillsProvider._read_skill_resource:1",
       "module": "chrys.service.skills.provider",
       "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "ChrysSkillsProvider._read_skill_resource",
+      "source_column": 20,
+      "source_line": 523,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await resource.read()",
+      "identity": "chrys.service.skills.provider:ChrysSkillsProvider._read_skill_resource:2",
+      "module": "chrys.service.skills.provider",
+      "ordinal": 2,
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._read_skill_resource",
       "source_column": 19,
-      "source_line": 519,
+      "source_line": 532,
       "wrapper_target": null
     },
     {
@@ -46138,7 +46178,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._reload",
       "source_column": 22,
-      "source_line": 374,
+      "source_line": 376,
       "wrapper_target": null
     },
     {
@@ -46158,7 +46198,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._run_skill_script_chrys",
       "source_column": 25,
-      "source_line": 801,
+      "source_line": 814,
       "wrapper_target": null
     },
     {
@@ -46178,7 +46218,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider.before_run",
       "source_column": 12,
-      "source_line": 456,
+      "source_line": 458,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._reload"
     },
     {
@@ -46198,7 +46238,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider.initialize",
       "source_column": 12,
-      "source_line": 387,
+      "source_line": 389,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._reload"
     },
     {
@@ -46218,7 +46258,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider.refresh_context",
       "source_column": 17,
-      "source_line": 423,
+      "source_line": 425,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider.stage_context_refresh"
     },
     {
@@ -46238,7 +46278,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider.stage_context_refresh",
       "source_column": 22,
-      "source_line": 428,
+      "source_line": 430,
       "wrapper_target": null
     },
     {
