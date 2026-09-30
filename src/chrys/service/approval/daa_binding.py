@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Chrys. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Trusted builtin adapters; local path/command keys are independent of identity."""
 
@@ -38,7 +38,7 @@ class DAABinding:
     def file_targets(self, context: FunctionInvocationContext) -> tuple[FileWriteTarget, ...] | None:
         """Resolve only authoritative builtin writes, also for one-time confirmation."""
         tool = context.function
-        owner = tool._instance
+        owner = tool.bound_instance
         if (
             self.tools.get(tool.name) is not tool
             or not isinstance(owner, FilesystemTools)
@@ -52,17 +52,13 @@ class DAABinding:
         self,
         context: FunctionInvocationContext,
         *,
-        must_ask_human: bool = False,
         non_reusable: bool = False,
     ) -> Candidate | None:
         tool = context.function
         kind = get_tool_kind(tool)
         func = tool.func
         if (
-            must_ask_human
-            or non_reusable
-            or context.metadata.get("daa_must_ask_human")
-            or context.metadata.get("daa_non_reusable")
+            non_reusable
             or self.tools.get(tool.name) is not tool
             or kind not in {KIND_SHELL, KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE}
             or not (inspect.isfunction(func) or inspect.ismethod(func))
@@ -73,7 +69,7 @@ class DAABinding:
             return None
         runtime = self.runtime
         reuse = ReuseContext(self.session_id, runtime.cwd)
-        owner = tool._instance
+        owner = tool.bound_instance
         if kind == KIND_FILESYSTEM_WRITE:
             if not isinstance(owner, FilesystemTools) or func not in (
                 FilesystemTools.write_file.func,
@@ -84,7 +80,7 @@ class DAABinding:
         if kind == KIND_SHELL:
             if not isinstance(owner, ShellTools) or func is not ShellTools.execute.func:
                 return None
-            shell = owner._shell
+            shell = owner.shell
             return self.service.candidates(
                 [shell.name, shell.path, shell.args], context.arguments, reuse, shell=shell.name
             )

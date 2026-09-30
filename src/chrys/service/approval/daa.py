@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Chrys. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Minimal allow-only reuse of explicit human approval; no semantic equivalence."""
 
@@ -83,12 +83,10 @@ class ReuseContext:
     session_id: str
     project_id: str
     execution: str = ""
-    must_ask_human: bool = False
-    non_reusable: bool = False
 
     @property
     def eligible(self) -> bool:
-        return bool(self.session_id and self.project_id) and not (self.must_ask_human or self.non_reusable)
+        return bool(self.session_id and self.project_id)
 
 
 def _raw_string(value: object) -> str:

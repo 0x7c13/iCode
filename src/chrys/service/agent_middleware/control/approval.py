@@ -354,7 +354,6 @@ class ApprovalMiddleware(FunctionMiddleware):
         *,
         reapprove: bool,
     ) -> Literal[False, "rehook", "reapprove"]:
-        must_ask_human = self._daa is not None and bool(context.metadata.get("daa_must_ask_human"))
         publisher = self._publisher
         tool_name = context.function.name
         call_id = get_call_id(context)
@@ -377,7 +376,6 @@ class ApprovalMiddleware(FunctionMiddleware):
         policy_requires_approval = self._policy.should_require_approval(tool_name, tool_kind)
         if (
             not reapprove
-            and not must_ask_human
             and not policy_requires_approval
             and not dev_sub_agent_review
             and not sensitive_shell
@@ -389,7 +387,7 @@ class ApprovalMiddleware(FunctionMiddleware):
 
         # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
         # without showing the approval dialog.
-        if tool_kind == KIND_SHELL and not must_ask_human and not reapprove:
+        if tool_kind == KIND_SHELL and not reapprove:
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:
@@ -411,7 +409,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                     return False
 
         # Auto-approve file writes inside workspace git repos.
-        if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots and not must_ask_human and not reapprove:
+        if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots and not reapprove:
             raw = context.arguments
             file_path = raw.get("path", "") if isinstance(raw, dict) else ""
             if (
@@ -436,12 +434,7 @@ class ApprovalMiddleware(FunctionMiddleware):
         # back content chrys itself archived from the conversation, so the
         # dialog would gate nothing — even under a ``require`` rule or a
         # sensitive-looking archived tool name in the filename.
-        if (
-            tool_kind == KIND_FILESYSTEM_READ
-            and self._session_archive_read_roots
-            and not must_ask_human
-            and not reapprove
-        ):
+        if tool_kind == KIND_FILESYSTEM_READ and self._session_archive_read_roots and not reapprove:
             raw = context.arguments
             file_path = raw.get("path", "") if isinstance(raw, dict) else ""
             if (
@@ -466,7 +459,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                 return False
 
         # BYPASS — silently auto-approve without ever publishing a request.
-        if self._approval_mode == ApprovalMode.BYPASS and not must_ask_human and not reapprove:
+        if self._approval_mode == ApprovalMode.BYPASS and not reapprove:
             self._decisions.append(
                 _decision(
                     request_id="",
@@ -517,15 +510,13 @@ class ApprovalMiddleware(FunctionMiddleware):
                 return value
 
             confirmed_kwargs = snapshot_kwargs(context.kwargs)
-            confirmed_flags = (context.metadata.get("daa_must_ask_human"), context.metadata.get("daa_non_reusable"))
 
             def request_identity_changed() -> bool:
                 return (
-                    (context.function, context.function.name, context.function.func) != confirmed_function
-                    or context.kwargs != confirmed_kwargs
-                    or (context.metadata.get("daa_must_ask_human"), context.metadata.get("daa_non_reusable"))
-                    != confirmed_flags
-                )
+                    context.function,
+                    context.function.name,
+                    context.function.func,
+                ) != confirmed_function or context.kwargs != confirmed_kwargs
 
             def request_changed() -> bool:
                 return (
@@ -538,7 +529,6 @@ class ApprovalMiddleware(FunctionMiddleware):
         if self._daa is not None and _daa_argument_snapshot(context.arguments) is not None:
             daa_candidate = self._daa.candidate(
                 context,
-                must_ask_human=must_ask_human,
                 non_reusable=dev_sub_agent_review
                 or sensitive_shell
                 or sensitive_filesystem_read
@@ -597,7 +587,6 @@ class ApprovalMiddleware(FunctionMiddleware):
                         self._approval_mode == ApprovalMode.AUTO
                         and self._approval_judge is not None
                         and not dev_sub_agent_review
-                        and not must_ask_human
                         and not reapprove
                     )
                     if judging:
