@@ -417,8 +417,17 @@ def _compile_sequence(
             step = 1 if target_x > source_x else -1
             points = (Point(source_x + step, y), Point(target_x, y))
         label_x = min(source_x, target_x) + 1 if source_x != target_x else source_x + 1
-        marker = edge.target_marker or arrow_for_points(points)
-        routed.append(RoutedEdge(edge, points, Point(label_x, y - 1) if edge.label else None, points[-1], marker))
+        marker = edge.target_marker or (arrow_for_points(points) if edge.directed else "")
+        routed.append(
+            RoutedEdge(
+                edge,
+                points,
+                Point(label_x, y - 1) if edge.label else None,
+                points[-1] if marker else None,
+                marker,
+                source_marker_at=points[0] if edge.source_marker else None,
+            )
+        )
     draw_edges(canvas, routed)
     width = max(width, canvas.natural_width)
     height = max(height, canvas.natural_height)

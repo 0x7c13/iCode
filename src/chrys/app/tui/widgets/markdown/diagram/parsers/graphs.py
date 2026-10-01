@@ -25,15 +25,17 @@ from .common import (
     _clean_label,
     _decimal_text,
     _diagram_direction,
+    _find_unquoted_delimiter,
 )
 
 _FLOW_HEADER_RE = re.compile(r"^(flowchart|graph)(?:\s+([A-Za-z]+))?\s*$", re.IGNORECASE)
 
 
+_CLASS_ID_PATTERN = rf"(?:`[^`]+`|{_ID_PATTERN})"
 _CLASS_RELATION_RE = re.compile(
-    rf'^({_ID_PATTERN}?)(?:\s+"([^"]*)")?\s*'
-    rf"(<\|--|--\|>|<\|\.\.|\.\.\|>|\*--|--\*|o--|--o|\.\.>|<\.\.|-->|<--|--)\s*"
-    rf'(?:"([^"]*)"\s*)?({_ID_PATTERN})(?:\s*:\s*(.*))?$'
+    rf'^(`[^`]+`|{_ID_PATTERN}?)(?:\s+"([^"]*)")?\s*'
+    r"((?:<\||[<*o])?(?:--|\.\.)(?:\|>|[>*o])?)\s*"
+    rf'(?:"([^"]*)"\s*)?({_CLASS_ID_PATTERN})(?:\s*:\s*(.*))?$'
 )
 
 
@@ -84,7 +86,7 @@ _STATE_RELATION_RE = re.compile(rf"^(\[\*\]|{_ID_PATTERN}?)\s*-->\s*(\[\*\]|{_ID
 
 
 _SEQUENCE_MESSAGE_RE = re.compile(
-    rf"^({_ID_PATTERN}?)\s*(-->>|->>|-->|->|--\)|-\)|--x|-x)\s*[+-]?\s*({_ID_PATTERN})(?:\s*:\s*(.*))?$"
+    rf"^({_ID_PATTERN}?)\s*(<<-->>|<<->>|-->>|->>|-->|->|--\)|-\)|--x|-x|--)\s*[+-]?\s*({_ID_PATTERN})(?:\s*:\s*(.*))?$"
 )
 
 
@@ -147,6 +149,31 @@ class _FlowOperator:
 _FLOW_ID_OPERATOR_RE = re.compile(r"-\.+->|-\.+-|-{2,}>|-{3,}|={2,}>|={3,}|--(?=\s)|-\.(?=\s)")
 
 
+_FLOW_METADATA_FIELD_RE = re.compile(
+    r"""\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_]\w*))\s*:\s*"""
+    r"""("(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s"',{}][^,{}]*?)\s*(?:,|$)"""
+)
+
+
+def _flow_metadata(raw: str) -> dict[str, str] | None:
+    """Read flat scalar metadata without interpreting text inside quoted values."""
+    fields: dict[str, str] = {}
+    position = 0
+    while position < len(raw.rstrip()):
+        match = _FLOW_METADATA_FIELD_RE.match(raw, position)
+        if match is None:
+            return None
+        key = next(value for value in match.groups()[:3] if value is not None)
+        value = match.group(4).strip()
+        if value.startswith('"') and value.endswith('"'):
+            value = re.sub(r'\\(["\\])', r"\1", value[1:-1])
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1].replace("''", "'")
+        fields[key] = value
+        position = match.end()
+    return fields
+
+
 def _parse_node_ref(text: str, start: int = 0) -> tuple[str, str | None, NodeShape, bool, int] | None:
     match = _ID_RE.match(text, start)
     if match is None:
@@ -198,20 +225,29 @@ def _parse_node_ref(text: str, start: int = 0) -> tuple[str, str | None, NodeSha
         ("(", ")", NodeShape.ROUNDED),
         ("{", "}", NodeShape.DECISION),
     )
-    if text.startswith("@{", position) and (end := text.find("}", position + 2)) >= 0:
-        metadata = text[position + 2 : end]
-        if shape_match := re.search(r'["\']?shape["\']?\s*:\s*["\']?([A-Za-z0-9_-]+)', metadata):
-            shape = _FLOW_METADATA_SHAPES.get(shape_match.group(1).casefold(), NodeShape.RECTANGLE)
-        if label_match := re.search(r'["\']?label["\']?\s*:\s*["\']([^"\']*)["\']', metadata):
-            label = _clean_label(label_match.group(1))
+    metadata_end = (
+        _find_unquoted_delimiter(text[position + 2 :], ("}",), literal_single_quotes=True, scalar_quotes=True)
+        if text.startswith("@{", position)
+        else None
+    )
+    if metadata_end is not None and metadata_end >= 0:
+        end = position + 2 + metadata_end
+        metadata = _flow_metadata(text[position + 2 : end])
+        if metadata is None:
+            return None
+        if "shape" in metadata:
+            shape = _FLOW_METADATA_SHAPES.get(metadata["shape"].casefold(), NodeShape.RECTANGLE)
+        if "label" in metadata:
+            label = _clean_label(metadata["label"], quote_chars="")
         explicit = True
         position = end + 1
     else:
         candidates: list[tuple[int, int, str, str, NodeShape]] = []
         for opening, closing, candidate_shape in delimiters:
             if text.startswith(opening, position):
-                end = text.find(closing, position + len(opening))
-                if end >= 0:
+                offset = _find_unquoted_delimiter(text[position + len(opening) :], (closing,), quote_chars='"')
+                if offset is not None and offset >= 0:
+                    end = position + len(opening) + offset
                     candidates.append((end, -len(opening), opening, closing, candidate_shape))
         if candidates:
             end, _, opening, closing, shape = min(candidates)
@@ -263,9 +299,10 @@ def _parse_flow_operator(text: str, start: int) -> _FlowOperator | None:
             position += 1
         label = ""
         if position < len(text) and text[position] == "|":
-            end = text.find("|", position + 1)
-            if end < 0:
+            offset = _find_unquoted_delimiter(text[position + 1 :], ("|",), quote_chars='"')
+            if offset is None or offset < 0:
                 return None
+            end = position + 1 + offset
             label = _clean_label(text[position + 1 : end])
             position = end + 1
         return _FlowOperator(style, directed, label, source_marker, target_marker, reverse, position)
@@ -286,44 +323,172 @@ def _parse_flow_operator(text: str, start: int) -> _FlowOperator | None:
             position += 1
         label = ""
         if position < len(text) and text[position] == "|":
-            end = text.find("|", position + 1)
-            if end < 0:
+            offset = _find_unquoted_delimiter(text[position + 1 :], ("|",), quote_chars='"')
+            if offset is None or offset < 0:
                 return None
+            end = position + 1 + offset
             label = _clean_label(text[position + 1 : end])
             position = end + 1
         return _FlowOperator(style, directed, label, "", "", False, position)
     return None
 
 
-def _split_statements(line: str) -> list[str]:
+class _StatementScanLimit(ValueError):
+    """Ambiguous statement boundaries exceeded the source-proportional budget."""
+
+
+@dataclass(slots=True)
+class _StatementBudget:
+    remaining: int
+
+    def consume(self) -> None:
+        self.remaining -= 1
+        if self.remaining < 0:
+            raise _StatementScanLimit
+
+
+_SEQUENCE_START_RE = re.compile(
+    rf"(?:participant|actor|create|activate|deactivate|destroy|note|autonumber)\b|"
+    rf"{_ID_PATTERN}?\s*(?:<<-->>|<<->>|-->>|->>|-->|->|--\)|-\)|--x|-x|--)",
+    re.IGNORECASE,
+)
+
+
+def _sequence_statement_start(raw: str, start: int, budget: _StatementBudget) -> bool:
+    """Keep legacy prose semicolons unless the suffix starts recognizable syntax."""
+    while start < len(raw) and raw[start].isspace():
+        budget.consume()
+        start += 1
+    if start == len(raw):
+        return True
+    if _SEQUENCE_START_RE.match(raw, start) is None:
+        return False
+    # Reuse lexical boundaries so a semicolon inside metadata cannot truncate
+    # a declaration and turn it into prose in the preceding message.
+    statements = _scan_statements(raw, budget, quote_chars='"', first_only=True, start=start)
+    if not statements:
+        return False
+    first = statements[0]
+    if _SEQUENCE_MESSAGE_RE.fullmatch(first) or _sequence_participant(first):
+        return True
+    if first.casefold().startswith("create "):
+        return _sequence_participant(first[7:].strip()) is not None
+    return (
+        re.fullmatch(
+            rf"(?:(?:activate|deactivate|destroy)\s+{_ID_PATTERN}|"
+            rf"note\s+(?:(?:left|right)\s+of\s+{_ID_PATTERN}|over\s+{_ID_PATTERN}(?:\s*,\s*{_ID_PATTERN})?)\s*:\s*.+|"
+            r"autonumber(?:\s+\d+(?:\.\d+)?){0,2})",
+            first,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _split_statements(line: str, *, quote_chars: str = '"`', sequence: bool = False, flow: bool = False) -> list[str]:
+    try:
+        return _scan_statements(
+            line, _StatementBudget(max(512, len(line) * 4)), quote_chars=quote_chars, sequence=sequence, flow=flow
+        )
+    except _StatementScanLimit:
+        # Sequence callers reject this sentinel, preserving the complete source.
+        return ["@ambiguous-statement-boundaries"]
+
+
+def _scan_statements(
+    line: str,
+    budget: _StatementBudget,
+    *,
+    quote_chars: str,
+    sequence: bool = False,
+    flow: bool = False,
+    first_only: bool = False,
+    start: int = 0,
+) -> list[str]:
     statements: list[str] = []
     current: list[str] = []
     quote = ""
     bracket_depth = 0
-    for char in line:
-        if char in {'"', "'"}:
+    escaped = False
+    message_text = False
+    metadata = False
+    previous = ""
+    for index in range(start, len(line)):
+        budget.consume()
+        char = line[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\" and quote and not (flow and quote == "'"):
+            current.append(char)
+            escaped = True
+            continue
+        if sequence and char == ":" and not quote and not bracket_depth:
+            message_text = True
+        if not quote and line.startswith("@{", index):
+            metadata = True
+        elif not quote and char == "}":
+            metadata = False
+        scalar_quote = flow and metadata and char in "\"'"
+        quote_boundary = (char in quote_chars or scalar_quote) and (
+            not scalar_quote or bool(quote) or previous in {"", "{", ":", ",", "'"}
+        )
+        if quote_boundary and not message_text:
             if not quote:
                 quote = char
             elif quote == char:
                 quote = ""
-        if not quote and char in "[({":
+        if not quote and not message_text and char in "[({":
             bracket_depth += 1
         elif not quote and char in "])}" and bracket_depth:
             bracket_depth -= 1
         if char == ";" and not quote and not bracket_depth:
-            entity_suffix = re.search(r"(?:&(?:#\d+|[A-Za-z][A-Za-z0-9]+)|#\d+)$", "".join(current[-64:]))
-            if entity_suffix is None:
+            entity_suffix = re.search(
+                r"(?:&(?:#(?:\d+|[xX][0-9A-Fa-f]+)|[A-Za-z][A-Za-z0-9]+)|#(?:\d+|[A-Za-z][A-Za-z0-9]+))$",
+                "".join(current[-64:]),
+            )
+            if entity_suffix is None and (
+                not sequence or not message_text or _sequence_statement_start(line, index + 1, budget)
+            ):
                 if statement := "".join(current).strip():
                     statements.append(statement)
+                if first_only:
+                    return statements
                 current = []
+                message_text = False
+                previous = ""
                 continue
         current.append(char)
+        if not char.isspace():
+            previous = char
     if statement := "".join(current).strip():
         statements.append(statement)
     return statements
 
 
-def _parse_flow_statement(builder: _Builder, statement: str, line: int) -> None:
+def _flow_node_group(builder: _Builder, text: str, start: int, line: int) -> tuple[list[str], int] | None:
+    """Read a bounded ampersand group without splitting quoted node labels."""
+    nodes: list[str] = []
+    position = start
+    while True:
+        while position < len(text) and text[position].isspace():
+            position += 1
+        node = _parse_node_ref(text, position)
+        if node is None:
+            return None
+        node_id, label, shape, explicit, position = node
+        if builder.node(node_id, label, line, shape=shape, explicit=explicit) is None:
+            return None
+        nodes.append(node_id)
+        while position < len(text) and text[position].isspace():
+            position += 1
+        if position == len(text) or text[position] != "&":
+            return nodes, position
+        position += 1
+
+
+def _parse_flow_statement(builder: _Builder, statement: str, line: int, edge_ids: set[str]) -> None:
     keyword = statement.split(maxsplit=1)[0].casefold()
     if keyword in {"class", "classdef", "click", "linkstyle", "style"}:
         builder.warning(line, DiagnosticCode.UNSUPPORTED_FLOW_STATEMENT)
@@ -334,19 +499,23 @@ def _parse_flow_statement(builder: _Builder, statement: str, line: int) -> None:
     if direction := re.fullmatch(r"direction\s+(TB|TD|BT|LR|RL)", statement, re.IGNORECASE):
         builder.direction = _diagram_direction(direction.group(1))
         return
-    first = _parse_node_ref(statement)
+    if (metadata := re.fullmatch(rf"({_ID_PATTERN})@\{{.*\}}", statement)) and metadata.group(1) in edge_ids:
+        builder.warning(line, DiagnosticCode.UNSUPPORTED_FLOW_STATEMENT)
+        return
+    first = _flow_node_group(builder, statement, 0, line)
     if first is None:
-        builder.error(line, DiagnosticCode.EXPECTED_NODE_OR_EDGE)
+        if not builder.has_fatal_error:
+            builder.error(line, DiagnosticCode.EXPECTED_NODE_OR_EDGE)
         return
-    node_id, label, shape, explicit, position = first
-    if builder.node(node_id, label, line, shape=shape, explicit=explicit) is None:
-        return
-    found_edge = False
+    sources, position = first
     while not builder.has_fatal_error and position < len(statement):
         while position < len(statement) and statement[position].isspace():
             position += 1
         if position == len(statement):
             break
+        edge_id = re.match(rf"({_ID_PATTERN})@(?=[<o x.=-])", statement[position:])
+        if edge_id is not None:
+            position += edge_id.end()
         operator = _parse_flow_operator(statement, position)
         if operator is None:
             builder.error(line, DiagnosticCode.MALFORMED_FLOW_EDGE)
@@ -354,42 +523,46 @@ def _parse_flow_statement(builder: _Builder, statement: str, line: int) -> None:
         position = operator.position
         while position < len(statement) and statement[position].isspace():
             position += 1
-        target = _parse_node_ref(statement, position)
+        target = _flow_node_group(builder, statement, position, line)
         if target is None:
-            builder.error(line, DiagnosticCode.MISSING_EDGE_TARGET)
+            if not builder.has_fatal_error:
+                builder.error(line, DiagnosticCode.MISSING_EDGE_TARGET)
             return
-        target_id, target_label, target_shape, target_explicit, position = target
-        if builder.node(target_id, target_label, line, shape=target_shape, explicit=target_explicit) is None:
-            return
-        edge_source, edge_target = (target_id, node_id) if operator.reverse else (node_id, target_id)
-        builder.edge(
-            DiagramEdge(
-                edge_source,
-                edge_target,
-                operator.label,
-                operator.style,
-                operator.directed,
-                source_marker=operator.source_marker,
-                target_marker=operator.target_marker,
-                line=line,
-            )
-        )
-        node_id = target_id
-        found_edge = True
-    if not found_edge and not explicit:
-        builder.node(node_id, None, line, explicit=True)
+        targets, position = target
+        if edge_id is not None:
+            edge_ids.add(edge_id.group(1))
+        for source_id in sources:
+            for target_id in targets:
+                edge_source, edge_target = (target_id, source_id) if operator.reverse else (source_id, target_id)
+                builder.edge(
+                    DiagramEdge(
+                        edge_source,
+                        edge_target,
+                        operator.label,
+                        operator.style,
+                        operator.directed,
+                        source_marker=operator.source_marker,
+                        target_marker=operator.target_marker,
+                        line=line,
+                    )
+                )
+                if builder.has_fatal_error:
+                    return
+        sources = targets
 
 
 def _parse_flow(lines: list[tuple[int, str]], header_index: int, header: re.Match[str]) -> DiagramIR:
     direction = _diagram_direction(header.group(2) or "TB")
     builder = _Builder(DiagramKind.FLOWCHART, direction)
     subgraph_depth = 0
+    edge_ids: set[str] = set()
+    deferred_metadata: list[tuple[int, str]] = []
     for line, raw in lines[header_index + 1 :]:
         if raw.startswith("%%"):
             if raw.startswith("%%{"):
                 builder.warning(line, DiagnosticCode.UNSUPPORTED_DIRECTIVE)
             continue
-        for statement in _split_statements(raw):
+        for statement in _split_statements(raw, flow=True):
             keyword = statement.split(maxsplit=1)[0].casefold()
             if keyword == "subgraph":
                 subgraph_depth += 1
@@ -402,36 +575,34 @@ def _parse_flow(lines: list[tuple[int, str]], header_index: int, header: re.Matc
             if subgraph_depth and keyword == "direction":
                 builder.warning(line, DiagnosticCode.UNSUPPORTED_FLOW_STATEMENT)
                 continue
-            _parse_flow_statement(builder, statement, line)
+            if metadata := re.fullmatch(rf"({_ID_PATTERN})@\{{(.*)\}}", statement):
+                fields = _flow_metadata(metadata.group(2))
+                if fields is not None and not fields.keys() & {"label", "shape"}:
+                    deferred_metadata.append((line, statement))
+                    continue
+            _parse_flow_statement(builder, statement, line, edge_ids)
             if builder.has_fatal_error:
                 return builder.finish()
+    for line, statement in deferred_metadata:
+        _parse_flow_statement(builder, statement, line, edge_ids)
     return builder.finish()
 
 
 def _relation_edge(match: re.Match[str], line: int) -> DiagramEdge:
     left, left_mult, operator, right_mult, right, label = match.groups()
-    source = left
-    target = right
-    source_marker = ""
-    target_marker = ""
-    directed = operator not in {"--", "o--", "--o", "*--", "--*"}
+    source = left.strip("`")
+    target = right.strip("`")
+    link = ".." if ".." in operator else "--"
+    start, end = operator.split(link)
+    markers = {"": "", "<|": "△", "|>": "△", "<": "◀", ">": "▶", "*": "◆", "o": "◇"}
+    source_marker = markers[start]
+    target_marker = markers[end]
+    directed = start in {"<", "<|"} or end in {">", "|>"}
     style = EdgeStyle.DOTTED if "." in operator else EdgeStyle.SOLID
-    if operator in {"<|--", "<|..", "<..", "<--"}:
-        source, target = right, left
+    if start in {"<", "<|"} and not end:
+        source, target = target, source
         left_mult, right_mult = right_mult, left_mult
-        target_marker = "△" if operator in {"<|--", "<|.."} else "▶"
-    elif operator in {"--|>", "..|>"}:
-        target_marker = "△"
-    elif operator in {"..>", "-->", "--|>"}:
-        target_marker = "▶"
-    elif operator == "*--":
-        source_marker = "◆"
-    elif operator == "--*":
-        target_marker = "◆"
-    elif operator == "o--":
-        source_marker = "◇"
-    elif operator == "--o":
-        target_marker = "◇"
+        source_marker, target_marker = "", ("△" if start == "<|" else "▶")
     return DiagramEdge(
         source,
         target,
@@ -447,10 +618,12 @@ def _relation_edge(match: re.Match[str], line: int) -> DiagramEdge:
 
 
 def _class_declaration(raw: str) -> tuple[str, str | None, str | None, bool] | None:
-    declaration = re.fullmatch(rf"class\s+({_ID_PATTERN})(?:~([^~]+)~)?(.*)", raw)
+    """Return a declaration with a display-ready label and raw annotation."""
+    declaration = re.fullmatch(rf"class\s+({_CLASS_ID_PATTERN})(?:~([^~]+)~)?(.*)", raw)
     if declaration is None:
         return None
     node_id, generic, remainder = declaration.groups()
+    node_id = node_id.strip("`")
     remainder = remainder.strip()
     opens = remainder.endswith("{")
     if opens:
@@ -467,8 +640,10 @@ def _class_declaration(raw: str) -> tuple[str, str | None, str | None, bool] | N
             label = remainder[3:].strip()
         else:
             return None
+    if label is not None:
+        label = _clean_label(label)
     if generic:
-        label = f"{label or node_id}<{_clean_label(generic)}>"
+        label = f"{label or _clean_label(node_id, quote_chars='')}<{_clean_label(generic)}>"
     return node_id, label, annotation, opens
 
 
@@ -476,7 +651,15 @@ def _parse_class(lines: list[tuple[int, str]], header_index: int) -> DiagramIR:
     builder = _Builder(DiagramKind.CLASS, Direction.TOP_DOWN)
     active_class: str | None = None
     namespace_depth = 0
+    expanded: list[tuple[int, str]] = []
     for line, raw in lines[header_index + 1 :]:
+        if inline_body := re.fullmatch(r"(class\s+[^{}]+)\{([^{}]*)\}\s*", raw):
+            expanded.append((line, inline_body.group(1).rstrip() + " {"))
+            expanded.extend((line, member) for member in _split_statements(inline_body.group(2)))
+            expanded.append((line, "}"))
+        else:
+            expanded.append((line, raw))
+    for line, raw in expanded:
         if raw.startswith("%%"):
             continue
         if direction := re.fullmatch(r"direction\s+(TB|TD|BT|LR|RL)", raw, re.IGNORECASE):
@@ -507,8 +690,8 @@ def _parse_class(lines: list[tuple[int, str]], header_index: int) -> DiagramIR:
             else:
                 builder.add_member(active_class, raw, line)
             continue
-        if note := re.fullmatch(rf'note\s+for\s+({_ID_PATTERN})\s+"([^"]*)"', raw, re.IGNORECASE):
-            builder.add_note(note.group(1), note.group(2), line)
+        if note := re.fullmatch(rf'note\s+for\s+({_CLASS_ID_PATTERN})\s+"([^"]*)"', raw, re.IGNORECASE):
+            builder.add_note(note.group(1).strip("`"), note.group(2), line)
             continue
         if re.fullmatch(r'note\s+"[^"]*"', raw, re.IGNORECASE):
             builder.warning(line, DiagnosticCode.UNSUPPORTED_CLASS_STATEMENT)
@@ -521,17 +704,17 @@ def _parse_class(lines: list[tuple[int, str]], header_index: int) -> DiagramIR:
             continue
         if declaration := _class_declaration(raw):
             node_id, label, annotation, opens = declaration
-            builder.node(node_id, _clean_label(label) if label else None, line, explicit=True)
+            builder.node(node_id, label, line, explicit=True)
             if annotation:
                 builder.annotate(node_id, annotation, line)
             if opens:
                 active_class = node_id
             continue
-        if annotation := re.fullmatch(rf"<<([^<>]+)>>\s+({_ID_PATTERN})", raw):
-            builder.annotate(annotation.group(2), annotation.group(1), line)
+        if annotation := re.fullmatch(rf"<<([^<>]+)>>\s+({_CLASS_ID_PATTERN})", raw):
+            builder.annotate(annotation.group(2).strip("`"), annotation.group(1), line)
             continue
-        if member := re.fullmatch(rf"({_ID_PATTERN})\s*:\s*(.+)", raw):
-            builder.add_member(member.group(1), member.group(2).strip(), line)
+        if member := re.fullmatch(rf"({_CLASS_ID_PATTERN})\s*:\s*(.+)", raw):
+            builder.add_member(member.group(1).strip("`"), member.group(2).strip(), line)
             continue
         builder.error(line, DiagnosticCode.UNSUPPORTED_CLASS_STATEMENT)
     if active_class is not None:
@@ -617,7 +800,7 @@ def _parse_er_attribute(raw: str) -> str | None:
         rendered += f" [{','.join(keys)}]"
     if comment:
         rendered += f" — {comment}"
-    return _clean_label(rendered)
+    return rendered
 
 
 def _parse_er(lines: list[tuple[int, str]], header_index: int) -> DiagramIR:
@@ -805,7 +988,12 @@ def _parse_sequence(lines: list[tuple[int, str]], header_index: int) -> DiagramI
     autonumber = False
     message_number = Decimal(1)
     message_increment = Decimal(1)
-    for line, raw in lines[header_index + 1 :]:
+    statements = [
+        (line, statement)
+        for line, raw in lines[header_index + 1 :]
+        for statement in ([raw] if raw.startswith("%%") else _split_statements(raw, quote_chars='"', sequence=True))
+    ]
+    for line, raw in statements:
         if raw.startswith("%%"):
             continue
         if numbering := re.fullmatch(
@@ -872,8 +1060,9 @@ def _parse_sequence(lines: list[tuple[int, str]], header_index: int) -> DiagramI
                     source,
                     target,
                     clean_label,
-                    EdgeStyle.DOTTED if operator.startswith("--") else EdgeStyle.SOLID,
-                    True,
+                    EdgeStyle.DOTTED if "--" in operator else EdgeStyle.SOLID,
+                    operator.endswith((">>", ")")),
+                    source_marker="◀" if operator.startswith("<<") else "",
                     target_marker=marker,
                     line=line,
                 )

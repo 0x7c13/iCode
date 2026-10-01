@@ -109,8 +109,6 @@ Analyze the task list implementation and propose a plan for adding a "Clear comp
 
 Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards. After completing its analysis, the agent presents an implementation plan.
 
-Your messages and the agent's replies are shown with Markdown formatting. To copy a message exactly as it was written, click **copy** next to its header. Text you select with the mouse is copied as it is displayed.
-
 ### Use Code Agent
 
 Code Agent handles tasks that require **modifying files, running commands, and validating results**. It reads the relevant code first, then implements, debugs, or refactors it as requested.
@@ -124,6 +122,20 @@ Implement the "Clear completed tasks" feature using the plan we just discussed. 
 If an approval dialog appears, review the tool call before approving it. Pay particular attention to the command, target files, and scope of its effects, and approve only when they match your expectations. For the behavior of each approval mode, see [Configure approval modes](../guides/configuration/approval.md).
 
 When the task is complete, review the agent's final response and use `/diff` to browse the file changes recorded in the current session. Then use Git or another version control tool to inspect the complete working directory changes. Confirm that the feature works correctly, the necessary tests pass, and there are no unrelated changes. Once you have verified the changes, you can commit them.
+
+### Read and copy replies
+
+All agents' replies support Markdown, formulas and Mermaid diagrams. Formulas in your own messages are not rendered as math.
+
+Lists and quotes can contain headings, tables, code and formulas.
+
+Single-line math is written with `$...$` or `\(...\)`. Display formulas in `math` code blocks, `$$...$$` or `\[...\]` can show fractions, matrices and aligned equations. Ordinary text, prices and shell variables keep their Markdown formatting. Formulas that are unsupported or too wide are shown as complete, wrapped source.
+
+For example, `$x^{n+1}$` displays as xⁿ⁺¹ and `$90^\circ$` as 90°.
+
+Mermaid code blocks appear as diagrams; choose **Open full diagram** to view and scroll the full result. Some diagrams are simplified with a notice; unsupported diagrams stay as source.
+
+Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
 
 ## 5. End the session
 
