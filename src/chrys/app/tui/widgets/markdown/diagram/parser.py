@@ -34,6 +34,7 @@ from .parsers.graphs import (
     _parse_flow,
     _parse_sequence,
     _parse_state,
+    _split_statements,
 )
 from .parsers.planning import parse_journey, parse_kanban, parse_mindmap, parse_timeline
 from .parsers.schedule import parse_gantt, parse_git, parse_packet
@@ -70,7 +71,7 @@ def parse_mermaid(source: str) -> DiagramIR:
             (Diagnostic(1, DiagnosticCode.SOURCE_LIMIT, (("limit", MAX_SOURCE_BYTES),)),),
             True,
         )
-    lines = _source_lines(source)
+    lines = _source_lines(source, join_labels=True)
     if not lines:
         return DiagramIR(
             DiagramKind.UNKNOWN,
@@ -82,6 +83,19 @@ def parse_mermaid(source: str) -> DiagramIR:
         )
     header_index = next((index for index, (_, line) in enumerate(lines) if not line.startswith("%%")), 0)
     line_number, header_text = lines[header_index]
+    # A Mermaid statement separator is also valid immediately after its header.
+    # Split only graph families here; chart labels have their own grammars.
+    statements = _split_statements(header_text, flow=True, sequence=header_text.startswith("sequenceDiagram"))
+    if (
+        statements
+        and statements[0] != header_text
+        and (
+            re.fullmatch(r"(?:flowchart|graph)\s+(?:TB|TD|BT|LR|RL)", statements[0], re.IGNORECASE)
+            or statements[0] in {"classDiagram", "sequenceDiagram", "stateDiagram", "stateDiagram-v2", "erDiagram"}
+        )
+    ):
+        header_text = statements[0]
+        lines[header_index : header_index + 1] = [(line_number, item) for item in statements]
     if parser := _FAMILY_PARSERS.get(header_text.split()[0].rstrip(":").casefold()):
         # These bounded adapters do not interpret Mermaid configuration. Do not
         # silently ignore settings that change scheduling, bit widths or branches.

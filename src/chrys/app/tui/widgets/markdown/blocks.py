@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from textual.content import Content
 
 if TYPE_CHECKING:
     from chrys.app.tui.widgets.markdown.diagram.model import CompiledDiagram
+    from chrys.app.tui.widgets.markdown.math import CompiledMath
 
 type TableOfContentsType = list[tuple[int, str, str | None]]
 """Information about the table of contents of a markdown document.
@@ -22,6 +23,16 @@ BULLETS = ["\u2022 ", "\u25aa ", "\u2023 ", "\u2b51 ", "\u25e6 "]
 """Unicode bullets used for unordered lists."""
 
 NUMERALS = " \u2160\u2161\u2162\u2163\u2164\u2165\u2166"
+
+
+@dataclass(frozen=True)
+class MarkdownGutter:
+    """One ordered container in a block's left gutter, shared by wrapped rows."""
+
+    container_id: int
+    kind: Literal["list", "quote"]
+    width: int
+    prefix: str = ""
 
 
 @dataclass
@@ -60,6 +71,8 @@ class MarkdownBlock:
     """Character to render as a left border on every content line."""
     bq_depth: int = 0
     """Blockquote nesting depth (0 = not in blockquote)."""
+    gutter: tuple[MarkdownGutter, ...] = ()
+    """List and quote containers in source order; IDs distinguish adjacent quotes."""
     text_align: str = "left"
     """Text alignment: 'left', 'center', or 'right'."""
     code_language: str = ""
@@ -72,6 +85,8 @@ class MarkdownBlock:
     """Row contents for table blocks."""
     diagram: CompiledDiagram | None = None
     """Compiled terminal diagram payload for diagram blocks."""
+    math: CompiledMath | None = None
+    """Formula canvas; content retains its source for lossless narrow layouts."""
 
 
 class MarkdownFence:

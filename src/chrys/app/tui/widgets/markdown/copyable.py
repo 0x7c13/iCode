@@ -3,7 +3,7 @@
 """CopyableMarkdown — VirtualizedMarkdown with copy buttons on code fences.
 
 Each fence block gets a clickable "copy" button rendered in its bottom
-margin.  Clicking the button copies the raw code to the clipboard.
+padding. Clicking the button copies the raw code to the clipboard.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.segment import Segment, cell_len
+from rich.style import Style as RichStyle
 from textual.events import Click
 from textual.strip import Strip
 
@@ -84,13 +85,15 @@ class CopyableMarkdown(VirtualizedMarkdown):
         self._copy_button_lines: dict[int, int] = {}
         """Mapping from virtual line number (copy button line) to block index."""
 
-    def _layout_blocks(self, width: int | None = None) -> None:
-        # Ensure fence blocks have at least 2 lines of bottom margin
-        # so there is room for a blank separator + the copy button line.
-        for block in self._blocks:
-            if block.block_type == "fence" and block.bottom_margin < 2:
-                block.bottom_margin = 2
+    def _build_blocks(self, markdown: str) -> list[MarkdownBlock]:
+        blocks = super()._build_blocks(markdown)
+        for block in blocks:
+            if block.block_type == "fence":
+                # A footer belongs to the block, even when it ends the document.
+                block.padding_bottom += 1
+        return blocks
 
+    def _layout_blocks(self, width: int | None = None) -> None:
         super()._layout_blocks(width)
 
         # Build copy-button-line → block-index mapping.
@@ -98,32 +101,38 @@ class CopyableMarkdown(VirtualizedMarkdown):
         for idx, block in enumerate(self._blocks):
             if block.block_type == "fence":
                 info = self._block_line_info[idx]
-                # Place the copy button on the first bottom-margin line
-                # (right below the fence content; second line is spacing before next block).
-                copy_line = info.start_line + info.top_margin + info.content_height
+                copy_line = info.start_line + info.top_margin + info.content_height - 1
                 self._copy_button_lines[copy_line] = idx
 
     def _render_block_line(self, block: MarkdownBlock, info: _BlockLineInfo, line: int, width: int) -> Strip:
         if line in self._copy_button_lines:
-            return self._render_copy_button(width)
+            return self._render_copy_button(block, width)
         return super()._render_block_line(block, info, line, width)
 
-    def _render_copy_button(self, width: int) -> Strip:
+    def _copy_button_region(self, block: MarkdownBlock, width: int) -> tuple[int, int]:
+        """Use the same clipped button bounds for painting and hit testing."""
+        gutter_width = block.indent + len(block.border_left)
+        end = max(gutter_width, width - _COPY_BUTTON_RIGHT_MARGIN)
+        start = max(gutter_width, end - cell_len(self._copy_button_text))
+        return min(start, width), min(end, width)
+
+    def _render_copy_button(self, block: MarkdownBlock, width: int) -> Strip:
         copy_text = self._copy_button_text
         button_style = self._safe_component_style("markdown--copy-button").rich_style
-        base_rs = self.visual_style.rich_style
-
-        copy_cells = cell_len(copy_text)
-        left_pad = max(0, width - copy_cells - _COPY_BUTTON_RIGHT_MARGIN)
-        segments = [
-            Segment(" " * left_pad, base_rs),
-            Segment(copy_text, button_style),
-            Segment(" " * _COPY_BUTTON_RIGHT_MARGIN, base_rs),
-        ]
-        return Strip(segments, width)
+        style = self._get_bq_depth_style(block.bq_depth) if block.bq_depth else self.visual_style
+        start, end = self._copy_button_region(block, width)
+        gutter = Strip(self._render_block_gutter(block)).adjust_cell_length(start, style.rich_style)
+        button = Strip([Segment(copy_text, button_style + RichStyle(bgcolor=style.rich_style.bgcolor))]).crop(
+            0, end - start
+        )
+        strip = Strip([*gutter._segments, *button._segments]).adjust_cell_length(max(0, width - 1), style.rich_style)
+        return Strip([*strip._segments, Segment(" ", self.visual_style.rich_style)], width)
 
     def on_click(self, event: Click) -> None:
-        virtual_y = event.y + self.scroll_offset.y
+        offset = event.get_content_offset(self)
+        if offset is None:
+            return
+        virtual_y = offset.y + self.scroll_offset.y
 
         if virtual_y not in self._copy_button_lines:
             super().on_click(event)
@@ -133,17 +142,11 @@ class CopyableMarkdown(VirtualizedMarkdown):
         block = self._blocks[block_index]
 
         # Hit-test: is the click within the button text?
-        copy_text = self._copy_button_text
         width = self.scrollable_content_region.width
-        copy_cells = cell_len(copy_text)
 
-        padding_left = self.styles.padding.left
-        x_in_content = event.x - padding_left
+        button_start, button_end = self._copy_button_region(block, width)
 
-        button_start = width - copy_cells - _COPY_BUTTON_RIGHT_MARGIN
-        button_end = width - _COPY_BUTTON_RIGHT_MARGIN
-
-        if button_start <= x_in_content < button_end:
+        if button_start <= offset.x < button_end:
             code = block.content.plain
             copy_text_to_clipboards(self.app, code)
             self.notify(
