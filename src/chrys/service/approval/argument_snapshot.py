@@ -14,7 +14,7 @@ def argument_snapshot(value: object) -> object:
     """Freeze typed values without erasing types, aliasing mutable data or comparing NaNs."""
     try:
         return _freeze(value)
-    except ValueError, RecursionError:
+    except (ValueError, RecursionError):
         # Unknown host objects must not compare equal just because neither has
         # a JSON identity. Do not loop forever asking about an unverifiable call.
         raise ModelVisibleToolError("Tool arguments cannot be safely compared for approval.") from None
