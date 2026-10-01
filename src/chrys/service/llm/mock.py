@@ -38,15 +38,9 @@ from chrys.kernel import (
     in_internal_side_call,
     split_middleware,
 )
-from chrys.kernel.client import _prepare_provider_request_messages, _PreparedRequestObserverClient
+from chrys.kernel.client import _PreparedRequestObserverClient
 from chrys.kernel.types import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream, UsageDetails
-from chrys.service.llm.instrumented import (
-    _count_function_calls,
-    _ExchangeObserver,
-    _extract_intermediate_text,
-    resolve_exchange_trace,
-)
-from chrys.service.trajectory.revisions import record_context_revision
+from chrys.service.llm.observer import intermediate_text_signal, open_exchange
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
@@ -88,19 +82,19 @@ class MockResponse:
     usage_details: UsageDetails | None = None
 
 
-class _LoopInnerAdapter(_PreparedRequestObserverClient):
-    """Present the mock's wire surface as the tool loop's inner client.
+class _ModelCall(_PreparedRequestObserverClient):
+    """One model call through the mock's base-client path, beneath its tool loop.
 
-    ``MockChatClient.get_response`` routes through an internal
-    ``ToolLoopLayer → ChatMiddlewareLayer`` stack; this adapter closes the cycle
-    back to the mock's own wire method.
+    ``MockChatClient.get_response`` runs the tool loop; the loop's chat layer
+    reaches the model through this, so each call takes the path
+    ``BaseChatClient.get_response`` gives every wire client.
     """
 
     def __init__(self, mock: MockChatClient) -> None:
         self._mock = mock
 
     async def aclose(self) -> None:
-        """Nothing to release: the adapter closes the mock's own internal cycle."""
+        """Nothing to release: the mock owns no provider resources."""
 
     def get_response(
         self,
@@ -109,89 +103,25 @@ class _LoopInnerAdapter(_PreparedRequestObserverClient):
         stream: bool = False,
         options: Mapping[str, Any] | None = None,
         compaction_strategy: Any = None,
-        tokenizer: Any = None,
+        tokenizer: TokenizerProtocol | None = None,
+        client_kwargs: Mapping[str, Any] | None = None,
         request_message_observer: Callable[[Sequence[Message]], None] | None = None,
         **kwargs: Any,
     ) -> Any:
-        compaction_overrides = self._mock._resolve_compaction_overrides(
+        # Every other keyword (``function_invocation_kwargs`` and whatever chat
+        # middleware put in ``context.kwargs``) joins ``client_kwargs`` and
+        # overrides it, so it reaches the mock's wire method.
+        merged_client_kwargs = dict(client_kwargs or {})
+        merged_client_kwargs.update(kwargs)
+        return self._mock._call_model(
+            messages,
+            stream=stream,
+            options=options,
             compaction_strategy=compaction_strategy,
             tokenizer=tokenizer,
+            client_kwargs=merged_client_kwargs,
+            request_message_observer=request_message_observer,
         )
-        merged_client_kwargs = dict(kwargs.pop("client_kwargs", None) or {})
-        merged_client_kwargs.update(kwargs)
-        options_snapshot, sanitized_client_kwargs, kwargs_cap_ceiling = self._mock._normalize_wire_inputs(
-            options,
-            merged_client_kwargs,
-        )
-
-        if not compaction_overrides or not isinstance(options_snapshot, Mapping):
-            wire_messages = _prepare_provider_request_messages(messages, request_message_observer)
-            return self._mock._inner_get_response(
-                messages=wire_messages,
-                stream=stream,
-                options=options_snapshot,
-                **sanitized_client_kwargs,
-            )
-
-        # Same per-call context as BaseChatClient.get_response, so mock-stack
-        # Phase 4 exercises the cache-safe completer path (with the same
-        # store-mode gate) instead of silently diverging to the fallback.
-        call_context = self._mock._build_compaction_call_context(
-            stream=stream,
-            options=options_snapshot,
-            client_kwargs=sanitized_client_kwargs,
-            tokenizer=compaction_overrides.get("tokenizer"),
-            kwargs_cap_ceiling=kwargs_cap_ceiling,
-        )
-
-        if stream:
-
-            async def _get_stream() -> ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
-                prepared_messages, wire_options = await self._mock._prepare_wire_call(
-                    messages,
-                    call_context=call_context,
-                    options_snapshot=options_snapshot,
-                    sanitized_client_kwargs=sanitized_client_kwargs,
-                    compaction_overrides=compaction_overrides,
-                    request_message_observer=request_message_observer,
-                )
-                stream_response = self._mock._inner_get_response(
-                    messages=prepared_messages,
-                    stream=True,
-                    options=wire_options,
-                    **sanitized_client_kwargs,
-                )
-                if isinstance(stream_response, ResponseStream):
-                    # The response-model parameter is erased at runtime; every
-                    # streaming mock response uses this same ResponseStream class.
-                    return cast("ResponseStream[ChatResponseUpdate, ChatResponse[Any]]", stream_response)
-                awaited_stream_response = await stream_response
-                if isinstance(awaited_stream_response, ResponseStream):
-                    return awaited_stream_response
-                raise ValueError("Streaming responses must return a ResponseStream.")
-
-            return ResponseStream.from_awaitable(_get_stream())
-
-        async def _get_response() -> ChatResponse[Any]:
-            prepared_messages, wire_options = await self._mock._prepare_wire_call(
-                messages,
-                call_context=call_context,
-                options_snapshot=options_snapshot,
-                sanitized_client_kwargs=sanitized_client_kwargs,
-                compaction_overrides=compaction_overrides,
-                request_message_observer=request_message_observer,
-            )
-            return cast(
-                "ChatResponse[Any]",
-                await self._mock._inner_get_response(
-                    messages=prepared_messages,
-                    stream=False,
-                    options=wire_options,
-                    **sanitized_client_kwargs,
-                ),
-            )
-
-        return _get_response()
 
 
 class MockChatClient(BaseChatClient):
@@ -199,8 +129,13 @@ class MockChatClient(BaseChatClient):
 
     Drives the chrys-owned tool loop internally: ``get_response`` routes
     through ``ToolLoopLayer(ChatMiddlewareLayer(...))`` — the same stack shape
-    as real clients built by ``chrys.service.llm.instrumented`` — so agent tool loops
-    and chat middleware work automatically.
+    as the real clients ``chrys.service.llm.clients`` builds — so agent tool
+    loops and chat middleware work automatically.
+
+    It reports each request the way a real wire client does (see
+    ``chrys.service.llm.observer``), except that it records no response
+    timing and, without a stream, fires the intermediate-text callback before
+    the exchange's finish marker.
 
     When all scripted responses are exhausted, returns a default
     "No more scripted responses" message.
@@ -230,7 +165,7 @@ class MockChatClient(BaseChatClient):
         self._on_intermediate_text_sync = on_intermediate_text_sync
         split = split_middleware(list(middleware) if middleware else None)
         self._tool_loop = ToolLoopLayer(
-            ChatMiddlewareLayer(_LoopInnerAdapter(self), middleware=split.chat),
+            ChatMiddlewareLayer(_ModelCall(self), middleware=split.chat),
             middleware=split.function,
             tool_result_ceiling_tokens=tool_result_ceiling_tokens,
         )
@@ -293,6 +228,10 @@ class MockChatClient(BaseChatClient):
             result,
         )
 
+    def _call_model(self, messages: Sequence[Message], **kwargs: Any) -> Any:
+        """One model call, without the tool loop that ``get_response`` adds."""
+        return super().get_response(messages, **kwargs)
+
     @property
     def call_count(self) -> int:
         """Number of get_response calls made."""
@@ -302,30 +241,6 @@ class MockChatClient(BaseChatClient):
     def call_history(self) -> list[tuple[Sequence[Message], Mapping[str, Any]]]:
         """List of (messages, options) from each call, for test assertions."""
         return self._call_history
-
-    def _finalize_response_updates(
-        self,
-        updates: Sequence[ChatResponseUpdate],
-        *,
-        response_format: Any | None = None,
-    ) -> ChatResponse[Any]:
-        """Finalize response updates into a Chrys ``ChatResponse``."""
-        return ChatResponse.from_updates(
-            updates,
-            output_format_type=response_format,
-        )
-
-    def _build_response_stream(
-        self,
-        stream: AsyncIterable[ChatResponseUpdate] | Awaitable[AsyncIterable[ChatResponseUpdate]],
-        *,
-        response_format: Any | None = None,
-    ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
-        """Create a Chrys ``ResponseStream`` with the standard finalizer."""
-        return ResponseStream(
-            stream,
-            finalizer=lambda updates: self._finalize_response_updates(updates, response_format=response_format),
-        )
 
     def add_response(self, response: MockResponse) -> None:
         """Append a response to the queue."""
@@ -373,8 +288,8 @@ class MockChatClient(BaseChatClient):
         options: Mapping[str, Any],
         **kwargs: Any,
     ) -> Awaitable[ChatResponse[Any]] | ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
-        # Loop-to-client trajectory handle; mirror _IntermediateTextMixin so
-        # mock-driven sessions record the same exchange facts as real ones.
+        # Loop-to-client trajectory handle; dropped as a real wire client does,
+        # so mock-driven sessions record the same exchange facts as real ones.
         forwarded_trace = kwargs.pop(TRAJECTORY_EXCHANGE_KWARG, None)
         self._call_history.append((list(messages), dict(options)))
 
@@ -383,45 +298,35 @@ class MockChatClient(BaseChatClient):
         finish_reason = self._finish_reason(resp)
 
         # Internal side calls (e.g. the Phase-4 last-words completer) never
-        # join the conversation — mirror _IntermediateTextMixin and keep the
-        # intermediate-text callbacks silent for them.
+        # join the conversation, so the intermediate-text callbacks stay
+        # silent for them, as they do for a real wire client.
         suppress_intermediate = in_internal_side_call()
-        trace = resolve_exchange_trace(forwarded_trace, internal_side_call=suppress_intermediate)
-        # Mirrors _IntermediateTextMixin: a trace the resolver minted here
-        # belongs to this client, one the loop handed down does not.
-        owns_trace = trace is not None and trace is not forwarded_trace
-        observer = _ExchangeObserver(trace, owned=owns_trace) if trace is not None else None
-        if trace is not None and not suppress_intermediate:
-            # Mirrors _IntermediateTextMixin: the exact request this
-            # acquisition sends, as a revision of the actor's context chain,
-            # named before the start marker that carries it is written.
-            trace.set_context_revision(record_context_revision(trace.context, messages))
-        if observer is not None:
-            observer.started(options, stream=stream)
+        recorder = open_exchange(
+            messages,
+            options,
+            stream=stream,
+            forwarded_trace=forwarded_trace,
+            internal_side_call=suppress_intermediate,
+        )
 
         if stream:
             result = self._build_response_stream(self._stream_updates(resp, model_id, finish_reason))
-            if observer is not None:
-                observer.attach_stream(result)
-            # Attach result_hook for intermediate text (streaming path).
-            # Mirrors _IntermediateTextMixin._wrap_stream_intermediate.
+            if recorder is not None:
+                recorder.attach_stream(result)
             sync_cb = None if suppress_intermediate else self._on_intermediate_text_sync
             if sync_cb is not None:
 
                 def _on_finalized(response: ChatResponse) -> ChatResponse:
-                    text = _extract_intermediate_text(response)
-                    if text:
-                        sync_cb(text)
-                    elif _count_function_calls(response):
-                        sync_cb("")  # Batch boundary signal
+                    if (signal := intermediate_text_signal(response)) is not None:
+                        sync_cb(signal)
                     return response
 
                 result.with_result_hook(_on_finalized)
             return result
 
         async_cb = None if suppress_intermediate else self._on_intermediate_text_async
-        if observer is not None:
-            return observer.wrap_awaitable(self._mock_response(resp, model_id, finish_reason, async_cb))
+        if recorder is not None:
+            return recorder.wrap_awaitable(self._mock_response(resp, model_id, finish_reason, async_cb))
         return self._mock_response(resp, model_id, finish_reason, async_cb)
 
     async def _mock_response(
@@ -442,14 +347,9 @@ class MockChatClient(BaseChatClient):
         )
         if resp.usage_details is not None:
             response.usage_details = resp.usage_details.copy()
-        # Fire intermediate text callback (non-streaming path).
-        # Mirrors _IntermediateTextMixin._intercept.
-        if async_cb is not None:
-            text = _extract_intermediate_text(response)
-            if text:
-                await async_cb(text)
-            elif _count_function_calls(response):
-                await async_cb("")  # Batch boundary signal
+        # Fire the intermediate-text callback (non-streaming path).
+        if async_cb is not None and (signal := intermediate_text_signal(response)) is not None:
+            await async_cb(signal)
         return response
 
     async def _stream_updates(

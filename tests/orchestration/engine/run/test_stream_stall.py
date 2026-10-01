@@ -66,7 +66,7 @@ from chrys.service.agent_middleware.response_validation import (
     TerminalResponseValidationError,
     ValidationRetryExemption,
 )
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
+from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
 from chrys.service.llm.mock import MockResponse
 from tests.support.pipeline_helpers import create_test_engine
 
@@ -406,7 +406,7 @@ class TestStreamStallPerChunk:
                 return _stream()
 
         anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_DelayedMessages()))
-        client = RawAnthropicClient(model="kimi-k3", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+        client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
             middleware=[ResponseValidationMiddleware(max_retries=0)],
@@ -467,7 +467,7 @@ class TestStreamStallPerChunk:
                 return _stream()
 
         anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_DelayedMessages()))
-        client = RawAnthropicClient(model="kimi-k3", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+        client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
             middleware=[ResponseValidationMiddleware(max_retries=0)],

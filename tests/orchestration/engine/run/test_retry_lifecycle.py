@@ -33,7 +33,7 @@ from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.session.history import SessionHistoryManager
 from tests.support.components import make_current, make_turn_state
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
-from tests.support.reminder_goldens import manifest_entry
+from tests.support.reminder_inputs import manifest_entry
 from tests.support.reminder_stack import reminder_pair
 from tests.support.turn_services import make_turn_coordinator, make_turn_retry, make_turn_runner
 

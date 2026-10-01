@@ -28,10 +28,10 @@ contracts now pin the owned stack directly:
    the wire and (b) never leaking back into the loop's accumulated list.
 
 3. **ResponseStream laziness + hooks**: construction schedules nothing and
-   ``stream=True`` returns the stream synchronously — instrumented ``_inner_get_response`` must
+   ``stream=True`` returns the stream synchronously — the wire client's ``_inner_get_response`` must
    add hooks WITHOUT wrap-and-await or the pipeline would run eagerly.
    ``with_transform_hook`` observes every yielded update (usage.py:92),
-   ``with_result_hook`` fires exactly once on finalization (instrumented result hooks),
+   ``with_result_hook`` fires exactly once on finalization (wire-client result hooks),
    and ``_run_cleanup_hooks`` is a private idempotent coroutine so
    ``ResponseStream`` can safely clean up after partial consumption or a stall
    (responses.py:34-42).
@@ -148,7 +148,7 @@ class _ScriptedWireClient(BaseChatClient):
         if stream:
             # Per the BaseChatClient contract, stream=True must
             # return a ResponseStream SYNCHRONOUSLY, not a coroutine — the laziness
-            # chain that instrumented.py preserves by never wrap-and-awaiting.
+            # chain that the wire client preserves by never wrap-and-awaiting.
             updates = self._update_rounds.pop(0)
 
             async def _gen():
@@ -522,7 +522,7 @@ class TestResponseStreamContract:
 
         stream = client.get_response([Message(role="user", contents=["go"])], stream=True, options={})
 
-        # A ResponseStream, synchronously — NOT a coroutine. instrumented.py adds its
+        # A ResponseStream, synchronously — NOT a coroutine. The wire client adds its
         # result hook directly to this object; wrap-and-awaiting here would run the
         # middleware pipeline and open the wire call eagerly.
         assert isinstance(stream, ResponseStream)
@@ -569,7 +569,7 @@ class TestResponseStreamContract:
         seen_updates: list[int] = []
         seen_results: list[int] = []
         # Observer hooks return None → ResponseStream keeps the original value
-        # (the usage.py / loop-recorder / instrumented pattern).
+        # (the usage.py / loop-recorder / wire-client pattern).
         stream.with_transform_hook(seen_updates.append)  # type: ignore[arg-type]
         stream.with_result_hook(seen_results.append)  # type: ignore[arg-type]
 

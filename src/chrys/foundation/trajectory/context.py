@@ -3,7 +3,7 @@
 """Ambient trajectory context: who is recording, for which turn, under which operation.
 
 The engine binds a :class:`TrajectoryContext` for the duration of a model run;
-the kernel loop, the instrumented LLM client, tool middleware and side calls
+the kernel loop, the LLM wire client, tool middleware and side calls
 read it back through :func:`current_trajectory` and narrow it (cycle, actor)
 with :func:`bind_trajectory`. Propagation rides on :mod:`contextvars`, so a
 task spawned for a parallel tool call or an in-process sub-agent inherits the

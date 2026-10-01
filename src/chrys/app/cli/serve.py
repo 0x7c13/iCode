@@ -1,4 +1,6 @@
+# Copyright (c) 2024 Textualize
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from textual-serve (MIT License; see NOTICE).
 
 """Browser-hosted ``chrys serve`` command."""
 

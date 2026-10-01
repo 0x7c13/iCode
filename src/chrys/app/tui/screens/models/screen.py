@@ -43,7 +43,7 @@ from chrys.foundation.util.header_charset import (
     model_id_charset_error,
 )
 from chrys.service.context.compaction.budgets import MIN_DERIVABLE_CONTEXT_TOKENS
-from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
+from chrys.service.llm.providers import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS, PROVIDERS
 from chrys.service.profiles.models.options import (
     OUTPUT_CAP_OPTION_ALIASES,
     PROTECTED_EXTRA_BODY_CHAT_OPTION_KEYS,
@@ -387,19 +387,14 @@ _PROVIDER_LABELS: dict[str, str] = {
     "glm-openai": "GLM (OpenAI)",
 }
 
-_PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
-    "openai": "https://api.openai.com/v1",
-    "anthropic": "https://api.anthropic.com",
-    "deepseek-openai": "https://api.deepseek.com",
-    "glm-openai": "https://open.bigmodel.cn/api/paas/v4",
-}
+_PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {name: spec.default_base_url for name, spec in PROVIDERS.items()}
 
 
 def _token_limit_param_name(provider: str, api_style: str) -> str:
     """Wire parameter that carries the Max Output Tokens value for this selection.
 
-    Chat-completions values come from the table the client classes take their
-    ``TOKEN_LIMIT_PARAM`` from, so the label names what the client sends without
+    Chat-completions values come from the table the client variants take their
+    ``max_output_param`` from, so the label names what the client sends without
     importing the SDK-backed client modules while the form renders.
     """
     if provider == "anthropic":

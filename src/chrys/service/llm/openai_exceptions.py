@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """OpenAI wire exceptions owned by Chrys."""
 
@@ -50,7 +52,7 @@ class ContentFilterCodes(Enum):
 
 @dataclass
 class OpenAIContentFilterException(ChatClientContentFilterException):
-    """Exception for OpenAI/Azure OpenAI content-filter errors."""
+    """Exception for OpenAI-compatible content-filter errors."""
 
     param: str | None
     content_filter_code: ContentFilterCodes

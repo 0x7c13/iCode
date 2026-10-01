@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from chrys.foundation.hosted_tools import OPENAI_HOSTED_WIRE_ITEM_KEY
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.compaction import (
     GROUP_ANNOTATION_KEY,
@@ -18,19 +19,12 @@ from chrys.kernel.compaction import (
     GROUP_INDEX_KEY,
     GROUP_KIND_KEY,
 )
-from chrys.service.llm.openai_responses import (
-    OPENAI_HOSTED_REPLAY_SHADOW_KEY,
-    OPENAI_HOSTED_WIRE_ITEM_KEY,
-    RawOpenAIChatClient,
-)
-
-
-class _FakeAsyncOpenAI:
-    base_url = "https://api.openai.test"
-
-
-def _client() -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=_FakeAsyncOpenAI())
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.decode import decode_response
+from chrys.service.llm.openai_responses.history import answer_apply_patch_calls
+from chrys.service.llm.openai_responses.hosted import OPENAI_HOSTED_REPLAY_SHADOW_KEY
+from chrys.service.llm.openai_responses.replay import encode_input
+from chrys.service.llm.openai_responses.stream import StreamState
 
 
 def _response(output: list[SimpleNamespace]) -> SimpleNamespace:
@@ -71,102 +65,69 @@ def _start_snapshot(item: SimpleNamespace) -> SimpleNamespace:
 
 
 def _stream_parse(
-    client: RawOpenAIChatClient,
     items: list[SimpleNamespace],
     *,
     options: dict[str, Any] | None = None,
 ) -> ChatResponse:
     updates = []
-    function_call_ids: dict[int, tuple[str, str]] = {}
-    calls: dict[int, Content] = {}
-    results: dict[int, Content] = {}
+    state = StreamState(options or {}, model="gpt-test", variant=OPENAI_RESPONSES)
     for output_index, item in enumerate(items):
         added = SimpleNamespace(
             type="response.output_item.added",
             item=_start_snapshot(item),
             output_index=output_index,
         )
-        updates.append(
-            client._parse_chunk_from_openai(
-                added,
-                options or {},
-                function_call_ids,
-                hosted_call_contents=calls,
-                hosted_result_contents=results,
-            )
-        )
+        updates.append(state.update_for(added))
         if item.type == "web_search_call":
             for status in ("searching", "completed"):
                 updates.append(
-                    client._parse_chunk_from_openai(
+                    state.update_for(
                         SimpleNamespace(
                             type=f"response.web_search_call.{status}",
                             output_index=output_index,
-                        ),
-                        options or {},
-                        function_call_ids,
-                        hosted_call_contents=calls,
-                        hosted_result_contents=results,
+                        )
                     )
                 )
         elif item.type == "code_interpreter_call" and item.code:
             midpoint = max(1, len(item.code) // 2)
             for sequence_number, delta in enumerate((item.code[:midpoint], item.code[midpoint:])):
                 updates.append(
-                    client._parse_chunk_from_openai(
+                    state.update_for(
                         SimpleNamespace(
                             type="response.code_interpreter_call_code.delta",
                             item_id=item.id,
                             output_index=output_index,
                             sequence_number=sequence_number,
                             delta=delta,
-                        ),
-                        options or {},
-                        function_call_ids,
-                        hosted_call_contents=calls,
-                        hosted_result_contents=results,
+                        )
                     )
                 )
             updates.append(
-                client._parse_chunk_from_openai(
+                state.update_for(
                     SimpleNamespace(
                         type="response.code_interpreter_call_code.done",
                         item_id=item.id,
                         output_index=output_index,
                         sequence_number=2,
                         code=item.code,
-                    ),
-                    options or {},
-                    function_call_ids,
-                    hosted_call_contents=calls,
-                    hosted_result_contents=results,
+                    )
                 )
             )
         elif item.type == "image_generation_call" and item.result:
             for partial_index, partial in enumerate(("aW1nLTE=", "aW1nLTI=")):
                 updates.append(
-                    client._parse_chunk_from_openai(
+                    state.update_for(
                         SimpleNamespace(
                             type="response.image_generation_call.partial_image",
                             item_id=item.id,
                             output_index=output_index,
                             partial_image_index=partial_index,
                             partial_image_b64=partial,
-                        ),
-                        options or {},
-                        function_call_ids,
-                        hosted_call_contents=calls,
-                        hosted_result_contents=results,
+                        )
                     )
                 )
         updates.append(
-            client._parse_chunk_from_openai(
-                SimpleNamespace(type="response.output_item.done", item=item, output_index=output_index),
-                options or {},
-                function_call_ids,
-                hosted_call_contents=calls,
-                hosted_result_contents=results,
-            )
+            state.update_for(SimpleNamespace(type="response.output_item.done", item=item, output_index=output_index))
         )
     return ChatResponse.from_updates(updates)
 
@@ -176,9 +137,8 @@ def _contents(response: ChatResponse) -> list[dict[str, Any]]:
 
 
 def _assert_blocking_streaming_parity(items: list[SimpleNamespace]) -> ChatResponse:
-    client = _client()
-    blocking = client._parse_response_from_openai(_response(items), {"store": False})
-    streaming = _stream_parse(client, items)
+    blocking = decode_response(_response(items), {"store": False}, variant=OPENAI_RESPONSES)
+    streaming = _stream_parse(items)
     assert _contents(streaming) == _contents(blocking)
     return blocking
 
@@ -229,7 +189,7 @@ def test_hosted_item_phase_tracks_provider_status(status: str | None, expected_p
     if status is not None:
         item.status = status
 
-    parsed = _client()._parse_response_from_openai(_response([item]), {"store": False})
+    parsed = decode_response(_response([item]), {"store": False}, variant=OPENAI_RESPONSES)
     call, result = parsed.messages[0].contents
 
     assert call.provider_phase == expected_phase
@@ -246,10 +206,7 @@ def test_file_search_normalizes_results_and_round_trips() -> None:
     )
 
     parsed = _assert_blocking_streaming_parity([item])
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert replayed == [
         {
@@ -305,12 +262,9 @@ def test_mcp_replay_consumes_reused_id_by_occurrence() -> None:
         )
         for query, output in (("first", "first result"), ("second", "second result"))
     ]
-    parsed = _client()._parse_response_from_openai(_response(items), {"store": False})
+    parsed = decode_response(_response(items), {"store": False}, variant=OPENAI_RESPONSES)
 
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert [item["output"] for item in replayed] == ["first result", "second result"]
 
@@ -321,13 +275,14 @@ def test_mcp_sibling_calls_share_exchange_result_scope() -> None:
     result1 = Content.from_mcp_server_tool_result("mcp_1", output=[Content.from_text("first result")])
     result2 = Content.from_mcp_server_tool_result("mcp_2", output=[Content.from_text("second result")])
 
-    replayed = _client()._prepare_messages_for_openai(
+    replayed = encode_input(
         [
             Message("assistant", [call1]),
             Message("assistant", [call2]),
             Message("tool", [result1, result2]),
         ],
-        request_uses_service_side_storage=False,
+        service_side=False,
+        variant=OPENAI_RESPONSES,
     )
 
     assert [item["output"] for item in replayed] == ["first result", "second result"]
@@ -376,10 +331,7 @@ def test_image_partial_snapshots_fold_to_one_final_pair() -> None:
     persisted = json.dumps([call.to_dict(), result.to_dict()])
     assert persisted.count("aW1nLWZpbmFs") == 1
 
-    replayed = _client()._prepare_messages_for_openai(
-        [Message("assistant", [call, result])],
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input([Message("assistant", [call, result])], service_side=False, variant=OPENAI_RESPONSES)
     assert replayed[0]["type"] == "message"
     assert "Status: completed" in replayed[0]["content"][0]["text"]
     assert "Images: 1" in replayed[0]["content"][0]["text"]
@@ -402,10 +354,7 @@ def test_image_result_terminalizes_stale_generating_status() -> None:
 
     parsed = _assert_blocking_streaming_parity([item])
     call, result = parsed.messages[0].contents
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert call.provider_status == result.provider_status == "generating"
     assert call.provider_phase == result.provider_phase == "terminal"
@@ -425,12 +374,9 @@ def test_image_replay_consumes_reused_id_by_occurrence() -> None:
         )
         for result in ("aW1nLWZpcnN0", "aW1nLXNlY29uZA==")
     ]
-    parsed = _client()._parse_response_from_openai(_response(items), {"store": False})
+    parsed = decode_response(_response(items), {"store": False}, variant=OPENAI_RESPONSES)
 
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert [item["type"] for item in replayed] == ["message", "message"]
     assert all("Images: 1" in item["content"][0]["text"] for item in replayed)
@@ -448,16 +394,17 @@ def test_image_sibling_calls_share_exchange_result_scope() -> None:
         )
         for image_id, result in (("img_1", "aW1nLWZpcnN0"), ("img_2", "aW1nLXNlY29uZA=="))
     ]
-    parsed = _client()._parse_response_from_openai(_response(items), {"store": False})
+    parsed = decode_response(_response(items), {"store": False}, variant=OPENAI_RESPONSES)
     call1, result1, call2, result2 = parsed.messages[0].contents
 
-    replayed = _client()._prepare_messages_for_openai(
+    replayed = encode_input(
         [
             Message("assistant", [call1]),
             Message("assistant", [call2]),
             Message("tool", [result1, result2]),
         ],
-        request_uses_service_side_storage=False,
+        service_side=False,
+        variant=OPENAI_RESPONSES,
     )
 
     assert [item["type"] for item in replayed] == ["message", "message"]
@@ -473,7 +420,7 @@ def test_result_only_image_with_conflicting_annotation_replays_payload() -> None
         result="aW1nLWdyb3VwZWQ=",
         status="completed",
     )
-    parsed = _client()._parse_response_from_openai(_response([item]), {"store": False})
+    parsed = decode_response(_response([item]), {"store": False}, variant=OPENAI_RESPONSES)
     call, result = parsed.messages[0].contents
 
     def _annotated(message: Message, group_id: str) -> Message:
@@ -488,10 +435,7 @@ def test_result_only_image_with_conflicting_annotation_replays_payload() -> None
     call_message = _annotated(Message("assistant", [call]), "call_group")
     result_message = _annotated(Message("assistant", [result]), "result_group")
 
-    replayed = _client()._prepare_messages_for_openai(
-        [call_message, result_message],
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input([call_message, result_message], service_side=False, variant=OPENAI_RESPONSES)
 
     assert len(replayed) == 1
     assert replayed[0]["type"] == "message"
@@ -501,23 +445,17 @@ def test_result_only_image_with_conflicting_annotation_replays_payload() -> None
 
 
 def test_image_partial_snapshots_terminalize_when_done_has_no_result() -> None:
-    client = _client()
-    calls: dict[int, Content] = {}
-    results: dict[int, Content] = {}
+    state = StreamState({}, model="gpt-test", variant=OPENAI_RESPONSES)
     partials = ["aW1nLTE=", "aW1nLTI="]
     updates = [
-        client._parse_chunk_from_openai(
+        state.update_for(
             SimpleNamespace(
                 type="response.image_generation_call.partial_image",
                 item_id="img_failed",
                 output_index=0,
                 partial_image_index=partial_index,
                 partial_image_b64=partial,
-            ),
-            {},
-            {},
-            hosted_call_contents=calls,
-            hosted_result_contents=results,
+            )
         )
         for partial_index, partial in enumerate(partials)
     ]
@@ -527,22 +465,11 @@ def test_image_partial_snapshots_terminalize_when_done_has_no_result() -> None:
         result=None,
         status="failed",
     )
-    updates.append(
-        client._parse_chunk_from_openai(
-            SimpleNamespace(type="response.output_item.done", item=done_item, output_index=0),
-            {},
-            {},
-            hosted_call_contents=calls,
-            hosted_result_contents=results,
-        )
-    )
+    updates.append(state.update_for(SimpleNamespace(type="response.output_item.done", item=done_item, output_index=0)))
 
     parsed = ChatResponse.from_updates(updates)
     call, result = parsed.messages[0].contents
-    replayed = client._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert (call.type, result.type) == ("image_generation_tool_call", "image_generation_tool_result")
     assert call.provider_phase == result.provider_phase == "terminal"
@@ -616,10 +543,7 @@ def test_tool_search_terminal_call_and_output_normalize_and_round_trip() -> None
 
     call_only = _assert_blocking_streaming_parity([call])
     parsed = _assert_blocking_streaming_parity([call, output])
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert [content.type for content in call_only.messages[0].contents] == ["hosted_tool_call"]
     assert [content.type for content in parsed.messages[0].contents] == ["hosted_tool_call", "hosted_tool_result"]
@@ -647,10 +571,7 @@ def test_apply_patch_call_preserves_informational_call_and_completes_replay() ->
     assert content.call_id == "call_patch_1"
     assert content.arguments == {"type": "create_file", "path": "hello.txt", "diff": "+hi there\n"}
 
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert [item["type"] for item in replayed] == ["apply_patch_call", "apply_patch_call_output"]
     assert replayed[0]["call_id"] == "call_patch_1"
@@ -668,7 +589,7 @@ def test_complete_unanswered_apply_patch_calls_skips_answered_calls() -> None:
         {"type": "message", "role": "assistant", "content": "done"},
     ]
 
-    completed = RawOpenAIChatClient._complete_unanswered_apply_patch_calls(items)
+    completed = answer_apply_patch_calls(items)
 
     assert [item.get("type") for item in completed] == [
         "apply_patch_call",
@@ -688,7 +609,6 @@ def test_complete_unanswered_apply_patch_calls_skips_answered_calls() -> None:
 
 @pytest.mark.parametrize("answered_exchange", [None, 0, 1])
 def test_apply_patch_completion_is_scoped_to_each_exchange(answered_exchange: int | None) -> None:
-    client = _client()
     messages: list[Message] = []
     for index in range(2):
         call = SimpleNamespace(
@@ -699,7 +619,7 @@ def test_apply_patch_completion_is_scoped_to_each_exchange(answered_exchange: in
             operation=SimpleNamespace(type="create_file", path=f"file{index}.txt", diff="+content\n"),
         )
         messages.append(Message(role="user", contents=[Content.from_text(f"request {index}")]))
-        messages.extend(client._parse_response_from_openai(_response([call]), {"store": False}).messages)
+        messages.extend(decode_response(_response([call]), {"store": False}, variant=OPENAI_RESPONSES).messages)
         if index == answered_exchange:
             result = Content.from_function_result(
                 "reused",
@@ -715,7 +635,7 @@ def test_apply_patch_completion_is_scoped_to_each_exchange(answered_exchange: in
             )
             result.hosted_provider = "openai"
             messages.append(Message(role="tool", contents=[result]))
-    replay = client._prepare_messages_for_openai(messages, request_uses_service_side_storage=False)
+    replay = encode_input(messages, service_side=False, variant=OPENAI_RESPONSES)
     assert [item["type"] for item in replay if item.get("type", "").startswith("apply_patch")] == [
         "apply_patch_call",
         "apply_patch_call_output",
@@ -751,7 +671,6 @@ def test_unknown_server_item_uses_fail_closed_generic_pair() -> None:
 
 
 def test_custom_computer_and_local_shell_are_not_misclassified() -> None:
-    client = _client()
     custom = SimpleNamespace(
         type="custom_tool_call",
         id="ctc_1",
@@ -768,18 +687,14 @@ def test_custom_computer_and_local_shell_are_not_misclassified() -> None:
         status="completed",
     )
 
-    parsed = client._parse_response_from_openai(_response([custom, computer]), {"store": False})
-    streamed = _stream_parse(client, [custom, computer])
+    parsed = decode_response(_response([custom, computer]), {"store": False}, variant=OPENAI_RESPONSES)
+    streamed = _stream_parse([custom, computer])
 
     assert len(parsed.messages[0].contents) == 1
     assert _contents(streamed) == _contents(parsed)
     assert parsed.messages[0].contents[0].type == "function_call"
     assert parsed.messages[0].contents[0].informational_only is True
 
-    async def run_shell(command: str) -> str:
-        return command
-
-    shell_tool = RawOpenAIChatClient.get_shell_tool(func=run_shell, name="bash")
     local_shell = SimpleNamespace(
         type="local_shell_call",
         id="lsc_1",
@@ -787,15 +702,12 @@ def test_custom_computer_and_local_shell_are_not_misclassified() -> None:
         action=SimpleNamespace(command=["echo", "hi"], timeout_ms=1000),
         status="completed",
     )
-    blocking = client._parse_response_from_openai(
-        _response([local_shell]),
-        {"store": False, "tools": [shell_tool]},
-    )
-    streaming = _stream_parse(client, [local_shell], options={"tools": [shell_tool]})
+    blocking = decode_response(_response([local_shell]), {"store": False}, variant=OPENAI_RESPONSES)
+    streaming = _stream_parse([local_shell])
 
     assert _contents(streaming) == _contents(blocking)
-    assert blocking.messages[0].contents[0].type == "function_call"
-    assert blocking.messages[0].contents[0].provider_hosted is False
+    assert blocking.messages[0].contents[0].type == "shell_tool_call"
+    assert blocking.messages[0].contents[0].provider_hosted is True
 
 
 def test_openai_specialized_hosted_items_same_provider_round_trip() -> None:
@@ -854,12 +766,9 @@ def test_openai_specialized_hosted_items_same_provider_round_trip() -> None:
             created_by=None,
         ),
     ]
-    parsed = _client()._parse_response_from_openai(_response(items), {"store": False})
+    parsed = decode_response(_response(items), {"store": False}, variant=OPENAI_RESPONSES)
 
-    replayed = _client()._prepare_messages_for_openai(
-        parsed.messages,
-        request_uses_service_side_storage=False,
-    )
+    replayed = encode_input(parsed.messages, service_side=False, variant=OPENAI_RESPONSES)
 
     assert [item["type"] for item in replayed] == [
         "web_search_call",
@@ -888,7 +797,7 @@ def test_unrecognized_non_execution_items_are_skipped_with_counter_friendly_log(
     ]
 
     with caplog.at_level("DEBUG", logger="chrys.service.llm.openai_responses"):
-        parsed = _client()._parse_response_from_openai(_response(items), {"store": False})
+        parsed = decode_response(_response(items), {"store": False}, variant=OPENAI_RESPONSES)
 
     assert parsed.messages[0].contents == []
     assert caplog.text.count("responses_parser_unrecognized_server_item") == 2
@@ -906,11 +815,10 @@ def test_openai_generic_same_provider_round_trip_replays_one_wire_item() -> None
         output={"text": "done"},
         status="completed",
     )
-    parsed = _client()._parse_response_from_openai(_response([item]), {"store": False})
+    parsed = decode_response(_response([item]), {"store": False}, variant=OPENAI_RESPONSES)
 
-    replayed = _client()._prepare_messages_for_openai(
-        [Message("assistant", parsed.messages[0].contents)],
-        request_uses_service_side_storage=False,
+    replayed = encode_input(
+        [Message("assistant", parsed.messages[0].contents)], service_side=False, variant=OPENAI_RESPONSES
     )
 
     assert replayed == [vars(item)]
@@ -959,9 +867,8 @@ def test_openai_cross_provider_hosted_history_degrades_to_assistant_context(
         )
 
     with caplog.at_level("DEBUG", logger="chrys.service.agent_middleware.events.hosted_tools"):
-        replayed = _client()._prepare_messages_for_openai(
-            [Message("assistant", [call]), Message("assistant", [result])],
-            request_uses_service_side_storage=False,
+        replayed = encode_input(
+            [Message("assistant", [call]), Message("assistant", [result])], service_side=False, variant=OPENAI_RESPONSES
         )
 
     assert len(replayed) == 1

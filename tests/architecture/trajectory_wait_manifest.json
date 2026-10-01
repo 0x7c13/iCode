@@ -1,5 +1,5 @@
 {
-  "inventory_sha256": "1ce584421bfa4e0290eea7912fd776491f37800616ea3c5717c2d798dc63e195",
+  "inventory_sha256": "d8c977da1b76d7b544a2207a61fbd06b47538cd72933428aa7907a4f9c56a49e",
   "nodes": [
     {
       "cases": [
@@ -2378,7 +2378,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient._prepare_wire_call",
       "source_column": 19,
-      "source_line": 907,
+      "source_line": 908,
       "wrapper_target": "chrys.kernel.client.BaseChatClient._prepare_messages_for_model_call"
     },
     {
@@ -2418,7 +2418,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient.get_response._get_response",
       "source_column": 46,
-      "source_line": 1035,
+      "source_line": 1036,
       "wrapper_target": "chrys.kernel.client.BaseChatClient._prepare_wire_call"
     },
     {
@@ -2438,7 +2438,7 @@
       "primitive": "awaitable",
       "qualname": "BaseChatClient.get_response._get_response",
       "source_column": 19,
-      "source_line": 1052,
+      "source_line": 1053,
       "wrapper_target": null
     },
     {
@@ -2458,7 +2458,7 @@
       "primitive": "wrapper",
       "qualname": "BaseChatClient.get_response._get_stream",
       "source_column": 50,
-      "source_line": 1011,
+      "source_line": 1012,
       "wrapper_target": "chrys.kernel.client.BaseChatClient._prepare_wire_call"
     },
     {
@@ -2478,7 +2478,7 @@
       "primitive": "awaitable",
       "qualname": "BaseChatClient.get_response._get_stream",
       "source_column": 42,
-      "source_line": 1027,
+      "source_line": 1028,
       "wrapper_target": null
     },
     {
@@ -20698,7 +20698,7 @@
       "primitive": "awaitable",
       "qualname": "SessionHookFactory.__call__",
       "source_column": 12,
-      "source_line": 58,
+      "source_line": 64,
       "wrapper_target": null
     },
     {
@@ -20718,7 +20718,27 @@
       "primitive": "awaitable",
       "qualname": "SessionHookFactory.__call__",
       "source_column": 12,
-      "source_line": 74,
+      "source_line": 80,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._bus.publish(Warning(code='hook_skipped', message=f\"Hook '{skipped.id}' in {loaded.source} was skipped: {skipped.reason}. The other hooks in this file still run.\", display_message=_CONSTRUCTION_HOOK_SKIPPED.bind(hook_id=skipped.id, path=DisplayPath(loaded.source), detail=DisplayBlock(skipped.reason)), session_id=session_id, request_id=request_id))",
+      "identity": "chrys.orchestration.session_hooks:SessionHookFactory.__call__:3",
+      "module": "chrys.orchestration.session_hooks",
+      "ordinal": 3,
+      "primitive": "awaitable",
+      "qualname": "SessionHookFactory.__call__",
+      "source_column": 16,
+      "source_line": 98,
       "wrapper_target": null
     },
     {
@@ -37759,7 +37779,7 @@
       "qualname": "ApprovalJudge.evaluate",
       "source_column": 23,
       "source_line": 510,
-      "wrapper_target": "chrys.service.llm.responses.get_final_response"
+      "wrapper_target": "chrys.service.llm.one_shot.get_final_response"
     },
     {
       "cases": [
@@ -38158,7 +38178,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate",
       "source_column": 29,
-      "source_line": 946,
+      "source_line": 947,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_completer"
     },
     {
@@ -38178,7 +38198,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate",
       "source_column": 15,
-      "source_line": 961,
+      "source_line": 962,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_via_fallback"
     },
     {
@@ -38198,7 +38218,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_once",
       "source_column": 17,
-      "source_line": 1604,
+      "source_line": 1605,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._get_client"
     },
     {
@@ -38218,8 +38238,8 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_once",
       "source_column": 23,
-      "source_line": 1610,
-      "wrapper_target": "chrys.service.llm.responses.get_final_response"
+      "source_line": 1611,
+      "wrapper_target": "chrys.service.llm.one_shot.get_final_response"
     },
     {
       "cases": [
@@ -38238,7 +38258,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1365,
+      "source_line": 1366,
       "wrapper_target": null
     },
     {
@@ -38258,7 +38278,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 16,
-      "source_line": 1412,
+      "source_line": 1413,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38278,7 +38298,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 16,
-      "source_line": 1418,
+      "source_line": 1419,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38298,7 +38318,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1480,
+      "source_line": 1481,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38318,7 +38338,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 20,
-      "source_line": 1486,
+      "source_line": 1487,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38338,7 +38358,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 12,
-      "source_line": 1521,
+      "source_line": 1522,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38358,7 +38378,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_completer",
       "source_column": 12,
-      "source_line": 1522,
+      "source_line": 1523,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38378,7 +38398,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 30,
-      "source_line": 1078,
+      "source_line": 1079,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate_once"
     },
     {
@@ -38398,7 +38418,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 16,
-      "source_line": 1128,
+      "source_line": 1129,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38418,7 +38438,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 16,
-      "source_line": 1135,
+      "source_line": 1136,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38438,7 +38458,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 20,
-      "source_line": 1188,
+      "source_line": 1189,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38458,7 +38478,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 20,
-      "source_line": 1195,
+      "source_line": 1196,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38478,7 +38498,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 12,
-      "source_line": 1275,
+      "source_line": 1276,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_retry_attempt"
     },
     {
@@ -38498,7 +38518,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._generate_via_fallback",
       "source_column": 12,
-      "source_line": 1282,
+      "source_line": 1283,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._sleep_for_retry"
     },
     {
@@ -38518,7 +38538,7 @@
       "primitive": "sync_primitive",
       "qualname": "LastWordsGenerator._get_client",
       "source_column": 19,
-      "source_line": 653,
+      "source_line": 654,
       "wrapper_target": null
     },
     {
@@ -38538,7 +38558,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator._get_client",
       "source_column": 31,
-      "source_line": 659,
+      "source_line": 660,
       "wrapper_target": "chrys.service.llm.clients.create_client"
     },
     {
@@ -38558,7 +38578,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._publish_retry_attempt",
       "source_column": 12,
-      "source_line": 1554,
+      "source_line": 1555,
       "wrapper_target": null
     },
     {
@@ -38578,7 +38598,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._publish_status_cancellable",
       "source_column": 12,
-      "source_line": 873,
+      "source_line": 874,
       "wrapper_target": null
     },
     {
@@ -38598,7 +38618,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 12,
-      "source_line": 1571,
+      "source_line": 1572,
       "wrapper_target": null
     },
     {
@@ -38618,7 +38638,7 @@
       "primitive": "sleep",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 8,
-      "source_line": 1572,
+      "source_line": 1573,
       "wrapper_target": null
     },
     {
@@ -38638,7 +38658,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator._sleep_for_retry",
       "source_column": 12,
-      "source_line": 1574,
+      "source_line": 1575,
       "wrapper_target": null
     },
     {
@@ -38658,7 +38678,7 @@
       "primitive": "sync_primitive",
       "qualname": "LastWordsGenerator.aclose",
       "source_column": 19,
-      "source_line": 670,
+      "source_line": 671,
       "wrapper_target": null
     },
     {
@@ -38678,7 +38698,7 @@
       "primitive": "awaitable",
       "qualname": "LastWordsGenerator.aclose",
       "source_column": 12,
-      "source_line": 673,
+      "source_line": 674,
       "wrapper_target": null
     },
     {
@@ -38698,7 +38718,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 12,
-      "source_line": 811,
+      "source_line": 812,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38718,7 +38738,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 24,
-      "source_line": 812,
+      "source_line": 813,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._generate"
     },
     {
@@ -38738,7 +38758,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.generate",
       "source_column": 16,
-      "source_line": 846,
+      "source_line": 847,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38758,7 +38778,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.publish_breaker_trip",
       "source_column": 8,
-      "source_line": 918,
+      "source_line": 919,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38778,7 +38798,7 @@
       "primitive": "wrapper",
       "qualname": "LastWordsGenerator.publish_breaker_trip",
       "source_column": 8,
-      "source_line": 919,
+      "source_line": 920,
       "wrapper_target": "chrys.service.context.compaction.last_words.LastWordsGenerator._publish_status_cancellable"
     },
     {
@@ -38798,7 +38818,7 @@
       "primitive": "shield",
       "qualname": "LastWordsGenerator.publish_committed",
       "source_column": 8,
-      "source_line": 902,
+      "source_line": 903,
       "wrapper_target": null
     },
     {
@@ -39339,7 +39359,7 @@
       "qualname": "ContextManagementProvider._recall_context",
       "source_column": 31,
       "source_line": 384,
-      "wrapper_target": "chrys.service.llm.responses.get_final_response"
+      "wrapper_target": "chrys.service.llm.one_shot.get_final_response"
     },
     {
       "cases": [
@@ -40011,34 +40031,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "async for chunk in self._rest",
-      "identity": "chrys.service.llm._chat_stream_validation:_ReplayByteStream.__aiter__:1",
-      "module": "chrys.service.llm._chat_stream_validation",
-      "ordinal": 1,
-      "primitive": "async_iteration",
-      "qualname": "_ReplayByteStream.__aiter__",
-      "source_column": 8,
-      "source_line": 144,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._original.aclose()",
-      "identity": "chrys.service.llm._chat_stream_validation:_ReplayByteStream.aclose:1",
-      "module": "chrys.service.llm._chat_stream_validation",
+      "expression": "await self.sdk_client.close()",
+      "identity": "chrys.service.llm.anthropic_messages.client:AnthropicMessagesClient._close_sdk_client:1",
+      "module": "chrys.service.llm.anthropic_messages.client",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "_ReplayByteStream.aclose",
+      "qualname": "AnthropicMessagesClient._close_sdk_client",
       "source_column": 8,
-      "source_line": 150,
+      "source_line": 90,
       "wrapper_target": null
     },
     {
@@ -40051,14 +40051,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await rest.__anext__()",
-      "identity": "chrys.service.llm._chat_stream_validation:_sniff_chat_completion_stream:1",
-      "module": "chrys.service.llm._chat_stream_validation",
+      "expression": "await self.sdk_client.beta.messages.create(**request, stream=True)",
+      "identity": "chrys.service.llm.anthropic_messages.client:AnthropicMessagesClient._open_stream.updates:1",
+      "module": "chrys.service.llm.anthropic_messages.client",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "_sniff_chat_completion_stream",
-      "source_column": 22,
-      "source_line": 237,
+      "qualname": "AnthropicMessagesClient._open_stream.updates",
+      "source_column": 25,
+      "source_line": 132,
       "wrapper_target": null
     },
     {
@@ -40071,34 +40071,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await rest.__anext__()",
-      "identity": "chrys.service.llm._chat_stream_validation:_sniff_chat_completion_stream:2",
-      "module": "chrys.service.llm._chat_stream_validation",
+      "expression": "async for event in events",
+      "identity": "chrys.service.llm.anthropic_messages.client:AnthropicMessagesClient._open_stream.updates:2",
+      "module": "chrys.service.llm.anthropic_messages.client",
       "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "_sniff_chat_completion_stream",
-      "source_column": 22,
-      "source_line": 262,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async for chunk in original(*args, **kwargs)",
-      "identity": "chrys.service.llm._chat_stream_validation:_strip_leading_bom_from_decoded_bytes.aiter_bytes:1",
-      "module": "chrys.service.llm._chat_stream_validation",
-      "ordinal": 1,
       "primitive": "async_iteration",
-      "qualname": "_strip_leading_bom_from_decoded_bytes.aiter_bytes",
-      "source_column": 8,
-      "source_line": 198,
+      "qualname": "AnthropicMessagesClient._open_stream.updates",
+      "source_column": 16,
+      "source_line": 133,
       "wrapper_target": null
     },
     {
@@ -40111,135 +40091,15 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await _sniff_chat_completion_stream(http_response)",
-      "identity": "chrys.service.llm._chat_stream_validation:_validate_chat_completion_stream_response:1",
-      "module": "chrys.service.llm._chat_stream_validation",
-      "ordinal": 1,
+      "expression": "await _close_event_stream(events)",
+      "identity": "chrys.service.llm.anthropic_messages.client:AnthropicMessagesClient._open_stream.updates:3",
+      "module": "chrys.service.llm.anthropic_messages.client",
+      "ordinal": 3,
       "primitive": "wrapper",
-      "qualname": "_validate_chat_completion_stream_response",
-      "source_column": 18,
-      "source_line": 293,
-      "wrapper_target": "chrys.service.llm._chat_stream_validation._sniff_chat_completion_stream"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await http_response.aclose()",
-      "identity": "chrys.service.llm._chat_stream_validation:_validate_chat_completion_stream_response:2",
-      "module": "chrys.service.llm._chat_stream_validation",
-      "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "_validate_chat_completion_stream_response",
-      "source_column": 12,
-      "source_line": 297,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await http_response.aclose()",
-      "identity": "chrys.service.llm._chat_stream_validation:_validate_chat_completion_stream_response:3",
-      "module": "chrys.service.llm._chat_stream_validation",
-      "ordinal": 3,
-      "primitive": "awaitable",
-      "qualname": "_validate_chat_completion_stream_response",
-      "source_column": 8,
-      "source_line": 304,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self.anthropic_client.close()",
-      "identity": "chrys.service.llm.anthropic_chat:RawAnthropicClient._close_sdk_client:1",
-      "module": "chrys.service.llm.anthropic_chat",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawAnthropicClient._close_sdk_client",
-      "source_column": 8,
-      "source_line": 319,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self.anthropic_client.beta.messages.create(**run_options, stream=False)",
-      "identity": "chrys.service.llm.anthropic_chat:RawAnthropicClient._inner_get_response._get_response:1",
-      "module": "chrys.service.llm.anthropic_chat",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawAnthropicClient._inner_get_response._get_response",
-      "source_column": 22,
-      "source_line": 544,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self.anthropic_client.beta.messages.create(**run_options, stream=True)",
-      "identity": "chrys.service.llm.anthropic_chat:RawAnthropicClient._inner_get_response._stream:1",
-      "module": "chrys.service.llm.anthropic_chat",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawAnthropicClient._inner_get_response._stream",
-      "source_column": 33,
-      "source_line": 501,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async for chunk in sdk_stream",
-      "identity": "chrys.service.llm.anthropic_chat:RawAnthropicClient._inner_get_response._stream:2",
-      "module": "chrys.service.llm.anthropic_chat",
-      "ordinal": 2,
-      "primitive": "async_iteration",
-      "qualname": "RawAnthropicClient._inner_get_response._stream",
+      "qualname": "AnthropicMessagesClient._open_stream.updates",
       "source_column": 20,
-      "source_line": 502,
-      "wrapper_target": null
+      "source_line": 140,
+      "wrapper_target": "chrys.service.llm.anthropic_messages.client._close_event_stream"
     },
     {
       "cases": [
@@ -40251,14 +40111,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await close_result",
-      "identity": "chrys.service.llm.anthropic_chat:RawAnthropicClient._inner_get_response._stream:3",
-      "module": "chrys.service.llm.anthropic_chat",
-      "ordinal": 3,
+      "expression": "await self.sdk_client.beta.messages.create(**request, stream=False)",
+      "identity": "chrys.service.llm.anthropic_messages.client:AnthropicMessagesClient._send.response:1",
+      "module": "chrys.service.llm.anthropic_messages.client",
+      "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "RawAnthropicClient._inner_get_response._stream",
-      "source_column": 36,
-      "source_line": 536,
+      "qualname": "AnthropicMessagesClient._send.response",
+      "source_column": 22,
+      "source_line": 113,
       "wrapper_target": null
     },
     {
@@ -40272,13 +40132,13 @@
         }
       ],
       "expression": "await self._close_sdk()",
-      "identity": "chrys.service.llm.anthropic_chat:RawAnthropicClient.aclose:1",
-      "module": "chrys.service.llm.anthropic_chat",
+      "identity": "chrys.service.llm.anthropic_messages.client:AnthropicMessagesClient.aclose:1",
+      "module": "chrys.service.llm.anthropic_messages.client",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "RawAnthropicClient.aclose",
+      "qualname": "AnthropicMessagesClient.aclose",
       "source_column": 8,
-      "source_line": 316,
+      "source_line": 87,
       "wrapper_target": null
     },
     {
@@ -40291,14 +40151,314 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await super()._sleep_for_retry(**kwargs)",
-      "identity": "chrys.service.llm.clients:_DeterministicConnectionRetryGuard._sleep_for_retry:1",
-      "module": "chrys.service.llm.clients",
+      "expression": "await closing",
+      "identity": "chrys.service.llm.anthropic_messages.client:_close_event_stream:1",
+      "module": "chrys.service.llm.anthropic_messages.client",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "_DeterministicConnectionRetryGuard._sleep_for_retry",
+      "qualname": "_close_event_stream",
+      "source_column": 12,
+      "source_line": 150,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.close()",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient._close_sdk_client:1",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ChatCompletionsClient._close_sdk_client",
       "source_column": 8,
-      "source_line": 104,
+      "source_line": 152,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.chat.completions.with_raw_response.create(stream=False, **request)",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient._complete:1",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ChatCompletionsClient._complete",
+      "source_column": 18,
+      "source_line": 181,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.chat.completions.with_raw_response.create(stream=True, **request)",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient._open_stream.updates:1",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ChatCompletionsClient._open_stream.updates",
+      "source_column": 27,
+      "source_line": 204,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await validate_stream_response(raw)",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient._open_stream.updates:2",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 2,
+      "primitive": "wrapper",
+      "qualname": "ChatCompletionsClient._open_stream.updates",
+      "source_column": 25,
+      "source_line": 205,
+      "wrapper_target": "chrys.service.llm.chat_completions.validation.validate_stream_response"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async for chunk in sdk_stream",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient._open_stream.updates:3",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 3,
+      "primitive": "async_iteration",
+      "qualname": "ChatCompletionsClient._open_stream.updates",
+      "source_column": 16,
+      "source_line": 208,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await sdk_stream.close()",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient._open_stream.updates:4",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 4,
+      "primitive": "awaitable",
+      "qualname": "ChatCompletionsClient._open_stream.updates",
+      "source_column": 24,
+      "source_line": 231,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._close_sdk()",
+      "identity": "chrys.service.llm.chat_completions.client:ChatCompletionsClient.aclose:1",
+      "module": "chrys.service.llm.chat_completions.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ChatCompletionsClient.aclose",
+      "source_column": 8,
+      "source_line": 149,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async for chunk in self._rest",
+      "identity": "chrys.service.llm.chat_completions.validation:ReplayByteStream.__aiter__:1",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 1,
+      "primitive": "async_iteration",
+      "qualname": "ReplayByteStream.__aiter__",
+      "source_column": 8,
+      "source_line": 149,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._original.aclose()",
+      "identity": "chrys.service.llm.chat_completions.validation:ReplayByteStream.aclose:1",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ReplayByteStream.aclose",
+      "source_column": 8,
+      "source_line": 155,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await rest.__anext__()",
+      "identity": "chrys.service.llm.chat_completions.validation:_sniff_stream:1",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "_sniff_stream",
+      "source_column": 22,
+      "source_line": 242,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await rest.__anext__()",
+      "identity": "chrys.service.llm.chat_completions.validation:_sniff_stream:2",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 2,
+      "primitive": "awaitable",
+      "qualname": "_sniff_stream",
+      "source_column": 22,
+      "source_line": 267,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async for chunk in original(*args, **kwargs)",
+      "identity": "chrys.service.llm.chat_completions.validation:_strip_leading_bom_from_decoded_bytes.aiter_bytes:1",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 1,
+      "primitive": "async_iteration",
+      "qualname": "_strip_leading_bom_from_decoded_bytes.aiter_bytes",
+      "source_column": 8,
+      "source_line": 203,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await _sniff_stream(http_response)",
+      "identity": "chrys.service.llm.chat_completions.validation:validate_stream_response:1",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 1,
+      "primitive": "wrapper",
+      "qualname": "validate_stream_response",
+      "source_column": 18,
+      "source_line": 296,
+      "wrapper_target": "chrys.service.llm.chat_completions.validation._sniff_stream"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await http_response.aclose()",
+      "identity": "chrys.service.llm.chat_completions.validation:validate_stream_response:2",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 2,
+      "primitive": "awaitable",
+      "qualname": "validate_stream_response",
+      "source_column": 12,
+      "source_line": 300,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await http_response.aclose()",
+      "identity": "chrys.service.llm.chat_completions.validation:validate_stream_response:3",
+      "module": "chrys.service.llm.chat_completions.validation",
+      "ordinal": 3,
+      "primitive": "awaitable",
+      "qualname": "validate_stream_response",
+      "source_column": 8,
+      "source_line": 307,
       "wrapper_target": null
     },
     {
@@ -40318,7 +40478,7 @@
       "primitive": "awaitable",
       "qualname": "create_client",
       "source_column": 12,
-      "source_line": 511,
+      "source_line": 469,
       "wrapper_target": null
     },
     {
@@ -40338,7 +40498,7 @@
       "primitive": "wrapper",
       "qualname": "scoped_client",
       "source_column": 13,
-      "source_line": 623,
+      "source_line": 609,
       "wrapper_target": "chrys.service.llm.clients.create_client"
     },
     {
@@ -40358,127 +40518,7 @@
       "primitive": "awaitable",
       "qualname": "scoped_client",
       "source_column": 8,
-      "source_line": 627,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await super()._prepare_options(messages, self._stateless_option_view(options))",
-      "identity": "chrys.service.llm.deepseek:DeepSeekResponsesClient._prepare_options:1",
-      "module": "chrys.service.llm.deepseek",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "DeepSeekResponsesClient._prepare_options",
-      "source_column": 15,
-      "source_line": 372,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await awaitable",
-      "identity": "chrys.service.llm.instrumented:_ExchangeObserver.wrap_awaitable._observe:1",
-      "module": "chrys.service.llm.instrumented",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "_ExchangeObserver.wrap_awaitable._observe",
-      "source_column": 27,
-      "source_line": 681,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await super()._prepare_options(messages, options)",
-      "identity": "chrys.service.llm.instrumented:_InstrumentedOpenAIResponsesClient.create_instrumented_openai_responses_client._prepare_options:1",
-      "module": "chrys.service.llm.instrumented",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "_InstrumentedOpenAIResponsesClient.create_instrumented_openai_responses_client._prepare_options",
-      "source_column": 23,
-      "source_line": 1026,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await observed",
-      "identity": "chrys.service.llm.instrumented:_IntermediateTextMixin._inner_get_response._intercept:1",
-      "module": "chrys.service.llm.instrumented",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "_IntermediateTextMixin._inner_get_response._intercept",
-      "source_column": 23,
-      "source_line": 771,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await callback(text)",
-      "identity": "chrys.service.llm.instrumented:_IntermediateTextMixin._inner_get_response._intercept:2",
-      "module": "chrys.service.llm.instrumented",
-      "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "_IntermediateTextMixin._inner_get_response._intercept",
-      "source_column": 20,
-      "source_line": 781,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await callback('')",
-      "identity": "chrys.service.llm.instrumented:_IntermediateTextMixin._inner_get_response._intercept:3",
-      "module": "chrys.service.llm.instrumented",
-      "ordinal": 3,
-      "primitive": "awaitable",
-      "qualname": "_IntermediateTextMixin._inner_get_response._intercept",
-      "source_column": 20,
-      "source_line": 785,
+      "source_line": 613,
       "wrapper_target": null
     },
     {
@@ -40498,7 +40538,7 @@
       "primitive": "sleep",
       "qualname": "MockChatClient._mock_response",
       "source_column": 12,
-      "source_line": 435,
+      "source_line": 340,
       "wrapper_target": null
     },
     {
@@ -40511,34 +40551,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await async_cb(text)",
+      "expression": "await async_cb(signal)",
       "identity": "chrys.service.llm.mock:MockChatClient._mock_response:2",
       "module": "chrys.service.llm.mock",
       "ordinal": 2,
       "primitive": "awaitable",
       "qualname": "MockChatClient._mock_response",
-      "source_column": 16,
-      "source_line": 450,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await async_cb('')",
-      "identity": "chrys.service.llm.mock:MockChatClient._mock_response:3",
-      "module": "chrys.service.llm.mock",
-      "ordinal": 3,
-      "primitive": "awaitable",
-      "qualname": "MockChatClient._mock_response",
-      "source_column": 16,
-      "source_line": 452,
+      "source_column": 12,
+      "source_line": 352,
       "wrapper_target": null
     },
     {
@@ -40558,7 +40578,7 @@
       "primitive": "sleep",
       "qualname": "MockChatClient._stream_updates",
       "source_column": 20,
-      "source_line": 496,
+      "source_line": 396,
       "wrapper_target": null
     },
     {
@@ -40571,14 +40591,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._mock._prepare_wire_call(messages, call_context=call_context, options_snapshot=options_snapshot, sanitized_client_kwargs=sanitized_client_kwargs, compaction_overrides=compaction_overrides, request_message_observer=request_message_observer)",
-      "identity": "chrys.service.llm.mock:_LoopInnerAdapter.get_response._get_response:1",
-      "module": "chrys.service.llm.mock",
+      "expression": "await awaitable",
+      "identity": "chrys.service.llm.observer:ExchangeRecorder.wrap_awaitable._observe:1",
+      "module": "chrys.service.llm.observer",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "_LoopInnerAdapter.get_response._get_response",
-      "source_column": 46,
-      "source_line": 176,
+      "qualname": "ExchangeRecorder.wrap_awaitable._observe",
+      "source_column": 27,
+      "source_line": 299,
       "wrapper_target": null
     },
     {
@@ -40591,15 +40611,155 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._mock._inner_get_response(messages=prepared_messages, stream=False, options=wire_options, **sanitized_client_kwargs)",
-      "identity": "chrys.service.llm.mock:_LoopInnerAdapter.get_response._get_response:2",
-      "module": "chrys.service.llm.mock",
+      "expression": "await observed",
+      "identity": "chrys.service.llm.observer:WireCall._land:1",
+      "module": "chrys.service.llm.observer",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "WireCall._land",
+      "source_column": 19,
+      "source_line": 442,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._on_async(signal)",
+      "identity": "chrys.service.llm.observer:WireCall._land:2",
+      "module": "chrys.service.llm.observer",
       "ordinal": 2,
       "primitive": "awaitable",
-      "qualname": "_LoopInnerAdapter.get_response._get_response",
+      "qualname": "WireCall._land",
+      "source_column": 12,
+      "source_line": 445,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await awaitable",
+      "identity": "chrys.service.llm.one_shot:_await_with_timeout:1",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "_await_with_timeout",
+      "source_column": 15,
+      "source_line": 24,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await asyncio.wait_for(awaitable, timeout=timeout)",
+      "identity": "chrys.service.llm.one_shot:_await_with_timeout:2",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 2,
+      "primitive": "timeout",
+      "qualname": "_await_with_timeout",
+      "source_column": 15,
+      "source_line": 26,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await result",
+      "identity": "chrys.service.llm.one_shot:cleanup_response_stream:1",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "cleanup_response_stream",
+      "source_column": 8,
+      "source_line": 44,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await client.get_response(messages, stream=False, options=options, **kwargs)",
+      "identity": "chrys.service.llm.one_shot:get_final_response:1",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "get_final_response",
+      "source_column": 15,
+      "source_line": 58,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await _await_with_timeout(client.get_response(messages, stream=True, options=options, **kwargs), timeout, 'LLM stream')",
+      "identity": "chrys.service.llm.one_shot:get_final_response:2",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 2,
+      "primitive": "wrapper",
+      "qualname": "get_final_response",
+      "source_column": 13,
+      "source_line": 60,
+      "wrapper_target": "chrys.service.llm.one_shot._await_with_timeout"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await _await_with_timeout(aiter.__anext__(), timeout, 'LLM stream update')",
+      "identity": "chrys.service.llm.one_shot:get_final_response:3",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 3,
+      "primitive": "wrapper",
+      "qualname": "get_final_response",
       "source_column": 16,
-      "source_line": 186,
-      "wrapper_target": null
+      "source_line": 70,
+      "wrapper_target": "chrys.service.llm.one_shot._await_with_timeout"
     },
     {
       "cases": [
@@ -40611,14 +40771,54 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self._mock._prepare_wire_call(messages, call_context=call_context, options_snapshot=options_snapshot, sanitized_client_kwargs=sanitized_client_kwargs, compaction_overrides=compaction_overrides, request_message_observer=request_message_observer)",
-      "identity": "chrys.service.llm.mock:_LoopInnerAdapter.get_response._get_stream:1",
-      "module": "chrys.service.llm.mock",
+      "expression": "await _await_with_timeout(result.get_final_response(), timeout, 'LLM final response')",
+      "identity": "chrys.service.llm.one_shot:get_final_response:4",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 4,
+      "primitive": "wrapper",
+      "qualname": "get_final_response",
+      "source_column": 15,
+      "source_line": 76,
+      "wrapper_target": "chrys.service.llm.one_shot._await_with_timeout"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await cleanup_response_stream(result)",
+      "identity": "chrys.service.llm.one_shot:get_final_response:5",
+      "module": "chrys.service.llm.one_shot",
+      "ordinal": 5,
+      "primitive": "wrapper",
+      "qualname": "get_final_response",
+      "source_column": 12,
+      "source_line": 79,
+      "wrapper_target": "chrys.service.llm.one_shot.cleanup_response_stream"
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.close()",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._close_sdk_client:1",
+      "module": "chrys.service.llm.openai_responses.client",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "_LoopInnerAdapter.get_response._get_stream",
-      "source_column": 50,
-      "source_line": 150,
+      "qualname": "ResponsesApiClient._close_sdk_client",
+      "source_column": 8,
+      "source_line": 129,
       "wrapper_target": null
     },
     {
@@ -40631,13 +40831,213 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await stream_response",
-      "identity": "chrys.service.llm.mock:_LoopInnerAdapter.get_response._get_stream:2",
-      "module": "chrys.service.llm.mock",
+      "expression": "await self._validate_options(options)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._create:1",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ResponsesApiClient._create",
+      "source_column": 20,
+      "source_line": 152,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.responses.with_raw_response.parse(stream=False, **request)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._create:2",
+      "module": "chrys.service.llm.openai_responses.client",
       "ordinal": 2,
       "primitive": "awaitable",
-      "qualname": "_LoopInnerAdapter.get_response._get_stream",
-      "source_column": 42,
+      "qualname": "ResponsesApiClient._create",
+      "source_column": 22,
+      "source_line": 156,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.responses.with_raw_response.create(stream=False, **request)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._create:3",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 3,
+      "primitive": "awaitable",
+      "qualname": "ResponsesApiClient._create",
+      "source_column": 22,
+      "source_line": 158,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._validate_options(options)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:1",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 24,
+      "source_line": 207,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async with self.sdk_client.responses.stream(**request)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:2",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 2,
+      "primitive": "async_context",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 31,
+      "source_line": 217,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async for event in parsed_events",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:3",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 3,
+      "primitive": "async_iteration",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 24,
+      "source_line": 218,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.responses.with_raw_response.retrieve(token['response_id'], stream=True)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:4",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 4,
+      "primitive": "awaitable",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 30,
+      "source_line": 222,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self.sdk_client.responses.with_raw_response.create(stream=True, **request)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:5",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 5,
+      "primitive": "awaitable",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 30,
+      "source_line": 226,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async with events",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:6",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 6,
+      "primitive": "async_context",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 31,
+      "source_line": 231,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "async for event in stream",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._open_stream.updates:7",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 7,
+      "primitive": "async_iteration",
+      "qualname": "ResponsesApiClient._open_stream.updates",
+      "source_column": 24,
+      "source_line": 232,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await self._validate_options(options)",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._poll:1",
+      "module": "chrys.service.llm.openai_responses.client",
+      "ordinal": 1,
+      "primitive": "awaitable",
+      "qualname": "ResponsesApiClient._poll",
+      "source_column": 20,
       "source_line": 168,
       "wrapper_target": null
     },
@@ -40651,154 +41051,14 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await self.client.close()",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._close_sdk_client:1",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient._close_sdk_client",
-      "source_column": 8,
-      "source_line": 556,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.chat.completions.with_raw_response.create(stream=False, **options_dict)",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._get_response:1",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._get_response",
-      "source_column": 40,
-      "source_line": 774,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.chat.completions.create(stream=False, **options_dict)",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._get_response:2",
-      "module": "chrys.service.llm.openai_chat_completion",
+      "expression": "await self.sdk_client.responses.with_raw_response.retrieve(token['response_id'])",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient._poll:2",
+      "module": "chrys.service.llm.openai_responses.client",
       "ordinal": 2,
       "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._get_response",
-      "source_column": 31,
-      "source_line": 779,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.chat.completions.with_raw_response.create(stream=True, **options_dict)",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._stream:1",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
-      "source_column": 44,
-      "source_line": 693,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await _validate_chat_completion_stream_response(raw_response)",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._stream:2",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 2,
-      "primitive": "wrapper",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
-      "source_column": 33,
-      "source_line": 696,
-      "wrapper_target": "chrys.service.llm._chat_stream_validation._validate_chat_completion_stream_response"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.chat.completions.create(stream=True, **options_dict)",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._stream:3",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 3,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
-      "source_column": 37,
-      "source_line": 699,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async for chunk in sdk_stream",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._stream:4",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 4,
-      "primitive": "async_iteration",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
-      "source_column": 20,
-      "source_line": 701,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await close_result",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient._inner_get_response._stream:5",
-      "module": "chrys.service.llm.openai_chat_completion",
-      "ordinal": 5,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient._inner_get_response._stream",
-      "source_column": 36,
-      "source_line": 761,
+      "qualname": "ResponsesApiClient._poll",
+      "source_column": 18,
+      "source_line": 170,
       "wrapper_target": null
     },
     {
@@ -40812,393 +41072,13 @@
         }
       ],
       "expression": "await self._close_sdk()",
-      "identity": "chrys.service.llm.openai_chat_completion:RawOpenAIChatCompletionClient.aclose:1",
-      "module": "chrys.service.llm.openai_chat_completion",
+      "identity": "chrys.service.llm.openai_responses.client:ResponsesApiClient.aclose:1",
+      "module": "chrys.service.llm.openai_responses.client",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "RawOpenAIChatCompletionClient.aclose",
+      "qualname": "ResponsesApiClient.aclose",
       "source_column": 8,
-      "source_line": 553,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self.client.close()",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._close_sdk_client:1",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._close_sdk_client",
-      "source_column": 8,
-      "source_line": 723,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._validate_options(options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._get_response:1",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._get_response",
-      "source_column": 36,
-      "source_line": 881,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.responses.with_raw_response.retrieve(continuation_token['response_id'])",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._get_response:2",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._get_response",
-      "source_column": 35,
-      "source_line": 883,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._prepare_request(messages, options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._get_response:3",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 3,
-      "primitive": "wrapper",
-      "qualname": "RawOpenAIChatClient._inner_get_response._get_response",
-      "source_column": 53,
-      "source_line": 903,
-      "wrapper_target": "chrys.service.llm.openai_responses.RawOpenAIChatClient._prepare_request"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.responses.with_raw_response.parse(stream=False, **run_options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._get_response:4",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 4,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._get_response",
-      "source_column": 35,
-      "source_line": 906,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.responses.with_raw_response.create(stream=False, **run_options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._get_response:5",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 5,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._get_response",
-      "source_column": 35,
-      "source_line": 908,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._validate_options(options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:1",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 40,
-      "source_line": 788,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.responses.with_raw_response.retrieve(continuation_token['response_id'], stream=True)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:2",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 46,
-      "source_line": 791,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async with parsed_stream",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:3",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 3,
-      "primitive": "async_context",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 35,
-      "source_line": 803,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async for chunk in stream_response",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:4",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 4,
-      "primitive": "async_iteration",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 28,
-      "source_line": 804,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._prepare_request(messages, options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:5",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 5,
-      "primitive": "wrapper",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 24,
-      "source_line": 825,
-      "wrapper_target": "chrys.service.llm.openai_responses.RawOpenAIChatClient._prepare_request"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async with client.responses.stream(**run_options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:6",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 6,
-      "primitive": "async_context",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 39,
-      "source_line": 835,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async for chunk in response",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:7",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 7,
-      "primitive": "async_iteration",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 32,
-      "source_line": 836,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.responses.with_raw_response.create(stream=True, **run_options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:8",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 8,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 50,
-      "source_line": 848,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async with parsed_stream",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:9",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 9,
-      "primitive": "async_context",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 39,
-      "source_line": 856,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "async for chunk in stream_response",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._inner_get_response._stream:10",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 10,
-      "primitive": "async_iteration",
-      "qualname": "RawOpenAIChatClient._inner_get_response._stream",
-      "source_column": 32,
-      "source_line": 857,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._validate_options(options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._prepare_request:1",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._prepare_request",
-      "source_column": 28,
-      "source_line": 738,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._prepare_options(messages, validated_options)",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient._prepare_request:2",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 2,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient._prepare_request",
-      "source_column": 22,
-      "source_line": 739,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await self._close_sdk()",
-      "identity": "chrys.service.llm.openai_responses:RawOpenAIChatClient.aclose:1",
-      "module": "chrys.service.llm.openai_responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "RawOpenAIChatClient.aclose",
-      "source_column": 8,
-      "source_line": 720,
+      "source_line": 126,
       "wrapper_target": null
     },
     {
@@ -41431,155 +41311,15 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await awaitable",
-      "identity": "chrys.service.llm.responses:_await_with_timeout:1",
-      "module": "chrys.service.llm.responses",
+      "expression": "await super()._sleep_for_retry(**kwargs)",
+      "identity": "chrys.service.llm.sdk_retry:DeterministicConnectionRetryGuard._sleep_for_retry:1",
+      "module": "chrys.service.llm.sdk_retry",
       "ordinal": 1,
       "primitive": "awaitable",
-      "qualname": "_await_with_timeout",
-      "source_column": 15,
-      "source_line": 24,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await asyncio.wait_for(awaitable, timeout=timeout)",
-      "identity": "chrys.service.llm.responses:_await_with_timeout:2",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 2,
-      "primitive": "timeout",
-      "qualname": "_await_with_timeout",
-      "source_column": 15,
-      "source_line": 26,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await result",
-      "identity": "chrys.service.llm.responses:cleanup_response_stream:1",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "cleanup_response_stream",
+      "qualname": "DeterministicConnectionRetryGuard._sleep_for_retry",
       "source_column": 8,
-      "source_line": 44,
+      "source_line": 37,
       "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await client.get_response(messages, stream=False, options=options, **kwargs)",
-      "identity": "chrys.service.llm.responses:get_final_response:1",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 1,
-      "primitive": "awaitable",
-      "qualname": "get_final_response",
-      "source_column": 15,
-      "source_line": 58,
-      "wrapper_target": null
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await _await_with_timeout(client.get_response(messages, stream=True, options=options, **kwargs), timeout, 'LLM stream')",
-      "identity": "chrys.service.llm.responses:get_final_response:2",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 2,
-      "primitive": "wrapper",
-      "qualname": "get_final_response",
-      "source_column": 13,
-      "source_line": 60,
-      "wrapper_target": "chrys.service.llm.responses._await_with_timeout"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await _await_with_timeout(aiter.__anext__(), timeout, 'LLM stream update')",
-      "identity": "chrys.service.llm.responses:get_final_response:3",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 3,
-      "primitive": "wrapper",
-      "qualname": "get_final_response",
-      "source_column": 16,
-      "source_line": 70,
-      "wrapper_target": "chrys.service.llm.responses._await_with_timeout"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await _await_with_timeout(result.get_final_response(), timeout, 'LLM final response')",
-      "identity": "chrys.service.llm.responses:get_final_response:4",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 4,
-      "primitive": "wrapper",
-      "qualname": "get_final_response",
-      "source_column": 15,
-      "source_line": 76,
-      "wrapper_target": "chrys.service.llm.responses._await_with_timeout"
-    },
-    {
-      "cases": [
-        {
-          "classification": "B",
-          "container_rule": "unresolved_outer_container",
-          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
-          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
-          "when": "all_paths"
-        }
-      ],
-      "expression": "await cleanup_response_stream(result)",
-      "identity": "chrys.service.llm.responses:get_final_response:5",
-      "module": "chrys.service.llm.responses",
-      "ordinal": 5,
-      "primitive": "wrapper",
-      "qualname": "get_final_response",
-      "source_column": 12,
-      "source_line": 79,
-      "wrapper_target": "chrys.service.llm.responses.cleanup_response_stream"
     },
     {
       "cases": [
@@ -46058,7 +45798,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._create_tools._load",
       "source_column": 19,
-      "source_line": 594,
+      "source_line": 607,
       "wrapper_target": null
     },
     {
@@ -46078,7 +45818,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider._create_tools._read_resource",
       "source_column": 19,
-      "source_line": 617,
+      "source_line": 630,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._read_skill_resource"
     },
     {
@@ -46098,7 +45838,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider._create_tools._run_script",
       "source_column": 19,
-      "source_line": 657,
+      "source_line": 670,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._run_skill_script_chrys"
     },
     {
@@ -46111,14 +45851,34 @@
           "when": "all_paths"
         }
       ],
-      "expression": "await resource.read()",
+      "expression": "await asyncio.to_thread(is_contained_skill_path, resource.full_path, skill.path)",
       "identity": "chrys.service.skills.provider:ChrysSkillsProvider._read_skill_resource:1",
       "module": "chrys.service.skills.provider",
       "ordinal": 1,
+      "primitive": "thread_pool",
+      "qualname": "ChrysSkillsProvider._read_skill_resource",
+      "source_column": 20,
+      "source_line": 523,
+      "wrapper_target": null
+    },
+    {
+      "cases": [
+        {
+          "classification": "B",
+          "container_rule": "unresolved_outer_container",
+          "degradation_rule": "Mark the containing residual Unresolved; never report it as exact.",
+          "reason": "No enclosing trajectory interval is machine-proven for every call path; fail closed until reviewed.",
+          "when": "all_paths"
+        }
+      ],
+      "expression": "await resource.read()",
+      "identity": "chrys.service.skills.provider:ChrysSkillsProvider._read_skill_resource:2",
+      "module": "chrys.service.skills.provider",
+      "ordinal": 2,
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._read_skill_resource",
       "source_column": 19,
-      "source_line": 519,
+      "source_line": 532,
       "wrapper_target": null
     },
     {
@@ -46138,7 +45898,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._reload",
       "source_column": 22,
-      "source_line": 374,
+      "source_line": 376,
       "wrapper_target": null
     },
     {
@@ -46158,7 +45918,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider._run_skill_script_chrys",
       "source_column": 25,
-      "source_line": 801,
+      "source_line": 814,
       "wrapper_target": null
     },
     {
@@ -46178,7 +45938,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider.before_run",
       "source_column": 12,
-      "source_line": 456,
+      "source_line": 458,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._reload"
     },
     {
@@ -46198,7 +45958,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider.initialize",
       "source_column": 12,
-      "source_line": 387,
+      "source_line": 389,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider._reload"
     },
     {
@@ -46218,7 +45978,7 @@
       "primitive": "wrapper",
       "qualname": "ChrysSkillsProvider.refresh_context",
       "source_column": 17,
-      "source_line": 423,
+      "source_line": 425,
       "wrapper_target": "chrys.service.skills.provider.ChrysSkillsProvider.stage_context_refresh"
     },
     {
@@ -46238,7 +45998,7 @@
       "primitive": "awaitable",
       "qualname": "ChrysSkillsProvider.stage_context_refresh",
       "source_column": 22,
-      "source_line": 428,
+      "source_line": 430,
       "wrapper_target": null
     },
     {

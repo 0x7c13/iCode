@@ -728,16 +728,19 @@ async def test_max_output_tokens_label_shows_wire_param_per_provider(monkeypatch
     """The Max Output Tokens label surfaces the actual wire parameter so users
     can tell max_tokens providers apart from max_completion_tokens ones.
 
-    Labelling never imports the SDK-backed client modules: on a process that has
-    not loaded the openai SDK, the first open would import it on the UI loop.
+    Labelling never imports a provider SDK or a client package built on one: on
+    a process that has not loaded the SDK, the first open would import it on the
+    UI loop.
     """
-    for module in (
-        "openai",
-        "chrys.service.llm.openai_chat_completion",
-        "chrys.service.llm.deepseek",
-        "chrys.service.llm.glm",
-    ):
+    # A blocked package stops its uncached submodules, but a cached submodule,
+    # or a package cached as an attribute of its parent, would still import.
+    clients = [f"chrys.service.llm.{name}" for name in ("chat_completions", "openai_responses", "anthropic_messages")]
+    blocked = ("openai", "anthropic", *clients)
+    cached = [name for name in sys.modules if name.startswith(tuple(f"{package}." for package in blocked))]
+    for module in (*blocked, *cached):
         monkeypatch.setitem(sys.modules, module, None)
+    for package in clients:
+        monkeypatch.delattr(package, raising=False)
     registry, profile = single_profile_registry()
 
     async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):

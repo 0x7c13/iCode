@@ -1024,7 +1024,7 @@ class _MainStreamObserver:
     """The main shell's final-response text projection for one stream attempt.
 
     ``on_update`` accumulates text, discarding intermediate tool-response
-    text that the instrumented client's ``result_hook`` publishes separately.
+    text that the wire client's ``result_hook`` publishes separately.
     Two signals discard the buffer: a non-informational ``function_call``
     in the update, or a change in ``IntermediateTextBuffer.batch_id`` between
     updates. The hook advances the batch at the end of a tool-calling response;

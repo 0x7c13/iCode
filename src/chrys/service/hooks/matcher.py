@@ -8,10 +8,10 @@ fires on every event of the hook's type.  Tool-related clauses
 they match only tool events.
 
 Regex patterns from ``match.args.<name>.regex`` are compiled once per
-process and cached on the :class:`HookArgMatch` instance.  Invalid
-regexes are caught at first use and turned into a logged warning + a
-non-match (the hook stops firing for the rest of the session) — we
-don't want a typo in one hook to crash the whole event dispatch.
+process and cached on the :class:`HookArgMatch` instance.  The loader
+already leaves out an enabled hook whose pattern does not compile and
+reports it; a pattern that still fails here is logged once and treated
+as a non-match, so one bad hook never crashes the whole event dispatch.
 """
 
 from __future__ import annotations
@@ -24,6 +24,11 @@ if TYPE_CHECKING:
     from chrys.service.hooks.schema import HookArgMatch, HookConfig, HookMatch
 
 logger = logging.getLogger(__name__)
+
+REGEX_COMPILE_ERRORS: tuple[type[Exception], ...] = (re.error, OverflowError, RecursionError)
+"""What ``re.compile`` raises for a pattern it cannot compile: ``re.error``,
+plus ``OverflowError`` for an out-of-range repeat count and ``RecursionError``
+for very deep nesting."""
 
 
 def matches(hook: HookConfig, payload: dict[str, Any]) -> bool:
@@ -98,7 +103,7 @@ def _get_compiled_regex(arg_match: HookArgMatch) -> re.Pattern[str] | None:
 
     try:
         compiled = re.compile(arg_match.regex or "")
-    except re.error as exc:
+    except REGEX_COMPILE_ERRORS as exc:
         logger.warning("Invalid regex in hook match: %r — %s", arg_match.regex, exc)
         compiled = None  # type: ignore[assignment]
     arg_match._compiled_regex = compiled

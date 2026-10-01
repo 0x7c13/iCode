@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chrys.kernel import Message
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 
 if TYPE_CHECKING:
     from chrys.service.profiles.models.schema import ModelProfile

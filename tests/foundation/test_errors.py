@@ -337,7 +337,7 @@ def test_clean_error_message_uses_provider_body_from_wrapped_status_error() -> N
     cause = _make_status_error("Error code: 400", body={"message": "chat template rejected tool call"})
     wrapped = _make_chained(
         cause,
-        "<class 'chrys.service.llm.openai_chat_completion.RawOpenAIChatCompletionClient'> service failed to complete the prompt: "
+        "<class 'chrys.service.llm.chat_completions.client.ChatCompletionsClient'> service failed to complete the prompt: "
         "Error code: 400",
     )
 

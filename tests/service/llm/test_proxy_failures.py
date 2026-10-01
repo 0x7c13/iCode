@@ -168,9 +168,9 @@ async def _fail_through(proxy: Origin, provider: str, monkeypatch: pytest.Monkey
     raw = stack.inner.inner
     try:
         if provider == "anthropic":
-            await raw.anthropic_client.messages.create(model="test-model", max_tokens=8, messages=_CHAT)
+            await raw.sdk_client.messages.create(model="test-model", max_tokens=8, messages=_CHAT)
         else:
-            await raw.client.chat.completions.create(model="test-model", messages=_CHAT)
+            await raw.sdk_client.chat.completions.create(model="test-model", messages=_CHAT)
     except (openai.APIError, anthropic.APIError, httpx.HTTPError) as exc:
         return exc
     finally:

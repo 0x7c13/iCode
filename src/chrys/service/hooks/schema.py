@@ -268,10 +268,23 @@ class HooksFile:
     settings_overrides: set[str] = field(default_factory=set)
     """Names of settings fields explicitly present in the source file."""
     hooks: list[HookConfig] = field(default_factory=list)
+    skipped_hooks: list[SkippedHook] = field(default_factory=list)
+    """Hooks left out of :attr:`hooks` because their configuration can never
+    work; the rest of the file still loads.  Reported to the user at session
+    start.
+    """
     source: str = ""
     """Path the file was loaded from; empty for synthetic configs.  Used
     in log messages and the future ``/hooks`` screen.
     """
+
+
+@dataclass(frozen=True)
+class SkippedHook:
+    """A hook the loader left out, and why (English, names the offending field)."""
+
+    id: str
+    reason: str
 
 
 # ---------------------------------------------------------------------------

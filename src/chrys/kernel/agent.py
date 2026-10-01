@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Agent orchestration over session providers and the model/tool loop.
 
@@ -8,7 +10,7 @@ after the run. ``Agent`` adds telemetry and forwards chat/function middleware
 to the client stack::
 
     Agent = AgentTelemetryLayer over _AgentCore
-    client = ToolLoopLayer(ChatMiddlewareLayer(instrumented Raw*))
+    client = ToolLoopLayer(ChatMiddlewareLayer(wire client))
     session/providers = kernel.sessions
 
 The MCP adapter supplies flat ``FunctionTool`` lists. Compaction strategy and

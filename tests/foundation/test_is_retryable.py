@@ -462,7 +462,7 @@ class TestRealWorldErrors:
         cause = _make_sdk_exception("RateLimitError", "Error code: 429", status_code=429)
         wrapper = _make_chained(
             cause,
-            "<class 'chrys.service.llm.openai_chat_completion.RawOpenAIChatCompletionClient'> "
+            "<class 'chrys.service.llm.chat_completions.client.ChatCompletionsClient'> "
             "service failed to complete the prompt: Error code: 429",
         )
         assert is_retryable(wrapper)

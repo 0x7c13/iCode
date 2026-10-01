@@ -121,7 +121,7 @@ def _profile(provider: str, base_url: str, *, max_retries: int = 0) -> ModelProf
 
 def _sdk(stack: Any, provider: str) -> Any:
     raw = stack.inner.inner
-    return raw.anthropic_client if provider == "anthropic" else raw.client
+    return raw.sdk_client
 
 
 def _is_route_hook(hook: Callable[..., Any]) -> bool:

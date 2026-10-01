@@ -1,0 +1,208 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
+
+"""Whole completions and their usage read back as chat responses.
+
+The stream reuses the pieces that describe one choice: its text, its
+metadata and the usage.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast
+
+from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompletionMessageCustomToolCall
+
+from chrys.kernel import ChatResponse, Content, FinishReason, Message, UsageDetails
+from chrys.service.llm.openai_timestamps import openai_created_at_iso
+
+from .reasoning import message_reasoning, message_reasoning_props
+from .validation import raise_invalid_response
+
+if TYPE_CHECKING:
+    from openai.types import CompletionUsage
+    from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+    from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
+    from openai.types.chat.chat_completion_message import ChatCompletionMessage
+
+    from .client import ChatCompletionsVariant
+
+logger = logging.getLogger(__name__)
+
+_PAYLOAD_PREVIEW_LIMIT = 2000
+_TRUNCATED = "...[truncated]"
+
+# The usage breakdowns, in reporting order: the details object, the prefix of
+# the keys its counts are reported under, and each count with the kernel key
+# it also fills and whether a zero is kept. The SDK fields are read directly,
+# so a details value of the wrong shape fails the decode. Not in the SDK
+# model, ``cache_write_tokens`` is kept as an extra field when present; billed
+# explicit prompt caching reports it.
+_BREAKDOWNS: tuple[tuple[str, str, tuple[tuple[str, str | None, bool], ...]], ...] = (
+    (
+        "completion_tokens_details",
+        "completion",
+        (
+            ("accepted_prediction_tokens", None, False),
+            ("audio_tokens", None, False),
+            ("reasoning_tokens", "reasoning_output_token_count", True),
+            ("rejected_prediction_tokens", None, False),
+        ),
+    ),
+    (
+        "prompt_tokens_details",
+        "prompt",
+        (
+            ("audio_tokens", None, False),
+            ("cached_tokens", "cache_read_input_token_count", True),
+            ("cache_write_tokens", "cache_creation_input_token_count", True),
+        ),
+    ),
+)
+
+
+def ensure_choices(response: Any) -> None:
+    """Reject a decoded completion whose ``choices`` is not a list.
+
+    The raw-response check rejects such a body already; this one guards the
+    decoder itself. A gateway may answer with an error envelope such as
+    ``{"error": "rate limit"}``, which the SDK turns into a completion with
+    ``choices=None`` that would fail later as ``'NoneType' object is not
+    iterable``. The SDK model keeps unknown fields, so the payload quoted in
+    the error still shows what the gateway said.
+    """
+    choices = response.choices
+    if isinstance(choices, list):
+        return
+    try:
+        payload = response.model_dump_json()
+    except Exception:
+        payload = repr(response)
+    if len(payload) > _PAYLOAD_PREVIEW_LIMIT:
+        payload = payload[: _PAYLOAD_PREVIEW_LIMIT - len(_TRUNCATED)] + _TRUNCATED
+    problem = (
+        "is missing the required 'choices' array"
+        if choices is None
+        else f"'choices' is {type(choices).__name__}; expected an array"
+    )
+    raise_invalid_response(f"OpenAI Chat Completions response {problem}. Parsed payload: {payload}")
+
+
+def decode_completion(
+    response: ChatCompletion, options: Mapping[str, Any], *, variant: ChatCompletionsVariant
+) -> ChatResponse:
+    """A whole completion as a chat response with one assistant message per choice."""
+    ensure_choices(response)
+    metadata = response_metadata(response)
+    messages: list[Message] = []
+    finish: FinishReason | None = None
+    for choice in response.choices:
+        metadata.update(choice_metadata(choice))
+        if choice.finish_reason:
+            finish = FinishReason(choice.finish_reason)
+        # Text, then calls, then reasoning: unlike a delta, a whole message
+        # has no chunk boundary that could split its text.
+        contents = [*text_contents(choice), *_function_calls(choice.message), *message_reasoning(choice.message)]
+        messages.append(
+            Message(role="assistant", contents=contents, additional_properties=message_reasoning_props(choice.message))
+        )
+    return ChatResponse(
+        messages=messages,
+        response_id=response.id,
+        created_at=openai_created_at_iso(response.created),
+        model=response.model,
+        finish_reason=finish,
+        usage_details=decode_usage(response.usage, variant=variant) if response.usage else None,
+        response_format=options.get("response_format"),
+        additional_properties=metadata,
+    )
+
+
+def decode_usage(usage: CompletionUsage, *, variant: ChatCompletionsVariant) -> UsageDetails:
+    """Token counts and the breakdowns the usage reports.
+
+    Reasoning, cache-read and cache-write counts are kept at zero; other
+    breakdowns only when non-zero.
+    """
+    details = UsageDetails(
+        input_token_count=usage.prompt_tokens,
+        output_token_count=usage.completion_tokens,
+        total_token_count=usage.total_tokens,
+    )
+    counts = cast("dict[str, Any]", details)
+    for group, prefix, entries in _BREAKDOWNS:
+        if not (source := getattr(usage, group)):
+            continue
+        for name, kernel_key, keep_zero in entries:
+            count = getattr(source, name, None) if name == "cache_write_tokens" else getattr(source, name)
+            if count is None or not (count or keep_zero):
+                continue
+            counts[f"{prefix}/{name}"] = count
+            if kernel_key is not None:
+                counts[kernel_key] = count
+    if "cache_read_input_token_count" not in details:
+        # Kimi reports cache reads as a top-level ``cached_tokens`` (zero kept).
+        cached = (usage.model_extra or {}).get("cached_tokens")
+        if isinstance(cached, int) and not isinstance(cached, bool):
+            counts["prompt/cached_tokens"] = cached
+            counts["cache_read_input_token_count"] = cached
+    if variant.reports_prompt_cache_hits:
+        add_deepseek_cache_usage(details, usage)
+    return details
+
+
+def add_deepseek_cache_usage(details: UsageDetails, usage: Any) -> None:
+    """Add DeepSeek's prompt-cache hits, reported top-level as ``prompt_cache_hit_tokens``.
+
+    The kernel keys do not cover it, so it goes under a namespaced key the
+    usage middleware lets through. The Responses decoder reads it too.
+    """
+    hits = getattr(usage, "prompt_cache_hit_tokens", None)
+    if hits is None:
+        hits = (getattr(usage, "model_extra", None) or {}).get("prompt_cache_hit_tokens")
+    if hits is not None:
+        cast("dict[str, Any]", details)["deepseek.prompt_cache_hit_tokens"] = int(hits)
+
+
+def text_contents(choice: Choice | ChunkChoice) -> list[Content]:
+    """A choice's answer text and refusal, each when it is a non-empty string."""
+    message = choice.message if isinstance(choice, Choice) else choice.delta
+    contents: list[Content] = []
+    if text := message.content:
+        if isinstance(text, str):
+            contents.append(Content.from_text(text=text, raw_representation=choice))
+        else:
+            logger.debug("Ignoring non-string Chat Completions content of type %s", type(text).__name__)
+    if isinstance(refusal := message.refusal, str) and refusal:
+        contents.append(Content.from_text(text=refusal, raw_representation=choice))
+    return contents
+
+
+def response_metadata(payload: ChatCompletion | ChatCompletionChunk) -> dict[str, Any]:
+    """The metadata a completion or chunk adds to the response."""
+    return {"system_fingerprint": getattr(payload, "system_fingerprint", None)}
+
+
+def choice_metadata(choice: Choice | ChunkChoice) -> dict[str, Any]:
+    """The metadata one choice adds to the response."""
+    return {"logprobs": getattr(choice, "logprobs", None)}
+
+
+def _function_calls(message: ChatCompletionMessage | None) -> list[Content]:
+    """The message's function calls; custom tool calls are skipped."""
+    if not message or not message.tool_calls:
+        return []
+    return [
+        Content.from_function_call(
+            call_id=call.id or "",
+            name=call.function.name or "",
+            arguments=call.function.arguments or "",
+            raw_representation=call.function,
+        )
+        for call in message.tool_calls
+        if not isinstance(call, ChatCompletionMessageCustomToolCall) and call.function
+    ]

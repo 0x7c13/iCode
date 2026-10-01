@@ -168,7 +168,7 @@ class _Stop(Exception):
 async def test_sdk_requests_use_absolute_urls(provider: str, url: str) -> None:
     stack = await create_client(_profile(provider))
     raw = stack.inner.inner
-    sdk = raw.anthropic_client if provider == "anthropic" else raw.client
+    sdk = raw.sdk_client
     http_client: httpx.AsyncClient = sdk._client
     seen: list[httpx.URL] = []
 

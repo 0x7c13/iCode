@@ -7,23 +7,19 @@ chrys classifies tools with a bare ``kind`` string (``shell``,
 the TUI and the ACP bridge. The same bare form appears in user-facing YAML —
 there is no storage/runtime conversion.
 
-The value is deliberately **not** stored on ``FunctionTool.kind``: the OpenAI
-*Responses* and *Anthropic* wire serializers reserve exactly one kind value,
-``"shell"``, and replace any ``FunctionTool`` whose
-``kind == "shell"`` with the provider's *hosted* shell/bash tool, discarding
-the real name and JSON schema. Those serializers stay on the request path even
-with the chrys-owned tool loop (tools travel to the wire client via options),
-so chrys kinds live on a chrys-owned attribute — ``tool.chrys_kind`` — written
-by :func:`set_tool_kind` and read by :func:`get_tool_kind`, while ``.kind``
-stays ``None`` and the hosted-shell reservation can never match.
+The value lives only on a chrys-owned attribute — ``tool.chrys_kind`` —
+written by :func:`set_tool_kind` and read by :func:`get_tool_kind`;
+``FunctionTool.kind`` stays ``None``. One channel means every reader sees the
+same kind, and the wire serializers, which ignore ``.kind``, always send a
+tool exactly as declared.
 
 The vocabulary and out-of-band kind channel live in
 ``chrys.foundation.tool_kinds`` so lower layers do not depend on ``tools``. This
 module stays as the permanent public authoring surface because it also wraps
 ``chrys.kernel.tool`` with the ``kind=`` convenience parameter.
 
-See ``tests/service/tools/test_kind_framework_contract.py`` (pins the upstream hijack
-and the ``kind is None`` invariant).
+See ``tests/service/tools/test_tool_kind_wire_boundary.py`` (pins the
+``kind is None`` invariant and what each serializer sends).
 """
 
 from __future__ import annotations
@@ -81,7 +77,7 @@ from chrys.foundation.tool_kinds import (
 from chrys.foundation.tool_kinds import (
     strip_legacy_kind_prefix as strip_legacy_kind_prefix,
 )
-from chrys.kernel import tool as _framework_tool
+from chrys.kernel import tool as _kernel_tool
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -100,7 +96,7 @@ def tool(
 ) -> FunctionTool | Callable[[Callable[..., Any]], FunctionTool]:
     """Drop-in for :func:`chrys.kernel.tool` that stores ``kind`` out of band.
 
-    Identical to the upstream decorator except that ``kind=`` is intercepted
+    Identical to :func:`chrys.kernel.tool` except that ``kind=`` is intercepted
     and recorded via :func:`set_tool_kind` — ``FunctionTool.kind`` stays
     ``None`` (see module docstring). All other arguments pass through.
     Instance-method tools keep the kind across descriptor binding: the bound
@@ -109,7 +105,7 @@ def tool(
     """
 
     def decorate(f: Callable[..., Any]) -> FunctionTool:
-        wrapped = _framework_tool(f, **kwargs)
+        wrapped = _kernel_tool(f, **kwargs)
         if kind is not None:
             set_tool_kind(wrapped, kind)
         return wrapped

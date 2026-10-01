@@ -231,7 +231,7 @@ Matching follows these rules:
 - Missing arguments and `null` values do not match. `path: {}` only checks that `path` exists and is not `null`, without comparing its value.
 - Condition values must be strings. In YAML, quote numbers and booleans: an unquoted value such as `equals: 10` or `equals: true` is a configuration error that disables every hook in the file.
 - Non-string arguments are converted with Python's `str()` before comparison, so JSON `true` and `false` become `True` and `False` (match them with `equals: "True"`), and lists and objects use Python's representation.
-- Use YAML single-quoted strings for regular expressions where possible; backslashes must be escaped inside double quotes. If a regular expression is invalid, iCode logs a warning and the condition does not match.
+- Use YAML single-quoted strings for regular expressions where possible; backslashes must be escaped inside double quotes. A hook whose regular expression is invalid is skipped when the session starts and a warning names the hook and its file; the other hooks in the file still run.
 
 ## Run configuration
 

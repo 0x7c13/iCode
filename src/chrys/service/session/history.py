@@ -1229,7 +1229,7 @@ class SessionHistoryManager:
                     len(text),
                 )
                 continue
-            # Match _extract_intermediate_text(), which concatenates text
+            # Match intermediate_text_signal(), which concatenates text
             # parts without separators before deciding whether a sidecar is
             # needed. Replay also recognizes this form for compatibility.
             existing_text = "".join((c.text or "") for c in msg.contents if c.type == "text")

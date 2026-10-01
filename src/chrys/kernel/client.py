@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Chrys-owned chat client base.
 
@@ -804,8 +806,9 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
 
         Single construction point for the LAST_WORDS completer — every stack
         that routes compaction through ``_prepare_messages_for_model_call``
-        (``get_response`` here, ``MockChatClient``'s loop adapter) must build
-        the context through this method so gating stays uniform.
+        (``get_response`` here, which ``MockChatClient`` also calls beneath its
+        tool loop) must build the context through this method so gating stays
+        uniform.
 
         Side-call behavior under OpenAI Responses server-side storage still
         needs live smoke validation. Until then, store-mode profiles get no
