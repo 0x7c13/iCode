@@ -1,0 +1,81 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Remembered grants remain manageable across sessions and feature toggles."""
+
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import replace
+from unittest.mock import create_autospec
+
+import pytest
+
+from chrys.app.cli import app, approvals
+from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.models.workspace import Workspace
+from chrys.kernel.middleware import FunctionInvocationContext
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding
+from chrys.service.state.store import JsonFileStateStore
+from chrys.service.tools.builtins.shell import ShellTools
+
+
+@pytest.fixture
+def grants(tmp_path, monkeypatch):
+    runtime = SessionEnvironment.capture("session-a", Workspace.from_cwd(str(tmp_path)))
+    runtime = replace(runtime, platform=replace(runtime.platform, config_dir=tmp_path / "config"))
+    monkeypatch.setattr(approvals, "get_platform", lambda: runtime.platform)
+    monkeypatch.setattr(approvals, "bootstrap_runtime", create_autospec(approvals.bootstrap_runtime))
+    tools = ShellTools(runtime).tools()
+    binding = ApprovalReuseBinding(runtime, tools)
+    candidate = binding.candidate(FunctionInvocationContext(tools[0], {"command": "npm run test"}))
+    assert candidate is not None
+    assert binding.service.remember(candidate, "EXACT_SESSION")
+    assert binding.service.remember(candidate, "EXACT_PROJECT")
+    return binding, candidate
+
+
+def test_cli_lists_and_revokes_grants_while_reuse_is_disabled(grants, capsys, monkeypatch):
+    binding, candidate = grants
+    monkeypatch.setenv("CHRYS_APPROVAL_REUSE", "false")
+    monkeypatch.setattr(sys, "argv", ["icode", "approvals", "list", "--json"])
+    assert app.main() == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert {row["scope"] for row in rows} == {"SESSION", "PROJECT"}
+    for row in rows:
+        assert approvals.main(["revoke", row["id"]]) == 0
+    assert not binding.service.match(candidate)
+    assert approvals.main(["revoke", rows[0]["id"]]) == 1
+
+
+@pytest.mark.parametrize("filter_args", [["--session", "session-a"], ["--project"], ["--all"]])
+def test_cli_selectively_clears_grants(grants, filter_args):
+    binding, candidate = grants
+    if filter_args == ["--project"]:
+        filter_args = [*filter_args, candidate.context.project_id]
+    assert approvals.main(["clear", *filter_args]) == 0
+    remaining = binding.service.rules()
+    assert [rule.scope for rule in remaining] == (["PROJECT"] if filter_args[0] == "--session" else [])
+
+
+def test_cli_requires_an_explicit_clear_scope(grants):
+    binding, _ = grants
+    with pytest.raises(SystemExit) as error:
+        approvals.main(["clear"])
+    assert error.value.code == 2
+    assert len(binding.service.rules()) == 2
+
+
+async def test_session_restore_fork_and_delete_grant_lifecycle(grants):
+    binding, candidate = grants
+    session_path = binding.service.session_store.path
+    store = JsonFileStateStore(session_path.parent.parent)
+    await store.save_session(binding.session_id, {"messages": [], "compressed_msgs": []})
+    rebuilt = ApprovalReuseBinding(binding.runtime, list(binding.tools.values()))
+    assert {rule.scope for rule in rebuilt.service.rules()} == {"SESSION", "PROJECT"}
+    fork_id = store.fork_session(binding.session_id)
+    assert not (store.session_dir(fork_id) / session_path.name).exists()
+    await store.delete_session(binding.session_id)
+    assert not session_path.exists()
+    assert [rule.scope for rule in rebuilt.service.rules()] == ["PROJECT"]
+    assert rebuilt.service.match(candidate)

@@ -1200,8 +1200,7 @@ class MainScreenViewAdapter:
             judging=event.judging,
             approval_body=body,
             presentation_kind=event.presentation_kind,
-            daa_exact=event.daa_exact,
-            daa_prefix=event.daa_prefix,
+            reuse_offer=event.reuse_offer,
         )
         self._screen.app.push_screen(dialog, on_result)
         return dialog

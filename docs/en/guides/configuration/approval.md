@@ -43,21 +43,50 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 - When declining, you can provide a reason. The reason is sent to the agent to help it adjust its next steps. Once a reason is entered, the approve button is disabled.
 - In automatic mode, the dialog initially shows **Evaluating**. If the model judges the call safe, the dialog closes automatically. If the model judges it suspicious, the title changes to **Flagged by Auto-Review** and the dialog shows the reason and waits for a person to decide. You can also approve or decline directly while evaluation is in progress. If the approval judge model is unavailable or evaluation fails, iCode keeps the dialog open for a person to decide instead of approving the tool call automatically.
 
+## User Approval Reuse (Don't Ask Again, or DAA)
+
+Enable this experimental feature with `CHRYS_APPROVAL_REUSE=1` or `approval.reuse_enabled: true` in [user settings](../../reference/settings.md). The default is off. In eligible dialogs, choose **Remember — this session** or **Remember — this project**; the default remains **Allow once**. Only an explicit human choice creates a grant. Editing a request approves it once; if a hook changes it again, the resulting request requires confirmation.
+
+### Interfaces and data
+
+| Interface / type | Contract |
+| --- | --- |
+| `ApprovalReuseService.match / remember` | Match returns covering grant IDs; remember returns whether storage succeeded. |
+| `ApprovalRequest.reuse_offer` / `ApprovalResponse.remember_choice` | A typed display offer and one-time, session, project or extra-argument choice. Display text is never a matching key. |
+| `CommandKey` / `FileKey` | Command tokens (or exact text), normalized working directory, Shell name, executable path, startup arguments and remaining execution options; or an actual file destination. |
+| `ApprovalGrant` | ID, session/project scope and owner, normalized project path, explicit-user source, creation time, prefix flag and structured key. |
+
+### Authorization rules
+
+| Operation | What is remembered |
+| --- | --- |
+| Shell command | Command arguments, actual working directory and Shell configuration must match in both scopes. Simple commands compare normalized tokens; complex commands support project-only exact text. Environment variables, reason, timeout and output limit are not bound. An explicit `working_dir` uses ordinary approval. |
+| File write/edit | Permission to modify the physical file, after resolving parent directory links; contents may change. Every affected file must be covered within one scope. Changing the destination requires approval again; the worker also checks the approved target. A final-component symlink uses ordinary approval and retains target-change checks. |
+| Reads and other tools | No grant reuse. File reads also check the resolved target for sensitivity; custom tools keep ordinary approval, including valid date/UUID arguments. |
+
+Scope: main-agent local Shell and file write/edit only; sensitive requests, sub-agents, workflow nodes, remote/MCP tools and other custom tools do not create or reuse grants. Existing automatic approval and bypass policies still apply.
+
+**Known issue — generic prefix grants:** the extra-argument choice remains available for supported literal commands. Remembering `git push origin main` this way also permits `git push origin main --force`. Appended arguments may make an operation destructive; this risk is deferred, and the interface warns about it. Choose the ordinary remember option when arguments must remain identical.
+
+### Persistence and management
+
+Project grants live in the user-owned `<config_dir>/approval-grants.json`; session grants live in `<session_root>/sessions/<short-id>/approval-grants.json`. Both use versioned JSON, the existing file lock, a locked re-read and owner-only atomic writes. Unsafe files and symlink paths are rejected. Each file is limited to 1,000 grants / 4 MiB; a full or unwritable store allows the current approved call but reports that it was **not remembered**. Repository files cannot declare user approval.
+
+Session grants survive rebuilding or restoring the same session, disappear when that session is deleted, and are not copied into a fork. Project grants remain until revoked or cleared. Disabling reuse leaves records intact; re-enabling restores their effect. Old development SQLite grants and configuration names are not imported: enable the new setting and approve again. These checks do not provide filesystem sandbox isolation against concurrent changes by other processes.
+
+```bash
+icode approvals list                         # all project and saved-session grants
+icode approvals list --project /work/demo    # filter by normalized project path
+icode approvals list --session SESSION_ID --json
+icode approvals revoke GRANT_ID
+icode approvals clear --project /work/demo
+icode approvals clear --session SESSION_ID
+icode approvals clear --all
+```
+
+Management works even when reuse is off. Lists show IDs, scope, project and target; a reused call records `grant_ids` in its approval decision and `approval_grant_ids` in tool metadata so it can be traced to the relevant rule.
+
 ## Understand automatic approval and safety protections
-
-Enable minimal DAA with `CHRYS_DAA_MINIMAL=1` or by setting `approval.daa_minimal` to `true` in your [user settings](../../reference/settings.md). When an eligible approval dialog appears, choose a session or project grant for exact reuse, or a literal command prefix. The default remains a one-time approval.
-
-DAA is currently available only to the main agent. Sub-agents and workflow nodes do not reuse or save DAA grants; they follow their existing approval policy and mode, including automatic approval and bypass where applicable.
-
-When minimal DAA is enabled, editing a request approves that edit once and does not save the original request as a reusable grant. The edited arguments run through `before_tool_call` hooks. If a hook changes them further, iCode asks you to confirm the resulting request without running the same transformation again. Arguments outside DAA's supported JSON identity format can use ordinary per-call approval only if the confirmation snapshot supports their types (see below); they cannot reuse or create a DAA grant.
-
-Session-scoped DAA grants follow the session ID and survive an agent rebuild or restoration of that same session. A different session does not inherit them. Historical session grants are currently retained in the DAA store; closing an approval dialog or rebuilding an agent does not delete them.
-
-File grants bind to the physical destination after resolving directory symlinks. Changing a link target requires new approval; the destination is checked again in the write/edit worker and the operation uses the confirmed physical path. A final-component symlink stays on ordinary approval because atomic replacement replaces the link itself. This one-time approval still tracks the physical parent and final entry, plus the link's current target: changing either while approval is pending requires fresh approval, and changes after handoff are rejected by the worker. An unresolved target never disables that guard. Older file grants without the physical-path version marker are ignored and must be approved again; command grants are unchanged. These checks do not provide filesystem sandbox isolation against another process concurrently replacing directory entries during an OS write.
-
-Per-call confirmation uses a separate, type-preserving snapshot. It supports built-in strings, booleans, integers, floats (including non-finite values), `None`, bytes, bytearrays, dictionaries, lists, tuples, sets and frozensets, plus `PurePath`/`Path` and enums, with nested values restricted to these types. Enum snapshots retain the enum class, member name and frozen value; valid StrEnum, IntEnum and ordinary Enum parameters reach normal approval. Changing supported arguments while approval is pending requires fresh approval, even when they cannot form reusable DAA keys.
-
-With DAA enabled, calls reaching this confirmation step with `date`/`datetime`, `UUID`, `Decimal`, Pydantic model instances, other unsupported host objects or cyclic values are rejected before a dialog opens with `Tool arguments cannot be safely compared for approval.` Custom tools that need these types must disable minimal DAA or accept supported argument types. This restriction does not apply when DAA is disabled.
 
 The following operations usually run without an approval dialog:
 

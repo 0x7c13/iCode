@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from uuid import uuid4
 
 from chrys.foundation.i18n import MessageRef
+from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -231,7 +232,7 @@ class ApprovalResponse(Event):
     approved: bool = False
     reason: str = ""
     modified_args: dict[str, Any] | None = None
-    daa_choice: str = ""
+    remember_choice: ReuseChoice = ""
 
 
 @dataclass
@@ -684,8 +685,7 @@ class ApprovalRequest(Event):
     user_message: str = ""
     workspace_roots: list[str] = field(default_factory=list)
     workspace_cwd: str = ""
-    daa_exact: str = ""
-    daa_prefix: tuple[str, ...] = ()
+    reuse_offer: ApprovalReuseOffer | None = None
     judging: bool = False
     """True when an LLM reviewer is concurrently evaluating this request.
 

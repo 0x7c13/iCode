@@ -14,6 +14,13 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
+#. English: Allowed once, but the approval could not be remembered. Check
+#. storage permissions or manage grants with icode approvals.
+#. chrys-meta={"fingerprint":"c91616456df496f2e172de04a6f110be536221689f8ab1922238c4949e6e2d3d","multiline":false,"placeholders":[]}
+#: src/chrys/service/agent_middleware/control/approval.py
+msgid "approval.reuse.save_failed"
+msgstr "本次已允许，但未能记住授权。请检查存储权限，或使用 icode approvals 管理授权。"
+
 #. English: We couldn't attach this image.  {items}
 #. English-plural: We couldn't attach these images.  {items}
 #. chrys-meta={"fingerprint":"216dc5eacba54d010a0f7c93ce47777fab09b4133cc2254cc187ec69719dbaa7","multiline":true,"placeholders":["items"]}
@@ -806,17 +813,17 @@ msgstr "默认智能体"
 msgid "settings.app.dev_mode.label"
 msgstr "开发者模式"
 
-#. English: Enable experimental exact/prefix approval reuse
-#. chrys-meta={"fingerprint":"f1f07a6882cf5aa1a1b7f7f5d3f34987af5232f395f9503c7aeb9221959e71c2","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.approval.daa_minimal.label"
-msgstr "启用实验性的精确请求/命令前缀授权复用"
-
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.approval.default_mode.label"
 msgstr "默认审批模式"
+
+#. English: Remember explicit user approvals
+#. chrys-meta={"fingerprint":"c10a0357d44f313a77d1cfb814e8f592fe805b48bf82ed0942d898c6776f8f46","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.reuse_enabled.label"
+msgstr "记住用户明确批准的授权"
 
 #. English: Lowering {source}={raw} to the maximum of {limit}.
 #. chrys-meta={"fingerprint":"08856704e9743293e879aa58af94ee553170e14dd68beec58672b1ea4550f24a","multiline":false,"placeholders":["limit","raw","source"]}
@@ -3651,65 +3658,6 @@ msgstr "批准（Y）"
 msgid "tui.approval.button.decline"
 msgstr "拒绝（N）"
 
-#. English: Session remembers the normalized command below, including every
-#. argument. Project EXACT retains the full request and execution context.
-#. Edits here apply once only.
-#. chrys-meta={"fingerprint":"ca6a4aa7d939e96d48f9a01f82d2c0c1728d9fc83e0d7c92c18e74d916724567","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.command"
-msgstr "当前会话记住下方规范化命令及全部参数；项目 EXACT 仍匹配完整请求和执行上下文。在此编辑参数仅批准一次。"
-
-#. English: EXACT remembers all arguments and execution context below. Edits
-#. apply once only.
-#. chrys-meta={"fingerprint":"1f0aefce4d1660a519ad9eeee2e78eb425d686d4843e732e69419914e2c7606f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.description"
-msgstr "EXACT 会记住以下全部参数及执行上下文。编辑后的请求仅允许本次。"
-
-#. English: Remember — project
-#. chrys-meta={"fingerprint":"b628893c89b145dccc32312b04bac620664fce7b4d2c111824b3640660010bc7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.exact_project"
-msgstr "记住 — 当前项目"
-
-#. English: Remember — session
-#. chrys-meta={"fingerprint":"120b2ebf7829da2f7074e14e3b9d09613d5db27d68df774534dcaf22674befd0","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.exact_session"
-msgstr "记住 — 当前会话"
-
-#. English: Allow further modifications to these files in the selected scope;
-#. contents may change. Edits here apply once only.
-#. chrys-meta={"fingerprint":"b8735796487f73b5db9f2a79257cbcbac860228fddefb5e661c6ff6b28ad9f2e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.files"
-msgstr "允许在所选作用域内继续修改这些文件，内容可以变化。在此编辑参数仅批准一次。"
-
-#. English: Allow once
-#. chrys-meta={"fingerprint":"d9b6ae9de13b9c9a45139f96888d1827e0953a543381b7b6c2ee8917849b23e7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.once"
-msgstr "仅允许本次"
-
-#. English: PREFIX authorizes these tokens and any appended literal arguments:
-#. {prefix}
-#. chrys-meta={"fingerprint":"0bbf6b6224f802bb51002132ed20db6aa63a7386057cc4920051946a753a9377","multiline":false,"placeholders":["prefix"]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.prefix"
-msgstr "PREFIX 将授权以下词元及其后追加的任意字面参数：{prefix}"
-
-#. English: Remember PREFIX — project
-#. chrys-meta={"fingerprint":"834bd178e9c5f5c8d7a07f3883168eb32968d9c94096623f28410f1ec4882d04","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.prefix_project"
-msgstr "记住 PREFIX 命令前缀 — 当前项目"
-
-#. English: Remember PREFIX — session
-#. chrys-meta={"fingerprint":"d55e7b1109e5315c619483746cca3548d6c3844bbff2cee8fe113adba92a0d1c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
-msgid "tui.approval.daa.prefix_session"
-msgstr "记住 PREFIX 命令前缀 — 当前会话"
-
 #. English: Evaluating
 #. chrys-meta={"fingerprint":"1f40bf7abed439a37e5ef078ab3f1cc9e3b9c99ae066d8fbe917082ae955ddbc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
@@ -3813,6 +3761,66 @@ msgstr "原因（可选，拒绝时发送给智能体）"
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.required_title"
 msgstr "工具审批"
+
+#. English: Remember this command in {project}. Command arguments, working
+#. directory and shell configuration must match. Environment variables, reason,
+#. timeout and output limit are not bound.
+#. chrys-meta={"fingerprint":"7066b0ab20a9109b7ea4b7db36f9e425f414d2592205e3bd01cadd99026205d7","multiline":false,"placeholders":["project"]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.command"
+msgstr "在项目 {project} 中记住这条命令。命令参数、工作目录和 Shell 配置必须相同；不绑定环境变量、原因、超时和输出上限。"
+
+#. English: Session grants survive restoring this session; project grants apply
+#. across sessions. Manage or revoke grants with icode approvals. Edits here
+#. apply once only.
+#. chrys-meta={"fingerprint":"fae2e4e6068bffeeb29df96c217ec49434601e33ae62ce6aa8942ad0ff475aad","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.description"
+msgstr "本会话授权在恢复同一会话后继续有效；本项目授权跨会话保留。可用 icode approvals 管理或撤销。此处编辑仅对本次生效。"
+
+#. English: Remember — this project
+#. chrys-meta={"fingerprint":"2e61efa146e59a33623e1b2b89ebe7504f9f06237fefb45e1ce08534dba36e8e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.exact_project"
+msgstr "记住授权—本项目"
+
+#. English: Remember — this session
+#. chrys-meta={"fingerprint":"3ddafc61763b15f332676169e5c06554324122c8d1e222a2b79a1ec14a363872","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.exact_session"
+msgstr "记住授权—本会话"
+
+#. English: Remember permission to modify these files in {project}. File
+#. contents may change.
+#. chrys-meta={"fingerprint":"da1bf95c70a974cc92ef1fda6a883719f8140ce357b2ae37619bf32bf8bc676a","multiline":false,"placeholders":["project"]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.files"
+msgstr "记住以后修改项目 {project} 中这些文件的权限，文件内容可以改变。"
+
+#. English: Allow once
+#. chrys-meta={"fingerprint":"d9b6ae9de13b9c9a45139f96888d1827e0953a543381b7b6c2ee8917849b23e7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.once"
+msgstr "仅允许一次"
+
+#. English: Allowing extra arguments also allows flags that can make this
+#. command destructive.
+#. chrys-meta={"fingerprint":"764b2fba41e30747c1cb56242edbc50b7037047f10349e78bf0c4ad37010fe63","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.prefix"
+msgstr "允许附加参数也会允许可能将此命令变为破坏性操作的选项。"
+
+#. English: Remember with extra arguments — this project
+#. chrys-meta={"fingerprint":"abf9d97e75094238ce3a8f41e718225139cf76bc0edfaa23b84d743888efa162","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.prefix_project"
+msgstr "记住授权并允许附加参数—本项目"
+
+#. English: Remember with extra arguments — this session
+#. chrys-meta={"fingerprint":"c79286bc5d9aada55f4518ad886b9b31ada1de1ba7c5c7c1cbb0ba654664b726","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.prefix_session"
+msgstr "记住授权并允许附加参数—本会话"
 
 #. English: Review sub-agent delegation
 #. chrys-meta={"fingerprint":"7dcb85149a86ce191f347580fab4a3af3588038f343870f21f4ac65eed0af3c8","multiline":false,"placeholders":[]}

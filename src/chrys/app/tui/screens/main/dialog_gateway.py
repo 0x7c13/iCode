@@ -21,6 +21,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
 from chrys.app.tui.screens.main.ports import DialogGatewayView, StatusMessage
 from chrys.app.tui.widgets import PromptDraft
 from chrys.foundation.events.types import ApprovalRequest, ApprovalReviewed, QuestionToUser
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 
 
@@ -87,10 +88,12 @@ class UiGateway:
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
-        daa_choice: str = "",
+        remember_choice: ReuseChoice = "",
     ) -> ApprovalResponseWorker | None:
-        if daa_choice:
-            return self._callbacks.handle_approval_response(request_id, approved, reason, modified_args, daa_choice)
+        if remember_choice:
+            return self._callbacks.handle_approval_response(
+                request_id, approved, reason, modified_args, remember_choice
+            )
         return self._callbacks.handle_approval_response(request_id, approved, reason, modified_args)
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:

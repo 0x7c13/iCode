@@ -15,9 +15,9 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
-from chrys.service.approval.daa_binding import DAABinding
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.builtins.shell import ShellTools
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
@@ -34,15 +34,15 @@ def runtime(tmp_path):
     )
 
 
-def shell_binding(runtime, *, shell=None, profile="profile-a"):
+def shell_binding(runtime, *, shell=None):
     tools = ShellTools(runtime, shell=shell).tools()
     tool = tools[0]
-    return tool, DAABinding(runtime, tools, profile)
+    return tool, ApprovalReuseBinding(runtime, tools)
 
 
 @pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"])
 async def test_human_command_grant_survives_rebuild_and_environment_change(runtime, monkeypatch, choice):
-    monkeypatch.setenv("DAA_REUSE_TEST_ENV", "before")
+    monkeypatch.setenv("APPROVAL_REUSE_TEST_ENV", "before")
     tool, binding = shell_binding(runtime)
     bus = EventBus()
     policy = ApprovalPolicy(ApprovalConfig(default="require", overrides={}))
@@ -50,11 +50,11 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
 
     async def approve(event: ApprovalRequest):
         requests.append(event)
-        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, daa_choice=choice))
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice=choice))
 
     await bus.subscribe(ApprovalRequest, approve)
     called = AsyncMock(spec=lambda: None)
-    middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, daa=binding)
+    middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, reuse=binding)
     args = {"command": "npm run test", "reason": "first", "timeout": 30, "max_tokens": 8000}
     try:
         await middleware.process(FunctionInvocationContext(tool, args), called)
@@ -63,10 +63,10 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
 
-    monkeypatch.setenv("DAA_REUSE_TEST_ENV", "after")
+    monkeypatch.setenv("APPROVAL_REUSE_TEST_ENV", "after")
     runtime = replace(runtime, session_id="session-b" if choice.endswith("PROJECT") else runtime.session_id)
-    rebuilt_tool, rebuilt = shell_binding(runtime, profile="profile-b")
-    middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, daa=rebuilt)
+    rebuilt_tool, rebuilt = shell_binding(runtime)
+    middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, reuse=rebuilt)
 
     async def decline(event: ApprovalRequest):
         requests.append(event)
@@ -80,7 +80,7 @@ async def test_human_command_grant_survives_rebuild_and_environment_change(runti
         await middleware.process(FunctionInvocationContext(rebuilt_tool, changed), called)
         assert len(requests) == 1
         assert called.await_count == 2
-        assert middleware.drain_decisions()[-1]["status"] == "daa_approved"
+        assert middleware.drain_decisions()[-1]["status"] == "reuse_approved"
 
         await middleware.process(
             FunctionInvocationContext(rebuilt_tool, {**changed, "command": "npm run build"}), called
@@ -109,21 +109,18 @@ def test_command_grant_binds_active_shell_and_cwd(runtime, choice, change):
             **{change: {"name": "zsh", "path": active_shell.path + ".other", "args": ["-l", "-c"]}[change]},
         )
     changed_tool, changed_binding = shell_binding(runtime, shell=active_shell)
-    assert (
-        changed_binding.service.match(changed_binding.candidate(FunctionInvocationContext(changed_tool, args)))
-        == "MISS"
-    )
+    assert not changed_binding.service.match(changed_binding.candidate(FunctionInvocationContext(changed_tool, args)))
 
 
 @pytest.mark.parametrize("approved", [False, True])
-async def test_daa_response_cannot_be_changed_after_publication(runtime, approved):
+async def test_reuse_response_cannot_be_changed_after_publication(runtime, approved):
     tool, binding = shell_binding(runtime)
     bus = EventBus()
     middleware = ApprovalMiddleware(
         ApprovalPolicy(ApprovalConfig(default="require", overrides={})),
         bus,
         session_id=runtime.session_id,
-        daa=binding,
+        reuse=binding,
     )
     called = AsyncMock(spec=lambda: None)
 
@@ -133,7 +130,7 @@ async def test_daa_response_cannot_be_changed_after_publication(runtime, approve
         # The request handler still owns this object while the middleware's
         # response future has settled but its execution has not resumed.
         response.approved = True
-        response.daa_choice = "EXACT_PROJECT"
+        response.remember_choice = "EXACT_PROJECT"
 
     await bus.subscribe(ApprovalRequest, answer)
     try:
@@ -150,16 +147,16 @@ def test_session_command_grant_cannot_cross_registered_shells(runtime, source, t
     tools = [
         ShellTools(runtime, shell=replace(runtime.platform.shell, name=name)).tools()[0] for name in (source, target)
     ]
-    binding = DAABinding(runtime, tools, "profile")
+    binding = ApprovalReuseBinding(runtime, tools)
     args = {"command": "sc query foo", "reason": "test"}
     approved = binding.candidate(FunctionInvocationContext(tools[0], args))
     assert approved and binding.service.remember(approved, "EXACT_SESSION")
-    assert binding.service.match(binding.candidate(FunctionInvocationContext(tools[0], args))) == "HIT_ALLOW"
-    assert binding.service.match(binding.candidate(FunctionInvocationContext(tools[1], args))) == "MISS"
+    assert binding.service.match(binding.candidate(FunctionInvocationContext(tools[0], args)))
+    assert not binding.service.match(binding.candidate(FunctionInvocationContext(tools[1], args)))
 
 
 @pytest.mark.parametrize("human_remembers", [False, True])
-async def test_judge_review_preserves_explicit_human_daa_choice(runtime, monkeypatch, human_remembers):
+async def test_judge_review_preserves_explicit_human_remember_choice(runtime, monkeypatch, human_remembers):
     tool, binding = shell_binding(runtime)
     bus = EventBus()
     judge = create_autospec(ApprovalJudge, instance=True)
@@ -169,7 +166,9 @@ async def test_judge_review_preserves_explicit_human_daa_choice(runtime, monkeyp
 
     async def remember(event: ApprovalReviewed):
         if human_remembers:
-            await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, daa_choice="EXACT_PROJECT"))
+            await bus.publish(
+                ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT")
+            )
 
     await bus.subscribe(ApprovalReviewed, remember)
     middleware = ApprovalMiddleware(
@@ -178,7 +177,7 @@ async def test_judge_review_preserves_explicit_human_daa_choice(runtime, monkeyp
         session_id=runtime.session_id,
         approval_mode=ApprovalMode.AUTO,
         approval_judge=judge,
-        daa=binding,
+        reuse=binding,
     )
     context = FunctionInvocationContext(tool, {"command": "npm run test", "reason": "test"})
     called = AsyncMock(spec=lambda: None)
@@ -192,21 +191,21 @@ async def test_judge_review_preserves_explicit_human_daa_choice(runtime, monkeyp
             reason_code="",
             arguments_modified=False,
         )
-        assert binding.service.match(binding.candidate(context)) == ("HIT_ALLOW" if human_remembers else "MISS")
+        assert bool(binding.service.match(binding.candidate(context))) is human_remembers
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalReviewed, remember)
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_live_request_changes_require_reapproval_only_with_daa(runtime, enabled):
+async def test_live_request_changes_require_reapproval_only_with_reuse(runtime, enabled):
     tool, binding = shell_binding(runtime)
     bus = EventBus()
     middleware = ApprovalMiddleware(
         ApprovalPolicy(ApprovalConfig(default="require", overrides={})),
         bus,
         session_id=runtime.session_id,
-        daa=binding if enabled else None,
+        reuse=binding if enabled else None,
     )
     context = FunctionInvocationContext(tool, {"command": "npm run test", "reason": "test"})
     requested_commands = []
@@ -214,7 +213,7 @@ async def test_live_request_changes_require_reapproval_only_with_daa(runtime, en
     async def approve(event: ApprovalRequest):
         requested_commands.append(event.args["command"])
         context.arguments["command"] = "npm run build"
-        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, daa_choice="EXACT_PROJECT"))
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT"))
 
     await bus.subscribe(ApprovalRequest, approve)
     called = AsyncMock(spec=lambda: None)
@@ -222,9 +221,9 @@ async def test_live_request_changes_require_reapproval_only_with_daa(runtime, en
         await middleware.process(context, called)
         called.assert_awaited_once()
         assert requested_commands == (["npm run test", "npm run build"] if enabled else ["npm run test"])
-        assert binding.service.match(binding.candidate(context)) == ("HIT_ALLOW" if enabled else "MISS")
+        assert bool(binding.service.match(binding.candidate(context))) is enabled
         original = FunctionInvocationContext(tool, {"command": "npm run test", "reason": "test"})
-        assert binding.service.match(binding.candidate(original)) == "MISS"
+        assert not binding.service.match(binding.candidate(original))
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)

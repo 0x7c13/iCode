@@ -18,7 +18,9 @@ from chrys.foundation.events.types import (
     ApprovalResponse,
     Event,
     InvocationToolCallArgsUpdated,
+    Warning,
 )
+from chrys.foundation.i18n import msg
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.tool_kinds import (
@@ -47,9 +49,9 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.argument_snapshot import argument_snapshot
 from chrys.service.approval.correlation import OneShotCorrelation
-from chrys.service.approval.daa import canonical
-from chrys.service.approval.daa_binding import DAABinding
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.approval.reuse import canonical
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
@@ -59,6 +61,11 @@ from chrys.service.approval.safety_classifier import (
 from chrys.service.tools.file_approval import approved_file_targets
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
+
+_REMEMBER_FAILED = msg(
+    "approval.reuse.save_failed",
+    fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with icode approvals.",
+)
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
 
@@ -74,7 +81,7 @@ if TYPE_CHECKING:
     from chrys.service.hooks.manager import HookManager
 
 
-def _daa_argument_snapshot(arguments: object) -> str | None:
+def _reuse_argument_snapshot(arguments: object) -> str | None:
     """Unsupported identities use ordinary approval and cannot reuse a grant."""
     try:
         return canonical(arguments)
@@ -237,11 +244,11 @@ class ApprovalMiddleware(FunctionMiddleware):
         profile_name: str = "",
         session_archive_read_roots: list[Path] | None = None,
         turn_context: TurnContextHolder | None = None,
-        daa: DAABinding | None = None,
+        reuse: ApprovalReuseBinding | None = None,
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
-        self._daa = daa
+        self._reuse = reuse
         self._policy = approval_policy
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
@@ -370,6 +377,14 @@ class ApprovalMiddleware(FunctionMiddleware):
         sensitive_filesystem_read = tool_kind == KIND_FILESYSTEM_READ and path_arg_may_access_sensitive_data(
             context.arguments
         )
+        if tool_kind == KIND_FILESYSTEM_READ and isinstance(context.arguments, dict):
+            path = context.arguments.get("path")
+            if isinstance(path, str) and path:
+                try:
+                    target = os.path.realpath(resolve_workspace_path(path, base_cwd=self._workspace_cwd))
+                    sensitive_filesystem_read |= target_may_access_sensitive_data(target)
+                except OSError, ValueError:
+                    sensitive_filesystem_read = True
         sensitive_filesystem_write = tool_kind == KIND_FILESYSTEM_WRITE and path_arg_may_access_sensitive_data(
             context.arguments
         )
@@ -489,11 +504,12 @@ class ApprovalMiddleware(FunctionMiddleware):
         # branches above without copying or coercing their result.
         parsed_args = cast("dict[str, Any]", parsed_args)
 
-        if self._daa is not None:
-            # DAA-only confirmation snapshot, never a future reuse key. Keep
+        reuse = self._reuse if self._reuse is not None and self._reuse.supports(context) else None
+        if reuse is not None:
+            # Reuse-only confirmation snapshot, never a future grant key. Keep
             # ordinary approval free of serialization and tool identity checks.
             confirmed_arguments = argument_snapshot(context.arguments)
-            file_targets = self._daa.file_targets
+            file_targets = reuse.file_targets
             confirmed_file_targets = file_targets(context)
             parsed_args = deepcopy(parsed_args)
             confirmed_function = (context.function, context.function.name, context.function.func)
@@ -525,33 +541,35 @@ class ApprovalMiddleware(FunctionMiddleware):
                     or request_identity_changed()
                 )
 
-        daa_candidate = None
-        if self._daa is not None and _daa_argument_snapshot(context.arguments) is not None:
-            daa_candidate = self._daa.candidate(
+        reuse_candidate = None
+        if reuse is not None and _reuse_argument_snapshot(context.arguments) is not None:
+            reuse_candidate = reuse.candidate(
                 context,
                 non_reusable=dev_sub_agent_review
                 or sensitive_shell
                 or sensitive_filesystem_read
                 or sensitive_filesystem_write,
             )
-            if not reapprove and daa_candidate is not None:
-                matched = await asyncio.to_thread(self._daa.service.match, daa_candidate)
+            if not reapprove and reuse_candidate is not None:
+                matched = await asyncio.to_thread(reuse.service.match, reuse_candidate)
                 # A worker lookup yields the event loop. The grant must still
                 # describe the live request when execution resumes.
                 if request_changed():
                     return "rehook"
             else:
-                matched = "MISS"
-            if matched == "HIT_ALLOW":
+                matched = ()
+            if matched:
                 self._decisions.append(
                     _decision(
                         request_id="",
                         tool_name=tool_name,
-                        status="daa_approved",
+                        status="reuse_approved",
                         call_id=call_id,
                         tool_order=tool_order,
                     )
                 )
+                self._decisions[-1]["grant_ids"] = json.dumps(matched)
+                context.metadata["approval_grant_ids"] = list(matched)
                 with approved_file_targets(confirmed_file_targets):
                     await call_next()
                 return False
@@ -579,7 +597,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                 self._bus,
                 ApprovalResponse,
                 request_id=request_id,
-                snapshot=deepcopy if self._daa is not None else None,
+                snapshot=deepcopy if reuse is not None else None,
             ) as correlation:
                 future = correlation.future
                 try:
@@ -603,7 +621,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                             call_id=call_id,
                             tool_name=tool_name,
                             tool_kind=tool_kind,
-                            args=deepcopy(parsed_args) if self._daa is not None else parsed_args,
+                            args=deepcopy(parsed_args) if reuse is not None else parsed_args,
                             # intent_summary stays empty: the middleware has no real intent
                             # to report, and a fabricated "Execute {tool_name}" placeholder
                             # would win over the informative title fallbacks downstream
@@ -614,8 +632,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                             workspace_roots=list(self._workspace_roots),
                             workspace_cwd=self._workspace_cwd or "",
                             judging=judging,
-                            daa_exact=daa_candidate.display if daa_candidate is not None else "",
-                            daa_prefix=daa_candidate.prefix or () if daa_candidate is not None else (),
+                            reuse_offer=reuse_candidate.offer() if reuse_candidate is not None else None,
                         )
                     )
 
@@ -687,7 +704,7 @@ class ApprovalMiddleware(FunctionMiddleware):
 
             user_decided = correlation.resolved_by_event
             approved = response.approved
-            daa_choice = response.daa_choice if approved else ""
+            remember_choice = response.remember_choice if approved else ""
             reason = response.reason.strip()
             modified_args = response.modified_args
             status = "user_approved" if approved else "user_rejected"
@@ -711,16 +728,16 @@ class ApprovalMiddleware(FunctionMiddleware):
             raise
 
         if approved:
-            if self._daa is not None and request_changed():
+            if reuse is not None and request_changed():
                 # Only the confirmation of the actual request belongs in the
                 # persisted tool decision; a stale approval must not win by ID.
                 self._decisions.remove(decision)
                 return "rehook"
             if modified_args:
                 context.arguments = {**parsed_args, **modified_args}
-                if self._daa is not None:
+                if reuse is not None:
                     confirmed_arguments = argument_snapshot(context.arguments)
-                    confirmed_file_targets = self._daa.file_targets(context)
+                    confirmed_file_targets = reuse.file_targets(context)
                 # Re-dispatch ``before_tool_call`` hooks with the edited args.
                 # ``ToolEventMiddleware`` already fired hooks once with the
                 # original args before approval ran; without this second pass,
@@ -742,8 +759,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                     target_operation_id=tool_operation_id(context.metadata),
                 )
                 # Hooks may have rewritten args further — capture the final form.
-                hooked_arguments = argument_snapshot(context.arguments) if self._daa is not None else None
-                hooked_file_targets = self._daa.file_targets(context) if self._daa is not None else None
+                hooked_arguments = argument_snapshot(context.arguments) if reuse is not None else None
+                hooked_file_targets = reuse.file_targets(context) if reuse is not None else None
                 final_args = context.arguments if isinstance(context.arguments, dict) else modified_args
                 context.metadata[_APPROVAL_MODIFIED_ARGS_KEY] = final_args
                 if call_id and isinstance(final_args, dict):
@@ -769,12 +786,12 @@ class ApprovalMiddleware(FunctionMiddleware):
                     # already set ``context.result`` and ``_APPROVAL_REJECTED_KEY``;
                     # skip ``call_next`` so the tool doesn't run.
                     return False
-                if self._daa is not None and request_changed():
+                if reuse is not None and request_changed():
                     self._decisions.remove(decision)
                     if (
                         request_identity_changed()
                         or argument_snapshot(context.arguments) != hooked_arguments
-                        or self._daa.file_targets(context) != hooked_file_targets
+                        or reuse.file_targets(context) != hooked_file_targets
                     ):
                         # A later event handler changed the request again; that
                         # new request has not passed before_tool_call hooks.
@@ -782,18 +799,27 @@ class ApprovalMiddleware(FunctionMiddleware):
                     return "reapprove"
             if (
                 user_decided
-                and daa_choice
-                and daa_candidate is not None
-                and self._daa is not None
+                and remember_choice
+                and reuse_candidate is not None
+                and reuse is not None
                 and not modified_args
             ):
                 # UI edits are explicit one-time approvals; they never save the
                 # original candidate selected before editing.
-                await asyncio.to_thread(self._daa.service.remember, daa_candidate, daa_choice)
+                remembered = await asyncio.to_thread(reuse.service.remember, reuse_candidate, remember_choice)
+                if not remembered:
+                    await self._bus.publish(
+                        Warning(
+                            session_id=self._session_id,
+                            code="approval_reuse_save_failed",
+                            message=_REMEMBER_FAILED.fallback,
+                            display_message=_REMEMBER_FAILED.bind(),
+                        )
+                    )
                 if request_changed():
                     self._decisions.remove(decision)
                     return "rehook"
-            with approved_file_targets(confirmed_file_targets if self._daa is not None else None):
+            with approved_file_targets(confirmed_file_targets if reuse is not None else None):
                 await call_next()
         else:
             # Return error result — LLM sees rejection and can respond naturally.

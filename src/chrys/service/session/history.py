@@ -1343,6 +1343,8 @@ class SessionHistoryManager:
                 approval["call_id"] = decision["call_id"]
             if decision.get("reason"):
                 approval["reason"] = decision["reason"]
+            if decision.get("grant_ids"):
+                approval["grant_ids"] = decision["grant_ids"]
             return approval
 
         def _apply_modified_args(content: Content, decision: dict[str, str]) -> bool:

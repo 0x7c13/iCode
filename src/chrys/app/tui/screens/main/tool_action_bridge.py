@@ -15,6 +15,7 @@ from chrys.foundation.events.types import (
     InvocationRetryRequested,
     SleepSkip,
 )
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 
 
@@ -51,7 +52,7 @@ class ToolActionBridge:
         approved: bool,
         reason: str = "",
         modified_args: dict[str, Any] | None = None,
-        daa_choice: str = "",
+        remember_choice: ReuseChoice = "",
     ) -> None:
         """Publish an approval response."""
         await self._publisher.publish(
@@ -60,7 +61,7 @@ class ToolActionBridge:
                 approved=approved,
                 reason=reason,
                 modified_args=modified_args,
-                daa_choice=daa_choice,
+                remember_choice=remember_choice,
             )
         )
         self._log("ApprovalResponse", "approved" if approved else "declined")

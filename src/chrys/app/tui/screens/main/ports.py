@@ -22,6 +22,7 @@ from chrys.foundation.events.types import (
     QuestionToUser,
 )
 from chrys.foundation.i18n import MessageRef
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.service.approval.policy import ApprovalMode
 
 if TYPE_CHECKING:
@@ -418,7 +419,7 @@ class DialogGatewayCallbacks(Protocol):
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
-        daa_choice: str = "",
+        remember_choice: ReuseChoice = "",
     ) -> ApprovalResponseWorker | None: ...
     async def publish_auto_fulfill_blocked(self, event: ApprovalReviewed) -> None: ...
     def handle_ask_user_response(self, request_id: str, answers: tuple[AskUserAnswer, ...]) -> None: ...
