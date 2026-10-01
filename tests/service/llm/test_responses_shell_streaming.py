@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Regression tests for OpenAI Responses streaming shell items."""
+"""OpenAI Responses shell items: streamed hosted calls and the stored local-shell results replayed from history."""
 
 from __future__ import annotations
 
@@ -8,47 +8,34 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from openai.types.responses import ResponseFunctionShellToolCall, ResponseOutputItemDoneEvent
-from openai.types.responses.response_function_shell_tool_call import Action as ShellCallAction
-from openai.types.responses.response_output_item import LocalShellCall, LocalShellCallAction
 
 from chrys.kernel import Content, Message
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.history import (
+    OPENAI_SHELL_OUTPUT_TYPE_KEY,
+    OPENAI_SHELL_OUTPUT_TYPE_LOCAL_SHELL_CALL,
+    OPENAI_SHELL_OUTPUT_TYPE_SHELL_CALL,
+)
+from chrys.service.llm.openai_responses.replay import encode_input
+from chrys.service.llm.openai_responses.request import build_request
+from chrys.service.llm.openai_responses.stream import StreamState
 
 
-class _FakeAsyncOpenAI:
-    base_url = "https://api.test"
-
-
-def _client() -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=_FakeAsyncOpenAI())
+def _stream() -> StreamState:
+    return StreamState({}, model="gpt-test", variant=OPENAI_RESPONSES)
 
 
 def _event(event_type: str, item: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(type=event_type, item=item, output_index=0)
 
 
-def _local_shell_tool_and_result(client: RawOpenAIChatClient) -> tuple[object, Content]:
-    async def run_shell(command: str) -> str:
-        return f"ran {command}"
-
-    tool = RawOpenAIChatClient.get_shell_tool(func=run_shell, name="bash")
-    item = SimpleNamespace(
-        type="local_shell_call",
-        id="lsc_1",
+def _stored_local_shell_result() -> Content:
+    """A local shell result as stored history carries it: a function result marked with its output item type."""
+    return Content.from_function_result(
         call_id="call_1",
-        action=SimpleNamespace(command=["echo", "hi"], timeout_ms=1000),
-        status="completed",
-    )
-
-    update = client._parse_chunk_from_openai(_event("response.output_item.done", item), {"tools": [tool]}, {})
-    call = update.contents[0]
-    result = Content.from_function_result(
-        call_id=call.call_id,
         result="ok",
-        additional_properties=call.additional_properties,
+        additional_properties={OPENAI_SHELL_OUTPUT_TYPE_KEY: OPENAI_SHELL_OUTPUT_TYPE_LOCAL_SHELL_CALL},
     )
-    return tool, result
 
 
 @pytest.mark.parametrize(
@@ -59,7 +46,7 @@ def _local_shell_tool_and_result(client: RawOpenAIChatClient) -> tuple[object, C
     ],
 )
 def test_streaming_hosted_shell_added_emits_one_start_carrier(item: SimpleNamespace) -> None:
-    update = _client()._parse_chunk_from_openai(_event("response.output_item.added", item), {}, {})
+    update = _stream().update_for(_event("response.output_item.added", item))
 
     assert len(update.contents) == 1
     assert update.contents[0].type == "shell_tool_call"
@@ -69,7 +56,7 @@ def test_streaming_hosted_shell_added_emits_one_start_carrier(item: SimpleNamesp
 def test_streaming_shell_output_added_defers_until_done() -> None:
     item = SimpleNamespace(type="shell_call_output", call_id="call_1", output=[])
 
-    update = _client()._parse_chunk_from_openai(_event("response.output_item.added", item), {}, {})
+    update = _stream().update_for(_event("response.output_item.added", item))
 
     assert update.contents == []
 
@@ -82,7 +69,7 @@ def test_streaming_shell_done_parses_shell_call() -> None:
         status="completed",
     )
 
-    update = _client()._parse_chunk_from_openai(_event("response.output_item.done", item), {}, {})
+    update = _stream().update_for(_event("response.output_item.done", item))
 
     content = update.contents[0]
     assert content.type == "shell_tool_call"
@@ -101,7 +88,7 @@ def test_streaming_shell_done_parses_local_shell_call() -> None:
         status="completed",
     )
 
-    update = _client()._parse_chunk_from_openai(_event("response.output_item.done", item), {}, {})
+    update = _stream().update_for(_event("response.output_item.done", item))
 
     content = update.contents[0]
     assert content.type == "shell_tool_call"
@@ -112,15 +99,13 @@ def test_streaming_shell_done_parses_local_shell_call() -> None:
 
 
 @pytest.mark.parametrize("request_uses_service_side_storage", [False, True])
-def test_streaming_local_shell_result_serializes_as_local_shell_output(
+def test_stored_local_shell_result_serializes_as_local_shell_output(
     request_uses_service_side_storage: bool,
 ) -> None:
-    client = _client()
-    _tool, result = _local_shell_tool_and_result(client)
-
-    prepared = client._prepare_messages_for_openai(
-        [Message(role="tool", contents=[result])],
-        request_uses_service_side_storage=request_uses_service_side_storage,
+    prepared = encode_input(
+        [Message(role="tool", contents=[_stored_local_shell_result()])],
+        service_side=request_uses_service_side_storage,
+        variant=OPENAI_RESPONSES,
     )
 
     assert prepared[0]["type"] == "local_shell_call_output"
@@ -129,64 +114,36 @@ def test_streaming_local_shell_result_serializes_as_local_shell_output(
 
 
 @pytest.mark.parametrize(
-    ("item", "output"),
+    ("output_type", "output"),
     [
+        (OPENAI_SHELL_OUTPUT_TYPE_LOCAL_SHELL_CALL, '{"stdout": "Error: Function failed.", "exit_code": 1}'),
         (
-            LocalShellCall(
-                type="local_shell_call",
-                id="lsc_1",
-                call_id="call_1",
-                action=LocalShellCallAction(type="exec", command=["echo", "hi"], env={}, timeout_ms=1000),
-                status="completed",
-            ),
-            '{"stdout": "Error: Function failed.", "exit_code": 1}',
-        ),
-        (
-            ResponseFunctionShellToolCall(
-                type="shell_call",
-                id="sh_1",
-                call_id="call_1",
-                action=ShellCallAction(commands=["echo hi"], timeout_ms=1000, max_output_length=None),
-                status="completed",
-            ),
+            OPENAI_SHELL_OUTPUT_TYPE_SHELL_CALL,
             [{"stdout": "Error: Function failed.", "stderr": "", "outcome": {"type": "exit", "exit_code": 1}}],
         ),
     ],
     ids=["local_shell_call", "shell_call"],
 )
-def test_failed_local_shell_result_keeps_its_exception_record_off_the_wire(
-    item: LocalShellCall | ResponseFunctionShellToolCall, output: object
-) -> None:
-    async def run_shell(command: str) -> str:
-        return f"ran {command}"
-
-    client = _client()
-    tool = RawOpenAIChatClient.get_shell_tool(func=run_shell, name="bash")
-    done = ResponseOutputItemDoneEvent(type="response.output_item.done", item=item, output_index=0, sequence_number=0)
-    update = client._parse_chunk_from_openai(done, {"tools": [tool]}, {})
-    call = update.contents[0]
+def test_failed_local_shell_result_keeps_its_exception_record_off_the_wire(output_type: str, output: object) -> None:
     result = Content.from_function_result(
-        call_id=call.call_id,
+        call_id="call_1",
         result="Error: Function failed.",
         exception="ToolExecutionException: Failed. (caused by OSError: /home/me/.secret)",
-        additional_properties=call.additional_properties,
+        additional_properties={OPENAI_SHELL_OUTPUT_TYPE_KEY: output_type},
     )
 
-    prepared = client._prepare_messages_for_openai(
-        [Message(role="tool", contents=[result])], request_uses_service_side_storage=False
-    )
+    prepared = encode_input([Message(role="tool", contents=[result])], service_side=False, variant=OPENAI_RESPONSES)
 
     assert prepared[0]["output"] == output
     assert "/home/me/.secret" not in json.dumps(prepared)
 
 
-async def test_stored_local_shell_result_keeps_request_input() -> None:
-    client = _client()
-    tool, result = _local_shell_tool_and_result(client)
-
-    prepared = await client._prepare_options(
-        [Message(role="tool", contents=[result])],
-        {"conversation_id": "resp_123", "tools": [tool]},
+def test_stored_local_shell_result_keeps_request_input() -> None:
+    prepared = build_request(
+        [Message(role="tool", contents=[_stored_local_shell_result()])],
+        {"conversation_id": "resp_123"},
+        model="gpt-test",
+        variant=OPENAI_RESPONSES,
     )
 
     assert prepared["input"][0]["type"] == "local_shell_call_output"
@@ -207,7 +164,7 @@ def test_streaming_shell_done_parses_shell_call_output() -> None:
         max_output_length=2000,
     )
 
-    update = _client()._parse_chunk_from_openai(_event("response.output_item.done", item), {}, {})
+    update = _stream().update_for(_event("response.output_item.done", item))
 
     content = update.contents[0]
     assert content.type == "shell_tool_result"

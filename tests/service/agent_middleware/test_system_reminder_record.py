@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
@@ -33,9 +32,11 @@ from chrys.service.agent_middleware.system_reminder import SystemReminderMiddlew
 from chrys.service.agent_middleware.system_reminder import (
     wrap_system_reminder as _wrap,
 )
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.anthropic_messages.history import encode_messages
+from chrys.service.llm.chat_completions import ChatCompletionsClient
+from chrys.service.llm.chat_completions import history as chat_history
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.replay import encode_input
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 from tests.support.reminder_calls import enrich_call, establish_request
 from tests.support.reminder_stack import reminder_pair
@@ -792,18 +793,16 @@ class _FakeAsyncOpenAI:
 
 
 def _chat_completions(messages: list[Message]) -> object:
-    client = RawOpenAIChatCompletionClient(model="glm-5.2", async_client=_FakeAsyncOpenAI())
-    return client._prepare_messages_for_openai(messages)
+    client = ChatCompletionsClient(model="glm-5.2", sdk_client=_FakeAsyncOpenAI())
+    return chat_history.encode_messages(messages, variant=client.VARIANT)
 
 
 def _responses(messages: list[Message]) -> object:
-    client = RawOpenAIChatClient(model="openai-test", async_client=_FakeAsyncOpenAI())
-    return client._prepare_messages_for_openai(messages)
+    return encode_input(messages, service_side=True, variant=OPENAI_RESPONSES)
 
 
 def _anthropic(messages: list[Message]) -> object:
-    client = RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
-    return client._prepare_messages_for_anthropic(messages)
+    return encode_messages(messages)
 
 
 @pytest.mark.parametrize(

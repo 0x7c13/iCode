@@ -126,7 +126,7 @@ def test_wait_inventory_pins_blocking_stream_io_representatives() -> None:
 def test_wait_inventory_pins_implicit_stream_and_context_manager_waits() -> None:
     nodes = scan_wait_nodes()
     expected = {
-        ("chrys.service.llm.openai_responses", "async for chunk in response"),
+        ("chrys.service.llm.openai_responses.client", "async for event in parsed_events"),
         ("chrys.service.mcp._stdio_transport", "async for session_message in write_stream_reader"),
         ("chrys.service.mcp._http_transport", "async with streamable_http_client("),
     }

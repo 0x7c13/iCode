@@ -23,7 +23,7 @@ from anthropic.types.beta import (
 )
 
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
+from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
 
 
 class _FakeMessages:
@@ -62,9 +62,9 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
         async def create(self, **_kwargs: object):
             return sdk_stream
 
-    client = RawAnthropicClient(
+    client = AnthropicMessagesClient(
         model="claude-test",
-        anthropic_client=SimpleNamespace(beta=SimpleNamespace(messages=_Messages())),  # type: ignore[arg-type]
+        sdk_client=SimpleNamespace(beta=SimpleNamespace(messages=_Messages())),  # type: ignore[arg-type]
     )
     response_stream = client._inner_get_response(
         messages=[Message("user", ["hi"])],
@@ -81,7 +81,7 @@ async def _stream_response(
     events: Sequence[BetaRawMessageStreamEvent],
 ) -> tuple[list[ChatResponseUpdate], ChatResponse]:
     anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_FakeMessages(events)))
-    client = RawAnthropicClient(model="kimi-k3", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+    client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
         messages=[Message("user", ["Explore the repository"])],
         options={},
@@ -107,7 +107,7 @@ async def _stream_function_calls(events: Sequence[BetaRawMessageStreamEvent]) ->
 async def test_additional_beta_flags_are_forwarded_only_in_betas() -> None:
     messages_client = _FakeMessages([])
     anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
-    client = RawAnthropicClient(model="claude-test", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+    client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
         messages=[Message("user", ["hi"])],
         options={"additional_beta_flags": ["x-beta"]},
@@ -133,7 +133,7 @@ async def test_additional_beta_flags_from_chat_options_survive_public_get_respon
     whether carried in options or in client kwargs."""
     messages_client = _FakeMessages([])
     anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
-    client = RawAnthropicClient(model="claude-test", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+    client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client.get_response(
         [Message("user", ["hi"])],
         stream=True,
@@ -152,43 +152,57 @@ async def test_additional_beta_flags_from_chat_options_survive_public_get_respon
     assert "additional_beta_flags" not in request_kwargs
 
 
+def _tool_start(index: int, call_id: str, name: str) -> BetaRawContentBlockStartEvent:
+    block = BetaToolUseBlock(type="tool_use", id=call_id, name=name, input={})
+    return BetaRawContentBlockStartEvent(type="content_block_start", index=index, content_block=block)
+
+
+def _text_start(index: int) -> BetaRawContentBlockStartEvent:
+    block = BetaTextBlock(type="text", text="", citations=None)
+    return BetaRawContentBlockStartEvent(type="content_block_start", index=index, content_block=block)
+
+
+def _json_delta(index: int, partial_json: str) -> BetaRawContentBlockDeltaEvent:
+    delta = BetaInputJSONDelta(type="input_json_delta", partial_json=partial_json)
+    return BetaRawContentBlockDeltaEvent(type="content_block_delta", index=index, delta=delta)
+
+
+def _text_delta(index: int, text: str) -> BetaRawContentBlockDeltaEvent:
+    delta = BetaTextDelta(type="text_delta", text=text)
+    return BetaRawContentBlockDeltaEvent(type="content_block_delta", index=index, delta=delta)
+
+
+def _block_stop(index: int) -> BetaRawContentBlockStopEvent:
+    return BetaRawContentBlockStopEvent(type="content_block_stop", index=index)
+
+
+def _message_stop() -> BetaRawMessageStopEvent:
+    return BetaRawMessageStopEvent(type="message_stop")
+
+
+def _tool_use_tail(output_tokens: int) -> list[BetaRawMessageStreamEvent]:
+    """The closing events of a message that stopped to call tools."""
+    finish = BetaRawMessageDeltaEvent(
+        type="message_delta",
+        delta={"stop_reason": "tool_use", "stop_sequence": None},
+        usage=BetaMessageDeltaUsage(output_tokens=output_tokens),
+    )
+    return [finish, _message_stop()]
+
+
 @pytest.mark.asyncio
 async def test_interleaved_parallel_tool_calls_are_assembled_by_content_block_index() -> None:
     """Kimi K3 may interleave Anthropic input deltas from parallel tool-use blocks."""
     events: list[BetaRawMessageStreamEvent] = [
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=0,
-            content_block=BetaToolUseBlock(type="tool_use", id="call-a", name="zsh", input={}),
-        ),
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=1,
-            content_block=BetaToolUseBlock(type="tool_use", id="call-b", name="glob", input={}),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=0,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='{"command":'),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=1,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='{"pattern":'),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=0,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='"ls"}'),
-        ),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=0),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=1,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='"*.py"}'),
-        ),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=1),
-        BetaRawMessageStopEvent(type="message_stop"),
+        _tool_start(0, "call-a", "zsh"),
+        _tool_start(1, "call-b", "glob"),
+        _json_delta(0, '{"command":'),
+        _json_delta(1, '{"pattern":'),
+        _json_delta(0, '"ls"}'),
+        _block_stop(0),
+        _json_delta(1, '"*.py"}'),
+        _block_stop(1),
+        _message_stop(),
     ]
     calls = await _stream_function_calls(events)
 
@@ -203,29 +217,13 @@ async def test_interleaved_parallel_tool_calls_are_assembled_by_content_block_in
 async def test_parallel_tool_calls_preserve_block_order_when_stops_are_reversed() -> None:
     """Tool execution order follows content-block indices, not interleaved stop-event order."""
     events: list[BetaRawMessageStreamEvent] = [
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=0,
-            content_block=BetaToolUseBlock(type="tool_use", id="call-a", name="zsh", input={}),
-        ),
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=1,
-            content_block=BetaToolUseBlock(type="tool_use", id="call-b", name="glob", input={}),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=0,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='{"command":"ls"}'),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=1,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='{"pattern":"*.py"}'),
-        ),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=1),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=0),
-        BetaRawMessageStopEvent(type="message_stop"),
+        _tool_start(0, "call-a", "zsh"),
+        _tool_start(1, "call-b", "glob"),
+        _json_delta(0, '{"command":"ls"}'),
+        _json_delta(1, '{"pattern":"*.py"}'),
+        _block_stop(1),
+        _block_stop(0),
+        _message_stop(),
     ]
 
     calls = await _stream_function_calls(events)
@@ -240,23 +238,10 @@ async def test_parallel_tool_calls_preserve_block_order_when_stops_are_reversed(
 async def test_tool_calls_are_emitted_before_terminal_message_delta() -> None:
     """The standard Anthropic tail exposes calls before its terminal finish update."""
     events: list[BetaRawMessageStreamEvent] = [
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=0,
-            content_block=BetaToolUseBlock(type="tool_use", id="call-a", name="zsh", input={}),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=0,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='{"command":"ls"}'),
-        ),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=0),
-        BetaRawMessageDeltaEvent(
-            type="message_delta",
-            delta={"stop_reason": "tool_use", "stop_sequence": None},
-            usage=BetaMessageDeltaUsage(output_tokens=12),
-        ),
-        BetaRawMessageStopEvent(type="message_stop"),
+        _tool_start(0, "call-a", "zsh"),
+        _json_delta(0, '{"command":"ls"}'),
+        _block_stop(0),
+        *_tool_use_tail(output_tokens=12),
     ]
 
     updates, response = await _stream_response(events)
@@ -278,34 +263,13 @@ async def test_tool_calls_are_emitted_before_terminal_message_delta() -> None:
 async def test_local_tool_call_preserves_order_before_later_text_block() -> None:
     """Deferred local calls retain their indexed position relative to later content blocks."""
     events: list[BetaRawMessageStreamEvent] = [
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=0,
-            content_block=BetaToolUseBlock(type="tool_use", id="call-a", name="zsh", input={}),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=0,
-            delta=BetaInputJSONDelta(type="input_json_delta", partial_json='{"command":"ls"}'),
-        ),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=0),
-        BetaRawContentBlockStartEvent(
-            type="content_block_start",
-            index=1,
-            content_block=BetaTextBlock(type="text", text="", citations=None),
-        ),
-        BetaRawContentBlockDeltaEvent(
-            type="content_block_delta",
-            index=1,
-            delta=BetaTextDelta(type="text_delta", text="Done"),
-        ),
-        BetaRawContentBlockStopEvent(type="content_block_stop", index=1),
-        BetaRawMessageDeltaEvent(
-            type="message_delta",
-            delta={"stop_reason": "tool_use", "stop_sequence": None},
-            usage=BetaMessageDeltaUsage(output_tokens=16),
-        ),
-        BetaRawMessageStopEvent(type="message_stop"),
+        _tool_start(0, "call-a", "zsh"),
+        _json_delta(0, '{"command":"ls"}'),
+        _block_stop(0),
+        _text_start(1),
+        _text_delta(1, "Done"),
+        _block_stop(1),
+        *_tool_use_tail(output_tokens=16),
     ]
 
     updates, response = await _stream_response(events)

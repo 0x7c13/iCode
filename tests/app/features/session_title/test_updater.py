@@ -543,7 +543,7 @@ async def test_generate_title_rebuilds_client_on_profile_config_change(tmp_path:
     from types import SimpleNamespace
 
     from chrys.service.llm import clients as clients_mod
-    from chrys.service.llm import responses as responses_mod
+    from chrys.service.llm import one_shot as one_shot_mod
     from chrys.service.profiles.models.schema import ModelProfile
 
     store = await _saved_store(tmp_path)
@@ -566,7 +566,7 @@ async def test_generate_title_rebuilds_client_on_profile_config_change(tmp_path:
         return SimpleNamespace(text=" <existing-title>\nFix login bug\n</existing-title>\n")
 
     monkeypatch.setattr(clients_mod, "create_client", fake_create_client)
-    monkeypatch.setattr(responses_mod, "get_final_response", fake_get_final_response)
+    monkeypatch.setattr(one_shot_mod, "get_final_response", fake_get_final_response)
 
     def title_profile():
         return _resolve_title_profile(engine)
@@ -654,7 +654,7 @@ def _lease_updater(
     from unittest.mock import create_autospec
 
     from chrys.service.llm import clients as clients_mod
-    from chrys.service.llm import responses as responses_mod
+    from chrys.service.llm import one_shot as one_shot_mod
 
     async def get_final_response(
         client: _LeaseClient, messages: list[Message], *, stream: bool, options: dict, timeout: float
@@ -665,9 +665,9 @@ def _lease_updater(
         clients_mod, "create_client", create_autospec(clients_mod.create_client, side_effect=list(clients))
     )
     monkeypatch.setattr(
-        responses_mod,
+        one_shot_mod,
         "get_final_response",
-        create_autospec(responses_mod.get_final_response, side_effect=get_final_response),
+        create_autospec(one_shot_mod.get_final_response, side_effect=get_final_response),
     )
     return SessionTitleUpdater(EventBus(), store, engine_getter=lambda: engine)
 

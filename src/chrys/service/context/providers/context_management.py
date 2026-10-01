@@ -35,7 +35,7 @@ from chrys.kernel import (
 )
 from chrys.service.context.compaction.groups import _tool_call_name, _tool_result_text
 from chrys.service.context.providers.history import CompressibleHistoryProvider
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 from chrys.service.tools.result_metadata import tool_error
 
 if TYPE_CHECKING:

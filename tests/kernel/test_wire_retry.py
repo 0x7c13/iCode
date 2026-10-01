@@ -161,7 +161,7 @@ def _wrapped_network_error() -> ChatClientException:
     cause = ConnectionError("peer closed connection")
     try:
         raise ChatClientException(
-            "<class 'chrys.service.llm.instrumented.DynamicClient'> "
+            "<class 'chrys.service.llm.chat_completions.client.ChatCompletionsClient'> "
             "service failed to complete the prompt: peer closed connection",
             inner_exception=cause,
         ) from cause
@@ -1139,7 +1139,7 @@ async def test_abandoned_close_never_finalizes_partial_updates_via_cleanup_hooks
     stream.with_result_hook(_after)
 
     async def _telemetry_shaped_cleanup() -> None:
-        # Mirrors the instrumented cleanup hook: on a non-errored stream it
+        # Mirrors the wire client's cleanup hook: on a non-errored stream it
         # requests the final response, which must refuse on abandonment.
         try:
             await stream.get_final_response()

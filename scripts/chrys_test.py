@@ -167,15 +167,21 @@ ARCHITECTURE_RULES = (
 _WORKFLOW_WORKER_HOST = ("src/chrys/service/workflows/worker_host.py", "src/chrys/service/workflows/sdk/**")
 _WORKFLOW_FAKE_WORKER = ("tests/orchestration/workflows/fake_worker.py",)
 
-# The reminder characterization tests pin the whole reminder pipeline, whose
-# sources sit more than two imports away; the golden test reads its baseline
-# files by path.
+# The reminder lifecycle tests drive the whole reminder pipeline, whose
+# sources sit more than two imports away.
 _REMINDER_PIPELINE = (
     "src/chrys/service/agent_middleware/system_reminder.py",
     "src/chrys/service/agent_middleware/reminders/**",
     "src/chrys/service/context/compaction/last_words_state.py",
 )
-_REMINDER_GOLDENS = ("tests/service/agent_middleware/reminder_goldens/**",)
+
+# The client contracts build every LLM client through ``create_client``, most
+# of it more than two imports from the test, and import the package in a
+# subprocess.
+_LLM_CLIENT_SOURCES = (
+    "src/chrys/service/llm/**",
+    "src/chrys/service/profiles/models/**",
+)
 
 # Regular tests can also consume repository files without importing them.  Keep
 # those dependency edges explicit: subprocess fixtures, filesystem scanners,
@@ -192,8 +198,9 @@ REGULAR_RULES = (
     TestRule("tests/orchestration/workflows/test_worker_semantics.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/orchestration/workflows/test_worker_stdout.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/orchestration/workflows/test_worker_values.py", _WORKFLOW_WORKER_HOST),
-    TestRule("tests/service/agent_middleware/test_reminder_goldens.py", (*_REMINDER_PIPELINE, *_REMINDER_GOLDENS)),
     TestRule("tests/service/agent_middleware/test_reminder_lifecycle.py", _REMINDER_PIPELINE),
+    TestRule("tests/service/llm/test_client_contracts.py", _LLM_CLIENT_SOURCES),
+    TestRule("tests/service/llm/test_persisted_names.py", ("src/chrys/service/llm/**",)),
     TestRule("tests/app/tui/behaviors/test_chrys_themes.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/app/tui/i18n/test_bindings.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/app/tui/screens/test_modal_insert_clipboard.py", ("src/chrys/app/tui/screens/**",)),

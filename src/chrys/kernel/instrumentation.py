@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """OpenTelemetry layers for chat calls, agent runs and tool execution.
 
@@ -1048,8 +1050,8 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
     """Trace chat calls through ``super().get_response()`` under ``TELEMETRY_GATE``.
 
     Telemetry must wrap ``get_response`` and must never define
-    ``_inner_get_response``: the intermediate-text mixin delegates below
-    this layer when it reaches the wire client.
+    ``_inner_get_response``: the wire client below this layer implements
+    that hook, and request reporting rides on it.
     """
 
     def __init__(self, *args: Any, otel_provider_name: str | None = None, **kwargs: Any) -> None:

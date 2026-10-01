@@ -4,49 +4,12 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
-
-from openai import AsyncOpenAI
-
 from chrys.kernel import Content, Message
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
-from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
-
-
-class _UnusedCompletions:
-    async def create(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("serializer tests should not call the SDK")
-
-
-class _UnusedChat:
-    def __init__(self) -> None:
-        self.completions = _UnusedCompletions()
-
-
-class _UnusedAsyncOpenAI:
-    base_url = "https://api.deepseek.test"
-
-    def __init__(self) -> None:
-        self.chat = _UnusedChat()
-
-
-def _openai_client() -> RawOpenAIChatCompletionClient:
-    return RawOpenAIChatCompletionClient(model="gpt-test", async_client=AsyncOpenAI(api_key="sk-fake"))
-
-
-def _deepseek_client() -> DeepSeekChatCompletionClient:
-    return DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_UnusedAsyncOpenAI())
-
-
-def _responses_client() -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=AsyncOpenAI(api_key="sk-fake"))
-
-
-def _anthropic_client() -> RawAnthropicClient:
-    return RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
+from chrys.service.llm.anthropic_messages.history import encode_messages
+from chrys.service.llm.chat_completions import history as chat_history
+from chrys.service.llm.chat_completions.client import DEEPSEEK, OPENAI
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.replay import encode_input
 
 
 def _image_result(call_id: str, text: str = "caption") -> Content:
@@ -60,7 +23,7 @@ def _image_result(call_id: str, text: str = "caption") -> Content:
 
 
 def test_openai_chat_lowers_single_tool_result_image_after_tool_message() -> None:
-    prepared = _openai_client()._prepare_messages_for_openai([Message("tool", [_image_result("call_1")])])
+    prepared = chat_history.encode_messages([Message("tool", [_image_result("call_1")])], variant=OPENAI)
 
     assert len(prepared) == 2
     assert prepared[0] == {
@@ -77,8 +40,8 @@ def test_openai_chat_lowers_single_tool_result_image_after_tool_message() -> Non
 
 
 def test_openai_chat_buffers_multiple_tool_result_images_into_one_user_message() -> None:
-    prepared = _openai_client()._prepare_messages_for_openai(
-        [Message("tool", [_image_result("call_1", "one"), _image_result("call_2", "two")])]
+    prepared = chat_history.encode_messages(
+        [Message("tool", [_image_result("call_1", "one"), _image_result("call_2", "two")])], variant=OPENAI
     )
 
     assert [message["role"] for message in prepared] == ["tool", "tool", "user"]
@@ -105,7 +68,7 @@ def test_openai_chat_buffers_parallel_mixed_tool_results_after_all_tools() -> No
         ],
     )
 
-    prepared = _openai_client()._prepare_messages_for_openai([assistant, tool_results])
+    prepared = chat_history.encode_messages([assistant, tool_results], variant=OPENAI)
 
     assert [message["role"] for message in prepared] == ["assistant", "tool", "tool", "user"]
     assert len(prepared[0]["tool_calls"]) == 2
@@ -128,7 +91,7 @@ def test_openai_chat_flushes_image_message_before_following_non_tool_message() -
     tool_results = Message("tool", [_image_result("call_image", "image caption")])
     followup = Message("user", [Content.from_text("next user turn")])
 
-    prepared = _openai_client()._prepare_messages_for_openai([assistant, tool_results, followup])
+    prepared = chat_history.encode_messages([assistant, tool_results, followup], variant=OPENAI)
 
     assert [message["role"] for message in prepared] == ["assistant", "tool", "user", "user"]
     assert prepared[1]["tool_call_id"] == "call_image"
@@ -144,7 +107,7 @@ def test_openai_chat_does_not_lower_non_image_rich_tool_results() -> None:
         result=[Content.from_text("audio"), Content.from_data(b"audio-bytes", "audio/wav")],
     )
 
-    prepared = _openai_client()._prepare_messages_for_openai([Message("tool", [result])])
+    prepared = chat_history.encode_messages([Message("tool", [result])], variant=OPENAI)
 
     assert prepared == [{"role": "tool", "tool_call_id": "call_1", "content": "audio"}]
 
@@ -155,7 +118,7 @@ def test_openai_chat_omits_unknown_rich_tool_results_without_crashing() -> None:
         result=[Content.from_text("unknown"), Content.from_uri("https://example.com/blob")],
     )
 
-    prepared = _openai_client()._prepare_messages_for_openai([Message("tool", [result])])
+    prepared = chat_history.encode_messages([Message("tool", [result])], variant=OPENAI)
 
     assert prepared == [{"role": "tool", "tool_call_id": "call_1", "content": "unknown"}]
 
@@ -169,7 +132,7 @@ def test_deepseek_calls_shared_post_pass_and_preserves_reasoning_fields() -> Non
     )
     tool = Message("tool", [_image_result("call_1")])
 
-    prepared = _deepseek_client()._prepare_messages_for_openai([assistant, tool])
+    prepared = chat_history.encode_messages([assistant, tool], variant=DEEPSEEK)
 
     assert prepared[0]["role"] == "assistant"
     assert prepared[0]["reasoning_content"] == "look first"
@@ -180,10 +143,7 @@ def test_deepseek_calls_shared_post_pass_and_preserves_reasoning_fields() -> Non
 
 
 def test_responses_keeps_native_rich_function_output_shape() -> None:
-    prepared = _responses_client()._prepare_messages_for_openai(
-        [Message("tool", [_image_result("call_1")])],
-        request_uses_service_side_storage=False,
-    )
+    prepared = encode_input([Message("tool", [_image_result("call_1")])], service_side=False, variant=OPENAI_RESPONSES)
 
     assert len(prepared) == 1
     output = prepared[0]["output"]
@@ -195,7 +155,7 @@ def test_responses_keeps_native_rich_function_output_shape() -> None:
 
 
 def test_anthropic_keeps_native_tool_result_image_block() -> None:
-    prepared = _anthropic_client()._prepare_messages_for_anthropic([Message("tool", [_image_result("call_1")])])
+    prepared = encode_messages([Message("tool", [_image_result("call_1")])])
 
     assert len(prepared) == 1
     tool_result = prepared[0]["content"][0]

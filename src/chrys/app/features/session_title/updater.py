@@ -548,7 +548,7 @@ class SessionTitleUpdater:
         from chrys.foundation.trajectory.context import side_call_scope
         from chrys.foundation.trajectory.envelope import ActorRole
         from chrys.kernel import Message
-        from chrys.service.llm.responses import get_final_response
+        from chrys.service.llm.one_shot import get_final_response
         from chrys.service.llm.route_sessions import derive_llm_route_session_id
         from chrys.service.profiles.models.options import effective_chat_options
 

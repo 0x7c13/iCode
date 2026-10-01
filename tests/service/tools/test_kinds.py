@@ -46,13 +46,13 @@ def test_every_kind_constant_is_registered_in_tool_kinds() -> None:
     assert len(constants.values()) == len(set(constants.values())), "duplicate KIND_* values"
 
 
-def test_set_get_roundtrip_leaves_framework_kind_none() -> None:
+def test_set_get_roundtrip_leaves_function_tool_kind_none() -> None:
     t = _plain_tool()
     assert get_tool_kind(t) is None
     set_tool_kind(t, kinds.KIND_SHELL)
     assert get_tool_kind(t) == "shell"
-    # FunctionTool.kind must never be written — wire serializers hijack
-    # ``kind == "shell"`` (see test_kind_framework_contract.py).
+    # FunctionTool.kind is never written: chrys_kind is the one kind channel
+    # (see test_tool_kind_wire_boundary.py).
     assert t.kind is None
 
 

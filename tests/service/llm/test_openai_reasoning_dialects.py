@@ -36,9 +36,12 @@ from chrys.kernel import (
     Message,
     ResponseStream,
 )
-from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
+from chrys.service.llm.chat_completions import ChatCompletionsClient, DeepSeekChatCompletionsClient
+from chrys.service.llm.chat_completions.client import DEEPSEEK, OPENAI
+from chrys.service.llm.chat_completions.decode import decode_completion
+from chrys.service.llm.chat_completions.history import encode_message, encode_messages
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
+from tests.support.openai_chat_wire import parse_stream_chunks, scripted_openai
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
 
@@ -59,52 +62,36 @@ class _UnusedAsyncOpenAI:
         self.chat = _UnusedChat()
 
 
-def _client() -> RawOpenAIChatCompletionClient:
-    return RawOpenAIChatCompletionClient(model="glm-5.2", async_client=_UnusedAsyncOpenAI())
+def _client() -> ChatCompletionsClient:
+    return ChatCompletionsClient(model="glm-5.2", sdk_client=_UnusedAsyncOpenAI())
 
 
 @pytest.mark.asyncio
-async def test_openai_adapter_closes_sdk_stream_after_consumption() -> None:
-    class _SdkStream:
-        def __init__(self) -> None:
-            self.closed = 0
+async def test_a_stream_closed_after_its_first_update_releases_the_body() -> None:
+    """The SDK closes a body it read to the end itself; one left early is the client's to close."""
+    chunks = [
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="hi")),
+        _chunk(ChunkChoiceDelta.model_construct(content=" there")),
+    ]
+    async with scripted_openai([chunks]) as wire:
+        raw_client = ChatCompletionsClient(model="glm-5.2", sdk_client=wire.client)
+        response_stream = raw_client._inner_get_response(
+            messages=[Message("user", ["hi"])],
+            options={},
+            stream=True,
+        )
+        assert isinstance(response_stream, ResponseStream)
+        first = await anext(response_stream)
+        assert first.text == "hi"
+        assert [stream.closed for stream in wire.streams] == [False]
 
-        def __aiter__(self):
-            return self
+        await response_stream.aclose()
 
-        async def __anext__(self):
-            raise StopAsyncIteration
-
-        async def close(self) -> None:
-            self.closed += 1
-
-    sdk_stream = _SdkStream()
-
-    class _Completions:
-        async def create(self, **_kwargs: Any):
-            return sdk_stream
-
-    raw_client = RawOpenAIChatCompletionClient(
-        model="glm-5.2",
-        async_client=type(
-            "_Client",
-            (),
-            {"base_url": "https://api.test", "chat": type("_Chat", (), {"completions": _Completions()})()},
-        )(),
-    )
-    response_stream = raw_client._inner_get_response(
-        messages=[Message("user", ["hi"])],
-        options={},
-        stream=True,
-    )
-
-    assert isinstance(response_stream, ResponseStream)
-    assert [update async for update in response_stream] == []
-    assert sdk_stream.closed == 1
+        assert [stream.closed for stream in wire.streams] == [True]
 
 
-def _deepseek() -> DeepSeekChatCompletionClient:
-    return DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_UnusedAsyncOpenAI())
+def _deepseek() -> DeepSeekChatCompletionsClient:
+    return DeepSeekChatCompletionsClient(model="deepseek-reasoner", sdk_client=_UnusedAsyncOpenAI())
 
 
 def _completion(message: ChatCompletionMessage, created: int = 1234567890) -> ChatCompletion:
@@ -155,12 +142,13 @@ def _vllm_reasoning(text: str | None = None, protected: Any = None) -> Content:
 
 def test_base_nonstreaming_captures_reasoning_content_with_marker_and_props() -> None:
     created_ms = 1_717_171_717_123
-    parsed = _client()._parse_response_from_openai(
+    parsed = decode_completion(
         _completion(
             ChatCompletionMessage(role="assistant", content="Answer.", reasoning_content="GLM thinking"),
             created=created_ms,
         ),
         {},
+        variant=OPENAI,
     )
 
     message = parsed.messages[0]
@@ -175,10 +163,10 @@ def test_base_nonstreaming_captures_reasoning_content_with_marker_and_props() ->
 
 
 def test_base_nonstreaming_captures_vllm_reasoning_with_marker_props_and_exact_replay() -> None:
-    client = _client()
-    parsed = client._parse_response_from_openai(
+    parsed = decode_completion(
         _completion(ChatCompletionMessage.model_construct(role="assistant", content="Answer.", reasoning="thinking")),
         {},
+        variant=OPENAI,
     )
 
     message = parsed.messages[0]
@@ -191,7 +179,7 @@ def test_base_nonstreaming_captures_vllm_reasoning_with_marker_props_and_exact_r
         "openai_reasoning_format": "reasoning",
     }
 
-    (prepared,) = client._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
     assert prepared["reasoning"] == "thinking"
     assert "reasoning_content" not in prepared
     assert "reasoning_details" not in prepared
@@ -231,8 +219,8 @@ def test_vllm_reasoning_survives_openai_sdk_wire_validation_for_blocking_and_str
     )
 
     client = _client()
-    blocking = client._parse_response_from_openai(completion, {})
-    streaming = client._parse_response_update_from_openai(chunk)
+    blocking = decode_completion(completion, {}, variant=client.VARIANT)
+    (streaming,) = parse_stream_chunks(client, chunk)
 
     assert blocking.messages[0].contents[1].protected_data == json.dumps("blocking chain")
     assert streaming.contents[0].text == "streaming chain"
@@ -263,13 +251,13 @@ def test_vllm_explicit_null_reasoning_is_absence_not_empty_reasoning() -> None:
         }
     )
 
-    parsed = _client()._parse_response_from_openai(completion, {})
+    parsed = decode_completion(completion, {}, variant=OPENAI)
 
     message = parsed.messages[0]
     assert [content.type for content in message.contents] == ["text"]
     assert message.contents[0].text == "12"
     assert message.additional_properties == {}
-    (prepared,) = _client()._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
     assert "reasoning" not in prepared
 
 
@@ -286,7 +274,7 @@ def test_vllm_reasoning_session_round_trip_preserves_exact_replay_dialect() -> N
     assert serialized["contents"][1]["protected_data"] == json.dumps("thinking")
     assert serialized["contents"][1]["additional_properties"]["openai_reasoning_format"] == "reasoning"
     assert serialized["additional_properties"]["reasoning"] == "thinking"
-    (prepared,) = _client()._prepare_message_for_openai(restored)
+    (prepared,) = encode_message(restored, variant=OPENAI)
     assert prepared["reasoning"] == "thinking"
     assert "reasoning_content" not in prepared
 
@@ -321,7 +309,7 @@ async def test_vllm_reasoning_replay_reaches_actual_openai_sdk_http_body() -> No
             base_url="https://vllm.test/v1",
             http_client=http_client,
         )
-        client = RawOpenAIChatCompletionClient(model="qwen", async_client=sdk_client)
+        client = ChatCompletionsClient(model="qwen", sdk_client=sdk_client)
         await client.get_response(
             [
                 Message(
@@ -340,9 +328,10 @@ async def test_vllm_reasoning_replay_reaches_actual_openai_sdk_http_body() -> No
 
 def test_base_nonstreaming_captures_reasoning_details_stamped() -> None:
     details = [{"type": "reasoning.text", "text": "chain"}]
-    parsed = _client()._parse_response_from_openai(
+    parsed = decode_completion(
         _completion(ChatCompletionMessage.model_construct(role="assistant", content="A", reasoning_details=details)),
         {},
+        variant=OPENAI,
     )
 
     message = parsed.messages[0]
@@ -355,7 +344,7 @@ def test_base_nonstreaming_captures_reasoning_details_stamped() -> None:
 
 def test_base_nonstreaming_dual_field_capture_details_first() -> None:
     details = [{"type": "reasoning.encrypted", "data": "opaque"}]
-    parsed = _client()._parse_response_from_openai(
+    parsed = decode_completion(
         _completion(
             ChatCompletionMessage.model_construct(
                 role="assistant",
@@ -365,6 +354,7 @@ def test_base_nonstreaming_dual_field_capture_details_first() -> None:
             )
         ),
         {},
+        variant=OPENAI,
     )
 
     message = parsed.messages[0]
@@ -405,7 +395,7 @@ def test_base_nonstreaming_reasoning_is_fallback_to_established_fields(
         **established_fields,
     )
 
-    parsed = _client()._parse_response_from_openai(_completion(message), {})
+    parsed = decode_completion(_completion(message), {}, variant=OPENAI)
 
     kernel_message = parsed.messages[0]
     reasoning_contents = [content for content in kernel_message.contents if content.type == "text_reasoning"]
@@ -417,8 +407,9 @@ def test_base_nonstreaming_reasoning_is_fallback_to_established_fields(
 
 def test_base_streaming_captures_reasoning_content_as_visible_text() -> None:
     created_ms = 1_717_171_717_123
-    update = _client()._parse_response_update_from_openai(
-        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="streamed chain"), created_ms)
+    (update,) = parse_stream_chunks(
+        _client(),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="streamed chain"), created_ms),
     )
 
     reasoning = next(content for content in update.contents if content.type == "text_reasoning")
@@ -429,8 +420,8 @@ def test_base_streaming_captures_reasoning_content_as_visible_text() -> None:
 
 
 def test_base_streaming_captures_vllm_reasoning_as_visible_text() -> None:
-    update = _client()._parse_response_update_from_openai(
-        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning="streamed chain"))
+    (update,) = parse_stream_chunks(
+        _client(), _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning="streamed chain"))
     )
 
     (reasoning,) = [content for content in update.contents if content.type == "text_reasoning"]
@@ -450,14 +441,15 @@ def test_base_streaming_reasoning_is_fallback_to_established_fields(
     established_fields: dict[str, Any],
     expected_markers: list[str],
 ) -> None:
-    update = _client()._parse_response_update_from_openai(
+    (update,) = parse_stream_chunks(
+        _client(),
         _chunk(
             ChunkChoiceDelta.model_construct(
                 role="assistant",
                 reasoning="mirrored plaintext",
                 **established_fields,
             )
-        )
+        ),
     )
 
     reasoning_contents = [content for content in update.contents if content.type == "text_reasoning"]
@@ -468,8 +460,8 @@ def test_base_streaming_reasoning_is_fallback_to_established_fields(
 
 def test_base_streaming_captures_reasoning_details_as_protected_json() -> None:
     details = [{"type": "reasoning.text", "text": "delta"}]
-    update = _client()._parse_response_update_from_openai(
-        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=details))
+    (update,) = parse_stream_chunks(
+        _client(), _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=details))
     )
 
     reasoning = next(content for content in update.contents if content.type == "text_reasoning")
@@ -483,12 +475,13 @@ def test_base_streaming_captures_reasoning_details_as_protected_json() -> None:
 
 def test_base_replays_marked_reasoning_without_tool_interaction() -> None:
     """GLM preserved thinking: replay happens on every multi-turn request."""
-    prepared = _client()._prepare_messages_for_openai(
+    prepared = encode_messages(
         [
             Message("user", ["First question"]),
             Message("assistant", [Content.from_text("Answer"), _content_reasoning(protected="no-tool chain")]),
             Message("user", ["Follow-up"]),
-        ]
+        ],
+        variant=OPENAI,
     )
 
     assistant_message = prepared[1]
@@ -500,9 +493,8 @@ def test_streamed_text_and_protected_json_shapes_replay_identically() -> None:
     streamed = Message("assistant", [Content.from_text("A"), _content_reasoning(text="chain")])
     protected = Message("assistant", [Content.from_text("A"), _content_reasoning(protected="chain")])
 
-    client = _client()
     for message in (streamed, protected):
-        (prepared,) = client._prepare_message_for_openai(message)
+        (prepared,) = encode_message(message, variant=OPENAI)
         assert prepared["reasoning_content"] == "chain"
 
 
@@ -516,7 +508,7 @@ def test_streamed_vllm_reasoning_fragments_concatenate_and_replay_exact_field() 
         ],
     )
 
-    (prepared,) = _client()._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
 
     assert prepared["reasoning"] == "first second"
     assert "reasoning_content" not in prepared
@@ -539,7 +531,7 @@ def test_dual_field_replay_attaches_both_fields_once() -> None:
         },
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 1
     assert prepared[0]["reasoning_details"] == details
@@ -548,13 +540,13 @@ def test_dual_field_replay_attaches_both_fields_once() -> None:
 
 def test_parse_replay_round_trip_emits_each_field_value_exactly_once() -> None:
     """Dual storage (content + message props) must not double a field's value."""
-    client = _client()
-    parsed = client._parse_response_from_openai(
+    parsed = decode_completion(
         _completion(ChatCompletionMessage(role="assistant", content="A", reasoning_content="X")),
         {},
+        variant=OPENAI,
     )
 
-    (prepared,) = client._prepare_message_for_openai(parsed.messages[0])
+    (prepared,) = encode_message(parsed.messages[0], variant=OPENAI)
 
     assert prepared["reasoning_content"] == "X"
 
@@ -566,10 +558,10 @@ def test_deepseek_still_gates_replay_on_tool_interaction() -> None:
         Message("user", ["Follow-up"]),
     ]
 
-    deepseek_prepared = _deepseek()._prepare_messages_for_openai(messages)
+    deepseek_prepared = encode_messages(messages, variant=DEEPSEEK)
     assert "reasoning_content" not in deepseek_prepared[1]
 
-    base_prepared = _client()._prepare_messages_for_openai(messages)
+    base_prepared = encode_messages(messages, variant=OPENAI)
     assert base_prepared[1]["reasoning_content"] == "chain"
 
 
@@ -586,7 +578,7 @@ def test_nonstreaming_text_reasoning_tool_calls_coalesce_to_one_message() -> Non
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 1
     assert prepared[0]["content"] == "Let me check."
@@ -594,37 +586,34 @@ def test_nonstreaming_text_reasoning_tool_calls_coalesce_to_one_message() -> Non
     assert prepared[0]["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
-def test_streaming_accumulated_reasoning_coalesces_to_one_message() -> None:
-    client = _client()
-    updates = [
-        client._parse_response_update_from_openai(
-            _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="first "))
-        ),
-        client._parse_response_update_from_openai(
-            _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="second"))
-        ),
-        client._parse_response_update_from_openai(
-            _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Answer"))
-        ),
-        client._parse_response_update_from_openai(
-            _chunk(
-                ChunkChoiceDelta.model_construct(
-                    role="assistant",
-                    tool_calls=[
-                        ChoiceDeltaToolCall(
-                            index=0,
-                            id="call_1",
-                            type="function",
-                            function=ChoiceDeltaToolCallFunction(name="get_weather", arguments='{"city":"Seattle"}'),
-                        )
-                    ],
-                )
+@pytest.mark.asyncio
+async def test_streaming_accumulated_reasoning_coalesces_to_one_message() -> None:
+    chunks = [
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="first ")),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="second")),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Answer")),
+        _chunk(
+            ChunkChoiceDelta.model_construct(
+                role="assistant",
+                tool_calls=[
+                    ChoiceDeltaToolCall(
+                        index=0,
+                        id="call_1",
+                        type="function",
+                        function=ChoiceDeltaToolCallFunction(name="get_weather", arguments='{"city":"Seattle"}'),
+                    )
+                ],
             )
         ),
     ]
+    async with scripted_openai([chunks]) as wire:
+        stream = ChatCompletionsClient(model="glm-5.2", sdk_client=wire.client)._inner_get_response(
+            messages=[Message("user", ["hi"])], options={}, stream=True
+        )
+        assert isinstance(stream, ResponseStream)
+        response = await stream.get_final_response()
 
-    response = ChatResponse.from_updates(updates)
-    prepared = client._prepare_message_for_openai(response.messages[0])
+    prepared = encode_message(response.messages[0], variant=OPENAI)
 
     assert len(prepared) == 1
     assert prepared[0]["content"] == "Answer"
@@ -632,8 +621,8 @@ def test_streaming_accumulated_reasoning_coalesces_to_one_message() -> None:
     assert prepared[0]["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
-def test_no_reasoning_assistant_message_keeps_fragment_shape() -> None:
-    """Messages without replayable reasoning keep today's per-fragment emission."""
+def test_no_reasoning_assistant_message_sends_one_tool_call_carrier() -> None:
+    """Without replayable reasoning, the text and tool-call fragments go out as one message."""
     message = Message(
         role="assistant",
         contents=[
@@ -642,12 +631,10 @@ def test_no_reasoning_assistant_message_keeps_fragment_shape() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_messages([message], variant=OPENAI)
 
-    assert prepared == [
-        {"role": "assistant", "content": "Preface"},
-        {"role": "assistant", "tool_calls": prepared[1]["tool_calls"]},
-    ]
+    assert prepared == [{"role": "assistant", "content": "Preface", "tool_calls": prepared[0]["tool_calls"]}]
+    assert [call["function"]["name"] for call in prepared[0]["tool_calls"]] == ["lookup"]
 
 
 def test_text_image_reasoning_tool_calls_aggregate_excludes_image() -> None:
@@ -662,7 +649,7 @@ def test_text_image_reasoning_tool_calls_aggregate_excludes_image() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 2
     image_message, aggregate = prepared
@@ -697,7 +684,7 @@ def test_aggregate_emits_last_for_tool_result_adjacency(contents_order: list[str
         Message("tool", [Content.from_function_result(call_id="call_1", result="found")]),
     ]
 
-    prepared = _client()._prepare_messages_for_openai(messages)
+    prepared = encode_messages(messages, variant=OPENAI)
 
     roles = [message["role"] for message in prepared]
     assert roles == ["user", "assistant", "assistant", "tool"]
@@ -719,7 +706,7 @@ def test_zero_text_aggregate_keeps_empty_string_content() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 2
     image_message, aggregate = prepared
@@ -747,7 +734,7 @@ def test_interleaved_dual_field_fragments_aggregate_per_field() -> None:
     )
 
     for client in (_client(), _deepseek()):
-        (prepared,) = client._prepare_message_for_openai(message)
+        (prepared,) = encode_message(message, variant=client.VARIANT)
         assert prepared["reasoning_content"] == "C1C2"
         assert prepared["reasoning_details"] == [{"step": 1}, {"step": 2}]
 
@@ -765,7 +752,7 @@ def test_separator_split_details_replay_both_blocks() -> None:
     )
 
     for client in (_client(), _deepseek()):
-        (prepared,) = client._prepare_message_for_openai(message)
+        (prepared,) = encode_message(message, variant=client.VARIANT)
         assert prepared["reasoning_details"] == [{"block": "D1"}, {"block": "D2"}]
         assert prepared["content"] == "thinking aloud"
         assert prepared["tool_calls"][0]["function"]["name"] == "lookup"
@@ -773,17 +760,12 @@ def test_separator_split_details_replay_both_blocks() -> None:
 
 def test_streamed_protected_detail_blocks_survive_and_replay_extended() -> None:
     client = _client()
-    updates = [
-        client._parse_response_update_from_openai(
-            _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=[{"block": "D1"}]))
-        ),
-        client._parse_response_update_from_openai(
-            _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=[{"block": "D2"}]))
-        ),
-        client._parse_response_update_from_openai(
-            _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Answer"))
-        ),
-    ]
+    updates = parse_stream_chunks(
+        client,
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=[{"block": "D1"}])),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=[{"block": "D2"}])),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Answer")),
+    )
 
     response = ChatResponse.from_updates(updates)
 
@@ -793,7 +775,7 @@ def test_streamed_protected_detail_blocks_survive_and_replay_extended() -> None:
         json.dumps([{"block": "D2"}]),
     ]
 
-    (prepared,) = client._prepare_message_for_openai(response.messages[0])
+    (prepared,) = encode_message(response.messages[0], variant=client.VARIANT)
     assert prepared["reasoning_details"] == [{"block": "D1"}, {"block": "D2"}]
 
 
@@ -807,7 +789,7 @@ def test_mixed_type_reasoning_content_contributions_last_win() -> None:
         ],
     )
 
-    (prepared,) = _client()._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
 
     assert prepared["reasoning_content"] == [2]
 
@@ -823,7 +805,7 @@ def test_system_and_developer_reasoning_is_never_replayed(role: str) -> None:
         additional_properties={"reasoning_content": "never send"},
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert prepared == [{"role": role, "content": "Instructions"}]
 
@@ -838,7 +820,7 @@ def test_user_reasoning_attaches_to_next_emitted_fragment() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 2
     assert prepared[0]["content"] == "Q"
@@ -851,7 +833,7 @@ def test_user_reasoning_attaches_to_next_emitted_fragment() -> None:
 def test_props_only_contentless_non_assistant_message_emits_nothing(role: str) -> None:
     message = Message(role=role, contents=[], additional_properties={"reasoning_content": "stash"})
 
-    assert _client()._prepare_message_for_openai(message) == []
+    assert encode_message(message, variant=OPENAI) == []
 
 
 def test_props_only_contentless_assistant_message_emits_empty_content_carrier() -> None:
@@ -861,7 +843,7 @@ def test_props_only_contentless_assistant_message_emits_empty_content_carrier() 
         additional_properties={"reasoning_content": "props chain", "openai_reasoning_format": "reasoning_content"},
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert prepared == [{"role": "assistant", "content": "", "reasoning_content": "props chain"}]
 
@@ -874,7 +856,7 @@ def test_malformed_marker_reasoning_drops_without_coalescing() -> None:
         ],
     )
 
-    assert _client()._prepare_message_for_openai(message) == []
+    assert encode_message(message, variant=OPENAI) == []
 
 
 def test_unparseable_protected_data_suppresses_marked_text() -> None:
@@ -886,7 +868,7 @@ def test_unparseable_protected_data_suppresses_marked_text() -> None:
     )
     message = Message(role="assistant", contents=[foreign, Content.from_text("A")])
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert prepared == [{"role": "assistant", "content": "A"}]
 
@@ -898,7 +880,7 @@ def test_legacy_unmarked_json_protected_data_replays_as_details() -> None:
         contents=[legacy, Content.from_function_call(call_id="call_1", name="lookup", arguments="{}")],
     )
 
-    (prepared,) = _client()._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
 
     assert prepared["reasoning_details"] == [{"block": "legacy"}]
     assert prepared["content"] == ""
@@ -929,7 +911,7 @@ def test_result_carrying_assistant_attaches_aggregate_to_tool_calls_message() ->
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 2
     aggregate, result_record = prepared
@@ -953,7 +935,7 @@ def test_per_run_reasoning_ownership_survives_result_separators() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 4
     first_call, first_result, second_call, second_result = prepared
@@ -978,7 +960,7 @@ def test_deepseek_per_run_reasoning_ownership_survives_result_separators() -> No
         ],
     )
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert len(prepared) == 4
     first_call, first_result, second_call, second_result = prepared
@@ -1007,7 +989,7 @@ def test_text_separated_tool_calls_coalesce_into_one_aggregate_before_results() 
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 3
     aggregate, result_1, result_2 = prepared
@@ -1033,7 +1015,7 @@ def test_wire_text_segments_split_at_calls_without_splitting_aggregate() -> None
         ],
     )
 
-    prepared = _client()._prepare_messages_for_openai([message])
+    prepared = encode_messages([message], variant=OPENAI)
 
     assert len(prepared) == 1
     aggregate = prepared[0]
@@ -1063,7 +1045,7 @@ def test_reasoning_history_preserves_text_boundary_at_degraded_hosted_calls(host
     )
     original = message.to_dict()
 
-    prepared = _client()._prepare_messages_for_openai([message])
+    prepared = encode_messages([message], variant=OPENAI)
 
     assert prepared == [{"role": "assistant", "content": f"A\n{summary}\nB", "reasoning_content": "R"}]
     assert message.to_dict() == original
@@ -1099,7 +1081,7 @@ def test_reasoning_history_reconstructs_text_within_item_boundaries(
     contents.append(Content.from_function_call(call_id="call_1", name="read_file", arguments="{}"))
     message = Message.from_dict(Message("assistant", contents).to_dict())
 
-    prepared = _client()._prepare_messages_for_openai([message])
+    prepared = encode_messages([message], variant=OPENAI)
 
     assert len(prepared) == 1
     assert prepared[0]["content"] == expected
@@ -1120,7 +1102,7 @@ def test_trailing_reasoning_after_last_result_emits_positional_carrier() -> None
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 5
     first_call, first_result, second_call, second_result, carrier = prepared
@@ -1145,7 +1127,7 @@ def test_reasoning_never_rides_a_multimodal_carrier() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 3
     image_message, aggregate, result_record = prepared
@@ -1167,7 +1149,7 @@ def test_image_only_result_message_reasoning_defers_carrier_past_result() -> Non
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 3
     image_message, result_record, carrier = prepared
@@ -1188,7 +1170,7 @@ def test_reasoning_only_run_never_splits_a_parallel_result_block() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 4
     aggregate, result_1, result_2, carrier = prepared
@@ -1210,7 +1192,7 @@ def test_mid_block_reasoning_joins_the_next_run_aggregate() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 3
     result_1, result_2, aggregate = prepared
@@ -1220,7 +1202,7 @@ def test_mid_block_reasoning_joins_the_next_run_aggregate() -> None:
 
 
 def test_deepseek_reasoning_never_rides_a_multimodal_carrier() -> None:
-    """DeepSeek delegates to the base coalescer: string aggregate carries reasoning, image stays standalone."""
+    """DeepSeek shares the reasoning-bearing encoder: string aggregate carries reasoning, image stays standalone."""
     message = Message(
         role="assistant",
         contents=[
@@ -1231,7 +1213,7 @@ def test_deepseek_reasoning_never_rides_a_multimodal_carrier() -> None:
         ],
     )
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert len(prepared) == 3
     image_message, aggregate, result_record = prepared
@@ -1253,7 +1235,7 @@ def test_deepseek_image_then_tool_call_reasoning_rides_string_aggregate() -> Non
         ],
     )
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert len(prepared) == 2
     image_message, aggregate = prepared
@@ -1274,7 +1256,7 @@ def test_result_only_assistant_reasoning_appends_carrier_after_result() -> None:
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 2
     result_record, carrier = prepared
@@ -1293,7 +1275,7 @@ def test_deepseek_result_carrying_assistant_reasoning_rides_tool_calls_message()
         ],
     )
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert len(prepared) == 2
     tool_calls_message, result_record = prepared
@@ -1315,7 +1297,7 @@ def test_deepseek_text_call_result_reasoning_rides_merged_tool_calls_message() -
         ],
     )
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert len(prepared) == 2
     merged, result_record = prepared
@@ -1329,13 +1311,13 @@ def test_deepseek_text_call_result_reasoning_rides_merged_tool_calls_message() -
 def test_deepseek_props_only_non_assistant_message_emits_nothing(role: str) -> None:
     message = Message(role=role, contents=[], additional_properties={"reasoning_content": "stash"})
 
-    assert _deepseek()._prepare_message_for_openai(message) == []
+    assert encode_message(message, variant=DEEPSEEK) == []
 
 
 def test_deepseek_props_only_assistant_message_emits_empty_content_carrier() -> None:
     message = Message(role="assistant", contents=[], additional_properties={"reasoning_content": "stash"})
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert prepared == [{"role": "assistant", "content": "", "reasoning_content": "stash"}]
 
@@ -1347,7 +1329,7 @@ def test_deepseek_tool_result_message_never_carries_reasoning_props() -> None:
         additional_properties={"reasoning_content": "stash"},
     )
 
-    prepared = _deepseek()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=DEEPSEEK)
 
     assert len(prepared) == 1
     assert prepared[0]["tool_call_id"] == "call_1"
@@ -1364,7 +1346,7 @@ def test_unknown_format_marker_never_replays_through_the_aggregate_path() -> Non
         ],
     )
 
-    prepared = _client()._prepare_message_for_openai(message)
+    prepared = encode_message(message, variant=OPENAI)
 
     assert len(prepared) == 1
     assert prepared[0]["content"] == "Answer."
@@ -1378,7 +1360,7 @@ def test_unknown_format_marker_never_replays_through_the_legacy_walk() -> None:
         contents=[_foreign_reasoning(protected=[{"future": "payload"}]), Content.from_text("Q")],
     )
 
-    prepared = _client()._prepare_message_for_openai(user_message)
+    prepared = encode_message(user_message, variant=OPENAI)
 
     assert len(prepared) == 1
     assert prepared[0]["content"] == "Q"
@@ -1389,7 +1371,7 @@ def test_unknown_format_marker_never_replays_through_the_legacy_walk() -> None:
 def test_unknown_format_marker_only_assistant_message_emits_nothing() -> None:
     message = Message(role="assistant", contents=[_foreign_reasoning(protected=[{"future": "payload"}])])
 
-    assert _client()._prepare_message_for_openai(message) == []
+    assert encode_message(message, variant=OPENAI) == []
 
 
 # ───────────────────────── streaming tool loop (§F(e)) ─────────────────────────
@@ -1397,8 +1379,6 @@ def test_unknown_format_marker_only_assistant_message_emits_nothing() -> None:
 
 @pytest.mark.asyncio
 async def test_streaming_tool_loop_accumulates_and_replays_reasoning_content() -> None:
-    captured_requests: list[dict[str, Any]] = []
-
     def _tool_call_chunks() -> list[ChatCompletionChunk]:
         return [
             _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_content="accumulated ")),
@@ -1437,49 +1417,24 @@ async def test_streaming_tool_loop_accumulates_and_replays_reasoning_content() -
             ),
         ]
 
-    class _FakeCompletions:
-        def __init__(self) -> None:
-            self._call_count = 0
-
-        async def create(self, stream: bool = False, **kwargs: Any) -> Any:
-            assert stream is True
-            captured_requests.append(kwargs)
-            self._call_count += 1
-            chunks = _tool_call_chunks() if self._call_count == 1 else _final_chunks()
-
-            async def _iterate() -> Any:
-                for chunk in chunks:
-                    yield chunk
-
-            return _iterate()
-
-    class _FakeChat:
-        def __init__(self) -> None:
-            self.completions = _FakeCompletions()
-
-    class _FakeAsyncOpenAI:
-        base_url = "https://api.test"
-
-        def __init__(self) -> None:
-            self.chat = _FakeChat()
-
     def read_file(path: str) -> str:
         return f"contents of {path}"
 
-    client = InvariantCheckedToolLoopLayer(
-        ChatMiddlewareLayer(RawOpenAIChatCompletionClient(model="glm-5.2", async_client=_FakeAsyncOpenAI()))
-    )
-    tool = FunctionTool(name="read_file", description="Read a file", func=read_file)
+    async with scripted_openai([_tool_call_chunks(), _final_chunks()]) as wire:
+        client = InvariantCheckedToolLoopLayer(
+            ChatMiddlewareLayer(ChatCompletionsClient(model="glm-5.2", sdk_client=wire.client))
+        )
+        tool = FunctionTool(name="read_file", description="Read a file", func=read_file)
 
-    stream = client.get_response([Message("user", ["inspect foo.py"])], stream=True, options={"tools": [tool]})
-    async for _update in stream:
-        pass
+        stream = client.get_response([Message("user", ["inspect foo.py"])], stream=True, options={"tools": [tool]})
+        async for _update in stream:
+            pass
 
-    assert len(captured_requests) == 2
-    assistant_message = captured_requests[1]["messages"][1]
+    assert len(wire.requests) == 2
+    assistant_message = wire.requests[1]["messages"][1]
     assert assistant_message["reasoning_content"] == "accumulated chain"
     assert assistant_message["tool_calls"][0]["function"]["name"] == "read_file"
-    tool_message = captured_requests[1]["messages"][2]
+    tool_message = wire.requests[1]["messages"][2]
     assert tool_message["tool_call_id"] == "call_abc"
     assert tool_message["content"] == "contents of foo.py"
 
@@ -1497,4 +1452,4 @@ def test_only_reasoning_non_assistant_message_emits_no_carrier(role: str, marker
         contents=[Content.from_text_reasoning(text="chain", additional_properties={"openai_reasoning_format": marker})],
     )
 
-    assert _client()._prepare_message_for_openai(message) == []
+    assert encode_message(message, variant=OPENAI) == []

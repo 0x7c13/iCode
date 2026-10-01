@@ -1,4 +1,6 @@
+# Copyright (c) 2021 Will McGugan
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Textual (MIT License; see NOTICE).
 
 """Patch: keep Textual's Kitty keyboard input compatible with IMEs.
 

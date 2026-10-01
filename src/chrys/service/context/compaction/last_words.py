@@ -63,7 +63,7 @@ from chrys.kernel import (
     report_wire_progress,
 )
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
 from chrys.service.trajectory.compaction import current_compaction_operation_id
 from chrys.service.trajectory.retries import RetryBackoffTrace

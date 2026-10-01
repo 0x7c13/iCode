@@ -18,15 +18,14 @@ from typing import Any
 
 import pytest
 
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.kernel import ChatResponseUpdate
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.decode import decode_response
+from chrys.service.llm.openai_responses.stream import StreamState
 
 
-class _FakeAsyncOpenAI:
-    base_url = "https://api.test"
-
-
-def _client() -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=_FakeAsyncOpenAI())
+def _decoded_update(event: Any, options: dict[str, Any]) -> ChatResponseUpdate:
+    return StreamState(options, model="gpt-test", variant=OPENAI_RESPONSES).update_for(event)
 
 
 def _response() -> SimpleNamespace:
@@ -44,13 +43,13 @@ def _response() -> SimpleNamespace:
 
 
 def _conversation_id(options: dict[str, Any]) -> str | None:
-    parsed = _client()._parse_response_from_openai(_response(), options)
+    parsed = decode_response(_response(), options, variant=OPENAI_RESPONSES)
     return parsed.conversation_id
 
 
 def _streaming_conversation_id(options: dict[str, Any], event_type: str = "response.completed") -> str | None:
     event = SimpleNamespace(type=event_type, response=_response())
-    update = _client()._parse_chunk_from_openai(event, options, {})
+    update = _decoded_update(event, options)
     return update.conversation_id
 
 
@@ -92,14 +91,14 @@ def test_streaming_events_apply_the_same_store_veto(event_type: str) -> None:
 def _continuation_token(options: dict[str, Any]) -> Any:
     response = _response()
     response.status = "in_progress"
-    return _client()._parse_response_from_openai(response, options).continuation_token
+    return decode_response(response, options, variant=OPENAI_RESPONSES).continuation_token
 
 
 def _streaming_continuation_token(options: dict[str, Any], event_type: str) -> Any:
     response = _response()
     response.status = "in_progress"
     event = SimpleNamespace(type=event_type, response=response)
-    return _client()._parse_chunk_from_openai(event, options, {}).continuation_token
+    return _decoded_update(event, options).continuation_token
 
 
 def test_unstored_responses_never_mint_continuation_tokens() -> None:

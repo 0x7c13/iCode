@@ -1,4 +1,6 @@
+# Copyright (c) the agent-client-protocol authors (Chojan Shang, Frost Ming and contributors)
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from the Agent Client Protocol Python SDK (Apache License 2.0; see NOTICE).
 
 """ACP transport framing, backpressure, observation, and tracking.
 

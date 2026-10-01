@@ -225,11 +225,9 @@ def _forced_phase4(messages: list[Message], **strategy_kwargs: Any) -> UnifiedCo
 
 def _anthropic_fetched_pdf_exchange(payload: str) -> list[Message]:
     """An Anthropic web_fetch of a PDF, parsed by the real adapter: the result keeps the base64 ``source`` dict."""
-    from types import SimpleNamespace
-
     from anthropic.types.beta import BetaMessage
 
-    from chrys.service.llm.anthropic_chat import RawAnthropicClient
+    from chrys.service.llm.anthropic_messages.decode import decode_blocks
 
     response = BetaMessage.model_validate(
         {
@@ -262,6 +260,5 @@ def _anthropic_fetched_pdf_exchange(payload: str) -> list[Message]:
             ],
         }
     )
-    client = RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
-    call, result = client._parse_contents_from_anthropic(response.content)
+    call, result = decode_blocks(response.content)
     return [Message("assistant", [call]), Message("assistant", [result])]

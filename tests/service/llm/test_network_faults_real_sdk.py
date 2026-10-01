@@ -167,7 +167,7 @@ async def test_injected_fault_through_the_real_sdk(provider: str, fault: str, mo
     expected = _FAULTS[fault]
     stack = await create_client(_profile(provider))
     raw = stack.inner.inner
-    sdk = raw.anthropic_client if provider == "anthropic" else raw.client
+    sdk = raw.sdk_client
     # The SDK's own backoff, at the instance boundary: retries happen, instantly.
     monkeypatch.setattr(sdk, "_calculate_retry_timeout", lambda *_args, **_kwargs: 0.0)
     try:

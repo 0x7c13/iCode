@@ -1,6 +1,8 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
-"""Model/tool loop over a chat middleware layer and instrumented wire client.
+"""Model/tool loop over a chat middleware layer and a provider wire client.
 
 ``ToolLoopLayer`` owns per-run middleware pipelines, dispatch, result assembly,
 continuation state and interrupt-recovery recording. Approval middleware
@@ -3423,7 +3425,7 @@ class ToolLoopLayer:
                     async for update in logical_stream:
                         yield update
                     # Triggers the inner stream's finalizer and result hooks (the
-                    # instrumented intermediate-text hook runs before tool
+                    # wire client's intermediate-text hook runs before tool
                     # extraction below — "hook before tool detection" ordering).
                     response = await logical_stream.get_final_response()
                     _remove_echo_emptied_message_shells(response)

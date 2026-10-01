@@ -21,7 +21,7 @@ from chrys.foundation.trajectory.event_types import (
     ValidationReason,
 )
 from chrys.foundation.trajectory.ids import is_valid_analytics_id, new_analytics_id
-from chrys.service.llm.instrumented import _ExchangeObserver
+from chrys.service.llm.observer import ExchangeRecorder
 from chrys.service.trajectory.validation import ValidationTrace
 from tests.service.trajectory._fakes import FakeSink, make_context
 
@@ -169,7 +169,7 @@ async def test_a_forwarded_exchange_is_not_closed_by_the_client_that_failed() ->
         raise RuntimeError("connection reset")
 
     with pytest.raises(RuntimeError):
-        await _ExchangeObserver(trace, owned=False).wrap_awaitable(_boom())
+        await ExchangeRecorder(trace, owned=False).wrap_awaitable(_boom())
 
     assert sink.of_type(EventType.MODEL_EXCHANGE_FINISHED) == []
     # The layer above unwinds next, and its verdict — which carries the retry
@@ -189,7 +189,7 @@ async def test_a_client_owned_exchange_closes_itself_when_it_fails() -> None:
         raise RuntimeError("connection reset")
 
     with pytest.raises(RuntimeError):
-        await _ExchangeObserver(trace, owned=True).wrap_awaitable(_boom())
+        await ExchangeRecorder(trace, owned=True).wrap_awaitable(_boom())
 
     finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
     assert finished.payload["outcome"] == ExchangeOutcome.ERROR

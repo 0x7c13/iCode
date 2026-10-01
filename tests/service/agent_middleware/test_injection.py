@@ -691,7 +691,7 @@ async def test_intermediate_text_stored_as_metadata(tmp_path, agent_engine) -> N
         await engine.shutdown()
 
     # Check that intermediate text is embedded per-message via additional_properties.
-    # The mock client bypasses the instrumented client, so the callback may not
+    # The mock client bypasses the provider wire client, so the callback may not
     # fire.  Just verify session saved successfully and messages are present.
     import json
 

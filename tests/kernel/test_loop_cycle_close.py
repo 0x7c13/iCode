@@ -10,7 +10,8 @@ terminal is on its way.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any, NoReturn
 
 import pytest
 
@@ -19,9 +20,9 @@ from chrys.foundation.trajectory.envelope import MeasurementSource
 from chrys.foundation.trajectory.event_types import EventType, ToolOutcome
 from chrys.kernel import ChatMiddlewareLayer, ChatResponse, Content, Message, tool
 from chrys.kernel import loop as loop_module
-from chrys.kernel.client import BaseChatClient
 from chrys.kernel.middleware import FunctionInvocationContext, FunctionMiddleware
-from chrys.service.llm.instrumented import _IntermediateTextMixin
+from chrys.service.llm.observer import WireCallObserver
+from chrys.service.llm.wire_client import WireClient
 from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
@@ -74,22 +75,27 @@ async def test_a_cycle_interrupted_while_recording_hosted_calls_is_still_closed(
     assert finished.operation_id == started.operation_id
 
 
-class _WireClient(BaseChatClient):
-    """The real preparation path: compaction runs before the request is sent."""
+class _ReportingWireClient(WireClient):
+    """The real preparation path: compaction runs before the request is sent,
+    and the production observer reports the exchange start just before sending it."""
 
     OTEL_PROVIDER_NAME = "test"
 
-    def _inner_get_response(self, *, messages: object, stream: bool = False, **kwargs: object) -> object:
-        del messages, stream, kwargs
+    def __init__(self) -> None:
+        super().__init__(observer=WireCallObserver())
+
+    def _send(
+        self, *, messages: Sequence[Message], options: Mapping[str, Any], **kwargs: Any
+    ) -> Awaitable[ChatResponse]:
+        del messages, options, kwargs
 
         async def _resolve() -> ChatResponse:
             return ChatResponse(messages=[Message("assistant", ["hi"])])
 
         return _resolve()
 
-
-class _InstrumentedClient(_IntermediateTextMixin, _WireClient):
-    pass
+    def _open_stream(self, *, messages: Sequence[Message], options: Mapping[str, Any], **kwargs: Any) -> NoReturn:
+        raise NotImplementedError("these tests send blocking requests")
 
 
 class _SuspendingCompaction:
@@ -110,7 +116,7 @@ async def test_an_interrupt_before_the_request_is_sent_records_no_exchange() -> 
     the start immediately before sending. An interrupt in between — compaction
     is the window that actually suspends there — ends a trace that never
     reached the provider, so it must leave no terminal behind."""
-    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_InstrumentedClient()))
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_ReportingWireClient()))
     sink = FakeSink()
     compaction = _SuspendingCompaction()
 
@@ -130,6 +136,20 @@ async def test_an_interrupt_before_the_request_is_sent_records_no_exchange() -> 
     assert EventType.MODEL_EXCHANGE_STARTED not in sink.event_types
     # The cycle around it is still closed: that span did open.
     assert sink.only(EventType.MODEL_CYCLE_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_is_sent_reports_its_exchange() -> None:
+    """Control for the interrupt case: the same client, reached, starts its exchange."""
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_ReportingWireClient()))
+    sink = FakeSink()
+
+    await layer.get_response(
+        [Message("user", ["hi"])],
+        client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+    )
+
+    assert sink.only(EventType.MODEL_EXCHANGE_STARTED)
 
 
 class _AlwaysCallsClient:

@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-import chrys.service.llm.clients as clients_module
 from chrys.kernel import ToolLoopLayer
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
+from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
+from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.clients import create_client, scoped_client
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.openai_responses import ResponsesApiClient
+from chrys.service.llm.providers import PROVIDERS, ProviderSpec
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.close_races import ReleaseGate
 
@@ -35,11 +35,11 @@ def _profile(provider: str, api_style: str = "chat_completions") -> ModelProfile
 
 def _sdk_client(stack: ToolLoopLayer) -> Any:
     raw = stack.inner.inner
-    if isinstance(raw, RawAnthropicClient):
-        return raw.anthropic_client
-    if not isinstance(raw, RawOpenAIChatCompletionClient | RawOpenAIChatClient):
+    if isinstance(raw, AnthropicMessagesClient):
+        return raw.sdk_client
+    if not isinstance(raw, ChatCompletionsClient | ResponsesApiClient):
         raise TypeError(f"unexpected raw client {type(raw).__name__}")
-    return raw.client
+    return raw.sdk_client
 
 
 @pytest.mark.parametrize(
@@ -72,7 +72,20 @@ async def test_a_provider_with_a_key_entry_but_no_stack_is_refused_and_its_pool_
     monkeypatch: pytest.MonkeyPatch, http_client_ledger: HttpClientLedger
 ) -> None:
     # Never build another provider's stack (the last branch used to be GLM's) for it.
-    monkeypatch.setitem(clients_module._PROVIDER_API_KEY_ENVS, "azure", "AZURE_API_KEY")
+    monkeypatch.setitem(
+        PROVIDERS,
+        "azure",
+        ProviderSpec(
+            label="Azure",
+            sdk="openai",
+            api_key_env="AZURE_API_KEY",
+            base_url_env="AZURE_BASE_URL",
+            default_base_url="https://azure.example",
+            native_sdk=False,
+            api_styles=None,
+            chat_completions_max_output_param=None,
+        ),
+    )
 
     with pytest.raises(ValueError, match="Unknown provider: 'azure'"):
         await create_client(_profile("azure"))
