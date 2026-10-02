@@ -27,6 +27,7 @@ from chrys.kernel import (
     UsageDetails,
 )
 from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
+from chrys.service.llm.chat_completions.decode import refused_calls_error
 
 from . import server_tools
 
@@ -53,13 +54,21 @@ _CONTAINER_TOOLS: Final = frozenset({"code_execution", "bash_code_execution", "t
 
 
 def decode_message(message: BetaMessage, *, response_format: Any) -> ChatResponse:
-    """A blocking response as one assistant message."""
+    """A blocking response as one assistant message.
+
+    A message that stops for a refusal yet asks for tool calls raises: the
+    calls are never run.
+    """
     usage = decode_usage(message.usage)
     if usage is not None and (estimate := blocking_context_estimate(message.usage, message.content)) is not None:
         usage["context_input_token_estimate"] = estimate
+    contents = decode_blocks(message.content)
+    if message.stop_reason == "refusal" and any(content.type == "function_call" for content in contents):
+        hosted = [content for content in contents if content.provider_hosted]
+        raise refused_calls_error(hosted, usage_details=usage)
     return ChatResponse(
         response_id=message.id,
-        messages=[Message(role="assistant", contents=decode_blocks(message.content), raw_representation=message)],
+        messages=[Message(role="assistant", contents=contents, raw_representation=message)],
         usage_details=usage,
         model=message.model,
         finish_reason=decode_stop_reason(message.stop_reason),
@@ -84,6 +93,10 @@ def _decode_block(block: Any) -> Content | None:
     match block.type:
         case "text" | "text_delta":
             return Content.from_text(text=block.text, raw_representation=block, annotations=decode_citations(block))
+        case "citations_delta":
+            # A streamed citation of the text block it arrives in; response
+            # assembly merges it into that text.
+            return Content.from_text(text="", raw_representation=block, annotations=[_decode_citation(block.citation)])
         case "thinking" | "thinking_delta":
             # A thinking delta carries no signature; a later signature delta does.
             signature = getattr(block, "signature", None)
