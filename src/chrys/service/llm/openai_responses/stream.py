@@ -60,6 +60,7 @@ from .decode import (
     decode_usage,
     finish_reason,
     hosted_contents,
+    is_function_call,
     logprobs_metadata,
     output_message_envelope,
     refuses,
@@ -471,11 +472,13 @@ class StreamState:
     def _refuse_calls(self, response: Any = None, usage: UsageDetails | None = None) -> None:
         """Fail a response that refused or was filtered yet asks for calls, however it ended.
 
-        *response* is the terminal response, when the stream sent one.
+        *response* is the terminal response, when the stream sent one; a
+        call it lists counts even when no event streamed it.
         """
         if response is not None:
             output = getattr(response, "output", None) or []
             self._refused = self._refused or finish_reason(response) == "content_filter" or any(map(refuses, output))
+            self._calls_seen = self._calls_seen or any(map(is_function_call, output))
         if self._refused and self._calls_seen:
             raise refused_calls_error(self._unsent_hosted(response), usage_details=usage)
 

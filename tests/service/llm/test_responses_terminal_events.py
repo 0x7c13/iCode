@@ -532,6 +532,32 @@ _REFUSED_STREAMS = [
         .emit("response.completed", response=_completed_with_an_error(call_item("fc_1", "call_1"))),
         id="refusal_then_a_completed_event_with_an_error",
     ),
+    # A call the terminal response lists counts even when no event streamed it.
+    pytest.param(
+        Script()
+        .started()
+        .refusal(0, "msg_1", _REFUSAL)
+        .failed(refusal_item("msg_1", _REFUSAL), call_item("fc_1", "call_1")),
+        id="refusal_then_failed_with_the_call_only_in_its_response",
+    ),
+    pytest.param(
+        Script().started().failed(refusal_item("msg_1", _REFUSAL), call_item("fc_1", "call_1")),
+        id="refusal_and_call_only_in_a_failed_response",
+    ),
+    pytest.param(
+        Script()
+        .started()
+        .refusal(0, "msg_1", _REFUSAL)
+        .emit(
+            "response.completed",
+            response=_completed_with_an_error(refusal_item("msg_1", _REFUSAL), call_item("fc_1", "call_1")),
+        ),
+        id="refusal_then_a_completed_event_with_an_error_listing_the_call",
+    ),
+    pytest.param(
+        Script().started().finished(call_item("fc_1", "call_1"), incomplete="content_filter"),
+        id="call_only_in_a_filtered_response",
+    ),
 ]
 
 

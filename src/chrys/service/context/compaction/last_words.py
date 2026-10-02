@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 from uuid import uuid4
 
-from chrys.foundation.errors import clean_error_message, is_retryable, may_be_context_overflow
+from chrys.foundation.errors import ProviderResponseError, clean_error_message, is_retryable, may_be_context_overflow
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, RetryAttemptInfo
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
@@ -1607,14 +1607,20 @@ class LastWordsGenerator:
         options = {key: value for key, value in profile_options.items() if key in _FALLBACK_ALLOWED_OPTION_KEYS}
         options["max_tokens"] = max_tokens
         report_wire_progress()
-        with side_call_scope(ActorRole.COMPACTION):
-            response = await get_final_response(
-                client,
-                messages,
-                stream=self._profile.stream,
-                options=options,
-                timeout=self._profile.http_read_timeout,
-            )
+        try:
+            with side_call_scope(ActorRole.COMPACTION):
+                response = await get_final_response(
+                    client,
+                    messages,
+                    stream=self._profile.stream,
+                    options=options,
+                    timeout=self._profile.http_read_timeout,
+                )
+        except ProviderResponseError as err:
+            # A response the adapter failed consumed provider tokens too.
+            if err.usage_details:
+                self._report_side_call_usage(err.usage_details)
+            raise
         usage_details = response.usage_details
         if usage_details:
             self._report_side_call_usage(usage_details)

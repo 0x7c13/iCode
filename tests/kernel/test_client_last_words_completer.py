@@ -35,6 +35,7 @@ import pytest
 
 import chrys.kernel.client as kernel_client
 import chrys.kernel.compaction as kernel_compaction
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import (
     TRAJECTORY_EXCHANGE_KWARG,
@@ -108,6 +109,17 @@ class _RecordingClient(BaseChatClient):
             return self._make_response()
 
         return _response()
+
+
+class _FailingClient(_RecordingClient):
+    """A client whose adapter fails the response with *error*."""
+
+    def __init__(self, *, error: ProviderResponseError, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._error = error
+
+    def _make_response(self) -> ChatResponse[Any]:
+        raise self._error
 
 
 class _StoringClient(_RecordingClient):
@@ -958,6 +970,32 @@ async def test_completer_reports_usage_even_when_guard_rejects() -> None:
         )
 
     assert reported == [usage]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage",
+    [{"input_token_count": 70, "output_token_count": 9, "total_token_count": 79}, None],
+    ids=["usage", "no_usage"],
+)
+async def test_completer_reports_the_usage_of_a_response_the_adapter_failed(usage: dict[str, int] | None) -> None:
+    """A response the adapter fails (a failure finish reason, a refusal that
+    asks for calls) consumed provider tokens too; without usage nothing is
+    reported."""
+    error = ProviderResponseError("network_error", "It broke.", retryable=True, usage_details=usage)
+    completer = _ClientLastWordsCompleter(
+        _FailingClient(error=error), stream=False, options={"model": "m"}, client_kwargs={}
+    )
+    reported: list[Any] = []
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await completer.complete_last_words(
+            [Message("user", ["q"])], "I", max_output_tokens=10, on_usage=reported.append
+        )
+
+    assert raised.value is error
+    assert reported == ([] if usage is None else [usage])
+    assert not in_internal_side_call()
 
 
 @pytest.mark.asyncio

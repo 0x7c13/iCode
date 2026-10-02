@@ -9,14 +9,19 @@ the HTTP answers are scripted.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 from openai.types import CompletionUsage
 from openai.types.chat.chat_completion import ChatCompletion, Choice
-from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
+from openai.types.chat.chat_completion_chunk import (
+    ChatCompletionChunk,
+    ChoiceDelta,
+    ChoiceDeltaToolCall,
+    ChoiceDeltaToolCallFunction,
+)
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.chat.chat_completion_message_function_tool_call import ChatCompletionMessageFunctionToolCall, Function
@@ -29,6 +34,7 @@ from chrys.orchestration.invoker.attempts import WireRetryPolicyAdapter
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 from chrys.service.context.middleware.usage import UsageTrackingMiddleware
 from chrys.service.llm.chat_completions import ChatCompletionsClient
+from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
 from tests.service.llm._responses_wire import Script, blocking, call_item, responses_client
 from tests.support.openai_chat_wire import ChatReply, scripted_openai
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
@@ -62,21 +68,33 @@ def _completion(
     )
 
 
-def _failing_chunk() -> ChatCompletionChunk:
-    delta = ChoiceDelta.model_construct(role="assistant", content="Partial")
+def _chunk(*, finish_reason: str | None = None, usage: bool = False, **delta: Any) -> ChatCompletionChunk:
+    """One streamed chunk; with no *delta* fields and no finish reason, it has no choice at all."""
+    choices = []
+    if delta or finish_reason:
+        choices = [
+            ChunkChoice.model_construct(
+                index=0, delta=ChoiceDelta.model_construct(role="assistant", **delta), finish_reason=finish_reason
+            )
+        ]
     return ChatCompletionChunk.model_construct(
         id="chunk-1",
         object="chat.completion.chunk",
         created=1_717_171_717,
         model="test",
-        choices=[ChunkChoice.model_construct(index=0, delta=delta, finish_reason="network_error")],
-        usage=CompletionUsage(prompt_tokens=70, completion_tokens=9, total_tokens=79),
+        choices=choices,
+        usage=CompletionUsage(prompt_tokens=70, completion_tokens=9, total_tokens=79) if usage else None,
     )
 
 
+def _call(arguments: str = '{"path": "a"}') -> list[ChoiceDeltaToolCall]:
+    function = ChoiceDeltaToolCallFunction.model_construct(name="read_file", arguments=arguments)
+    return [ChoiceDeltaToolCall.model_construct(index=0, id="call_1", type="function", function=function)]
+
+
 @asynccontextmanager
-async def _chat_completions(reply: ChatReply) -> AsyncIterator[BaseChatClient]:
-    async with scripted_openai([reply]) as wire:
+async def _chat_completions(*replies: ChatReply) -> AsyncIterator[BaseChatClient]:
+    async with scripted_openai(replies) as wire:
         yield ChatCompletionsClient(model="test", sdk_client=wire.client)
 
 
@@ -106,7 +124,9 @@ def _policy(validation: ResponseValidationMiddleware) -> WireRetryPolicyAdapter:
     )
 
 
-async def _counted(client: BaseChatClient, *, stream: bool, wire_retry: bool = False) -> list[tuple[int, int, int]]:
+async def _counted(
+    client: BaseChatClient, *, stream: bool, wire_retry: bool = False, options: Mapping[str, Any] | None = None
+) -> list[tuple[int, int, int]]:
     """Run one turn through the usage and validation middleware; the usage counted per call."""
     counted: list[tuple[int, int, int]] = []
 
@@ -120,7 +140,7 @@ async def _counted(client: BaseChatClient, *, stream: bool, wire_retry: bool = F
     result = layer.get_response(
         [Message("user", ["hi"])],
         stream=stream,
-        options={"store": False},
+        options={"store": False, **(options or {})},
         client_kwargs={"wire_retry_policy": _policy(validation)} if wire_retry else {},
     )
     with contextlib.suppress(ProviderResponseError):
@@ -145,7 +165,27 @@ _FAILED_WITH_USAGE: list[Any] = [
         False,
         id="responses_refused",
     ),
-    pytest.param(lambda: _chat_completions([_failing_chunk()]), True, id="chat_completions_failed_stream"),
+    pytest.param(
+        lambda: _chat_completions([_chunk(content="Partial", finish_reason="network_error", usage=True)]),
+        True,
+        id="chat_completions_failed_stream",
+    ),
+    pytest.param(
+        lambda: _chat_completions([_chunk(content="Partial", usage=True), _chunk(finish_reason="network_error")]),
+        True,
+        id="chat_completions_failed_after_its_usage",
+    ),
+    # Streams without a finish reason: the usage came in a chunk of its own.
+    pytest.param(
+        lambda: _chat_completions([_chunk(refusal="I can't.", tool_calls=_call()), _chunk(usage=True)]),
+        True,
+        id="chat_completions_refused_stream",
+    ),
+    pytest.param(
+        lambda: _chat_completions([_chunk(tool_calls=_call('{"path": ')), _chunk(usage=True)]),
+        True,
+        id="chat_completions_call_cut_off",
+    ),
     pytest.param(
         lambda: _chat_completions(_completion(finish_reason="network_error")), False, id="chat_completions_failed"
     ),
@@ -191,3 +231,23 @@ async def test_each_attempt_of_a_wire_retry_counts_its_usage(stream: bool) -> No
 
     async with _responses(failed, recovered) as client:
         assert await _counted(client, stream=stream, wire_retry=True) == [_REPORTED, _REPORTED]
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [
+        pytest.param([_chunk(content="Partial"), _chunk(usage=True)], id="cut_off_after_its_usage"),
+        pytest.param(
+            [_chunk(content="Partial", usage=True), _chunk(finish_reason="network_error")], id="failed_after_its_usage"
+        ),
+    ],
+)
+async def test_each_attempt_of_a_chat_completions_retry_counts_its_usage(failed: list[ChatCompletionChunk]) -> None:
+    recovered = [_chunk(content="Sunny.", finish_reason="stop"), _chunk(usage=True)]
+
+    async with _chat_completions(failed, recovered) as client:
+        counted = await _counted(
+            client, stream=True, wire_retry=True, options={STREAM_REQUIRES_FINISH_REASON_OPTION: True}
+        )
+
+    assert counted == [_REPORTED, _REPORTED]

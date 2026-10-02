@@ -24,6 +24,7 @@ from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeGuard, TypeIs, cast, overload
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace, side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
 
@@ -646,23 +647,29 @@ class _ClientLastWordsCompleter:
         # attempt's dispatch) restarts the live call's stall watchdog, which
         # still cancels a side call that goes idle.
         report_wire_progress()
-        with internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
-            result = self._client._inner_get_response(
-                messages=side_messages,
-                stream=self._stream,
-                options=side_options,
-                **forwarded_kwargs,
-            )
-            response: ChatResponse[Any]
-            if _is_chat_response_stream(result):
-                response = await result.with_transform_hook(_report_side_call_update).get_final_response()
-            else:
-                awaited = await result
-                response = (
-                    await awaited.with_transform_hook(_report_side_call_update).get_final_response()
-                    if isinstance(awaited, ResponseStream)
-                    else awaited
+        try:
+            with internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
+                result = self._client._inner_get_response(
+                    messages=side_messages,
+                    stream=self._stream,
+                    options=side_options,
+                    **forwarded_kwargs,
                 )
+                response: ChatResponse[Any]
+                if _is_chat_response_stream(result):
+                    response = await result.with_transform_hook(_report_side_call_update).get_final_response()
+                else:
+                    awaited = await result
+                    response = (
+                        await awaited.with_transform_hook(_report_side_call_update).get_final_response()
+                        if isinstance(awaited, ResponseStream)
+                        else awaited
+                    )
+        except ProviderResponseError as err:
+            # A response the adapter failed consumed provider tokens too.
+            if on_usage is not None and err.usage_details:
+                on_usage(err.usage_details)
+            raise
         report_wire_progress()
         # Report spend before any acceptance decision: a response the guard
         # rejects below still consumed real provider tokens.

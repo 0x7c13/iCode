@@ -30,7 +30,7 @@ from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompl
 from pydantic import ValidationError
 
 from chrys.foundation.errors import ProviderResponseError
-from chrys.kernel import ChatResponseUpdate, Content, FinishReason, UsageDetails
+from chrys.kernel import ChatResponseUpdate, Content, FinishReason, UsageDetails, normalize_stream_usage
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
 from chrys.service.llm.openai_timestamps import normalize_openai_created_payload, openai_created_at_iso
 
@@ -106,12 +106,15 @@ class StreamState:
         self._refused = False
         # Calls went out in an update.
         self._calls_released = False
+        # The usage snapshots the stream reported, which a failure's error
+        # carries: the usage often comes in a chunk of its own.
+        self._usages: list[UsageDetails] = []
 
     def updates_for(self, chunk: ChatCompletionChunk) -> list[ChatResponseUpdate]:
         """The updates one chunk yields: calls its finish reasons complete, then its own.
 
         A finish reason that reports a failure raises the provider's error,
-        with the usage the chunk reports; a refusal with tool calls
+        with the usage the stream reported so far; a refusal with tool calls
         outranks it.
         """
         choices = getattr(chunk, "choices", None)
@@ -122,16 +125,15 @@ class StreamState:
         # Read once: the update reports these and the release keys on them.
         finished = _finish_reasons(chunk)
         update = self.update_for(chunk, finished)
-        usage = next((content.usage_details for content in update.contents if content.type == "usage"), None)
-        if (failure := finish_failure(finished.values(), usage_details=usage)) is not None:
+        if (failure := finish_failure(finished.values(), usage_details=self._usage())) is not None:
             if self._refused and (self._calls_released or self._calls_pending()):
-                raise refused_calls_error(usage_details=usage)
+                raise refused_calls_error(usage_details=self._usage())
             raise failure
         # A consumer may stop at a finish reason, so the calls go out first.
-        calls = self._release(finished, usage) if finished else None
+        calls = self._release(finished) if finished else None
         if self._refused and self._calls_released:
             # A refusal may follow calls an earlier choice finished with.
-            raise refused_calls_error(usage_details=usage)
+            raise refused_calls_error(usage_details=self._usage())
         return [update] if calls is None else [calls, update]
 
     def finish(self, *, requires_finish_reason: bool = False) -> ChatResponseUpdate | None:
@@ -148,7 +150,10 @@ class StreamState:
         if not self._finish_seen:
             if requires_finish_reason:
                 raise ProviderResponseError(
-                    "stream_truncated", "The stream ended without a finish reason.", retryable=True
+                    "stream_truncated",
+                    "The stream ended without a finish reason.",
+                    retryable=True,
+                    usage_details=self._usage(),
                 )
             logger.warning("Chat Completions stream ended without a finish reason; the answer may be incomplete")
         return None
@@ -169,9 +174,9 @@ class StreamState:
         finish: FinishReason | None = None
         # Usage can share a chunk with content (Gemini); both are kept.
         if usage := chunk.usage or _choice_level_usage(chunk):
-            contents.append(
-                Content.from_usage(usage_details=decode_usage(usage, variant=self._variant), raw_representation=chunk)
-            )
+            details = decode_usage(usage, variant=self._variant)
+            self._usages.append(details)
+            contents.append(Content.from_usage(usage_details=details, raw_representation=chunk))
         for choice in chunk.choices:
             metadata.update(choice_metadata(choice))
             if (reason := finished.get(choice.index)) is not None:
@@ -196,6 +201,9 @@ class StreamState:
 
     def _calls_pending(self) -> bool:
         return any(state.calls for state in self._choices.values())
+
+    def _usage(self) -> UsageDetails | None:
+        return normalize_stream_usage(self._usages)
 
     def _delta_contents(self, choice: ChunkChoice) -> list[Content]:
         state = self._choice(choice.index)
@@ -308,13 +316,8 @@ class StreamState:
             state.by_index[index] = pending
         return pending
 
-    def _release(
-        self, finished: Mapping[int, str] | None, usage: UsageDetails | None = None
-    ) -> ChatResponseUpdate | None:
-        """One update with the complete calls of the finished choices, or of every choice at the end.
-
-        *usage* is what the finishing chunk reported, kept on a refusal's error.
-        """
+    def _release(self, finished: Mapping[int, str] | None) -> ChatResponseUpdate | None:
+        """One update with the complete calls of the finished choices, or of every choice at the end."""
         chosen = sorted(self._choices if finished is None else finished)
         if finished is not None:
             self._finish_seen = True
@@ -324,12 +327,13 @@ class StreamState:
         # (``_complete_calls``), so it cannot turn a refusal into a failure.
         released = [call for call in pending if call.name or finished is None or finished.get(call.choice) != "length"]
         if released and self._refused:
-            raise refused_calls_error(usage_details=usage)
+            raise refused_calls_error(usage_details=self._usage())
         if finished is None and any(not _arguments_complete(call) for call in pending):
             raise ProviderResponseError(
                 "stream_truncated",
                 "The stream ended without a finish reason while a tool call's arguments were incomplete.",
                 retryable=True,
+                usage_details=self._usage(),
             )
         contents: list[Content] = []
         for choice in chosen:
