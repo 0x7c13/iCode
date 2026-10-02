@@ -5,8 +5,7 @@
 from __future__ import annotations
 
 import contextlib
-import json
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from rich.markup import escape
 from rich.text import Text
@@ -21,7 +20,8 @@ from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.widgets import ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.foundation.i18n import MessageDef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
+from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, KIND_SHELL
 
 if TYPE_CHECKING:
@@ -61,25 +61,30 @@ _REASON_PLACEHOLDER = msg(
 )
 _APPROVE = msg("tui.approval.button.approve", fallback="Approve (Y)")
 _DECLINE = msg("tui.approval.button.decline", fallback="Decline (N)")
-_DAA_ONCE = msg("tui.approval.daa.once", fallback="Allow once")
-_DAA_EXACT_SESSION = msg("tui.approval.daa.exact_session", fallback="Remember — session")
-_DAA_EXACT_PROJECT = msg("tui.approval.daa.exact_project", fallback="Remember — project")
-_DAA_PREFIX_SESSION = msg("tui.approval.daa.prefix_session", fallback="Remember PREFIX — session")
-_DAA_PREFIX_PROJECT = msg("tui.approval.daa.prefix_project", fallback="Remember PREFIX — project")
-_DAA_DESCRIPTION = msg(
-    "tui.approval.daa.description",
-    fallback="EXACT remembers all arguments and execution context below. Edits apply once only.",
+_REUSE_ONCE = msg("tui.approval.reuse.once", fallback="Allow once")
+_REUSE_EXACT_SESSION = msg("tui.approval.reuse.exact_session", fallback="Remember — this session")
+_REUSE_EXACT_PROJECT = msg("tui.approval.reuse.exact_project", fallback="Remember — this project")
+_REUSE_PREFIX_SESSION = msg(
+    "tui.approval.reuse.prefix_session", fallback="Remember with extra arguments — this session"
 )
-_DAA_FILES = msg(
-    "tui.approval.daa.files",
-    fallback="Allow further modifications to these files in the selected scope; contents may change. Edits here apply once only.",
+_REUSE_PREFIX_PROJECT = msg(
+    "tui.approval.reuse.prefix_project", fallback="Remember with extra arguments — this project"
 )
-_DAA_COMMAND = msg(
-    "tui.approval.daa.command",
-    fallback="Session remembers the normalized command below, including every argument. Project EXACT retains the full request and execution context. Edits here apply once only.",
+_REUSE_DESCRIPTION = msg(
+    "tui.approval.reuse.description",
+    fallback="Session grants survive restoring this session; project grants apply across sessions. Manage or revoke grants with icode approvals. Edits here apply once only.",
 )
-_DAA_PREFIX = msg(
-    "tui.approval.daa.prefix", fallback="PREFIX authorizes these tokens and any appended literal arguments: {prefix}"
+_REUSE_FILES = msg(
+    "tui.approval.reuse.files",
+    fallback="Remember permission to modify these files in {project}. File contents may change.",
+)
+_REUSE_COMMAND = msg(
+    "tui.approval.reuse.command",
+    fallback="Remember this command in {project}. Command arguments, working directory and shell configuration must match. Environment variables, reason, timeout and output limit are not bound.",
+)
+_REUSE_PREFIX = msg(
+    "tui.approval.reuse.prefix",
+    fallback="Allowing extra arguments also allows flags that can make this command destructive.",
 )
 _FLAGGED = msg("tui.approval.flagged", fallback="Flagged by Auto-Review")
 
@@ -188,26 +193,10 @@ class ApprovalDialog(
         judging: bool = False,
         approval_body: ApprovalBody | None = None,
         presentation_kind: str = "",
-        daa_exact: str = "",
-        daa_prefix: tuple[str, ...] = (),
+        reuse_offer: ApprovalReuseOffer | None = None,
     ) -> None:
-        self._daa_exact = daa_exact
-        self._daa_prefix = daa_prefix
-        self._daa_description = _DAA_DESCRIPTION
-        self._daa_session = True
-        self._daa_project = True
-        if daa_exact:
-            try:
-                details = json.loads(daa_exact)
-            except ValueError:
-                details = {}
-            if "file_paths" in details:
-                self._daa_description = _DAA_FILES
-            elif "command_session" in details:
-                self._daa_description = _DAA_COMMAND
-                self._daa_session = details["command_session"] is not None
-                self._daa_project = details.get("project_exact", False)
-        self.daa_choice = ""
+        self._reuse_offer = reuse_offer
+        self.remember_choice: ReuseChoice = ""
         self._tool_name = tool_name
         self._tool_kind = tool_kind
         self._presentation_kind = presentation_kind
@@ -272,14 +261,19 @@ class ApprovalDialog(
                             arg_box = Static(Text(value), classes="approval-arg-box")
                             arg_box.border_title = Text(label)
                             yield arg_box
-                if self._daa_exact:
-                    yield Static(Text(render_str(localizer, self._daa_description.bind())))
-                    yield Static(Text(self._daa_exact), id="daa-exact")
-                    if self._daa_prefix:
-                        yield Static(
-                            Text(render_str(localizer, _DAA_PREFIX.bind(prefix=repr(list(self._daa_prefix))))),
-                            id="daa-prefix",
-                        )
+                if self._reuse_offer is not None:
+                    offer = self._reuse_offer
+                    description = _REUSE_FILES if offer.kind == "files" else _REUSE_COMMAND
+                    yield Static(
+                        Text(render_str(localizer, description.bind(project=sanitize_legacy_block(offer.project))))
+                    )
+                    yield Static(
+                        Text(sanitize_legacy_block("\n".join((*offer.targets, offer.shell)).strip())),
+                        id="reuse-targets",
+                    )
+                    yield Static(Text(render_str(localizer, _REUSE_DESCRIPTION.bind())))
+                    if offer.prefix:
+                        yield Static(Text(render_str(localizer, _REUSE_PREFIX.bind())), id="reuse-prefix")
             # Docked footer — separator + judge + buttons always pinned to bottom.
             with VerticalGroup(id="approval-footer"):
                 separator = Static("\u2500" * 200, id="approval-separator", markup=False)
@@ -298,22 +292,21 @@ class ApprovalDialog(
                 )
                 reason_input.placeholder = render_str(localizer, _REASON_PLACEHOLDER.bind())
                 yield reason_input
-                if self._daa_exact:
+                if self._reuse_offer:
                     choices = [
-                        (Text(render_str(localizer, _DAA_ONCE.bind())), ""),
+                        (Text(render_str(localizer, _REUSE_ONCE.bind())), ""),
                     ]
-                    if self._daa_session:
-                        choices.append((Text(render_str(localizer, _DAA_EXACT_SESSION.bind())), "EXACT_SESSION"))
-                    if self._daa_project:
-                        choices.append((Text(render_str(localizer, _DAA_EXACT_PROJECT.bind())), "EXACT_PROJECT"))
-                    if self._daa_prefix:
+                    if self._reuse_offer.session:
+                        choices.append((Text(render_str(localizer, _REUSE_EXACT_SESSION.bind())), "EXACT_SESSION"))
+                    choices.append((Text(render_str(localizer, _REUSE_EXACT_PROJECT.bind())), "EXACT_PROJECT"))
+                    if self._reuse_offer.prefix:
                         choices.extend(
                             [
-                                (Text(render_str(localizer, _DAA_PREFIX_SESSION.bind())), "PREFIX_SESSION"),
-                                (Text(render_str(localizer, _DAA_PREFIX_PROJECT.bind())), "PREFIX_PROJECT"),
+                                (Text(render_str(localizer, _REUSE_PREFIX_SESSION.bind())), "PREFIX_SESSION"),
+                                (Text(render_str(localizer, _REUSE_PREFIX_PROJECT.bind())), "PREFIX_PROJECT"),
                             ]
                         )
-                    yield Select(choices, value="", allow_blank=False, id="daa-choice")
+                    yield Select(choices, value="", allow_blank=False, id="reuse-choice")
                 with HorizontalGroup(id="approval-buttons"):
                     yield _ApprovalButton(
                         Text(render_str(localizer, _APPROVE.bind())),
@@ -468,9 +461,13 @@ class ApprovalDialog(
         modified_args_fn = self._approval_body.modified_args if self._approval_body is not None else None
         modified_args = modified_args_fn() if modified_args_fn is not None else None
         reason = self.query_one("#approval-reason", _ApprovalReasonTextArea).text.strip()
-        if self._daa_exact and not modified_args:
-            selected = self.query_one("#daa-choice", Select).value
-            self.daa_choice = selected if isinstance(selected, str) else ""
+        if self._reuse_offer and not modified_args:
+            selected = self.query_one("#reuse-choice", Select).value
+            self.remember_choice = (
+                cast("ReuseChoice", selected)
+                if selected in {"EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"}
+                else ""
+            )
         self._safe_dismiss((True, reason, modified_args), user_decision=True)
 
     @on(Button.Pressed, "#approval-no")

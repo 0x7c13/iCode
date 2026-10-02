@@ -15,8 +15,8 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
-from chrys.service.approval.daa_binding import DAABinding
 from chrys.service.approval.policy import ApprovalPolicy
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.builtins.shell import ShellTools
 
@@ -34,7 +34,7 @@ def setup(tmp_path):
     )
     tools = ShellTools(runtime).tools()
     tool = next(t for t in tools if t.name == runtime.platform.shell.name)
-    binding = DAABinding(runtime, tools, "profile-a")
+    binding = ApprovalReuseBinding(runtime, tools)
     bus = EventBus()
     policy = ApprovalPolicy(ApprovalConfig(default="require", overrides={}))
     return runtime, tool, binding, bus, policy
@@ -48,13 +48,15 @@ def invocation(tool, command="npm run dev"):
 @pytest.mark.parametrize("opaque_context", [False, True])
 async def test_session_approved_command_requires_approval_with_working_dir(setup, command, opaque_context):
     runtime, tool, binding, bus, policy = setup
-    middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, workspace_cwd=runtime.cwd, daa=binding)
+    middleware = ApprovalMiddleware(
+        policy, bus, session_id=runtime.session_id, workspace_cwd=runtime.cwd, reuse=binding
+    )
     requests = []
 
     async def respond(event: ApprovalRequest):
         requests.append(event)
         await bus.publish(
-            ApprovalResponse(request_id=event.request_id, approved=len(requests) == 1, daa_choice="EXACT_SESSION")
+            ApprovalResponse(request_id=event.request_id, approved=len(requests) == 1, remember_choice="EXACT_SESSION")
         )
 
     called = AsyncMock(spec=lambda: None)
@@ -70,12 +72,12 @@ async def test_session_approved_command_requires_approval_with_working_dir(setup
             await middleware.process(redirected, called)
             assert redirected.result == "Error: Tool execution was rejected by user."
         assert len(requests) == 4
-        assert all(not request.daa_exact and not request.daa_prefix for request in requests[1:])
+        assert all(not request.reuse_offer for request in requests[1:])
         called.assert_awaited_once()
         await middleware.process(invocation(tool, command), called)
         assert called.await_count == 2
         assert len(requests) == 4
-        assert middleware.drain_decisions()[-1]["status"] == "daa_approved"
+        assert middleware.drain_decisions()[-1]["status"] == "reuse_approved"
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, respond)
@@ -84,12 +86,14 @@ async def test_session_approved_command_requires_approval_with_working_dir(setup
 @pytest.mark.parametrize("choice", ["EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"])
 async def test_explicit_working_dir_approval_never_mints_reuse(setup, choice):
     runtime, tool, binding, bus, policy = setup
-    middleware = ApprovalMiddleware(policy, bus, session_id=runtime.session_id, workspace_cwd=runtime.cwd, daa=binding)
+    middleware = ApprovalMiddleware(
+        policy, bus, session_id=runtime.session_id, workspace_cwd=runtime.cwd, reuse=binding
+    )
     requests = []
 
     async def approve(event: ApprovalRequest):
         requests.append(event)
-        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, daa_choice=choice))
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice=choice))
 
     called = AsyncMock(spec=lambda: None)
     await bus.subscribe(ApprovalRequest, approve)
@@ -100,14 +104,14 @@ async def test_explicit_working_dir_approval_never_mints_reuse(setup, choice):
             await middleware.process(ctx, called)
             assert not binding.service.rules()
         assert len(requests) == called.await_count == 3
-        assert all(not request.daa_exact and not request.daa_prefix for request in requests)
+        assert all(not request.reuse_offer for request in requests)
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
 
 
 @pytest.mark.parametrize("opaque_context", ["none", "kwargs", "arguments"])
-def test_working_dir_cannot_bypass_reuse_guard_via_legacy_fallback(setup, opaque_context):
+def test_working_dir_cannot_bypass_reuse_guard_with_opaque_arguments(setup, opaque_context):
     runtime, tool, binding, _, _ = setup
     ctx = FunctionInvocationContext(tool, {"command": "git reset --hard"})
     first = binding.candidate(ctx)
@@ -118,5 +122,5 @@ def test_working_dir_cannot_bypass_reuse_guard_via_legacy_fallback(setup, opaque
     elif opaque_context == "arguments":
         ctx.arguments["reason"] = object()
     current = binding.candidate(ctx)
-    assert binding.service.match(current) == "MISS"
+    assert not binding.service.match(current)
     assert current is None

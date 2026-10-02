@@ -1,22 +1,23 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Pinned message ids for approval dialogs, DAA choices and approval modes."""
+"""Pinned message ids for approval dialogs, remember choices and approval modes."""
 
 from __future__ import annotations
 
 APPROVAL_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
     {
+        "approval.reuse.save_failed",
         "tui.approval.button.approve",
         "tui.approval.button.decline",
-        "tui.approval.daa.command",
-        "tui.approval.daa.description",
-        "tui.approval.daa.exact_project",
-        "tui.approval.daa.exact_session",
-        "tui.approval.daa.files",
-        "tui.approval.daa.once",
-        "tui.approval.daa.prefix",
-        "tui.approval.daa.prefix_project",
-        "tui.approval.daa.prefix_session",
+        "tui.approval.reuse.command",
+        "tui.approval.reuse.description",
+        "tui.approval.reuse.exact_project",
+        "tui.approval.reuse.exact_session",
+        "tui.approval.reuse.files",
+        "tui.approval.reuse.once",
+        "tui.approval.reuse.prefix",
+        "tui.approval.reuse.prefix_project",
+        "tui.approval.reuse.prefix_session",
         "tui.approval.evaluating",
         "tui.approval.file_edit.content",
         "tui.approval.file_edit.planned_diff",

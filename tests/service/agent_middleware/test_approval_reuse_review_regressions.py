@@ -1,11 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""DAA approval boundaries for edited, typed and concurrently stored requests."""
+"""Reusable approval boundaries for edited, typed and concurrently stored requests."""
 
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,11 +17,12 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.util.lock import FileLock
 from chrys.kernel import FunctionTool
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
-from chrys.service.approval.daa_binding import DAABinding
 from chrys.service.approval.policy import ApprovalPolicy
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.schema import HookDecision
@@ -43,7 +43,7 @@ def approval_setup(tmp_path):
     tools = ShellTools(runtime).tools()
     return (
         tools[0],
-        DAABinding(runtime, tools, "profile"),
+        ApprovalReuseBinding(runtime, tools),
         EventBus(),
         ApprovalPolicy(ApprovalConfig(default="require")),
     )
@@ -74,7 +74,7 @@ async def test_ui_edit_runs_its_before_hook_once(approval_setup, rewrite):
             )
         )
 
-    middleware = ApprovalMiddleware(policy, bus, daa=binding, hook_manager=hooks)
+    middleware = ApprovalMiddleware(policy, bus, reuse=binding, hook_manager=hooks)
     context = FunctionInvocationContext(tool, {"command": "npm run test"})
     called = AsyncMock(spec=lambda: None)
     await bus.subscribe(ApprovalRequest, approve)
@@ -108,17 +108,17 @@ async def test_non_json_arguments_fall_back_to_ordinary_approval(approval_setup,
                 request_id=event.request_id,
                 approved=True,
                 modified_args={"value": value} if phase == "edited" else None,
-                daa_choice="EXACT_PROJECT",
+                remember_choice="EXACT_PROJECT",
             )
         )
 
     called = AsyncMock(spec=lambda: None)
-    middleware = ApprovalMiddleware(policy, bus, daa=binding)
+    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
     await bus.subscribe(ApprovalRequest, approve)
     try:
         await middleware.process(context, called)
-        assert len(requests) == (2 if phase == "changed" else 1)
-        assert all(not request.daa_exact and not request.daa_prefix for request in requests)
+        assert len(requests) == 1
+        assert all(not request.reuse_offer for request in requests)
         called.assert_awaited_once()
         assert binding.service.rules() == []
     finally:
@@ -126,14 +126,14 @@ async def test_non_json_arguments_fall_back_to_ordinary_approval(approval_setup,
         await bus.unsubscribe(ApprovalRequest, approve)
 
 
-def _hold_database(path, mode):
-    connection = sqlite3.connect(path, check_same_thread=False)
-    connection.execute(f"BEGIN {mode}")
-    return connection
+def _hold_writer_lock(store):
+    lock = FileLock(store.lock_path, timeout=1)
+    lock.acquire()
+    return lock
 
 
 @pytest.mark.parametrize("operation", ["match", "remember"])
-async def test_sqlite_contention_does_not_block_approval_event_loop(approval_setup, operation):
+async def test_writer_contention_does_not_block_approval_event_loop(approval_setup, operation):
     tool, binding, bus, policy = approval_setup
     context = FunctionInvocationContext(tool, {"command": "npm run test"})
     candidate = binding.candidate(context)
@@ -142,26 +142,24 @@ async def test_sqlite_contention_does_not_block_approval_event_loop(approval_set
         assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
     else:
         assert await asyncio.to_thread(binding.service.store.add_many, [])
-    connection = await asyncio.to_thread(
-        _hold_database, binding.service.store.path, "EXCLUSIVE" if operation == "match" else "IMMEDIATE"
-    )
+    lock = await asyncio.to_thread(_hold_writer_lock, binding.service.store)
     order = []
     requests = []
 
     def release():
         order.append("heartbeat")
-        connection.rollback()
+        lock.release()
 
     async def approve(event):
         requests.append(event)
-        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, daa_choice="EXACT_PROJECT"))
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT"))
         if operation == "remember":
             asyncio.get_running_loop().call_soon(release)
 
     async def execute():
         order.append("execute")
 
-    middleware = ApprovalMiddleware(policy, bus, daa=binding)
+    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
     await bus.subscribe(ApprovalRequest, approve)
     try:
         if operation == "match":
@@ -169,12 +167,11 @@ async def test_sqlite_contention_does_not_block_approval_event_loop(approval_set
         await middleware.process(context, execute)
         assert order == ["heartbeat", "execute"]
         assert len(requests) == (0 if operation == "match" else 1)
-        assert await asyncio.to_thread(binding.service.match, candidate) == "HIT_ALLOW"
+        assert await asyncio.to_thread(binding.service.match, candidate)
     finally:
         # Drain a queued release even when a synchronous regression failed above.
         await asyncio.to_thread(lambda: None)
-        connection.rollback()
-        connection.close()
+        lock.release()
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
 
@@ -184,12 +181,11 @@ async def test_reserved_writer_lock_does_not_block_existing_rule_reads(approval_
     candidate = binding.candidate(FunctionInvocationContext(tool, {"command": "npm run test"}))
     assert candidate is not None
     assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
-    connection = await asyncio.to_thread(_hold_database, binding.service.store.path, "IMMEDIATE")
+    lock = await asyncio.to_thread(_hold_writer_lock, binding.service.store)
     try:
-        assert await asyncio.to_thread(binding.service.match, candidate) == "HIT_ALLOW"
+        assert await asyncio.to_thread(binding.service.match, candidate)
     finally:
-        connection.rollback()
-        connection.close()
+        lock.release()
 
 
 async def test_session_grants_survive_rebuild_but_not_a_different_session(approval_setup):
@@ -198,13 +194,13 @@ async def test_session_grants_survive_rebuild_but_not_a_different_session(approv
     candidate = binding.candidate(context)
     assert candidate is not None
     assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_SESSION")
-    middleware = ApprovalMiddleware(policy, bus, daa=binding)
+    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
     await middleware.close()
-    rebuilt = DAABinding(binding.runtime, [tool], "rebuilt")
-    other_session = DAABinding(binding.runtime, [tool], "other", session_id="session-b")
-    assert await asyncio.to_thread(rebuilt.service.match, rebuilt.candidate(context)) == "HIT_ALLOW"
-    assert await asyncio.to_thread(other_session.service.match, other_session.candidate(context)) == "MISS"
-    assert len(await asyncio.to_thread(other_session.service.rules)) == 1
+    rebuilt = ApprovalReuseBinding(binding.runtime, [tool])
+    other_session = ApprovalReuseBinding(binding.runtime, [tool], session_id="session-b")
+    assert await asyncio.to_thread(rebuilt.service.match, rebuilt.candidate(context))
+    assert not await asyncio.to_thread(other_session.service.match, other_session.candidate(context))
+    assert await asyncio.to_thread(other_session.service.rules) == []
 
 
 @pytest.mark.parametrize(
@@ -225,7 +221,7 @@ async def test_typed_values_reach_ordinary_approval_through_real_tool_loop(
     tool = FunctionTool(
         name="typed_value", func=consume, input_model=create_model("TypedValue", value=(annotation, ...))
     )
-    middleware = ApprovalMiddleware(policy, bus, daa=binding)
+    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
 
     async def approve(event):
         requests.append(event)
@@ -283,11 +279,11 @@ async def test_changed_request_during_store_operation_requires_new_human_approva
             ApprovalResponse(
                 request_id=event.request_id,
                 approved=event.args["command"] == "npm run test",
-                daa_choice="EXACT_PROJECT",
+                remember_choice="EXACT_PROJECT",
             )
         )
 
-    middleware = ApprovalMiddleware(policy, bus, daa=binding)
+    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
     called = AsyncMock(spec=lambda: None)
     await bus.subscribe(ApprovalRequest, respond)
     try:
@@ -295,7 +291,7 @@ async def test_changed_request_during_store_operation_requires_new_human_approva
         assert requests == (["npm run build"] if operation == "match" else ["npm run test", "npm run build"])
         called.assert_not_awaited()
         assert context.result == "Error: Tool execution was rejected by user."
-        assert original_match(binding.candidate(context)) == "MISS"
+        assert not original_match(binding.candidate(context))
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, respond)

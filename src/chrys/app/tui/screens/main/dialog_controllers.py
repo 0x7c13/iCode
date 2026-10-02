@@ -31,6 +31,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 
 _LOAD_TITLE_INITIALIZING = msg("tui.agent_load.title.initializing", fallback="Initializing Agent")
@@ -109,7 +110,7 @@ class ApprovalResponseCallback(Protocol):
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
-        daa_choice: str = "",
+        remember_choice: ReuseChoice = "",
     ) -> ApprovalResponseWorker | None: ...
 
 
@@ -119,7 +120,7 @@ class ApprovalDialogHandle(Protocol):
     @property
     def user_decision_submitted(self) -> bool: ...
 
-    daa_choice: str
+    remember_choice: ReuseChoice
 
     @property
     def is_dismissed(self) -> bool: ...
@@ -163,7 +164,7 @@ class ApprovalDialogPort(Protocol):
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
-        daa_choice: str = "",
+        remember_choice: ReuseChoice = "",
     ) -> ApprovalResponseWorker | None: ...
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None: ...
@@ -228,7 +229,7 @@ class ApprovalQueueController:
                 _call_id: str = event.call_id,
                 _args: dict[str, Any] = event.args,
                 _judging: bool = event.judging,
-                _daa_enabled: bool = bool(event.daa_exact),
+                _reuse_enabled: bool = bool(event.reuse_offer),
             ) -> None:
                 dialog = self.open_dialogs.pop(_req, None)
                 if _req in self.cancelled_requests:
@@ -247,14 +248,14 @@ class ApprovalQueueController:
                 if approved and modified_args and _call_id:
                     self._port.update_tool_args(_call_id, {**_args, **modified_args})
                 if (
-                    _daa_enabled
+                    _reuse_enabled
                     and approved
                     and dialog is not None
                     and dialog.user_decision_submitted
-                    and dialog.daa_choice
+                    and dialog.remember_choice
                 ):
                     response_worker = self._port.handle_approval_response(
-                        _req, approved, reason, modified_args, dialog.daa_choice
+                        _req, approved, reason, modified_args, dialog.remember_choice
                     )
                 else:
                     response_worker = self._port.handle_approval_response(_req, approved, reason, modified_args)

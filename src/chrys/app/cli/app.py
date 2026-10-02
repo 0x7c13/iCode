@@ -70,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  run         Run an agent headlessly until the final response\n"
             "  agents      List available agent profiles\n"
             "  models      List available model profiles\n"
+            "  approvals   List, revoke or clear remembered approvals\n"
             "  acp         Run an Agent Client Protocol stdio server\n"
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
@@ -134,6 +135,10 @@ def main() -> int:
         from chrys.app.cli.profiles import models_main
 
         return models_main(argv[1:])
+    if argv and argv[0] == "approvals":
+        from chrys.app.cli.approvals import main as approvals_main
+
+        return approvals_main(argv[1:])
     if argv and argv[0] == "install":
         return _run_install(argv[1:])
     if argv and argv[0] == "serve":

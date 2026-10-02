@@ -666,9 +666,7 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
-_LABEL_DAA_MINIMAL = msg(
-    "settings.approval.daa_minimal.label", fallback="Enable experimental exact/prefix approval reuse"
-)
+_LABEL_APPROVAL_REUSE = msg("settings.approval.reuse_enabled.label", fallback="Remember explicit user approvals")
 _LABEL_APP_DEV_MODE = msg("settings.app.dev_mode.label", fallback="Developer mode")
 _LABEL_MUTATIONS_PARALLEL_IMPLICIT_TOOLS = msg(
     "settings.mutations.parallel_implicit_tools.label", fallback="Parallel implicit tools"
@@ -1095,12 +1093,12 @@ class Settings:
         ),
     )
 
-    daa_minimal: bool = field(
+    reuse_enabled: bool = field(
         default=False,
         metadata=spec(
-            key="approval.daa_minimal",
-            label=_LABEL_DAA_MINIMAL,
-            env="CHRYS_DAA_MINIMAL",
+            key="approval.reuse_enabled",
+            label=_LABEL_APPROVAL_REUSE,
+            env="CHRYS_APPROVAL_REUSE",
             coerce=bool_coercer(),
             apply=Apply.RELOAD,
             group="approval",
