@@ -23,6 +23,7 @@ from .provider import (
     ContinuationVerdictError,
     ProviderResponseError,
     ProviderSignal,
+    in_band_failure_retryable,
     is_2xx,
     names_context_overflow,
     names_server_error_overflow,
@@ -155,7 +156,11 @@ def classify_error(exc: BaseException) -> ErrorClassification:
         retryable = False
     elif signal is not None and signal.explicit_retryable is not None:
         retryable = signal.explicit_retryable
-    elif (network is not None and network.deterministic) or kind in _NON_RETRYABLE_KINDS:
+    elif (
+        (network is not None and network.deterministic)
+        or kind in _NON_RETRYABLE_KINDS
+        or _names_a_final_in_band_failure(signal)
+    ):
         retryable = False
     elif signal is not None and is_2xx(signal.status_code):
         retryable = stream_error_retryable(signal)
@@ -172,6 +177,22 @@ def classify_error(exc: BaseException) -> ErrorClassification:
         from_model_service=_from_model_service(explicit, route),
         invalidates_continuation_token=_invalidates_continuation_token(explicit),
         evidence=evidence,
+    )
+
+
+def _names_a_final_in_band_failure(signal: ProviderSignal | None) -> bool:
+    """Whether *signal* is an error a stream reported in-band whose code a retry meets again.
+
+    The OpenAI SDK raises an error event inside a stream as a bare
+    ``APIError`` with no status: its code gets the verdict an adapter gives
+    the same failure (:func:`in_band_failure_retryable`). A veto only: an
+    unknown code keeps the retry it had.
+    """
+    return (
+        signal is not None
+        and signal.status_code is None
+        and signal.code is not None
+        and not in_band_failure_retryable(signal.code)
     )
 
 
