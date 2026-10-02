@@ -299,6 +299,11 @@ class ApprovalDialog(
             self.call_later(self._dismiss_if_top)
 
     @property
+    def tool_name(self) -> str:
+        """The tool name this dialog asks about, as it was given."""
+        return self._tool_name
+
+    @property
     def is_dismissed(self) -> bool:
         """True once the dialog has been dismissed (approve/decline/verdict)."""
         return self._dismissed

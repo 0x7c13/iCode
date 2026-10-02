@@ -349,9 +349,9 @@ def _get_shell_version(shell_path: str, name: str) -> str:
     import contextlib
     import subprocess
 
-    from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+    from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
-    win_kwargs = _windows_hidden_subprocess_kwargs()
+    win_kwargs = windows_hidden_subprocess_kwargs()
 
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError, OSError):
         if name in ("pwsh", "powershell"):
@@ -496,7 +496,7 @@ def _detect_git_bash() -> ShellInfo | None:
     def _get_git_version() -> str:
         if not has_git:
             return ""
-        from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+        from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
         with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError, OSError):
             r = subprocess.run(
@@ -510,7 +510,7 @@ def _detect_git_bash() -> ShellInfo | None:
                 encoding="utf-8",
                 errors="replace",
                 timeout=3,
-                **_windows_hidden_subprocess_kwargs(),
+                **windows_hidden_subprocess_kwargs(),
             )
             if r.returncode == 0:
                 return r.stdout.strip()

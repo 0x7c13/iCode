@@ -792,7 +792,7 @@ class AgentLoader:
         self._current.loaded = completed.loaded
         self._current.manifest = completed.manifest
         self._history.bind(completed.loaded.bindings.backend.history_state)
-        self._workspace_change_tracker.apply_retarget(staged.workspace, completed.workspace_retarget)
+        self._workspace_change_tracker.apply_retarget(completed.workspace_retarget)
         self._permits.advance_build_generation()
         return ReplacedBuild(
             loaded=old_loaded,

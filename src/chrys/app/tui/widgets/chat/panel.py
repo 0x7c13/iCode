@@ -664,7 +664,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Resume bottom-follow once when the agent starts its final answer."""
         self._scroll_controller.on_final_response_started()
 
-    def watch_virtual_size(self, old: object, new: object) -> None:
+    def watch_virtual_size(self, old: Size, new: Size) -> None:
         """Post-layout hook: re-engage anchor, sync scrollbar, toggle spacer.
 
         1. Anchor re-engage on growth: ``add_user_message`` releases the

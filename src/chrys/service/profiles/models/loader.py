@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import yaml
 
 from chrys.foundation.text.encoding import decode_bytes
+from chrys.service.profiles.coercion import coerce_bool
 from chrys.service.profiles.models.options import OUTPUT_CAP_OPTION_ALIASES, output_cap_option_value
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
@@ -29,21 +30,6 @@ logger = logging.getLogger(__name__)
 
 class ModelProfileLoadError(Exception):
     """Raised when a model profile YAML file cannot be loaded or validated."""
-
-
-def _coerce_bool(value: object, *, default: bool) -> bool:
-    """Coerce YAML scalar bool-ish values into a Python bool."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    return bool(value)
 
 
 def _coerce_int(data: dict[str, object], field: str, default: int, path: Path) -> int:
@@ -239,13 +225,13 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
             http_connect_timeout=_coerce_float(data, "http_connect_timeout", 10.0, path),
             http_read_timeout=_coerce_float(data, "http_read_timeout", 300.0, path),
             http_max_retries=_coerce_int(data, "http_max_retries", 2, path),
-            verify_ssl=_coerce_bool(data.get("verify_ssl"), default=True),
-            bypass_proxy=_coerce_bool(data.get("bypass_proxy"), default=False),
+            verify_ssl=coerce_bool(data.get("verify_ssl"), default=True),
+            bypass_proxy=coerce_bool(data.get("bypass_proxy"), default=False),
             http_headers=data.get("http_headers", ""),
             chat_options=chat_options,
-            stream=_coerce_bool(data.get("stream"), default=False),
-            vision=_coerce_bool(data.get("vision"), default=False),
-            stream_requires_finish_reason=_coerce_bool(data.get("stream_requires_finish_reason"), default=False),
+            stream=coerce_bool(data.get("stream"), default=False),
+            vision=coerce_bool(data.get("vision"), default=False),
+            stream_requires_finish_reason=coerce_bool(data.get("stream_requires_finish_reason"), default=False),
         )
     except ModelProfileLoadError:
         raise

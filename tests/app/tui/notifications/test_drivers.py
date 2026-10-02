@@ -207,7 +207,7 @@ async def test_run_command_spawns_hidden_windows_console(monkeypatch: pytest.Mon
 
     hidden = {"creationflags": process_mod._CREATE_NEW_CONSOLE, "startupinfo": "hidden-startupinfo"}
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
-    monkeypatch.setattr(process_mod, "_windows_hidden_subprocess_kwargs", lambda: dict(hidden))
+    monkeypatch.setattr(process_mod, "windows_hidden_subprocess_kwargs", lambda: dict(hidden))
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _capture)
 
     assert await drivers._run_command(["C:\\pwsh.exe", "-NoProfile", "-Command", "notify"]) is True
@@ -263,7 +263,7 @@ async def test_run_command_timeout_cleanup_hides_taskkill_console(monkeypatch: p
 
     hidden = {"creationflags": process_mod._CREATE_NEW_CONSOLE, "startupinfo": "hidden-startupinfo"}
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
-    monkeypatch.setattr(process_mod, "_windows_hidden_subprocess_kwargs", lambda: dict(hidden))
+    monkeypatch.setattr(process_mod, "windows_hidden_subprocess_kwargs", lambda: dict(hidden))
     monkeypatch.setattr(process_mod.shutil, "which", lambda name: taskkill if name == "taskkill" else None)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
 

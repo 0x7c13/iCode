@@ -74,7 +74,7 @@ def _is_macos() -> bool:
     return get_platform().is_macos
 
 
-def _fsync_dir(path: Path) -> None:
+def fsync_directory(path: Path) -> None:
     """Best-effort fsync of a directory after an atomic rename."""
     if os.name == "nt":
         return
@@ -84,6 +84,10 @@ def _fsync_dir(path: Path) -> None:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+
+_fsync_dir = fsync_directory
+"""Backward-compatible alias for callers predating the public helper."""
 
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
@@ -97,7 +101,7 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
-        _fsync_dir(path.parent)
+        fsync_directory(path.parent)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
@@ -153,7 +157,7 @@ def _atomic_create_bytes(path: Path, payload: bytes) -> None:
             # entry, breaking the no-temp-file-on-success durability above.
             os.link(tmp_path, path)
             tmp_path.unlink()
-        _fsync_dir(path.parent)
+        fsync_directory(path.parent)
     finally:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
@@ -1306,7 +1310,7 @@ def atomic_write_owner_only_bytes(path: Path, payload: bytes, *, create_parents:
         published = True
         verify_fd = secure_open_owner_only(path, read=True)
         os.close(verify_fd)
-        _fsync_dir(path.parent)
+        fsync_directory(path.parent)
     except BaseException:
         if fd >= 0:
             os.close(fd)

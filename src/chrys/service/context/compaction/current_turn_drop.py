@@ -138,10 +138,10 @@ class CurrentTurnDropRound:
                 degraded_opener=degraded_opener,
                 has_continuation_nudges=has_continuation_nudges,
                 completer=context.last_words_completer if context is not None else None,
-                tokenizer=self._strategy._tokenizer,
-                system_overhead_tokens=self._strategy._system_overhead,
+                tokenizer=self._strategy.tokenizer,
+                system_overhead_tokens=self._strategy.system_overhead_tokens,
                 request_overhead_tokens=request_overhead_tokens,
-                calibration_ratio=self._strategy._calibration_ratio,
+                calibration_ratio=self._strategy.calibration_ratio,
                 spend_side_call_tokens=self._breaker.spend_side_call_tokens,
             )
         except LastWordsSpendBudgetExceeded:
@@ -316,7 +316,7 @@ class CurrentTurnDropRound:
                                 reminder_middleware.refresh_last_words_reminder(messages)
                                 annotate_token_counts(
                                     messages,
-                                    tokenizer=self._strategy._tokenizer,
+                                    tokenizer=self._strategy.tokenizer,
                                     force_retokenize=True,
                                 )
                                 changed = True

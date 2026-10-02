@@ -118,7 +118,7 @@ class _FakeApp:
 
 class _FakeApprovalDialog:
     def __init__(self, **kwargs: object) -> None:
-        self._tool_name = str(kwargs.get("tool_name", ""))
+        self.tool_name = str(kwargs.get("tool_name", ""))
         self._dismissed = False
         self._user_decision_submitted = False
         self.verdicts: list[object] = []
@@ -642,8 +642,8 @@ async def test_final_agent_message_notifies_only_for_live_run() -> None:
             return
 
     class _StatusBar:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, *_args: object, **_kwargs: object) -> None:
             return

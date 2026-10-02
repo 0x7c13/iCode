@@ -23,6 +23,7 @@ from chrys.service.analytics.model import (
     TimeSlice,
     TurnAnalysis,
     ValidationMetrics,
+    least_precision,
     verify_covers_edit,
 )
 from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelled
@@ -101,7 +102,7 @@ def evaluate_findings(
                 occurrence_id=f"repeated:{target.occurrence_id}",
                 severity=FindingSeverity.WARNING,
                 detail_args=(("count", len(repeated)),),
-                precision=_least_precision(
+                precision=least_precision(
                     (
                         validation.tool_count.precision,
                         *(action.classification_precision for action in repeated),
@@ -184,7 +185,7 @@ def evaluate_findings(
                 severity=FindingSeverity.WARNING,
                 deterministic=True,
                 detail_args=(("count", len(net_zero_rows)),),
-                precision=_least_precision((change_verification.net_zero.precision, validation.tool_count.precision)),
+                precision=least_precision((change_verification.net_zero.precision, validation.tool_count.precision)),
                 turn_id=target_action.turn_id if target_action is not None else None,
                 turn_number=last_turn_number,
                 operation_id=target_action.operation_id if target_action is not None else None,
@@ -226,7 +227,7 @@ def evaluate_findings(
             severity=FindingSeverity.INFO,
             deterministic=True,
             detail_args=(("load", item.load),),
-            precision=_least_precision((Precision.ESTIMATED, validation.tool_count.precision)),
+            precision=least_precision((Precision.ESTIMATED, validation.tool_count.precision)),
             turn_id=item.turn_id,
             turn_number=item.turn_number,
             operation_id=None,
@@ -299,17 +300,6 @@ def _finding(
         turn_number=target.turn_number,
         operation_id=target.operation_id,
     )
-
-
-def _least_precision(values: Iterable[Precision]) -> Precision:
-    order = {
-        Precision.EXACT: 0,
-        Precision.ESTIMATED: 1,
-        Precision.MISSING: 2,
-        Precision.UNRESOLVED: 3,
-    }
-    precisions = list(values)
-    return max(precisions, key=order.__getitem__) if precisions else Precision.EXACT
 
 
 def _tool_succeeded(outcome: str | None) -> bool:

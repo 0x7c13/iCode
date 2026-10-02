@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, TypeGuard
 
+from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
     _APPROVAL_REJECTED_KEY,
@@ -212,15 +213,7 @@ def get_tool_invocation_order(context: FunctionInvocationContext) -> int | None:
     """Return the current-run tool invocation ordinal from metadata."""
     if not isinstance(context.metadata, dict):
         return None
-    raw = context.metadata.get(_TOOL_INVOCATION_ORDER_KEY)
-    if isinstance(raw, int):
-        return raw
-    if isinstance(raw, str):
-        try:
-            return int(raw)
-        except ValueError:
-            return None
-    return None
+    return read_tool_invocation_order(context.metadata)
 
 
 def set_tool_invocation_order(context: FunctionInvocationContext, order: int) -> None:

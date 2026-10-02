@@ -99,6 +99,7 @@ from chrys.service.analytics.model import (
     UsageBucket,
     ValidationMetrics,
     WallBucket,
+    least_precision,
     verify_covers_edit,
 )
 from chrys.service.analytics.reader import (
@@ -843,7 +844,7 @@ def _action_count_metrics(
     metrics: dict[ActionClass, Metric] = {}
     for action_class in ActionClass:
         matching = [action for action in actions if action.classification is action_class]
-        precision = _least_precision((projection_precision, *(action.classification_precision for action in matching)))
+        precision = least_precision((projection_precision, *(action.classification_precision for action in matching)))
         reason = None
         if projection_precision is not Precision.EXACT:
             reason = projection_reason or "tool action projection is incomplete"
@@ -875,7 +876,7 @@ def _validation_metrics(
     cancel_event: Event | None = None,
 ) -> ValidationMetrics:
     _check_cancelled(cancel_event)
-    projection_precision = _least_precision(turn.action_projection_precision for turn in turns)
+    projection_precision = least_precision(turn.action_projection_precision for turn in turns)
     projection_reason = next(
         (turn.action_projection_reason for turn in turns if turn.action_projection_reason is not None),
         None,
@@ -966,7 +967,7 @@ def _validation_metrics(
         # An unrecognized shell verify could have opened or closed more
         # cycles than the word list identified.
         cycle_precisions.append(Precision.ESTIMATED)
-    cycle_precision = _least_precision(cycle_precisions)
+    cycle_precision = least_precision(cycle_precisions)
     cycle_reason = (
         verification_reason
         if degraded_shell
@@ -983,7 +984,7 @@ def _validation_metrics(
         for action in edits
         if last_successful_verify is None or not verify_covers_edit(action, last_successful_verify)
     ]
-    unverified_precision = _least_precision(action.classification_precision for action in (*edits, *verifies))
+    unverified_precision = least_precision(action.classification_precision for action in (*edits, *verifies))
     unverified_reason = None
     if degraded_shell:
         unverified_precision = Precision.UNRESOLVED
@@ -1054,7 +1055,7 @@ def _validation_metrics(
         signature_precision = outcome_precision
         signature_reason = outcome_reason
     recovery_values = [metric.value for metric in recovery_metrics if isinstance(metric.value, int)]
-    recovery_precision = _least_precision(metric.precision for metric in recovery_metrics)
+    recovery_precision = least_precision(metric.precision for metric in recovery_metrics)
     recovery_reason = next((metric.reason for metric in recovery_metrics if metric.reason is not None), outcome_reason)
     validation = ValidationMetrics(
         funnel=ActionFunnel(
@@ -1321,7 +1322,7 @@ def _time_to_action(turns: list[TurnAnalysis], action: ActionOperation | None) -
             offset = action.start_ns - turn.axis_start_ns
             if offset < 0:
                 return Metric(None, Precision.UNRESOLVED, "action precedes its owning turn")
-            return Metric(elapsed + offset, _least_precision(precisions), action.classification_reason)
+            return Metric(elapsed + offset, least_precision(precisions), action.classification_reason)
         if not isinstance(turn.elapsed_ns.value, int):
             return Metric(None, Precision.UNRESOLVED, "an earlier turn duration is unresolved")
         elapsed += turn.elapsed_ns.value
@@ -1344,7 +1345,7 @@ def _duration_between_actions(
         duration = second.start_ns - start_ns
         if duration < 0:
             return Metric(None, Precision.UNRESOLVED, "action order yields a negative duration")
-        return Metric(duration, _least_precision(precisions))
+        return Metric(duration, least_precision(precisions))
     turns_by_id = {turn.turn_id: index for index, turn in enumerate(turns)}
     first_index = turns_by_id.get(first.turn_id)
     second_index = turns_by_id.get(second.turn_id)
@@ -1365,7 +1366,7 @@ def _duration_between_actions(
         metric_precisions.append(turn.elapsed_ns.precision)
     if duration < 0:
         return Metric(None, Precision.UNRESOLVED, "action order yields a negative duration")
-    return Metric(duration, _least_precision(metric_precisions))
+    return Metric(duration, least_precision(metric_precisions))
 
 
 def _retry_amplification(
@@ -1776,7 +1777,7 @@ def _resolve_change_verification(
                 unprovable_net_zero = True
                 row_precision = Precision.UNRESOLVED
             else:
-                row_precision = _least_precision((metric_precision, provenance_precision))
+                row_precision = least_precision((metric_precision, provenance_precision))
         else:
             latest_verify = successful_verifies[-1] if successful_verifies else None
             edit_terminals = edit_terminals_by_turn.get(last_turn, [])
@@ -1790,7 +1791,7 @@ def _resolve_change_verification(
             orderable = bool(edit_terminals) and None not in mutator_terminals
             if latest_verify is None or latest_verify.turn_number is None:
                 state = ChangeVerificationState.UNVERIFIED
-                row_precision = _least_precision((metric_precision, provenance_precision, verify_absence_precision))
+                row_precision = least_precision((metric_precision, provenance_precision, verify_absence_precision))
             elif latest_verify.turn_number == last_turn and not orderable:
                 # The turn's changes came from actions that never classify
                 # as edits (shell commands classify as verify or other) or
@@ -1804,7 +1805,7 @@ def _resolve_change_verification(
                 and latest_verify.start_sequence > max(cast("list[int]", mutator_terminals))
             ):
                 state = ChangeVerificationState.VERIFIED
-                row_precision = _least_precision(
+                row_precision = least_precision(
                     (metric_precision, provenance_precision, latest_verify.classification_precision)
                 )
             else:
@@ -1813,7 +1814,7 @@ def _resolve_change_verification(
                 # a later verify that would upgrade the row, so both
                 # precisions travel with it.
                 state = ChangeVerificationState.AFTER_VERIFY
-                row_precision = _least_precision(
+                row_precision = least_precision(
                     (
                         metric_precision,
                         provenance_precision,
@@ -1835,13 +1836,13 @@ def _resolve_change_verification(
     if any(diff.inferred or diff.contested for diff, _ in folded.values()):
         # The counts then include folds that may describe another writer's
         # change, so they cannot pass for exact per-session totals.
-        count_precision = _least_precision((count_precision, Precision.ESTIMATED))
+        count_precision = least_precision((count_precision, Precision.ESTIMATED))
         diagnostics.append("counts include window-inferred or peer-contested mutations")
     count_reason = "; ".join(diagnostics) if diagnostics else None
     net_zero_precision = count_precision
     net_zero_reason = count_reason
     if unprovable_net_zero:
-        net_zero_precision = _least_precision((net_zero_precision, Precision.UNRESOLVED))
+        net_zero_precision = least_precision((net_zero_precision, Precision.UNRESOLVED))
         net_zero_reason = "; ".join(
             (*diagnostics, "count includes files whose withheld content backups leave the net change unprovable")
         )
@@ -2152,17 +2153,6 @@ def _percentile_metric(values: list[int], quantile: float) -> Metric:
     return Metric(ordered[index], Precision.EXACT)
 
 
-def _least_precision(values: Iterable[Precision]) -> Precision:
-    order = {
-        Precision.EXACT: 0,
-        Precision.ESTIMATED: 1,
-        Precision.MISSING: 2,
-        Precision.UNRESOLVED: 3,
-    }
-    precisions = list(values)
-    return max(precisions, key=order.__getitem__) if precisions else Precision.EXACT
-
-
 def _tool_succeeded(outcome: str | None) -> bool:
     return outcome == ToolOutcome.SUCCESS
 
@@ -2274,7 +2264,7 @@ def _sum_metrics(
             reason or f"one or more {metric_subject} are unresolved",
         )
     values = [metric.value for metric in metrics if metric.value is not None]
-    precision = _least_precision(metric.precision for metric in metrics)
+    precision = least_precision(metric.precision for metric in metrics)
     return Metric(
         sum(values),
         precision,
@@ -2437,7 +2427,7 @@ def _fold_turn_group(attempts: list[TurnAnalysis], *, cancel_event: Event | None
         )
         for action_class in ActionClass
     }
-    action_precision = _least_precision(attempt.action_projection_precision for attempt in attempts)
+    action_precision = least_precision(attempt.action_projection_precision for attempt in attempts)
     action_reason = next(
         (
             attempt.action_projection_reason

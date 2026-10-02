@@ -936,6 +936,20 @@ async def test_chat_panel_removes_status_before_retry_note_on_agent_recovery() -
         assert len(cp.get_agent_responses()) == 1
 
 
+async def test_chat_panel_transcript_labels_agent_messages_with_their_profile() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("hi")
+        await cp.add_agent_message("unnamed")
+        cp.profile_name = "QA [bold]"
+        await cp.add_user_message("again")
+        await cp.add_agent_message("named")
+        await pilot.pause()
+
+        assert cp.get_agent_responses() == [("Agent", "unnamed"), ("QA [bold]", "named")]
+        assert cp.get_all_messages() == [("You", "hi"), ("Agent", "unnamed"), ("You", "again"), ("QA [bold]", "named")]
+
+
 @pytest.mark.parametrize("status_type", [ErrorMessage, InterruptedMessage])
 @pytest.mark.parametrize("suffix", ["none", "system", "note", "mixed"])
 async def test_chat_panel_retry_actions_and_removal_find_the_same_status(status_type, suffix: str) -> None:

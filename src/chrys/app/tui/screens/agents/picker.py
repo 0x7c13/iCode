@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import textwrap
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import on
@@ -16,6 +15,7 @@ from textual.widgets.option_list import Option
 from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.util.picker_text import wrap_description
 from chrys.foundation.i18n import msg
 
 if TYPE_CHECKING:
@@ -23,27 +23,7 @@ if TYPE_CHECKING:
 
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
 
-_DESC_INDENT = "    "
-"""Indent for description lines (matches width of '  - ')."""
-
 _AGENTS = msg("tui.agent_picker.title", fallback="Agents")
-
-
-def _wrap_description(desc: str, width: int) -> str:
-    """Wrap description text so continuation lines align after '  - '."""
-    if not desc:
-        return ""
-    indent = _DESC_INDENT
-    first_prefix = "  - "
-    # Available width for text on the first and subsequent lines
-    text_width = max(width - len(indent), 20)
-    lines = textwrap.wrap(desc, width=text_width)
-    if not lines:
-        return ""
-    result = first_prefix + lines[0]
-    for line in lines[1:]:
-        result += "\n" + indent + line
-    return result
 
 
 class AgentsScreen(BaseDialog[str | None]):
@@ -102,7 +82,7 @@ class AgentsScreen(BaseDialog[str | None]):
                 ol.add_option(None)
             label = p.display_name or p.name
             is_current = label == self._current_profile
-            desc = _wrap_description(p.description, content_width) if p.description else ""
+            desc = wrap_description(p.description, content_width) if p.description else ""
             prefix = "◦ " if is_current else ""
             if is_current:
                 content = Content.assemble(

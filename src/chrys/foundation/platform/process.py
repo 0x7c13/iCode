@@ -859,7 +859,7 @@ async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncIterator[as
     # - CREATE_NO_WINDOW: child shares the parent's console → can modify it.
     # - DETACHED_PROCESS: child has NO console → cmd.exe / pwsh / powershell fail.
     if sys.platform == "win32" and "creationflags" not in kwargs:
-        for k, v in _windows_hidden_subprocess_kwargs().items():
+        for k, v in windows_hidden_subprocess_kwargs().items():
             kwargs.setdefault(k, v)
 
     # Detach from the parent's stdin unless a caller asked for something else.
@@ -1044,7 +1044,7 @@ async def _run_windows_tree_kill(argv: list[str]) -> bool:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            **_windows_hidden_subprocess_kwargs(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except OSError:
         return False

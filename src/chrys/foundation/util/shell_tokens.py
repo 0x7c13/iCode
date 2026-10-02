@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 
-def _split_on_operators(command: str) -> list[str]:
+def split_on_operators(command: str) -> list[str]:
     """Split *command* on unquoted ``|``, ``&&``, ``||``, ``&``, ``;``, or newline operators.
 
     Respects single and double quotes so that ``echo 'a|b'`` is not split.
@@ -69,12 +69,7 @@ def _split_on_operators(command: str) -> list[str]:
                 current = []
                 i += 1
                 continue
-            if ch == ";":
-                segments.append("".join(current))
-                current = []
-                i += 1
-                continue
-            if ch in "\r\n":
+            if ch in ";\r\n":
                 segments.append("".join(current))
                 current = []
                 i += 1
@@ -87,3 +82,7 @@ def _split_on_operators(command: str) -> list[str]:
         segments.append("".join(current))
 
     return [s for s in segments if s.strip()]
+
+
+_split_on_operators = split_on_operators
+"""Backward-compatible alias for callers predating the public helper."""

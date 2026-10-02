@@ -537,7 +537,6 @@ def _entries_for_target(
     tracker: MutationTracker,
     target_turn: int,
     cwd: str,
-    available_turns: list[int],
 ) -> list[DiffFileEntry]:
     """Build the diff entries shown when the user previews keeping ``target_turn`` turns.
 
@@ -559,9 +558,6 @@ def _entries_for_target(
     by the engine (``start_turn(self._turn_number)`` uses the same
     counter that names snapshot files and history turn markers), so a
     ``turn_id`` lookup is both correct and gap-safe.
-
-    ``available_turns`` is accepted for API symmetry with the picker
-    builder; it's not consulted here.
     """
     all_turns = tracker.get_all_turns()
     if target_turn < 0 or not all_turns:
@@ -586,10 +582,9 @@ def _build_preview_state(
     tracker: MutationTracker,
     target_turn: int,
     cwd: str,
-    available_turns: list[int],
 ) -> tuple[list[DiffFileEntry], RollbackPlan | None]:
     """Build the expensive rollback entry and plan projection off-loop."""
-    entries = filter_and_dedupe_entries(_entries_for_target(tracker, target_turn, cwd, available_turns))
+    entries = filter_and_dedupe_entries(_entries_for_target(tracker, target_turn, cwd))
     return entries, _plan_for_target(tracker, target_turn)
 
 
@@ -1029,13 +1024,7 @@ class RollbackModal(BaseDialog[RollbackChoice | None]):
         tracker = self._tracker
         if tracker is None:
             raise RuntimeError("rollback state was not loaded")
-        entries, plan = await asyncio.to_thread(
-            _build_preview_state,
-            tracker,
-            self._selected_turn,
-            self._cwd,
-            self._available_turns,
-        )
+        entries, plan = await asyncio.to_thread(_build_preview_state, tracker, self._selected_turn, self._cwd)
         # Paths the plan dropped (non-restorable, move-poisoned, foreign,
         # …) are surfaced as a non-checkable note, never silently.
         if plan is not None and self._plan_augment is not None:

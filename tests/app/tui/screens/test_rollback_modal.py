@@ -276,10 +276,10 @@ async def test_cancelled_preview_keeps_projection_fenced_until_worker_thread_qui
         assert owner == "preview-projection"
         projection_released.set()
 
-    def blocking_build(*args, **kwargs):
+    def blocking_build(tracker: MutationTracker, target_turn: int, cwd: str):
         build_started.set()
         assert release_build.wait(timeout=2)
-        return original_build(*args, **kwargs)
+        return original_build(tracker, target_turn, cwd)
 
     monkeypatch.setattr(rollback_module, "_build_preview_state", blocking_build)
     modal = RollbackModal(
@@ -760,9 +760,9 @@ async def test_rollback_paints_loading_shell_before_building_content(
         await release_refresh.wait()
         return False
 
-    def tracked_build(*args, **kwargs):
+    def tracked_build(tracker: MutationTracker, target_turn: int, cwd: str):
         build_thread_ids.append(threading.get_ident())
-        return original_build(*args, **kwargs)
+        return original_build(tracker, target_turn, cwd)
 
     monkeypatch.setattr(rollback_module, "_build_preview_state", tracked_build)
     modal = RollbackModal(
@@ -1641,7 +1641,7 @@ def test_skipped_create_is_offered_as_revert_delete(tmp_path: Path) -> None:
     big.write_bytes(b"x" * (_POLICY_CAP + 1))
     tracker.record_after(mutation)
 
-    entries = _entries_for_target(tracker, 0, str(tmp_path), [0])
+    entries = _entries_for_target(tracker, 0, str(tmp_path))
     assert [e.rel_path for e in entries] == ["artifact.bin"]
     entry = entries[0]
     assert entry.operation is MutationOp.DELETE
@@ -1662,7 +1662,7 @@ def test_skipped_binary_create_marks_reason(tmp_path: Path) -> None:
     png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
     tracker.record_after(mutation)
 
-    entries = _entries_for_target(tracker, 0, str(tmp_path), [0])
+    entries = _entries_for_target(tracker, 0, str(tmp_path))
     assert len(entries) == 1
     assert entries[0].operation is MutationOp.DELETE
     assert entries[0].content_omitted == "binary"
@@ -1683,7 +1683,7 @@ def test_grown_file_revert_restores_saved_before_content(tmp_path: Path) -> None
     path.write_bytes(b"y" * (_POLICY_CAP + 1))
     tracker.record_after(mutation)
 
-    entries = _entries_for_target(tracker, 0, str(tmp_path), [0])
+    entries = _entries_for_target(tracker, 0, str(tmp_path))
     assert len(entries) == 1
     entry = entries[0]
     assert entry.operation is MutationOp.MODIFY
@@ -1710,7 +1710,7 @@ def test_preexisting_oversized_modify_stays_hidden(tmp_path: Path) -> None:
     path.write_bytes(b"y" * (_POLICY_CAP + 2))
     tracker.record_after(mutation)
 
-    assert _entries_for_target(tracker, 0, str(tmp_path), [0]) == []
+    assert _entries_for_target(tracker, 0, str(tmp_path)) == []
     assert tracker.get_rollback_plan(1).entries == []
 
 
@@ -1770,7 +1770,7 @@ def test_modal_hides_binary_move_destination(tmp_path: Path) -> None:
     mutation = tracker.record(str(dst), MutationOp.MOVE, MutationSource.SHELL, "call-mv", old_path=str(src))
     assert mutation is not None
 
-    assert _entries_for_target(tracker, 0, str(tmp_path), [0]) == []
+    assert _entries_for_target(tracker, 0, str(tmp_path)) == []
     # Sanity: the modal mirrors the plan, which is also empty.
     assert tracker.get_rollback_plan_for_turns({1}).entries == []
 

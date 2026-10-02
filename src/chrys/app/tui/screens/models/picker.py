@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import textwrap
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -17,6 +16,7 @@ from textual.widgets.option_list import Option
 from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.util.picker_text import wrap_description
 from chrys.foundation.i18n import msg
 from chrys.foundation.text.reading_order import reading_order
 from chrys.service.profiles.models.schema import is_model_profile_selectable
@@ -25,9 +25,6 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
     from chrys.service.profiles.models.registry import ModelProfileRegistry
-
-_DESC_INDENT = "    "
-"""Indent for description lines (matches width of '  - ')."""
 
 _PROFILE_OPTION_PREFIX = "profile:"
 _MANAGE_OPTION_ID = "action:manage"
@@ -48,23 +45,6 @@ class ModelPickerAction(StrEnum):
 
 
 type ModelPickerResult = str | ModelPickerAction | None
-
-
-def _wrap_description(desc: str, width: int) -> str:
-    """Wrap description text so continuation lines align after '  - '."""
-    if not desc:
-        return ""
-    indent = _DESC_INDENT
-    first_prefix = "  - "
-    # Available width for text on the first and subsequent lines
-    text_width = max(width - len(indent), 20)
-    lines = textwrap.wrap(desc, width=text_width)
-    if not lines:
-        return ""
-    result = first_prefix + lines[0]
-    for line in lines[1:]:
-        result += "\n" + indent + line
-    return result
 
 
 class ModelsScreen(BaseDialog[ModelPickerResult]):
@@ -144,7 +124,7 @@ class ModelsScreen(BaseDialog[ModelPickerResult]):
         desc = ""
         if hidden_count:
             hidden_text = render_str(localizer, _HIDDEN_PROFILES.bind(count=hidden_count))
-            desc = _wrap_description(hidden_text, content_width)
+            desc = wrap_description(hidden_text, content_width)
         manage_content = Content.assemble(
             (render_str(localizer, _MANAGE_MODELS.bind()), "bold"),
             f"\n{desc}" if desc else "",

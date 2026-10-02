@@ -170,3 +170,16 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
         assert status_bar.visible is True
         assert status_bar._flash is None
         assert status_bar.query_one("#profile-tag", Static).render().plain == "Code Agent"
+
+
+def test_approval_dialog_tool_name_is_the_raw_name_or_empty() -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
+    from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
+
+    adapter = MainScreenViewAdapter(SimpleNamespace())  # type: ignore[arg-type]
+    acp_name = "acp: `fs/write_text_file`"
+
+    assert adapter.approval_dialog_tool_name(ApprovalDialog(caller_name="", tool_name=acp_name)) == acp_name
+    assert adapter.approval_dialog_tool_name(SimpleNamespace(tool_name="shell")) == ""  # type: ignore[arg-type]

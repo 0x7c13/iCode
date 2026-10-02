@@ -83,13 +83,13 @@ def test_atomic_create_removes_the_temp_name_before_the_directory_sync(tmp_path,
     """
     target = tmp_path / "payload.txt"
     listings: list[list[str]] = []
-    real_fsync_dir = files._fsync_dir
+    real_fsync_dir = files.fsync_directory
 
     def observing_fsync_dir(directory) -> None:
         listings.append(sorted(entry.name for entry in tmp_path.iterdir()))
         real_fsync_dir(directory)
 
-    monkeypatch.setattr(files, "_fsync_dir", observing_fsync_dir)
+    monkeypatch.setattr(files, "fsync_directory", observing_fsync_dir)
 
     files.atomic_create_text(target, "payload")
 
@@ -144,7 +144,7 @@ def test_fsync_dir_is_noop_on_windows(tmp_path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(files.os, "name", "nt")
     monkeypatch.setattr(files.os, "open", open_mock)
 
-    files._fsync_dir(tmp_path)
+    files.fsync_directory(tmp_path)
 
     open_mock.assert_not_called()
 
@@ -153,7 +153,7 @@ def test_fsync_dir_swallows_posix_open_error(tmp_path, monkeypatch: pytest.Monke
     monkeypatch.setattr(files.os, "name", "posix")
     monkeypatch.setattr(files.os, "open", Mock(side_effect=OSError("unavailable")))
 
-    files._fsync_dir(tmp_path)
+    files.fsync_directory(tmp_path)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode assertion")

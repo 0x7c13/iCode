@@ -112,7 +112,7 @@
         ["thread_pool", "await asyncio.to_thread(_processes_have_stopped_member, process_group_id, process_session_id)", "unresolved"]
       ],
       "_run_windows_tree_kill": [
-        ["awaitable", "await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **_windows_hidden_subprocess_kwargs())", "unresolved"],
+        ["awaitable", "await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **windows_hidden_subprocess_kwargs())", "unresolved"],
         ["timeout", "await asyncio.wait_for(killer.wait(), timeout=_WINDOWS_TREE_KILL_TIMEOUT)", "unresolved"]
       ],
       "_spawn_windows_managed_stdio_process": [
@@ -3660,7 +3660,7 @@
     },
     "chrys.service.context.compaction.current_turn_drop": {
       "CurrentTurnDropRound._generate_last_words": [
-        ["awaitable", "await generator.generate(timeline_groups, previous, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=context.last_words_completer if context is not None else None, tokenizer=self._strategy._tokenizer, system_overhead_tokens=self._strategy._system_overhead, request_overhead_tokens=request_overhead_tokens, calibration_ratio=self._strategy._calibration_ratio, spend_side_call_tokens=self._breaker.spend_side_call_tokens)", "unresolved"]
+        ["awaitable", "await generator.generate(timeline_groups, previous, degraded_opener=degraded_opener, has_continuation_nudges=has_continuation_nudges, completer=context.last_words_completer if context is not None else None, tokenizer=self._strategy.tokenizer, system_overhead_tokens=self._strategy.system_overhead_tokens, request_overhead_tokens=request_overhead_tokens, calibration_ratio=self._strategy.calibration_ratio, spend_side_call_tokens=self._breaker.spend_side_call_tokens)", "unresolved"]
       ],
       "CurrentTurnDropRound._spill_drop_groups": [
         ["wrapper", "await _write_spill_batch_in_worker(self._strategy._spill_root, self._strategy._spill_quota, drop_groups, record_dir=record_dir, absolute_turn=absolute_turn, round_number=round_number, session_id=self._strategy._spill_session_id, superseded_note=previous or None)", "unresolved", "chrys.service.context.compaction.current_turn_drop._write_spill_batch_in_worker"],

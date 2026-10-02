@@ -6,15 +6,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from chrys.foundation.text.images import is_image_media_type as _is_image_media_type
+
 from ._content import Content
 
 
 def is_image_media_type(media_type: Any) -> bool:
     """Return True when *media_type* is an image MIME type."""
-    if not isinstance(media_type, str):
-        return False
-    top_level = media_type.split(";", 1)[0].split("/", 1)[0].strip().lower()
-    return top_level == "image"
+    return _is_image_media_type(media_type)
 
 
 def is_image_data_uri(uri: Any) -> bool:

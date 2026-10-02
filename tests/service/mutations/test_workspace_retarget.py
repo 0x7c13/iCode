@@ -34,7 +34,7 @@ def test_retarget_composition_matches_resolve_and_apply(tmp_path) -> None:
     for tracker in [first, second]:
         tracker.queue_safety_notice("kept", cwd=str(tmp_path / "old"))
     first.retarget_roots(workspace, resolve_scope=False)
-    second.apply_retarget(workspace, second.resolve_retarget(workspace, resolve_scope=False))
+    second.apply_retarget(second.resolve_retarget(workspace, resolve_scope=False))
     assert _state(first) == _state(second)
     assert first.serialize() == second.serialize()
 
@@ -51,7 +51,7 @@ def test_disabled_resolve_and_apply_skip_probes_and_preserve_baseline(tmp_path, 
     monkeypatch.setattr(module, "_resolve_workspace_scope", fail)
     retarget = tracker.resolve_retarget(workspace, resolve_scope=False)
     assert tracker.baseline is baseline
-    tracker.apply_retarget(workspace, retarget)
+    tracker.apply_retarget(retarget)
     assert tracker.baseline is baseline
     assert tracker._scope.roots == ()
 
@@ -99,7 +99,7 @@ def test_apply_retarget_with_pending_and_newly_queued_notices_never_resolves_pat
 
     monkeypatch.setattr(module.os.path, "realpath", fail)
     monkeypatch.setattr(module, "_resolve_workspace_scope", fail)
-    tracker.apply_retarget(workspace, retarget)
+    tracker.apply_retarget(retarget)
     assert tracker.take_pending_notice() == f"{_header(old)}\nfirst\n\n{_header(old)}\nsecond"
 
 
