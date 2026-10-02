@@ -68,8 +68,13 @@ def _completion(
     )
 
 
-def _chunk(*, finish_reason: str | None = None, usage: bool = False, **delta: Any) -> ChatCompletionChunk:
-    """One streamed chunk; with no *delta* fields and no finish reason, it has no choice at all."""
+def _chunk(
+    *, finish_reason: str | None = None, usage: bool = False, output_tokens: int = 9, **delta: Any
+) -> ChatCompletionChunk:
+    """One streamed chunk; with no *delta* fields and no finish reason, it has no choice at all.
+
+    With *usage*, the chunk reports the usage so far: 70 input tokens and *output_tokens*.
+    """
     choices = []
     if delta or finish_reason:
         choices = [
@@ -83,7 +88,9 @@ def _chunk(*, finish_reason: str | None = None, usage: bool = False, **delta: An
         created=1_717_171_717,
         model="test",
         choices=choices,
-        usage=CompletionUsage(prompt_tokens=70, completion_tokens=9, total_tokens=79) if usage else None,
+        usage=CompletionUsage(prompt_tokens=70, completion_tokens=output_tokens, total_tokens=70 + output_tokens)
+        if usage
+        else None,
     )
 
 
@@ -174,6 +181,17 @@ _FAILED_WITH_USAGE: list[Any] = [
         lambda: _chat_completions([_chunk(content="Partial", usage=True), _chunk(finish_reason="network_error")]),
         True,
         id="chat_completions_failed_after_its_usage",
+    ),
+    pytest.param(
+        lambda: _chat_completions(
+            [
+                _chunk(content="Partial", usage=True, output_tokens=1),
+                _chunk(content=" answer", usage=True),
+                _chunk(finish_reason="network_error"),
+            ]
+        ),
+        True,
+        id="chat_completions_failed_after_growing_usage",
     ),
     # Streams without a finish reason: the usage came in a chunk of its own.
     pytest.param(
