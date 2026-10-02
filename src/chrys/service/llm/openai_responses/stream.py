@@ -69,6 +69,8 @@ from .decode import (
 from .hosted import decode_hosted_item, image_data_uri, item_properties, refresh_in_place
 
 if TYPE_CHECKING:
+    from chrys.kernel import UsageDetails
+
     from .client import ResponsesVariant
 
 logger = logging.getLogger(__name__)
@@ -252,17 +254,17 @@ class StreamState:
         event lost the rest of it: that is a truncation the next attempt
         may resume. A stream with no lifecycle events at all (some
         compatible endpoints send none) is kept, with a warning, and the
-        calls it still holds are sent.
+        calls it still holds are sent. A stream that refused yet asks for
+        calls fails as filtered either way.
         """
         if self._ended:
             return None
+        self._refuse_calls()
         if self._announced:
             raise ProviderResponseError(
                 "stream_truncated", "The stream ended before the response finished.", retryable=True
             )
         logger.warning("Responses stream ended without a terminal event; the answer may be incomplete")
-        if self._refused and self._calls_seen:
-            raise refused_calls_error()
         update = _Update(model=self._model)
         self._release(update, drain=True)
         if not update.contents:
@@ -418,13 +420,13 @@ class StreamState:
         """``response.completed`` or ``response.incomplete``: the response ends here, unless it failed or refused."""
         self._ended = True
         response = event.response
-        if (failure := response_failure(response, observed=self._unsent_hosted(response))) is not None:
+        usage = decode_usage(response.usage, variant=self._variant) if response.usage else None
+        self._refuse_calls(response, usage)
+        observed = self._unsent_hosted(response)
+        if (failure := response_failure(response, observed=observed, usage_details=usage)) is not None:
             raise failure
         reason = finish_reason(response)
         output = getattr(response, "output", None) or []
-        self._refused = self._refused or reason == "content_filter" or any(map(refuses, output))
-        if self._refused and self._calls_seen:
-            raise refused_calls_error(self._unsent_hosted(response))
         if self._backfills_reasoning:
             for item in output:
                 if getattr(item, "type", None) == "reasoning":
@@ -434,7 +436,7 @@ class StreamState:
         update.conversation_id = conversation_handle(response, store=self._store(), variant=self._variant)
         update.model = response.model
         update.created_at = timestamp(response.created_at)
-        if response.usage and (usage := decode_usage(response.usage, variant=self._variant)):
+        if usage:
             update.contents.append(Content.from_usage(usage_details=usage, raw_representation=event))
         update.finish_reason = reason
 
@@ -442,18 +444,22 @@ class StreamState:
         """``response.failed``: the error it carries, the hosted work it ran included."""
         self._ended = True
         response = event.response
+        usage = decode_usage(response.usage, variant=self._variant) if response.usage else None
+        self._refuse_calls(response, usage)
         observed = self._unsent_hosted(response)
-        raise response_failure(response, observed=observed) or ProviderResponseError(
+        raise response_failure(response, observed=observed, usage_details=usage) or ProviderResponseError(
             "server_error",
             "The service reported the response as failed.",
             retryable=True,
             invalidates_continuation_token=True,
             observed_contents=tuple(observed),
+            usage_details=usage,
         )
 
     def _error(self, event: Any, update: _Update) -> None:
         """An ``error`` event: the response ends with it."""
         self._ended = True
+        self._refuse_calls()
         code = getattr(event, "code", None) or "server_error"
         raise ProviderResponseError(
             code,
@@ -461,6 +467,17 @@ class StreamState:
             retryable=in_band_failure_retryable(code),
             invalidates_continuation_token=True,
         )
+
+    def _refuse_calls(self, response: Any = None, usage: UsageDetails | None = None) -> None:
+        """Fail a response that refused or was filtered yet asks for calls, however it ended.
+
+        *response* is the terminal response, when the stream sent one.
+        """
+        if response is not None:
+            output = getattr(response, "output", None) or []
+            self._refused = self._refused or finish_reason(response) == "content_filter" or any(map(refuses, output))
+        if self._refused and self._calls_seen:
+            raise refused_calls_error(self._unsent_hosted(response), usage_details=usage)
 
     # Output items
 

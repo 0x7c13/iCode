@@ -11,7 +11,7 @@ metadata and the usage.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from openai.types.chat.chat_completion import ChatCompletion, Choice
@@ -102,34 +102,47 @@ def ensure_choices(response: Any) -> None:
 
 
 def finish_reason(value: object) -> str | None:
-    """The finish reason a choice reports, in the spelling the kernel reads.
-
-    An empty string reports none. A finish reason that reports a failure is
-    raised as the provider's error instead.
-    """
+    """The finish reason a choice reports, in the spelling the kernel reads; an empty string reports none."""
     if not isinstance(value, str) or not value:
         return None
-    reason = _FINISH_REASON_SPELLINGS.get(value, value)
-    if reason in _FAILED_FINISH_REASONS:
-        raise ProviderResponseError(
-            reason, f"The service ended the completion with finish reason {reason!r}.", retryable=True
-        )
-    if reason == _CONTEXT_OVERFLOW_FINISH_REASON:
-        raise ProviderResponseError(
-            reason,
-            "The request does not fit the model's context window.",
-            retryable=False,
-            invalidates_continuation_token=True,
-        )
-    return reason
+    return _FINISH_REASON_SPELLINGS.get(value, value)
 
 
-def refused_calls_error(observed_contents: Sequence[Content] = ()) -> ProviderResponseError:
+def finish_failure(
+    reasons: Iterable[str | None], *, usage_details: UsageDetails | None = None
+) -> ProviderResponseError | None:
+    """The provider's error for the first finish reason that reports a failure, or None.
+
+    A refusal with tool calls outranks it: callers check for that first.
+    """
+    for reason in reasons:
+        if reason in _FAILED_FINISH_REASONS:
+            return ProviderResponseError(
+                reason,
+                f"The service ended the completion with finish reason {reason!r}.",
+                retryable=True,
+                usage_details=usage_details,
+            )
+        if reason == _CONTEXT_OVERFLOW_FINISH_REASON:
+            return ProviderResponseError(
+                reason,
+                "The request does not fit the model's context window.",
+                retryable=False,
+                invalidates_continuation_token=True,
+                usage_details=usage_details,
+            )
+    return None
+
+
+def refused_calls_error(
+    observed_contents: Sequence[Content] = (), *, usage_details: UsageDetails | None = None
+) -> ProviderResponseError:
     """The failure of a response that refused or was filtered, yet asks for tool calls.
 
     The calls are never run: the response's own verdict is that it should
-    not go on. *observed_contents* is the hosted work the response showed
-    but never yielded.
+    not go on, and that verdict stands even when the response also failed
+    or was cut off. *observed_contents* is the hosted work the response
+    showed but never yielded.
     """
     return ProviderResponseError(
         "content_filter",
@@ -137,6 +150,7 @@ def refused_calls_error(observed_contents: Sequence[Content] = ()) -> ProviderRe
         retryable=False,
         invalidates_continuation_token=True,
         observed_contents=tuple(observed_contents),
+        usage_details=usage_details,
     )
 
 
@@ -158,18 +172,21 @@ def decode_completion(
     metadata = response_metadata(response)
     messages: list[Message] = []
     finish: FinishReason | None = None
+    usage = decode_usage(response.usage, variant=variant) if response.usage else None
     reasons = [finish_reason(choice.finish_reason) for choice in response.choices]
+    calls = [_function_calls(choice.message) for choice in response.choices]
     refused = "content_filter" in reasons or any(has_refusal(choice.message) for choice in response.choices)
-    for choice, reason in zip(response.choices, reasons, strict=True):
+    if refused and any(calls):
+        raise refused_calls_error(usage_details=usage)
+    if (failure := finish_failure(reasons, usage_details=usage)) is not None:
+        raise failure
+    for choice, reason, choice_calls in zip(response.choices, reasons, calls, strict=True):
         metadata.update(choice_metadata(choice))
         if reason is not None:
             finish = FinishReason(reason)
-        calls = _function_calls(choice.message)
-        if calls and refused:
-            raise refused_calls_error()
         # Text, then calls, then reasoning: unlike a delta, a whole message
         # has no chunk boundary that could split its text.
-        contents = [*text_contents(choice), *calls, *message_reasoning(choice.message)]
+        contents = [*text_contents(choice), *choice_calls, *message_reasoning(choice.message)]
         messages.append(
             Message(role="assistant", contents=contents, additional_properties=message_reasoning_props(choice.message))
         )
@@ -179,7 +196,7 @@ def decode_completion(
         created_at=openai_created_at_iso(response.created),
         model=response.model,
         finish_reason=finish,
-        usage_details=decode_usage(response.usage, variant=variant) if response.usage else None,
+        usage_details=usage,
         response_format=options.get("response_format"),
         additional_properties=metadata,
     )

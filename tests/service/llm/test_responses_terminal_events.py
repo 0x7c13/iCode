@@ -26,6 +26,7 @@ from tests.service.llm._responses_wire import (
     refusal_item,
     respond,
     responses_client,
+    snapshot,
     tool_runs,
 )
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
@@ -304,6 +305,66 @@ async def test_an_error_event_reports_no_hosted_work() -> None:
     assert raised.value.observed_contents == ()
 
 
+# ---------------------------------------------------------------------------
+# Usage a failed response reported
+# ---------------------------------------------------------------------------
+
+
+def _completed_with_an_error(*output: Mapping[str, Any]) -> dict[str, Any]:
+    """A terminal response that reports an error although it says it completed."""
+    return snapshot(*output, error={"code": "server_error", "message": "It broke."})
+
+
+@pytest.mark.parametrize(
+    ("reply", "stream"),
+    [
+        pytest.param(_answer().failed().reply(), True, id="failed_stream"),
+        pytest.param(
+            _answer().emit("response.completed", response=_completed_with_an_error()).reply(),
+            True,
+            id="completed_event_with_an_error",
+        ),
+        pytest.param(
+            _answer().emit("response.failed", response=snapshot()).reply(), True, id="failed_event_without_an_error"
+        ),
+        pytest.param(
+            blocking(resp_message("msg_1", "Partial"), status="failed", error={"code": "server_error", "message": "x"}),
+            False,
+            id="failed_blocking",
+        ),
+        pytest.param(
+            Script()
+            .started()
+            .call(0, "fc_1", "call_1")
+            .finished(call_item("fc_1", "call_1"), incomplete="content_filter")
+            .reply(),
+            True,
+            id="refused_stream",
+        ),
+        pytest.param(
+            blocking(call_item("fc_1", "call_1"), status="incomplete", incomplete="content_filter"),
+            False,
+            id="refused_blocking",
+        ),
+    ],
+)
+async def test_a_failed_response_carries_the_usage_it_reported(reply: Reply, stream: bool) -> None:
+    with pytest.raises(ProviderResponseError) as raised:
+        await respond(reply, stream=stream)
+
+    usage = raised.value.usage_details
+    assert usage is not None
+    assert (usage["input_token_count"], usage["output_token_count"], usage["total_token_count"]) == (70, 9, 79)
+
+
+@pytest.mark.parametrize("script", [_answer().error("server_error"), _answer()], ids=["error_event", "cut_off"])
+async def test_a_stream_that_ends_without_a_response_carries_no_usage(script: Script) -> None:
+    with pytest.raises(ProviderResponseError) as raised:
+        await respond(script.reply(), stream=True)
+
+    assert raised.value.usage_details is None
+
+
 def _policy(validation: ResponseValidationMiddleware, retries: list[BaseException]) -> WireRetryPolicyAdapter:
     async def no_sleep(_seconds: int) -> bool:
         return False
@@ -408,6 +469,7 @@ async def test_hosted_work_on_a_failed_service_side_stream_is_recorded_as_commit
 # ---------------------------------------------------------------------------
 
 _REFUSAL = "I can't help with that."
+
 _REFUSED_STREAMS = [
     pytest.param(
         Script()
@@ -448,6 +510,28 @@ _REFUSED_STREAMS = [
         Script().started().call(0, "fc_1", "call_1").finished(call_item("fc_1", "call_1"), incomplete="content_filter"),
         id="filtered",
     ),
+    # However the response then ends, the refusal stands: a retry could run the calls.
+    pytest.param(
+        Script()
+        .started()
+        .refusal(0, "msg_1", _REFUSAL)
+        .call(1, "fc_1", "call_1")
+        .failed(refusal_item("msg_1", _REFUSAL), call_item("fc_1", "call_1")),
+        id="refusal_then_failed",
+    ),
+    pytest.param(
+        Script().started().refusal(0, "msg_1", _REFUSAL).call(1, "fc_1", "call_1").error("server_error"),
+        id="refusal_then_error_event",
+    ),
+    pytest.param(Script().started().refusal(0, "msg_1", _REFUSAL).call(1, "fc_1", "call_1"), id="refusal_then_cut_off"),
+    pytest.param(
+        Script()
+        .started()
+        .refusal(0, "msg_1", _REFUSAL)
+        .call(1, "fc_1", "call_1")
+        .emit("response.completed", response=_completed_with_an_error(call_item("fc_1", "call_1"))),
+        id="refusal_then_a_completed_event_with_an_error",
+    ),
 ]
 
 
@@ -470,10 +554,48 @@ async def test_a_refused_stream_runs_none_of_its_calls(script: Script) -> None:
         pytest.param(
             blocking(call_item("fc_1", "call_1"), status="incomplete", incomplete="content_filter"), id="filtered"
         ),
+        pytest.param(
+            blocking(
+                refusal_item("msg_1", _REFUSAL),
+                call_item("fc_1", "call_1"),
+                status="failed",
+                error={"code": "server_error", "message": "It broke."},
+            ),
+            id="refusal_in_a_failed_response",
+        ),
     ],
 )
 async def test_a_refused_blocking_response_runs_none_of_its_calls(reply: Reply) -> None:
     _assert_refused(await tool_runs(reply, stream=False))
+
+
+@pytest.mark.parametrize(
+    ("reply", "stream", "code"),
+    [
+        pytest.param(
+            Script().started().refusal(0, "msg_1", _REFUSAL).failed(refusal_item("msg_1", _REFUSAL)).reply(),
+            True,
+            "server_error",
+            id="failed_stream",
+        ),
+        pytest.param(
+            Script().started().refusal(0, "msg_1", _REFUSAL).reply(), True, "stream_truncated", id="cut_off_stream"
+        ),
+        pytest.param(
+            blocking(
+                refusal_item("msg_1", _REFUSAL), status="failed", error={"code": "server_error", "message": "It broke."}
+            ),
+            False,
+            "server_error",
+            id="failed_blocking",
+        ),
+    ],
+)
+async def test_a_refusal_without_calls_keeps_the_failure_it_ended_with(reply: Reply, stream: bool, code: str) -> None:
+    with pytest.raises(ProviderResponseError) as raised:
+        await respond(reply, stream=stream)
+
+    assert (raised.value.code, raised.value.retryable) == (code, True)
 
 
 async def test_a_refusal_that_asks_for_calls_reports_the_hosted_work_it_never_sent() -> None:

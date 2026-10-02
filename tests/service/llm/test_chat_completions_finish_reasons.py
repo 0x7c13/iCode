@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from openai.types import CompletionUsage
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
@@ -209,6 +210,53 @@ async def test_a_refused_completion_runs_none_of_its_calls(completion: ChatCompl
     assert invalidates_continuation_token(raised.value) is True
 
 
+@pytest.mark.parametrize("reason", ["network_error", "model_context_window_exceeded"])
+@pytest.mark.parametrize(
+    "shape",
+    ["blocking", "streaming", "refusal_in_the_failing_chunk", "refusal_in_the_failing_chunk_after_released_calls"],
+)
+async def test_a_refusal_with_calls_outranks_a_failed_finish_reason(shape: str, reason: str) -> None:
+    replies: dict[str, ChatReply] = {
+        "blocking": _completion(refusal="I can't.", calls=1, finish_reason=reason),
+        "streaming": [_refusal("I can't."), _call('{"path": "a"}'), _text("", finish_reason=reason)],
+        "refusal_in_the_failing_chunk": [
+            _call('{"path": "a"}'),
+            _chunk(ChoiceDelta.model_construct(role="assistant", refusal="I can't."), finish_reason=reason),
+        ],
+        "refusal_in_the_failing_chunk_after_released_calls": [
+            _call('{"path": "a"}', finish_reason="tool_calls"),
+            _on_choice(
+                _chunk(ChoiceDelta.model_construct(role="assistant", refusal="I can't."), finish_reason=reason), 1
+            ),
+        ],
+    }
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(replies[shape])
+
+    assert raised.value.code == "content_filter"
+    assert classify_error(raised.value).retryable is False
+    assert invalidates_continuation_token(raised.value) is True
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+@pytest.mark.parametrize(("refusal", "calls"), [("I can't.", 0), (None, 1)], ids=["refusal_only", "calls_only"])
+async def test_without_a_refusal_with_calls_a_failed_finish_reason_stands(
+    stream: bool, refusal: str | None, calls: int
+) -> None:
+    chunks = [*([_refusal(refusal)] if refusal else []), *([_call('{"path": "a"}')] if calls else [])]
+    reply: ChatReply = (
+        [*chunks, _text("", finish_reason="network_error")]
+        if stream
+        else _completion(refusal=refusal, calls=calls, finish_reason="network_error")
+    )
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(reply)
+
+    assert (raised.value.code, classify_error(raised.value).retryable) == ("network_error", True)
+
+
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 async def test_a_refusal_without_calls_is_an_ordinary_answer(stream: bool) -> None:
     reply: ChatReply = (
@@ -312,6 +360,55 @@ async def test_a_named_call_beside_a_dropped_nameless_one_is_still_refused() -> 
     assert (runs, requests) == ([], 1)
     assert isinstance(raised, ProviderResponseError)
     assert raised.code == "content_filter"
+
+
+# ---------------------------------------------------------------------------
+# Usage a failed completion reported
+# ---------------------------------------------------------------------------
+
+_USAGE = CompletionUsage(prompt_tokens=70, completion_tokens=9, total_tokens=79)
+
+
+def _reporting_usage(chunk: ChatCompletionChunk) -> ChatCompletionChunk:
+    chunk.usage = _USAGE
+    return chunk
+
+
+def _completion_reporting_usage(**fields: Any) -> ChatCompletion:
+    completion = _completion(**fields)
+    completion.usage = _USAGE
+    return completion
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(_completion_reporting_usage(content="Partial", finish_reason="network_error"), id="failed"),
+        pytest.param(
+            _completion_reporting_usage(refusal="I can't.", calls=1, finish_reason="tool_calls"), id="refused"
+        ),
+        pytest.param([_reporting_usage(_text("Partial", finish_reason="network_error"))], id="failed_stream"),
+        pytest.param(
+            [_refusal("I can't."), _reporting_usage(_call('{"path": "a"}', finish_reason="tool_calls"))],
+            id="refused_stream",
+        ),
+        pytest.param(
+            [_call('{"path": "a"}', finish_reason="tool_calls"), _reporting_usage(_on_choice(_refusal("I can't."), 1))],
+            id="refused_after_released_calls_stream",
+        ),
+        pytest.param(
+            [_refusal("I can't."), _call('{"path": "a"}'), _reporting_usage(_text("", finish_reason="network_error"))],
+            id="refused_then_failed_stream",
+        ),
+    ],
+)
+async def test_a_failed_completion_carries_the_usage_it_reported(reply: ChatReply) -> None:
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(reply)
+
+    usage = raised.value.usage_details
+    assert usage is not None
+    assert (usage["input_token_count"], usage["output_token_count"], usage["total_token_count"]) == (70, 9, 79)
 
 
 # ---------------------------------------------------------------------------

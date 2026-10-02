@@ -30,13 +30,14 @@ from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompl
 from pydantic import ValidationError
 
 from chrys.foundation.errors import ProviderResponseError
-from chrys.kernel import ChatResponseUpdate, Content, FinishReason
+from chrys.kernel import ChatResponseUpdate, Content, FinishReason, UsageDetails
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
 from chrys.service.llm.openai_timestamps import normalize_openai_created_payload, openai_created_at_iso
 
 from .decode import (
     choice_metadata,
     decode_usage,
+    finish_failure,
     finish_reason,
     has_refusal,
     refused_calls_error,
@@ -107,7 +108,12 @@ class StreamState:
         self._calls_released = False
 
     def updates_for(self, chunk: ChatCompletionChunk) -> list[ChatResponseUpdate]:
-        """The updates one chunk yields: calls its finish reasons complete, then its own."""
+        """The updates one chunk yields: calls its finish reasons complete, then its own.
+
+        A finish reason that reports a failure raises the provider's error,
+        with the usage the chunk reports; a refusal with tool calls
+        outranks it.
+        """
         choices = getattr(chunk, "choices", None)
         if not isinstance(choices, list):
             raise_invalid_stream_event(chunk, choices)
@@ -116,11 +122,16 @@ class StreamState:
         # Read once: the update reports these and the release keys on them.
         finished = _finish_reasons(chunk)
         update = self.update_for(chunk, finished)
+        usage = next((content.usage_details for content in update.contents if content.type == "usage"), None)
+        if (failure := finish_failure(finished.values(), usage_details=usage)) is not None:
+            if self._refused and (self._calls_released or self._calls_pending()):
+                raise refused_calls_error(usage_details=usage)
+            raise failure
         # A consumer may stop at a finish reason, so the calls go out first.
-        calls = self._release(finished) if finished else None
+        calls = self._release(finished, usage) if finished else None
         if self._refused and self._calls_released:
             # A refusal may follow calls an earlier choice finished with.
-            raise refused_calls_error()
+            raise refused_calls_error(usage_details=usage)
         return [update] if calls is None else [calls, update]
 
     def finish(self, *, requires_finish_reason: bool = False) -> ChatResponseUpdate | None:
@@ -132,7 +143,7 @@ class StreamState:
         and no finish reason may have lost its answer's end; that fails
         under *requires_finish_reason* and is logged otherwise.
         """
-        if any(state.calls for state in self._choices.values()):
+        if self._calls_pending():
             return self._release(None)
         if not self._finish_seen:
             if requires_finish_reason:
@@ -182,6 +193,9 @@ class StreamState:
 
     def _choice(self, index: int) -> _ChoiceState:
         return self._choices.setdefault(index, _ChoiceState())
+
+    def _calls_pending(self) -> bool:
+        return any(state.calls for state in self._choices.values())
 
     def _delta_contents(self, choice: ChunkChoice) -> list[Content]:
         state = self._choice(choice.index)
@@ -294,8 +308,13 @@ class StreamState:
             state.by_index[index] = pending
         return pending
 
-    def _release(self, finished: Mapping[int, str] | None) -> ChatResponseUpdate | None:
-        """One update with the complete calls of the finished choices, or of every choice at the end."""
+    def _release(
+        self, finished: Mapping[int, str] | None, usage: UsageDetails | None = None
+    ) -> ChatResponseUpdate | None:
+        """One update with the complete calls of the finished choices, or of every choice at the end.
+
+        *usage* is what the finishing chunk reported, kept on a refusal's error.
+        """
         chosen = sorted(self._choices if finished is None else finished)
         if finished is not None:
             self._finish_seen = True
@@ -305,7 +324,7 @@ class StreamState:
         # (``_complete_calls``), so it cannot turn a refusal into a failure.
         released = [call for call in pending if call.name or finished is None or finished.get(call.choice) != "length"]
         if released and self._refused:
-            raise refused_calls_error()
+            raise refused_calls_error(usage_details=usage)
         if finished is None and any(not _arguments_complete(call) for call in pending):
             raise ProviderResponseError(
                 "stream_truncated",

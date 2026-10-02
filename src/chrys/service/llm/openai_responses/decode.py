@@ -82,11 +82,12 @@ def decode_response(
     for item in output:
         contents.extend(_decode_item(item, metadata, variant.hosted_provider))
     hosted = [content for content in contents if content.provider_hosted]
-    if (failure := response_failure(response, observed=hosted)) is not None:
-        raise failure
+    usage = decode_usage(response.usage, variant=variant) if response.usage else None
     reason = finish_reason(response)
     if (reason == "content_filter" or any(map(refuses, output))) and any(map(is_function_call, output)):
-        raise refused_calls_error(hosted)
+        raise refused_calls_error(hosted, usage_details=usage)
+    if (failure := response_failure(response, observed=hosted, usage_details=usage)) is not None:
+        raise failure
 
     fields: dict[str, Any] = {
         "response_id": response.id,
@@ -99,7 +100,7 @@ def decode_response(
     store = effective_store_option(options)
     if conversation_id := conversation_handle(response, store=store, variant=variant):
         fields["conversation_id"] = conversation_id
-    if response.usage and (usage := decode_usage(response.usage, variant=variant)):
+    if usage:
         fields["usage_details"] = usage
     if parsed:
         fields["value"] = parsed
@@ -112,14 +113,17 @@ def decode_response(
     return ChatResponse(**fields)
 
 
-def response_failure(response: Any, *, observed: Iterable[Content] = ()) -> ProviderResponseError | None:
+def response_failure(
+    response: Any, *, observed: Iterable[Content] = (), usage_details: UsageDetails | None = None
+) -> ProviderResponseError | None:
     """The failure a response reports, or None when it did not fail.
 
     A failed or cancelled response, or one carrying an error, will not
     change any more, so its error drops the continuation token. The error
     code decides whether sending the request anew may succeed; a cancelled
     response is not sent again. *observed* is the hosted work it showed but
-    never yielded.
+    never yielded; *usage_details* the usage it reported. A refusal with
+    tool calls outranks the failure: callers check for that first.
     """
     status = getattr(response, "status", None)
     error = getattr(response, "error", None)
@@ -138,6 +142,7 @@ def response_failure(response: Any, *, observed: Iterable[Content] = ()) -> Prov
         retryable=retryable,
         invalidates_continuation_token=True,
         observed_contents=tuple(observed),
+        usage_details=usage_details,
     )
 
 

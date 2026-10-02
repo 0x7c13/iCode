@@ -190,7 +190,8 @@ class ProviderResponseError(ContinuationVerdictError):
     ``observed_contents`` holds what the failed response showed that the
     adapter never yielded, such as provider-hosted tool work: the retry gates
     count it as executed. It is opaque here; the layer that reads it knows
-    its type.
+    its type. ``usage_details`` holds the token usage the failed response
+    reported, so the tokens it consumed are still counted.
     """
 
     def __init__(
@@ -203,6 +204,7 @@ class ProviderResponseError(ContinuationVerdictError):
         invalidates_continuation_token: bool = False,
         kind: ErrorKind | None = None,
         observed_contents: tuple[object, ...] = (),
+        usage_details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(f"{code}: {provider_message}")
         self.code = code
@@ -212,6 +214,7 @@ class ProviderResponseError(ContinuationVerdictError):
         self.invalidates_continuation_token = invalidates_continuation_token
         self.kind = kind if kind is not None else _code_kind(code)
         self.observed_contents = observed_contents
+        self.usage_details = usage_details
 
 
 @dataclass(frozen=True, slots=True)
