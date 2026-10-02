@@ -14,6 +14,7 @@ from chrys.foundation.errors import (
     ErrorKind,
     ProviderResponseError,
     classify_error,
+    in_band_failure_retryable,
     invalidates_continuation_token,
 )
 from chrys.foundation.errors import classify as classify_module
@@ -122,6 +123,29 @@ def test_provider_response_error_states_kind_and_retry(
 
     assert (result.kind, result.retryable) == (kind, retryable)
     assert str(error) == f"{error.code}: {error.provider_message}"
+
+
+@pytest.mark.parametrize(
+    ("code", "kind", "retryable"),
+    [
+        ("server_error", ErrorKind.SERVER_ERROR, True),
+        ("rate_limit_exceeded", ErrorKind.RATE_LIMITED, True),
+        ("vector_store_timeout", ErrorKind.UNKNOWN, True),
+        ("vendor_specific", ErrorKind.UNKNOWN, True),
+        ("context_length_exceeded", ErrorKind.CONTEXT_OVERFLOW, False),
+        ("insufficient_quota", ErrorKind.QUOTA_EXHAUSTED, False),
+        ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
+        ("invalid_image_url", ErrorKind.REQUEST_REJECTED, False),
+        ("cyber_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
+    ],
+)
+def test_a_failure_a_response_reports_retries_only_when_its_code_may_pass(
+    code: str, kind: ErrorKind, retryable: bool
+) -> None:
+    error = ProviderResponseError(code, "?", retryable=in_band_failure_retryable(code))
+
+    assert (classify_error(error).kind, classify_error(error).retryable) == (kind, retryable)
 
 
 def test_owner_terminal_veto_outranks_a_retryable_provider_response_error() -> None:

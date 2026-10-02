@@ -57,7 +57,42 @@ _PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
     # completion with when it failed to finish it.
     "network_error": ErrorKind.STREAM_TRUNCATED,
     "insufficient_system_resource": ErrorKind.OVERLOADED,
+    # Codes a failed Responses API response reports.
+    "invalid_prompt": ErrorKind.REQUEST_REJECTED,
+    "cyber_policy": ErrorKind.CONTENT_FILTERED,
+    "misalignment_policy_violation": ErrorKind.CONTENT_FILTERED,
+    "image_content_policy_violation": ErrorKind.CONTENT_FILTERED,
+    **dict.fromkeys(
+        (
+            "invalid_image",
+            "invalid_image_format",
+            "invalid_base64_image",
+            "invalid_image_url",
+            "image_too_large",
+            "image_too_small",
+            "image_parse_error",
+            "invalid_image_mode",
+            "image_file_too_large",
+            "unsupported_image_media_type",
+            "empty_image_file",
+            "failed_to_download_image",
+            "image_file_not_found",
+        ),
+        ErrorKind.REQUEST_REJECTED,
+    ),
 }
+# Kinds of a failure a response reported in-band that the same request meets
+# again when sent anew.
+_FINAL_IN_BAND_KINDS = frozenset(
+    {
+        ErrorKind.QUOTA_EXHAUSTED,
+        ErrorKind.CONTEXT_OVERFLOW,
+        ErrorKind.PAYLOAD_TOO_LARGE,
+        ErrorKind.AUTH_FAILED,
+        ErrorKind.REQUEST_REJECTED,
+        ErrorKind.CONTENT_FILTERED,
+    }
+)
 
 _CONTEXT_OVERFLOW_CODES = frozenset({"context_length_exceeded", "model_context_window_exceeded"})
 # Only phrasings that name the context window or the model's token limit.
@@ -122,6 +157,16 @@ def _code_kind(code: str) -> ErrorKind:
     if code in NON_RETRYABLE_PROVIDER_ERROR_CODES:
         return ErrorKind.QUOTA_EXHAUSTED
     return _PROVIDER_CODE_KINDS.get(code, ErrorKind.UNKNOWN)
+
+
+def in_band_failure_retryable(code: str) -> bool:
+    """Whether a request whose response failed with *code* may succeed when sent again.
+
+    Adapters raising :class:`ProviderResponseError` for a failure the
+    response itself reported decide its retry by this; an unknown code may
+    pass.
+    """
+    return _code_kind(code) not in _FINAL_IN_BAND_KINDS
 
 
 class ContinuationVerdictError(Exception):

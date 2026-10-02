@@ -28,7 +28,7 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, ApiStyle, ModelProfile
 from tests.support.engines import AgentEngineFactory
 from tests.support.event_capture import capture_events
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -43,17 +43,26 @@ class ProviderTurn:
     terminal: Error | InvocationMessage
 
 
-def mock_provider_profile(provider: str, *, stream: bool, http_max_retries: int = 0) -> ModelProfile:
+def mock_provider_profile(
+    provider: str,
+    *,
+    stream: bool,
+    http_max_retries: int = 0,
+    api_style: ApiStyle = API_STYLE_CHAT_COMPLETIONS,
+    chat_options: str = "",
+) -> ModelProfile:
     """Return a model profile for *provider* pointing at a fake host."""
     return ModelProfile(
         id=f"mock-{provider}",
         name=f"mock-{provider}",
         provider=provider,
+        api_style=api_style,
         model_id="test-model",
         base_url="https://provider.example/v1" if provider != "anthropic" else "https://provider.example",
         api_key="test-key",
         http_max_retries=http_max_retries,
         stream=stream,
+        chat_options=chat_options,
     )
 
 

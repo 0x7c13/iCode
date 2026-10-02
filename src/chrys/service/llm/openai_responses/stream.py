@@ -6,10 +6,23 @@
 
 One :class:`StreamState` reads one stream. Events about an output item name
 it by its output index, so the state keeps one :class:`OutputSlot` per index:
-the function call it announced, the hosted call and result contents later
+the function call it assembles, the hosted call and result contents later
 events update in place, and the text contents its message envelope belongs
 to. An update carries what the event added; a hosted content already sent
 is sent again whenever an event changes it.
+
+A function call is sent once, whole, when its item is done. What comes
+after a call not yet done, in output order, waits for it, so the contents
+keep the order of the output; hosted work that waits is reported at once as
+:class:`~chrys.foundation.hosted_tools.HeldHostedEvidence`. The terminal
+event sends whatever still waits.
+
+A stream that announced a response must end with its terminal event: a
+failure (``response.failed``, an ``error`` event, a failed or cancelled
+terminal response) raises, and so does a stream that ends before it
+(:meth:`StreamState.finish`). A response that refused or was filtered yet
+asks for function calls raises too, whenever the refusal came: the response
+lands only after the stream ends, so its calls never run.
 """
 
 from __future__ import annotations
@@ -19,7 +32,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from chrys.foundation.hosted_tools import PRESENTATION_TEXT_SEGMENT_ID_KEY, HostedRetrySafety, HostedToolPhase
+from chrys.foundation.errors import ProviderResponseError, in_band_failure_retryable
+from chrys.foundation.hosted_tools import (
+    PRESENTATION_TEXT_SEGMENT_ID_KEY,
+    HeldHostedEvidence,
+    HostedRetrySafety,
+    HostedToolPhase,
+)
 from chrys.kernel import (
     OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY,
     Annotation,
@@ -28,6 +47,7 @@ from chrys.kernel import (
     TextSpanRegion,
 )
 from chrys.kernel.exchanges import TOOL_RESULT_CONTENT_TYPES
+from chrys.service.llm.chat_completions.decode import refused_calls_error
 from chrys.service.profiles.models.options import effective_store_option
 
 from .decode import (
@@ -39,8 +59,11 @@ from .decode import (
     decode_reasoning_item,
     decode_usage,
     finish_reason,
+    hosted_contents,
     logprobs_metadata,
     output_message_envelope,
+    refuses,
+    response_failure,
     timestamp,
 )
 from .hosted import decode_hosted_item, image_data_uri, item_properties, refresh_in_place
@@ -71,10 +94,49 @@ _STATUS_EVENTS = (
 
 
 @dataclass(slots=True)
+class PendingCall:
+    """A function call assembled from its events, held until its item is done."""
+
+    item_id: str | None = None
+    call_id: str | None = None
+    name: str | None = None
+    status: str | None = None
+    # The arguments the added item came with, the deltas after it, and the
+    # whole arguments a done event repeats, which win over the pieces.
+    initial: str = ""
+    deltas: list[str] = field(default_factory=list)
+    final: str | None = None
+    done: bool = False
+    sent: bool = False
+    raw: Any = None
+
+    def learn(self, item: Any) -> None:
+        """Take what an added or done item says about the call."""
+        self.item_id = getattr(item, "id", None) or self.item_id
+        self.call_id = getattr(item, "call_id", None) or self.call_id
+        self.name = getattr(item, "name", None) or self.name
+        self.status = getattr(item, "status", None) or self.status
+        self.raw = item
+
+    def content(self, output_index: Any) -> Content:
+        arguments = self.final or ("".join(self.deltas) if self.deltas else self.initial)
+        properties: dict[str, Any] = {"output_index": output_index, "fc_id": self.item_id}
+        if self.status:
+            properties["status"] = self.status
+        return Content.from_function_call(
+            call_id=self.call_id or "",
+            name=self.name or "",
+            arguments=arguments,
+            additional_properties=properties,
+            raw_representation=self.raw,
+        )
+
+
+@dataclass(slots=True)
 class OutputSlot:
     """What the stream has seen of one output item."""
 
-    function_call: tuple[str, str] | None = None
+    function_call: PendingCall | None = None
     call: Content | None = None
     result: Content | None = None
     envelope: dict[str, str] | None = None
@@ -109,7 +171,7 @@ class _Update:
     response_id: str | None = None
     created_at: str | None = None
     continuation_token: OpenAIContinuationToken | None = None
-    finish_reason: Literal["length"] | None = None
+    finish_reason: Literal["length", "content_filter"] | None = None
 
 
 class StreamState:
@@ -120,17 +182,56 @@ class StreamState:
         self._model = model
         self._variant = variant
         self._slots: dict[Any, OutputSlot] = {}
+        # Contents waiting behind a function call not yet done, by output
+        # index, and the hosted ones among them not yet reported.
+        self._held: dict[Any, list[Content]] = {}
+        self._held_hosted: list[Content] = []
         # Reasoning items whose text came as deltas: their done event repeats it.
         self._reasoning_with_deltas: set[str] = set()
+        # A lifecycle event announced the response; its terminal event came.
+        self._announced = False
+        self._ended = False
+        # A non-empty refusal came; a function call came.
+        self._refused = False
+        self._calls_seen = False
+        # Local history replays reasoning by its encrypted payload, which may
+        # only arrive once the item or the whole response is done: it then
+        # goes onto the contents already sent for that item, by item id.
+        self._backfills_reasoning = variant.encrypted_reasoning and effective_store_option(options) is False
+        self._reasoning: dict[str, list[Content]] = {}
+
+    def updates_for(self, event: Any) -> list[ChatResponseUpdate]:
+        """The updates one event makes: its own, after the evidence of hosted work it held."""
+        update = self.update_for(event)
+        if not self._held_hosted:
+            return [update]
+        evidence = ChatResponseUpdate(
+            contents=[],
+            role="assistant",
+            model=self._model,
+            raw_representation=HeldHostedEvidence(tuple(self._held_hosted)),
+        )
+        self._held_hosted.clear()
+        return [evidence, update]
 
     def update_for(self, event: Any) -> ChatResponseUpdate:
-        """The update one event makes."""
+        """The update one event makes; what it adds behind a call not yet done waits for that call."""
         update = _Update(model=self._model)
         handler = _HANDLERS.get(event.type)
         if handler is None:
             logger.debug("Unparsed event of type: %s: %s", event.type, event)
         else:
             handler(self, event, update)
+        index = getattr(event, "output_index", None)
+        if update.contents and _output_order(index)[0] == 0 and self._waits_behind_call(index):
+            # A hosted content an event refreshes in place waits, and is
+            # reported, once.
+            held = self._held.setdefault(index, [])
+            fresh = [content for content in update.contents if all(content is not other for other in held)]
+            held.extend(fresh)
+            self._held_hosted.extend(content for content in fresh if content.provider_hosted)
+            update.contents = []
+        self._release(update, drain=False)
         return ChatResponseUpdate(
             contents=update.contents,
             conversation_id=update.conversation_id,
@@ -144,8 +245,101 @@ class StreamState:
             raw_representation=event,
         )
 
+    def finish(self) -> ChatResponseUpdate | None:
+        """What the stream still owes when it ends.
+
+        A stream that announced its response but ended before the terminal
+        event lost the rest of it: that is a truncation the next attempt
+        may resume. A stream with no lifecycle events at all (some
+        compatible endpoints send none) is kept, with a warning, and the
+        calls it still holds are sent.
+        """
+        if self._ended:
+            return None
+        if self._announced:
+            raise ProviderResponseError(
+                "stream_truncated", "The stream ended before the response finished.", retryable=True
+            )
+        logger.warning("Responses stream ended without a terminal event; the answer may be incomplete")
+        if self._refused and self._calls_seen:
+            raise refused_calls_error()
+        update = _Update(model=self._model)
+        self._release(update, drain=True)
+        if not update.contents:
+            return None
+        return ChatResponseUpdate(contents=update.contents, role="assistant", model=update.model)
+
     def _slot(self, index: Any) -> OutputSlot:
         return self._slots.setdefault(index, OutputSlot())
+
+    def _pending_call(self, index: Any) -> PendingCall:
+        slot = self._slot(index)
+        if slot.function_call is None:
+            slot.function_call = PendingCall()
+            self._calls_seen = True
+        return slot.function_call
+
+    def _waits_behind_call(self, index: Any) -> bool:
+        """Whether a function call before *index* in output order is not sent yet."""
+        return any(
+            slot.function_call is not None
+            and not slot.function_call.sent
+            and _output_order(other) < _output_order(index)
+            for other, slot in self._slots.items()
+        )
+
+    def _release(self, update: _Update, *, drain: bool) -> None:
+        """Send what waits, in output order, up to the first call not done; with *drain*, all of it.
+
+        A call waits for every call before it, so a later call that is done
+        first does not overtake it, and neither does what follows either.
+        """
+        unsent = {index for index, slot in self._slots.items() if slot.function_call and not slot.function_call.sent}
+        for index in sorted(unsent | self._held.keys(), key=_output_order):
+            slot = self._slots.get(index)
+            call = slot.function_call if slot is not None else None
+            if call is not None and not call.sent:
+                if not (drain or call.done):
+                    return
+                call.sent = True
+                if call.call_id and call.name:
+                    update.contents.append(call.content(index))
+                else:
+                    logger.warning("Responses stream dropped a function call without a call id or name at %r", index)
+            update.contents.extend(self._held.pop(index, ()))
+
+    def _unsent_hosted(self, response: Any) -> list[Content]:
+        """The hosted work in a terminal response's output that the stream never sent, or still holds."""
+        output = getattr(response, "output", None) or []
+        unsent = [
+            item
+            for index, item in enumerate(output)
+            if (slot := self._slots.get(index)) is None
+            or (slot.call is None and slot.result is None)
+            or index in self._held
+        ]
+        return hosted_contents(unsent, self._variant.hosted_provider)
+
+    def _remember_reasoning(self, contents: list[Content]) -> None:
+        if self._backfills_reasoning:
+            for content in contents:
+                if content.id:
+                    self._reasoning.setdefault(content.id, []).append(content)
+
+    def _backfill_reasoning(self, item: Any, *, final: bool) -> bool:
+        """Put a reasoning item's payload on the last content sent for it; False when none was.
+
+        A done item's payload is *final*; the terminal response's only fills
+        a gap, never replacing a payload the contents already carry.
+        """
+        payload = getattr(item, "encrypted_content", None)
+        item_id = getattr(item, "id", None)
+        sent = self._reasoning.get(item_id) if isinstance(item_id, str) else None
+        if not (payload and sent):
+            return False
+        if final or not any(content.protected_data for content in sent):
+            sent[-1].protected_data = payload
+        return True
 
     def _store(self) -> Any:
         return effective_store_option(self._options)
@@ -158,11 +352,20 @@ class StreamState:
             update.contents.append(self._message_text(event, part.text))
             update.metadata.update(logprobs_metadata(part))
         elif part.type == "refusal":
+            self._refused = self._refused or bool(part.refusal)
             update.contents.append(self._message_text(event, part.refusal))
 
     def _text_delta(self, event: Any, update: _Update) -> None:
         update.contents.append(self._message_text(event, event.delta))
         update.metadata.update(logprobs_metadata(event))
+
+    def _refusal_delta(self, event: Any, update: _Update) -> None:
+        self._refused = self._refused or bool(event.delta)
+        self._text_delta(event, update)
+
+    def _refusal_done(self, event: Any, update: _Update) -> None:
+        # Its text came as deltas.
+        self._refused = self._refused or bool(getattr(event, "refusal", None))
 
     def _annotation_added(self, event: Any, update: _Update) -> None:
         if (citation := streamed_citation(event)) is not None:
@@ -188,38 +391,76 @@ class StreamState:
 
     def _reasoning_delta(self, event: Any, update: _Update) -> None:
         self._reasoning_with_deltas.add(event.item_id)
-        update.contents.append(_reasoning_text(event, event.delta))
+        content = _reasoning_text(event, event.delta)
+        self._remember_reasoning([content])
+        update.contents.append(content)
         update.metadata.update(logprobs_metadata(event))
 
     def _reasoning_done(self, event: Any, update: _Update) -> None:
         if event.item_id not in self._reasoning_with_deltas:
-            update.contents.append(_reasoning_text(event, event.text))
+            content = _reasoning_text(event, event.text)
+            self._remember_reasoning([content])
+            update.contents.append(content)
         update.metadata.update(logprobs_metadata(event))
 
     # Response lifecycle
 
-    def _created(self, event: Any, update: _Update) -> None:
+    def _started(self, event: Any, update: _Update) -> None:
+        """``response.created`` or ``response.in_progress``: only a running response can be resumed."""
+        self._announced = True
         response = event.response
         update.response_id = response.id
         update.conversation_id = conversation_handle(response, store=self._store(), variant=self._variant)
         if response.status in RUNNING_STATUSES:
             update.continuation_token = continuation_token(response.id, store=self._store(), variant=self._variant)
 
-    def _in_progress(self, event: Any, update: _Update) -> None:
-        response = event.response
-        update.response_id = response.id
-        update.conversation_id = conversation_handle(response, store=self._store(), variant=self._variant)
-        update.continuation_token = continuation_token(response.id, store=self._store(), variant=self._variant)
-
     def _finished(self, event: Any, update: _Update) -> None:
+        """``response.completed`` or ``response.incomplete``: the response ends here, unless it failed or refused."""
+        self._ended = True
         response = event.response
+        if (failure := response_failure(response, observed=self._unsent_hosted(response))) is not None:
+            raise failure
+        reason = finish_reason(response)
+        output = getattr(response, "output", None) or []
+        self._refused = self._refused or reason == "content_filter" or any(map(refuses, output))
+        if self._refused and self._calls_seen:
+            raise refused_calls_error(self._unsent_hosted(response))
+        if self._backfills_reasoning:
+            for item in output:
+                if getattr(item, "type", None) == "reasoning":
+                    self._backfill_reasoning(item, final=False)
+        self._release(update, drain=True)
         update.response_id = response.id
         update.conversation_id = conversation_handle(response, store=self._store(), variant=self._variant)
         update.model = response.model
         update.created_at = timestamp(response.created_at)
         if response.usage and (usage := decode_usage(response.usage, variant=self._variant)):
             update.contents.append(Content.from_usage(usage_details=usage, raw_representation=event))
-        update.finish_reason = finish_reason(response)
+        update.finish_reason = reason
+
+    def _failed(self, event: Any, update: _Update) -> None:
+        """``response.failed``: the error it carries, the hosted work it ran included."""
+        self._ended = True
+        response = event.response
+        observed = self._unsent_hosted(response)
+        raise response_failure(response, observed=observed) or ProviderResponseError(
+            "server_error",
+            "The service reported the response as failed.",
+            retryable=True,
+            invalidates_continuation_token=True,
+            observed_contents=tuple(observed),
+        )
+
+    def _error(self, event: Any, update: _Update) -> None:
+        """An ``error`` event: the response ends with it."""
+        self._ended = True
+        code = getattr(event, "code", None) or "server_error"
+        raise ProviderResponseError(
+            code,
+            getattr(event, "message", None) or "The service reported an error.",
+            retryable=in_band_failure_retryable(code),
+            invalidates_continuation_token=True,
+        )
 
     # Output items
 
@@ -231,9 +472,14 @@ class StreamState:
                 if envelope := output_message_envelope(item):
                     self._slot(index).envelope = envelope
             case "function_call":
-                self._slot(index).function_call = (item.call_id, item.name)
+                call = self._pending_call(index)
+                call.learn(item)
+                if isinstance(arguments := getattr(item, "arguments", None), str):
+                    call.initial = arguments
             case "reasoning":
-                update.contents.extend(decode_reasoning_item(item, streamed=True))
+                contents = decode_reasoning_item(item, streamed=True)
+                self._remember_reasoning(contents)
+                update.contents.extend(contents)
             case "shell_call_output" | "tool_search_output":
                 # Results are decoded once, from their done item.
                 pass
@@ -244,8 +490,15 @@ class StreamState:
 
     def _item_done(self, event: Any, update: _Update) -> None:
         item = event.item
-        slot = self._slot(getattr(event, "output_index", -1))
+        index = getattr(event, "output_index", -1)
+        slot = self._slot(index)
         match getattr(item, "type", None):
+            case "function_call":
+                call = self._pending_call(index)
+                call.learn(item)
+                if isinstance(arguments := getattr(item, "arguments", None), str) and arguments:
+                    call.final = arguments
+                call.done = True
             case "message":
                 envelope = output_message_envelope(item)
                 if envelope:
@@ -257,12 +510,13 @@ class StreamState:
                         content.additional_properties.pop(OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY, None)
             case "reasoning":
                 # The payload only arrives once the item is done.
-                if payload := getattr(item, "encrypted_content", None):
-                    update.contents.append(
-                        Content.from_text_reasoning(
-                            id=getattr(item, "id", None), text="", protected_data=payload, raw_representation=item
-                        )
+                payload = getattr(item, "encrypted_content", None)
+                if payload and not self._backfill_reasoning(item, final=True):
+                    content = Content.from_text_reasoning(
+                        id=getattr(item, "id", None), text="", protected_data=payload, raw_representation=item
                     )
+                    self._remember_reasoning([content])
+                    update.contents.append(content)
             case "custom_tool_call":
                 name = getattr(item, "name", "") or ""
                 update.contents.append(decode_client_tool_call(item, name=name, arguments=getattr(item, "input", None)))
@@ -285,17 +539,16 @@ class StreamState:
     # Tool progress
 
     def _arguments_delta(self, event: Any, update: _Update) -> None:
-        call_id, name = self._slot(event.output_index).function_call or (None, None)
-        if call_id and name:
-            update.contents.append(
-                Content.from_function_call(
-                    call_id=call_id,
-                    name=name,
-                    arguments=event.delta,
-                    additional_properties={"output_index": event.output_index, "fc_id": event.item_id},
-                    raw_representation=event,
-                )
-            )
+        # Held until the item is done; the update still shows progress.
+        call = self._pending_call(event.output_index)
+        call.item_id = call.item_id or event.item_id
+        call.deltas.append(event.delta)
+
+    def _arguments_done(self, event: Any, update: _Update) -> None:
+        call = self._pending_call(event.output_index)
+        call.item_id = call.item_id or event.item_id
+        if isinstance(arguments := getattr(event, "arguments", None), str) and arguments:
+            call.final = arguments
 
     def _status_changed(self, event: Any, update: _Update) -> None:
         call = self._slot(getattr(event, "output_index", -1)).call
@@ -390,6 +643,13 @@ class StreamState:
         result.provider_status = "generating"
         result.raw_representation = event
         update.contents.append(result)
+
+
+def _output_order(index: Any) -> tuple[int, int]:
+    """Output indexes in order; a missing one after them."""
+    if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+        return (0, index)
+    return (1, 0)
 
 
 def _text_segment_id(event: Any) -> str:
@@ -489,19 +749,23 @@ def streamed_citation(event: Any) -> Annotation | None:
 _HANDLERS: dict[str, Callable[[StreamState, Any, _Update], None]] = {
     "response.content_part.added": StreamState._part_added,
     "response.output_text.delta": StreamState._text_delta,
-    "response.refusal.delta": StreamState._text_delta,
+    "response.refusal.delta": StreamState._refusal_delta,
+    "response.refusal.done": StreamState._refusal_done,
     "response.output_text.annotation.added": StreamState._annotation_added,
     "response.reasoning_text.delta": StreamState._reasoning_delta,
     "response.reasoning_summary_text.delta": StreamState._reasoning_delta,
     "response.reasoning_text.done": StreamState._reasoning_done,
     "response.reasoning_summary_text.done": StreamState._reasoning_done,
-    "response.created": StreamState._created,
-    "response.in_progress": StreamState._in_progress,
+    "response.created": StreamState._started,
+    "response.in_progress": StreamState._started,
     "response.completed": StreamState._finished,
     "response.incomplete": StreamState._finished,
+    "response.failed": StreamState._failed,
+    "error": StreamState._error,
     "response.output_item.added": StreamState._item_added,
     "response.output_item.done": StreamState._item_done,
     "response.function_call_arguments.delta": StreamState._arguments_delta,
+    "response.function_call_arguments.done": StreamState._arguments_done,
     "response.code_interpreter_call_code.delta": StreamState._code_delta,
     "response.code_interpreter_call_code.done": StreamState._code_done,
     "response.image_generation_call.partial_image": StreamState._partial_image,

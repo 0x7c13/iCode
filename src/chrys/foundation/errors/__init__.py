@@ -29,6 +29,7 @@ from .provider import (
     ContinuationVerdictError,
     ProviderResponseError,
     ProviderSignal,
+    in_band_failure_retryable,
 )
 from .route import ROUTE_EXTENSION_KEY, Origin, RouteFacts, origin_of, route_of
 
@@ -49,6 +50,7 @@ __all__ = [
     "TimeoutPhase",
     "classify_error",
     "clean_error_message",
+    "in_band_failure_retryable",
     "invalidates_continuation_token",
     "is_context_overflow",
     "is_deterministic_connection_error",

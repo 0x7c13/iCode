@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, override
 
 from openai import AsyncStream, BadRequestError
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream
 from chrys.kernel.exceptions import ChatClientException
@@ -218,7 +219,9 @@ class ResponsesApiClient(WireClient):
                     # requested model rather than the served one.
                     async with self.sdk_client.responses.stream(**request) as parsed_events:
                         async for event in parsed_events:
-                            yield state.update_for(event)
+                            for update in state.updates_for(event):
+                                yield update
+                    served = None
                 else:
                     if token is not None:
                         raw = await self.sdk_client.responses.with_raw_response.retrieve(
@@ -232,10 +235,19 @@ class ResponsesApiClient(WireClient):
                     events = cast("AsyncStream[ResponseStreamEvent]", raw.parse())
                     async with events as stream:
                         async for event in stream:
-                            update = state.update_for(event)
-                            if served is not None:
-                                update.model = served
-                            yield update
+                            for update in state.updates_for(event):
+                                if served is not None:
+                                    update.model = served
+                                yield update
+                if (tail := state.finish()) is not None:
+                    if served is not None:
+                        tail.model = served
+                    yield tail
+            except ProviderResponseError:
+                # The failure the response itself reported, or a stream that
+                # ended before its response did, with its retry decision and
+                # the hosted work it showed.
+                raise
             except Exception as ex:
                 raise _service_error(type(self), ex) from ex
 

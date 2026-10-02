@@ -6,7 +6,8 @@ The Responses API signals a truncated response via ``status: "incomplete"`` +
 ``incomplete_details.reason: "max_output_tokens"`` rather than the Chat
 Completions ``finish_reason: "length"``. The adapter normalises it so downstream
 truncation handling (response validation, tool-arg parsing) behaves identically
-across providers.
+across providers. A response the content filter stopped reads as
+``content_filter``, as on Chat Completions.
 """
 
 from __future__ import annotations
@@ -70,9 +71,13 @@ def test_streaming_completed_with_incomplete_details_is_not_length() -> None:
     assert update.finish_reason is None
 
 
-def test_streaming_incomplete_other_reason_is_not_length() -> None:
-    # Only an output-token cutoff maps to "length"; content_filter etc. do not.
+def test_streaming_incomplete_content_filter_maps_to_content_filter() -> None:
     update = _stream().update_for(_event("response.incomplete", reason="content_filter"))
+    assert update.finish_reason == "content_filter"
+
+
+def test_streaming_incomplete_other_reason_has_no_finish_reason() -> None:
+    update = _stream().update_for(_event("response.incomplete", reason="something_new"))
     assert update.finish_reason is None
 
 
@@ -94,9 +99,18 @@ def test_non_streaming_completed_with_incomplete_details_is_not_length() -> None
     assert response.finish_reason is None
 
 
-def test_non_streaming_incomplete_other_reason_is_not_length() -> None:
+def test_non_streaming_incomplete_content_filter_maps_to_content_filter() -> None:
     response = decode_response(
         _response(status="incomplete", reason="content_filter"),
+        {},
+        variant=OPENAI_RESPONSES,
+    )
+    assert response.finish_reason == "content_filter"
+
+
+def test_non_streaming_incomplete_other_reason_has_no_finish_reason() -> None:
+    response = decode_response(
+        _response(status="incomplete", reason="something_new"),
         {},
         variant=OPENAI_RESPONSES,
     )

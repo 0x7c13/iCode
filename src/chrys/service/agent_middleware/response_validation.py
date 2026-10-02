@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from chrys.foundation.errors import ContinuationVerdictError, ProviderResponseError
 from chrys.foundation.hosted_tools import (
+    HeldHostedEvidence,
     HostedRetrySafety,
     HostedToolPhase,
     HostedToolStatus,
@@ -753,6 +754,14 @@ class ResponseValidationMiddleware(ChatMiddleware):
                         await result
                         inner_hooks = _collect_and_clear_hooks(result)
                         async for update in result:
+                            if isinstance(evidence := update.raw_representation, HeldHostedEvidence):
+                                # Hosted work the adapter holds behind an
+                                # unfinished call already ran: the retry gates
+                                # count it now. The update that releases it in
+                                # order presents it and keeps it for the replay.
+                                self._observe_hosted_contents(evidence.contents)
+                                yield _stream_heartbeat_for(update)
+                                continue
                             # Record hosted executions the moment their updates
                             # land — a stall or transport drop after this point
                             # must reach the retry owners as commit evidence even

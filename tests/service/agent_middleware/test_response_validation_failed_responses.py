@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import pytest
 
 from chrys.foundation.errors import ErrorKind, ProviderResponseError, classify_error, invalidates_continuation_token
-from chrys.foundation.hosted_tools import HostedToolFamily, HostedToolPhase
+from chrys.foundation.hosted_tools import HeldHostedEvidence, HostedToolFamily, HostedToolPhase
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace
 from chrys.foundation.trajectory.event_types import EventType, ValidationReason
@@ -229,3 +229,39 @@ async def test_a_failed_response_without_hosted_work_commits_nothing(stream: boo
 
     assert middleware.hosted_commits_observed() == ()
     assert [event for event in hook.events if event[0] == "contents" and event[1] is True] == []
+
+
+@pytest.mark.parametrize("released", [False, True], ids=["dropped_while_held", "released"])
+async def test_held_hosted_work_counts_at_once_and_is_shown_only_when_released(released: bool) -> None:
+    hosted = _hosted_work()
+    context = _make_context(stream=True)
+
+    async def _updates() -> AsyncIterator[ChatResponseUpdate]:
+        yield ChatResponseUpdate(contents=[], role="assistant", raw_representation=HeldHostedEvidence(hosted))
+        if not released:
+            raise ProviderResponseError("network_error", "dropped", retryable=True)
+        call = Content.from_function_call(call_id="call_1", name="lookup", arguments="{}")
+        yield ChatResponseUpdate(contents=[call, *hosted, Content.from_text("Filed #42.")], role="assistant")
+
+    async def _call_next() -> None:
+        context.result = ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
+
+    hook = _ObservationHook()
+    middleware = ResponseValidationMiddleware(observation_hook=hook, backoff_schedule=[0.0])
+    if released:
+        response = await _run(middleware, context, _call_next)
+        # In the order the stream released it, behind the call it waited for.
+        assert [content.type for message in response.messages for content in message.contents] == [
+            "function_call",
+            "mcp_server_tool_call",
+            "mcp_server_tool_result",
+            "text",
+        ]
+    else:
+        with pytest.raises(ProviderResponseError, match="dropped"):
+            await _run(middleware, context, _call_next)
+
+    assert len(middleware.hosted_commits_observed()) == 1
+    # Shown once as the stream releases it and once in the final response; never while held.
+    shown = [event[1] for event in hook.events if event[0] == "contents" and "mcp_server_tool_call" in event[2]]
+    assert shown == ([False, True] if released else [])

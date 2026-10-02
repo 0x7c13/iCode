@@ -11,7 +11,7 @@ metadata and the usage.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from openai.types.chat.chat_completion import ChatCompletion, Choice
@@ -124,17 +124,19 @@ def finish_reason(value: object) -> str | None:
     return reason
 
 
-def refused_calls_error() -> ProviderResponseError:
+def refused_calls_error(observed_contents: Sequence[Content] = ()) -> ProviderResponseError:
     """The failure of a response that refused or was filtered, yet asks for tool calls.
 
     The calls are never run: the response's own verdict is that it should
-    not go on.
+    not go on. *observed_contents* is the hosted work the response showed
+    but never yielded.
     """
     return ProviderResponseError(
         "content_filter",
         "The response was refused or filtered, so the tool calls it requested were not run.",
         retryable=False,
         invalidates_continuation_token=True,
+        observed_contents=tuple(observed_contents),
     )
 
 
