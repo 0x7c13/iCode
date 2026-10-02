@@ -200,7 +200,8 @@ class DefaultResponseValidator:
     Behaviour:
 
     - **Filtered without an answer** is reported in place of the rule that
-      would read the response as blank or answerless and retry it.
+      would read the response as blank or answerless and retry it; a
+      filtered answer is reported in place of a text rule it breaks.
     - **Empty contents** is always checked first (cheapest).
     - **Whitespace-only text** runs only when the message has NO tool calls
       (a pure tool-calling turn can legitimately have no text).
@@ -218,10 +219,10 @@ class DefaultResponseValidator:
 
     def validate(self, response: ChatResponse) -> ValidationResult:
         msg = _final_assistant_message(response)
-        # A content filter that stopped the response before its answer is
-        # terminal: the same request meets the same filter. Each rule below
-        # that finds no answer would read the response as blank and retry it,
-        # so where one would fire, the filter is reported instead.
+        # A content filter that stopped the response is terminal: the same
+        # request meets the same filter. Each rule below that would retry the
+        # response, as blank, answerless or with text it rejects, reports the
+        # filter instead where it fires.
         content_filtered = response.finish_reason == "content_filter"
         if msg is None:
             if content_filtered:
@@ -354,6 +355,8 @@ class DefaultResponseValidator:
             rule = DEFAULT_LEAKED_TOOL_CALL_RULE
             for text in text_items:
                 if text and rule.pattern.search(text):
+                    if content_filtered:
+                        return _content_filtered()
                     return ValidationResult.invalid(rule.reason, code=ValidationReason.LEAKED_TOOL_CALL)
 
         # Extra rules — run on concatenated text, one rule at a time.
@@ -361,6 +364,8 @@ class DefaultResponseValidator:
             joined = "".join(text_items)
             for rule in self.extra_rules:
                 if joined and rule.pattern.search(joined):
+                    if content_filtered:
+                        return _content_filtered()
                     return ValidationResult.invalid(rule.reason, code=ValidationReason.RULE_VIOLATION)
 
         return ValidationResult.valid()

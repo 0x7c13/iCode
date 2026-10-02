@@ -40,6 +40,8 @@ _FINISH_REASONS: Final[Mapping[str, FinishReasonLiteral]] = {
     "pause_turn": "stop",
     "stop_sequence": "stop",
     "max_tokens": "length",
+    # Cut off, without the window-filled marker Chat Completions sets
+    # (``CONTEXT_WINDOW_FILLED_KEY``): a LAST_WORDS note cut off here is kept.
     "model_context_window_exceeded": "length",
     "tool_use": "tool_calls",
     "refusal": "content_filter",

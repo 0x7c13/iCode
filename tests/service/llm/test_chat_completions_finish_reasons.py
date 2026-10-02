@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from types import ModuleType
 from typing import Any
 
 import pytest
+from openai import APIError
 from openai.types import CompletionUsage
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_chunk import (
@@ -31,6 +33,7 @@ from chrys.foundation.errors import (
     is_context_overflow,
 )
 from chrys.kernel import (
+    CONTEXT_WINDOW_FILLED_KEY,
     ChatClientException,
     ChatResponse,
     Content,
@@ -84,7 +87,12 @@ def _call(arguments: str, *, index: int = 0, finish_reason: str | None = None) -
 
 
 def _completion(
-    *, content: str | None = None, refusal: str | None = None, calls: int = 0, finish_reason: str | None = "stop"
+    *,
+    content: str | None = None,
+    refusal: str | None = None,
+    reasoning: str | None = None,
+    calls: int = 0,
+    finish_reason: str | None = "stop",
 ) -> ChatCompletion:
     tool_calls = [
         ChatCompletionMessageFunctionToolCall(
@@ -92,8 +100,10 @@ def _completion(
         )
         for index in range(calls)
     ]
+    # Set only when given: an absent field stays absent on the wire.
+    extra = {} if reasoning is None else {"reasoning_content": reasoning}
     message = ChatCompletionMessage.model_construct(
-        role="assistant", content=content, refusal=refusal, tool_calls=tool_calls or None
+        role="assistant", content=content, refusal=refusal, tool_calls=tool_calls or None, **extra
     )
     choice = Choice.model_construct(index=0, message=message, finish_reason=finish_reason)
     return ChatCompletion.model_construct(
@@ -102,11 +112,16 @@ def _completion(
 
 
 async def _respond(
-    reply: ChatReply, *, options: dict[str, Any] | None = None, done: bool = True, breaks_off: bool = False
+    reply: ChatReply,
+    *,
+    options: dict[str, Any] | None = None,
+    done: bool = True,
+    breaks_off: bool = False,
+    held_open: bool = False,
 ) -> tuple[ChatResponse, list[dict[str, Any]]]:
     """The response *reply* decodes to, and the request bodies sent for it."""
     stream = not isinstance(reply, ChatCompletion)
-    async with scripted_openai([reply], done=done, breaks_off=breaks_off) as wire:
+    async with scripted_openai([reply], done=done, breaks_off=breaks_off, held_open=held_open) as wire:
         client = ChatCompletionsClient(model="test", sdk_client=wire.client)
         result = client._inner_get_response(
             messages=[Message("user", ["hi"])], options=dict(options or {}), stream=stream
@@ -129,7 +144,13 @@ def _calls(response: ChatResponse) -> list[Content]:
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 @pytest.mark.parametrize(
     ("sent", "read"),
-    [("stop", "stop"), ("end", "stop"), ("sensitive", "content_filter"), ("vendor_reason", "vendor_reason")],
+    [
+        ("stop", "stop"),
+        ("end", "stop"),
+        ("length", "length"),
+        ("sensitive", "content_filter"),
+        ("vendor_reason", "vendor_reason"),
+    ],
 )
 async def test_finish_reasons_are_read_in_the_kernels_spelling(stream: bool, sent: str, read: str) -> None:
     reply: ChatReply = [_text("Hi", finish_reason=sent)] if stream else _completion(content="Hi", finish_reason=sent)
@@ -137,6 +158,7 @@ async def test_finish_reasons_are_read_in_the_kernels_spelling(stream: bool, sen
     response, _ = await _respond(reply)
 
     assert response.finish_reason == read
+    assert CONTEXT_WINDOW_FILLED_KEY not in response.additional_properties
     assert response.text == "Hi"
 
 
@@ -171,6 +193,90 @@ async def test_a_context_overflow_finish_reason_fails_without_retry(stream: bool
     assert is_context_overflow(raised.value)
     assert classify_error(raised.value).retryable is False
     assert invalidates_continuation_token(raised.value) is True
+    assert raised.value.provider_message == "The model filled its context window before it produced an answer."
+
+
+def _reasoning(text: str) -> ChatCompletionChunk:
+    return _chunk(ChoiceDelta.model_construct(role="assistant", reasoning_content=text))
+
+
+_FILLED = "model_context_window_exceeded"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(_completion(reasoning="Thinking", finish_reason=_FILLED), id="blocking_reasoning"),
+        pytest.param([_reasoning("Thinking"), _text("", finish_reason=_FILLED)], id="streamed_reasoning"),
+        # Reasoning models often send a blank line as they turn to answering.
+        pytest.param(
+            _completion(content="\n\n", reasoning="Thinking", finish_reason=_FILLED), id="blocking_whitespace"
+        ),
+        pytest.param(
+            [_reasoning("Thinking"), _text("\n\n"), _text("", finish_reason=_FILLED)], id="streamed_whitespace"
+        ),
+        # A call fragment without a name is dropped: no call was made.
+        pytest.param(
+            [
+                _chunk(ChoiceDelta.model_construct(role="assistant", tool_calls=[_fragment('{"pa', name=None)])),
+                _text("", finish_reason=_FILLED),
+            ],
+            id="nameless_call_fragment",
+        ),
+    ],
+)
+async def test_a_context_window_filled_before_an_answer_fails_without_retry(reply: ChatReply) -> None:
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(reply)
+
+    assert (raised.value.code, classify_error(raised.value).retryable) == (_FILLED, False)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(_completion(content="Partial", finish_reason="model_context_window_exceeded"), id="blocking_text"),
+        pytest.param(
+            _completion(refusal="Partial", finish_reason="model_context_window_exceeded"), id="blocking_refusal"
+        ),
+        pytest.param([_text("Partial", finish_reason="model_context_window_exceeded")], id="text_in_the_same_chunk"),
+        pytest.param([_text("Partial"), _text("", finish_reason="model_context_window_exceeded")], id="text_before"),
+        pytest.param(
+            [_refusal("Partial"), _text("", finish_reason="model_context_window_exceeded")], id="refusal_before"
+        ),
+    ],
+)
+async def test_a_context_window_filled_mid_answer_keeps_it_as_cut_off(reply: ChatReply) -> None:
+    # The request fit: the model was already answering when it filled the window.
+    response, _ = await _respond(reply)
+
+    assert response.text == "Partial"
+    assert response.finish_reason == "length"
+    # A caller that would rather send a smaller prompt can tell.
+    assert response.additional_properties[CONTEXT_WINDOW_FILLED_KEY] is True
+
+
+async def test_a_context_window_filled_mid_call_reads_as_cut_off() -> None:
+    response, _ = await _respond([_call('{"path": "a"}'), _text("", finish_reason="model_context_window_exceeded")])
+
+    assert response.finish_reason == "length"
+    assert response.additional_properties[CONTEXT_WINDOW_FILLED_KEY] is True
+
+
+@pytest.mark.parametrize("late", ["network_error", "model_context_window_exceeded", "length"])
+async def test_a_finish_reason_after_a_choice_finished_leaves_its_answer(late: str) -> None:
+    response, requests = await _respond([_text("Hi", finish_reason="stop"), _text("", finish_reason=late)])
+
+    assert (response.text, response.finish_reason, len(requests)) == ("Hi", "stop", 1)
+    assert CONTEXT_WINDOW_FILLED_KEY not in response.additional_properties
+
+
+async def test_a_failure_after_released_calls_still_runs_them() -> None:
+    runs, requests, raised = await _tool_runs(
+        [_call('{"path": "a"}', finish_reason="tool_calls"), _text("", finish_reason="network_error")]
+    )
+
+    assert (runs, requests, raised) == (["a"], 2, None)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +402,7 @@ def _on_choice(chunk: ChatCompletionChunk, index: int) -> ChatCompletionChunk:
     return chunk
 
 
-async def _tool_runs(chunks: Sequence[ChatCompletionChunk]) -> tuple[list[str], int, BaseException | None]:
+async def _tool_runs(chunks: Sequence[ChatCompletionChunk | str]) -> tuple[list[str], int, BaseException | None]:
     """Drive *chunks* through the tool loop: the tool runs, the requests sent and what the run raised."""
     runs: list[str] = []
 
@@ -314,7 +420,7 @@ async def _tool_runs(chunks: Sequence[ChatCompletionChunk]) -> tuple[list[str], 
         assert isinstance(result, ResponseStream)
         try:
             await result.get_final_response()
-        except ProviderResponseError as error:
+        except (ProviderResponseError, ChatClientException) as error:
             return runs, len(wire.requests), error
         return runs, len(wire.requests), None
 
@@ -341,6 +447,25 @@ async def test_released_calls_run_when_no_refusal_follows() -> None:
     )
 
     assert (runs, requests, raised) == (["a"], 2, None)
+
+
+@pytest.mark.parametrize(
+    "finished",
+    [
+        pytest.param(_call('{"path": "a"}', finish_reason="tool_calls"), id="calls"),
+        pytest.param(_text("Hi", finish_reason="stop"), id="text"),
+    ],
+)
+async def test_an_error_the_service_sends_after_a_finished_stream_fails_it(finished: ChatCompletionChunk) -> None:
+    # Unlike a connection that breaks off after the end, the service itself
+    # says the reply failed.
+    runs, requests, raised = await _tool_runs(
+        [finished, '{"error": {"code": "server_error", "message": "The reply failed."}}']
+    )
+
+    assert (runs, requests) == ([], 1)
+    assert isinstance(raised, ChatClientException)
+    assert isinstance(raised.__cause__, APIError)
 
 
 def _cut_off(*fragments: ChoiceDeltaToolCall, refusal: str | None = None) -> ChatCompletionChunk:
@@ -568,7 +693,7 @@ async def test_a_settled_stream_that_goes_quiet_fails_as_it_settled_before_it_st
     monkeypatch: pytest.MonkeyPatch, chunks: Sequence[ChatCompletionChunk], code: str, retryable: bool
 ) -> None:
     # What may follow is only its usage, waited on far shorter than a stall.
-    monkeypatch.setattr(chat_completions_client, "_SETTLED_STREAM_WAIT_SECONDS", 0)
+    monkeypatch.setattr(chat_completions_client, "_ENDED_STREAM_WAIT_SECONDS", 0)
     validation = ResponseValidationMiddleware(backoff_schedule=(0,))
 
     async with scripted_openai([chunks], held_open=True) as wire:
@@ -588,9 +713,14 @@ async def test_a_settled_stream_that_goes_quiet_fails_as_it_settled_before_it_st
     assert len(wire.requests) == 1
 
 
-async def _settle(chunks: Sequence[ChatCompletionChunk], *, held_open: bool = False) -> ProviderResponseError:
+async def _settle(
+    chunks: Sequence[ChatCompletionChunk | str],
+    *,
+    held_open: bool = False,
+    pace: Callable[[], Awaitable[object]] | None = None,
+) -> ProviderResponseError:
     """The error the client raises for a stream of *chunks*, read to its end."""
-    async with scripted_openai([chunks], held_open=held_open) as wire:
+    async with scripted_openai([chunks], held_open=held_open, pace=pace) as wire:
         client = ChatCompletionsClient(model="test", sdk_client=wire.client)
         stream = client._inner_get_response(messages=[Message("user", ["hi"])], options={}, stream=True)
         assert isinstance(stream, ResponseStream)
@@ -606,33 +736,229 @@ async def test_the_chunk_that_settles_a_stream_restarts_the_stall_timer() -> Non
     reports: list[None] = []
 
     with wire_progress_scope(lambda: reports.append(None)):
-        error = await _settle(
-            [_text("Partial"), _text("", finish_reason="model_context_window_exceeded"), _usage_only()]
-        )
+        error = await _settle([_text("Partial"), _text("", finish_reason="network_error"), _usage_only()])
 
-    assert error.code == "model_context_window_exceeded"
+    assert error.code == "network_error"
     assert error.usage_details is not None
     assert reports == [None]
 
 
-async def test_what_follows_a_settled_stream_is_read_within_one_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Chunks without the usage do not extend the wait, however many come.
-    bounds: list[float | None] = []
+async def test_the_chunk_that_finishes_a_stream_restarts_the_stall_timer() -> None:
+    reports: list[None] = []
 
-    def timeout(delay: float | None) -> asyncio.Timeout:
-        bounds.append(delay)
-        return asyncio.timeout(delay)
+    with wire_progress_scope(lambda: reports.append(None)):
+        response, _ = await _respond([_text("Hi", finish_reason="stop"), _usage_only()])
 
+    assert response.text == "Hi"
+    assert response.usage_details is not None
+    assert reports == [None]
+
+
+async def test_a_settled_stream_raises_at_its_usage_without_reading_on() -> None:
+    # Nothing is left to wait for: a connection held open after the usage
+    # must not hold the call for the rest of the bound.
+    events_sent = 0
+
+    async def count() -> None:
+        nonlocal events_sent
+        events_sent += 1
+
+    error = await _settle([_text("Partial", finish_reason="network_error"), _usage_only(), _text("More")], pace=count)
+
+    assert (error.code, error.usage_details is not None) == ("network_error", True)
+    assert events_sent == 2
+
+
+class _TickingLoop:
+    """A loop whose clock reads 1, 2, 3, … s, one tick per reading."""
+
+    def __init__(self) -> None:
+        self._ticks = itertools.count(1)
+
+    def time(self) -> float:
+        return float(next(self._ticks))
+
+
+@pytest.mark.parametrize(
+    ("chunks", "text", "reads_from"),
+    [
+        # A settled stream yields nothing more: what follows adds nothing.
+        pytest.param(
+            [_text("Partial", finish_reason="network_error"), _text("More"), _text("More"), _text("More")],
+            None,
+            [1, 1, 1, 1],
+            id="settled",
+        ),
+        pytest.param(
+            [_text("Hi", finish_reason="stop"), _text(""), _text(""), _usage_only()], "Hi", [1, 1, 1], id="finished"
+        ),
+        # A gateway may send the finish reason before the rest of the text.
+        pytest.param(
+            [_text("Hi", finish_reason="stop"), _text(" there"), _text(""), _text("!"), _usage_only()],
+            "Hi there!",
+            [1, 2, 2, 3],
+            id="text_after_the_finish_reason",
+        ),
+    ],
+)
+async def test_what_follows_the_end_of_a_stream_is_waited_for_while_it_adds_to_the_answer(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[ChatCompletionChunk], text: str | None, reads_from: list[int]
+) -> None:
+    # Each read waits until the bound after the last chunk that added to the
+    # answer: chunks that add nothing do not extend it, however many come.
+    deadlines: list[float] = []
+
+    def timeout_at(when: float) -> asyncio.Timeout:
+        deadlines.append(when)
+        return asyncio.timeout(None)
+
+    loop = _TickingLoop()
     shadow = ModuleType("asyncio")
-    shadow.__dict__.update(vars(asyncio), timeout=timeout)
+    shadow.__dict__.update(vars(asyncio), timeout_at=timeout_at, get_running_loop=lambda: loop)
     monkeypatch.setattr(chat_completions_client, "asyncio", shadow)
 
-    error = await _settle(
-        [_text("Partial", finish_reason="network_error"), _text("More"), _text("More"), _text("More")]
+    if text is None:
+        assert (await _settle(chunks)).code == "network_error"
+    else:
+        response, _ = await _respond(chunks)
+        assert (response.text, response.usage_details is not None) == (text, True)
+    bound = chat_completions_client._ENDED_STREAM_WAIT_SECONDS
+    assert deadlines == [tick + bound for tick in reads_from]
+    # Far shorter than a stall, which the read timeout sets (300 s by default).
+    assert 0 < bound <= 10
+
+
+async def test_a_finished_stream_ends_at_its_usage_while_the_connection_stays_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The usage is the last thing a stream sends: the call does not wait on.
+    with caplog.at_level(logging.WARNING, logger=chat_completions_client.__name__):
+        response, _ = await _respond([_text("Hi", finish_reason="stop"), _usage_only()], held_open=True)
+
+    assert (response.text, response.usage_details is not None) == ("Hi", True)
+    assert [record for record in caplog.records if record.name == chat_completions_client.__name__] == []
+
+
+def _late_choice() -> ChatCompletionChunk:
+    """A chunk for a choice no chunk before it named: the requests ask for one."""
+    choice = ChunkChoice.model_construct(
+        index=1, delta=ChoiceDelta.model_construct(role="assistant", content="Other"), finish_reason=None
+    )
+    return ChatCompletionChunk.model_construct(
+        id="chunk-1", object="chat.completion.chunk", created=1_717_171_717, model="test", choices=[choice], usage=None
     )
 
-    assert error.code == "network_error"
-    assert bounds == [chat_completions_client._SETTLED_STREAM_WAIT_SECONDS]
+
+@pytest.mark.parametrize("end", ["breaks_off", "held_open"])
+async def test_a_choice_that_first_shows_up_after_the_end_is_cut_off_by_a_break(
+    monkeypatch: pytest.MonkeyPatch, end: str
+) -> None:
+    monkeypatch.setattr(chat_completions_client, "_ENDED_STREAM_WAIT_SECONDS", 0.5)
+
+    with pytest.raises(ChatClientException) as raised:
+        await _respond(
+            [_text("Hi", finish_reason="stop"), _late_choice()],
+            breaks_off=end == "breaks_off",
+            held_open=end == "held_open",
+        )
+
+    assert classify_error(raised.value).retryable is True
+
+
+# Each is data the SDK makes a chunk of that cannot be read: it takes ``null``
+# for ``None``, and leaves a missing ``created`` unset.
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        pytest.param('{"choices": null}', id="no_chunk"),
+        pytest.param('{"choices": [null]}', id="null_choice"),
+        pytest.param("null", id="null"),
+        pytest.param(
+            '{"id": "chunk-1", "model": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}',
+            id="no_created",
+        ),
+        pytest.param(
+            '{"id": "chunk-1", "model": "test", "choices": [{"index": 1, "delta": {"role": "assistant", "tool_calls": '
+            '[{"index": 0, "id": "call_late", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]}, '
+            '"finish_reason": null}]}',
+            id="late_call",
+        ),
+        pytest.param(
+            '{"id": "chunk-1", "model": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": "content_filter"}]}',
+            id="late_filter",
+        ),
+    ],
+)
+async def test_a_chunk_that_cannot_be_read_after_the_end_fails_the_reply(trailing: str) -> None:
+    """As before the end, on purpose: skipped, it could keep a call it began or lose a filter it reports.
+
+    The calls the stream finished with then never run.
+    """
+    with pytest.raises(ChatClientException):
+        await _respond([_call('{"path": "a"}', finish_reason="tool_calls"), trailing])
+
+
+@pytest.mark.parametrize(
+    ("chunks", "code"),
+    [
+        pytest.param(
+            [_text("", finish_reason="model_context_window_exceeded"), "{not json", _usage_only()],
+            "model_context_window_exceeded",
+            id="failed",
+        ),
+        pytest.param([_refusal_with_a_call(), "{not json"], "content_filter", id="refused_with_a_call"),
+    ],
+)
+async def test_invalid_data_after_a_settled_stream_cannot_unsettle_it(
+    chunks: Sequence[ChatCompletionChunk | str], code: str
+) -> None:
+    error = await _settle(chunks)
+
+    assert (error.code, classify_error(error).retryable) == (code, False)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "text", "reason"),
+    [
+        pytest.param([_text("Hi", finish_reason="stop")], "Hi", "stop", id="stopped"),
+        pytest.param([_text("Partial", finish_reason="content_filter")], "Partial", "content_filter", id="filtered"),
+        pytest.param([_text("", finish_reason="content_filter")], "", "content_filter", id="filtered_before_text"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("end", "trailing", "logged"),
+    [
+        pytest.param("breaks_off", [], "failed after its end", id="breaks_off"),
+        pytest.param("", ["{not json"], "failed after its end", id="invalid_data"),
+        pytest.param("", ["\udcff"], "failed after its end", id="not_utf8"),
+        pytest.param("held_open", [], "stayed open after its end", id="held_open"),
+    ],
+)
+async def test_a_finished_stream_stands_however_its_connection_ends(
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[ChatCompletionChunk],
+    text: str,
+    reason: str,
+    end: str,
+    trailing: list[str],
+    logged: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Sent again, a filtered answer meets the same filter, and hosted work
+    # the answer ran would block the resend.
+    if end == "held_open":
+        monkeypatch.setattr(chat_completions_client, "_ENDED_STREAM_WAIT_SECONDS", 0)
+
+    with caplog.at_level(logging.WARNING, logger=chat_completions_client.__name__):
+        response, requests = await _respond(
+            [*chunks, *trailing], breaks_off=end == "breaks_off", held_open=end == "held_open"
+        )
+
+    assert (response.text, response.finish_reason, len(requests)) == (text, reason, 1)
+    [record] = [record for record in caplog.records if record.name == chat_completions_client.__name__]
+    assert logged in record.getMessage()
+    # A connection held open is no failure to trace.
+    assert bool(record.exc_info) is (end != "held_open")
 
 
 async def test_what_follows_a_settled_stream_cannot_unsettle_it_by_being_malformed() -> None:

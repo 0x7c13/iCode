@@ -60,6 +60,7 @@ from chrys.kernel import (
     LastWordsToolCallError,
     Message,
     TokenizerProtocol,
+    raise_if_context_window_filled,
     report_wire_progress,
 )
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
@@ -1628,6 +1629,7 @@ class LastWordsGenerator:
         usage_details = response.usage_details
         if usage_details:
             self._report_side_call_usage(usage_details)
+        raise_if_context_window_filled(response)
         return _normalize_note_response(response.raw_text)
 
     def _write_log(

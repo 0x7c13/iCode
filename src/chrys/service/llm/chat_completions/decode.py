@@ -18,7 +18,7 @@ from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompletionMessageCustomToolCall
 
 from chrys.foundation.errors import ProviderResponseError
-from chrys.kernel import ChatResponse, Content, FinishReason, Message, UsageDetails
+from chrys.kernel import CONTEXT_WINDOW_FILLED_KEY, ChatResponse, Content, FinishReason, Message, UsageDetails
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
 
 from .reasoning import message_reasoning, message_reasoning_props
@@ -42,8 +42,10 @@ _FINISH_REASON_SPELLINGS: Final[Mapping[str, str]] = {"end": "stop", "sensitive"
 # Finish reasons that report the service failed the completion; another
 # request may well succeed.
 _FAILED_FINISH_REASONS: Final = frozenset({"network_error", "insufficient_system_resource"})
-# The request did not fit the model's context window; resending it cannot.
-_CONTEXT_OVERFLOW_FINISH_REASON: Final = "model_context_window_exceeded"
+# The model filled its context window as it generated. With part of an
+# answer out, the reply was cut off as at its output limit; with none, no
+# attempt of the same request can fit an answer.
+_CONTEXT_WINDOW_FILLED: Final = "model_context_window_exceeded"
 
 # The usage breakdowns, in reporting order: the details object, the prefix of
 # the keys its counts are reported under, and each count with the kernel key
@@ -101,11 +103,46 @@ def ensure_choices(response: Any) -> None:
     raise_invalid_response(f"OpenAI Chat Completions response {problem}. Parsed payload: {payload}")
 
 
-def finish_reason(value: object) -> str | None:
-    """The finish reason a choice reports, in the spelling the kernel reads; an empty string reports none."""
+def finish_reason(value: object, *, answered: bool) -> str | None:
+    """The finish reason a choice reports, in the spelling the kernel reads; an empty string reports none.
+
+    A context window the model filled once its choice *answered* (text, a
+    refusal or a call) reads as ``length``, as the output it cut off is kept;
+    the response then also carries ``CONTEXT_WINDOW_FILLED_KEY``
+    (:func:`filled_window`).
+    """
     if not isinstance(value, str) or not value:
         return None
+    if value == _CONTEXT_WINDOW_FILLED and answered:
+        return "length"
     return _FINISH_REASON_SPELLINGS.get(value, value)
+
+
+def filled_window(value: object, read_as: str | None) -> bool:
+    """Whether a choice that reported *value* filled its context window and was read as cut off."""
+    return value == _CONTEXT_WINDOW_FILLED and read_as == "length"
+
+
+def has_answer(message: ChatCompletionMessage | ChoiceDelta | None) -> bool:
+    """Whether a message or delta carries answer text, a refusal or a call to a named function.
+
+    Text that is whitespace alone is no answer (reasoning models often send
+    some as they switch to answering), nor is a call that names no function
+    or a custom tool call, which is skipped.
+    """
+    if message is None:
+        return False
+    content = message.content
+    return (
+        (isinstance(content, str) and bool(content.strip()))
+        or has_refusal(message)
+        or any(_names_a_function(call) for call in message.tool_calls or ())
+    )
+
+
+def _names_a_function(call: object) -> bool:
+    name = getattr(getattr(call, "function", None), "name", None)
+    return isinstance(name, str) and bool(name)
 
 
 def finish_failure(
@@ -123,10 +160,10 @@ def finish_failure(
                 retryable=True,
                 usage_details=usage_details,
             )
-        if reason == _CONTEXT_OVERFLOW_FINISH_REASON:
+        if reason == _CONTEXT_WINDOW_FILLED:
             return ProviderResponseError(
                 reason,
-                "The request does not fit the model's context window.",
+                "The model filled its context window before it produced an answer.",
                 retryable=False,
                 invalidates_continuation_token=True,
                 usage_details=usage_details,
@@ -173,7 +210,7 @@ def decode_completion(
     messages: list[Message] = []
     finish: FinishReason | None = None
     usage = decode_usage(response.usage, variant=variant) if response.usage else None
-    reasons = [finish_reason(choice.finish_reason) for choice in response.choices]
+    reasons = [finish_reason(choice.finish_reason, answered=has_answer(choice.message)) for choice in response.choices]
     calls = [_function_calls(choice.message) for choice in response.choices]
     refused = "content_filter" in reasons or any(has_refusal(choice.message) for choice in response.choices)
     if refused and any(calls):
@@ -182,6 +219,8 @@ def decode_completion(
         raise failure
     for choice, reason, choice_calls in zip(response.choices, reasons, calls, strict=True):
         metadata.update(choice_metadata(choice))
+        if filled_window(choice.finish_reason, reason):
+            metadata[CONTEXT_WINDOW_FILLED_KEY] = True
         if reason is not None:
             finish = FinishReason(reason)
         # Text, then calls, then reasoning: unlike a delta, a whole message

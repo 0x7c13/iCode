@@ -8,6 +8,7 @@ from typing import Any, NoReturn
 
 import httpx
 import pytest
+from openai import APIError
 
 from chrys.foundation.errors import (
     ContinuationVerdictError,
@@ -146,6 +147,52 @@ def test_a_failure_a_response_reports_retries_only_when_its_code_may_pass(
     error = ProviderResponseError(code, "?", retryable=in_band_failure_retryable(code))
 
     assert (classify_error(error).kind, classify_error(error).retryable) == (kind, retryable)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "network_error",
+        "insufficient_system_resource",
+        "invalid_prompt",
+        "cyber_policy",
+        "misalignment_policy_violation",
+        "image_content_policy_violation",
+        "invalid_image_url",
+    ],
+)
+@pytest.mark.parametrize("status", [400, 502])
+async def test_an_http_error_carrying_a_code_only_responses_report_is_read_by_its_status(
+    status: int, code: str
+) -> None:
+    # These codes name how a response failed, not what an HTTP error means.
+    carrying = classify_error(await openai_status(status, {"error": {"code": code, "message": "It broke."}}))
+    plain = classify_error(await openai_status(status, {"error": {"code": "vendor_specific", "message": "It broke."}}))
+
+    assert (carrying.kind, carrying.retryable) == (plain.kind, plain.retryable)
+
+
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [
+        ("network_error", ErrorKind.STREAM_TRUNCATED),
+        ("insufficient_system_resource", ErrorKind.OVERLOADED),
+        ("invalid_prompt", ErrorKind.REQUEST_REJECTED),
+        ("cyber_policy", ErrorKind.CONTENT_FILTERED),
+        ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED),
+        ("invalid_image_url", ErrorKind.REQUEST_REJECTED),
+    ],
+)
+def test_an_error_a_stream_reports_in_band_is_named_by_its_code(code: str, kind: ErrorKind) -> None:
+    # The SDK raises an error event inside a 200 stream as a bare APIError:
+    # the code names how that response failed. The retry stays the stream's.
+    request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
+    carrying = classify_error(APIError("It broke.", request, body={"code": code, "message": "It broke."}))
+    plain = classify_error(APIError("It broke.", request, body={"code": "vendor_specific", "message": "It broke."}))
+
+    assert carrying.kind is kind
+    assert plain.kind is ErrorKind.UNKNOWN
+    assert carrying.retryable == plain.retryable
 
 
 def test_owner_terminal_veto_outranks_a_retryable_provider_response_error() -> None:

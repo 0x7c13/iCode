@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -376,22 +377,37 @@ def default_rule(node: WaitNode) -> str:
     return UNRESOLVED_RULE
 
 
-def build_manifest(reviewed: Manifest | None = None) -> Manifest:
-    """Build the manifest from source, keeping reviewed rules for unchanged waits.
+def _carried_rules(reviewed: Manifest | None, nodes: Sequence[WaitNode | ManifestNode]) -> dict[str, str]:
+    """The reviewed rule each of *nodes* keeps, by identity.
 
-    A rule carries over only while its identity still names the same wait: an
-    await inserted above shifts the ordinals, and a reviewed rule must not move
-    onto the unreviewed wait that now holds its identity.
+    A rule carries over only while its identity still names the same wait:
+    the same expression and primitive, in a function with as many waits as
+    before. An await added or removed shifts the ordinals after it, and a
+    copy of a reviewed wait inserted above it would take its rule, so a
+    function whose wait count changed is reopened whole.
     """
+    if reviewed is None:
+        return {}
+    before = Counter((node.module, node.qualname) for node in reviewed.nodes)
+    now = Counter((node.module, node.qualname) for node in nodes)
+    rows = {node.identity: node for node in reviewed.nodes}
+    return {
+        node.identity: row.rule
+        for node in nodes
+        if (row := rows.get(node.identity)) is not None
+        and (row.expression, row.primitive) == (node.expression, node.primitive)
+        and before[node.module, node.qualname] == now[node.module, node.qualname]
+    }
+
+
+def build_manifest(reviewed: Manifest | None = None) -> Manifest:
+    """Build the manifest from source, keeping reviewed rules for unchanged waits (``_carried_rules``)."""
     reviewed_rules = {} if reviewed is None else reviewed.rules
-    inherited = (
-        {}
-        if reviewed is None
-        else {(node.identity, node.expression, node.primitive): node.rule for node in reviewed.nodes}
-    )
+    scanned = scan_wait_nodes()
+    carried = _carried_rules(reviewed, scanned)
     nodes: list[ManifestNode] = []
-    for node in scan_wait_nodes():
-        rule = inherited.get((node.identity, node.expression, node.primitive))
+    for node in scanned:
+        rule = carried.get(node.identity)
         if rule is None or (rule not in DEFAULT_RULES and rule not in reviewed_rules):
             rule = default_rule(node)
         nodes.append(
@@ -410,17 +426,37 @@ def build_manifest(reviewed: Manifest | None = None) -> Manifest:
     return Manifest(rules=rules, nodes=tuple(nodes))
 
 
-def reopened_nodes(reviewed: Manifest | None, built: Manifest) -> list[str]:
-    """Identities whose wait is new or changed, so their rule fell back to the default."""
-    known = set() if reviewed is None else {(node.identity, node.expression, node.primitive) for node in reviewed.nodes}
-    return [node.identity for node in built.nodes if (node.identity, node.expression, node.primitive) not in known]
+def reopened_nodes(reviewed: Manifest | None, built: Manifest) -> list[tuple[str, str | None, str | None]]:
+    """The waits whose reviewed rule did not carry over, so they got the default.
+
+    Each comes with the rule its identity had in *reviewed* and the wait it
+    then named, or None twice for an identity that is new: after an insertion
+    the identity names another wait, so the rule belongs to that expression.
+    """
+    carried = _carried_rules(reviewed, built.nodes)
+    before = {} if reviewed is None else {node.identity: node for node in reviewed.nodes}
+    return [
+        (node.identity, None, None)
+        if (row := before.get(node.identity)) is None
+        else (node.identity, row.rule, row.expression)
+        for node in built.nodes
+        if node.identity not in carried
+    ]
 
 
 def encode_manifest(manifest: Manifest) -> str:
-    """Serialize *manifest* with one line per wait, grouped by module and function."""
+    """Serialize *manifest* with one line per wait, grouped by module and function.
+
+    Rows carry no ordinal: a function's ordinals must run 1..n, or decoding
+    would renumber them.
+    """
     grouped: dict[str, dict[str, list[ManifestNode]]] = {}
     for node in manifest.nodes:
         grouped.setdefault(node.module, {}).setdefault(node.qualname, []).append(node)
+    for module, functions in grouped.items():
+        for qualname, rows in functions.items():
+            if sorted(node.ordinal for node in rows) != list(range(1, len(rows) + 1)):
+                raise ValueError(f"{module}:{qualname}: ordinals are not 1..n")
     lines = ["{", f'  "schema_version": {MANIFEST_SCHEMA_VERSION},', '  "rules": {']
     rule_names = sorted(manifest.rules)
     for index, name in enumerate(rule_names):
@@ -610,7 +646,8 @@ def read_reviewed(text: str) -> Manifest:
 def manifest_errors(text: str, scanned: Sequence[WaitNode]) -> list[str]:
     """Problems with the manifest in *text* against the waits *scanned* from source.
 
-    Source line and column movement is not drift: rows carry no positions.
+    Source line and column movement is not drift: rows carry no positions. A
+    manifest that is otherwise right must be in the layout a refresh writes.
     """
     manifest, errors = decode_manifest(text)
     for name, rule in sorted(manifest.rules.items()):
@@ -633,6 +670,8 @@ def manifest_errors(text: str, scanned: Sequence[WaitNode]) -> list[str]:
         ):
             if recorded != scanned_value:
                 errors.append(f"{identity}: {field} drifted")
+    if not errors and encode_manifest(manifest) != text:
+        errors.append("manifest is not in the layout a refresh writes")
     return errors
 
 
@@ -643,8 +682,8 @@ def main() -> None:
     MANIFEST_PATH.write_text(encode_manifest(built), encoding="utf-8")
     reopened = reopened_nodes(reviewed, built)
     sys.stdout.write(f"{len(built.nodes)} waits, {len(reopened)} reopened (new or changed; default rule applied):\n")
-    for identity in reopened:
-        sys.stdout.write(f"  {identity}\n")
+    for identity, rule, expression in reopened:
+        sys.stdout.write(f"  {identity}" + ("" if rule is None else f" (was {rule} on `{expression}`)") + "\n")
 
 
 if __name__ == "__main__":

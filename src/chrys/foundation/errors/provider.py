@@ -53,6 +53,12 @@ _PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
     "content_filter": ErrorKind.CONTENT_FILTERED,
     "billing_error": ErrorKind.QUOTA_EXHAUSTED,
     "stream_truncated": ErrorKind.STREAM_TRUNCATED,
+}
+# Codes only a response's own failure reports (``ProviderResponseError``, or
+# an error event inside its stream): an HTTP error that carries one keeps the
+# kind its status gives it.
+_IN_BAND_CODE_KINDS: Mapping[str, ErrorKind] = {
+    **_PROVIDER_CODE_KINDS,
     # Finish reasons a Chat Completions service (GLM, DeepSeek) ends a
     # completion with when it failed to finish it.
     "network_error": ErrorKind.STREAM_TRUNCATED,
@@ -156,7 +162,7 @@ def _code_kind(code: str) -> ErrorKind:
         return ErrorKind.CONTEXT_OVERFLOW
     if code in NON_RETRYABLE_PROVIDER_ERROR_CODES:
         return ErrorKind.QUOTA_EXHAUSTED
-    return _PROVIDER_CODE_KINDS.get(code, ErrorKind.UNKNOWN)
+    return _IN_BAND_CODE_KINDS.get(code, ErrorKind.UNKNOWN)
 
 
 def in_band_failure_retryable(code: str) -> bool:
@@ -342,14 +348,17 @@ def signal_kind(signal: ProviderSignal) -> tuple[ErrorKind, str]:
     evidence = f"{type(source).__name__} http {signal.status_code}"
     if _is_quota(signal):
         return ErrorKind.QUOTA_EXHAUSTED, f"{evidence} {signal.code or signal.error_type or ''}".rstrip()
-    if signal.code is not None and (kind := _PROVIDER_CODE_KINDS.get(signal.code)) is not None:
+    # An error a stream reports in-band, with no status of its own, is how
+    # that response failed: the codes only a response reports name it too.
+    codes = _IN_BAND_CODE_KINDS if signal.status_code is None else _PROVIDER_CODE_KINDS
+    if signal.code is not None and (kind := codes.get(signal.code)) is not None:
         return kind, f"{evidence} {signal.code}"
     # An error status outranks the error type, which can be broad
     # (OpenAI answers a bad key with 401 ``invalid_request_error``); the type
     # decides only for errors reported without one, e.g. inside a 2xx stream.
     if signal.status_code is not None and (kind := status_kind(signal.status_code)) is not ErrorKind.UNKNOWN:
         return kind, evidence
-    if signal.error_type is not None and (kind := _PROVIDER_CODE_KINDS.get(signal.error_type)) is not None:
+    if signal.error_type is not None and (kind := codes.get(signal.error_type)) is not None:
         return kind, f"{evidence} {signal.error_type}"
     return ErrorKind.UNKNOWN, evidence
 

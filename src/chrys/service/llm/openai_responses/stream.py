@@ -21,8 +21,14 @@ A stream that announced a response must end with its terminal event: a
 failure (``response.failed``, an ``error`` event, a failed or cancelled
 terminal response) raises, and so does a stream that ends before it
 (:meth:`StreamState.finish`). A response that refused or was filtered yet
-asks for function calls raises too, whenever the refusal came: the response
-lands only after the stream ends, so its calls never run.
+asks for function calls raises too, whenever the refusal came, a refusal
+only a message snapshot shows included: the response lands only after the
+stream ends, so its calls never run. One without calls whose refusal no text
+showed ends as filtered (``content_filter``): it is refused, not blank. The
+client reads nothing after the terminal event (:attr:`StreamState.ended`). A
+stream that goes quiet before it is left to the stall watchdog, which sends
+it again: unlike after a Chat Completions finish reason, nothing it said yet
+tells how it ends.
 """
 
 from __future__ import annotations
@@ -194,14 +200,21 @@ class StreamState:
         # A lifecycle event announced the response; its terminal event came.
         self._announced = False
         self._ended = False
-        # A non-empty refusal came; a function call came.
+        # A non-empty refusal came; a function call came; message text that
+        # is not blank went out.
         self._refused = False
         self._calls_seen = False
+        self._text_sent = False
         # Local history replays reasoning by its encrypted payload, which may
         # only arrive once the item or the whole response is done: it then
         # goes onto the contents already sent for that item, by item id.
         self._backfills_reasoning = variant.encrypted_reasoning and effective_store_option(options) is False
         self._reasoning: dict[str, list[Content]] = {}
+
+    @property
+    def ended(self) -> bool:
+        """Whether the terminal event came: the response ended."""
+        return self._ended
 
     def updates_for(self, event: Any) -> list[ChatResponseUpdate]:
         """The updates one event makes: its own, after the evidence of hosted work it held."""
@@ -268,9 +281,20 @@ class StreamState:
         logger.warning("Responses stream ended without a terminal event; the answer may be incomplete")
         update = _Update(model=self._model)
         self._release(update, drain=True)
-        if not update.contents:
+        reason = self._finish_reason(None)
+        if not update.contents and reason is None:
             return None
-        return ChatResponseUpdate(contents=update.contents, role="assistant", model=update.model)
+        return ChatResponseUpdate(contents=update.contents, role="assistant", model=update.model, finish_reason=reason)
+
+    def _finish_reason(
+        self, reason: Literal["length", "content_filter"] | None
+    ) -> Literal["length", "content_filter"] | None:
+        """*reason*, or ``content_filter`` for a refusal no text showed (a message snapshot's only).
+
+        The response is not blank for want of an answer: it was refused, and
+        sending it again meets the same refusal.
+        """
+        return "content_filter" if self._refused and not self._text_sent else reason
 
     def _slot(self, index: Any) -> OutputSlot:
         return self._slots.setdefault(index, OutputSlot())
@@ -370,6 +394,12 @@ class StreamState:
         # Its text came as deltas.
         self._refused = self._refused or bool(getattr(event, "refusal", None))
 
+    def _part_done(self, event: Any, update: _Update) -> None:
+        # Its text came with the part or as deltas; a refusal may show only here.
+        part = event.part
+        if getattr(part, "type", None) == "refusal":
+            self._refused = self._refused or bool(getattr(part, "refusal", None))
+
     def _annotation_added(self, event: Any, update: _Update) -> None:
         if (citation := streamed_citation(event)) is not None:
             update.contents.append(self._message_text(event, "", annotations=[citation]))
@@ -388,6 +418,7 @@ class StreamState:
         )
         if tracked:
             self._slot(index).message_contents.append(content)
+        self._text_sent = self._text_sent or bool(text.strip())
         return content
 
     # Reasoning
@@ -439,7 +470,7 @@ class StreamState:
         update.created_at = timestamp(response.created_at)
         if usage:
             update.contents.append(Content.from_usage(usage_details=usage, raw_representation=event))
-        update.finish_reason = reason
+        update.finish_reason = self._finish_reason(reason)
 
     def _failed(self, event: Any, update: _Update) -> None:
         """``response.failed``: the error it carries, the hosted work it ran included."""
@@ -496,6 +527,8 @@ class StreamState:
         index = getattr(event, "output_index", -1)
         match item.type:
             case "message":
+                # Its text comes as part events; a refusal may show only here.
+                self._refused = self._refused or refuses(item)
                 if envelope := output_message_envelope(item):
                     self._slot(index).envelope = envelope
             case "function_call":
@@ -527,6 +560,7 @@ class StreamState:
                     call.final = arguments
                 call.done = True
             case "message":
+                self._refused = self._refused or refuses(item)
                 envelope = output_message_envelope(item)
                 if envelope:
                     slot.envelope = envelope
@@ -775,6 +809,7 @@ def streamed_citation(event: Any) -> Annotation | None:
 
 _HANDLERS: dict[str, Callable[[StreamState, Any, _Update], None]] = {
     "response.content_part.added": StreamState._part_added,
+    "response.content_part.done": StreamState._part_done,
     "response.output_text.delta": StreamState._text_delta,
     "response.refusal.delta": StreamState._refusal_delta,
     "response.refusal.done": StreamState._refusal_done,

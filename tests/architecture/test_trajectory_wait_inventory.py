@@ -9,6 +9,7 @@ import functools
 import json
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from tests.support.trajectory_wait_inventory import (
     WaitNode,
     build_manifest,
     decode_manifest,
+    default_rule,
     encode_manifest,
     load_manifest_text,
     manifest_errors,
@@ -131,7 +133,125 @@ def test_manifest_refresh_preserves_reviewed_cases(monkeypatch: pytest.MonkeyPat
     moved = build_manifest(shifted)
     assert [row.rule for row in moved.nodes] == [UNRESOLVED_RULE]
     assert moved.rules == {UNRESOLVED_RULE: DEFAULT_RULES[UNRESOLVED_RULE]}
-    assert reopened_nodes(shifted, moved) == [node.identity]
+    assert reopened_nodes(shifted, moved) == [(node.identity, "reviewed", "await some_other_wait()")]
+
+
+def _in(qualname: str, node: WaitNode) -> WaitNode:
+    return replace(node, qualname=qualname, identity=f"{node.module}:{qualname}:{node.ordinal}")
+
+
+def test_a_wait_copied_above_a_reviewed_one_reopens_its_function(monkeypatch: pytest.MonkeyPatch) -> None:
+    reviewed_node = _wait()
+    elsewhere = _in("other", _wait())
+    reviewed = Manifest(
+        rules={"reviewed": dict(_REVIEWED_RULE)},
+        nodes=(
+            *_reviewed(reviewed_node).nodes,
+            ManifestNode(elsewhere.module, "other", 1, elsewhere.primitive, elsewhere.expression, "reviewed"),
+        ),
+    )
+    # The copy now holds the reviewed wait's identity and expression; the
+    # reviewed wait moved to ordinal 2.
+    copied = [_wait(), _wait(ordinal=2, line=11), elsewhere]
+    monkeypatch.setattr(wait_inventory, "scan_wait_nodes", lambda: copied)
+
+    built = build_manifest(reviewed)
+
+    assert [(row.identity, row.rule) for row in built.nodes] == [
+        ("chrys.synthetic:run:1", UNRESOLVED_RULE),
+        ("chrys.synthetic:run:2", UNRESOLVED_RULE),
+        ("chrys.synthetic:other:1", "reviewed"),
+    ]
+    assert reopened_nodes(reviewed, built) == [
+        ("chrys.synthetic:run:1", "reviewed", reviewed_node.expression),
+        ("chrys.synthetic:run:2", None, None),
+    ]
+
+
+def test_a_wait_whose_primitive_changed_is_reopened(monkeypatch: pytest.MonkeyPatch) -> None:
+    node = _wait()
+    monkeypatch.setattr(wait_inventory, "scan_wait_nodes", lambda: [replace(node, primitive="async_iteration")])
+
+    built = build_manifest(_reviewed(node))
+
+    assert [row.rule for row in built.nodes] == [UNRESOLVED_RULE]
+    assert reopened_nodes(_reviewed(node), built) == [(node.identity, "reviewed", node.expression)]
+
+
+@pytest.mark.parametrize(
+    ("primitive", "expression", "rule"),
+    [
+        pytest.param("sleep", "await asyncio.sleep(0)", EVENT_LOOP_YIELD_RULE, id="zero-sleep"),
+        pytest.param("sleep", "await asyncio.sleep(0.5)", UNRESOLVED_RULE, id="timed-sleep"),
+        pytest.param("sleep", "await asyncio.sleep(delay)", UNRESOLVED_RULE, id="variable-sleep"),
+        pytest.param("awaitable", "await clock.sleep(0)", UNRESOLVED_RULE, id="other-sleep"),
+    ],
+)
+def test_only_a_zero_sleep_defaults_to_an_event_loop_yield(primitive: str, expression: str, rule: str) -> None:
+    assert default_rule(_wait(expression, primitive=primitive)) == rule
+
+
+def test_a_new_zero_sleep_gets_the_yield_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wait_inventory, "scan_wait_nodes", lambda: [_wait("await asyncio.sleep(0)", primitive="sleep")])
+
+    built = build_manifest(None)
+
+    assert [row.rule for row in built.nodes] == [EVENT_LOOP_YIELD_RULE]
+    assert built.rules == {EVENT_LOOP_YIELD_RULE: DEFAULT_RULES[EVENT_LOOP_YIELD_RULE]}
+
+
+def test_the_refresh_reports_the_rule_each_reopened_wait_had(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    node = _wait()
+    path = tmp_path / "manifest.json"
+    path.write_text(encode_manifest(_reviewed(node)), encoding="utf-8")
+    monkeypatch.setattr(wait_inventory, "MANIFEST_PATH", path)
+    # A wait inserted above the reviewed one takes its identity: the rule is
+    # reported with the wait it was reviewed on.
+    monkeypatch.setattr(
+        wait_inventory, "scan_wait_nodes", lambda: [_wait("await new_thing()"), _wait(ordinal=2, line=11)]
+    )
+
+    wait_inventory.main()
+
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        "  chrys.synthetic:run:1 (was reviewed on `await reviewed()`)",
+        "  chrys.synthetic:run:2",
+    ]
+    assert [row.rule for row in decode_manifest(path.read_text(encoding="utf-8"))[0].nodes] == [UNRESOLVED_RULE] * 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("{", id="not-json"),
+        pytest.param(json.dumps({"schema_version": 3, "rules": {}, "modules": {}}), id="unknown-schema"),
+        pytest.param(
+            json.dumps(
+                {
+                    **_synthetic_document(),
+                    "modules": {"chrys.synthetic": {"run": [["awaitable", "await reviewed()", "missing"]]}},
+                }
+            ),
+            id="unknown-rule",
+        ),
+        pytest.param(
+            json.dumps(_synthetic_document()).replace('"modules": {', '"modules": {"chrys.synthetic": {}, ', 1),
+            id="duplicate-key",
+        ),
+    ],
+)
+def test_the_refresh_refuses_an_invalid_manifest(text: str) -> None:
+    with pytest.raises(ValueError, match="cannot refresh from an invalid manifest"):
+        read_reviewed(text)
+
+
+def test_a_v1_manifest_with_duplicate_keys_is_not_migrated() -> None:
+    text = json.dumps({"schema_version": 1, "nodes": []}).replace('"nodes"', '"nodes": [], "nodes"', 1)
+
+    with pytest.raises(ValueError, match="duplicate JSON key 'nodes'"):
+        read_reviewed(text)
 
 
 def test_manifest_refresh_rewrites_built_in_rule_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,6 +265,12 @@ def test_manifest_refresh_rewrites_built_in_rule_text(monkeypatch: pytest.Monkey
     assert build_manifest(stale).rules == {UNRESOLVED_RULE: DEFAULT_RULES[UNRESOLVED_RULE]}
 
 
+def _canonical(document: dict[str, Any]) -> str:
+    manifest, errors = decode_manifest(json.dumps(document))
+    assert errors == []
+    return encode_manifest(manifest)
+
+
 def test_manifest_encoding_round_trips() -> None:
     manifest, errors = decode_manifest(json.dumps(_synthetic_document()))
     assert errors == []
@@ -152,9 +278,28 @@ def test_manifest_encoding_round_trips() -> None:
     assert manifest_errors(encode_manifest(manifest), _SYNTHETIC_WAITS) == []
 
 
+def test_the_gate_wants_the_layout_a_refresh_writes() -> None:
+    assert manifest_errors(json.dumps(_synthetic_document()), _SYNTHETIC_WAITS) == [
+        "manifest is not in the layout a refresh writes"
+    ]
+
+
+def test_encoding_refuses_ordinals_it_would_renumber() -> None:
+    gap = Manifest(
+        rules={UNRESOLVED_RULE: dict(DEFAULT_RULES[UNRESOLVED_RULE])},
+        nodes=(
+            ManifestNode("chrys.synthetic", "run", 1, "awaitable", "await one()", UNRESOLVED_RULE),
+            ManifestNode("chrys.synthetic", "run", 3, "awaitable", "await three()", UNRESOLVED_RULE),
+        ),
+    )
+
+    with pytest.raises(ValueError, match=r"chrys.synthetic:run: ordinals are not 1..n"):
+        encode_manifest(gap)
+
+
 def test_source_line_moves_are_not_drift() -> None:
     moved = tuple(replace(node, source_line=node.source_line + 40, source_column=0) for node in _SYNTHETIC_WAITS)
-    assert manifest_errors(json.dumps(_synthetic_document()), moved) == []
+    assert manifest_errors(_canonical(_synthetic_document()), moved) == []
 
 
 def _run_rows(document: dict[str, Any]) -> list[list[Any]]:
@@ -244,7 +389,7 @@ def test_manifest_decoder_rejects_malformed_documents(
 def test_manifest_reports_waits_missing_from_a_module() -> None:
     other = _wait("await elsewhere()", module="chrys.other")
 
-    assert manifest_errors(json.dumps(_synthetic_document()), (*_SYNTHETIC_WAITS, other)) == [
+    assert manifest_errors(_canonical(_synthetic_document()), (*_SYNTHETIC_WAITS, other)) == [
         "unclassified wait nodes: chrys.other:run:1"
     ]
 

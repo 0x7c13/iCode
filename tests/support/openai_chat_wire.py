@@ -11,7 +11,10 @@ scripted ``ChatCompletion`` is sent as one JSON body. Models built with
 literal-null wire fields reach the client as written. No request leaves the
 process; ``done=False`` ends the streams at EOF instead, ``breaks_off=True``
 loses the connection after the last chunk and ``held_open=True`` keeps it
-open, sending nothing more. Parser tests that skip HTTP use
+open, sending nothing more. A string in a stream is sent as an event's data
+verbatim, for data a chunk model cannot express (no chunk at all, or a chunk
+with fields left out or null); a lone surrogate escape in it (``"\\udcff"``)
+sends its byte, for data that is not UTF-8. Parser tests that skip HTTP use
 ``parse_stream_chunks``.
 """
 
@@ -33,8 +36,8 @@ from chrys.kernel import ChatResponseUpdate
 from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.chat_completions.stream import StreamState
 
-type ChatReply = Sequence[ChatCompletionChunk] | ChatCompletion
-"""A streamed reply (its chunks) or a blocking one (its completion)."""
+type ChatReply = Sequence[ChatCompletionChunk | str] | ChatCompletion
+"""A streamed reply (its chunks, or raw event data) or a blocking one (its completion)."""
 
 
 def wire_payload(model: ChatCompletionChunk | ChatCompletion) -> dict[str, Any]:
@@ -47,14 +50,19 @@ class _EventStream(httpx.AsyncByteStream):
 
     def __init__(
         self,
-        chunks: Sequence[ChatCompletionChunk],
+        chunks: Sequence[ChatCompletionChunk | str],
         pace: Callable[[], Awaitable[object]] | None,
         *,
         done: bool,
         breaks_off: bool = False,
         held_open: bool = False,
     ) -> None:
-        self._events = [f"data: {json.dumps(wire_payload(chunk))}\n\n".encode() for chunk in chunks]
+        self._events = [
+            f"data: {chunk if isinstance(chunk, str) else json.dumps(wire_payload(chunk))}\n\n".encode(
+                "utf-8", "surrogateescape"
+            )
+            for chunk in chunks
+        ]
         if done and not (breaks_off or held_open):
             self._events.append(b"data: [DONE]\n\n")
         self._pace = pace

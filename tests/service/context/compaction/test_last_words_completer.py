@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+from typing import ClassVar
 
 import pytest
 
@@ -116,6 +117,7 @@ async def test_fallback_path_reports_side_call_usage(tmp_path):
     class _UsageResponse:
         raw_text = note
         usage_details = usage
+        additional_properties: ClassVar[dict[str, object]] = {}
 
     class _UsageClient:
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]

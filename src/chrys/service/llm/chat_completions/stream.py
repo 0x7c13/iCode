@@ -15,6 +15,13 @@ only when every one of them has arguments a model could have finished. A
 stream that refused or was filtered fails instead of handing over calls,
 also when the refusal comes after calls it already released: the response
 lands only after the stream ends, so its calls never run.
+
+A choice finishes once: a finish reason that follows on it counts only when
+it reports the content filter, which still refuses the calls released. A
+stream has said how it ends once every choice finished or it settled on a
+failure (:attr:`StreamState.ended`): the client reads what follows up to its
+usage, waiting a short bound for anything that adds to the answer, for the
+usage and for a refusal or failure it still reports.
 """
 
 from __future__ import annotations
@@ -30,15 +37,24 @@ from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompl
 from pydantic import ValidationError
 
 from chrys.foundation.errors import ProviderResponseError
-from chrys.kernel import ChatResponseUpdate, Content, FinishReason, UsageDetails, normalize_stream_usage
+from chrys.kernel import (
+    CONTEXT_WINDOW_FILLED_KEY,
+    ChatResponseUpdate,
+    Content,
+    FinishReason,
+    UsageDetails,
+    normalize_stream_usage,
+)
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
 from chrys.service.llm.openai_timestamps import normalize_openai_created_payload, openai_created_at_iso
 
 from .decode import (
     choice_metadata,
     decode_usage,
+    filled_window,
     finish_failure,
     finish_reason,
+    has_answer,
     has_refusal,
     refused_calls_error,
     response_metadata,
@@ -89,6 +105,9 @@ class _ChoiceState:
     empty_reasoning_sent: bool = False
     # Non-empty plaintext reasoning arrived.
     reasoning_seen: bool = False
+    # Answer text that is not blank, a refusal or a call to a named function
+    # arrived (``has_answer``).
+    answered: bool = False
     # The choice's finish reason arrived; later fragments are ignored.
     finished: bool = False
 
@@ -113,13 +132,18 @@ class StreamState:
         # The finish reasons of the chunk that reported a failure.
         self._failed: tuple[str, ...] | None = None
         # The stream reported how it ends: a failure finish reason, or a
-        # refusal with calls. What follows is read only for its usage.
+        # refusal with calls. It yields nothing more; what follows is read
+        # only for its usage.
         self._settled = False
 
     @property
-    def settled(self) -> bool:
-        """Whether the stream reported how it ends; what follows is read only for its usage."""
-        return self._settled
+    def ended(self) -> bool:
+        """Whether the stream said how it ends.
+
+        Every choice finished, or it settled: a failure finish reason, or a
+        refusal with calls.
+        """
+        return self._settled or (self._finish_seen and all(state.finished for state in self._choices.values()))
 
     def updates_for(self, chunk: ChatCompletionChunk) -> list[ChatResponseUpdate]:
         """The updates one chunk yields: calls its finish reasons complete, then its own.
@@ -139,7 +163,7 @@ class StreamState:
                 self._raise_failure()
             return []
         # Read once: the update reports these and the release keys on them.
-        finished = _finish_reasons(chunk)
+        finished = self._finish_reasons(chunk)
         update = self.update_for(chunk, finished)
         if finish_failure(finished.values()) is not None:
             self._failed = tuple(finished.values())
@@ -201,7 +225,7 @@ class StreamState:
         update's raw representation; the SDK chunk stays as received.
         """
         if finished is None:
-            finished = _finish_reasons(chunk)
+            finished = self._finish_reasons(chunk)
         chunk = normalize_openai_created_payload(chunk)
         metadata = response_metadata(chunk)
         contents: list[Content] = []
@@ -213,6 +237,8 @@ class StreamState:
             metadata.update(choice_metadata(choice))
             if (reason := finished.get(choice.index)) is not None:
                 finish = FinishReason(reason)
+            if filled_window(choice.finish_reason, reason):
+                metadata[CONTEXT_WINDOW_FILLED_KEY] = True
             # Some compatible providers finish with ``"delta": null``.
             if choice.delta is not None:
                 contents.extend(self._delta_contents(choice))
@@ -233,6 +259,22 @@ class StreamState:
         if (failure := self.failure()) is not None:
             raise failure
 
+    def _finish_reasons(self, chunk: ChatCompletionChunk) -> dict[int, str]:
+        """The finish reasons of the chunk's choices that report one, read as ``finish_reason`` reads them.
+
+        A choice that already finished keeps its answer: only a content filter
+        that follows still counts.
+        """
+        reasons: dict[int, str] = {}
+        for choice in chunk.choices:
+            state = self._choices.get(choice.index)
+            answered = (state is not None and state.answered) or has_answer(choice.delta)
+            if (reason := finish_reason(choice.finish_reason, answered=answered)) is None:
+                continue
+            if state is None or not state.finished or reason == "content_filter":
+                reasons[choice.index] = reason
+        return reasons
+
     def _take_usage(self, chunk: ChatCompletionChunk) -> UsageDetails | None:
         """The usage the chunk reports, also taken into the usage so far."""
         if not (usage := chunk.usage or _choice_level_usage(chunk)):
@@ -249,6 +291,7 @@ class StreamState:
 
     def _delta_contents(self, choice: ChunkChoice) -> list[Content]:
         state = self._choice(choice.index)
+        state.answered = state.answered or has_answer(choice.delta)
         if has_refusal(choice.delta):
             self._refused = True
         fields = reasoning_fields(choice.delta)
@@ -432,13 +475,6 @@ def _complete_calls(choice: int, calls: list[_PendingCall], finish_reason: str |
             )
         contents.append(call.content())
     return contents
-
-
-def _finish_reasons(chunk: ChatCompletionChunk) -> dict[int, str]:
-    """The finish reasons of the chunk's choices that report one."""
-    return {
-        choice.index: reason for choice in chunk.choices if (reason := finish_reason(choice.finish_reason)) is not None
-    }
 
 
 def _arguments_complete(call: _PendingCall) -> bool:

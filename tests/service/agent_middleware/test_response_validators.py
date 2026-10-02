@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from chrys.foundation.hosted_tools import HostedToolFamily, HostedToolPhase
@@ -23,6 +25,7 @@ from chrys.service.agent_middleware.validators import (
     OUTPUT_TRUNCATED_REASON,
     REASONING_EXHAUSTED_OUTPUT_REASON,
     DefaultResponseValidator,
+    RegexRule,
     ValidationResult,
 )
 from tests.service.agent_middleware._response_validation_fakes import (
@@ -419,6 +422,32 @@ class TestContentFilteredWithoutAnswer:
     )
     def test_an_answer_the_filter_cut_short_is_kept(self, contents: list[Content]) -> None:
         assert DefaultResponseValidator().validate(_filtered(contents)).ok
+
+    @pytest.mark.parametrize(
+        ("validator", "code"),
+        [
+            pytest.param(DefaultResponseValidator(), ValidationReason.LEAKED_TOOL_CALL, id="leaked_marker"),
+            pytest.param(
+                DefaultResponseValidator(
+                    disable_leaked_tool_call=True,
+                    extra_rules=[RegexRule("no_drafts", re.compile("DRAFT"), "draft text")],
+                ),
+                ValidationReason.RULE_VIOLATION,
+                id="extra_rule",
+            ),
+        ],
+    )
+    def test_filtered_text_a_rule_rejects_is_reported_as_filtered(
+        self, validator: DefaultResponseValidator, code: ValidationReason
+    ) -> None:
+        # Retrying it would meet the same filter.
+        text = 'DRAFT minimax:tool_call {"name":"read_file"} </minimax:tool_call>'
+
+        filtered = validator.validate(_filtered([Content.from_text(text)]))
+        stopped = validator.validate(_assistant([Content.from_text(text)]))
+
+        assert (filtered, filtered.code) == (_FILTERED, ValidationReason.CONTENT_FILTERED)
+        assert (stopped.ok, stopped.retryable, stopped.code) == (False, True, code)
 
     def test_disabled_rules_stay_disabled(self) -> None:
         no_op = DefaultResponseValidator(

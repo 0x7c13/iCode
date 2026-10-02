@@ -8,14 +8,17 @@ import asyncio
 import base64
 import json
 from types import ModuleType
+from typing import ClassVar
 
 import pytest
+from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
 from chrys.foundation.errors import ProviderResponseError
 from chrys.kernel import Content, Message
-from chrys.kernel.client import start_with_wire_progress
+from chrys.kernel.client import _ClientLastWordsCompleter, start_with_wire_progress
 from chrys.service.context.compaction.last_words import (
     _BASE_GUIDANCE,
     _FORMAT_CONTRACT,
@@ -42,7 +45,7 @@ from tests.service.context.compaction._last_words_helpers import (
     structured_note,
     user,
 )
-from tests.support.openai_chat_wire import scripted_openai
+from tests.support.openai_chat_wire import ChatReply, scripted_openai
 from tests.support.provider_errors import openai_status
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
@@ -56,6 +59,18 @@ def _note_chunk(text: str, finish_reason: str | None = None) -> ChatCompletionCh
         created=1_717_171_717,
         model="model",
         choices=[ChunkChoice.model_construct(index=0, delta=delta, finish_reason=finish_reason)],
+        usage=None,
+    )
+
+
+def _note_completion(text: str, finish_reason: str) -> ChatCompletion:
+    message = ChatCompletionMessage.model_construct(role="assistant", content=text)
+    return ChatCompletion.model_construct(
+        id="completion-1",
+        object="chat.completion",
+        created=1_717_171_717,
+        model="model",
+        choices=[Choice.model_construct(index=0, message=message, finish_reason=finish_reason)],
         usage=None,
     )
 
@@ -108,6 +123,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -202,6 +218,7 @@ async def test_note_call_output_budget_is_clamped_on_both_paths(
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -310,6 +327,7 @@ async def test_fallback_uses_three_scoped_blocks_and_interleaves_followups(tmp_p
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -343,6 +361,7 @@ async def test_fallback_renders_an_image_result_as_a_placeholder_not_base64(tmp_
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -378,6 +397,7 @@ async def test_fallback_renders_a_hosted_base64_document_as_a_placeholder(tmp_pa
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -407,6 +427,7 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -479,6 +500,7 @@ async def test_fallback_caps_supplement_and_middle_truncates_previous_note(tmp_p
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -527,6 +549,7 @@ async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_p
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -578,6 +601,7 @@ async def test_fallback_format_correction_is_readmitted_and_shrunk(tmp_path, mon
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = invalid if len(self.messages) == 1 else valid
 
             return _Response()
@@ -661,6 +685,7 @@ async def test_fallback_small_window_final_candidate_is_provider_authoritative(t
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -719,6 +744,7 @@ async def test_fallback_bypass_never_raises_max_tokens_above_model_cap(tmp_path)
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -758,6 +784,7 @@ async def test_fallback_short_note_acceptance_still_canonicalizes(tmp_path, monk
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = short_relaxed
 
             return _Response()
@@ -784,6 +811,7 @@ async def test_provider_context_rejection_advances_fallback_shrink_sequence(tmp_
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -837,6 +865,7 @@ async def _prompt_lengths_after(tmp_path, monkeypatch, rejection: BaseException)
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -883,7 +912,7 @@ async def test_a_candidate_that_overflows_as_its_read_timeout_runs_out_still_shr
     on for its usage ends on the overflow, and a smaller candidate follows
     instead of the timeout cutting the stream off and sending it again."""
     monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
-    monkeypatch.setattr(chat_completions_client, "_SETTLED_STREAM_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(chat_completions_client, "_ENDED_STREAM_WAIT_SECONDS", 1.0)
     read_timeouts: list[asyncio.Timeout] = []
 
     def timeout(delay: float | None) -> asyncio.Timeout:
@@ -929,6 +958,81 @@ async def test_a_candidate_that_overflows_as_its_read_timeout_runs_out_still_shr
     assert retry_events == []
     # Before the first candidate, after its first chunk, at its overflow.
     assert reported_at[:3] == [0, 1, 2]
+
+
+@pytest.mark.parametrize("partial", ["## Task\nDo", "## Task\n" + "Done so far. " * 60], ids=["short", "long"])
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_note_that_filled_the_context_window_part_way_shrinks_the_fallback(
+    tmp_path, monkeypatch, stream: bool, partial: str
+) -> None:
+    """The main turn keeps an answer the full window cut off; a note is asked for again, with a smaller prompt."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    reason = "model_context_window_exceeded"
+    filled: ChatReply = (
+        [_note_chunk(partial), _note_chunk("", finish_reason=reason)] if stream else _note_completion(partial, reason)
+    )
+    note: ChatReply = (
+        [_note_chunk(structured_note(), finish_reason="stop")]
+        if stream
+        else _note_completion(structured_note(), "stop")
+    )
+    retry_events, publish_retry = retry_collector()
+    profile = ModelProfile(id="model", name="model", model_id="model", stream=stream)
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, publish_retry=publish_retry)
+    async with scripted_openai([filled, note]) as wire:
+        gen._client = ChatCompletionsClient(model="model", sdk_client=wire.client)  # type: ignore[assignment]
+        written = await generate(
+            gen,
+            user_request="do X",
+            previous_last_words="previous",
+            dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+        )
+
+    assert written == structured_note()
+    first, second = (len(json.dumps(request["messages"])) for request in wire.requests)
+    assert second < first
+    assert retry_events == []
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_note_the_completer_wrote_until_the_context_window_filled_falls_back(
+    tmp_path, monkeypatch, stream: bool
+) -> None:
+    """The completer sends the whole conversation, the call most likely to fill the window.
+
+    A note it cut off is not asked for again with that prompt: LAST_WORDS
+    falls back to the smaller one.
+    """
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    reason = "model_context_window_exceeded"
+    filled: ChatReply = (
+        [_note_chunk("## Task\nDo"), _note_chunk("", finish_reason=reason)]
+        if stream
+        else _note_completion("## Task\nDo", reason)
+    )
+    note: ChatReply = (
+        [_note_chunk(long_structured_note(), finish_reason="stop")]
+        if stream
+        else _note_completion(long_structured_note(), "stop")
+    )
+    retry_events, publish_retry = retry_collector()
+    profile = ModelProfile(id="model", name="model", model_id="model", stream=stream)
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, publish_retry=publish_retry)
+    async with scripted_openai([filled, note]) as wire:
+        client = ChatCompletionsClient(model="model", sdk_client=wire.client)
+        gen._client = client  # type: ignore[assignment]
+        written = await generate(
+            gen,
+            user_request="do X",
+            previous_last_words="previous",
+            dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+            completer=_ClientLastWordsCompleter(client, stream=stream, options={}, client_kwargs={}),
+        )
+
+    assert written == long_structured_note()
+    completer_request, fallback_request = (len(json.dumps(request["messages"])) for request in wire.requests)
+    assert fallback_request < completer_request
+    assert retry_events == []
 
 
 async def test_a_rate_limit_naming_tokens_retries_the_same_fallback_candidate(tmp_path, monkeypatch) -> None:
@@ -1054,6 +1158,7 @@ async def test_sibling_call_run_admission_charges_one_merged_timeline(tmp_path):
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()

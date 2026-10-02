@@ -606,7 +606,12 @@ class _ClientLastWordsCompleter:
         max_output_tokens: int,
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> str:
-        from .compaction import LastWordsToolCallError, internal_side_call_scope, messages_contain_tool_calls
+        from .compaction import (
+            LastWordsToolCallError,
+            internal_side_call_scope,
+            messages_contain_tool_calls,
+            raise_if_context_window_filled,
+        )
 
         # Shallow copy with top-level-key overrides only: nested values (the
         # tools list in particular) stay shared by reference and are never
@@ -685,6 +690,7 @@ class _ClientLastWordsCompleter:
         # rejects below still consumed real provider tokens.
         if on_usage is not None and response.usage_details:
             on_usage(response.usage_details)
+        raise_if_context_window_filled(response)
         if messages_contain_tool_calls(response.messages):
             raise LastWordsToolCallError(
                 "last-words side call returned tool-call content despite the no-tools instruction"

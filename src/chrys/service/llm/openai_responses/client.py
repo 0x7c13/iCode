@@ -221,6 +221,10 @@ class ResponsesApiClient(WireClient):
                         async for event in parsed_events:
                             for update in state.updates_for(event):
                                 yield update
+                            # The response ended: a connection that breaks
+                            # off or stays open after it must not lose it.
+                            if state.ended:
+                                break
                     served = None
                 else:
                     if token is not None:
@@ -239,6 +243,8 @@ class ResponsesApiClient(WireClient):
                                 if served is not None:
                                     update.model = served
                                 yield update
+                            if state.ended:
+                                break
                 if (tail := state.finish()) is not None:
                     if served is not None:
                         tail.model = served

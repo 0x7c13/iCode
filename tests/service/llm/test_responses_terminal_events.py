@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from chrys.foundation.errors import ProviderResponseError, classify_error, invalidates_continuation_token
+from chrys.foundation.errors import ErrorKind, ProviderResponseError, classify_error, invalidates_continuation_token
 from chrys.kernel import Message, ResponseStream
 from chrys.kernel.loop import StallExhaustedAction
 from chrys.kernel.middleware import ChatMiddlewareLayer
@@ -236,6 +236,64 @@ async def test_a_filtered_stream_drops_its_token_and_is_not_resumed(script: Scri
 
     assert observed == [_TOKEN, None]
     assert requests == ["POST /v1/responses"]
+
+
+_SHOWN_REFUSAL = "I can't help with that."
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param(
+            Script()
+            .started()
+            .emit("response.output_item.added", output_index=0, item=refusal_item("msg_1", _SHOWN_REFUSAL))
+            .finished(),
+            id="added_message",
+        ),
+        pytest.param(
+            Script()
+            .started()
+            .emit("response.output_item.done", output_index=0, item=refusal_item("msg_1", _SHOWN_REFUSAL))
+            .finished(),
+            id="done_message",
+        ),
+        pytest.param(
+            Script()
+            .started()
+            .emit(
+                "response.content_part.done",
+                item_id="msg_1",
+                output_index=0,
+                content_index=0,
+                part={"type": "refusal", "refusal": _SHOWN_REFUSAL},
+            )
+            .finished(),
+            id="done_part",
+        ),
+        pytest.param(Script().started().finished(refusal_item("msg_1", _SHOWN_REFUSAL)), id="terminal_response"),
+        pytest.param(
+            Script().emit("response.output_item.done", output_index=0, item=refusal_item("msg_1", _SHOWN_REFUSAL)),
+            id="done_message_without_lifecycle_events",
+        ),
+    ],
+)
+async def test_a_refusal_no_text_showed_is_reported_as_filtered(script: Script) -> None:
+    """Only a message snapshot shows the refusal: the response is refused, not blank, so it is not sent again."""
+    _, error, requests = await _observe_tokens(script, script, validate=True)
+
+    assert error is not None
+    assert (classify_error(error).kind, classify_error(error).retryable) == (ErrorKind.CONTENT_FILTERED, False)
+    assert requests == ["POST /v1/responses"]
+
+
+async def test_a_refusal_whose_text_streamed_is_the_answer() -> None:
+    script = Script().started().refusal(0, "msg_1", _SHOWN_REFUSAL).finished(refusal_item("msg_1", _SHOWN_REFUSAL))
+
+    response, _ = await respond(script.reply(), stream=True)
+
+    assert response.text == _SHOWN_REFUSAL
+    assert response.finish_reason is None
 
 
 async def test_a_cut_off_stream_keeps_its_token_and_the_next_attempt_resumes_it() -> None:
@@ -491,6 +549,31 @@ _REFUSED_STREAMS = [
         Script().refusal(0, "msg_1", _REFUSAL).call(1, "fc_1", "call_1"),
         id="refusal_in_a_stream_without_lifecycle_events",
     ),
+    # A refusal only a message snapshot shows, with no terminal response to list it.
+    pytest.param(
+        Script()
+        .emit("response.output_item.added", output_index=0, item=refusal_item("msg_1", _REFUSAL))
+        .call(1, "fc_1", "call_1"),
+        id="refusal_only_in_an_added_message",
+    ),
+    pytest.param(
+        Script()
+        .emit("response.output_item.done", output_index=0, item=refusal_item("msg_1", _REFUSAL))
+        .call(1, "fc_1", "call_1"),
+        id="refusal_only_in_a_done_message",
+    ),
+    pytest.param(
+        Script()
+        .emit(
+            "response.content_part.done",
+            item_id="msg_1",
+            output_index=0,
+            content_index=0,
+            part={"type": "refusal", "refusal": _REFUSAL},
+        )
+        .call(1, "fc_1", "call_1"),
+        id="refusal_only_in_a_done_part",
+    ),
     pytest.param(
         Script()
         .started()
@@ -615,6 +698,31 @@ async def test_a_stream_that_breaks_off_is_sent_again_unless_it_refused_with_cal
             assert response.text == "Sunny."
             assert paths(wire.requests) == ["POST /v1/responses", "POST /v1/responses"]
             assert len(retries) == 1
+
+
+@pytest.mark.parametrize("mode", ["create", "parsed"])
+async def test_a_stream_is_not_read_past_its_terminal_event(mode: str) -> None:
+    # Sent again, an answer that ran hosted work could not be, and a filtered
+    # one would meet the filter again.
+    finished = _answer().finished(resp_message("msg_1", WEATHER_REPORT_JSON)).breaks_off()
+    again = _answer().finished(resp_message("msg_1", WEATHER_REPORT_JSON))
+    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    retries: list[BaseException] = []
+
+    async with responses_client(finished.reply(), again.reply()) as (client, wire):
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[validation]))
+        result = layer.get_response(
+            [Message("user", ["What is the weather in Paris?"])],
+            stream=True,
+            options={"store": False, **_stream_options(mode)},
+            client_kwargs={"wire_retry_policy": _policy(validation, retries)},
+        )
+        assert isinstance(result, ResponseStream)
+        response = await result.get_final_response()
+
+    assert response.text == WEATHER_REPORT_JSON
+    assert paths(wire.requests) == ["POST /v1/responses"]
+    assert retries == []
 
 
 @pytest.mark.parametrize(

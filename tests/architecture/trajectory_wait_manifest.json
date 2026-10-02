@@ -3903,15 +3903,15 @@
         ["awaitable", "await self.sdk_client.chat.completions.with_raw_response.create(stream=True, **request)", "unresolved"],
         ["wrapper", "await validate_stream_response(raw)", "unresolved", "chrys.service.llm.chat_completions.validation.validate_stream_response"],
         ["async_iteration", "async for chunk in chunks", "unresolved"],
-        ["wrapper", "await _read_usage_after_settling(chunks, state)", "unresolved", "chrys.service.llm.chat_completions.client._read_usage_after_settling"],
+        ["wrapper", "async for update in _read_after_ending(chunks, state)", "unresolved", "chrys.service.llm.chat_completions.client._read_after_ending"],
         ["awaitable", "await sdk_stream.close()", "unresolved"]
       ],
       "ChatCompletionsClient.aclose": [
         ["awaitable", "await self._close_sdk()", "unresolved"]
       ],
-      "_read_usage_after_settling": [
-        ["timeout", "async with asyncio.timeout(_SETTLED_STREAM_WAIT_SECONDS)", "unresolved"],
-        ["async_iteration", "async for chunk in chunks", "unresolved"]
+      "_read_after_ending": [
+        ["async_context", "async with asyncio.timeout_at(deadline)", "unresolved"],
+        ["awaitable", "await anext(chunks)", "unresolved"]
       ]
     },
     "chrys.service.llm.chat_completions.validation": {

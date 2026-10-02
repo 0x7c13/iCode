@@ -27,6 +27,7 @@ from .client import (
     wire_progress_scope,
 )
 from .compaction import (
+    CONTEXT_WINDOW_FILLED_KEY,
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
@@ -56,6 +57,7 @@ from .compaction import (
     internal_side_call_scope,
     messages_contain_tool_calls,
     project_included_messages,
+    raise_if_context_window_filled,
     set_excluded,
 )
 from .images import is_image_content, is_image_media_type
@@ -133,6 +135,7 @@ from .types import (
 )
 
 __all__ = [
+    "CONTEXT_WINDOW_FILLED_KEY",
     "CONVERSATION_HANDLE_KEYS",
     "EXCLUDED_KEY",
     "EXCLUDE_REASON_KEY",
@@ -235,6 +238,7 @@ __all__ = [
     "normalize_tools",
     "prepend_instructions_to_messages",
     "project_included_messages",
+    "raise_if_context_window_filled",
     "report_wire_progress",
     "resolve_storage_mode_and_handles",
     "set_excluded",

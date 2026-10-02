@@ -20,6 +20,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Mapping, Se
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Self, override
 
+import httpx
 from openai import BadRequestError
 
 from chrys.foundation.errors import ProviderResponseError
@@ -51,10 +52,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How long what follows a settled stream is read for its usage, in all: a
-# connection held open after it must not hold the call until it stalls, which
-# would send it again.
-_SETTLED_STREAM_WAIT_SECONDS: Final = 5.0
+# How long what follows the end a stream reported is waited for while nothing
+# comes that adds to the answer: a connection held open after it must not hold
+# the call until it stalls, which would send it again. A refusal that comes
+# later, or after the usage, is missed: waiting for one would hold every
+# finished answer.
+_ENDED_STREAM_WAIT_SECONDS: Final = 5.0
+# How the connection may end after that (``RequestError`` includes a body that
+# fails to decompress), and data the SDK cannot read (not UTF-8, not JSON):
+# neither takes back how the stream said it ends, and each fails before the
+# stream state reads anything. An error the service sends (the SDK's
+# ``APIError``) and a chunk that cannot be read still fail the reply.
+_DISCARDED_AFTER_ENDING: Final = (httpx.RequestError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,8 +232,12 @@ class ChatCompletionsClient(WireClient):
                     received = True
                     for update in state.updates_for(chunk):
                         yield update
-                    if state.settled:
-                        await _read_usage_after_settling(chunks, state)
+                    if state.ended:
+                        # Also when the chunk the stream ended with carried
+                        # usage: a usage chunk after it may repeat or complete
+                        # that (Kimi repeats it).
+                        async for update in _read_after_ending(chunks, state):
+                            yield update
                         break
                 if not received:
                     # Valid framing with no event after it (comments only, or
@@ -259,19 +272,66 @@ class ChatCompletionsClient(WireClient):
         return self._build_response_stream(updates(), response_format=options.get("response_format"))
 
 
-async def _read_usage_after_settling(chunks: AsyncIterator[ChatCompletionChunk], state: StreamState) -> None:
-    """Read what follows the chunk that settled the stream, for its usage, within one bound.
+async def _read_after_ending(
+    chunks: AsyncIterator[ChatCompletionChunk], state: StreamState
+) -> AsyncIterator[ChatResponseUpdate]:
+    """The updates of what follows the chunk the stream ended with, up to its usage.
 
-    That chunk arrived: the stall watchdog's idle timer restarts, so it fires
-    only after the bound. The state raises the error the stream settled on
-    once the usage is in; when the stream or the bound ends first, so does
-    the client (``StreamState.failure``).
+    What follows is read for its usage and for a refusal or failure it still
+    reports, until the usage comes or nothing that adds to the answer comes
+    within the bound. That chunk arrived: the stall watchdog's idle timer
+    restarts, so it fires only after the bound. A stream that settled on a
+    failure yields nothing more: the state raises its error once the usage is
+    in, and the client when the stream or the bound ends first
+    (``StreamState.failure``). A finished answer stands when the stream breaks
+    off, sends data that is no chunk (not UTF-8, not JSON) or stays open after
+    it; only its usage may be missing. A choice that first shows up here and
+    is then unfinished is cut off by that, as by any break.
+
+    A chunk that cannot be read fails the reply here as before the end, on
+    purpose: see the comment where it is read.
     """
     report_wire_progress()
-    async with asyncio.timeout(_SETTLED_STREAM_WAIT_SECONDS):
-        async for chunk in chunks:
-            # A settled state yields nothing: it only takes the usage.
-            state.updates_for(chunk)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _ENDED_STREAM_WAIT_SECONDS
+    while True:
+        try:
+            # One pull at a time: the bound must not span a yield, as each
+            # pull may run in a task of its own.
+            async with asyncio.timeout_at(deadline):
+                chunk = await anext(chunks)
+        except StopAsyncIteration:
+            # Not a ``None`` default: the SDK yields ``None`` for ``data: null``,
+            # which is a chunk that cannot be read, not the end of the stream.
+            return
+        except _DISCARDED_AFTER_ENDING as error:
+            if not state.ended:
+                raise
+            # Accepted: should the bound run out while the SDK closes the
+            # response after an error the service sent just before it, the
+            # error is lost and the finished answer stands.
+            held_open = isinstance(error, TimeoutError)
+            logger.warning(
+                "Chat Completions stream %s after its end; usage it would still report is missing",
+                "stayed open" if held_open else "failed",
+                exc_info=not held_open,
+            )
+            return
+        # Deliberately not skipped when it cannot be read, though the answer
+        # already finished: reading a chunk takes in its usage, refusal and
+        # calls before its last check can fail, so a skipped chunk could keep a
+        # call it began or lose a filter it reports. Only what fails before a
+        # chunk is read is safe to drop (``_DISCARDED_AFTER_ENDING``). No
+        # service sends one only after the end: a field one leaves out, every
+        # chunk lacks, so its stream already failed before it.
+        updates = state.updates_for(chunk)
+        for update in updates:
+            yield update
+        contents = [content for update in updates for content in update.contents]
+        if state.ended and any(content.type == "usage" for content in contents):
+            return
+        if any(content.type != "usage" for content in contents):
+            deadline = loop.time() + _ENDED_STREAM_WAIT_SECONDS
 
 
 class DeepSeekChatCompletionsClient(ChatCompletionsClient):
