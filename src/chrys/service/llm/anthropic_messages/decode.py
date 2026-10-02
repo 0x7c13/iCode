@@ -140,7 +140,7 @@ class _CitationShape:
 
 
 _CITATION_SHAPES: Final[Mapping[str, _CitationShape]] = {
-    "char_location": _CitationShape("title", ("start_char_index", "end_char_index"), names_file=True),
+    "char_location": _CitationShape("document_title", ("start_char_index", "end_char_index"), names_file=True),
     "page_location": _CitationShape("document_title", ("start_page_number", "end_page_number"), names_file=True),
     "content_block_location": _CitationShape(
         "document_title", ("start_block_index", "end_block_index"), names_file=True
@@ -164,7 +164,8 @@ def _decode_citation(citation: Any) -> Annotation:
     if shape is None:
         logger.debug("Unknown citation type encountered: %s", citation.type)
         return annotation
-    annotation["title"] = getattr(citation, shape.title)
+    if (title := getattr(citation, shape.title, None)) is not None:
+        annotation["title"] = title
     annotation["snippet"] = citation.cited_text
     if shape.url is not None:
         annotation["url"] = getattr(citation, shape.url)

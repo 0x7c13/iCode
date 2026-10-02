@@ -167,7 +167,8 @@ def encode_tools(tools: Any) -> list[Any]:
         if not isinstance(tool, FunctionTool):
             encoded.append(tool)
             continue
-        parameters = tool.parameters()
+        # A copy: ``parameters()`` is the cached schema local validation reads.
+        parameters = dict(tool.parameters())
         parameters["additionalProperties"] = False
         encoded.append(
             FunctionToolParam(

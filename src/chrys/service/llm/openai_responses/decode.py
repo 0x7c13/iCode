@@ -65,7 +65,7 @@ def decode_response(
     # ask the SDK to parse into Pydantic models.
     parsed = cast("BaseModel | None", response.output_parsed) if isinstance(response, ParsedResponse) else None
     # Log probabilities of the text parts collect here.
-    metadata: dict[str, Any] = response.metadata or {}
+    metadata: dict[str, Any] = dict(response.metadata or {})
     try:
         output = response.output
     except AttributeError:
