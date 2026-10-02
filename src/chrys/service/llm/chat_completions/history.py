@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, Content, Message, is_image_content
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
+from chrys.service.llm.images import UNSUPPORTED_IMAGE_TEXT, WireImage, wire_image
 from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks, text_block_id
 
 from .reasoning import (
@@ -359,8 +360,15 @@ def encode_content(content: Content) -> dict[str, Any]:
 
 
 def image_part(content: Content) -> dict[str, Any]:
+    """An ``image_url`` part, or a text part saying the image was left out when the API can't read it."""
+    if (image := wire_image(content)) is None:
+        return {"type": "text", "text": UNSUPPORTED_IMAGE_TEXT}
+    return _image_url_part(image, content)
+
+
+def _image_url_part(image: WireImage, content: Content) -> dict[str, Any]:
     """An ``image_url`` part, with the content's ``detail`` when it sets one."""
-    image_url: dict[str, Any] = {"url": content.uri}
+    image_url: dict[str, Any] = {"url": image.uri}
     if isinstance(detail := content.additional_properties.get("detail"), str):
         image_url["detail"] = detail
     return {"type": "image_url", "image_url": image_url}
@@ -418,8 +426,11 @@ def lower_function_result(content: Content) -> tuple[str, list[dict[str, Any]]]:
             texts.append(item.text or "")
         elif item.type in ("data", "uri"):
             if is_image_content(item) and isinstance(item.uri, str):
+                if (image := wire_image(item)) is None:
+                    texts.append(UNSUPPORTED_IMAGE_TEXT)
+                    continue
                 images.append({"type": "text", "text": f"Image from tool call {content.call_id}, item {position}:"})
-                images.append(image_part(item))
+                images.append(_image_url_part(image, item))
             else:
                 dropped = True
     if dropped:

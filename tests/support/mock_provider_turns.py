@@ -71,8 +71,13 @@ async def run_mock_provider_turn(
     monkeypatch: pytest.MonkeyPatch,
     model_profile: ModelProfile,
     respond: Callable[[httpx.Request], httpx.Response],
+    *,
+    user_message: UserMessage | None = None,
 ) -> ProviderTurn:
-    """Run one turn whose provider HTTP traffic *respond* answers; retries back off 0 s."""
+    """Run one turn of *user_message* (default ``hello``) whose provider HTTP traffic *respond* answers.
+
+    Retries back off 0 s.
+    """
     requests: list[httpx.Request] = []
 
     def record(request: httpx.Request) -> httpx.Response:
@@ -111,7 +116,7 @@ async def run_mock_provider_turn(
     )
     try:
         await engine.start(profile)
-        await bus.publish(UserMessage(text="hello"))
+        await bus.publish(user_message or UserMessage(text="hello"))
         await wait_for(terminal.done, timeout=ENGINE_TURN_TIMEOUT, description="terminal engine event")
     finally:
         await engine.shutdown()

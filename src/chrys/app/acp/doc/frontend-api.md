@@ -62,6 +62,11 @@ Implemented standard methods:
   unconditionally (empty entries = clear) on `session/new`, `session/load`, and
   after `session/rollback` — both to a turn and to welcome.
 
+`session/prompt` takes text, resource links and embedded text resources (sent as
+text), and, when the model profile has vision, images. An image needs an `image/*`
+`mimeType`, but its bytes name its type; anything but PNG, JPEG, GIF or WebP fails
+the whole prompt with `invalid_params`. Audio and embedded blob resources fail the same way.
+
 `session/new` and `session/load` accept `additionalDirectories` (advertised via
 `SessionCapabilities.additionalDirectories` in `initialize` so clients surface the
 option); the manager builds a multi-dir `Workspace` and passes it to

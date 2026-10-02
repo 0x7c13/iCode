@@ -50,7 +50,7 @@ class _MainScreenPasteApp(App):
 
 def _write_image(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"abc")
+    path.write_bytes(png_bytes((200, 40, 40)))
     return path
 
 

@@ -23,6 +23,7 @@ from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
 from chrys.service.llm.anthropic_messages.decode import decode_usage
 from chrys.service.llm.anthropic_messages.stream import StreamState
 from chrys.service.llm.clients import _assemble_stack
+from tests.support.images import image_bytes
 
 
 def _make_anthropic_client(*, session_id: str | None = None, parent_session_id: str | None = None) -> Any:
@@ -272,8 +273,8 @@ def test_anthropic_build_request_drops_unsigned_thinking_blocks() -> None:
                 "user",
                 [
                     "compare these",
-                    Content.from_data(data=b"one", media_type="image/png"),
-                    Content.from_data(data=b"two", media_type="image/jpeg"),
+                    Content.from_data(data=image_bytes("PNG"), media_type="image/png"),
+                    Content.from_data(data=image_bytes("JPEG"), media_type="image/jpeg"),
                 ],
             ),
         ],

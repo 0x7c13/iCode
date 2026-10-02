@@ -27,6 +27,7 @@ from chrys.foundation.hosted_tools import OPENAI_HOSTED_WIRE_ITEM_KEY, HostedToo
 from chrys.kernel import OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY, Content
 from chrys.kernel.exchanges import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
+from chrys.service.llm.images import UNSUPPORTED_IMAGE_TEXT, wire_image
 
 from .decode import ENVELOPE_FIELDS
 from .hosted import (
@@ -248,16 +249,24 @@ def _reasoning_item(content: Content) -> dict[str, Any]:
 
 
 def _media_part(content: Content) -> dict[str, Any]:
+    # Older sessions kept MCP links as their URL, some without a type: only
+    # an image is sent by URL, audio and files go inline or not at all.
+    if content.media_type is None:
+        return {}
     properties = content.additional_properties
     if content.has_top_level_media_type("image"):
+        if (image := wire_image(content)) is None:
+            return {"type": "input_text", "text": UNSUPPORTED_IMAGE_TEXT}
         part: dict[str, Any] = {
             "type": "input_image",
-            "image_url": content.uri,
+            "image_url": image.uri,
             "detail": properties.get("detail", "auto"),
         }
         if (file_id := properties.get("file_id")) is not None:
             part["file_id"] = file_id
         return part
+    if not (content.uri or "").startswith("data:"):
+        return {}
     if content.has_top_level_media_type("audio"):
         media_type = content.media_type or ""
         audio_format = "wav" if "wav" in media_type else "mp3" if "mp3" in media_type else None

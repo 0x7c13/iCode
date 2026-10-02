@@ -39,6 +39,7 @@ from chrys.service.tools.builtins.filesystem import (
     write_file,
 )
 from chrys.service.tools.session_artifacts import make_document_artifact_handle
+from tests.support.images import image_bytes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -327,6 +328,21 @@ def test_view_image_uses_magic_bytes_when_extension_disagrees(tmp_path: Path) ->
     assert image.uri is not None
     assert image.uri.startswith("data:image/jpeg;base64,")
     assert image.additional_properties["media_type"] == "image/jpeg"
+
+
+def test_view_image_converts_an_unsupported_format_behind_a_supported_name(tmp_path: Path) -> None:
+    """A renamed BMP is no PNG model APIs read: it goes out converted, like an oversized image."""
+    f = tmp_path / "renamed.png"
+    f.write_bytes(image_bytes("BMP"))
+
+    result = view_image(str(f))
+
+    assert len(result) == 1
+    image = result[0]
+    assert image.type == "data"
+    assert image.media_type == "image/jpeg"
+    assert image.uri is not None
+    assert base64.b64decode(image.uri.partition(",")[2]).startswith(b"\xff\xd8\xff")
 
 
 def test_runtime_bound_view_image_resolves_relative_paths_from_runtime_cwd(tmp_path: Path, monkeypatch) -> None:

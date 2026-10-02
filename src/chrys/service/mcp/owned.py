@@ -13,7 +13,6 @@ and SEP-2663 long-running task driving are intentionally out of scope.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import contextvars
 import json
@@ -40,6 +39,7 @@ from chrys.kernel.exceptions import ModelVisibleToolError, ToolException, ToolEx
 from chrys.kernel.instrumentation import OtelAttr, create_mcp_client_span, set_mcp_span_error
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.tools import FunctionTool
+from chrys.service.mcp.content import INVALID_AUDIO_TEXT, INVALID_IMAGE_TEXT, INVALID_RESOURCE_TEXT, decode_media_base64
 from chrys.service.mcp.result_limits import (
     _MCP_PROMPT_TOOL_KEY,
     DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS,
@@ -255,6 +255,35 @@ def _describe_with_cleanup(ex: BaseException, cleanup_error: BaseException | Non
     if isinstance(ex, asyncio.CancelledError) and cleanup_error is not None:
         return _describe_error(cleanup_error)
     return _describe_error(ex)
+
+
+def _media_content(item: types.ImageContent | types.AudioContent, **kwargs: Any) -> Content:
+    """An image or audio item as data; a placeholder text when its data is not non-empty base64."""
+    if data := decode_media_base64(item.data):
+        return Content.from_data(data=data, media_type=item.mimeType, **kwargs)
+    return Content.from_text(INVALID_IMAGE_TEXT if item.type == "image" else INVALID_AUDIO_TEXT, **kwargs)
+
+
+def _blob_content(resource: types.BlobResourceContents, **kwargs: Any) -> Content:
+    """A blob resource as data, empty allowed; a placeholder text when its blob is not base64."""
+    if (data := decode_media_base64(resource.blob)) is None:
+        return Content.from_text(INVALID_RESOURCE_TEXT, **kwargs)
+    return Content.from_data(data=data, media_type=resource.mimeType or "application/octet-stream", **kwargs)
+
+
+def _resource_link_text(item: types.ResourceLink) -> Content:
+    """A link as text the model reads, never as the linked item itself.
+
+    Model APIs would fetch a linked item on every request, and one they can't
+    reach (a local file, a localhost or expired URL) would fail every later
+    request of the session.
+    """
+    lines = [f"Resource link: {item.name}", f"URI: {item.uri}"]
+    if item.mimeType:
+        lines.append(f"MIME type: {item.mimeType}")
+    if item.description:
+        lines.append(f"Description: {item.description}")
+    return Content.from_text("\n".join(lines))
 
 
 class MCPTool:
@@ -1082,19 +1111,15 @@ class MCPTool:
                 case types.TextContent():
                     result.append(Content.from_text(item.text))
                 case types.ImageContent() | types.AudioContent():
-                    result.append(Content.from_data(data=base64.b64decode(item.data), media_type=item.mimeType))
+                    result.append(_media_content(item))
                 case types.ResourceLink():
-                    result.append(Content.from_uri(uri=str(item.uri), media_type=item.mimeType))
+                    result.append(_resource_link_text(item))
                 case types.EmbeddedResource():
                     match item.resource:
                         case types.TextResourceContents():
                             result.append(Content.from_text(item.resource.text))
                         case types.BlobResourceContents():
-                            blob = item.resource.blob
-                            mime = item.resource.mimeType or "application/octet-stream"
-                            if not blob.startswith("data:"):
-                                blob = f"data:{mime};base64,{blob}"
-                            result.append(Content.from_uri(uri=blob, media_type=mime))
+                            result.append(_blob_content(item.resource))
                 case _:
                     result.append(Content.from_text(str(item)))
         if not result:
@@ -1113,8 +1138,7 @@ class MCPTool:
                 case types.TextContent():
                     output.append(Content.from_text(text=item.text, raw_representation=item))
                 case types.ImageContent() | types.AudioContent():
-                    data_bytes = base64.b64decode(item.data) if isinstance(item.data, str) else item.data
-                    output.append(Content.from_data(data=data_bytes, media_type=item.mimeType, raw_representation=item))
+                    output.append(_media_content(item, raw_representation=item))
                 case types.ResourceLink():
                     output.append(
                         Content.from_uri(
@@ -1151,9 +1175,8 @@ class MCPTool:
                             )
                         case types.BlobResourceContents():
                             output.append(
-                                Content.from_uri(
-                                    uri=item.resource.blob,
-                                    media_type=item.resource.mimeType,
+                                _blob_content(
+                                    item.resource,
                                     raw_representation=item,
                                     additional_properties=item.annotations.model_dump() if item.annotations else None,
                                 )

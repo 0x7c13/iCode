@@ -34,6 +34,7 @@ from chrys.foundation.text.images import (
     compress_image_data,
     inspect_image_dimensions,
     read_image_source_bytes,
+    wire_image_media_type,
 )
 from chrys.foundation.text.images import (
     MAX_IMAGE_PIXELS as MAX_IMAGE_PIXELS,
@@ -315,7 +316,6 @@ def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseR
                 )
             )
             continue
-        media_type = mention.media_type
         if len(data) > MAX_IMAGE_SOURCE_BYTES:
             errors.append(
                 _format_image_error(
@@ -325,7 +325,11 @@ def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseR
                 )
             )
             continue
-        if len(data) > MAX_IMAGE_BYTES:
+        # The bytes name the type, not the file name. Model APIs read only PNG,
+        # JPEG, GIF and WebP: other bytes behind an image name (a renamed BMP)
+        # are converted like an oversized image.
+        media_type = wire_image_media_type(data, None)
+        if len(data) > MAX_IMAGE_BYTES or media_type is None:
             try:
                 data = compress_image_data(data, max_bytes=MAX_IMAGE_BYTES)
             except ImageProcessingError as exc:

@@ -571,7 +571,12 @@ def _view_image_impl(
 def view_image(
     path: Annotated[str, "Absolute or relative path to the image file to inspect."],
 ) -> list[Content]:
-    """Read an image file and return it as model-visible image content."""
+    """Read an image file and return it as model-visible image content.
+
+    Images the user attached to a message are already visible to you, at the
+    same size this tool returns; call it for one only when it is not in the
+    conversation.
+    """
     return _view_image_impl(path)
 
 
@@ -943,7 +948,12 @@ class FilesystemTools:
         self,
         path: Annotated[str, "Absolute or relative path to the image file to inspect."],
     ) -> list[Content]:
-        """Read an image file and return it as model-visible image content."""
+        """Read an image file and return it as model-visible image content.
+
+        Images the user attached to a message are already visible to you, at the
+        same size this tool returns; call it for one only when it is not in the
+        conversation.
+        """
         return _view_image_impl(path, base_cwd=self._runtime.cwd, session_dir=self._session_dir)
 
     @tool(kind=KIND_FILESYSTEM_WRITE)

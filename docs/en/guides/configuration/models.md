@@ -31,6 +31,7 @@ While a task is running, the "Model Configuration" window opens in read-only mod
 - Clicking "New" immediately creates and saves a blank profile. You must click "Save" for any subsequent entries or changes to take effect. Closing the window does not delete the blank profile you created.
 - The profile name identifies the model profile in the interface and is not sent to the model service. It cannot be empty or duplicate an existing name (case-insensitive). Names can contain Chinese characters, spaces, letters, numbers, and common symbols.
 - A profile with missing required information, such as the model ID or token limits, does not appear in the model selection list.
+- With "Vision Model" on, images are sent to the model in PNG, JPEG, GIF, or WebP format. An image a tool returns in another format is sent as a short note that the image was left out, and the conversation continues.
 - If no usable model profile existed before, the new profile automatically becomes the current model profile after you save it and close the window. If another model profile is already in use, saving a new profile does not automatically switch models.
 - To set reasoning effort, prompt caching, or other request fields, use "Chat Options" in the "Extra Options" section. See [Chat Options](./chat-options.md), which also lists settings for common model services. When a save makes a profile a Claude profile on the Anthropic protocol without a cache setting, iCode offers to add one.
 

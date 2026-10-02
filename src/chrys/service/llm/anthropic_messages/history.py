@@ -27,8 +27,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.hosted_tools import ANTHROPIC_HOSTED_WIRE_BLOCK_KEY
-from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY, _get_data_bytes_as_str
+from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
+from chrys.service.llm.images import UNSUPPORTED_IMAGE_TEXT, wire_image
 
 if TYPE_CHECKING:
     from chrys.kernel import Content, Message
@@ -216,12 +217,15 @@ def _tool_result_blocks(result: Content) -> list[dict[str, Any]]:
 
 
 def _image_block(content: Content) -> dict[str, Any] | None:
-    """A ``data`` or ``uri`` content as an image block; None when it is no image."""
-    if not content.has_top_level_media_type("image"):
+    """A ``data`` or ``uri`` content as an image block; None when it is no image.
+
+    An image the API can't read goes out as a text block saying so; a link
+    saved without a type (older sessions kept MCP links that way) is no image.
+    """
+    if content.media_type is None or not content.has_top_level_media_type("image"):
         return None
-    if content.type == "data":
-        return {
-            "type": "image",
-            "source": {"data": _get_data_bytes_as_str(content), "media_type": content.media_type, "type": "base64"},
-        }
-    return {"type": "image", "source": {"type": "url", "url": content.uri}}
+    if (image := wire_image(content)) is None:
+        return {"type": "text", "text": UNSUPPORTED_IMAGE_TEXT}
+    if image.data is not None:
+        return {"type": "image", "source": {"data": image.data, "media_type": image.media_type, "type": "base64"}}
+    return {"type": "image", "source": {"type": "url", "url": image.uri}}

@@ -20,6 +20,7 @@ from acp.schema import (
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.events.types import UserMessage
+from chrys.foundation.text.images import wire_image_media_type
 from chrys.kernel import Content
 from chrys.orchestration.engine.run.attachments import MAX_IMAGE_BYTES
 
@@ -123,4 +124,9 @@ def _image_content(block: ImageContentBlock) -> Content:
     if len(data) > MAX_IMAGE_BYTES:
         msg = f"Image content exceeds the {MAX_IMAGE_BYTES // (1024 * 1024)} MB limit."
         raise AcpContentError(msg)
-    return Content.from_data(data=data, media_type=mime_type)
+    # The bytes name the type: a mislabelled or unreadable image would fail
+    # every later request of the session.
+    if (media_type := wire_image_media_type(data, None)) is None:
+        msg = "Unsupported image format. Use PNG, JPEG, GIF, or WebP."
+        raise AcpContentError(msg)
+    return Content.from_data(data=data, media_type=media_type)

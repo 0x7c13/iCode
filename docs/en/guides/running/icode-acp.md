@@ -52,6 +52,8 @@ Sessions used through an ACP client also appear in the TUI's "Chat Sessions" win
 
 iCode sends agent replies and tool call status to the client. When the client cancels a task, iCode interrupts the current task.
 
+If the current model supports image input, a prompt can include images in PNG, JPEG, GIF, or WebP format. A prompt with an image in another format is rejected, and the client receives an error.
+
 If the client supports session management, a closed session can still be restored in the same working directory. Deleting a session removes the session record saved by iCode, and the session can no longer be restored in iCode.
 
 To use the question feature through an ACP client, the client must support iCode's `_chrys/request_input` extension request (shown as `chrys/request_input` in ACP SDKs that add the underscore prefix automatically). iCode uses this request to send the agent's questions to the client and receive the user's answers; a client that does not support it cannot complete tasks that require user answers. Use `--ask-user-timeout` to limit how long iCode waits for an answer.

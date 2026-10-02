@@ -16,7 +16,7 @@ Each option corresponds to a kind of built-in tool. Enable the kinds the agent n
 
 | Tool kind | Available operations | When to enable |
 | --- | --- | --- |
-| Filesystem Read | Read files and view images | Enable when the agent needs to analyze project files; the agent can use the image viewing tool only if the selected model supports image input |
+| Filesystem Read | Read files and view images (PNG, JPEG, or WebP) | Enable when the agent needs to analyze project files; the agent can use the image viewing tool only if the selected model supports image input |
 | Filesystem Write | Create, overwrite, and precisely edit files | Enable only when the agent needs to modify files |
 | File search | Search file contents or find files by name pattern | Enable when the agent needs to locate code and files in a project |
 | Web search | Find online URLs and summaries; uses Exa (exa.ai) unless the agent profile names other providers | Enable when the agent needs current external information, such as documentation or release details. Queries go to that outside service and can carry details from your conversation, so mind your data and privacy |
