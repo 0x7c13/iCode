@@ -22,6 +22,12 @@ class ContentFilterResultSeverity(Enum):
     MEDIUM = "medium"
     SAFE = "safe"
     LOW = "low"
+    # A severity this client does not know, or a null one.
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> ContentFilterResultSeverity:
+        return cls.UNKNOWN
 
 
 @dataclass
@@ -48,6 +54,14 @@ class ContentFilterCodes(Enum):
     """Content filter codes."""
 
     RESPONSIBLE_AI_POLICY_VIOLATION = "ResponsibleAIPolicyViolation"
+    CONTENT_FILTERED = "ContentFiltered"
+    # A code this client does not know, or a null one: the error is still a
+    # content-filter error.
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> ContentFilterCodes:
+        return cls.UNKNOWN
 
 
 @dataclass

@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -658,6 +659,52 @@ def test_function_call_merge_uses_name_from_later_delta() -> None:
 
     assert merged.name == "echo"
     assert merged.arguments == '{"text":"hi"}'
+
+
+def _streamed_calls(*parts: tuple[str, dict[str, Any]]) -> list[tuple[str | None, Any]]:
+    """The calls one streamed message assembles from function-call contents sharing call id ``same``."""
+    updates = [
+        kernel_types.ChatResponseUpdate(
+            contents=[
+                kernel_types.Content.from_function_call(
+                    "same", "lookup", arguments=arguments, additional_properties=properties
+                )
+            ]
+        )
+        for arguments, properties in parts
+    ]
+    response = kernel_types.ChatResponse.from_updates(updates)
+    return [(content.call_id, content.arguments) for content in response.messages[0].contents]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param({"output_index": 0, "fc_id": "fc_1"}, {"output_index": 1, "fc_id": "fc_2"}, id="two_items"),
+        pytest.param({"output_index": 0}, {"output_index": 1}, id="two_positions"),
+        pytest.param({"fc_id": "fc_1"}, {"fc_id": "fc_2"}, id="two_item_ids"),
+    ],
+)
+def test_calls_from_two_responses_output_items_stay_two_under_one_call_id(
+    first: dict[str, Any], second: dict[str, Any]
+) -> None:
+    assert _streamed_calls(('{"city": "Paris"}', first), ('{"city": "Rome"}', second)) == [
+        ("same", '{"city": "Paris"}'),
+        ("same", '{"city": "Rome"}'),
+    ]
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        pytest.param({"output_index": 0, "fc_id": "fc_1"}, id="the_same_item"),
+        pytest.param({}, id="a_fragment_naming_no_item"),
+    ],
+)
+def test_fragments_of_one_call_still_merge(second: dict[str, Any]) -> None:
+    first = {"output_index": 0, "fc_id": "fc_1"}
+
+    assert _streamed_calls(('{"city": ', first), ('"Paris"}', second)) == [("same", '{"city": "Paris"}')]
 
 
 def test_reasoning_text_and_summary_contents_do_not_merge() -> None:

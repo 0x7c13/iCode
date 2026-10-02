@@ -47,6 +47,7 @@ def test_load_minimal_profile(tmp_path: Path) -> None:
     assert profile.chat_options == ""
     assert profile.stream is False
     assert profile.vision is False
+    assert profile.stream_requires_finish_reason is False
 
 
 @pytest.mark.parametrize("value", [1, 2, 99, 0, -1])

@@ -50,6 +50,9 @@ class ModelProfile:
     chat_options: str = ""  # JSON object of provider request options
     stream: bool = False  # Stream response
     vision: bool = False  # Supports image input
+    # Chat Completions: a stream that ends without a finish reason fails as
+    # truncated instead of being accepted with a warning.
+    stream_requires_finish_reason: bool = False
 
 
 def is_model_profile_selectable(profile: ModelProfile) -> bool:

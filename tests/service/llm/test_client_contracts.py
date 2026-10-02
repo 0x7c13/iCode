@@ -189,11 +189,17 @@ async def test_a_stream_sends_nothing_until_it_is_consumed(
 
 
 class _StalledBody(httpx.AsyncByteStream):
-    """Serve every SSE event but the last, then stall until closed."""
+    """Serve every SSE event but the last one that sends data, then stall until closed.
+
+    A closing ``[DONE]`` sends none: a Chat Completions stream that sent its
+    usage after its finish reason has ended, so its usage is held back instead.
+    """
 
     def __init__(self, body: bytes) -> None:
-        events = body.split(b"\n\n")
-        self._head = b"\n\n".join(events[:-2]) + b"\n\n"
+        events = body.split(b"\n\n")[:-1]
+        if events[-1] == b"data: [DONE]":
+            events.pop()
+        self._head = b"\n\n".join(events[:-1]) + b"\n\n"
         self._closing = asyncio.Event()
         self.served = asyncio.Event()
         self.closed = False

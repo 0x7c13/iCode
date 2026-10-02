@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
+from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream, report_wire_progress
 from chrys.kernel.client import start_with_wire_progress
 from chrys.service.llm.one_shot import get_final_response
 
@@ -112,3 +112,51 @@ async def test_streamed_final_response_reports_each_chunk_to_the_enclosing_wire_
     assert response.text == "abc"
     assert at_chunk == [0, 1, 2]
     assert reports == 3
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_outlives_its_read_is_ignored() -> None:
+    late = asyncio.Event()
+    strays: list[asyncio.Task[None]] = []
+
+    async def _late_report() -> None:
+        await late.wait()
+        report_wire_progress()
+
+    async def _updates():
+        # Copies the read's context, its timer included, and outlives it.
+        strays.append(asyncio.create_task(_late_report()))
+        yield ChatResponseUpdate(contents=[Content.from_text("done")], role="assistant")
+
+    class _Client:
+        async def get_response(self, _messages, *, stream=False, **_kwargs):
+            assert stream is True
+            return ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
+
+    try:
+        response = await get_final_response(_Client(), [Message("user", ["hi"])], stream=True, timeout=5)
+        late.set()
+        await strays[0]
+    finally:
+        late.set()
+        await asyncio.gather(*strays, return_exceptions=True)
+
+    assert response.text == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_report_made_while_the_read_times_out_keeps_it_a_timeout() -> None:
+    async def _updates():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            report_wire_progress()
+        yield ChatResponseUpdate(contents=[Content.from_text("unreachable")], role="assistant")
+
+    class _Client:
+        async def get_response(self, _messages, *, stream=False, **_kwargs):
+            assert stream is True
+            return ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
+
+    with pytest.raises(TimeoutError, match=r"LLM stream update timed out after 0\.01s"):
+        await get_final_response(_Client(), [Message("user", ["hi"])], stream=True, timeout=0.01)

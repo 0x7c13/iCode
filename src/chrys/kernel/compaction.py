@@ -24,14 +24,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, cast, runtime_checkable
+from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import HOSTED_WIRE_REPLAY_PROPERTY_KEYS
 from chrys.foundation.text.images import inspect_image_dimensions
 from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY
 
 from ._content import Content
-from ._types import Message
+from ._types import ChatResponse, Message
 from .exchanges import (
     TOOL_CALL_CONTENT_TYPES,
     Exchange,
@@ -98,6 +99,26 @@ class LastWordsToolCallError(RuntimeError):
     ignores it, the requested tool calls must not be executed, so the side
     call is treated as a failed attempt and retried by the caller.
     """
+
+
+# Set True in a response's ``additional_properties`` when the model filled its
+# context window after it began answering: the response reads as cut off
+# (``length``) and keeps what it wrote. A LAST_WORDS note fails instead
+# (:func:`raise_if_context_window_filled`).
+CONTEXT_WINDOW_FILLED_KEY: Final = "chrys_context_window_filled"
+
+
+def raise_if_context_window_filled(response: ChatResponse[Any]) -> None:
+    """Fail a LAST_WORDS note that filled the context window, as an overflow that is not retried.
+
+    The note was cut off and the same prompt fills the window again: the
+    overflow has the caller send a smaller one. Every LAST_WORDS side call
+    checks it, the completer's and the fallback's.
+    """
+    if response.additional_properties.get(CONTEXT_WINDOW_FILLED_KEY) is True:
+        raise ProviderResponseError(
+            "model_context_window_exceeded", "The note filled the context window before it ended.", retryable=False
+        )
 
 
 class CompactionProjectionAtomicityError(RuntimeError):

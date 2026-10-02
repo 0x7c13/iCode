@@ -9,11 +9,18 @@ chunks sent as ``text/event-stream`` events and closed with ``[DONE]``; a
 scripted ``ChatCompletion`` is sent as one JSON body. Models built with
 ``model_construct`` serialize only the fields they set, so absent and
 literal-null wire fields reach the client as written. No request leaves the
-process. Parser tests that skip HTTP use ``parse_stream_chunks``.
+process; ``done=False`` ends the streams at EOF instead, ``breaks_off=True``
+loses the connection after the last chunk and ``held_open=True`` keeps it
+open, sending nothing more. A string in a stream is sent as an event's data
+verbatim, for data a chunk model cannot express (no chunk at all, or a chunk
+with fields left out or null); a lone surrogate escape in it (``"\\udcff"``)
+sends its byte, for data that is not UTF-8. Parser tests that skip HTTP use
+``parse_stream_chunks``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -29,8 +36,8 @@ from chrys.kernel import ChatResponseUpdate
 from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.chat_completions.stream import StreamState
 
-type ChatReply = Sequence[ChatCompletionChunk] | ChatCompletion
-"""A streamed reply (its chunks) or a blocking one (its completion)."""
+type ChatReply = Sequence[ChatCompletionChunk | str] | ChatCompletion
+"""A streamed reply (its chunks, or raw event data) or a blocking one (its completion)."""
 
 
 def wire_payload(model: ChatCompletionChunk | ChatCompletion) -> dict[str, Any]:
@@ -43,12 +50,24 @@ class _EventStream(httpx.AsyncByteStream):
 
     def __init__(
         self,
-        chunks: Sequence[ChatCompletionChunk],
+        chunks: Sequence[ChatCompletionChunk | str],
         pace: Callable[[], Awaitable[object]] | None,
+        *,
+        done: bool,
+        breaks_off: bool = False,
+        held_open: bool = False,
     ) -> None:
-        self._events = [f"data: {json.dumps(wire_payload(chunk))}\n\n".encode() for chunk in chunks]
-        self._events.append(b"data: [DONE]\n\n")
+        self._events = [
+            f"data: {chunk if isinstance(chunk, str) else json.dumps(wire_payload(chunk))}\n\n".encode(
+                "utf-8", "surrogateescape"
+            )
+            for chunk in chunks
+        ]
+        if done and not (breaks_off or held_open):
+            self._events.append(b"data: [DONE]\n\n")
         self._pace = pace
+        self._breaks_off = breaks_off
+        self._held_open = held_open
         self.closed = False
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
@@ -56,6 +75,11 @@ class _EventStream(httpx.AsyncByteStream):
             if self._pace is not None:
                 await self._pace()
             yield event
+        if self._breaks_off:
+            raise httpx.ReadError("Connection reset by peer")
+        if self._held_open:
+            # Until the reader gives up: it is cancelled.
+            await asyncio.Event().wait()
 
     async def aclose(self) -> None:
         self.closed = True
@@ -76,6 +100,9 @@ async def scripted_openai(
     *,
     base_url: str = "https://api.test/v1",
     pace: Callable[[], Awaitable[object]] | None = None,
+    done: bool = True,
+    breaks_off: bool = False,
+    held_open: bool = False,
 ) -> AsyncIterator[ScriptedOpenAI]:
     """Yield a real ``AsyncOpenAI`` answering request *n* with ``replies[n]``.
 
@@ -102,7 +129,7 @@ async def scripted_openai(
             raise AssertionError(f"unscripted request #{len(requests)}")
         if isinstance(reply, ChatCompletion):
             return httpx.Response(200, json=wire_payload(reply), request=request)
-        stream = _EventStream(reply, pace)
+        stream = _EventStream(reply, pace, done=done, breaks_off=breaks_off, held_open=held_open)
         streams.append(stream)
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream, request=request)
 

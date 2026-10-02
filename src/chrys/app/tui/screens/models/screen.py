@@ -1892,6 +1892,8 @@ class ModelConfigScreen(BaseDialog[str]):
         api_style = (
             API_STYLE_RESPONSES if is_responses_wire_dialect(provider, api_style_value) else API_STYLE_CHAT_COMPLETIONS
         )
+        # Fields the form has no control for keep their stored value.
+        stored = self._registry.get(self._selected_profile_id)
 
         return ModelProfile(
             id=self._selected_profile_id,
@@ -1912,6 +1914,7 @@ class ModelConfigScreen(BaseDialog[str]):
             chat_options=_kv_to_json(options),
             stream=self.query_one("#mc-stream", Checkbox).value,
             vision=self.query_one("#mc-vision", Checkbox).value,
+            stream_requires_finish_reason=stored is not None and stored.stream_requires_finish_reason,
         )
 
     async def _save_only(self) -> ModelProfile | None:

@@ -7,18 +7,24 @@
 :func:`decode_response` reads a blocking response. The stream (:mod:`.stream`)
 reuses the pieces that describe whole items or the response itself: reasoning
 items, client-executed tool calls, usage, the conversation handle, the
-continuation token and the finish reason.
+continuation token, the finish reason, and the failure a response that
+stopped running reports.
+
+A failed or cancelled response raises instead of landing, and so does one
+that refused or was filtered yet asks for function calls: their calls never
+run. Either error carries the hosted work the response showed.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from openai.types.responses.parsed_response import ParsedResponse
 
+from chrys.foundation.errors import ProviderResponseError, in_band_failure_retryable
 from chrys.foundation.hosted_tools import OPENAI_HOSTED_WIRE_ITEM_KEY
 from chrys.kernel import (
     OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY,
@@ -30,7 +36,7 @@ from chrys.kernel import (
     TextSpanRegion,
     UsageDetails,
 )
-from chrys.service.llm.chat_completions.decode import add_deepseek_cache_usage
+from chrys.service.llm.chat_completions.decode import add_deepseek_cache_usage, refused_calls_error
 from chrys.service.profiles.models.options import effective_store_option
 
 from .hosted import decode_hosted_item, to_payload
@@ -49,6 +55,8 @@ logger = logging.getLogger(__name__)
 ENVELOPE_FIELDS = ("id", "status", "phase")
 # Statuses of a response that is still running, so a token can resume it.
 RUNNING_STATUSES = ("in_progress", "queued")
+# Output items the client reads itself: never hosted work.
+_CLIENT_ITEM_TYPES = frozenset({"message", "reasoning", "function_call", "custom_tool_call", "apply_patch_call"})
 
 
 class OpenAIContinuationToken(ContinuationToken):
@@ -65,7 +73,7 @@ def decode_response(
     # ask the SDK to parse into Pydantic models.
     parsed = cast("BaseModel | None", response.output_parsed) if isinstance(response, ParsedResponse) else None
     # Log probabilities of the text parts collect here.
-    metadata: dict[str, Any] = response.metadata or {}
+    metadata: dict[str, Any] = dict(response.metadata or {})
     try:
         output = response.output
     except AttributeError:
@@ -73,6 +81,13 @@ def decode_response(
     contents: list[Content] = []
     for item in output:
         contents.extend(_decode_item(item, metadata, variant.hosted_provider))
+    hosted = [content for content in contents if content.provider_hosted]
+    usage = decode_usage(response.usage, variant=variant) if response.usage else None
+    reason = finish_reason(response)
+    if (reason == "content_filter" or any(map(refuses, output))) and any(map(is_function_call, output)):
+        raise refused_calls_error(hosted, usage_details=usage)
+    if (failure := response_failure(response, observed=hosted, usage_details=usage)) is not None:
+        raise failure
 
     fields: dict[str, Any] = {
         "response_id": response.id,
@@ -85,7 +100,7 @@ def decode_response(
     store = effective_store_option(options)
     if conversation_id := conversation_handle(response, store=store, variant=variant):
         fields["conversation_id"] = conversation_id
-    if response.usage and (usage := decode_usage(response.usage, variant=variant)):
+    if usage:
         fields["usage_details"] = usage
     if parsed:
         fields["value"] = parsed
@@ -93,9 +108,71 @@ def decode_response(
         fields["response_format"] = response_format
     if response.status in RUNNING_STATUSES and (token := continuation_token(response.id, store=store, variant=variant)):
         fields["continuation_token"] = token
-    if reason := finish_reason(response):
+    if reason:
         fields["finish_reason"] = reason
     return ChatResponse(**fields)
+
+
+def response_failure(
+    response: Any, *, observed: Iterable[Content] = (), usage_details: UsageDetails | None = None
+) -> ProviderResponseError | None:
+    """The failure a response reports, or None when it did not fail.
+
+    A failed or cancelled response, or one carrying an error, will not
+    change any more, so its error drops the continuation token. The error
+    code decides whether sending the request anew may succeed; a cancelled
+    response is not sent again. *observed* is the hosted work it showed but
+    never yielded; *usage_details* the usage it reported. A refusal with
+    tool calls outranks the failure: callers check for that first.
+    """
+    status = getattr(response, "status", None)
+    error = getattr(response, "error", None)
+    code, message = _error_field(error, "code"), _error_field(error, "message")
+    if code is None and message is None and status not in ("failed", "cancelled"):
+        return None
+    if status == "cancelled":
+        code = code or "cancelled"
+        retryable = False
+    else:
+        code = code or "server_error"
+        retryable = in_band_failure_retryable(code)
+    return ProviderResponseError(
+        code,
+        message or f"The service reported the response as {status or 'failed'}.",
+        retryable=retryable,
+        invalidates_continuation_token=True,
+        observed_contents=tuple(observed),
+        usage_details=usage_details,
+    )
+
+
+def _error_field(error: Any, name: str) -> str | None:
+    value = error.get(name) if isinstance(error, Mapping) else getattr(error, name, None)
+    return value if isinstance(value, str) and value else None
+
+
+def is_function_call(item: Any) -> bool:
+    """Whether an output item is a function call this client runs."""
+    return getattr(item, "type", None) == "function_call"
+
+
+def refuses(item: Any) -> bool:
+    """Whether an output item is a message carrying a non-empty refusal."""
+    if getattr(item, "type", None) != "message":
+        return False
+    return any(
+        getattr(part, "type", None) == "refusal" and bool(getattr(part, "refusal", None))
+        for part in getattr(item, "content", None) or []
+    )
+
+
+def hosted_contents(items: Iterable[Any], provider: str) -> list[Content]:
+    """The hosted call and result contents of output items; other items add nothing."""
+    contents: list[Content] = []
+    for item in items:
+        if getattr(item, "type", None) not in _CLIENT_ITEM_TYPES:
+            contents.extend(decode_hosted_item(item, provider) or [])
+    return contents
 
 
 def _decode_item(item: Any, metadata: dict[str, Any], provider: str) -> list[Content]:
@@ -319,16 +396,21 @@ def continuation_token(response_id: str, *, store: Any, variant: ResponsesVarian
     return OpenAIContinuationToken(response_id=response_id)
 
 
-def finish_reason(response: Any) -> Literal["length"] | None:
-    """``length`` for a response cut off at its output cap.
+def finish_reason(response: Any) -> Literal["length", "content_filter"] | None:
+    """``length`` for a response cut off at its output cap, ``content_filter`` for one a filter stopped.
 
-    Truncation handling then treats it like the other protocols' cutoff, not
-    as an empty response to retry.
+    Truncation handling then treats a cutoff like the other protocols' one,
+    not as an empty response to retry.
     """
-    details = getattr(response, "incomplete_details", None)
-    if response.status == "incomplete" and getattr(details, "reason", None) == "max_output_tokens":
-        return "length"
-    return None
+    if response.status != "incomplete":
+        return None
+    match getattr(getattr(response, "incomplete_details", None), "reason", None):
+        case "max_output_tokens":
+            return "length"
+        case "content_filter":
+            return "content_filter"
+        case _:
+            return None
 
 
 def timestamp(created_at: float) -> str:

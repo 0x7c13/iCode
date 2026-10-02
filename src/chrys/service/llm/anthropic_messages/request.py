@@ -94,7 +94,7 @@ def build_request(
     request.setdefault("extra_headers", {})
     if user := request.pop("user", None):
         # The Messages API takes the end-user id as ``metadata.user_id``.
-        metadata = request.get("metadata", {})
+        metadata = dict(request.get("metadata") or {})
         if "user_id" not in metadata:
             metadata["user_id"] = user
         request["metadata"] = metadata

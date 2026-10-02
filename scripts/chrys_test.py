@@ -1509,11 +1509,11 @@ def _add_trajectory_targets(selection: Selection, changes: tuple[Change, ...]) -
     )
     test_file = "tests/architecture/test_trajectory_wait_inventory.py"
     if inventory_changed:
-        selection.add(test_file, "trajectory inventory implementation or signed manifest changed")
+        selection.add(test_file, "trajectory wait inventory or manifest changed")
         return
     if inventory_source_changed:
         for test_name in (
-            "test_signed_wait_manifest_covers_every_ast_node",
+            "test_wait_manifest_matches_source",
             "test_wait_inventory_covers_every_explicit_and_implicit_async_wait",
         ):
             selection.add(f"{test_file}::{test_name}", "async-capable production source changed")

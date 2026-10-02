@@ -182,3 +182,13 @@ def test_delete_profile_false_when_dir_missing(fake_config_dir: Path) -> None:
     # fake_config_dir exists, but models/ subdir doesn't
     assert not (fake_config_dir / "models").exists()
     assert delete_profile("anything") is False
+
+
+def test_stream_requires_finish_reason_round_trips(tmp_path: Path) -> None:
+    data = profile_to_dict(ModelProfile(id="glm", name="GLM", stream_requires_finish_reason=True))
+    path = tmp_path / "glm.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    assert data["stream_requires_finish_reason"] is True
+    assert "stream_requires_finish_reason" not in profile_to_dict(ModelProfile(id="d", name="D"))
+    assert load_profile_from_yaml(path).stream_requires_finish_reason is True

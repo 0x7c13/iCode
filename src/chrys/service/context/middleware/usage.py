@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.kernel import ChatResponse, ResponseStream, normalize_stream_usage
 from chrys.kernel.instrumentation import _stream_error_of
 from chrys.kernel.middleware import ChatContext, ChatMiddleware
@@ -78,12 +79,13 @@ class UsageTrackingMiddleware(ChatMiddleware):
         self._call_count += 1
 
         # Execute the model call.  Validation failures — terminal or
-        # service-side retryable — still consumed provider tokens on the
-        # rejected attempt, so count their usage before re-raising to the
-        # executor error path or the whole-run retry boundary.
+        # service-side retryable — and responses the adapter failed still
+        # consumed provider tokens on the rejected attempt, so count their
+        # usage before re-raising to the executor error path or a retry
+        # boundary.
         try:
             await call_next()
-        except ResponseValidationError as err:
+        except (ResponseValidationError, ProviderResponseError) as err:
             if err.usage_details:
                 self._handle_usage(
                     dict(err.usage_details),
@@ -111,7 +113,7 @@ class UsageTrackingMiddleware(ChatMiddleware):
                 stream_error = _stream_error_of(result)
                 if (
                     not stream_usage_handled
-                    and isinstance(stream_error, ResponseValidationError)
+                    and isinstance(stream_error, ResponseValidationError | ProviderResponseError)
                     and stream_error.usage_details
                 ):
                     stream_usage_handled = True
@@ -121,14 +123,15 @@ class UsageTrackingMiddleware(ChatMiddleware):
                             use_local_context_estimate=self._should_guard_validation_error_usage(),
                         )
                     except Exception:
-                        logger.exception("Failed to report usage from stream-validation error")
+                        logger.exception("Failed to report usage from a failed stream")
 
             # Streaming: attach hooks to intercept per-iteration usage updates
             result.with_transform_hook(on_stream_update)
             result.with_result_hook(on_stream_final)
-            # Lazy response validation raises terminal failures during iteration,
-            # after this middleware's ``call_next`` frame has returned. Recover
-            # the consumed provider usage from that stream error during cleanup.
+            # Lazy response validation and the adapter raise failures during
+            # iteration, after this middleware's ``call_next`` frame has
+            # returned. Recover the consumed provider usage from that stream
+            # error during cleanup.
             result.with_cleanup_hook(on_stream_cleanup)
         # Non-streaming: capture usage directly from the ChatResponse
         elif isinstance(result, ChatResponse) and result.usage_details:
@@ -181,9 +184,10 @@ class UsageTrackingMiddleware(ChatMiddleware):
     def _should_guard_validation_error_usage(self) -> bool:
         """Return the conservative calibration guard for rejected responses.
 
-        Validation errors retain usage but not a reliable assembled response
-        shape, so a Responses dialect configured for hosted aggregate usage
-        must not calibrate from that provider input count.
+        Validation and adapter errors retain usage but not a reliable
+        assembled response shape, so a Responses dialect configured for
+        hosted aggregate usage must not calibrate from that provider input
+        count.
         """
         return self._use_local_context_estimate_for_hosted_usage and self._compaction_strategy is not None
 
