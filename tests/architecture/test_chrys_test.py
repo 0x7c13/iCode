@@ -1036,6 +1036,14 @@ def test_runtime_asset_without_a_subsystem_scope_reports_the_gap() -> None:
             "src/chrys/app/features/session_title/generator.py",
             "tests/architecture/test_trajectory_wait_inventory.py::test_pending_retry_clear_calls_declare_a_terminal_reason",
         ),
+        (
+            "src/chrys/kernel/loop.py",
+            "tests/architecture/test_trajectory_wait_inventory.py::test_wait_manifest_matches_source",
+        ),
+        (
+            "src/chrys/kernel/loop.py",
+            "tests/architecture/test_trajectory_wait_inventory.py::test_wait_inventory_covers_every_explicit_and_implicit_async_wait",
+        ),
     ],
 )
 def test_filesystem_scanning_architecture_guards_watch_their_complete_scope(
