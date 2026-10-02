@@ -110,8 +110,10 @@ def test_system_exit_code_is_not_a_provider_signal() -> None:
             False,
         ),
         (ProviderResponseError("vendor_specific", "?", retryable=True), ErrorKind.UNKNOWN, True),
+        (ProviderResponseError("network_error", "?", retryable=True), ErrorKind.STREAM_TRUNCATED, True),
+        (ProviderResponseError("insufficient_system_resource", "?", retryable=True), ErrorKind.OVERLOADED, True),
     ],
-    ids=["truncated-retryable", "explicit-kind-not-retryable", "unknown-code"],
+    ids=["truncated-retryable", "explicit-kind-not-retryable", "unknown-code", "network-error", "no-resources"],
 )
 def test_provider_response_error_states_kind_and_retry(
     error: ProviderResponseError, kind: ErrorKind, retryable: bool

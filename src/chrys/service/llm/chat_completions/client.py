@@ -21,12 +21,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, override
 
 from openai import BadRequestError
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream
 from chrys.kernel.exceptions import ChatClientException
 from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
 from chrys.service.llm.providers import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
 from chrys.service.llm.wire_client import RequestHeaders, WireClient
+from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
 
 from .decode import decode_completion
 from .request import build_request
@@ -182,7 +184,8 @@ class ChatCompletionsClient(WireClient):
             # keeps the status, headers and body the diagnostics quote.
             raw = await self.sdk_client.chat.completions.with_raw_response.create(stream=False, **request)
             return decode_completion(parse_completion(raw), options, variant=self.VARIANT)
-        except ChatClientException:
+        except ChatClientException, ProviderResponseError:
+            # Already the failure to report; wrapping would hide its verdict.
             raise
         except Exception as ex:
             raise _service_error(type(self), ex) from ex
@@ -197,6 +200,7 @@ class ChatCompletionsClient(WireClient):
     ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
         request = self._build_request(messages, options)
         request["stream_options"] = {"include_usage": True}
+        requires_finish_reason = options.get(STREAM_REQUIRES_FINISH_REASON_OPTION) is True
 
         async def updates() -> AsyncIterable[ChatResponseUpdate]:
             state = StreamState(self.VARIANT)
@@ -216,14 +220,14 @@ class ChatCompletionsClient(WireClient):
                     # ``[DONE]`` alone) is never a usable completion.
                     raise_invalid_response(zero_event_message(replay))
                 # Some gateways end the stream without a finish reason.
-                if (calls := state.finish()) is not None:
+                if (calls := state.finish(requires_finish_reason=requires_finish_reason)) is not None:
                     yield calls
             except json.JSONDecodeError as ex:
                 raise_invalid_response(
                     f"Chat Completions API returned invalid stream event JSON ({ex}). "
                     f"Event data: {bounded_body_preview(ex.doc)}"
                 )
-            except ChatClientException:
+            except ChatClientException, ProviderResponseError:
                 raise
             except Exception as ex:
                 raise _service_error(type(self), ex) from ex

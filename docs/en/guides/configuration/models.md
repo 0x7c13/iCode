@@ -112,6 +112,8 @@ If the error persists, compare the symptoms against the following cases:
 
 - **The error message contains `The Chat Completions client supports only n=1`**: With the Chat Completions style, iCode processes only one response per request and does not support multiple candidate responses, so the `n` parameter must be omitted or set to the integer `1`. Remove the value or set it to `1` in the profile's ["Chat Options"](./chat-options.md), including when it was set indirectly through `extra_body`.
 - **The response has an `HTTP 200` status but is not a valid model reply**: for example a `text/html` Content-Type with an error page, an error JSON body, or an empty body. This means a gateway or proxy wrapped a backend error as a successful response; check that the selected API style matches the model service address, and review the proxy route.
+- **The model service's content filter stopped the reply**: iCode does not retry the request, and it does not run any tools that a filtered or refused reply asked for. Rephrase the request.
+- **Streamed replies sometimes stop partway without an error**: some services using the Chat Completions style end a stream without saying that the reply is finished. iCode keeps such a reply. To have iCode treat it as an interrupted reply and retry, open the profile's file in the `models` folder of the iCode configuration directory (`~/.chrys/models/` on macOS and Linux, `%APPDATA%\chrys\models\` on Windows; the file's `name:` line shows the profile name), add the line `stream_requires_finish_reason: true`, and restart iCode. Saving the profile in the "Model Configuration" window keeps this line.
 
 ### If iCode can't reach the model service
 
@@ -126,4 +128,4 @@ When iCode can tell why a model request failed, it says so in plain words, with 
 | The proxy requires authentication | The proxy's user name and password. |
 | Couldn't establish a secure connection | On a corporate network, the proxy's certificate setup. |
 | The API key is invalid or lacks access | The API key in the model profile. |
-| The request exceeds the model's context window | That the context window in the model profile matches the model's real one. |
+| The request exceeds the model's context window | That the context window in the model profile matches the model's real one. iCode does not retry this request. |

@@ -9,7 +9,8 @@ chunks sent as ``text/event-stream`` events and closed with ``[DONE]``; a
 scripted ``ChatCompletion`` is sent as one JSON body. Models built with
 ``model_construct`` serialize only the fields they set, so absent and
 literal-null wire fields reach the client as written. No request leaves the
-process. Parser tests that skip HTTP use ``parse_stream_chunks``.
+process; ``done=False`` ends the streams at EOF instead. Parser tests that
+skip HTTP use ``parse_stream_chunks``.
 """
 
 from __future__ import annotations
@@ -45,9 +46,12 @@ class _EventStream(httpx.AsyncByteStream):
         self,
         chunks: Sequence[ChatCompletionChunk],
         pace: Callable[[], Awaitable[object]] | None,
+        *,
+        done: bool,
     ) -> None:
         self._events = [f"data: {json.dumps(wire_payload(chunk))}\n\n".encode() for chunk in chunks]
-        self._events.append(b"data: [DONE]\n\n")
+        if done:
+            self._events.append(b"data: [DONE]\n\n")
         self._pace = pace
         self.closed = False
 
@@ -76,6 +80,7 @@ async def scripted_openai(
     *,
     base_url: str = "https://api.test/v1",
     pace: Callable[[], Awaitable[object]] | None = None,
+    done: bool = True,
 ) -> AsyncIterator[ScriptedOpenAI]:
     """Yield a real ``AsyncOpenAI`` answering request *n* with ``replies[n]``.
 
@@ -102,7 +107,7 @@ async def scripted_openai(
             raise AssertionError(f"unscripted request #{len(requests)}")
         if isinstance(reply, ChatCompletion):
             return httpx.Response(200, json=wire_payload(reply), request=request)
-        stream = _EventStream(reply, pace)
+        stream = _EventStream(reply, pace, done=done)
         streams.append(stream)
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream, request=request)
 

@@ -19,6 +19,9 @@ the agent loop to terminate with a nonsense final response:
 4. **Evidence gathering without a final answer** — provider-hosted search,
    fetch, or tool discovery completed after the last visible text item and
    the response stopped without a later answer or answer-bearing output.
+5. **Filtered without an answer** — the provider's content filter ended the
+   response before its answer. The same request meets the same filter, so
+   this is terminal, never retried.
 
 Validation runs on the **final message** of a :class:`ChatResponse` —
 the message that would become the agent's final reply for the turn.
@@ -117,6 +120,8 @@ HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON = (
     "Response ended after provider-hosted evidence gathering without generating a final user-visible answer."
 )
 
+CONTENT_FILTERED_REASON = "The model service's content filter stopped the response before it generated an answer."
+
 _EVIDENCE_ONLY_HOSTED_FAMILIES = {
     HostedToolFamily.SEARCH,
     HostedToolFamily.FETCH,
@@ -194,6 +199,8 @@ class DefaultResponseValidator:
 
     Behaviour:
 
+    - **Filtered without an answer** is reported in place of the rule that
+      would read the response as blank or answerless and retry it.
     - **Empty contents** is always checked first (cheapest).
     - **Whitespace-only text** runs only when the message has NO tool calls
       (a pure tool-calling turn can legitimately have no text).
@@ -211,7 +218,14 @@ class DefaultResponseValidator:
 
     def validate(self, response: ChatResponse) -> ValidationResult:
         msg = _final_assistant_message(response)
+        # A content filter that stopped the response before its answer is
+        # terminal: the same request meets the same filter. Each rule below
+        # that finds no answer would read the response as blank and retry it,
+        # so where one would fire, the filter is reported instead.
+        content_filtered = response.finish_reason == "content_filter"
         if msg is None:
+            if content_filtered:
+                return _content_filtered()
             # No message at all — empty response from the provider.
             return ValidationResult.invalid(
                 "no assistant message in response", code=ValidationReason.NO_ASSISTANT_MESSAGE
@@ -230,6 +244,8 @@ class DefaultResponseValidator:
 
         # Rule 1: empty contents=[]
         if not self.disable_empty_contents and not msg.contents:
+            if content_filtered:
+                return _content_filtered()
             if output_truncated:
                 return ValidationResult.invalid(
                     OUTPUT_TRUNCATED_REASON, code=ValidationReason.OUTPUT_TRUNCATED, retryable=False
@@ -278,6 +294,16 @@ class DefaultResponseValidator:
                 has_reasoning_content = has_reasoning_content or bool(
                     (content.text or "").strip() or content.protected_data
                 )
+
+        # An answer is visible text, a call, or a hosted output that is an
+        # answer itself, after the last hosted evidence gathering.
+        if (
+            content_filtered
+            and not self.disable_whitespace_text
+            and not has_local_function_call
+            and max(last_visible_text_index, last_answer_bearing_output_index) <= last_terminal_evidence_index
+        ):
+            return _content_filtered()
 
         # Hosted search, fetch, and tool discovery are evidence gathering,
         # not the answer to a text request. Providers normally emit a message
@@ -343,6 +369,10 @@ class DefaultResponseValidator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _content_filtered() -> ValidationResult:
+    return ValidationResult.invalid(CONTENT_FILTERED_REASON, code=ValidationReason.CONTENT_FILTERED, retryable=False)
 
 
 def _final_assistant_message(response: ChatResponse) -> Message | None:

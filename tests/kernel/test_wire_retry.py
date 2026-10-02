@@ -689,6 +689,166 @@ async def test_hosted_commit_evidence_vetoes_mid_stream_wire_replay() -> None:
     assert policy.events == []
 
 
+class _ProviderRetryPolicy(_Policy):
+    def is_retryable(self, exc: BaseException) -> bool:
+        return isinstance(exc, ProviderResponseError) and exc.retryable
+
+
+def _failed_after_hosted_work(*, invalidates: bool, hosted: bool = True) -> ProviderResponseError:
+    # What an adapter raises when the response failed after the provider ran
+    # hosted work it never yielded.
+    observed = (
+        Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
+        Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
+    )
+    return ProviderResponseError(
+        "stream_truncated",
+        "the response failed",
+        retryable=True,
+        invalidates_continuation_token=invalidates,
+        observed_contents=observed if hosted else (),
+    )
+
+
+def _validated_layer(wire: _ScriptedWire) -> tuple[InvariantCheckedToolLoopLayer, _ProviderRetryPolicy]:
+    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    policy = _ProviderRetryPolicy()
+    policy.hosted_commits_in_flight = validation.hosted_commits_in_flight
+    return InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[validation])), policy
+
+
+async def _drive(layer: InvariantCheckedToolLoopLayer, policy: _Policy, *, stream: bool) -> ChatResponse:
+    result = layer.get_response([_user()], stream=stream, client_kwargs={"wire_retry_policy": policy})
+    if stream:
+        assert isinstance(result, ResponseStream)
+        _ = [update async for update in result]
+        return await result.get_final_response()
+    return await result
+
+
+@pytest.mark.parametrize("hosted", [True, False], ids=["hosted_work", "no_hosted_work"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_on_a_provider_failure_vetoes_wire_retry(stream: bool, hosted: bool) -> None:
+    success: Any = [_text_update("recovered")] if stream else _text_response("recovered")
+    wire = _ScriptedWire([_failed_after_hosted_work(invalidates=False, hosted=hosted), success])
+    layer, policy = _validated_layer(wire)
+
+    if hosted:
+        with pytest.raises(ProviderResponseError, match="the response failed"):
+            await _drive(layer, policy, stream=stream)
+        assert len(wire.calls) == 1
+        assert policy.events == []
+    else:
+        response = await _drive(layer, policy, stream=stream)
+        assert response.text == "recovered"
+        assert len(wire.calls) == 2
+        assert len(policy.events) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_on_a_provider_failure_still_polls_a_live_token(stream: bool) -> None:
+    token = {"response_id": "pending-hosted"}
+    if stream:
+        pending: Any = [_text_update("not-terminal", continuation_token=token)]
+        terminal: Any = [_text_update("terminal")]
+    else:
+        pending = _text_response("not-terminal", continuation_token=token)
+        terminal = _text_response("terminal")
+    wire = _ScriptedWire([pending, _failed_after_hosted_work(invalidates=False), terminal])
+    layer, policy = _validated_layer(wire)
+
+    response = await _drive(layer, policy, stream=stream)
+
+    # Polling resumes the response that ran the work; it never re-creates it.
+    assert response.text == "terminal"
+    assert [call["options"].get("continuation_token") for call in wire.calls] == [None, token, token]
+    assert len(policy.events) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_an_invalidated_token_with_hosted_work_never_re_creates_the_request(stream: bool) -> None:
+    token = {"response_id": "pending-hosted"}
+    pending: Any = (
+        [_text_update("not-terminal", continuation_token=token)]
+        if stream
+        else _text_response("not-terminal", continuation_token=token)
+    )
+    unused: Any = [_text_update("must stay unused")] if stream else _text_response("must stay unused")
+    wire = _ScriptedWire([pending, _failed_after_hosted_work(invalidates=True), unused])
+    layer, policy = _validated_layer(wire)
+
+    with pytest.raises(ProviderResponseError, match="the response failed"):
+        await _drive(layer, policy, stream=stream)
+
+    assert len(wire.calls) == 2
+    assert policy.events == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_a_poll_showed_still_vetoes_a_later_poll_that_ends_the_response(stream: bool) -> None:
+    # One poll reports the hosted work and keeps the token; the next poll
+    # ends the response without repeating it. The work belongs to the
+    # response, not to the poll that reported it.
+    token = {"response_id": "pending-hosted"}
+    pending: Any = (
+        [_text_update("not-terminal", continuation_token=token)]
+        if stream
+        else _text_response("not-terminal", continuation_token=token)
+    )
+    ended = ProviderResponseError(
+        "server_error", "the response ended", retryable=True, invalidates_continuation_token=True
+    )
+    unused: Any = [_text_update("must stay unused")] if stream else _text_response("must stay unused")
+    wire = _ScriptedWire([pending, _failed_after_hosted_work(invalidates=False), ended, unused])
+    layer, policy = _validated_layer(wire)
+
+    with pytest.raises(ProviderResponseError, match="the response ended"):
+        await _drive(layer, policy, stream=stream)
+
+    assert [call["options"].get("continuation_token") for call in wire.calls] == [None, token, token]
+    assert len(policy.events) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_of_an_earlier_response_does_not_veto_a_new_request(stream: bool) -> None:
+    # The first response ran hosted work and finished; the tool loop's next
+    # request starts another response, whose failure may be retried.
+    hosted = [
+        Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
+        Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
+    ]
+    call = Content.from_function_call("c1", "echo", arguments={"text": "x"})
+    first: Any = (
+        [ChatResponseUpdate(role="assistant", contents=[*hosted, call])]
+        if stream
+        else ChatResponse(messages=[Message("assistant", [*hosted, call])])
+    )
+    final: Any = [_text_update("done")] if stream else _text_response("done")
+    failure = ProviderResponseError("server_error", "dropped", retryable=True)
+    wire = _ScriptedWire([first, failure, final])
+    layer, policy = _validated_layer(wire)
+
+    runs: list[str] = []
+    result = layer.get_response(
+        [_user()], stream=stream, options={"tools": [_echo_tool(runs)]}, client_kwargs={"wire_retry_policy": policy}
+    )
+    if stream:
+        assert isinstance(result, ResponseStream)
+        response = await result.get_final_response()
+    else:
+        response = await result
+
+    assert response.text == "done"
+    assert runs == ["x"]
+    assert len(wire.calls) == 3
+    assert len(policy.events) == 1
+
+
 @pytest.mark.asyncio
 async def test_response_stream_close_is_recursive_idempotent_and_skips_finalization() -> None:
     cleanups = 0

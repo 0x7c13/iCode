@@ -46,6 +46,11 @@ class ProtectedChatOptionsWarning:
         )
 
 
+# The Chat Completions option that carries ``ModelProfile.stream_requires_finish_reason``
+# to the client; it is never sent.
+STREAM_REQUIRES_FINISH_REASON_OPTION = "stream_requires_finish_reason"
+_CHAT_COMPLETIONS_PROVIDERS = frozenset({"openai", "deepseek-openai", "glm-openai"})
+
 PROTECTED_TOP_LEVEL_CHAT_OPTION_KEYS = frozenset(
     {
         "messages",
@@ -239,6 +244,14 @@ def effective_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
         if effective is None or effective is opts:
             effective = dict(opts or {})
         effective["max_tokens"] = profile.max_output_tokens
+    if (
+        profile.stream_requires_finish_reason
+        and profile.provider in _CHAT_COMPLETIONS_PROVIDERS
+        and not uses_responses_wire_dialect(profile)
+    ):
+        if effective is None or effective is opts:
+            effective = dict(opts or {})
+        effective[STREAM_REQUIRES_FINISH_REASON_OPTION] = True
     return effective
 
 

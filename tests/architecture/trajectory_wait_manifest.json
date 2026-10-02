@@ -3556,12 +3556,16 @@
       "ResponseValidationMiddleware._notify_response_started": [
         ["awaitable", "await self._observation_hook.begin_response()", "unresolved"]
       ],
+      "ResponseValidationMiddleware._observe_failed_response": [
+        ["wrapper", "await self._notify_contents_observed(contents, is_final=True)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_contents_observed"]
+      ],
       "ResponseValidationMiddleware._validated_response_stream._updates": [
         ["wrapper", "await self._notify_attempt_started(continuation=continuation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_started"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await result", "unresolved"],
         ["async_iteration", "async for update in result", "unresolved"],
         ["wrapper", "await self._notify_contents_observed(observed_contents, is_final=False)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_contents_observed"],
+        ["wrapper", "await self._observe_failed_response(error)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._observe_failed_response"],
         ["wrapper", "await _preview_finalize(result, updates)", "unresolved", "chrys.service.agent_middleware.response_validation._preview_finalize"],
         ["wrapper", "await self._notify_contents_observed(final_contents, is_final=True)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_contents_observed"],
         ["wrapper", "await self._notify_attempt_accepted(final.messages or [])", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_accepted"],
@@ -3579,6 +3583,7 @@
         ["wrapper", "await self._notify_response_started(continuation=continuation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_response_started"],
         ["wrapper", "await self._notify_attempt_started(continuation=continuation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_started"],
         ["awaitable", "await call_next()", "unresolved"],
+        ["wrapper", "await self._observe_failed_response(error)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._observe_failed_response"],
         ["wrapper", "await self._notify_contents_observed(observed_contents, is_final=True)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_contents_observed"],
         ["wrapper", "await self._notify_attempt_accepted(result.messages or [])", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_accepted"],
         ["awaitable", "await validation.finished(accepted=verdict.ok, reason_code=None if verdict.ok else verdict.code, retryable=None if verdict.ok else verdict.retryable, gave_up=give_up)", "unresolved"],

@@ -53,6 +53,10 @@ _PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
     "content_filter": ErrorKind.CONTENT_FILTERED,
     "billing_error": ErrorKind.QUOTA_EXHAUSTED,
     "stream_truncated": ErrorKind.STREAM_TRUNCATED,
+    # Finish reasons a Chat Completions service (GLM, DeepSeek) ends a
+    # completion with when it failed to finish it.
+    "network_error": ErrorKind.STREAM_TRUNCATED,
+    "insufficient_system_resource": ErrorKind.OVERLOADED,
 }
 
 _CONTEXT_OVERFLOW_CODES = frozenset({"context_length_exceeded", "model_context_window_exceeded"})
@@ -137,6 +141,11 @@ class ProviderResponseError(ContinuationVerdictError):
     Adapters raise it for failures the SDK does not raise itself — a stream
     that ended without its terminal event, an error-typed finish reason — and
     state the retry decision explicitly.
+
+    ``observed_contents`` holds what the failed response showed that the
+    adapter never yielded, such as provider-hosted tool work: the retry gates
+    count it as executed. It is opaque here; the layer that reads it knows
+    its type.
     """
 
     def __init__(
@@ -148,6 +157,7 @@ class ProviderResponseError(ContinuationVerdictError):
         retry_after: float | None = None,
         invalidates_continuation_token: bool = False,
         kind: ErrorKind | None = None,
+        observed_contents: tuple[object, ...] = (),
     ) -> None:
         super().__init__(f"{code}: {provider_message}")
         self.code = code
@@ -156,6 +166,7 @@ class ProviderResponseError(ContinuationVerdictError):
         self.retry_after = retry_after
         self.invalidates_continuation_token = invalidates_continuation_token
         self.kind = kind if kind is not None else _code_kind(code)
+        self.observed_contents = observed_contents
 
 
 @dataclass(frozen=True, slots=True)

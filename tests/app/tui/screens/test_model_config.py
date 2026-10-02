@@ -690,6 +690,15 @@ async def test_model_config_saves_draft_key_value_rows_without_add() -> None:
     assert json.loads(saved.chat_options) == {"temperature": 0.7}
 
 
+async def test_model_config_form_keeps_fields_it_has_no_control_for() -> None:
+    registry, profile = single_profile_registry(provider="glm-openai", stream_requires_finish_reason=True)
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, _pilot):
+        saved = screen._build_profile_from_form()
+
+    assert saved.stream_requires_finish_reason is True
+
+
 @pytest.mark.parametrize("provider", ["openai", "deepseek-openai"])
 async def test_model_config_responses_capable_provider_api_style_round_trip(provider: str) -> None:
     registry = ModelProfileRegistry()

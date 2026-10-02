@@ -26,6 +26,7 @@ from chrys.service.llm._structured_outputs import (
     _sanitize_response_format_name,
     _strictify_response_schema,
 )
+from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
 
 from .history import encode_messages
 
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Options the request carries in another form or not at all.
-_NOT_FORWARDED = frozenset({"instructions", "tools", "conversation_id"})
+_NOT_FORWARDED = frozenset({"instructions", "tools", "conversation_id", STREAM_REQUIRES_FINISH_REASON_OPTION})
 
 # Chat option names and the names this API uses for them.
 _RENAMED_OPTIONS = (("allow_multiple_tool_calls", "parallel_tool_calls"), ("max_tokens", "max_completion_tokens"))

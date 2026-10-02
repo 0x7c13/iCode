@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompletionMessageCustomToolCall
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.kernel import ChatResponse, Content, FinishReason, Message, UsageDetails
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
 
@@ -25,7 +26,7 @@ from .validation import raise_invalid_response
 
 if TYPE_CHECKING:
     from openai.types import CompletionUsage
-    from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+    from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
     from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
     from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
@@ -35,6 +36,14 @@ logger = logging.getLogger(__name__)
 
 _PAYLOAD_PREVIEW_LIMIT = 2000
 _TRUNCATED = "...[truncated]"
+
+# Finish reasons compatible services spell their own way (GLM ``sensitive``).
+_FINISH_REASON_SPELLINGS: Final[Mapping[str, str]] = {"end": "stop", "sensitive": "content_filter"}
+# Finish reasons that report the service failed the completion; another
+# request may well succeed.
+_FAILED_FINISH_REASONS: Final = frozenset({"network_error", "insufficient_system_resource"})
+# The request did not fit the model's context window; resending it cannot.
+_CONTEXT_OVERFLOW_FINISH_REASON: Final = "model_context_window_exceeded"
 
 # The usage breakdowns, in reporting order: the details object, the prefix of
 # the keys its counts are reported under, and each count with the kernel key
@@ -92,21 +101,73 @@ def ensure_choices(response: Any) -> None:
     raise_invalid_response(f"OpenAI Chat Completions response {problem}. Parsed payload: {payload}")
 
 
+def finish_reason(value: object) -> str | None:
+    """The finish reason a choice reports, in the spelling the kernel reads.
+
+    An empty string reports none. A finish reason that reports a failure is
+    raised as the provider's error instead.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    reason = _FINISH_REASON_SPELLINGS.get(value, value)
+    if reason in _FAILED_FINISH_REASONS:
+        raise ProviderResponseError(
+            reason, f"The service ended the completion with finish reason {reason!r}.", retryable=True
+        )
+    if reason == _CONTEXT_OVERFLOW_FINISH_REASON:
+        raise ProviderResponseError(
+            reason,
+            "The request does not fit the model's context window.",
+            retryable=False,
+            invalidates_continuation_token=True,
+        )
+    return reason
+
+
+def refused_calls_error() -> ProviderResponseError:
+    """The failure of a response that refused or was filtered, yet asks for tool calls.
+
+    The calls are never run: the response's own verdict is that it should
+    not go on.
+    """
+    return ProviderResponseError(
+        "content_filter",
+        "The response was refused or filtered, so the tool calls it requested were not run.",
+        retryable=False,
+        invalidates_continuation_token=True,
+    )
+
+
+def has_refusal(message: ChatCompletionMessage | ChoiceDelta | None) -> bool:
+    """Whether a message or delta carries an explicit refusal."""
+    refusal = getattr(message, "refusal", None)
+    return isinstance(refusal, str) and bool(refusal)
+
+
 def decode_completion(
     response: ChatCompletion, options: Mapping[str, Any], *, variant: ChatCompletionsVariant
 ) -> ChatResponse:
-    """A whole completion as a chat response with one assistant message per choice."""
+    """A whole completion as a chat response with one assistant message per choice.
+
+    Tool calls of a response that refused or was filtered fail the whole
+    response before it lands.
+    """
     ensure_choices(response)
     metadata = response_metadata(response)
     messages: list[Message] = []
     finish: FinishReason | None = None
-    for choice in response.choices:
+    reasons = [finish_reason(choice.finish_reason) for choice in response.choices]
+    refused = "content_filter" in reasons or any(has_refusal(choice.message) for choice in response.choices)
+    for choice, reason in zip(response.choices, reasons, strict=True):
         metadata.update(choice_metadata(choice))
-        if choice.finish_reason:
-            finish = FinishReason(choice.finish_reason)
+        if reason is not None:
+            finish = FinishReason(reason)
+        calls = _function_calls(choice.message)
+        if calls and refused:
+            raise refused_calls_error()
         # Text, then calls, then reasoning: unlike a delta, a whole message
         # has no chunk boundary that could split its text.
-        contents = [*text_contents(choice), *_function_calls(choice.message), *message_reasoning(choice.message)]
+        contents = [*text_contents(choice), *calls, *message_reasoning(choice.message)]
         messages.append(
             Message(role="assistant", contents=contents, additional_properties=message_reasoning_props(choice.message))
         )

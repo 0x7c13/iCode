@@ -245,6 +245,7 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
             chat_options=chat_options,
             stream=_coerce_bool(data.get("stream"), default=False),
             vision=_coerce_bool(data.get("vision"), default=False),
+            stream_requires_finish_reason=_coerce_bool(data.get("stream_requires_finish_reason"), default=False),
         )
     except ModelProfileLoadError:
         raise

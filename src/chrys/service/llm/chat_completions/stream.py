@@ -9,10 +9,17 @@ Tool calls arrive in fragments keyed by an index and, usually, an id. One
 call once, whole, in an update of its own just before the update that
 finishes its choice, or at the end of a stream no chunk finished. The kernel
 never sees a fragment.
+
+Some gateways end a stream without a finish reason. Its calls are released
+only when every one of them has arguments a model could have finished. A
+stream that refused or was filtered fails instead of handing over calls,
+also when the refusal comes after calls it already released: the response
+lands only after the stream ends, so its calls never run.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -22,11 +29,20 @@ from openai.types import CompletionUsage
 from openai.types.chat.chat_completion_message_custom_tool_call import ChatCompletionMessageCustomToolCall
 from pydantic import ValidationError
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.kernel import ChatResponseUpdate, Content, FinishReason
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
 from chrys.service.llm.openai_timestamps import normalize_openai_created_payload, openai_created_at_iso
 
-from .decode import choice_metadata, decode_usage, response_metadata, text_contents
+from .decode import (
+    choice_metadata,
+    decode_usage,
+    finish_reason,
+    has_refusal,
+    refused_calls_error,
+    response_metadata,
+    text_contents,
+)
 from .reasoning import REASONING_DETAILS_FIELD, REASONING_FORMAT_KEY, delta_reasoning, reasoning_fields
 from .validation import raise_invalid_stream_event
 
@@ -83,6 +99,12 @@ class StreamState:
         self._variant = variant
         self._choices: dict[int, _ChoiceState] = {}
         self._next_order = 0
+        # A choice finished with a finish reason.
+        self._finish_seen = False
+        # The stream refused (an explicit refusal) or was filtered.
+        self._refused = False
+        # Calls went out in an update.
+        self._calls_released = False
 
     def updates_for(self, chunk: ChatCompletionChunk) -> list[ChatResponseUpdate]:
         """The updates one chunk yields: calls its finish reasons complete, then its own."""
@@ -91,22 +113,45 @@ class StreamState:
             raise_invalid_stream_event(chunk, choices)
         if not choices and chunk.usage is None:
             return []
-        update = self.update_for(chunk)
-        finished = {choice.index: choice.finish_reason for choice in chunk.choices if choice.finish_reason is not None}
+        # Read once: the update reports these and the release keys on them.
+        finished = _finish_reasons(chunk)
+        update = self.update_for(chunk, finished)
         # A consumer may stop at a finish reason, so the calls go out first.
         calls = self._release(finished) if finished else None
+        if self._refused and self._calls_released:
+            # A refusal may follow calls an earlier choice finished with.
+            raise refused_calls_error()
         return [update] if calls is None else [calls, update]
 
-    def finish(self) -> ChatResponseUpdate | None:
-        """The calls still pending at the end; some gateways never send a finish reason."""
-        return self._release(None)
+    def finish(self, *, requires_finish_reason: bool = False) -> ChatResponseUpdate | None:
+        """The calls still pending at the end of the stream.
 
-    def update_for(self, chunk: ChatCompletionChunk) -> ChatResponseUpdate:
+        Every pending call is checked before any is released: a call whose
+        arguments are not a JSON object (or empty) was cut off, and the whole
+        response is then a truncated one. A stream that ends with no call
+        and no finish reason may have lost its answer's end; that fails
+        under *requires_finish_reason* and is logged otherwise.
+        """
+        if any(state.calls for state in self._choices.values()):
+            return self._release(None)
+        if not self._finish_seen:
+            if requires_finish_reason:
+                raise ProviderResponseError(
+                    "stream_truncated", "The stream ended without a finish reason.", retryable=True
+                )
+            logger.warning("Chat Completions stream ended without a finish reason; the answer may be incomplete")
+        return None
+
+    def update_for(self, chunk: ChatCompletionChunk, finished: Mapping[int, str] | None = None) -> ChatResponseUpdate:
         """The update for one chunk, its call fragments held back.
 
+        *finished* holds the chunk's finish reasons by choice, as
+        :meth:`updates_for` read them; they are read here when not given.
         A ``created`` in milliseconds is converted on a copy, which is also the
         update's raw representation; the SDK chunk stays as received.
         """
+        if finished is None:
+            finished = _finish_reasons(chunk)
         chunk = normalize_openai_created_payload(chunk)
         metadata = response_metadata(chunk)
         contents: list[Content] = []
@@ -118,8 +163,8 @@ class StreamState:
             )
         for choice in chunk.choices:
             metadata.update(choice_metadata(choice))
-            if choice.finish_reason:
-                finish = FinishReason(choice.finish_reason)
+            if (reason := finished.get(choice.index)) is not None:
+                finish = FinishReason(reason)
             # Some compatible providers finish with ``"delta": null``.
             if choice.delta is not None:
                 contents.extend(self._delta_contents(choice))
@@ -140,6 +185,8 @@ class StreamState:
 
     def _delta_contents(self, choice: ChunkChoice) -> list[Content]:
         state = self._choice(choice.index)
+        if has_refusal(choice.delta):
+            self._refused = True
         fields = reasoning_fields(choice.delta)
         plain = next(((name, value) for name, value in fields.items() if name != REASONING_DETAILS_FIELD), None)
         contents: list[Content] = []
@@ -247,10 +294,26 @@ class StreamState:
             state.by_index[index] = pending
         return pending
 
-    def _release(self, finished: Mapping[int, str | None] | None) -> ChatResponseUpdate | None:
+    def _release(self, finished: Mapping[int, str] | None) -> ChatResponseUpdate | None:
         """One update with the complete calls of the finished choices, or of every choice at the end."""
+        chosen = sorted(self._choices if finished is None else finished)
+        if finished is not None:
+            self._finish_seen = True
+            self._refused = self._refused or "content_filter" in finished.values()
+        pending = [call for choice in chosen if (state := self._choices.get(choice)) for call in state.calls]
+        # A nameless call in a choice cut off at the length limit is dropped
+        # (``_complete_calls``), so it cannot turn a refusal into a failure.
+        released = [call for call in pending if call.name or finished is None or finished.get(call.choice) != "length"]
+        if released and self._refused:
+            raise refused_calls_error()
+        if finished is None and any(not _arguments_complete(call) for call in pending):
+            raise ProviderResponseError(
+                "stream_truncated",
+                "The stream ended without a finish reason while a tool call's arguments were incomplete.",
+                retryable=True,
+            )
         contents: list[Content] = []
-        for choice in sorted(self._choices if finished is None else finished):
+        for choice in chosen:
             state = self._choices.get(choice)
             if state is None:
                 if finished is not None:
@@ -265,7 +328,10 @@ class StreamState:
             state.by_id.clear()
             if finished is not None:
                 state.finished = True
-        return ChatResponseUpdate(contents=contents) if contents else None
+        if not contents:
+            return None
+        self._calls_released = True
+        return ChatResponseUpdate(contents=contents)
 
 
 def _complete_calls(choice: int, calls: list[_PendingCall], finish_reason: str | None) -> list[Content]:
@@ -298,6 +364,28 @@ def _complete_calls(choice: int, calls: list[_PendingCall], finish_reason: str |
             )
         contents.append(call.content())
     return contents
+
+
+def _finish_reasons(chunk: ChatCompletionChunk) -> dict[int, str]:
+    """The finish reasons of the chunk's choices that report one."""
+    return {
+        choice.index: reason for choice in chunk.choices if (reason := finish_reason(choice.finish_reason)) is not None
+    }
+
+
+def _arguments_complete(call: _PendingCall) -> bool:
+    """Whether a call's arguments could be whole: none at all, or a JSON object.
+
+    Only the shape is checked; a JSON object proves no more than that the
+    text was not cut inside it.
+    """
+    arguments = "".join(call.arguments)
+    if not arguments.strip():
+        return True
+    try:
+        return isinstance(json.loads(arguments), dict)
+    except ValueError:
+        return False
 
 
 def _assign_local_ids(choice: int, calls: list[_PendingCall]) -> None:

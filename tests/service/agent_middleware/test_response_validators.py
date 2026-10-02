@@ -7,14 +7,17 @@ from __future__ import annotations
 import pytest
 
 from chrys.foundation.hosted_tools import HostedToolFamily, HostedToolPhase
+from chrys.foundation.trajectory.event_types import ValidationReason
 from chrys.kernel import (
     ChatResponse,
     Content,
+    Message,
 )
 from chrys.service.agent_middleware.response_validation import (
     ResponseValidationMiddleware,
 )
 from chrys.service.agent_middleware.validators import (
+    CONTENT_FILTERED_REASON,
     HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON,
     NO_VISIBLE_OUTPUT_REASON,
     OUTPUT_TRUNCATED_REASON,
@@ -324,6 +327,117 @@ class TestDefaultValidatorRules:
             )
         )
         assert result.ok
+
+
+# ---------------------------------------------------------------------------
+# Content filter without an answer
+# ---------------------------------------------------------------------------
+
+
+def _filtered(contents: list[Content]) -> ChatResponse:
+    return ChatResponse(messages=[Message(role="assistant", contents=contents)], finish_reason="content_filter")
+
+
+def _terminal_search_result() -> Content:
+    return Content.from_search_tool_result(
+        "ws_1",
+        tool_name="web_search",
+        status="completed",
+        provider_phase=HostedToolPhase.TERMINAL,
+        provider_status="completed",
+        result={"query": "Chrys"},
+    )
+
+
+def _image_result() -> Content:
+    return Content.from_image_generation_tool_result(
+        image_id="image_1",
+        outputs=["data:image/png;base64,AA=="],
+        provider_phase=HostedToolPhase.TERMINAL,
+        provider_status="completed",
+    )
+
+
+_FILTERED = ValidationResult.invalid(CONTENT_FILTERED_REASON, retryable=False)
+
+
+class TestContentFilteredWithoutAnswer:
+    @pytest.mark.parametrize(
+        "response",
+        [
+            pytest.param(ChatResponse(messages=[], finish_reason="content_filter"), id="no_message"),
+            pytest.param(_filtered([]), id="empty_contents"),
+            pytest.param(_filtered([Content.from_text(" \n ")]), id="whitespace_text"),
+            pytest.param(_filtered([Content.from_text_reasoning(text="thinking")]), id="reasoning_only"),
+            pytest.param(
+                _filtered(
+                    [
+                        Content.from_hosted_tool_call(
+                            "hosted_1",
+                            tool_name="server_task",
+                            status="running",
+                            provider_phase=HostedToolPhase.START,
+                            provider_status="running",
+                        )
+                    ]
+                ),
+                id="running_hosted_work",
+            ),
+            pytest.param(_filtered([_terminal_search_result()]), id="evidence_only"),
+            pytest.param(
+                _filtered([Content.from_text("Checking sources."), _terminal_search_result()]),
+                id="text_before_evidence",
+            ),
+        ],
+    )
+    def test_is_terminal_and_never_retried(self, response: ChatResponse) -> None:
+        result = DefaultResponseValidator().validate(response)
+
+        assert result == _FILTERED
+        assert result.code == ValidationReason.CONTENT_FILTERED
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            pytest.param([Content.from_text("Part of the answer")], id="visible_text"),
+            pytest.param(
+                [Content.from_function_call("call_1", "read_file", arguments={"path": "README.md"})],
+                id="local_call",
+            ),
+            pytest.param(
+                [
+                    Content.from_function_call("call_1", "read_file", arguments={"path": "README.md"}),
+                    _terminal_search_result(),
+                ],
+                id="local_call_before_evidence",
+            ),
+            pytest.param([_image_result()], id="answer_bearing_hosted_output"),
+            pytest.param(
+                [_terminal_search_result(), Content.from_text("Here is the answer.")], id="answer_after_evidence"
+            ),
+        ],
+    )
+    def test_an_answer_the_filter_cut_short_is_kept(self, contents: list[Content]) -> None:
+        assert DefaultResponseValidator().validate(_filtered(contents)).ok
+
+    def test_disabled_rules_stay_disabled(self) -> None:
+        no_op = DefaultResponseValidator(
+            disable_empty_contents=True, disable_whitespace_text=True, disable_leaked_tool_call=True
+        )
+        whitespace_allowed = DefaultResponseValidator(disable_whitespace_text=True)
+        empty_allowed = DefaultResponseValidator(disable_empty_contents=True)
+
+        assert no_op.validate(_filtered([])).ok
+        assert whitespace_allowed.validate(_filtered([Content.from_text(" ")])).ok
+        assert whitespace_allowed.validate(_filtered([])) == _FILTERED
+        # The whitespace rule still reads an empty message as blank.
+        assert empty_allowed.validate(_filtered([])) == _FILTERED
+
+    def test_other_finish_reasons_keep_their_rules(self) -> None:
+        empty = DefaultResponseValidator().validate(_assistant([]))
+
+        assert empty == ValidationResult.invalid("empty contents")
+        assert empty.code == ValidationReason.EMPTY_CONTENTS
 
 
 # ---------------------------------------------------------------------------

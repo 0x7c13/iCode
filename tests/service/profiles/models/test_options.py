@@ -11,6 +11,7 @@ import pytest
 from chrys.foundation.util.chrys_headers import MODEL_ID_HEADER, SESSION_ID_HEADER
 from chrys.foundation.util.env_templates import EnvVarResolutionError
 from chrys.service.profiles.models.options import (
+    STREAM_REQUIRES_FINISH_REASON_OPTION,
     effective_chat_options,
     is_anthropic_claude_profile,
     lacks_anthropic_prompt_cache_option,
@@ -535,3 +536,42 @@ def test_with_anthropic_prompt_cache_option_merges_without_mutating() -> None:
     first = with_anthropic_prompt_cache_option(None)
     first["cache_control"]["ttl"] = "1h"
     assert with_anthropic_prompt_cache_option(None) == {"cache_control": {"type": "ephemeral"}}
+
+
+@pytest.mark.parametrize(
+    ("provider", "api_style", "sent"),
+    [
+        ("openai", "chat_completions", True),
+        ("deepseek-openai", "chat_completions", True),
+        ("glm-openai", "chat_completions", True),
+        ("openai", "responses", False),
+        ("deepseek-openai", "responses", False),
+        ("anthropic", "chat_completions", False),
+        ("mock", "chat_completions", False),
+    ],
+)
+def test_the_finish_reason_requirement_reaches_only_chat_completions_clients(
+    provider: str, api_style: str, sent: bool
+) -> None:
+    profile = ModelProfile(
+        id="p",
+        name="Profile",
+        provider=provider,
+        api_style=api_style,
+        model_id="m",
+        chat_options='{"temperature": 0.2}',
+        stream_requires_finish_reason=True,
+    )
+
+    options = effective_chat_options(profile) or {}
+
+    assert options.get(STREAM_REQUIRES_FINISH_REASON_OPTION) is (True if sent else None)
+    assert options["temperature"] == 0.2
+    # The option rides only on the effective copy.
+    assert STREAM_REQUIRES_FINISH_REASON_OPTION not in (parse_chat_options(profile) or {})
+
+
+def test_a_profile_without_the_finish_reason_requirement_adds_no_option() -> None:
+    profile = ModelProfile(id="p", name="Profile", provider="glm-openai", model_id="m")
+
+    assert STREAM_REQUIRES_FINISH_REASON_OPTION not in (effective_chat_options(profile) or {})
