@@ -62,7 +62,7 @@ Enable this experimental feature with `CHRYS_APPROVAL_REUSE=1` or `approval.reus
 | --- | --- |
 | Shell command | Command arguments, actual working directory and Shell configuration must match in both scopes. Simple commands compare normalized tokens; complex commands support project-only exact text. Environment variables, reason, timeout and output limit are not bound. An explicit `working_dir` uses ordinary approval. |
 | File write/edit | Permission to modify the physical file, after resolving parent directory links; contents may change. Every affected file must be covered within one scope. Changing the destination requires approval again; the worker also checks the approved target. A final-component symlink uses ordinary approval and retains target-change checks. |
-| Reads and other tools | No grant reuse. File reads also check the resolved target for sensitivity; custom tools keep ordinary approval, including valid date/UUID arguments. |
+| Reads and other tools | No grant reuse. With reuse enabled, file reads also check the resolved target for sensitivity using the workspace directory; this stricter check is off by default and may flag ordinary files under directories named `credentials` or `cookies`. Custom tools keep ordinary approval, including valid date/UUID arguments. |
 
 Scope: main-agent local Shell and file write/edit only; sensitive requests, sub-agents, workflow nodes, remote/MCP tools and other custom tools do not create or reuse grants. Existing automatic approval and bypass policies still apply.
 
@@ -84,7 +84,7 @@ icode approvals clear --session SESSION_ID
 icode approvals clear --all
 ```
 
-Management works even when reuse is off. Lists show IDs, scope, project and target; a reused call records `grant_ids` in its approval decision and `approval_grant_ids` in tool metadata so it can be traced to the relevant rule.
+Management works even when reuse is off. An explicit `--session` must name an existing session directory; an unknown ID returns an error without creating a directory. Lists show IDs, scope, project and target; a reused call records `grant_ids` in its approval decision and `approval_grant_ids` in tool metadata so it can be traced to the relevant rule.
 
 ## Understand automatic approval and safety protections
 

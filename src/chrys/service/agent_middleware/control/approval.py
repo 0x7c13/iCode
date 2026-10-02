@@ -93,6 +93,16 @@ def _path_is_at_or_under(path: str, parent: str) -> bool:
     return path == parent or path.startswith(parent + os.sep)
 
 
+def _resolved_read_may_access_sensitive_data(file_path: str, *, base_cwd: str) -> bool:
+    if not base_cwd:
+        return True
+    try:
+        target = os.path.realpath(resolve_workspace_path(file_path, base_cwd=base_cwd))
+        return target_may_access_sensitive_data(target)
+    except OSError, ValueError:
+        return True
+
+
 def _is_session_archive_read_path(file_path: str, resolved_roots: list[str], *, base_cwd: str | None = None) -> bool:
     """Check if *file_path* resolves inside a session-owned archive root.
 
@@ -377,14 +387,16 @@ class ApprovalMiddleware(FunctionMiddleware):
         sensitive_filesystem_read = tool_kind == KIND_FILESYSTEM_READ and path_arg_may_access_sensitive_data(
             context.arguments
         )
-        if tool_kind == KIND_FILESYSTEM_READ and isinstance(context.arguments, dict):
+        # Resolved-target hardening is opt-in with reuse; preserve ordinary
+        # read approval behavior when the feature is disabled.
+        if self._reuse is not None and tool_kind == KIND_FILESYSTEM_READ and isinstance(context.arguments, dict):
             path = context.arguments.get("path")
             if isinstance(path, str) and path:
-                try:
-                    target = os.path.realpath(resolve_workspace_path(path, base_cwd=self._workspace_cwd))
-                    sensitive_filesystem_read |= target_may_access_sensitive_data(target)
-                except OSError, ValueError:
-                    sensitive_filesystem_read = True
+                sensitive_filesystem_read |= await asyncio.to_thread(
+                    _resolved_read_may_access_sensitive_data,
+                    path,
+                    base_cwd=self._workspace_cwd or self._reuse.runtime.cwd,
+                )
         sensitive_filesystem_write = tool_kind == KIND_FILESYSTEM_WRITE and path_arg_may_access_sensitive_data(
             context.arguments
         )

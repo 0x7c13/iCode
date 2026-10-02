@@ -19,8 +19,11 @@ from chrys.service.approval.reuse import ApprovalGrant, CommandKey, project_path
 
 
 def _stores(config_dir: Path, session: str | None) -> list[ApprovalGrantStore]:
-    if session:
-        return [ApprovalGrantStore(session_grants_path(config_dir, session))]
+    if session is not None:
+        path = session_grants_path(config_dir, session)
+        if not path.parent.is_dir():
+            raise ValueError("Session directory does not exist")
+        return [ApprovalGrantStore(path)]
     sessions = resolve_sessions_dir(config_dir, create=False)
     paths = [config_dir / GRANTS_FILE, *sorted(sessions.glob(f"*/{GRANTS_FILE}"))]
     return [ApprovalGrantStore(path) for path in paths]
@@ -44,7 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.all and (args.action != "clear" or args.session or args.project):
         parser.error("--all is only valid with an unfiltered clear")
     bootstrap_runtime(dotenv_override=True, configure_stdio=True, setup_telemetry=False)
-    stores = _stores(get_platform().config_dir, args.session)
+    try:
+        stores = _stores(get_platform().config_dir, args.session)
+    except ValueError as error:
+        parser.error(str(error))
     project = project_path(args.project) if args.project else None
     if args.action == "clear":
         results = [store.clear(project=project) for store in stores]

@@ -15,6 +15,7 @@ from chrys.app.cli import app, approvals
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.kernel.middleware import FunctionInvocationContext
+from chrys.service.approval.grant_store import session_grants_path
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.tools.builtins.shell import ShellTools
@@ -64,6 +65,18 @@ def test_cli_requires_an_explicit_clear_scope(grants):
         approvals.main(["clear"])
     assert error.value.code == 2
     assert len(binding.service.rules()) == 2
+
+
+@pytest.mark.parametrize("command", [["list"], ["clear"], ["revoke", "missing-grant"]])
+def test_cli_rejects_unknown_session_without_creating_it(grants, capsys, command):
+    binding, _ = grants
+    missing = session_grants_path(binding.runtime.platform.config_dir, "deadbee").parent
+    assert not missing.exists()
+    with pytest.raises(SystemExit) as error:
+        approvals.main([*command, "--session", "deadbee"])
+    assert error.value.code == 2
+    assert "Session directory does not exist" in capsys.readouterr().err
+    assert not missing.exists()
 
 
 async def test_session_restore_fork_and_delete_grant_lifecycle(grants):
