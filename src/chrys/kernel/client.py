@@ -41,12 +41,13 @@ _log = logging.getLogger(__name__)
 # the provider's first byte: compaction and its LAST_WORDS side call.  That
 # work reports liveness through this callback, which the watchdog installs in
 # the context it times, so the watchdog times idle gaps instead of the whole
-# pull.  Outside a watchdog it is None.
+# pull.  A timer nested inside (a side call's own read timeout) chains to it.
+# Outside a watchdog it is None.
 _WIRE_PROGRESS: ContextVar[Callable[[], None] | None] = ContextVar("chrys_wire_progress", default=None)
 
 
 def report_wire_progress() -> None:
-    """Restart the enclosing stall watchdog's idle timer, if one is running."""
+    """Restart the idle timers of the enclosing stall watchdogs, if any are running."""
     callback = _WIRE_PROGRESS.get()
     if callback is not None:
         callback()
@@ -56,10 +57,19 @@ def report_wire_progress() -> None:
 def wire_progress_scope(on_progress: Callable[[], None]) -> Iterator[None]:
     """Report progress from the block, and every task it spawns, to *on_progress*.
 
-    Spawned tasks copy the context, so they can report after the block
-    exits: the callback must tolerate a report once its timer is gone.
+    A report also reaches the scopes this one is nested in: an inner timer
+    never hides progress from the watchdog waiting on its work. Spawned tasks
+    copy the context, so they can report after the block exits: every
+    callback must tolerate a report once its timer is gone.
     """
-    token = _WIRE_PROGRESS.set(on_progress)
+    enclosing = _WIRE_PROGRESS.get()
+
+    def _report() -> None:
+        on_progress()
+        if enclosing is not None:
+            enclosing()
+
+    token = _WIRE_PROGRESS.set(_report)
     try:
         yield
     finally:

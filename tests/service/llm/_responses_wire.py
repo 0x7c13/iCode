@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Self
 
 import httpx
@@ -86,6 +86,8 @@ class Script:
     """The events of one stream, written in the order the service sends them."""
 
     events: list[tuple[str | None, Any]] = field(default_factory=list)
+    # The connection is lost after the events.
+    broken: bool = False
 
     def emit(self, event_type: str, **fields: Any) -> Self:
         self.events.append((event_type, {"type": event_type, "sequence_number": len(self.events), **fields}))
@@ -165,8 +167,13 @@ class Script:
     def error(self, code: str | None, message: str = "Something went wrong.") -> Self:
         return self.emit("error", code=code, message=message, param=None)
 
+    def breaks_off(self) -> Self:
+        """Lose the connection after the events so far: reading on fails as a reset connection."""
+        self.broken = True
+        return self
+
     def reply(self) -> Reply:
-        return sse_reply(self.events)
+        return replace(sse_reply(self.events), breaks_off=self.broken)
 
 
 def blocking(*output: Mapping[str, Any], **fields: Any) -> Reply:

@@ -65,6 +65,7 @@ from chrys.kernel import (
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
 from chrys.service.llm.one_shot import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
+from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
 from chrys.service.trajectory.compaction import current_compaction_operation_id
 from chrys.service.trajectory.retries import RetryBackoffTrace
 
@@ -109,6 +110,9 @@ _FALLBACK_ALLOWED_OPTION_KEYS = frozenset(
         "thinking",
         "top_k",
         "top_p",
+        # The model's streams always end with a finish reason: a note cut off
+        # without one fails here as on every other call.
+        STREAM_REQUIRES_FINISH_REASON_OPTION,
     }
 )
 

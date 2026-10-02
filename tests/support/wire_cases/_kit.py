@@ -35,6 +35,8 @@ class Reply:
     status: int = 200
     body: bytes = b""
     headers: tuple[tuple[str, str], ...] = ()
+    # The connection is lost after the body: reading on fails as a reset connection.
+    breaks_off: bool = False
 
 
 def json_reply(payload: Any) -> Reply:

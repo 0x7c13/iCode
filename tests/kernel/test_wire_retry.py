@@ -27,6 +27,7 @@ from chrys.kernel import (
     is_retry_boundary_update,
     report_wire_progress,
     tool,
+    wire_progress_scope,
 )
 from chrys.kernel import loop as loop_module
 from chrys.kernel.loop import ConsumedInjectionMessageProbe, LoopRecorder
@@ -1547,6 +1548,19 @@ async def test_stall_watchdog_still_fires_once_preparation_goes_idle() -> None:
     with pytest.raises(StreamStall):
         await stream.get_final_response()
     assert len(wire.calls) == 1
+
+
+def test_a_report_reaches_every_enclosing_progress_scope() -> None:
+    """A side call's own read timeout, nested in the watchdog of the pull
+    waiting on it, never hides its progress from that watchdog."""
+    reports: list[str] = []
+    with wire_progress_scope(lambda: reports.append("watchdog")):
+        with wire_progress_scope(lambda: reports.append("read timeout")):
+            report_wire_progress()
+        report_wire_progress()
+    report_wire_progress()
+
+    assert reports == ["read timeout", "watchdog", "watchdog"]
 
 
 @pytest.mark.parametrize("stream", [False, True])

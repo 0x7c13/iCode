@@ -4,11 +4,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
+from types import ModuleType
 
 import pytest
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.kernel import Content, Message
+from chrys.kernel.client import start_with_wire_progress
 from chrys.service.context.compaction.last_words import (
     _BASE_GUIDANCE,
     _FORMAT_CONTRACT,
@@ -17,7 +24,11 @@ from chrys.service.context.compaction.last_words import (
     LastWordsGenerator,
     LastWordsSpendBudgetExceeded,
 )
+from chrys.service.llm import one_shot
+from chrys.service.llm.chat_completions import ChatCompletionsClient
+from chrys.service.llm.chat_completions import client as chat_completions_client
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
+from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.service.context.compaction._compaction_helpers import _anthropic_fetched_pdf_exchange
 from tests.service.context.compaction._last_words_helpers import (
@@ -31,9 +42,22 @@ from tests.service.context.compaction._last_words_helpers import (
     structured_note,
     user,
 )
+from tests.support.openai_chat_wire import scripted_openai
 from tests.support.provider_errors import openai_status
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
+
+
+def _note_chunk(text: str, finish_reason: str | None = None) -> ChatCompletionChunk:
+    delta = ChoiceDelta.model_construct(role="assistant", content=text)
+    return ChatCompletionChunk.model_construct(
+        id="chunk-1",
+        object="chat.completion.chunk",
+        created=1_717_171_717,
+        model="model",
+        choices=[ChunkChoice.model_construct(index=0, delta=delta, finish_reason=finish_reason)],
+        usage=None,
+    )
 
 
 @pytest.mark.parametrize("template", ["", " \n\t", "TEMPLATE TEXT"])
@@ -408,6 +432,34 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
         "reasoning_effort": "low",
         "max_tokens": DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS,
     }
+
+
+@pytest.mark.parametrize("requires_finish_reason", [True, False], ids=["requires_a_finish_reason", "lenient"])
+async def test_a_fallback_note_streamed_without_a_finish_reason_is_judged_as_the_profile_says(
+    tmp_path, requires_finish_reason: bool
+) -> None:
+    note = structured_note()
+    profile = ModelProfile(
+        id="cut",
+        name="cut",
+        model_id="model",
+        stream=True,
+        stream_requires_finish_reason=requires_finish_reason,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, max_transient_retries=0)
+    async with scripted_openai([[_note_chunk(note)]]) as wire:
+        gen._client = ChatCompletionsClient(model="model", sdk_client=wire.client)  # type: ignore[assignment]
+        if requires_finish_reason:
+            with pytest.raises(LastWordsGenerationError) as raised:
+                await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+            cause = raised.value.__cause__
+            assert isinstance(cause, ProviderResponseError)
+            assert cause.code == "stream_truncated"
+        else:
+            assert await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[]) == note
+
+    [request] = wire.requests
+    assert STREAM_REQUIRES_FINISH_REASON_OPTION not in request
 
 
 async def test_fallback_caps_supplement_and_middle_truncates_previous_note(tmp_path):
@@ -821,6 +873,62 @@ async def test_a_server_error_naming_the_context_window_shrinks_the_fallback(
     assert len(prompt_lengths) == 2
     assert prompt_lengths[1] < prompt_lengths[0]
     assert retries == 0
+
+
+async def test_a_candidate_that_overflows_as_its_read_timeout_runs_out_still_shrinks_the_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    """The chunk that ends a candidate's stream on a context overflow restarts
+    the side call's read timeout and the stall watchdog waiting on it: reading
+    on for its usage ends on the overflow, and a smaller candidate follows
+    instead of the timeout cutting the stream off and sending it again."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    monkeypatch.setattr(chat_completions_client, "_SETTLED_STREAM_WAIT_SECONDS", 1.0)
+    read_timeouts: list[asyncio.Timeout] = []
+
+    def timeout(delay: float | None) -> asyncio.Timeout:
+        read_timeouts.append(asyncio.timeout(delay))
+        return read_timeouts[-1]
+
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio), timeout=timeout)
+    monkeypatch.setattr(one_shot, "asyncio", shadow)
+    loop = asyncio.get_running_loop()
+    events = 0
+
+    async def pace() -> None:
+        nonlocal events
+        events += 1
+        if events == 2:
+            # The overflow comes as the read timeout of its pull runs out.
+            read_timeouts[-1].reschedule(loop.time() + 0.5)
+        elif events == 3:
+            # Then the connection stays open, sending no usage.
+            await asyncio.Event().wait()
+
+    reported_at: list[int] = []
+    retry_events, publish_retry = retry_collector()
+    profile = ModelProfile(id="streamed", name="streamed", model_id="model", stream=True)
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, publish_retry=publish_retry)
+    overflow = [_note_chunk("## Task"), _note_chunk("", finish_reason="model_context_window_exceeded")]
+    async with scripted_openai([overflow, [_note_chunk(structured_note(), finish_reason="stop")]], pace=pace) as wire:
+        gen._client = ChatCompletionsClient(model="model", sdk_client=wire.client)  # type: ignore[assignment]
+        note = await start_with_wire_progress(
+            generate(
+                gen,
+                user_request="do X",
+                previous_last_words="previous",
+                dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+            ),
+            lambda: reported_at.append(events),
+        )
+
+    assert note == structured_note()
+    first, second = (len(json.dumps(request["messages"])) for request in wire.requests)
+    assert second < first
+    assert retry_events == []
+    # Before the first candidate, after its first chunk, at its overflow.
+    assert reported_at[:3] == [0, 1, 2]
 
 
 async def test_a_rate_limit_naming_tokens_retries_the_same_fallback_candidate(tmp_path, monkeypatch) -> None:

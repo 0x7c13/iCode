@@ -249,6 +249,9 @@ class ResponsesApiClient(WireClient):
                 # the hosted work it showed.
                 raise
             except Exception as ex:
+                # A refusal with calls outranks how the stream broke off.
+                if (failure := state.failure()) is not None:
+                    raise failure from ex
                 raise _service_error(type(self), ex) from ex
 
         return ResponseStream(

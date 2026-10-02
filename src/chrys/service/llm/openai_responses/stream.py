@@ -469,6 +469,13 @@ class StreamState:
             invalidates_continuation_token=True,
         )
 
+    def failure(self) -> ProviderResponseError | None:
+        """The failure the events so far decide, however the stream goes on: a refusal with calls, or None.
+
+        The client asks here before reporting a stream that broke off.
+        """
+        return refused_calls_error() if self._refused and self._calls_seen else None
+
     def _refuse_calls(self, response: Any = None, usage: UsageDetails | None = None) -> None:
         """Fail a response that refused or was filtered yet asks for calls, however it ended.
 

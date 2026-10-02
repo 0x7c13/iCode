@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
     from pathlib import Path
 
     from chrys.service.profiles.models.schema import ModelProfile
@@ -91,4 +91,23 @@ class ScriptedWire:
         if not self._replies:
             raise AssertionError(f"unscripted request: {request.method} {request.url}")
         reply = self._replies.pop(0)
+        if reply.breaks_off:
+            return httpx.Response(
+                reply.status, headers=list(reply.headers), stream=BrokenBody(reply.body), request=request
+            )
         return httpx.Response(reply.status, headers=list(reply.headers), content=reply.body, request=request)
+
+
+class BrokenBody(httpx.AsyncByteStream):
+    """A response body whose connection is lost once *body* is sent."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        if self._body:
+            yield self._body
+        raise httpx.ReadError("Connection reset by peer")
+
+    async def aclose(self) -> None:
+        return None

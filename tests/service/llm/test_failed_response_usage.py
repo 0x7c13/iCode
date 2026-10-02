@@ -193,6 +193,40 @@ _FAILED_WITH_USAGE: list[Any] = [
         True,
         id="chat_completions_failed_after_growing_usage",
     ),
+    # The usage comes in a chunk of its own after the finish reason.
+    pytest.param(
+        lambda: _chat_completions(
+            [_chunk(content="Partial"), _chunk(finish_reason="network_error"), _chunk(usage=True)]
+        ),
+        True,
+        id="chat_completions_failed_then_its_usage",
+    ),
+    pytest.param(
+        lambda: _chat_completions([_chunk(finish_reason="model_context_window_exceeded"), _chunk(usage=True)]),
+        True,
+        id="chat_completions_context_overflow_then_its_usage",
+    ),
+    pytest.param(
+        lambda: _chat_completions(
+            [_chunk(refusal="I can't.", tool_calls=_call()), _chunk(finish_reason="network_error"), _chunk(usage=True)]
+        ),
+        True,
+        id="chat_completions_refused_then_failed_then_its_usage",
+    ),
+    pytest.param(
+        lambda: _chat_completions(
+            [_chunk(refusal="I can't.", tool_calls=_call()), _chunk(finish_reason="tool_calls"), _chunk(usage=True)]
+        ),
+        True,
+        id="chat_completions_refused_then_its_usage",
+    ),
+    pytest.param(
+        lambda: _chat_completions(
+            [_chunk(tool_calls=_call()), _chunk(finish_reason="content_filter"), _chunk(usage=True)]
+        ),
+        True,
+        id="chat_completions_filtered_then_its_usage",
+    ),
     # Streams without a finish reason: the usage came in a chunk of its own.
     pytest.param(
         lambda: _chat_completions([_chunk(refusal="I can't.", tool_calls=_call()), _chunk(usage=True)]),
@@ -262,6 +296,10 @@ async def test_each_attempt_of_a_wire_retry_counts_its_usage(stream: bool) -> No
         pytest.param([_chunk(content="Partial"), _chunk(usage=True)], id="cut_off_after_its_usage"),
         pytest.param(
             [_chunk(content="Partial", usage=True), _chunk(finish_reason="network_error")], id="failed_after_its_usage"
+        ),
+        pytest.param(
+            [_chunk(content="Partial"), _chunk(finish_reason="network_error"), _chunk(usage=True)],
+            id="failed_then_its_usage",
         ),
     ],
 )

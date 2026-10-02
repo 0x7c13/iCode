@@ -110,42 +110,75 @@ class StreamState:
         # count, which a failure's error carries: the usage often comes in a
         # chunk of its own.
         self._usage: UsageDetails | None = None
+        # The finish reasons of the chunk that reported a failure.
+        self._failed: tuple[str, ...] | None = None
+        # The stream reported how it ends: a failure finish reason, or a
+        # refusal with calls. What follows is read only for its usage.
+        self._settled = False
+
+    @property
+    def settled(self) -> bool:
+        """Whether the stream reported how it ends; what follows is read only for its usage."""
+        return self._settled
 
     def updates_for(self, chunk: ChatCompletionChunk) -> list[ChatResponseUpdate]:
         """The updates one chunk yields: calls its finish reasons complete, then its own.
 
-        A finish reason that reports a failure raises the provider's error,
-        with the usage the stream reported so far; a refusal with tool calls
-        outranks it.
+        A failure finish reason, or a refusal with calls, settles the stream:
+        it yields nothing more. Its error is raised at the first usage report
+        from that chunk on, or when the stream ends: the usage commonly comes
+        in a chunk of its own after the finish reason. See :meth:`failure`.
         """
         choices = getattr(chunk, "choices", None)
         if not isinstance(choices, list):
             raise_invalid_stream_event(chunk, choices)
         if not choices and chunk.usage is None:
             return []
+        if self._settled:
+            if self._take_usage(chunk) is not None:
+                self._raise_failure()
+            return []
         # Read once: the update reports these and the release keys on them.
         finished = _finish_reasons(chunk)
         update = self.update_for(chunk, finished)
-        if (failure := finish_failure(finished.values(), usage_details=self._usage)) is not None:
-            if self._refused and (self._calls_released or self._calls_pending()):
-                raise refused_calls_error(usage_details=self._usage)
-            raise failure
+        if finish_failure(finished.values()) is not None:
+            self._failed = tuple(finished.values())
+            self._settled = True
         # A consumer may stop at a finish reason, so the calls go out first.
-        calls = self._release(finished) if finished else None
+        calls = self._release(finished) if finished and not self._settled else None
         if self._refused and self._calls_released:
             # A refusal may follow calls an earlier choice finished with.
-            raise refused_calls_error(usage_details=self._usage)
+            self._settled = True
+        if self._settled:
+            if any(content.type == "usage" for content in update.contents):
+                self._raise_failure()
+            return []
         return [update] if calls is None else [calls, update]
+
+    def failure(self) -> ProviderResponseError | None:
+        """The failure the stream reported so far, with the usage so far, or None.
+
+        A refusal or filter with tool calls outranks a failure finish reason.
+        Either outranks how the stream ends, also when it breaks off or goes
+        quiet: the client asks here before reporting either.
+        """
+        if self._refused and (self._calls_released or self._calls_pending()):
+            return refused_calls_error(usage_details=self._usage)
+        if self._failed is not None:
+            return finish_failure(self._failed, usage_details=self._usage)
+        return None
 
     def finish(self, *, requires_finish_reason: bool = False) -> ChatResponseUpdate | None:
         """The calls still pending at the end of the stream.
 
-        Every pending call is checked before any is released: a call whose
-        arguments are not a JSON object (or empty) was cut off, and the whole
-        response is then a truncated one. A stream that ends with no call
-        and no finish reason may have lost its answer's end; that fails
-        under *requires_finish_reason* and is logged otherwise.
+        A failure the stream reported is raised first. Every pending call is
+        checked before any is released: a call whose arguments are not a
+        JSON object (or empty) was cut off, and the whole response is then a
+        truncated one. A stream that ends with no call and no finish reason
+        may have lost its answer's end; that fails under
+        *requires_finish_reason* and is logged otherwise.
         """
+        self._raise_failure()
         if self._calls_pending():
             return self._release(None)
         if not self._finish_seen:
@@ -174,9 +207,7 @@ class StreamState:
         contents: list[Content] = []
         finish: FinishReason | None = None
         # Usage can share a chunk with content (Gemini); both are kept.
-        if usage := chunk.usage or _choice_level_usage(chunk):
-            details = decode_usage(usage, variant=self._variant)
-            self._usage = normalize_stream_usage([self._usage or {}, details])
+        if (details := self._take_usage(chunk)) is not None:
             contents.append(Content.from_usage(usage_details=details, raw_representation=chunk))
         for choice in chunk.choices:
             metadata.update(choice_metadata(choice))
@@ -196,6 +227,19 @@ class StreamState:
             additional_properties=metadata,
             raw_representation=chunk,
         )
+
+    def _raise_failure(self) -> None:
+        """Raise the failure the stream reported so far, if any."""
+        if (failure := self.failure()) is not None:
+            raise failure
+
+    def _take_usage(self, chunk: ChatCompletionChunk) -> UsageDetails | None:
+        """The usage the chunk reports, also taken into the usage so far."""
+        if not (usage := chunk.usage or _choice_level_usage(chunk)):
+            return None
+        details = decode_usage(usage, variant=self._variant)
+        self._usage = normalize_stream_usage([self._usage or {}, details])
+        return details
 
     def _choice(self, index: int) -> _ChoiceState:
         return self._choices.setdefault(index, _ChoiceState())
@@ -325,7 +369,10 @@ class StreamState:
         # (``_complete_calls``), so it cannot turn a refusal into a failure.
         released = [call for call in pending if call.name or finished is None or finished.get(call.choice) != "length"]
         if released and self._refused:
-            raise refused_calls_error(usage_details=self._usage)
+            # The calls never go out: the stream settles on the refusal,
+            # raised once its usage is in (``failure``).
+            self._settled = True
+            return None
         if finished is None and any(not _arguments_complete(call) for call in pending):
             raise ProviderResponseError(
                 "stream_truncated",

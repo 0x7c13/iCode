@@ -23,6 +23,10 @@ from .exceptions import AdditionItemMismatch, ContentError
 logger = logging.getLogger(__name__)
 
 OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY: Final[str] = "openai.responses.output_message_envelope"
+# What tells the output items of a Responses stream apart on the function
+# calls it sends, each whole: its position and its item id. Two items are two
+# calls even under one call id, so their calls never merge.
+_RESPONSES_OUTPUT_ITEM_KEYS: Final = ("output_index", "fc_id")
 _ANTHROPIC_REDACTED_THINKING_KEY = "anthropic_redacted_thinking"
 
 
@@ -1688,6 +1692,10 @@ class Content:
         self_call_id = self.call_id
         if other_call_id and self_call_id != other_call_id:
             raise ContentError("Cannot add function calls with different call_ids")
+        for key in _RESPONSES_OUTPUT_ITEM_KEYS:
+            mine, theirs = self.additional_properties.get(key), other.additional_properties.get(key)
+            if mine is not None and theirs is not None and mine != theirs:
+                raise AdditionItemMismatch("Cannot merge function calls from different OpenAI Responses output items")
 
         self_arguments = self.arguments
         other_arguments = other.arguments

@@ -193,6 +193,15 @@ async def test_calls_sharing_a_call_id_with_text_between_stay_two_calls() -> Non
     assert _order(response)[1] == ("text", "And Rome.")
 
 
+async def test_adjacent_calls_sharing_a_call_id_stay_two_calls() -> None:
+    script = Script().started().call(0, "fc_1", "same", _PARIS).call(1, "fc_2", "same", _ROME)
+    script.finished(call_item("fc_1", "same", _PARIS), call_item("fc_2", "same", _ROME))
+
+    response, _ = await respond(script.reply(), stream=True)
+
+    assert _calls(response) == [("same", "lookup", _PARIS), ("same", "lookup", _ROME)]
+
+
 async def test_hosted_work_behind_a_call_is_reported_at_once_and_sent_after_the_call() -> None:
     script = Script().started().call_added(0, "fc_1", "call_1").call_deltas(0, "fc_1", _PARIS)
     item = mcp_item("mcp_1")

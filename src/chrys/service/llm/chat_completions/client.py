@@ -13,17 +13,18 @@ are the same client with another variant.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import AsyncIterable, Awaitable, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Self, override
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Self, override
 
 from openai import BadRequestError
 
 from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.util.once_close import OnceClose
-from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream
+from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream, report_wire_progress
 from chrys.kernel.exceptions import ChatClientException
 from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
 from chrys.service.llm.providers import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
@@ -43,11 +44,17 @@ from .validation import (
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from openai.types.chat import ChatCompletionChunk
 
     from chrys.kernel.compaction import CompactionStrategy, TokenizerProtocol
     from chrys.service.llm.observer import WireCallObserver
 
 logger = logging.getLogger(__name__)
+
+# How long what follows a settled stream is read for its usage, in all: a
+# connection held open after it must not hold the call until it stalls, which
+# would send it again.
+_SETTLED_STREAM_WAIT_SECONDS: Final = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,11 +217,15 @@ class ChatCompletionsClient(WireClient):
                 raw: Any = await self.sdk_client.chat.completions.with_raw_response.create(stream=True, **request)
                 replay = await validate_stream_response(raw)
                 sdk_stream = raw.parse()
+                chunks = aiter(sdk_stream)
                 received = False
-                async for chunk in sdk_stream:
+                async for chunk in chunks:
                     received = True
                     for update in state.updates_for(chunk):
                         yield update
+                    if state.settled:
+                        await _read_usage_after_settling(chunks, state)
+                        break
                 if not received:
                     # Valid framing with no event after it (comments only, or
                     # ``[DONE]`` alone) is never a usable completion.
@@ -222,14 +233,21 @@ class ChatCompletionsClient(WireClient):
                 # Some gateways end the stream without a finish reason.
                 if (calls := state.finish(requires_finish_reason=requires_finish_reason)) is not None:
                     yield calls
-            except json.JSONDecodeError as ex:
-                raise_invalid_response(
-                    f"Chat Completions API returned invalid stream event JSON ({ex}). "
-                    f"Event data: {bounded_body_preview(ex.doc)}"
-                )
-            except ChatClientException, ProviderResponseError:
+            except ProviderResponseError:
                 raise
             except Exception as ex:
+                # What the stream reported before it broke off or went quiet
+                # outranks how it ended: a refusal with calls, or a failure
+                # finish reason.
+                if (failure := state.failure()) is not None:
+                    raise failure from ex
+                if isinstance(ex, json.JSONDecodeError):
+                    raise_invalid_response(
+                        f"Chat Completions API returned invalid stream event JSON ({ex}). "
+                        f"Event data: {bounded_body_preview(ex.doc)}"
+                    )
+                if isinstance(ex, ChatClientException):
+                    raise
                 raise _service_error(type(self), ex) from ex
             finally:
                 if sdk_stream is not None:
@@ -239,6 +257,21 @@ class ChatCompletionsClient(WireClient):
                         logger.debug("Failed to close OpenAI chat-completion stream", exc_info=True)
 
         return self._build_response_stream(updates(), response_format=options.get("response_format"))
+
+
+async def _read_usage_after_settling(chunks: AsyncIterator[ChatCompletionChunk], state: StreamState) -> None:
+    """Read what follows the chunk that settled the stream, for its usage, within one bound.
+
+    That chunk arrived: the stall watchdog's idle timer restarts, so it fires
+    only after the bound. The state raises the error the stream settled on
+    once the usage is in; when the stream or the bound ends first, so does
+    the client (``StreamState.failure``).
+    """
+    report_wire_progress()
+    async with asyncio.timeout(_SETTLED_STREAM_WAIT_SECONDS):
+        async for chunk in chunks:
+            # A settled state yields nothing: it only takes the usage.
+            state.updates_for(chunk)
 
 
 class DeepSeekChatCompletionsClient(ChatCompletionsClient):

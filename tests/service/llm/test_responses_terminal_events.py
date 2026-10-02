@@ -525,6 +525,10 @@ _REFUSED_STREAMS = [
     ),
     pytest.param(Script().started().refusal(0, "msg_1", _REFUSAL).call(1, "fc_1", "call_1"), id="refusal_then_cut_off"),
     pytest.param(
+        Script().started().refusal(0, "msg_1", _REFUSAL).call(1, "fc_1", "call_1").breaks_off(),
+        id="refusal_then_the_connection_breaks",
+    ),
+    pytest.param(
         Script()
         .started()
         .refusal(0, "msg_1", _REFUSAL)
@@ -571,6 +575,46 @@ def _assert_refused(result: Any) -> None:
 @pytest.mark.parametrize("script", _REFUSED_STREAMS)
 async def test_a_refused_stream_runs_none_of_its_calls(script: Script) -> None:
     _assert_refused(await tool_runs(script.reply()))
+
+
+@pytest.mark.parametrize(
+    ("refusal", "call"),
+    [(True, True), (True, False), (False, True)],
+    ids=["refusal_with_a_call", "refusal_only", "call_only"],
+)
+async def test_a_stream_that_breaks_off_is_sent_again_unless_it_refused_with_calls(refusal: bool, call: bool) -> None:
+    refused = refusal and call
+    broken = Script().started()
+    if refusal:
+        broken.refusal(0, "msg_1", _REFUSAL)
+    if call:
+        broken.call(1, "fc_1", "call_1")
+    broken.breaks_off()
+    recovered = Script().started().text(0, "msg_2", "Sunny.").finished(resp_message("msg_2", "Sunny."))
+    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    retries: list[BaseException] = []
+
+    async with responses_client(broken.reply(), recovered.reply()) as (client, wire):
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[validation]))
+        result = layer.get_response(
+            [Message("user", ["What is the weather in Paris?"])],
+            stream=True,
+            # Local storage: the kernel retries the wire call in place.
+            options={"store": False},
+            client_kwargs={"wire_retry_policy": _policy(validation, retries)},
+        )
+        assert isinstance(result, ResponseStream)
+        if refused:
+            with pytest.raises(ProviderResponseError) as raised:
+                await result.get_final_response()
+            _assert_failure(raised.value, "content_filter", retryable=False)
+            assert paths(wire.requests) == ["POST /v1/responses"]
+            assert retries == []
+        else:
+            response = await result.get_final_response()
+            assert response.text == "Sunny."
+            assert paths(wire.requests) == ["POST /v1/responses", "POST /v1/responses"]
+            assert len(retries) == 1
 
 
 @pytest.mark.parametrize(
