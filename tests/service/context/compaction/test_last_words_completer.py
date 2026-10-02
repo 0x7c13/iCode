@@ -24,6 +24,7 @@ from chrys.service.context.compaction.scoped import ScopedGroup
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.service.context.compaction._last_words_helpers import (
     CharacterTokenizer,
+    FailingFallbackClient,
     FakeCompleter,
     FallbackClient,
     generate,
@@ -139,12 +140,8 @@ async def test_fallback_path_reports_the_usage_of_a_response_the_adapter_failed(
     reported: list = []
     gen = make_generator(tmp_path, report_usage=reported.append)
     usage = {"input_token_count": 7, "output_token_count": 3, "total_token_count": 10}
-
-    class _FailingClient:
-        async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            raise ProviderResponseError("content_filter", "Refused.", retryable=False, usage_details=usage)
-
-    gen._client = _FailingClient()  # type: ignore[assignment]
+    error = ProviderResponseError("content_filter", "Refused.", retryable=False, usage_details=usage)
+    gen._client = FailingFallbackClient(error)  # type: ignore[assignment]
 
     with pytest.raises(LastWordsGenerationError):
         await generate(

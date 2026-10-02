@@ -213,6 +213,11 @@ async def test_a_failed_response_counts_the_usage_it_reported(client: Callable[[
             False,
             id="no_usage_reported",
         ),
+        pytest.param(
+            lambda: _chat_completions([_chunk(content="Partial"), _chunk(finish_reason="network_error")]),
+            True,
+            id="no_usage_streamed",
+        ),
     ],
 )
 async def test_a_failed_response_without_usage_counts_nothing(client: Callable[[], Any], stream: bool) -> None:
