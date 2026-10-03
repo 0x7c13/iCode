@@ -360,6 +360,19 @@ def test_only_a_retry_notice_names_a_stalled_stream(
     assert (_key(message), hint) == (key, None)
 
 
+@pytest.mark.parametrize(
+    ("retry_notice", "key"), [(True, "retry.context_overflow"), (False, "error.kind.context_overflow")]
+)
+def test_a_retry_notice_for_a_context_overflow_announces_the_resend_after_compacting(
+    monkeypatch: pytest.MonkeyPatch, retry_notice: bool, key: str
+) -> None:
+    _classified(monkeypatch, ErrorKind.CONTEXT_OVERFLOW, _DIRECT)
+
+    message, hint = display_fields(RuntimeError("stand-in"), retry_notice=retry_notice)
+
+    assert (_key(message), hint) == (key, None)
+
+
 def test_display_fields_is_empty_for_raw_text_kinds(monkeypatch: pytest.MonkeyPatch) -> None:
     _classified(monkeypatch, ErrorKind.UNKNOWN, _DIRECT)
 

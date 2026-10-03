@@ -2876,6 +2876,7 @@ class ToolLoopLayer:
             max_attempts: int,
             delay_seconds: int | None = None,
             fallback_to_blocking: bool = False,
+            retry_mode: str | None = None,
         ) -> None:
             if mutable_options.get("continuation_token") is None:
                 # A retry that resumes an already-created response via its
@@ -2886,7 +2887,8 @@ class ToolLoopLayer:
                 policy.before_retry()
             delay = policy.backoff_seconds(attempt - 1) if delay_seconds is None else delay_seconds
             stalled = isinstance(exc, StreamStall)
-            retry_mode = RetryMode.STALL_FALLBACK if fallback_to_blocking else RetryMode.WIRE
+            if retry_mode is None:
+                retry_mode = RetryMode.STALL_FALLBACK if fallback_to_blocking else RetryMode.WIRE
             await _trajectory_retry(
                 reason_code=RetryReason.STREAM_STALL if stalled else RetryReason.TRANSIENT_ERROR,
                 retry_mode=retry_mode,
@@ -2924,15 +2926,42 @@ class ToolLoopLayer:
             # The provider measured the real input and found the window full:
             # the strategy compacts before the next request instead of letting
             # it resend the rejected input. Runs before any retry decision, so
-            # service-side runs (no wire policy) are noted too.
+            # service-side runs (no wire policy) are noted too. Returns whether
+            # compacting and resending can help.
             if not isinstance(compaction_strategy, ContextOverflowSink) or not is_context_overflow(exc):
                 return False
             return compaction_strategy.note_context_overflow(exc)
+
+        def _resends_after_overflow(policy: WireRetryPolicy, *, noted: bool, recovered: bool) -> bool:
+            # One in-place resend per logical call, outside the transient and
+            # stall budgets. Service-side runs have no wire policy and only
+            # keep the note; a live continuation token would poll the rejected
+            # response, and hosted work an attempt already ran must not rerun.
+            return (
+                noted
+                and not recovered
+                and mutable_options.get("continuation_token") is None
+                and not _hosted_commits_vetoing_replay(policy)
+            )
+
+        async def _schedule_overflow_resend(policy: WireRetryPolicy, exc: BaseException) -> None:
+            # The strategy holds the note, so the resend's client preparation
+            # compacts before the request goes out.
+            await _schedule_wire_retry(
+                policy,
+                exc,
+                message=clean_error_message(exc),
+                attempt=1,
+                max_attempts=1,
+                delay_seconds=0,
+                retry_mode=RetryMode.CONTEXT_OVERFLOW,
+            )
 
         async def _blocking_response_with_retry(
             prepped: list[Message],
             *,
             request_message_observer: Callable[[Sequence[Message]], None],
+            overflow_recovered: bool = False,
         ) -> ChatResponse:
             retry_attempt = 0
             while True:
@@ -2966,7 +2995,13 @@ class ToolLoopLayer:
                         # issue a fresh request, never re-poll the completed
                         # (immutable) one.
                         _track_continuation_token(None)
-                    _note_context_overflow(exc)
+                    noted = _note_context_overflow(exc)
+                    if policy is not None and _resends_after_overflow(
+                        policy, noted=noted, recovered=overflow_recovered
+                    ):
+                        overflow_recovered = True
+                        await _schedule_overflow_resend(policy, exc)
+                        continue
                     if policy is None or not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
                         raise
                     hosted_commits = _hosted_commits_vetoing_replay(policy)
@@ -3032,6 +3067,7 @@ class ToolLoopLayer:
                 nonlocal final_response
                 retry_attempt = 0
                 stall_retry_attempt = 0
+                overflow_recovered = False
                 while True:
                     policy = wire_retry_policy
                     if policy is not None and policy.is_interrupted():
@@ -3109,7 +3145,7 @@ class ToolLoopLayer:
                             # must issue a fresh request, never re-poll the
                             # completed (immutable) one.
                             _track_continuation_token(None)
-                        _note_context_overflow(exc)
+                        noted = _note_context_overflow(exc)
                         if policy is None:
                             raise
                         hosted_commits = _hosted_commits_vetoing_replay(policy)
@@ -3120,6 +3156,12 @@ class ToolLoopLayer:
                                 ", ".join(str(label) for label in hosted_commits),
                             )
                             raise
+                        if _resends_after_overflow(policy, noted=noted, recovered=overflow_recovered):
+                            overflow_recovered = True
+                            await _schedule_overflow_resend(policy, exc)
+                            logical_stream._updates.clear()
+                            yield ChatResponseUpdate.retry_boundary()
+                            continue
                         if isinstance(exc, StreamStall):
                             if stall_retry_attempt >= policy.stall_max_retries:
                                 if policy.stall_exhausted_action is StallExhaustedAction.RAISE:
@@ -3138,6 +3180,7 @@ class ToolLoopLayer:
                                 final_response = await _blocking_response_with_retry(
                                     prepped,
                                     request_message_observer=request_message_observer,
+                                    overflow_recovered=overflow_recovered,
                                 )
                                 return
                             stall_retry_attempt += 1

@@ -83,7 +83,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
-| Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. | On close |
+| Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. This setting does not cover the one resend after iCode compacts a full context window. | On close |
 
 ### Security
 

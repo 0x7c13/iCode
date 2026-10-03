@@ -114,6 +114,9 @@ _CONTENT_FILTERED = msg(
 )
 _STREAM_TRUNCATED = msg("error.kind.stream_truncated", fallback="The model's response was cut off.")
 _STREAM_STALLED = msg("retry.stream_stalled", fallback="Stream stalled")
+_CONTEXT_OVERFLOW_RESEND = msg(
+    "retry.context_overflow", fallback="The context window is full. Compacting the context before one retry."
+)
 # The probe checks the device {app} runs on: under ``icode serve`` that is the
 # server, not the device showing the browser.
 _MAYBE_OFFLINE = msg(
@@ -219,12 +222,15 @@ def describe_error(
     *route_probe* runs only for a direct request to a public host that
     failed to resolve or connect; it adds a hint and never changes the
     message.  A *retry_notice* also names a stalled stream; a paused
-    sub-agent's card already labels a stall by its pause reason.
+    sub-agent's card already labels a stall by its pause reason.  A retry
+    notice for a context overflow is the one resend after compacting.
     """
     result = classify_error(exc)
     kind = result.kind
     if kind is ErrorKind.STREAM_STALLED and retry_notice:
         return ErrorDescription(kind, _STREAM_STALLED.bind())
+    if kind is ErrorKind.CONTEXT_OVERFLOW and retry_notice:
+        return ErrorDescription(kind, _CONTEXT_OVERFLOW_RESEND.bind())
     if (definition := _HOSTLESS_MESSAGES.get(kind)) is not None:
         return ErrorDescription(kind, definition.bind()) if result.from_model_service else None
     if kind in NETWORK_KINDS:

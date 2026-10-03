@@ -564,7 +564,10 @@ class InvocationCompactionCommitted(InvocationEvent):
 
 @dataclass
 class InvocationRetryAttempt(InvocationEvent):
-    """Executor is retrying a transient error (published before each retry sleep)."""
+    """Executor is retrying a transient error (published before each retry sleep).
+
+    Also announces the one resend after a context overflow, which compacts first.
+    """
 
     agent_name: str = ""
     message: str = ""

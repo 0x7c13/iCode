@@ -2,34 +2,30 @@
 
 """The loop tells the compaction strategy when the provider found the context window full.
 
-The request still fails; the note makes the strategy compact before the next
-one. Only a strict context overflow counts, and it is noted with or without a
-wire retry policy (service-side storage runs have none).
+The note makes the strategy compact before the next request. Only a strict
+context overflow counts, and it is noted with or without a wire retry policy
+(service-side storage runs have none). The one resend the note allows is
+covered in ``test_loop_context_overflow_recovery``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
-from chrys.foundation.retry import StreamStall
-from chrys.kernel import ContextOverflowSink, Message, StallExhaustedAction
-from tests.kernel._fakes import _final_response, _stack, _text_response, _text_update, _user
-from tests.support.provider_errors import openai_status
-
-_OVERFLOW = (
-    400,
-    {
-        "error": {
-            "type": "invalid_request_error",
-            "code": "context_length_exceeded",
-            "message": "This model's maximum context length is 131072 tokens. "
-            "However, your messages resulted in 140000 tokens.",
-        }
-    },
+from chrys.kernel import ContextOverflowSink, Message
+from tests.kernel._fakes import (
+    _final_response,
+    _OverflowSink,
+    _stack,
+    _text_response,
+    _text_update,
+    _user,
+    _WireRetryPolicy,
 )
+from tests.support.provider_errors import openai_context_overflow, openai_status
+
 _NOT_OVERFLOW = {
     "payload_too_large": (
         413,
@@ -47,20 +43,6 @@ _NOT_OVERFLOW = {
 }
 
 
-class _Sink:
-    """A compaction strategy reduced to the overflow note."""
-
-    def __init__(self) -> None:
-        self.notes: list[BaseException | None] = []
-
-    async def __call__(self, messages: list[Message], context: Any = None) -> bool:
-        return False
-
-    def note_context_overflow(self, exc: BaseException | None = None) -> bool:
-        self.notes.append(exc)
-        return True
-
-
 class _NoNote:
     """A compaction strategy without the note, as a test double or third party has."""
 
@@ -73,37 +55,8 @@ class _NoNote:
         return False
 
 
-@dataclass
-class _Policy:
-    """Local-storage wire retry that retries nothing a provider rejected."""
-
-    max_retries: int = 2
-    stall_timeout_seconds: float | None = None
-    stall_max_retries: int = 0
-    stall_exhausted_action: StallExhaustedAction = StallExhaustedAction.BLOCKING_FALLBACK
-    retries: list[BaseException] = field(default_factory=list)
-
-    def backoff_seconds(self, _attempt: int) -> int:
-        return 0
-
-    def is_retryable(self, exc: BaseException) -> bool:
-        return isinstance(exc, ConnectionError | StreamStall)
-
-    def is_interrupted(self) -> bool:
-        return False
-
-    async def sleep(self, seconds: int) -> bool:
-        return False
-
-    async def on_retry(self, message: str, attempt: int, max_attempts: int, delay: int, exc: BaseException) -> None:
-        self.retries.append(exc)
-
-    def before_retry(self) -> None:
-        pass
-
-
 async def _fail(
-    error: BaseException, *, strategy: Any, stream: bool, policy: _Policy | None, mid_stream: bool = False
+    error: BaseException, *, strategy: Any, stream: bool, policy: _WireRetryPolicy | None, mid_stream: bool = False
 ) -> int:
     """Run one logical call that fails with *error*; return how many wire calls it made."""
     layer, wire = _stack([[_text_update("partial"), error] if mid_stream else error])
@@ -128,9 +81,10 @@ _CALL_SHAPES = [
 async def test_a_context_overflow_is_noted_once_and_the_call_still_fails(
     with_policy: bool, stream: bool, mid_stream: bool
 ) -> None:
-    error = await openai_status(*_OVERFLOW)
-    sink = _Sink()
-    policy = _Policy() if with_policy else None
+    """The strategy says a resend cannot help, so even a local run fails at once."""
+    error = await openai_context_overflow()
+    sink = _OverflowSink(resend_helps=False)
+    policy = _WireRetryPolicy() if with_policy else None
 
     wire_calls = await _fail(error, strategy=sink, stream=stream, policy=policy, mid_stream=mid_stream)
 
@@ -143,17 +97,17 @@ async def test_a_context_overflow_is_noted_once_and_the_call_still_fails(
 @pytest.mark.parametrize("name", sorted(_NOT_OVERFLOW))
 async def test_other_rejections_are_not_noted(stream: bool, name: str) -> None:
     error = await openai_status(*_NOT_OVERFLOW[name])
-    sink = _Sink()
+    sink = _OverflowSink()
 
-    await _fail(error, strategy=sink, stream=stream, policy=_Policy())
+    await _fail(error, strategy=sink, stream=stream, policy=_WireRetryPolicy())
 
     assert sink.notes == []
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 async def test_a_transient_failure_that_recovers_is_not_noted(stream: bool) -> None:
-    sink = _Sink()
-    policy = _Policy()
+    sink = _OverflowSink()
+    policy = _WireRetryPolicy()
     success: Any = [_text_update("done")] if stream else _text_response("done")
     layer, wire = _stack([ConnectionError("peer closed connection"), success])
 
@@ -174,6 +128,6 @@ async def test_a_transient_failure_that_recovers_is_not_noted(stream: bool) -> N
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 async def test_without_a_sink_the_overflow_fails_unchanged(strategy: Any, stream: bool) -> None:
     assert not isinstance(strategy, ContextOverflowSink)
-    error = await openai_status(*_OVERFLOW)
+    error = await openai_context_overflow()
 
-    assert await _fail(error, strategy=strategy, stream=stream, policy=_Policy()) == 1
+    assert await _fail(error, strategy=strategy, stream=stream, policy=_WireRetryPolicy()) == 1

@@ -356,6 +356,7 @@
         ["wrapper", "await _resolve_response(await _wire_call(prepped, as_stream=False, request_message_observer=request_message_observer))", "unresolved", "chrys.kernel.loop._resolve_response"],
         ["awaitable", "await _wire_call(prepped, as_stream=False, request_message_observer=request_message_observer)", "unresolved"],
         ["awaitable", "await _pause_between_continuation_polls()", "unresolved"],
+        ["awaitable", "await _schedule_overflow_resend(policy, exc)", "unresolved"],
         ["awaitable", "await _schedule_wire_retry(policy, exc, message=clean_error_message(exc), attempt=retry_attempt, max_attempts=policy.max_retries)", "unresolved"]
       ],
       "ToolLoopLayer.get_response._get_response": [
@@ -373,6 +374,9 @@
       ],
       "ToolLoopLayer.get_response._pause_between_continuation_polls": [
         ["sleep", "await asyncio.sleep(CONTINUATION_POLL_INTERVAL_SECONDS)", "unresolved"]
+      ],
+      "ToolLoopLayer.get_response._schedule_overflow_resend": [
+        ["awaitable", "await _schedule_wire_retry(policy, exc, message=clean_error_message(exc), attempt=1, max_attempts=1, delay_seconds=0, retry_mode=RetryMode.CONTEXT_OVERFLOW)", "unresolved"]
       ],
       "ToolLoopLayer.get_response._schedule_wire_retry": [
         ["awaitable", "await _trajectory_retry(reason_code=RetryReason.STREAM_STALL if stalled else RetryReason.TRANSIENT_ERROR, retry_mode=retry_mode, delay_seconds=delay, fallback_to_blocking=fallback_to_blocking)", "unresolved"],
@@ -402,8 +406,9 @@
         ["awaitable", "await _pause_between_continuation_polls()", "unresolved"],
         ["awaitable", "await inner_stream.aclose()", "unresolved"],
         ["awaitable", "await inner_stream.aclose()", "unresolved"],
+        ["awaitable", "await _schedule_overflow_resend(policy, exc)", "unresolved"],
         ["awaitable", "await _schedule_wire_retry(policy, exc, message='Stream stalled; retrying with a blocking response', attempt=stall_retry_attempt + 1, max_attempts=policy.stall_max_retries + 1, delay_seconds=0, fallback_to_blocking=True)", "unresolved"],
-        ["awaitable", "await _blocking_response_with_retry(prepped, request_message_observer=request_message_observer)", "unresolved"],
+        ["awaitable", "await _blocking_response_with_retry(prepped, request_message_observer=request_message_observer, overflow_recovered=overflow_recovered)", "unresolved"],
         ["awaitable", "await _schedule_wire_retry(policy, exc, message='Stream stalled', attempt=stall_retry_attempt, max_attempts=policy.stall_max_retries)", "unresolved"],
         ["awaitable", "await _schedule_wire_retry(policy, exc, message=clean_error_message(exc), attempt=retry_attempt, max_attempts=policy.max_retries)", "unresolved"]
       ],

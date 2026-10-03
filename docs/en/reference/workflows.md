@@ -603,9 +603,10 @@ Automatic retry after a node failure depends on the error type and the node's `R
 | --- | --- |
 | A Python node's function raises an exception or times out | `Retry.max_attempts` has not been reached |
 | A non-ACP agent node's model request hits a temporary error, such as a dropped connection, a rate limit or a request timeout | The request is first retried within the attempt, as in chat. If it still fails, the node is retried while `Retry.max_attempts` has not been reached |
+| A non-ACP agent node's model request is too long for the model's context window | With context compaction on, the context is compacted and the request is sent once more within the attempt, as in chat. If it still fails, the node is not retried automatically |
 | A non-ACP agent node reaches its `timeout` | `Retry.max_attempts` has not been reached |
 | An external ACP agent node loses its connection, stops responding, reports an error, or reaches its `timeout` | `Retry.max_attempts` has not been reached. iCode cannot tell which errors an external agent reports are permanent, so it retries them all. It does not retry an agent that cannot be started, one that still cannot be reached after the attempt retried the connection several times, a rejected configuration, or an answer the agent refuses, cuts short or leaves empty |
-| Errors that retrying cannot fix, such as an exhausted quota or plan, a conversation too long for the model, or an external agent that needs you to log in; also failed condition or combine calculations, unserializable or oversized return values, user questions in an environment that does not support them, and similar errors | Not retried automatically |
+| Errors that retrying cannot fix, such as an exhausted quota or plan, or an external agent that needs you to log in; also failed condition or combine calculations, unserializable or oversized return values, user questions in an environment that does not support them, and similar errors | Not retried automatically |
 
 If retrying could make the model provider run one of its own tools a second time, such as an MCP server or shell the provider runs, the node is not retried automatically. Provider-run search and code execution are safe to repeat and don't stop retries; neither do iCode's own file, Shell or MCP tools.
 

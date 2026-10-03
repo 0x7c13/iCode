@@ -27,21 +27,13 @@ from tests.service.context.compaction._compaction_helpers import (
     _make_strategy,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
-from tests.support.provider_errors import openai_status, raised_from
+from tests.support.provider_errors import openai_context_overflow, raised_from
 
 _USAGE = 0.7  # between the default target (0.50) and trigger (0.85)
-_OVERFLOW_BODY = {
-    "error": {
-        "type": "invalid_request_error",
-        "code": "context_length_exceeded",
-        "message": "This model's maximum context length is 131072 tokens. "
-        "However, your messages resulted in 140000 tokens.",
-    }
-}
 
 
 async def _overflow() -> BaseException:
-    return await openai_status(400, _OVERFLOW_BODY)
+    return await openai_context_overflow()
 
 
 def _messages() -> list[Message]:

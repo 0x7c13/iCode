@@ -588,6 +588,13 @@ msgstr ""
 msgid "restore.sub_agents_discarded"
 msgstr ""
 
+#. English: The context window is full. Compacting the context before one
+#. retry.
+#. chrys-meta={"fingerprint":"4590c026541e884340855fb290e2e5e0e43ee38b846f8c90257d1e986fe28054","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "retry.context_overflow"
+msgstr ""
+
 #. English: Invalid response: {reason}
 #. chrys-meta={"fingerprint":"1015c4dc6fb6325fb498abc40fc15262f621140c328d1290f38881be09991edb","multiline":true,"placeholders":["reason"]}
 #: src/chrys/orchestration/engine/build/builder.py

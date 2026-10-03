@@ -53,7 +53,9 @@ _NEVER_DISPATCHED_TOOL_OUTCOMES: Final = frozenset(
     }
 )
 _MODEL_OPERATION_FAMILIES: Final = frozenset({"model.run", "model.cycle", "model.exchange"})
-_RETRY_EXCHANGE_MODES: Final = frozenset({RetryMode.WIRE, RetryMode.STALL_FALLBACK, RetryMode.VALIDATION})
+_RETRY_EXCHANGE_MODES: Final = frozenset(
+    {RetryMode.WIRE, RetryMode.STALL_FALLBACK, RetryMode.VALIDATION, RetryMode.CONTEXT_OVERFLOW}
+)
 
 
 @dataclass(frozen=True, slots=True)

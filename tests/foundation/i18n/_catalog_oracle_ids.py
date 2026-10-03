@@ -119,7 +119,6 @@ _message_ids: set[str | tuple[str, str]] = {
     "retry.invalid_response",
     "retry.last_words_compaction",
     "retry.missing_user_anchor",
-    "retry.stream_stalled",
     "retry.sub_agent_paused",
     "rollback.conversation_advanced",
     "rollback.conversation_changed",

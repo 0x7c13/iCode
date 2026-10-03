@@ -687,11 +687,14 @@ def error_on_nth(
     n: int,
     *,
     message: str = "Simulated non-retryable error",
+    error: BaseException | None = None,
 ) -> Callable[[], None]:
     """Make the ``n``-th LLM call raise; return a callable restoring the client.
 
     Simulates a non-retryable failure part-way through a tool loop so the test
-    can assert that the iterations completed before it survive.
+    can assert that the iterations completed before it survive. *error*, such
+    as a real provider rejection, replaces the default ``RuntimeError``. The
+    failed call consumes no scripted response.
     """
     original = ctx.mock_client._inner_get_response
     calls = itertools.count(1)
@@ -700,7 +703,7 @@ def error_on_nth(
         if next(calls) == n:
 
             async def _throw():
-                raise RuntimeError(message)
+                raise error if error is not None else RuntimeError(message)
 
             return _throw()
         return original(messages=messages, stream=stream, options=options, **kwargs)

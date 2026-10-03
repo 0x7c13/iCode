@@ -262,6 +262,8 @@ class RetryMode:
     """A compaction side call is retried without replaying the model run."""
     VALIDATION = "validation"
     """The response was rejected by validation and the request is re-issued."""
+    CONTEXT_OVERFLOW = "context_overflow"
+    """The provider found the context window full; the request is re-issued once after compacting."""
 
 
 class RetryReason:
