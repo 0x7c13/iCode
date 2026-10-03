@@ -69,7 +69,7 @@ def test_profile_to_dict_non_defaults_emitted() -> None:
         bypass_proxy=True,
         http_headers='{"X-Foo": "bar"}',
         chat_options='{"temperature": 0.5}',
-        stream=True,
+        stream=False,
         vision=True,
     )
     d = profile_to_dict(p)
@@ -90,7 +90,7 @@ def test_profile_to_dict_non_defaults_emitted() -> None:
     assert d["bypass_proxy"] is True
     assert d["http_headers"] == '{"X-Foo": "bar"}'
     assert d["chat_options"] == '{"temperature": 0.5}'
-    assert d["stream"] is True
+    assert d["stream"] is False
     assert d["vision"] is True
 
 
@@ -192,3 +192,21 @@ def test_stream_requires_finish_reason_round_trips(tmp_path: Path) -> None:
     assert data["stream_requires_finish_reason"] is True
     assert "stream_requires_finish_reason" not in profile_to_dict(ModelProfile(id="d", name="D"))
     assert load_profile_from_yaml(path).stream_requires_finish_reason is True
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_stream_round_trips_through_disk(fake_config_dir: Path, stream: bool) -> None:
+    """Streaming on is the default and is omitted on disk; off is written out and survives a re-save."""
+    profile = ModelProfile(id="rt", name="RT", stream=stream, stream_requires_finish_reason=True)
+    path = save_profile(profile)
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert ("stream" in raw) is (not stream)
+    if not stream:
+        assert raw["stream"] is False
+    loaded = load_profile_from_yaml(path)
+    assert loaded.stream is stream
+    assert loaded.stream_requires_finish_reason is True
+
+    save_profile(loaded)
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == raw

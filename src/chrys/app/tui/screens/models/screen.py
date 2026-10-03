@@ -864,7 +864,7 @@ class ModelConfigScreen(BaseDialog[str]):
 
                         yield Checkbox(
                             render_str(localizer, _STREAMING.bind()),
-                            value=False,
+                            value=True,
                             id="mc-stream",
                             classes="mc-checkbox",
                         )

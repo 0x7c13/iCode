@@ -486,6 +486,51 @@ def test_write_model_profile_clears_emptied_fields_but_keeps_api_key(monkeypatch
     assert saved["profile"].api_key == "real-secret"
 
 
+def _capture_model_profile_saves(monkeypatch: pytest.MonkeyPatch) -> list[ModelProfile]:
+    saved: list[ModelProfile] = []
+
+    def _fake_save(profile: ModelProfile) -> str:
+        saved.append(profile)
+        return "/tmp/fake.yaml"
+
+    monkeypatch.setattr(session_manager_module, "save_model_profile", _fake_save)
+    return saved
+
+
+@pytest.mark.parametrize(
+    ("stream_field", "expected"),
+    [({}, True), ({"stream": None}, True), ({"stream": False}, False)],
+    ids=["missing", "null", "false"],
+)
+def test_write_model_profile_new_profile_streams_unless_stream_is_false(
+    monkeypatch: pytest.MonkeyPatch, stream_field: dict[str, object], expected: bool
+) -> None:
+    agent_registry = AgentProfileRegistry()
+    agent_registry.register(AgentProfile(name="Code"))
+    manager = _profile_manager("Code", agent_registry, ModelProfileRegistry())
+    saved = _capture_model_profile_saves(monkeypatch)
+
+    manager.write_model_profile({"id": "new-model", "name": "New", **stream_field})
+
+    assert [profile.stream for profile in saved] == [expected]
+
+
+@pytest.mark.parametrize("stream_field", [{}, {"stream": None}], ids=["missing", "null"])
+def test_write_model_profile_update_without_stream_keeps_the_stored_value(
+    monkeypatch: pytest.MonkeyPatch, stream_field: dict[str, object]
+) -> None:
+    agent_registry = AgentProfileRegistry()
+    agent_registry.register(AgentProfile(name="Code"))
+    model_registry = ModelProfileRegistry()
+    model_registry.register(ModelProfile(id="model", name="Mock", stream=False))
+    manager = _profile_manager("Code", agent_registry, model_registry)
+    saved = _capture_model_profile_saves(monkeypatch)
+
+    manager.write_model_profile({"id": "model", "name": "Renamed", **stream_field})
+
+    assert [(profile.name, profile.stream) for profile in saved] == [("Renamed", False)]
+
+
 @pytest.mark.parametrize("spelling", ["code", "CODE", "cOdE"])
 @pytest.mark.parametrize("has_shadow", [False, True])
 def test_delete_agent_profile_rejects_case_variant_of_builtin_name(

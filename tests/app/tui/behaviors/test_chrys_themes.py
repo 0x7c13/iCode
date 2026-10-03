@@ -608,6 +608,8 @@ async def test_chrys_ansi_config_inner_borders_are_lighter(
             _, model_sidebar_color = models_screen.query_one("#mc-sidebar").styles.border_right
             option_section_border = models_screen.query_one("#mc-model-options").styles.border
             model_stream = models_screen.query_one("#mc-stream", Checkbox)
+            model_stream.value = False
+            await pilot.pause()
             model_unchecked_checkbox_style = model_stream.get_component_rich_style("toggle--button")
             model_stream.value = True
             await pilot.pause()
