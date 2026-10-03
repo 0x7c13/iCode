@@ -119,6 +119,21 @@ _CONTEXT_OVERFLOW_PATTERNS = tuple(
         r"exceeded model token limit",  # Kimi
     )
 )
+# The window limit, in tokens, that an overflow phrasing above names: a
+# plain decimal, optionally with thousands commas; never a "128k" shorthand.
+_LIMIT = r"(\d{1,3}(?:,\d{3})+|\d+)(?!\w|[.,]\d)"
+_CONTEXT_LIMIT_PATTERNS = tuple(
+    re.compile(pattern.replace("{limit}", _LIMIT), re.IGNORECASE)
+    for pattern in (
+        r"maximum context length is {limit} tokens",  # OpenAI, vLLM, DeepSeek, OpenRouter
+        r"prompt is too long: [\d,]+ tokens > {limit} maximum",  # Anthropic
+        r"maximum number of tokens allowed \({limit}\)",  # Google Gemini
+        r"maximum prompt length is {limit}",  # xAI
+        r"available context size \({limit} tokens\)",  # llama.cpp
+        r"n_ctx: {limit}",  # LM Studio
+        r"exceeded model token limit: {limit}",  # Kimi
+    )
+)
 # Throttling that happens to mention tokens ("Too many tokens, please wait",
 # "too many tokens per minute", a daily token quota) is a rate limit, not an
 # oversized request.  Without a provider signal the text is the only
@@ -390,6 +405,18 @@ def names_context_overflow(signal: ProviderSignal | None, unstructured_texts: It
     if signal.code in _CONTEXT_OVERFLOW_CODES:
         return True
     return _names_overflow((signal.message or "", _clean_exception_text(source)))
+
+
+def named_context_limit(texts: Iterable[str]) -> int | None:
+    """Return the one positive window limit, in tokens, that an overflow's *texts* name; None for none or several."""
+    limits = {
+        int(match.group(1).replace(",", ""))
+        for text in texts
+        for pattern in _CONTEXT_LIMIT_PATTERNS
+        for match in pattern.finditer(text)
+    }
+    limits.discard(0)
+    return limits.pop() if len(limits) == 1 else None
 
 
 def names_server_error_overflow(signal: ProviderSignal) -> bool:

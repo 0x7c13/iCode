@@ -327,7 +327,11 @@ class KernelSubAgentPolicy:
         await self._shell.cascade_abort()
 
     def _record_failure(self, exc: Exception) -> None:
-        self._last_error_display, self._last_error_hint = display_fields(exc)
+        # The child's own window: its profile may differ from the parent's.
+        strategy = self._compaction.strategy
+        self._last_error_display, self._last_error_hint = display_fields(
+            exc, max_context_tokens=strategy.max_context_tokens if strategy is not None else None
+        )
         if isinstance(exc, StreamStallExhausted):
             # Keep the original stall message (chained via __cause__)
             # so the pause banner shows the underlying reason instead

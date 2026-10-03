@@ -27,7 +27,7 @@ from tests.service.context.compaction._compaction_helpers import (
     _make_strategy,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
-from tests.support.provider_errors import openai_context_overflow, raised_from
+from tests.support.provider_errors import openai_context_overflow, openai_status, raised_from
 
 _USAGE = 0.7  # between the default target (0.50) and trigger (0.85)
 
@@ -82,6 +82,21 @@ async def test_a_note_without_the_error_still_forces_the_pass() -> None:
     strategy = _make_strategy(max_context_tokens=_window())
 
     assert strategy.note_context_overflow() is True
+    assert await strategy(_messages()) is True
+
+
+@pytest.mark.parametrize(
+    ("limit_offset", "resend_helps"), [(-1, False), (0, True)], ids=["server_limit_below_profile", "equal"]
+)
+async def test_a_server_limit_below_the_profiles_window_rules_out_the_resend_but_still_compacts(
+    limit_offset: int, resend_helps: bool
+) -> None:
+    window = _window()
+    message = f"This model's maximum context length is {window + limit_offset} tokens."
+    error = await openai_status(400, {"error": {"type": "invalid_request_error", "message": message}})
+    strategy = _make_strategy(max_context_tokens=window)
+
+    assert strategy.note_context_overflow(error) is resend_helps
     assert await strategy(_messages()) is True
 
 

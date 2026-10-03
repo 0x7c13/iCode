@@ -15,6 +15,7 @@ ERROR_MESSAGE_IDS = frozenset(
         "error.kind.connection_refused",
         "error.kind.content_filtered",
         "error.kind.context_overflow",
+        "error.kind.context_overflow_config_mismatch",
         "error.kind.dns_failed",
         "error.kind.host_unreachable",
         "error.kind.invalid_endpoint",

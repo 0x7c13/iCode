@@ -22,7 +22,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.net.route_probe import default_route_available, is_local_target
 
-from .classify import ErrorClassification, classify_error
+from .classify import ErrorClassification, classify_error, context_overflow_limit
 from .kinds import NETWORK_KINDS, ErrorKind
 from .route import Origin
 
@@ -99,6 +99,14 @@ _CONTEXT_OVERFLOW = msg(
     fallback=(
         "The request exceeds the model's context window. "
         "Check that the profile's context window matches the model's real one."
+    ),
+)
+_CONTEXT_OVERFLOW_CONFIG_MISMATCH = msg(
+    "error.kind.context_overflow_config_mismatch",
+    fallback=(
+        "The model profile's maximum context window ({configured_max_context_tokens}) is larger than the server's "
+        'limit ({server_max_context_tokens}). Set "Max Context Window" in the model profile '
+        "to {server_max_context_tokens} or less."
     ),
 )
 _PAYLOAD_TOO_LARGE = msg(
@@ -216,6 +224,7 @@ def describe_error(
     *,
     route_probe: Callable[[], bool | None] = default_route_available,
     retry_notice: bool = False,
+    max_context_tokens: int | None = None,
 ) -> ErrorDescription | None:
     """Describe *exc* for the user, or None when the raw text is the best description.
 
@@ -224,6 +233,8 @@ def describe_error(
     message.  A *retry_notice* also names a stalled stream; a paused
     sub-agent's card already labels a stall by its pause reason.  A retry
     notice for a context overflow is the one resend after compacting.
+    *max_context_tokens*, the failed request's configured window, lets an
+    overflow whose provider names a smaller limit say which value to set.
     """
     result = classify_error(exc)
     kind = result.kind
@@ -232,16 +243,29 @@ def describe_error(
     if kind is ErrorKind.CONTEXT_OVERFLOW and retry_notice:
         return ErrorDescription(kind, _CONTEXT_OVERFLOW_RESEND.bind())
     if (definition := _HOSTLESS_MESSAGES.get(kind)) is not None:
-        return ErrorDescription(kind, definition.bind()) if result.from_model_service else None
+        if not result.from_model_service:
+            return None
+        if kind is ErrorKind.CONTEXT_OVERFLOW and max_context_tokens is not None:
+            limit = context_overflow_limit(exc)
+            if limit is not None and limit < max_context_tokens:
+                return ErrorDescription(
+                    kind,
+                    _CONTEXT_OVERFLOW_CONFIG_MISMATCH.bind(
+                        configured_max_context_tokens=max_context_tokens, server_max_context_tokens=limit
+                    ),
+                )
+        return ErrorDescription(kind, definition.bind())
     if kind in NETWORK_KINDS:
         return _describe_network(result, route_probe)
     return None
 
 
-def display_fields(exc: BaseException, *, retry_notice: bool = False) -> tuple[MessageRef | None, MessageRef | None]:
+def display_fields(
+    exc: BaseException, *, retry_notice: bool = False, max_context_tokens: int | None = None
+) -> tuple[MessageRef | None, MessageRef | None]:
     """Return ``(display_message, display_hint)`` for a failure event; ``(None, None)`` on any internal error."""
     try:
-        description = describe_error(exc, retry_notice=retry_notice)
+        description = describe_error(exc, retry_notice=retry_notice, max_context_tokens=max_context_tokens)
     except Exception:
         logger.debug("Describing an error for display failed", exc_info=True)
         return None, None

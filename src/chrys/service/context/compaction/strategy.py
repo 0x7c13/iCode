@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from chrys.foundation.errors import iter_explicit_graph
+from chrys.foundation.errors import context_overflow_limit, iter_explicit_graph
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import current_trajectory
 from chrys.foundation.trajectory.event_types import CompactionSkipReason
@@ -695,15 +695,19 @@ class UnifiedContextStrategy:
 
         Not for a failure of compaction's own last-words call (owner-terminal;
         its fallback text names the context window), nor while compaction is
-        off, which would only record a misleading skip. Returns whether
-        compacting and resending the same request can help.
+        off, which would only record a misleading skip. Returns whether to
+        compact and resend the same request: not when the provider names a
+        smaller window than this one, since requests sized for this window
+        keep overflowing until the user sets the right one; the failure then
+        tells the user which value to set.
         """
         if exc is not None and any(isinstance(node, LastWordsGenerationError) for node in iter_explicit_graph(exc)):
             return False
         if not self._compaction_enabled:
             return False
         self._context_overflow_pending = True
-        return True
+        limit = context_overflow_limit(exc) if exc is not None else None
+        return limit is None or limit >= self.max_context_tokens
 
     async def __call__(self, messages: list[Message], context: CompactionCallContext | None = None) -> bool:
         # max() folds the retained legacy ``tool_definition_tokens`` spelling:

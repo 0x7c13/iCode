@@ -714,7 +714,10 @@ class TurnBindings:
         logger.error("Turn error: %s", err_msg)
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected(err_msg)
-        display_message, display_hint = display_fields(e)
+        strategy = self._compaction_strategy
+        display_message, display_hint = display_fields(
+            e, max_context_tokens=strategy.max_context_tokens if strategy is not None else None
+        )
         await self._emitter.publish(
             Error(
                 code="executor_error",

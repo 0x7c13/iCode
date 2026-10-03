@@ -134,3 +134,4 @@ When iCode can tell why a model request failed, it says so in plain words, with 
 | Couldn't establish a secure connection | On a corporate network, the proxy's certificate setup. |
 | The API key is invalid or lacks access | The API key in the model profile. |
 | The request exceeds the model's context window | That the context window in the model profile matches the model's real one. With context compaction on, iCode compacts the context and sends the request once more; this error appears only if that also fails. See [Configure context compaction](./compaction.md). |
+| The model profile's maximum context window is larger than the server's limit | Set "Max Context Window" in the model profile to the server's limit that the message names, or less, and save. |

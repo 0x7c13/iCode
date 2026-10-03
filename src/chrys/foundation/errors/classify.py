@@ -25,6 +25,7 @@ from .provider import (
     ProviderSignal,
     in_band_failure_retryable,
     is_2xx,
+    named_context_limit,
     names_context_overflow,
     names_server_error_overflow,
     provider_signal,
@@ -207,6 +208,23 @@ def is_context_overflow(exc: BaseException) -> bool:
     ``request_too_large`` / 413 is an oversized payload, not an overflow.
     """
     return classify_error(exc).kind is ErrorKind.CONTEXT_OVERFLOW
+
+
+def context_overflow_limit(exc: BaseException) -> int | None:
+    """Return the window limit, in tokens, the provider named when it rejected the request as too long.
+
+    Read only from the text that made *exc* an overflow: the provider
+    signal's own, or without one the explicit nodes' (never ``__context__``).
+    None when *exc* is no overflow or names no single positive limit.
+    """
+    result = classify_error(exc)
+    if result.kind is not ErrorKind.CONTEXT_OVERFLOW:
+        return None
+    if (signal := result.signal) is not None:
+        return named_context_limit((signal.message or "", _clean_exception_text(signal.source)))
+    return named_context_limit(
+        _clean_exception_text(node) for node in iter_explicit_graph(exc) if _type_kind(node) is None
+    )
 
 
 def may_be_context_overflow(exc: BaseException) -> bool:

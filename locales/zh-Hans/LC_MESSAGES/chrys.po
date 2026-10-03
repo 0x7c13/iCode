@@ -349,6 +349,15 @@ msgstr "模型服务的内容审核拦截了这次请求。"
 msgid "error.kind.context_overflow"
 msgstr "请求超出了模型的上下文窗口。请确认模型配置中的上下文窗口与模型实际一致。"
 
+#. English: The model profile's maximum context window
+#. ({configured_max_context_tokens}) is larger than the server's limit
+#. ({server_max_context_tokens}). Set "Max Context Window" in the model profile
+#. to {server_max_context_tokens} or less.
+#. chrys-meta={"fingerprint":"c3820643c41aae09c4bba74bfd172ca069645c682651c497e6111a106a80fcd5","multiline":false,"placeholders":["configured_max_context_tokens","server_max_context_tokens"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.context_overflow_config_mismatch"
+msgstr "当前模型配置的最大上下文窗口（{configured_max_context_tokens}）大于服务端实际支持的上限（{server_max_context_tokens}）。请在模型配置中把“最大上下文窗口”改为 {server_max_context_tokens} 或更小。"
+
 #. English: Can't resolve {host}. Check your network connection and DNS; if the
 #. address is wrong, fix the base URL in the model profile.
 #. chrys-meta={"fingerprint":"29b0bbc25ea2e5f23ac617e71a561bb685f224d4af035681cdbafe465b7f99fc","multiline":false,"placeholders":["host"]}
