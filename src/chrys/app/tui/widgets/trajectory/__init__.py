@@ -2,6 +2,7 @@
 
 """Trajectory dashboard widgets."""
 
-from chrys.app.tui.widgets.trajectory.panel import DashboardTab, ResponsiveTier, TrajectoryDashboard
+from chrys.app.tui.widgets.trajectory.panel import DashboardTab, TrajectoryDashboard
+from chrys.app.tui.widgets.trajectory.presentation import ResponsiveTier
 
 __all__ = ["DashboardTab", "ResponsiveTier", "TrajectoryDashboard"]

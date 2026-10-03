@@ -8,14 +8,18 @@ import re
 from pathlib import Path
 
 from rich.cells import cell_len
-from rich.console import Console
 from textual.widgets import Tab, Tabs
 
-from chrys.app.tui.widgets.trajectory.panel import TrajectoryTextView
+from chrys.app.tui.widgets.trajectory import DashboardTab
+from chrys.app.tui.widgets.trajectory.insights import _diagnostic_lines
+from chrys.app.tui.widgets.trajectory.presentation import RenderContext, ResponsiveTier
+from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
+from chrys.app.tui.widgets.trajectory.timeline import _operation_identity, timeline_lines
 from chrys.foundation.trajectory.event_types import EventType
-from chrys.service.analytics import TimelineDiagnosticCode
-from tests.app.tui.widgets._trajectory_fixtures import _NS, _write_operations, open_dashboard, page_text
+from chrys.service.analytics import TimelineDiagnosticCode, TrajectoryAnalyzer
+from tests.app.tui.widgets._trajectory_fixtures import _NS, _write_operations, open_dashboard, page_text, plain_look
 from tests.service.analytics._events import EventLog
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
 
@@ -73,7 +77,7 @@ async def test_timeline_renders_operations_hierarchy_identity_ruler_and_unresolv
         assert re.search(r"Prepare\s+preparation", text)
         assert "Bash (#01234567)" in text
         hook_operation = next(operation for operation in first_turn.operations if operation.family == "hook.operation")
-        assert dashboard._operation_identity(hook_operation) == "after_tool (register-sess...)"
+        assert _operation_identity(plain_look(), hook_operation) == "after_tool (register-sess...)"
         assert "after_tool (register-sess...)" in text
         assert "approval" in text
         assert "Explore" in text
@@ -85,7 +89,7 @@ async def test_timeline_renders_operations_hierarchy_identity_ruler_and_unresolv
             item for item in analysis.diagnostics.timeline_operations if item.identity == "user_input"
         )
         assert wait_diagnostic.code is TimelineDiagnosticCode.MISSING_TERMINAL
-        diagnostic_text = "\n".join(line.plain for line in dashboard._diagnostic_lines(analysis))
+        diagnostic_text = "\n".join(line.plain for line in _diagnostic_lines(plain_look(), analysis))
         assert "Turn 1 · user_input @44444444: lifecycle has no terminal endpoint" in diagnostic_text
         assert "idle" not in text.lower()
 
@@ -145,29 +149,25 @@ async def test_timeline_canvas_floor_keeps_columns_and_scrolls_below_71_cells(tm
                 )
 
 
-async def test_timeline_model_run_bar_uses_accent_without_recoloring_model_category(tmp_path: Path) -> None:
+def test_timeline_model_run_bar_uses_accent_without_recoloring_model_category(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     _write_operations(path)
+    turn = TrajectoryAnalyzer().load(path).turns[0]
+    look = plain_look({"primary": "#0000aa", "accent": "#aa00aa"})
 
-    async with open_dashboard(path, size=(150, 32)) as (dashboard, _pilot):
-        analysis = dashboard._analysis
-        assert analysis is not None
-        dashboard.select_turn(analysis.turns[0].turn_id)
+    lines = timeline_lines(look, RenderContext(width=148, tier=ResponsiveTier.WIDE), turn)
+    run_line = next(line for line in lines if re.match(r"Model\s+run\s", line.plain))
+    cycle_line = next(line for line in lines if re.match(r"Model\s+\u2502 cycle\s", line.plain))
 
-        lines = dashboard.query_one(TrajectoryTextView)._lines
-        run_line = next(line for line in lines if re.match(r"Model\s+run\s", line.plain))
-        cycle_line = next(line for line in lines if re.match(r"Model\s+\u2502 cycle\s", line.plain))
-        console = Console()
+    run_label_style = run_line.get_style_at_offset(look.console, 0)
+    run_bar_style = run_line.get_style_at_offset(look.console, run_line.plain.index("▮"))
+    cycle_label_style = cycle_line.get_style_at_offset(look.console, 0)
+    cycle_bar_style = cycle_line.get_style_at_offset(look.console, cycle_line.plain.index("▮"))
 
-        run_label_style = run_line.get_style_at_offset(console, 0)
-        run_bar_style = run_line.get_style_at_offset(console, run_line.plain.index("▮"))
-        cycle_label_style = cycle_line.get_style_at_offset(console, 0)
-        cycle_bar_style = cycle_line.get_style_at_offset(console, cycle_line.plain.index("▮"))
-
-        assert run_label_style.color == cycle_label_style.color
-        assert cycle_bar_style.color == cycle_label_style.color
-        assert run_bar_style.color == dashboard._semantic_style("accent", "magenta", bold=True).color
-        assert run_bar_style.color != run_label_style.color
+    assert run_label_style.color == cycle_label_style.color
+    assert cycle_bar_style.color == cycle_label_style.color
+    assert run_bar_style.color == look.semantic_style("accent", "magenta", bold=True).color
+    assert run_bar_style.color != run_label_style.color
 
 
 async def test_interrupted_retry_renders_one_logical_turn_tab(tmp_path: Path) -> None:
@@ -210,9 +210,8 @@ async def test_interrupted_retry_renders_one_logical_turn_tab(tmp_path: Path) ->
         assert analysis.turn(retry_turn_id) is analysis.turns[0]
         dashboard.select_turn(retry_turn_id)
         assert dashboard._selected_turn_id == analysis.turns[0].turn_id
-        # Keep the calls adjacent: an intervening layout pass changes the
-        # presentation key and lets the Timeline builders normalize the alias,
-        # masking a missing select_turn boundary normalization.
+        # A repeated request reuses the presentation the first one cached and
+        # still lands on the logical turn.
         dashboard.select_turn(retry_turn_id)
         assert dashboard._selected_turn_id == analysis.turns[0].turn_id
         await wait_for(
@@ -229,28 +228,109 @@ async def test_interrupted_retry_renders_one_logical_turn_tab(tmp_path: Path) ->
         assert [tab.label.plain for tab in turn_tabs.query(Tab)] == ["Turn 1"]
 
 
-async def test_timeline_operation_selection_has_distinct_presentation_identity(tmp_path: Path) -> None:
+async def test_timeline_opens_on_the_newest_turn(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
-    _write_operations(path)
+    _write_operations(path, second_turn=True)
+
+    async with open_dashboard(path, size=(150, 32)) as (dashboard, pilot):
+        analysis = dashboard._analysis
+        assert analysis is not None
+        _first_turn, second_turn = analysis.turns
+        await click_when_settled(pilot, "#timeline")
+        await wait_for(
+            lambda: any(tabs.active == "turn-1" for tabs in dashboard.query(Tabs) if tabs.id == "timeline-turn-tabs"),
+            timeout=5,
+            pilot=pilot,
+            description="turn tabs showing the newest turn",
+        )
+
+        # The turn tab strip activates its first tab when it mounts without
+        # one; the Timeline must have recorded the newest turn by then.
+        assert dashboard._selected_turn_id == second_turn.turn_id
+        assert dashboard.query_one(TrajectoryTextView)._lines[0].plain.startswith("Turn 2 ")
+
+
+async def test_selecting_a_turn_the_analysis_lacks_shows_the_newest_turn(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    _write_operations(path, second_turn=True)
+    missing_turn_id = "f" * 32
 
     async with open_dashboard(path, size=(150, 32)) as (dashboard, _pilot):
         analysis = dashboard._analysis
         assert analysis is not None
-        turn = analysis.turns[0]
+        first_turn, second_turn = analysis.turns
+        assert analysis.turn(missing_turn_id) is None
         view = dashboard.query_one(TrajectoryTextView)
-        console = Console()
+        dashboard.select_turn(first_turn.turn_id)
+        assert view._lines[0].plain.startswith("Turn 1 ")
 
-        dashboard.select_turn(turn.turn_id, "f" * 32)
-        bash = next(line for line in view._lines if "Bash (#01234567)" in line.plain)
-        approval = next(line for line in view._lines if "approval" in line.plain)
-        assert bash.get_style_at_offset(console, 0).reverse is True
-        assert approval.get_style_at_offset(console, 0).reverse is not True
+        dashboard.select_turn(missing_turn_id)
+        assert dashboard._selected_turn_id == second_turn.turn_id
+        assert view._lines[0].plain.startswith("Turn 2 ")
+        # The repeated request hits the presentation the first one cached.
+        dashboard.select_turn(missing_turn_id)
+        assert dashboard._selected_turn_id == second_turn.turn_id
+        assert view._lines[0].plain.startswith("Turn 2 ")
 
-        dashboard.select_turn(turn.turn_id, "1" * 32)
-        bash = next(line for line in view._lines if "Bash (#01234567)" in line.plain)
-        approval = next(line for line in view._lines if "approval" in line.plain)
-        assert bash.get_style_at_offset(console, 0).reverse is not True
-        assert approval.get_style_at_offset(console, 0).reverse is True
+
+def _write_first_of_two_turns(path: Path) -> bytes:
+    """Write only the first turn of the two-turn log; returns the second turn's lines to append later."""
+    two_turns = path.with_name("two-turns.jsonl")
+    _write_operations(two_turns, second_turn=True)
+    one_turn = path.with_name("one-turn.jsonl")
+    _write_operations(one_turn)
+    lines = two_turns.read_bytes().splitlines(keepends=True)
+    first_turn_lines = len(one_turn.read_bytes().splitlines())
+    path.write_bytes(b"".join(lines[:first_turn_lines]))
+    return b"".join(lines[first_turn_lines:])
+
+
+def _append(path: Path, data: bytes) -> None:
+    with path.open("ab") as handle:
+        handle.write(data)
+
+
+async def test_timeline_stays_on_its_turn_when_a_live_session_adds_one(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    second_turn = _write_first_of_two_turns(path)
+
+    async with open_dashboard(path, size=(150, 32)) as (dashboard, pilot):
+        analysis = dashboard._analysis
+        assert analysis is not None
+        (first_turn,) = analysis.turns
+        await click_when_settled(pilot, "#timeline")
+        await wait_for(
+            lambda: dashboard.active_tab is DashboardTab.TIMELINE and dashboard._selected_turn_id is not None,
+            pilot=pilot,
+            description="timeline tab showing a turn",
+        )
+        # The Timeline opens on the session's only turn.
+        assert dashboard._selected_turn_id == first_turn.turn_id
+
+        _append(path, second_turn)
+        await wait_for(
+            lambda: dashboard._analysis is not None and len(dashboard._analysis.turns) == 2,
+            timeout=5,
+            pilot=pilot,
+            description="live refresh picking up the appended turn",
+        )
+        await wait_for(
+            lambda: any(
+                # The replacement strip sets its active tab when it mounts,
+                # after its tabs can already be queried.
+                [tab.id for tab in tabs.query(Tab)] == ["turn-0", "turn-1"] and bool(tabs.active)
+                for tabs in dashboard.query(Tabs)
+                if tabs.id == "timeline-turn-tabs"
+            ),
+            timeout=5,
+            pilot=pilot,
+            description="turn tabs for both turns",
+        )
+
+        # The turn the reader opened stays selected: a new turn does not move them.
+        assert dashboard._selected_turn_id == first_turn.turn_id
+        assert dashboard.query_one("#timeline-turn-tabs", Tabs).active == "turn-0"
+        assert dashboard.query_one(TrajectoryTextView)._lines[0].plain.startswith("Turn 1 ")
 
 
 async def test_space_toggles_timeline_between_time_axis_and_dependency_graph(tmp_path: Path) -> None:

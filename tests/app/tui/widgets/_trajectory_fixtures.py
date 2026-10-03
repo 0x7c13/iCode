@@ -1,20 +1,22 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Shared apps, event-log writers and page helpers for the trajectory-dashboard widget tests."""
+"""Shared apps, looks, event-log writers and page helpers for the trajectory-dashboard widget tests."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.pilot import Pilot
 
 from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
-from chrys.app.tui.widgets.trajectory.panel import TrajectoryTextView
+from chrys.app.tui.widgets.trajectory.presentation import DashboardLook
+from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
 from chrys.foundation.trajectory.envelope import Link, LinkRelation
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from tests.service.analytics._events import EventLog
@@ -30,6 +32,16 @@ class _DashboardApp(App[None]):
 
 class _StyledDashboardApp(_DashboardApp):
     CSS = "TrajectoryTextView { background: #123456; color: #abcdef; }"
+
+
+def plain_look(theme_variables: Mapping[str, str] | None = None) -> DashboardLook:
+    """The look page builders draw with outside an App: a plain console, the given
+    theme colours (each style's fallback otherwise) and English messages."""
+    return DashboardLook(
+        console=Console(force_terminal=False, _environ={}),
+        theme_variables={} if theme_variables is None else dict(theme_variables),
+        localizer=None,
+    )
 
 
 def _write_operations(path: Path, *, second_turn: bool = False, diagnostics: bool = False) -> None:
@@ -482,9 +494,11 @@ async def open_dashboard(
     *,
     size: tuple[int, int],
     session_id: str = "session",
+    app: App[None] | None = None,
 ) -> AsyncIterator[tuple[TrajectoryDashboard, Pilot[None]]]:
-    """Mount a dashboard app and wait for its analysis and visible text viewport."""
-    async with _DashboardApp().run_test(size=size) as pilot:
+    """Mount a dashboard app (*app*, a plain one by default) and wait for its
+    analysis and visible text viewport."""
+    async with (_DashboardApp() if app is None else app).run_test(size=size) as pilot:
         dashboard = pilot.app.query_one(TrajectoryDashboard)
         dashboard.show_session(session_id, path)
         await _wait_loaded(dashboard, pilot)

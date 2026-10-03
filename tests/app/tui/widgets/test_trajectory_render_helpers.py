@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Pure chartkit/panel helper units and section line builders on a mounted trajectory dashboard."""
+"""Pure chartkit, presentation and page-builder units, rendered without mounting an App."""
 
 from __future__ import annotations
 
@@ -12,23 +12,26 @@ from rich.cells import cell_len
 from rich.console import Console
 from rich.text import Text
 
-from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
-from chrys.app.tui.widgets.trajectory import panel as trajectory_panel
+from chrys.app.tui.widgets.trajectory import insights as trajectory_insights
+from chrys.app.tui.widgets.trajectory import overview as trajectory_overview
 from chrys.app.tui.widgets.trajectory.chartkit import (
     bordered_section,
     coverage_bar,
     fit_cells,
+    fit_text_cells,
     section_interior_width,
     time_ruler,
     unresolved_bar,
     waterfall_lanes,
 )
-from chrys.app.tui.widgets.trajectory.panel import (
-    _align_edges,
-    _cache_hit_metric,
-    _fit_path_middle,
-    _has_diagnostic_content,
-    _input_share_metric,
+from chrys.app.tui.widgets.trajectory.insights import _input_share_metric, has_diagnostic_content
+from chrys.app.tui.widgets.trajectory.overview import _fit_path_middle
+from chrys.app.tui.widgets.trajectory.presentation import (
+    RenderContext,
+    ResponsiveTier,
+    align_edges,
+    cache_hit_metric,
+    identity_with_hook_id,
 )
 from chrys.service.analytics import (
     AnalysisAvailability,
@@ -45,13 +48,7 @@ from chrys.service.analytics import (
     TrajectoryDiagnostics,
     UsageBucket,
 )
-from tests.app.tui.widgets._trajectory_fixtures import (
-    _NS,
-    _DashboardApp,
-    _write_p1_operations,
-    _write_p2_operations,
-    open_dashboard,
-)
+from tests.app.tui.widgets._trajectory_fixtures import _NS, _write_p1_operations, _write_p2_operations, plain_look
 
 
 def test_coverage_bar_keeps_missing_distinct_from_unresolved() -> None:
@@ -73,17 +70,17 @@ def test_hook_identity_shortens_tool_event_names_and_caps_only_the_hook_id(
     hook_id: str | None,
     expected: str,
 ) -> None:
-    assert trajectory_panel._identity_with_hook_id(identity, hook_id) == expected
+    assert identity_with_hook_id(identity, hook_id) == expected
 
 
 def test_operation_reason_messages_cover_every_timeline_diagnostic_code() -> None:
-    assert set(trajectory_panel._OPERATION_REASON_MESSAGES) == set(TimelineDiagnosticCode)
+    assert set(trajectory_insights._OPERATION_REASON_MESSAGES) == set(TimelineDiagnosticCode)
 
 
 def test_grouped_grid_lines_keeps_each_semantic_group_in_one_column() -> None:
     groups = [[(Text(f"g{group}r{row}"), Text(str(row))) for row in range(3)] for group in range(4)]
 
-    lines = trajectory_panel._grouped_grid_lines(groups, width=120, columns=4)
+    lines = trajectory_overview._grouped_grid_lines(groups, width=120, columns=4)
 
     assert len(lines) == 3
     for row, line in enumerate(lines):
@@ -103,8 +100,8 @@ def test_grouped_grid_lines_keeps_each_semantic_group_in_one_column() -> None:
 def test_diagnostic_content_gate_does_not_depend_on_overview_precision(
     diagnostics: TrajectoryDiagnostics,
 ) -> None:
-    assert _has_diagnostic_content(diagnostics) is True
-    assert _has_diagnostic_content(TrajectoryDiagnostics()) is False
+    assert has_diagnostic_content(diagnostics) is True
+    assert has_diagnostic_content(TrajectoryDiagnostics()) is False
 
 
 @pytest.mark.parametrize("width", [1, 2, 4, 11])
@@ -152,8 +149,8 @@ def test_derived_token_ratios_preserve_missing_and_inconsistent_evidence() -> No
 
     assert _input_share_metric(estimated_usage, exact_session).precision is Precision.ESTIMATED
     assert _input_share_metric(estimated_usage, zero_session).precision is Precision.MISSING
-    assert _cache_hit_metric(estimated_usage).precision is Precision.MISSING
-    assert _cache_hit_metric(inconsistent_usage).precision is Precision.UNRESOLVED
+    assert cache_hit_metric(estimated_usage).precision is Precision.MISSING
+    assert cache_hit_metric(inconsistent_usage).precision is Precision.UNRESOLVED
 
 
 def test_bordered_section_is_cell_width_safe_for_cjk_titles() -> None:
@@ -205,7 +202,7 @@ def test_waterfall_lanes_keep_turn_separators_and_empty_canvas() -> None:
 
 
 def test_two_edge_alignment_is_cell_width_safe_for_cjk_labels() -> None:
-    line = _align_edges(Text("标签"), Text("值 [精确]"), 20)
+    line = align_edges(Text("标签"), Text("值 [精确]"), 20)
 
     assert cell_len(line.plain) == 20
     assert line.plain.startswith("标签")
@@ -241,15 +238,14 @@ def test_fit_path_middle_preserves_the_full_filename_and_extension(path: str) ->
         (61, "success", "green"),
     ],
 )
-async def test_cache_hit_meter_style_uses_threshold_theme_colors(
+def test_cache_hit_meter_style_uses_threshold_theme_colors(
     cache_hit: int,
     semantic_name: str,
     fallback: str,
 ) -> None:
-    async with _DashboardApp().run_test() as pilot:
-        dashboard = pilot.app.query_one(TrajectoryDashboard)
+    look = plain_look({"error": "#aa0000", "warning": "#bbbb00", "success": "#00cc00"})
 
-        assert dashboard._cache_hit_style(cache_hit) == dashboard._semantic_style(semantic_name, fallback)
+    assert trajectory_insights._cache_hit_style(look, cache_hit) == look.semantic_style(semantic_name, fallback)
 
 
 def _change_verification_analysis(
@@ -277,7 +273,7 @@ def _change_verification_analysis(
     )
 
 
-async def test_change_verification_path_display_copy_is_surrogate_safe() -> None:
+def test_change_verification_path_display_copy_is_surrogate_safe() -> None:
     raw_path = "changed-\udcff.py"
     analysis = _change_verification_analysis(
         (
@@ -290,14 +286,12 @@ async def test_change_verification_path_display_copy_is_surrogate_safe() -> None
         )
     )
 
-    async with _DashboardApp().run_test() as pilot:
-        dashboard = pilot.app.query_one(TrajectoryDashboard)
-        lines = dashboard._change_verification_lines(analysis, width=80)
+    lines = trajectory_overview._change_verification_lines(plain_look(), analysis, width=80)
 
     assert any("changed-\\udcff.py" in line.plain for line in lines)
 
 
-async def test_change_verification_rows_and_counts_carry_precision_badges() -> None:
+def test_change_verification_rows_and_counts_carry_precision_badges() -> None:
     """Each row shows its own precision and the counts line shows the worst
     of the five count precisions, so a degraded change section cannot pass
     for exact measurements."""
@@ -319,10 +313,8 @@ async def test_change_verification_rows_and_counts_carry_precision_badges() -> N
         modified=Metric(2, Precision.ESTIMATED, "counts include window-inferred or peer-contested mutations"),
     )
 
-    async with _DashboardApp().run_test() as pilot:
-        dashboard = pilot.app.query_one(TrajectoryDashboard)
-        lines = dashboard._change_verification_lines(analysis, width=80)
-        narrow = dashboard._change_verification_lines(analysis, width=22)
+    lines = trajectory_overview._change_verification_lines(plain_look(), analysis, width=80)
+    narrow = trajectory_overview._change_verification_lines(plain_look(), analysis, width=22)
 
     assert lines[0].plain.endswith("~")
     assert next(line.plain for line in lines if "proven.py" in line.plain).endswith("✓")
@@ -332,7 +324,7 @@ async def test_change_verification_rows_and_counts_carry_precision_badges() -> N
     assert narrow[0].plain.endswith("~")
 
 
-async def test_change_verification_middle_crops_paths_before_the_filename() -> None:
+def test_change_verification_middle_crops_paths_before_the_filename() -> None:
     analysis = _change_verification_analysis(
         (
             ChangeVerificationRow(
@@ -344,9 +336,7 @@ async def test_change_verification_middle_crops_paths_before_the_filename() -> N
         )
     )
 
-    async with _DashboardApp().run_test() as pilot:
-        dashboard = pilot.app.query_one(TrajectoryDashboard)
-        lines = dashboard._change_verification_lines(analysis, width=40)
+    lines = trajectory_overview._change_verification_lines(plain_look(), analysis, width=40)
 
     row = next(line.plain for line in lines if "report.final.json" in line.plain)
     assert row.startswith("/Users/")
@@ -359,7 +349,7 @@ async def test_change_verification_middle_crops_paths_before_the_filename() -> N
     ("precision", "badge"),
     [(Precision.EXACT, "✓"), (Precision.UNRESOLVED, "✗")],
 )
-async def test_insights_section_titles_render_their_panel_precision(
+def test_insights_section_titles_render_their_panel_precision(
     tmp_path: Path,
     precision: Precision,
     badge: str,
@@ -379,8 +369,11 @@ async def test_insights_section_titles_render_their_panel_precision(
         context_carrying_reason=reason,
     )
 
-    async with open_dashboard(path, size=(220, 100), session_id="abcd1234") as (dashboard, _pilot):
-        page = "\n".join(line.plain for line in dashboard._insights_lines(replace(analysis, insights=insights)))
+    context = RenderContext(width=220, tier=ResponsiveTier.WIDE)
+    page = "\n".join(
+        line.plain
+        for line in trajectory_insights.insights_lines(plain_look(), context, replace(analysis, insights=insights))
+    )
 
     for title in ("Skills", "MCP servers", "Tool activity", "Context re-send cost · top 5"):
         assert f"{title} {badge}" in page
@@ -390,7 +383,7 @@ async def test_insights_section_titles_render_their_panel_precision(
     ("precision", "badge"),
     [(Precision.EXACT, "✓"), (Precision.UNRESOLVED, "✗")],
 )
-async def test_submission_aggregate_renders_derived_precision_for_the_same_duration(
+def test_submission_aggregate_renders_derived_precision_for_the_same_duration(
     tmp_path: Path,
     precision: Precision,
     badge: str,
@@ -410,9 +403,9 @@ async def test_submission_aggregate_renders_derived_precision_for_the_same_durat
         buckets=(replace(stats, p50_ns=four_seconds, p90_ns=four_seconds, max_ns=four_seconds),),
     )
 
-    async with _DashboardApp().run_test() as pilot:
-        dashboard = pilot.app.query_one(TrajectoryDashboard)
-        lines = dashboard._submission_latency_lines(replace(analysis, submission_latency=submission), width=80)
+    lines = trajectory_overview._submission_latency_lines(
+        plain_look(), replace(analysis, submission_latency=submission), width=80
+    )
 
     aggregate = next(line.plain for line in lines if "started a new turn" in line.plain)
     assert aggregate.count("4.00 s") == 3
@@ -423,3 +416,16 @@ async def test_submission_aggregate_renders_derived_precision_for_the_same_durat
 @pytest.mark.parametrize("width", [-1, 0, 1, 2, 5, 12])
 def test_fit_cells_pads_and_crops_to_terminal_width(value: str, width: int) -> None:
     assert cell_len(fit_cells(value, width)) == max(0, width)
+
+
+@pytest.mark.parametrize("value", ["", "abc", "中文", "e\u0301", "a中b"])
+@pytest.mark.parametrize("width", [-1, 0, 1, 2, 5, 12])
+def test_fit_text_cells_pads_and_crops_styled_text_to_terminal_width(value: str, width: int) -> None:
+    assert cell_len(fit_text_cells(Text(value, style="bold"), width).plain) == max(0, width)
+
+
+def test_fit_text_cells_marks_a_crop_with_an_ellipsis_and_keeps_the_style() -> None:
+    fitted = fit_text_cells(Text("abcdef", style="bold"), 4)
+
+    assert fitted.plain == "abc…"
+    assert fitted.get_style_at_offset(Console(), 0).bold is True
