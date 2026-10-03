@@ -22,7 +22,7 @@ from chrys.foundation.trajectory.metadata import (
     OPERATION_ID_KEY,
     TOOL_RESULT_ITEM_ID_METADATA_KEY,
 )
-from chrys.kernel import tool
+from chrys.kernel import FunctionTool, tool
 from chrys.kernel.middleware import (
     FunctionInvocationContext,
     FunctionMiddleware,
@@ -242,24 +242,29 @@ class TestInvocationOrderStamping:
     @pytest.mark.asyncio
     async def test_prevalidation_failure_and_unknown_tool_consume_ordinals(self) -> None:
         """The issue-589 shape: calls that never enter the pipeline still hold their slot."""
-        layer, _wire = _stack(
-            [
-                _call_response(
-                    ("c1", "echo", {"wrong_arg": "x"}),
-                    ("c2", "missing_tool", {}),
-                    ("c3", "echo", {"text": "ok"}),
-                ),
-                _text_response("done"),
-            ]
+        batch = _call_response(
+            ("c1", "echo", {"wrong_arg": "x"}),
+            ("c2", "missing_tool", {}),
+            ("c3", "echo", {"text": "ok"}),
         )
+        # A lenient schema would accept the parser's {"raw": [1]} wrapper; the
+        # non-object payload is refused before the pipeline all the same.
+        lenient = FunctionTool(
+            name="lenient",
+            func=lambda **_kwargs: "ran",
+            input_model={"type": "object", "properties": {"state": {"type": "string"}}},
+        )
+        batch.messages[0].contents.append(Content.from_function_call("c4", "lenient", arguments="[1]"))
+        layer, _wire = _stack([batch, _text_response("done")])
 
-        response = await layer.get_response([_user()], options={"tools": [_make_tool()]})
+        response = await layer.get_response([_user()], options={"tools": [_make_tool(), lenient]})
 
-        assert _ordinals(response) == [0, 1, 2]
+        assert _ordinals(response) == [0, 1, 2, 3]
         results = {r.call_id: r for r in _result_contents(response)}
         assert results["c1"].additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == "argument_parsing"
         assert results["c2"].additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == "tool_not_found"
         assert str(results["c3"].result) == "echo:ok"
+        assert results["c4"].additional_properties[TOOL_ERROR_KIND_METADATA_KEY] == "argument_parsing"
         for result in results.values():
             assert TOOL_INVOCATION_ORDER_KEY not in result.additional_properties
 

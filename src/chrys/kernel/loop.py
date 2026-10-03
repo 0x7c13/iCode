@@ -1489,6 +1489,29 @@ def _arguments_unparseable(arguments: Any) -> bool:
     return False
 
 
+def _arguments_not_object(arguments: Any) -> bool:
+    """True when raw tool-call arguments are present but are not a JSON object.
+
+    ``Content.parse_arguments`` wraps such a payload as ``{"raw": ...}``, and a
+    tool whose schema accepts extra keys would then run on arguments the model
+    never gave it (MCP adapters drop the undeclared ``raw`` and call with none).
+    ``None`` and ``""`` mean "no arguments"; whitespace, undecodable text and
+    any JSON value other than an object do not, nor does a parsed non-mapping
+    value, however falsy (``[]``, ``0``, ``False``).
+    """
+    if arguments is None:
+        return False
+    if isinstance(arguments, str):
+        if not arguments:
+            return False
+        try:
+            loaded = json.loads(arguments)
+        except json.JSONDecodeError:
+            return True
+        return not isinstance(loaded, dict)
+    return not isinstance(arguments, Mapping)
+
+
 def _middleware_arguments_equal(left: Any, right: Any) -> bool:
     """Type-strict structural equality for the trusted middleware snapshot."""
     if type(left) is not type(right):
@@ -1879,7 +1902,10 @@ async def _invoke_function_call(
 
     _stamp_call_provenance(function_call, tool)
 
-    parsed_args: dict[str, Any] = dict(function_call.parse_arguments() or {})
+    # Judged on the raw payload: parsing would wrap a non-object as {"raw": ...}
+    # and turn a falsy parsed value into {}.
+    arguments_not_object = _arguments_not_object(function_call.arguments)
+    parsed_args: dict[str, Any] = {} if arguments_not_object else dict(function_call.parse_arguments() or {})
 
     # Filter out internal kwargs before passing to tools; conversation_id is an
     # internal tracking id that must not be forwarded.
@@ -1901,6 +1927,8 @@ async def _invoke_function_call(
         argument_schema, typed_model_dump=typed_model_dump
     ) and not _accepts_arbitrary_argument_names(validation_input_model)
     try:
+        if arguments_not_object:
+            raise TypeError(f"Arguments for '{tool.name}' are not a JSON object.")
         unexpected_arguments = _unexpected_argument_names(
             parsed_args,
             argument_schema,
@@ -1954,7 +1982,7 @@ async def _invoke_function_call(
             message = _argument_validation_message(
                 tool_name=tool.name,
                 arguments=parsed_args,
-                arguments_unparseable=arguments_unparseable,
+                arguments_unparseable=arguments_unparseable or arguments_not_object,
                 schema=argument_schema,
                 exception=exc,
                 reject_unexpected=reject_unexpected,
