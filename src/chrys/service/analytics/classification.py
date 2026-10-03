@@ -1,13 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Deterministic action classification over recorded tool evidence."""
+"""Deterministic classification of recorded tool evidence: action classes and tool outcomes."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+from typing import Final
 
+from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.service.analytics.model import ActionClass, Precision
 
 _DIRECT_CLASSES = {
@@ -84,10 +86,43 @@ def classify_action(
     return ActionClass.OTHER, Precision.ESTIMATED, "did not match the configured verification word list"
 
 
+KNOWN_TOOL_OUTCOMES: Final = frozenset(
+    {
+        ToolOutcome.SUCCESS,
+        ToolOutcome.FAILED,
+        ToolOutcome.ERRORED,
+        ToolOutcome.INTERRUPTED,
+        ToolOutcome.TIMED_OUT,
+        ToolOutcome.REJECTED,
+        ToolOutcome.INVALID_ARGUMENTS,
+        ToolOutcome.UNKNOWN_TOOL,
+        ToolOutcome.FILTERED,
+        ToolOutcome.UNKNOWN,
+    }
+)
+FAILED_TOOL_OUTCOMES: Final = KNOWN_TOOL_OUTCOMES - {
+    ToolOutcome.SUCCESS,
+    ToolOutcome.INTERRUPTED,
+    ToolOutcome.UNKNOWN,
+}
+
+
+def tool_failed(outcome: str | None) -> bool:
+    return outcome in FAILED_TOOL_OUTCOMES
+
+
+def tool_succeeded(outcome: str | None) -> bool:
+    return outcome == ToolOutcome.SUCCESS
+
+
 __all__ = [
+    "FAILED_TOOL_OUTCOMES",
+    "KNOWN_TOOL_OUTCOMES",
     "classification_evidence_key",
     "classify_action",
     "command_matches_verify",
     "evidence_key",
     "parse_verify_commands",
+    "tool_failed",
+    "tool_succeeded",
 ]

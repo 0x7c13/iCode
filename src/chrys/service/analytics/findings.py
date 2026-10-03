@@ -9,8 +9,7 @@ from collections.abc import Iterable
 from threading import Event
 from typing import Final
 
-from chrys.foundation.trajectory.event_types import ToolOutcome
-from chrys.service.analytics.classification import evidence_key
+from chrys.service.analytics.classification import evidence_key, tool_failed, tool_succeeded
 from chrys.service.analytics.math import interval_length
 from chrys.service.analytics.model import (
     ActionClass,
@@ -32,17 +31,6 @@ from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelle
 _FAILED_CRITICAL_PATH_SHARE: Final = 0.25
 _APPROVAL_BLOCKING_SHARE: Final = 0.25
 _CONTEXT_CARRYING_LOAD_TOP_N: Final = 3
-_FAILED_TOOL_OUTCOMES: Final = frozenset(
-    {
-        ToolOutcome.FAILED,
-        ToolOutcome.ERRORED,
-        ToolOutcome.TIMED_OUT,
-        ToolOutcome.REJECTED,
-        ToolOutcome.INVALID_ARGUMENTS,
-        ToolOutcome.UNKNOWN_TOOL,
-        ToolOutcome.FILTERED,
-    }
-)
 
 
 def evaluate_findings(
@@ -62,7 +50,7 @@ def evaluate_findings(
     turns_by_id = {turn.turn_id: turn for turn in turns}
 
     successful_verifies = [
-        action for action in actions if action.classification is ActionClass.VERIFY and _tool_succeeded(action.outcome)
+        action for action in actions if action.classification is ActionClass.VERIFY and tool_succeeded(action.outcome)
     ]
     last_verify = successful_verifies[-1] if successful_verifies else None
     unverified_edits = [
@@ -122,7 +110,7 @@ def evaluate_findings(
         contribution = turn.critical_tool_contributions_ns.get(action.operation_id, 0)
         stable_evidence = _action_evidence(action)
         if (
-            not _tool_failed(action.outcome)
+            not tool_failed(action.outcome)
             or not isinstance(response_cp, int)
             or response_cp <= 0
             or contribution / response_cp < _FAILED_CRITICAL_PATH_SHARE
@@ -289,14 +277,6 @@ def _finding(
         turn_number=target.turn_number,
         operation_id=target.operation_id,
     )
-
-
-def _tool_succeeded(outcome: str | None) -> bool:
-    return outcome == "success"
-
-
-def _tool_failed(outcome: str | None) -> bool:
-    return outcome in _FAILED_TOOL_OUTCOMES
 
 
 __all__ = ["ContextCarryingLoad", "evaluate_findings"]
