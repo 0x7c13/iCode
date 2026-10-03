@@ -17,8 +17,8 @@ from chrys.service.analytics import (
     TrajectoryAnalyzer,
     analyze_trajectory,
 )
+from chrys.service.analytics._context_evidence import _replay_delta
 from chrys.service.analytics._facts import _RevisionEntry
-from chrys.service.analytics._turns import _replay_delta
 from tests.service.analytics._events import NS, EventLog, caused_by, operation_index
 
 

@@ -16,7 +16,7 @@ from chrys.service.analytics import (
     analyze_trajectory,
 )
 from chrys.service.analytics import _facts as facts_module
-from chrys.service.analytics import aggregation as aggregation_module
+from chrys.service.analytics import _insights as insights_module
 from tests.service.analytics._events import BRANCH_ID, NS, EventLog
 
 
@@ -286,14 +286,14 @@ def test_cut_approval_and_mcp_wait_samples_follow_owner_activity(
     inactive_ranges = facts_module._closed_sequence_union(intermediate.rollback_ranges)
 
     assert (
-        aggregation_module._approval_durations_by_tool(
+        insights_module._approval_durations_by_tool(
             intermediate,
             inactive_ranges,
             cancel_event=None,
         )
         == expected_approvals
     )
-    waits, unattributed = aggregation_module._mcp_connection_waits(
+    waits, unattributed = insights_module._mcp_connection_waits(
         intermediate,
         inactive_ranges,
         cancel_event=None,
