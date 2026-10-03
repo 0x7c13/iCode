@@ -11426,207 +11426,207 @@ msgstr "输出"
 
 #. English: edit
 #. chrys-meta={"fingerprint":"49eda2a500ee133843a2309ccbf6c5bd315146116391b682bb2c65a7a9e3c2f4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.action.edit"
 msgstr "编辑"
 
 #. English: read
 #. chrys-meta={"fingerprint":"9d9c76cd501dbe7537c567a04fbd291a73cf80a83581a538f9fd5d23d1f77dad","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.action.read"
 msgstr "读取"
 
 #. English: search
 #. chrys-meta={"fingerprint":"552ad04f4c3abc0ccf9bb9928edf1de29a8fa96952ab295dc53a83488729f07d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.action.search"
 msgstr "搜索"
 
 #. English: verify
 #. chrys-meta={"fingerprint":"695d61645c6bacf9bc53f4c85adf3163a2a9ecf0743ff5073b5548e23803288b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.action.verify"
 msgstr "验证"
 
 #. English: Action breakdown
 #. chrys-meta={"fingerprint":"eedaf68960247f5f5f8143114cf1fe4a4b584361e4122c8b53b448514573161e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.action_funnel.title"
 msgstr "操作分类"
 
 #. English: idle
 #. chrys-meta={"fingerprint":"4349f67d4acd893212fd4d8b855f36d51801c8c8f11a08a822201c43453120d4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.bucket.idle"
 msgstr "空闲"
 
 #. English: model
 #. chrys-meta={"fingerprint":"cf31f189d10c419628d97965a144894948bf8ef0a2285d20b42d5a46c44c6748","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.bucket.model"
 msgstr "模型"
 
 #. English: tools
 #. chrys-meta={"fingerprint":"55c71756a393141c23a8ef7b949e06bba92edfd4f515b7ab89a5a2de2f56a3ed","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.bucket.tools"
 msgstr "工具"
 
 #. English: wait
 #. chrys-meta={"fingerprint":"b869b3a6f072f172517df5a7a89e441cf305ff420a96f52a20504107dfa71398","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.bucket.wait"
 msgstr "等待"
 
 #. English: Agent
 #. chrys-meta={"fingerprint":"776d9c6caf787f533a3dc88dd3977c72f4d683a010e52a6787a377fe58bc5f51","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.agent"
 msgstr "代理"
 
 #. English: Approval
 #. chrys-meta={"fingerprint":"e034cf95ac923be84e0a11a87d7245a74c5640c7e92cd1ef91bd1086193ecde0","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.approval"
 msgstr "审批"
 
 #. English: Compact
 #. chrys-meta={"fingerprint":"228598c399460c908c5dc8e6ca3fcc480fc9d7629e106b0e5c2cc55fbd23ded2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.compaction"
 msgstr "压缩"
 
 #. English: Hook
 #. chrys-meta={"fingerprint":"87396a32076d7dbb12eef1e80af84f4acf9287d998177caed3cf97ee1c1a1759","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.hook"
 msgstr "钩子"
 
 #. English: Model
 #. chrys-meta={"fingerprint":"c820b93516ff203603ed60a227ea14ad662f6ca472bb143e0987a574f55d0eba","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.model"
 msgstr "模型"
 
 #. English: Operation
 #. chrys-meta={"fingerprint":"0988d2407a1ff4c00aa65257fee210c8b9e8f4bf06d99c7e8f5c2773ea885e7b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.operation"
 msgstr "操作"
 
 #. English: Prepare
 #. chrys-meta={"fingerprint":"890017257d995b371a55f9c9b11c2c5b7a0b23932a504db8a2288dd0d8049a89","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.preparation"
 msgstr "准备"
 
 #. English: Retry
 #. chrys-meta={"fingerprint":"8d1f1fcb3503341e5c6f3f3a1b3299129d2fb1258f711734492a20316c6158af","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.retry"
 msgstr "重试"
 
 #. English: Tool
 #. chrys-meta={"fingerprint":"751c08b86de8fff2360da18925ac1cded09ccbee120c29ce74ab1dda9ee3c1b4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.tool"
 msgstr "工具"
 
 #. English: Wait
 #. chrys-meta={"fingerprint":"ca6f4824e2f87ffac545573514fd65b1664d1193d1a0c8d2b20670680e3df2ff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.category.wait"
 msgstr "等待"
 
 #. English: {files} · +{created} ~{modified} -{deleted} · cancelled out
 #. {net_zero}
 #. chrys-meta={"fingerprint":"0b49ac904ed5a9a492989c3b837a63bb7c436be973489de7a7248dd2e304999b","multiline":false,"placeholders":["created","deleted","files","modified","net_zero"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.counts"
 msgstr "{files} · +{created} ~{modified} -{deleted} · 抵消 {net_zero}"
 
 #. English: files
 #. chrys-meta={"fingerprint":"2ed7ede10bf5281d9b1cadee76c9d644904af0d44b309232c99dbaddbb524e63","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.files"
 msgstr "文件"
 
 #. English: after verify
 #. chrys-meta={"fingerprint":"ac56ceb7e9152f370c8b643e274e38be0fa0e014a9b8a00376f3a713787dbf30","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.state.after"
 msgstr "验证后更改"
 
 #. English: cancelled out
 #. chrys-meta={"fingerprint":"c7f85027e01b76bddcdd2eafc0c56e417fdbb9aa014bd4218011b3ec8f048e1f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.state.net_zero"
 msgstr "改动抵消"
 
 #. English: unverified
 #. chrys-meta={"fingerprint":"667cc012143663af0a9225f79c0eb8f009a3db6e76c69dd18f29d12b983ea74b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.state.unverified"
 msgstr "未验证"
 
 #. English: verified
 #. chrys-meta={"fingerprint":"7b12e8696412354dc09b2615b36249c3de02a09a0d57533443826f56f5d337e2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.state.verified"
 msgstr "已验证"
 
 #. English: Change verification
 #. chrys-meta={"fingerprint":"a1adfc8f29ee7472a406061ca6084de72c6b92da25b39665ef759541898be7ee","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.title"
 msgstr "变更验证"
 
 #. English: Recorded/observed counts; mutation detection was truncated.
 #. chrys-meta={"fingerprint":"120a5b1f5230bb06e41f5147281d7d897385770bcd88978e1c49753feeb65783","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.truncated"
 msgstr "记录/观测计数；变更检测已截断。"
 
 #. English: File detail unavailable; showing recorded mutation summaries.
 #. chrys-meta={"fingerprint":"07bdcd791094eb0eac1eeb37967a7a47ae717ef640ccfcfb7c07ca59cbe09037","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.change_verification.unavailable"
 msgstr "文件明细不可用；显示已记录的变更摘要。"
 
 #. English: Terminal too narrow; widen it to display charts.
 #. chrys-meta={"fingerprint":"642df7048f7c837dd549dc0f3d7c684603d1fdf7663d86bb768f08ead657ccad","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.charts_too_narrow"
 msgstr "终端过窄；请加宽以显示图表。"
 
 #. English: data confidence
 #. chrys-meta={"fingerprint":"1e20c2bf46bbf499a8d04a4b3545681b3971851fe5a10fe37305d509cfa8731d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.coverage"
 msgstr "数据可信度"
 
 #. English: {exact}✓/{estimated}~/{missing}−/{unresolved}✗
 #. chrys-meta={"fingerprint":"5a991801a05fbb3ea69163dbf61ee43e8e462957db0b46ae45a7c126dafc766c","multiline":false,"placeholders":["estimated","exact","missing","unresolved"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.coverage_shares"
 msgstr "{exact}✓/{estimated}~/{missing}−/{unresolved}✗"
 
 #. English: Accounted-prefix seq {first}-{last}: {reason}
 #. chrys-meta={"fingerprint":"395da4cbd297f77dc5ff07775e6fcf5b7ab194631944f50d8e33b77bde383efc","multiline":false,"placeholders":["first","last","reason"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.accounted_prefix"
 msgstr "计入前缀序列 {first}-{last}：{reason}"
 
 #. English: after seq {sequence}
 #. chrys-meta={"fingerprint":"0e2dc839822cab0ca1f1ca4378afa5ffe09226a920aab5a5aeaf30528fe872c6","multiline":false,"placeholders":["sequence"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.after_sequence"
 msgstr "序列 {sequence} 之后"
 
 #. English: Containment {family} @{callsite} outside {parent_family}
 #. @{parent_callsite}
 #. chrys-meta={"fingerprint":"2b166a961976bcfe61b92fb22c21f3db7edf284bb2a4cad1b62bbfadc3d7cc49","multiline":false,"placeholders":["callsite","family","parent_callsite","parent_family"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.containment"
 msgstr "包含关系 {family} @{callsite} 超出 {parent_family} @{parent_callsite}"
 
@@ -11635,7 +11635,7 @@ msgstr "包含关系 {family} @{callsite} 超出 {parent_family} @{parent_callsi
 #. English-plural: Corrupt lines {count} ({sequences}); metrics in the affected
 #. ranges degrade to unresolved.
 #. chrys-meta={"fingerprint":"71cd3e45191b9af119f4497fa227f0268e70a3a3c7d29689e96bb9be6c5269b7","multiline":false,"placeholders":["sequences"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.corrupt"
 msgid_plural "tui.trajectory.diagnostics.corrupt#plural"
 msgstr[0] "损坏行 {count}（{sequences}）；受影响区间的指标降级为无法解析。"
@@ -11647,102 +11647,102 @@ msgstr[0] "损坏行 {count}（{sequences}）；受影响区间的指标降级�
 #. intervals ({families}; up to {delta}) — write-through acknowledgement and
 #. scheduling jitter; every metric uses the lifecycle interval.
 #. chrys-meta={"fingerprint":"ea79a3ca91976a2a3843d73091a0a131ea20b0c7069fc29be35fb5efc661d365","multiline":false,"placeholders":["delta","families","value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.duration_mismatch_summary"
 msgid_plural "tui.trajectory.diagnostics.duration_mismatch_summary#plural"
 msgstr[0] "{value} 个区间记录的时长与其生命周期区间有偏差（{families}；最大 {delta}）——写穿确认与调度抖动所致；所有指标均以生命周期区间为准。"
 
 #. English: Trajectory gap seq {first}-{last}: {reason}
 #. chrys-meta={"fingerprint":"5484bc90bb2d0a99a14fd9dea0d92481775a4d4edae42860c8ddbcb0c52e4f7c","multiline":false,"placeholders":["first","last","reason"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.gap"
 msgstr "轨迹缺口序列 {first}-{last}：{reason}"
 
 #. English: The events log is intact; no problems were found.
 #. chrys-meta={"fingerprint":"e78df5984c75194d395ceba8cd5b748d97a9747f766ebe5862a6bd5dfa57f6dc","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.healthy"
 msgstr "事件日志完整，未发现问题。"
 
 #. English: Malformed hook execution mode: {count}
 #. English-plural: Malformed hook execution modes: {count}
 #. chrys-meta={"fingerprint":"de8ff35aac6fbb552d5bd24666124d835d25085db4f67c77fdefb12524e1a2f2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.hook_modes"
 msgid_plural "tui.trajectory.diagnostics.hook_modes#plural"
 msgstr[0] "格式错误的钩子执行模式：{count}"
 
 #. English: Data-integrity notes for this session's events log.
 #. chrys-meta={"fingerprint":"c50cc30c2b0e35c4504d20289df8dda7f144516f57a73cfe56be7e5433b23d0e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.intro"
 msgstr "本会话事件日志的数据完整性说明。"
 
 #. English: Turn {turn} · {operation}: {reason}
 #. chrys-meta={"fingerprint":"47fbb0b2a1cabfebe6ad5e1bdeed5ab18d27028e85b6005a97d629900ffb13f9","multiline":false,"placeholders":["operation","reason","turn"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation"
 msgstr "第 {turn} 轮 · {operation}：{reason}"
 
 #. English: detached hook records spawn latency, not work duration
 #. chrys-meta={"fingerprint":"c939be000671cf58d93d2fb6f163202c2ef93bed168f24550357c655761bfc52","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.detached_hook"
 msgstr "分离式钩子只记录进程启动延迟，不记录实际工作时长"
 
 #. English: interval has invalid monotonic endpoints
 #. chrys-meta={"fingerprint":"647804235ba4a187f8f65da29cd4e17293d5e0ca7d242c07d4ab050568479cc9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.invalid_endpoints"
 msgstr "区间的单调时钟端点无效"
 
 #. English: lifecycle has no start endpoint
 #. chrys-meta={"fingerprint":"ab35fee5a45ae2d2627e26bfdab9a675eaf709705e5e06846655a91e9cbd887b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.missing_start"
 msgstr "生命周期缺少起始端点"
 
 #. English: lifecycle has no terminal endpoint
 #. chrys-meta={"fingerprint":"d5c6b1265ff5cc8cb1d871ef3fcf20ec58a3bae0fe676b2e9b2e65be42112297","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.missing_terminal"
 msgstr "生命周期缺少终止端点"
 
 #. English: lifecycle is not uniquely closed
 #. chrys-meta={"fingerprint":"b5a37b428594cc9648901945add5cc7c3eec47a9fb2f24bc7d43935a3300fb3f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.nonunique"
 msgstr "生命周期未唯一闭合"
 
 #. English: lifecycle falls outside the owning turn coverage
 #. chrys-meta={"fingerprint":"f046f4b886b5a22a47d0635e5a3048537f8de2f1fc864cb0df0cf0f0747aa90a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.outside_coverage"
 msgstr "生命周期位于所属轮次的覆盖范围之外"
 
 #. English: lifecycle crosses rollback projection; only its start endpoint
 #. remains active
 #. chrys-meta={"fingerprint":"0fd6bdec1aef4836d4591716fac5eb7d4daab8ae37dc4703e165be1f072a6f8e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.rollback_start"
 msgstr "生命周期跨越回滚投影；仅起始端点仍然有效"
 
 #. English: lifecycle crosses rollback projection; only its terminal endpoint
 #. remains active
 #. chrys-meta={"fingerprint":"d9a349d06070a742b69dbef22996ef8b98f95bb27501ea8d34ab9802673be958","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.operation.rollback_terminal"
 msgstr "生命周期跨越回滚投影；仅终止端点仍然有效"
 
 #. English: Rollback live-history projection is unresolved.
 #. chrys-meta={"fingerprint":"c50f6f1ec572e9fb910e62f4d89b6aba918b01faf2b0bc0a732a25cbefed3eb7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.rollback"
 msgstr "回滚后的实时历史投影无法解析。"
 
 #. English: seq {sequence}
 #. chrys-meta={"fingerprint":"605f81826802fc6bb2fcdad8b2a403cde3df784b0e694ed9f8de35929fcbd76f","multiline":false,"placeholders":["sequence"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.sequence"
 msgstr "序列 {sequence}"
 
@@ -11753,20 +11753,20 @@ msgstr "序列 {sequence}"
 #. etc.) recorded empty context snapshots — a known benign shape, excluded from
 #. all metrics.
 #. chrys-meta={"fingerprint":"d6e0916ed70498e01748b01dab0372ed17cd28e353b2f96a94be4e8447d108bc","multiline":false,"placeholders":["value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.side_call_empty_shells"
 msgid_plural "tui.trajectory.diagnostics.side_call_empty_shells#plural"
 msgstr[0] "{value} 个辅助调用（标题生成、审批判定等）记录了空的上下文快照——已知的无害形状，已从所有指标中排除。"
 
 #. English: Diagnostics
 #. chrys-meta={"fingerprint":"acb086a97483ad15195a9c3e452caae73cef2e696e7cc679d7a32968150681ed","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.title"
 msgstr "诊断"
 
 #. English: Torn tail: {bytes} bytes
 #. chrys-meta={"fingerprint":"5dc3801e0aeacf2d058f416f50c64e5858d9baeff364a9383e74668f7ca68680","multiline":false,"placeholders":["bytes"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.torn_tail"
 msgstr "尾部残缺：{bytes} 字节"
 
@@ -11777,14 +11777,14 @@ msgstr "尾部残缺：{bytes} 字节"
 #. identity (e.g. sub-agent seed prompts); token re-send cost is unknown for
 #. such items, timing is unaffected.
 #. chrys-meta={"fingerprint":"f98511b77156770b1aca5c2b35077819ce8135fdc543154702fe561f929cfb66","multiline":false,"placeholders":["value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.unidentified_membership"
 msgid_plural "tui.trajectory.diagnostics.unidentified_membership#plural"
 msgstr[0] "{value} 个上下文快照含无分析身份的条目（如子代理的种子提示）；此类条目的重复发送 token 开销未知，不影响计时。"
 
 #. English: {metric} unresolved: {reason}
 #. chrys-meta={"fingerprint":"c331e892aafc66829527d8f48fa1b6b95edb0936fc82929d370309ffedff014e","multiline":false,"placeholders":["metric","reason"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.unresolved_metric"
 msgstr "{metric} 无法解析：{reason}"
 
@@ -11793,69 +11793,69 @@ msgstr "{metric} 无法解析：{reason}"
 #. English-plural: Unsupported lines {count} ({sequences}); metrics in the
 #. affected ranges degrade to unresolved.
 #. chrys-meta={"fingerprint":"d85cdb887241237c61c7c51f18eb272469fc9596d45e89f1ecbb30e227bdec77","multiline":false,"placeholders":["sequences"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.unsupported"
 msgid_plural "tui.trajectory.diagnostics.unsupported#plural"
 msgstr[0] "不支持行 {count}（{sequences}）；受影响区间的指标降级为无法解析。"
 
 #. English: {bucket} busy share
 #. chrys-meta={"fingerprint":"e80ee1a0a4655a60e658708485a916676f21fb8d90866a47a75533bb8566be6e","multiline":false,"placeholders":["bucket"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.utilization_metric"
 msgstr "{bucket}忙碌占比"
 
 #. English: {bucket} wall time
 #. chrys-meta={"fingerprint":"bc74bd3fc70e6337510001467023fe6107bacaffbc34b39b26116607cfba725a","multiline":false,"placeholders":["bucket"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.diagnostics.wall_metric"
 msgstr "{bucket}墙钟时间"
 
 #. English: Total time excludes preparation between submission and the start of
 #. the turn.
 #. chrys-meta={"fingerprint":"4fa30ab3c135b62589e3404d9607e8c70c98f21930516a639b5a5f94f1368c44","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.elapsed_scope"
 msgstr "总耗时不含提交后、轮次开始前的准备阶段。"
 
 #. English: retry overhead
 #. chrys-meta={"fingerprint":"67d693aa6559f052f7a4851b05bdde2ae60394fc51e3a4179c574c9852a74e28","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.failure_recovery.amplification"
 msgstr "重试额外消耗"
 
 #. English: tool failures
 #. chrys-meta={"fingerprint":"bb17f6fbb02e5a4cdd908fd37b4fca2f9e34f2f4b57d6cb9bd05d62f576c20a7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.failure_recovery.failures"
 msgstr "工具失败"
 
 #. English: median recovery after failure
 #. chrys-meta={"fingerprint":"16f35f3f074f44fa4cc2b0571d80e4e0ad22bc19aa891a639cc7b0fe257390b5","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.failure_recovery.median"
 msgstr "失败后恢复中位耗时"
 
 #. English: repeated identical failures
 #. chrys-meta={"fingerprint":"ebd8c2f3b190068938f46eafb2f5e042a361e0886ccaef6984a49ed829bf5b9f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.failure_recovery.repeated"
 msgstr "同类错误重复"
 
 #. English: Failure recovery
 #. chrys-meta={"fingerprint":"6839b1e157c42e2c851d571d0bbeb39172ac9670e227e672ce2cde4ce7f2a42b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.failure_recovery.title"
 msgstr "失败恢复"
 
 #. English: Approval waits occupied {percentage}% of this turn.
 #. chrys-meta={"fingerprint":"04fe16c1f9a6ec4b4108a100f1a95090ebf713435c4b60e10c75bbe8ad5d3b00","multiline":false,"placeholders":["percentage"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.approval_blocking_share.detail"
 msgstr "审批等待占本轮的 {percentage}%。"
 
 #. English: Approval blocking share is high
 #. chrys-meta={"fingerprint":"52f0bb85814b8ee587253d60c06fc132a1cf2f2188a64110bfb9630319ff32a0","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.approval_blocking_share.title"
 msgstr "审批阻塞占比过高"
 
@@ -11864,69 +11864,69 @@ msgstr "审批阻塞占比过高"
 #. English-plural: One context item cost an estimated {load} tokens across the
 #. model requests that re-sent it.
 #. chrys-meta={"fingerprint":"3262f62b74a6b3e45a3986e886a5ca1f9f6b5b606b8b2bffa9919eb64158cd5c","multiline":false,"placeholders":["load"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.context_carrying_load.detail"
 msgid_plural "tui.trajectory.finding.context_carrying_load.detail#plural"
 msgstr[0] "一个上下文条目在重复发送它的模型请求中累计消耗约 {load} 个词元。"
 
 #. English: Heavily re-sent context item
 #. chrys-meta={"fingerprint":"47647bcdd91166e2aa6283b2367094742327eac57f32f49a1cd8cda96d86c6d6","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.context_carrying_load.title"
 msgstr "重复发送开销高的上下文条目"
 
 #. English: One failed tool attempt accounts for {percentage}% of response
 #. critical-path time.
 #. chrys-meta={"fingerprint":"abb4d777ee66417f7ca3e6161229d25b84b2ea2d0028e82459a24232809334ba","multiline":false,"placeholders":["percentage"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.failed_attempt_critical_path.detail"
 msgstr "一次失败的工具尝试占响应关键路径时间的 {percentage}%。"
 
 #. English: Failed attempt dominates the critical path
 #. chrys-meta={"fingerprint":"bf2fe71d6eb51c1d205711a8a12d80c23ded644d441be21dcb58433d645089ce","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.failed_attempt_critical_path.title"
 msgstr "失败尝试主导关键路径"
 
 #. English: {count} file returned to its original state.
 #. English-plural: {count} files returned to their original state.
 #. chrys-meta={"fingerprint":"2385034e7a845a065ae168b83a6df231748504d94820a555843eed27b69b814a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.net_zero_churn.detail"
 msgid_plural "tui.trajectory.finding.net_zero_churn.detail#plural"
 msgstr[0] "{count} 个文件恢复到原始状态。"
 
 #. English: Changes cancelled out
 #. chrys-meta={"fingerprint":"b180daaad2d705ce3f424ad36066b409e57997384f1d1605c0c31c15501f86b1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.net_zero_churn.title"
 msgstr "改动抵消"
 
 #. English: The same argument fingerprint occurred {count} time.
 #. English-plural: The same argument fingerprint occurred {count} times.
 #. chrys-meta={"fingerprint":"d1e8515470a66864163f3c2bd57e665a61366dcbacbd97e4c56b6abe0474a544","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.repeated_tool_fingerprint.detail"
 msgid_plural "tui.trajectory.finding.repeated_tool_fingerprint.detail#plural"
 msgstr[0] "同一参数指纹出现了 {count} 次。"
 
 #. English: Repeated tool fingerprint
 #. chrys-meta={"fingerprint":"cf396922b467811d533de8a63191684284ad311df11779258880711c35a7dea7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.repeated_tool_fingerprint.title"
 msgstr "重复的工具参数指纹"
 
 #. English: Retries added {tokens} normalized token.
 #. English-plural: Retries added {tokens} normalized tokens.
 #. chrys-meta={"fingerprint":"cd393576fc375a6ac43f0b8017f711ae230f1552185f2286a0302a6d628e6183","multiline":false,"placeholders":["tokens"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.retry_token_amplification.detail"
 msgid_plural "tui.trajectory.finding.retry_token_amplification.detail#plural"
 msgstr[0] "重试增加了 {tokens} 个标准化 token。"
 
 #. English: Retry token amplification
 #. chrys-meta={"fingerprint":"7fb57d6cbb43730109163c2f1197454400070af68b7e12f178019f0852b3e836","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.retry_token_amplification.title"
 msgstr "重试 token 放大"
 
@@ -11935,513 +11935,513 @@ msgstr "重试 token 放大"
 #. English-plural: {count} edit actions occurred after the last successful
 #. verification.
 #. chrys-meta={"fingerprint":"560dc335d6fef9b5d9088481df82634e146cd3b0a8b7c061935f1dba054e370e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.unverified_change.detail"
 msgid_plural "tui.trajectory.finding.unverified_change.detail#plural"
 msgstr[0] "最后一次成功验证后发生了 {count} 次编辑操作。"
 
 #. English: Unverified change
 #. chrys-meta={"fingerprint":"965e0e25b178ff6cb00fde42755810843df150dc69f85afa79016180c9885732","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.unverified_change.title"
 msgstr "未验证的变更"
 
 #. English: No active findings.
 #. chrys-meta={"fingerprint":"72c86b99072d84a9641f0254d43772a92c0cb6b6ef349d86c728c5677c52a35a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.findings.none"
 msgstr "没有活跃发现。"
 
 #. English: Findings
 #. chrys-meta={"fingerprint":"36871014dd868c219bbaab19d92c26eae8d6570c67342c2bde9c6d0ad61d6e78","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.findings.title"
 msgstr "发现"
 
 #. English: The dependency graph contains a cycle; rows fall back to
 #. first-occurrence order.
 #. chrys-meta={"fingerprint":"6857706492018c633b3fb8eaf323459224b3bae72dc4d73abd3183d6d3f9b0fe","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.graph.cycle"
 msgstr "依赖图存在循环；各行按首次出现顺序排列。"
 
 #. English: │ parent · ⇠ causal · ┄ adjacent only (no proven dependency)
 #. chrys-meta={"fingerprint":"4cc72780a50e5a53e2544c5f544e4b0ce64fe17ac000440bb41ab90940f3574c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.graph.legend"
 msgstr "│ 父级 · ⇠ 因果 · ┄ 仅相邻（无依赖证据）"
 
 #. English: No dependency graph is available for this turn.
 #. chrys-meta={"fingerprint":"5ca4c45bcb29f61f0b0342bb9e299bd6c73c468d96274058f9337bafb59170c7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.graph.none"
 msgstr "本轮没有可用的依赖图。"
 
 #. English: response
 #. chrys-meta={"fingerprint":"86c65d1b96c62b9cc72529d66fe480a7a1ef4332cf7dc0613c4e8c084a13c520","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.graph.response"
 msgstr "响应"
 
 #. English: Space: timeline
 #. chrys-meta={"fingerprint":"8f81285a21af72c103901ac336850ea3572ec74cc92c262358b716ce0f4a5ebd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.graph.timeline_hint"
 msgstr "空格：返回时间线"
 
 #. English: Dependency graph · turn {turn}
 #. chrys-meta={"fingerprint":"18f547e91ce556a727161aade83e85c39a4ed4e00aeff0e6ac41328670a9fd4d","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.graph.title"
 msgstr "依赖图 · 第 {turn} 轮"
 
 #. English: approval blocking
 #. chrys-meta={"fingerprint":"4ccde32193d2e81cb1abd3a98fdd3be4d15735bf7091d64d304f3cba65b4795f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.approval"
 msgstr "审批阻塞"
 
 #. English: calls
 #. chrys-meta={"fingerprint":"88fccd9d21888c22558b8a0111f4ef99ae2f1c38c519c597fffbce7d77a26017","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.calls"
 msgstr "调用"
 
 #. English: connection wait
 #. chrys-meta={"fingerprint":"40da0bfe23cabac969c8bdabe3053cf3a93b93826f9f99645e0b0bcfe4767848","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.connection_wait"
 msgstr "连接等待"
 
 #. English: critical-path exclusive contribution
 #. chrys-meta={"fingerprint":"19f7d9be39e397dd347630a117c19ab075b51132f6cd2e19a1d165a22f08811b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.cp_exclusive"
 msgstr "关键路径独占贡献"
 
 #. English: time share
 #. chrys-meta={"fingerprint":"d8b7023589a7c36100e6979d633edbc08144d723df48a81bec0afbb84b3ebd15","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.duration_share"
 msgstr "时长占比"
 
 #. English: exit codes
 #. chrys-meta={"fingerprint":"2de4b8a9cf6b191c7ba25be7f86385054bd8bf16a3563d992a3cb9ce20243e9c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.exit_codes"
 msgstr "退出码"
 
 #. English: median time to first action
 #. chrys-meta={"fingerprint":"c96f9cb57aa3a9d05f93fc4ae2ab5ee40e5007031e54f7cb751889029ed13224","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.first_action"
 msgstr "首次动作中位延迟"
 
 #. English: injected tokens
 #. chrys-meta={"fingerprint":"13c7b4369bda93ea792f0c40b58997ec3fcd6bd75f47f3d5be8948dbe3ed5460","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.injected_tokens"
 msgstr "注入词元"
 
 #. English: loads
 #. chrys-meta={"fingerprint":"88c93ef5f12489a5d09827c43e6fca6d14145e188376a573eadb717f149679de","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.loads"
 msgstr "加载"
 
 #. English: OTel cross-check
 #. chrys-meta={"fingerprint":"9fb28eea20209d1f2520e4a3eaa98854ea2b983e93d4d2716acc79f674f44b16","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.otel_cross_check"
 msgstr "OTel 交叉校验"
 
 #. English: p50
 #. chrys-meta={"fingerprint":"b489ebfedabe19fc7fb69df0aaadddd6d619deaa9432ee0f51e0c9b0813a004f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.p50"
 msgstr "p50"
 
 #. English: p95
 #. chrys-meta={"fingerprint":"776dc92b98a2485c7249688a596de8a29fdc516a8e7378035b87fe2f5173951b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.p95"
 msgstr "p95"
 
 #. English: resource reads
 #. chrys-meta={"fingerprint":"acc80d23e41cabb34d9ca25bd5f0f562cdf404485c763dfbe0be5402b71479b8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.resource_reads"
 msgstr "资源读取"
 
 #. English: results
 #. chrys-meta={"fingerprint":"0e6e215c7c3a6ae700482cf0d99e393c6c536afe6c993110eafd01c1f615dcc2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.results"
 msgstr "结果"
 
 #. English: return volume
 #. chrys-meta={"fingerprint":"98859dfbd63046062e914af905bf1aefb3e123db57517aaeb9220810776ea7bf","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.return_volume"
 msgstr "返回量"
 
 #. English: revision
 #. chrys-meta={"fingerprint":"a6ab5ee9b47f59ba8f7942619b717bc9b5cfca56d1ba3bf262faf16ad9bdf938","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.revisions"
 msgstr "版本"
 
 #. English: script runs
 #. chrys-meta={"fingerprint":"b07f8fb394aa50f5d4e48a18a3b2fd55fc026a93b74c165393282c4dc0c20422","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.script_runs"
 msgstr "脚本执行"
 
 #. English: truncated · spilled
 #. chrys-meta={"fingerprint":"b820ac0f28e1c600efd1f0a05bcf9435ba78f09903aa99e49c8ff3f77c93bc4f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.truncated_spill"
 msgstr "截断·外溢"
 
 #. English: turns
 #. chrys-meta={"fingerprint":"d3753164842a6d22137baa45e7892464590e233f1149ce91fffd1b2c74f6e823","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.column.turns"
 msgstr "涉及轮次"
 
 #. English: MCP servers
 #. chrys-meta={"fingerprint":"7e5a9b15ae0bf61ec064e97a8571b2e7f0484bd56f175dd5e85c383a4c416b80","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.integrations.mcp"
 msgstr "MCP 服务器"
 
 #. English: This session has no MCP calls.
 #. chrys-meta={"fingerprint":"f7f2c024c5f028c095808be4e155f41db1ae2fb27253d061ce9dda2ad4defe1c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.integrations.mcp_none"
 msgstr "本会话没有 MCP 调用。"
 
 #. English: Skills
 #. chrys-meta={"fingerprint":"668b020a24aa380b78a6dd8481470ccf4b24e5a7665d6f3e72725b1d180b3437","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.integrations.skills"
 msgstr "技能（Skills）"
 
 #. English: This session has no skill usage.
 #. chrys-meta={"fingerprint":"2cf38ca7a438c5a8a96322fa407f4e7e4c746038606cd8c7231ab554a05c8190","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.integrations.skills_none"
 msgstr "本会话没有技能使用。"
 
 #. English: Skill changed during the session
 #. chrys-meta={"fingerprint":"0630bb0a91032ae571d7586daa6ce34673039216a161a331e36ef4d052304e0a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.status.skill_changed"
 msgstr "会话期间技能被修改"
 
 #. English: Skill not found (configuration issue)
 #. chrys-meta={"fingerprint":"752fdd4f8ec2390084318fa0c5dffea98811dedec6dfd21b93c14d9c0c6fde17","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.status.skill_not_found"
 msgstr "未找到技能（配置问题）"
 
 #. English: Unresolved attribution: {value}
 #. chrys-meta={"fingerprint":"c6d2fe7e0e6b9ced2fc63ee2393fc7980c8f31a7a9cbfbe15dc0f5a237e8470f","multiline":false,"placeholders":["value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.status.unattributed"
 msgstr "未解析归属 {value} 项"
 
 #. English: Unclassified: {value}
 #. chrys-meta={"fingerprint":"4ae37f20f155a88eb280d5c9b7eaa0311b984a2315d0a7f4671ac29482a4500a","multiline":false,"placeholders":["value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.status.unclassified"
 msgstr "未分类 {value} 项"
 
 #. English: assistant message
 #. chrys-meta={"fingerprint":"469091d3263e4b63858ab8b7aa5f89a2749c6bc6308ba68949325c0abf5896bf","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_assistant"
 msgstr "助手消息"
 
 #. English: tokens × model requests that re-sent the item
 #. chrys-meta={"fingerprint":"b789d1d791cddaf2eab8df5ef7bfbc0a9a2dbe92e3cb76df431337fa92e5272c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_explainer"
 msgstr "词元数 × 重复发送该条目的模型请求数"
 
 #. English: context item
 #. chrys-meta={"fingerprint":"4cecddff9a13392f9d8acb0c42f3be268a33662cfab0c3bae8984aca9c304a39","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_item"
 msgstr "上下文条目"
 
 #. English: Context re-send cost · top {value}
 #. chrys-meta={"fingerprint":"2adc951a2a10342311749da4eae382b5bfae550aeb5d1112675628bd3f976f0d","multiline":false,"placeholders":["value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_load"
 msgstr "上下文重复发送开销 · Top {value}"
 
 #. English: {tokens} tok × {carries} re-sends
 #. chrys-meta={"fingerprint":"262b76278d26e71322afb2faf99189adaee379e542d5b1eec4aeadcab151f670","multiline":false,"placeholders":["carries","tokens"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_row_detail"
 msgstr "{tokens} tok × {carries} 次重发"
 
 #. English: {item} · since turn {turn}
 #. chrys-meta={"fingerprint":"c4d83880177ea94e5fa9b0a0fcfdcb6c8cce59da8cc0af8ec8bf8e2271bc0d72","multiline":false,"placeholders":["item","turn"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_row_head"
 msgstr "{item} · 自第 {turn} 轮"
 
 #. English: tool result
 #. chrys-meta={"fingerprint":"5492336a573d34fc7f07077c6fccf0013e48947ea67680824175eb7435e10f38","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_tool_result"
 msgstr "工具结果"
 
 #. English: user message
 #. chrys-meta={"fingerprint":"fee44f48a188adc56cc5dddab9149f2e125ba699a6e5ec0126579949fd556fe1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_user"
 msgstr "用户消息"
 
 #. English: input share
 #. chrys-meta={"fingerprint":"0ee87981e337940d5eb658bcdec8a460c2684cca2b894bc0340acfb5bf956680","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.input_share"
 msgstr "输入占比"
 
 #. English: No per-turn data.
 #. chrys-meta={"fingerprint":"85fe7c1f91118586af5733af7756092ae724b92f948ee55aa40c50ccaf003c52","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.no_turn_data"
 msgstr "无逐轮数据。"
 
 #. English: Tokens per turn
 #. chrys-meta={"fingerprint":"4b32d7e031847e3a3c77955abe74be07b70e0506fcda579346cb78773f7f9db2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.per_turn"
 msgstr "每轮词元"
 
 #. English: This session has no tool calls.
 #. chrys-meta={"fingerprint":"a1740f4d64bcf0c3bdba92a0b71fdcefbe80ef2e8428335852542f22274742cd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tools.none"
 msgstr "本会话没有工具调用。"
 
 #. English: Tool activity
 #. chrys-meta={"fingerprint":"407bfd805f7262e9a7023c6a6620cac192a6f3c3d6185b104c0b5a495ba0e994","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tools.title"
 msgstr "工具"
 
 #. English: Parallelism & busy
 #. chrys-meta={"fingerprint":"f731a34535750c155ed04ec3088b5b3dc59c7713a612659a4ad9073889c43b2e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.kpi.parallel"
 msgstr "并行与忙碌"
 
 #. English: Where time went
 #. chrys-meta={"fingerprint":"7adda2b0738fbf8261e3e526a79a76cadf3b74f32ce53a6d2e25ccf13ac352af","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.kpi.split"
 msgstr "时间去向"
 
 #. English: Time & usage
 #. chrys-meta={"fingerprint":"486d2deba39ba5659e9a20b936a984b02da67e745efc37db8e189570ebeb98b7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.kpi.time"
 msgstr "时间与用量"
 
 #. English: No MCP tools were called.
 #. chrys-meta={"fingerprint":"43497a38bf40bb2fd85659af351f14b69a64ec439556e4c3c4b0458b6be8fd9e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.mcp_usage.none"
 msgstr "未调用 MCP 工具。"
 
 #. English: MCP usage
 #. chrys-meta={"fingerprint":"8ef5cfc48a391dc787367f4bf05df332a88ad9098fee3e82c94b2d33c7e0026e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.mcp_usage.title"
 msgstr "MCP 使用"
 
 #. English: bottleneck (compute)
 #. chrys-meta={"fingerprint":"3070b6428e148852e7b8dde062ce7d12977478134502593b7f0ec0aced1ac676","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.cp_compute"
 msgstr "瓶颈路径（计算）"
 
 #. English: bottleneck (response)
 #. chrys-meta={"fingerprint":"c96a87bb728bf6c2ba9892f1190b2c45f65a5e4c6675c9fa1b597552bd3e794f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.cp_response"
 msgstr "瓶颈路径（响应）"
 
 #. English: total time
 #. chrys-meta={"fingerprint":"bd30e9f4fdf6330977bd94bc85639b7694bd37700e1fc2feaddf2dc03795f9df","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.elapsed"
 msgstr "总耗时"
 
 #. English: parallel time saved
 #. chrys-meta={"fingerprint":"0158e24ee92af261d41b4938db75da2c291fc8ab4e1a616a9a85d041e8ec942a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.overlap"
 msgstr "并行省时"
 
 #. English: parallelism
 #. chrys-meta={"fingerprint":"9077d7e20a119014e9f4403dd76bc16797b84b89102762a997bd387862106c87","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.parallelism"
 msgstr "并行度"
 
 #. English: total token usage
 #. chrys-meta={"fingerprint":"9d18f08bd15394ad592b4f7ca966bd5fbca018a583ad47cb0a23499ad36c7a10","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.usage"
 msgstr "总词元消耗量"
 
 #. English: actual work time
 #. chrys-meta={"fingerprint":"9e183b819d77a8a9053fca2a7864a807483ab19ea96beb3dee0a2be365e5c7f2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.metric.work"
 msgstr "实际工作时长"
 
 #. English: No completed turns are available.
 #. chrys-meta={"fingerprint":"388c1cfe0f82b13df6595112195f15b9afc93fa3ba7a8837a3ffd96a480a86a6","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.no_turns"
 msgstr "暂无已完成的轮次。"
 
 #. English: estimated
 #. chrys-meta={"fingerprint":"038b31678a551acc9ef37607b456b8703e7d7527c9c6d254f3e52eddc4229c4e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.precision.estimated"
 msgstr "估算"
 
 #. English: exact
 #. chrys-meta={"fingerprint":"5b73a11f9ece587bc474966bd5e1daa4f8f948048416c805bb9a026f00002e5f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.precision.exact"
 msgstr "精确"
 
 #. English: missing
 #. chrys-meta={"fingerprint":"f9b18616c27539ba099c63387787a044fa36db5c03842f33b2d54a744e5032d9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.precision.missing"
 msgstr "缺失"
 
 #. English: unresolved
 #. chrys-meta={"fingerprint":"a7509e880ef329ffd7a9492402a30a2e9a3eecc1f1d8078c3fe94b7c755f8ba3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.precision.unresolved"
 msgstr "无法解析"
 
 #. English: abandoned: no target
 #. chrys-meta={"fingerprint":"6d26ae40fb566fecfe97e180da0e5599a982dbd1edb267336578a5298852dda4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.abandoned_no_target"
 msgstr "已放弃：无目标"
 
 #. English: cancelled
 #. chrys-meta={"fingerprint":"a5fb27a22343ae45dffbf8e925df54667260b67e79f86aabb0cfa7dd81b207f2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.cancelled"
 msgstr "已取消"
 
 #. English: completed
 #. chrys-meta={"fingerprint":"03e4d77d5b021bb4e5c21d4acd951db894b769916410b5a2106dbe4cb5a0e191","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.completed"
 msgstr "已完成"
 
 #. English: conflict
 #. chrys-meta={"fingerprint":"aa6343cbf9aa8107ceaab9e60130577f74d8173990a5a98ef51b88a9b3fba253","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.conflict"
 msgstr "冲突"
 
 #. English: dropped
 #. chrys-meta={"fingerprint":"f3d00baab239847b990697b70304460a63fbdc29239bbfe10bbc6a3e8b0c686c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.dropped"
 msgstr "已丢弃"
 
 #. English: failed
 #. chrys-meta={"fingerprint":"e577b0f8f70f769ff7fe235ed918b450c5161e91c7cb85d30d534f7a1541804b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.failed"
 msgstr "失败"
 
 #. English: fresh turn
 #. chrys-meta={"fingerprint":"81056a3bc54e9dab3286a66bb78e8c01aab960cacc0eef0e43482d8bd2070bd5","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.fresh_turn"
 msgstr "新轮次"
 
 #. English: handoff
 #. chrys-meta={"fingerprint":"5932e0faa8db410452f193dd468b1cdb7ba3a377dec97f8552649ce543dc34c7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.handoff"
 msgstr "已移交"
 
 #. English: image rejected
 #. chrys-meta={"fingerprint":"ac9e8226cb4e9225cd137c42a6761f221b9de37e3e6bbb04475d0e882df29b0d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.image_rejected"
 msgstr "图像被拒绝"
 
 #. English: injected
 #. chrys-meta={"fingerprint":"70bf04f2e6fa0c58811ab40e37bf7d4c9013cdcfd58ea4fab8da450690ecdc5d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.injected"
 msgstr "已注入"
 
 #. English: interrupted
 #. chrys-meta={"fingerprint":"9566bb81390b49dbd8aa355c817de177cf28c1c9bedd62a5ca1799d53b602ab7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.interrupted"
 msgstr "已中断"
 
 #. English: not ready
 #. chrys-meta={"fingerprint":"589877359eeccc2e090929eeda6edfafce9017fb5b741c4be8a05c3dea844788","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.not_ready"
 msgstr "未就绪"
 
 #. English: owner changed
 #. chrys-meta={"fingerprint":"e7c98466e3fe94e455c0b3bdfa56c0a00609aa91c0cba67ad2a18973ac4384e6","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.owner_changed"
 msgstr "所有者已变更"
 
 #. English: preparation failed
 #. chrys-meta={"fingerprint":"d4878c38a793e51fc53fc2ea71e256ec2424cbd35edf8233bf6de5a2160956e9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.preparation_failed"
 msgstr "准备失败"
 
 #. English: rejected
 #. chrys-meta={"fingerprint":"a4d7d339c4142ed17f1dadaccde3fb122e51f2f73cb09f05e87f990932f951b4","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.rejected"
 msgstr "已拒绝"
 
 #. English: retry turn
 #. chrys-meta={"fingerprint":"928aea2c6af06bb9967d5272fd40ecca0108b997b433db0bad823c8f694bd36a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.retry_turn"
 msgstr "重试轮次"
 
 #. English: superseded
 #. chrys-meta={"fingerprint":"92b3189ebbcba7546b5288ebbae7321e6b363ded87f3bdc152521c2760330f8d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.superseded"
 msgstr "已被取代"
 
 #. English: target stale
 #. chrys-meta={"fingerprint":"7b9f361985c6780f16dc1a9a1b4f3b08424fd37f5f0225915af54b014b1ebcf1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.target_stale"
 msgstr "目标已过期"
 
@@ -12453,45 +12453,45 @@ msgstr "轨迹读取错误：{error}"
 
 #. English: Copy path
 #. chrys-meta={"fingerprint":"ab31f49d44d33196a8495ec1517a9058d81251dade45ad052a36310e7ac30996","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.copy_path"
 msgstr "复制路径"
 
 #. English: events logged
 #. chrys-meta={"fingerprint":"ea96995d890554bafd3faf357034190b5e984ae8155c6c271833e1e0752d7111","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.events"
 msgstr "已记录事件"
 
 #. English: {count} file
 #. English-plural: {count} files
 #. chrys-meta={"fingerprint":"4339e9fb7957b389de563381810b48011a4074e2e1d2d3cef5cc41b323398e5a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.files"
 msgid_plural "tui.trajectory.session_info.files#plural"
 msgstr[0] "{count} 个文件"
 
 #. English: first message
 #. chrys-meta={"fingerprint":"08092ada2d61f0b5f02da507f361761156017ea7b30ccdf501086a717a55af1e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.first_message"
 msgstr "首条消息"
 
 #. English: last reply
 #. chrys-meta={"fingerprint":"eb854162c33eeb4a43991717e5d597421ceca702a6d3f3b6971d301c64904ea1","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.last_reply"
 msgstr "最后回复"
 
 #. English: diff backups
 #. chrys-meta={"fingerprint":"49f877eaeab21da3de2eaa93840f6597bc026ef717c33f8f41c7f1bf68d0d4c3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.mutations"
 msgstr "文件备份数据"
 
 #. English: on disk
 #. chrys-meta={"fingerprint":"1214cf8c8725c66c13445dda9348e4b050beb3e110394efc35f453bd15221299","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.on_disk"
 msgstr "占用空间"
 
@@ -12503,7 +12503,7 @@ msgstr "无法打开会话文件夹：{error}"
 
 #. English: Open folder
 #. chrys-meta={"fingerprint":"c1ed71e74a8fee72d035f7f727db12cc77290c91452ddd09e24eb6f9397e97bd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.open_folder"
 msgstr "打开文件夹"
 
@@ -12516,7 +12516,7 @@ msgstr "当前环境无法打开会话文件夹。"
 
 #. English: folder
 #. chrys-meta={"fingerprint":"3796d41b80c4ba8cd38645361792055112252e7141a47b86eeb91874d61350fc","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.path"
 msgstr "文件夹"
 
@@ -12528,86 +12528,86 @@ msgstr "路径已复制"
 
 #. English: times opened
 #. chrys-meta={"fingerprint":"32031782e387c1f832ac96722c2c39055f096dc4da39bc996a01d05a544fff29","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.runtimes"
 msgstr "打开次数"
 
 #. English: rollback snapshots
 #. chrys-meta={"fingerprint":"41861dea2ef1a01858d8b37a182ff101449ec391b5498bcaa215da2bd56ea911","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.snapshots"
 msgstr "回滚快照"
 
 #. English: first → last
 #. chrys-meta={"fingerprint":"f94f1a39dc442ff89df0ab9706f914270f3dedc0ab156140aa0ab4169fd06f3b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.span"
 msgstr "首 → 末"
 
 #. English: sub-agent sessions
 #. chrys-meta={"fingerprint":"b5175545805b0bd4342ec1f5ba38fdb5e29854cecca6248496cee073353b4e36","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.sub_agents"
 msgstr "子代理会话"
 
 #. English: Session info
 #. chrys-meta={"fingerprint":"e00cb34b65b65e41143234668dd15a9a5e698f8ee64868e504a9b8204ea37e41","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.title"
 msgstr "会话信息"
 
 #. English: turns
 #. chrys-meta={"fingerprint":"d3753164842a6d22137baa45e7892464590e233f1149ce91fffd1b2c74f6e823","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.session_info.turns"
 msgstr "轮数"
 
 #. English: No skills were used.
 #. chrys-meta={"fingerprint":"7503c7e584d4881a2aa83c1e04225ab64c5449cf9f6a7a1a6e7e275ca05042da","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.skill_usage.none"
 msgstr "未使用技能。"
 
 #. English: Skill usage
 #. chrys-meta={"fingerprint":"e1d6e52ca29932b2e468738c6d67ab163dde0b1cfdae4c6a0e3bbb0ee905463a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.skill_usage.title"
 msgstr "技能使用"
 
 #. English: started a new turn
 #. chrys-meta={"fingerprint":"b0431c37fa57f7f62cf2159b1f7ab882928bcbe0841af9a08b784434a90ad1f3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.became_turn"
 msgstr "开始新一轮"
 
 #. English: never became a turn
 #. chrys-meta={"fingerprint":"c63ad9509481f6f8b15271d5413437876852ef4f5b37e3c296391d19a7a8e60d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.did_not_become"
 msgstr "未形成轮次"
 
 #. English: injected into an ongoing turn
 #. chrys-meta={"fingerprint":"9d8168586d74d81ff1393f7cfb36733dfde01c78d682225a3365c501948c9245","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.injected"
 msgstr "注入进行中的轮次"
 
 #. English: How long each message waited between being sent and the agent
 #. starting on it.
 #. chrys-meta={"fingerprint":"c046439c349d0da83184012a97195647cf11e5c618b4e80d49e09c6f36ca9eeb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.intro"
 msgstr "每条消息从发出到智能体开始处理，等了多久。"
 
 #. English: No submissions were recorded.
 #. chrys-meta={"fingerprint":"ca80d2cfe72cd30d9c4b94a2824dc0115bbfe25ca701e719e8b5ac4210c9d0eb","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.none"
 msgstr "没有记录到提交。"
 
 #. English: {outcome} · {duration}
 #. chrys-meta={"fingerprint":"5351a35e738e315365d6419ea0af970529d292e7bf8ff0498a961599721ea7d9","multiline":false,"placeholders":["duration","outcome"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.sample"
 msgstr "{outcome} · {duration}"
 
@@ -12615,21 +12615,21 @@ msgstr "{outcome} · {duration}"
 #. English-plural: {value} samples · median {p50} · p90 {p90} · slowest
 #. {maximum}
 #. chrys-meta={"fingerprint":"c415d1349045aa417c7b3ec0ccade5b1ad2e028181aaf77b15518e6f6ca4980b","multiline":false,"placeholders":["maximum","p50","p90","value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.stats"
 msgid_plural "tui.trajectory.submission_latency.stats#plural"
 msgstr[0] "{value} 次 · 中位 {p50} · p90 {p90} · 最慢 {maximum}"
 
 #. English: Submission wait (submit → work starts)
 #. chrys-meta={"fingerprint":"d277358c58732d152e677114b6f70c8921cf3168b9581c18be6f176c80f31e46","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.title"
 msgstr "提交等待（发出 → 开始处理）"
 
 #. English: {count} unresolved sample
 #. English-plural: {count} unresolved samples
 #. chrys-meta={"fingerprint":"ad3a3b88ef5d6308cba9b01a6210cd0c90dd07607bff390a3ff736b764159e0a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.submission_latency.unresolved"
 msgid_plural "tui.trajectory.submission_latency.unresolved#plural"
 msgstr[0] "{count} 个无法解析的样本"
@@ -12660,13 +12660,13 @@ msgstr "时间线"
 
 #. English: time
 #. chrys-meta={"fingerprint":"133517c6e51dd64cea2e7e521c5517661d00eb3d65d7550d5cf6c6d82b25d27b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.time_ruler"
 msgstr "时间"
 
 #. English: Space: dependency graph
 #. chrys-meta={"fingerprint":"c5a1c725f99e46b5affee746ee49271828a33cf9c84cedec6840182cb341f218","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/timeline.py
 msgid "tui.trajectory.timeline.graph_hint"
 msgstr "空格：查看依赖图"
 
@@ -12678,85 +12678,85 @@ msgstr "轨迹"
 
 #. English: {tokens} tokens
 #. chrys-meta={"fingerprint":"9338d321ddbd2910cbc065c858fa5cd9606734d2d60bd74af39cf59c2c5ae4bc","multiline":false,"placeholders":["tokens"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.token_count"
 msgstr "{tokens} token"
 
 #. English: cache creation
 #. chrys-meta={"fingerprint":"ed7e25dae6f23ed48c95bda54bdc5fa458ff5b2dff260940297a2f5a6ec698d6","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.token_usage.cache_creation"
 msgstr "缓存写入"
 
 #. English: cache hit
 #. chrys-meta={"fingerprint":"8386608992ba3a4dad89904440f0ccb5377b5e5cc2ddf0317fa46726b7953ee7","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.token_usage.cache_hit"
 msgstr "缓存命中"
 
 #. English: cache read
 #. chrys-meta={"fingerprint":"3c119a88847f1047a1d48011f7d5be77538aa0af8e1146c9e64028120553d490","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.token_usage.cache_read"
 msgstr "缓存读取"
 
 #. English: input
 #. chrys-meta={"fingerprint":"d06c26157c94caa707cef91f0d9d9f889596f42c76641aabdca998edfa2f19e8","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.token_usage.input"
 msgstr "输入"
 
 #. English: output
 #. chrys-meta={"fingerprint":"a4829bccc1fb8e693e24cee7d9647ff1b10a13fdaeb9e7eaa26a6bfc4725122b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.token_usage.output"
 msgstr "输出"
 
 #. English: reasoning
 #. chrys-meta={"fingerprint":"97e10470ce399525567257ab4d3e622e909ecdaf5369a11d3f7ac2914b575a9e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.token_usage.reasoning"
 msgstr "推理"
 
 #. English: Token usage
 #. chrys-meta={"fingerprint":"d7b7f1b52ebed439f5949e6fc9f0cd3c71a0d7755d6c5eabb8b00e092bb87498","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.token_usage.title"
 msgstr "Token 用量"
 
 #. English: +{value} more
 #. chrys-meta={"fingerprint":"bbb4469bc4b6fa5a75075ba264ea7e55e5ae53958e1438c0c85a08ff60ccac6b","multiline":false,"placeholders":["value"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.tool_usage.more"
 msgstr "另有 {value} 项"
 
 #. English: (name unavailable)
 #. chrys-meta={"fingerprint":"286230148002cda82fa2da43ab4da91dce8886fd88e851ec8344096d04760063","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.tool_usage.unattributed"
 msgstr "（名称不可用）"
 
 #. English: Turn {turn}
 #. chrys-meta={"fingerprint":"11385e9dd3f32a82cce844426e3a1855f16e77d5767a065fdbe090a8aadfe70e","multiline":false,"placeholders":["turn"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.turn"
 msgstr "第 {turn} 轮"
 
 #. English: No trajectory data is available for this session.
 #. chrys-meta={"fingerprint":"5b17662900e9f51e5631a401d900ecda8301b9e6e9bde3c282d946051875d50b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/presentation.py
 msgid "tui.trajectory.unavailable"
 msgstr "本会话没有可用的轨迹数据。"
 
 #. English: Busy share (model and tools independent; >100% = parallel work)
 #. chrys-meta={"fingerprint":"b595d7edbd95fcb513dc9dfe2c55a57f80b624204992c74d51126393ac0e12e3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.utilization"
 msgstr "忙碌占比（模型/工具各自独立；>100% 即并行）"
 
 #. English: Per-turn time breakdown · turns {first}-{last}
 #. chrys-meta={"fingerprint":"c56a2afe75fc8f3f5cca27416a8f197ed15156456137ab01c3bcab90d150c84b","multiline":false,"placeholders":["first","last"]}
-#: src/chrys/app/tui/widgets/trajectory/panel.py
+#: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.waterfall"
 msgstr "各轮时间分布 · 第 {first}-{last} 轮"
 
