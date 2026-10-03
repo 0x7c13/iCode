@@ -11,6 +11,7 @@ from typing import Final
 
 from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.service.analytics.classification import evidence_key
+from chrys.service.analytics.math import interval_length
 from chrys.service.analytics.model import (
     ActionClass,
     ActionOperation,
@@ -248,19 +249,7 @@ def _approval_wait_ns(slices: Iterable[TimeSlice]) -> int:
     shared wall time once per request and push the share past the elapsed
     turn time.
     """
-    total = 0
-    span_start: int | None = None
-    span_end = 0
-    for start, end in sorted((item.start_ns, item.end_ns) for item in slices if item.owner == "approval"):
-        if span_start is None or start > span_end:
-            if span_start is not None:
-                total += span_end - span_start
-            span_start, span_end = start, end
-        else:
-            span_end = max(span_end, end)
-    if span_start is not None:
-        total += span_end - span_start
-    return total
+    return interval_length((item.start_ns, item.end_ns) for item in slices if item.owner == "approval")
 
 
 def _action_evidence(action: ActionOperation) -> tuple[str, ...]:

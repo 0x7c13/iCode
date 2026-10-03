@@ -4,17 +4,19 @@
 
 from __future__ import annotations
 
+from chrys.foundation.config.coercion import FALSY
+
 
 def coerce_bool(value: object, *, default: bool) -> bool:
-    """Coerce YAML scalar bool-ish values into a Python bool."""
+    """Coerce a YAML scalar into a bool; a missing value (``None``) keeps ``default``.
+
+    Text is false when blank or one of the settings grammar's false words
+    (``0``, ``false``, ``no``, ``off``, in any case) and true otherwise; any
+    other value follows Python truthiness.
+    """
     if value is None:
         return default
-    if isinstance(value, bool):
-        return value
     if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
+        word = value.strip().casefold()
+        return bool(word) and word not in FALSY
     return bool(value)
