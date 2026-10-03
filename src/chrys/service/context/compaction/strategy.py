@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from chrys.foundation.errors import iter_explicit_graph
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.trajectory.context import current_trajectory
 from chrys.foundation.trajectory.event_types import CompactionSkipReason
@@ -81,6 +82,7 @@ from .groups import (
     _ordered_group_ids,
     _tool_groups_in_range,
 )
+from .last_words import LastWordsGenerationError
 from .last_words_state import DropRoundBreakerState, LastWordsState, Phase4RetrySnapshot
 from .scoped import ScopedGroup
 from .spill import SpillQuota
@@ -162,8 +164,10 @@ class UnifiedContextStrategy:
     **Compaction** (4-phase, budget-triggered):
 
     1. Estimate context usage as ``(included_tokens * ratio) / max_context``.
-    2. If usage < ``trigger_pct``, no-op. Past it, a call that cannot start a
-       pass (compaction disabled, no resolvable turn) logs and records
+    2. If usage < ``trigger_pct``, no-op, unless the provider has reported the
+       context window full since the last completed pass
+       (:meth:`note_context_overflow`). Past the trigger, a call that cannot
+       start a pass (compaction disabled, no resolvable turn) logs and records
        ``compaction.skipped`` once per stretch above the trigger.
     3. **Phase 1-4**: trim old tools, compress old text turns, then drop
        current-turn tool work only as the final fallback.
@@ -226,6 +230,11 @@ class UnifiedContextStrategy:
         # stretch above the trigger; cleared when usage drops below it or a
         # pass starts.
         self._reported_skip: tuple[str, str | None] | None = None
+        # Set when the provider rejected a request for overflowing the context
+        # window; forces the next pass whatever the estimate says and clears
+        # only when one completes. Per instance on purpose: retry rollback
+        # keeps it, and it is never persisted.
+        self._context_overflow_pending = False
         self._on_context_pressure = on_context_pressure
         self._spill_quota = spill_quota
         self._spill_root = spill_root
@@ -681,6 +690,21 @@ class UnifiedContextStrategy:
         """Compute effective context usage as a fraction of max_context_tokens."""
         return self._calibration.usage_pct(included)
 
+    def note_context_overflow(self, exc: BaseException | None = None) -> bool:
+        """Make the next pass run even below the trigger: the provider found the window full.
+
+        Not for a failure of compaction's own last-words call (owner-terminal;
+        its fallback text names the context window), nor while compaction is
+        off, which would only record a misleading skip. Returns whether
+        compacting and resending the same request can help.
+        """
+        if exc is not None and any(isinstance(node, LastWordsGenerationError) for node in iter_explicit_graph(exc)):
+            return False
+        if not self._compaction_enabled:
+            return False
+        self._context_overflow_pending = True
+        return True
+
     async def __call__(self, messages: list[Message], context: CompactionCallContext | None = None) -> bool:
         # max() folds the retained legacy ``tool_definition_tokens`` spelling:
         # external constructors of CompactionCallContext may populate only it.
@@ -696,8 +720,10 @@ class UnifiedContextStrategy:
         self._reinject_compressed_context_summaries(messages)
         current = self._annotate_and_count(messages)
         usage = self._usage_pct(current)
+        below_trigger = usage < self.trigger_pct
+        overflow_forced = self._context_overflow_pending
 
-        if usage < self.trigger_pct:
+        if below_trigger and not overflow_forced:
             self._reported_skip = None
             return compressions_processed
 
@@ -709,7 +735,12 @@ class UnifiedContextStrategy:
         resolved = _resolve_turns(messages, self._state)
 
         if not resolved.spans:
-            self._report_skip(CompactionSkipReason.TURNS_UNRESOLVED, current)
+            # ``compaction.skipped`` reports usage past the trigger; a pass the
+            # overflow forced below it just waits for the next call.
+            if below_trigger:
+                self._reported_skip = None
+            else:
+                self._report_skip(CompactionSkipReason.TURNS_UNRESOLVED, current)
             return compressions_processed
         self._reported_skip = None
 
@@ -728,7 +759,10 @@ class UnifiedContextStrategy:
         compaction_token = bind_compaction_operation(run.run_id if run is not None else None)
         try:
             if run is not None:
-                await run.started(trigger="usage_threshold", tokens_before=tokens_before)
+                await run.started(
+                    trigger="context_overflow" if overflow_forced else "usage_threshold",
+                    tokens_before=tokens_before,
+                )
             changed = await self._run_phase1(
                 messages,
                 previous_count=previous_count,
@@ -749,6 +783,7 @@ class UnifiedContextStrategy:
             reset_compaction_operation(compaction_token)
             self._trajectory_run = None
         self._finalize_pass(messages, changed, entry_tokens=current)
+        self._context_overflow_pending = False
         if run is not None:
             await run.finished(tokens_before=tokens_before, tokens_after=self._last_included_tokens)
         return changed or compressions_processed

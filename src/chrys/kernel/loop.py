@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
 
 from pydantic import BaseModel, ValidationError
 
-from chrys.foundation.errors import clean_error_message, invalidates_continuation_token
+from chrys.foundation.errors import clean_error_message, invalidates_continuation_token, is_context_overflow
 from chrys.foundation.observability.gate import TELEMETRY_GATE
 from chrys.foundation.recovery import RecoveryPersistOutcome
 from chrys.foundation.retry import StreamStall
@@ -121,6 +121,7 @@ from ._types import (
     ResponseStream,
 )
 from .client import _wire_message_view, resolve_storage_mode_and_handles, start_with_wire_progress
+from .compaction import ContextOverflowSink
 from .exceptions import ChrysException, tool_error_result_text
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
@@ -2919,6 +2920,15 @@ class ToolLoopLayer:
                 return hosted_commits
             return ()
 
+        def _note_context_overflow(exc: BaseException) -> bool:
+            # The provider measured the real input and found the window full:
+            # the strategy compacts before the next request instead of letting
+            # it resend the rejected input. Runs before any retry decision, so
+            # service-side runs (no wire policy) are noted too.
+            if not isinstance(compaction_strategy, ContextOverflowSink) or not is_context_overflow(exc):
+                return False
+            return compaction_strategy.note_context_overflow(exc)
+
         async def _blocking_response_with_retry(
             prepped: list[Message],
             *,
@@ -2956,6 +2966,7 @@ class ToolLoopLayer:
                         # issue a fresh request, never re-poll the completed
                         # (immutable) one.
                         _track_continuation_token(None)
+                    _note_context_overflow(exc)
                     if policy is None or not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
                         raise
                     hosted_commits = _hosted_commits_vetoing_replay(policy)
@@ -3098,6 +3109,7 @@ class ToolLoopLayer:
                             # must issue a fresh request, never re-poll the
                             # completed (immutable) one.
                             _track_continuation_token(None)
+                        _note_context_overflow(exc)
                         if policy is None:
                             raise
                         hosted_commits = _hosted_commits_vetoing_replay(policy)

@@ -3742,7 +3742,7 @@
     "chrys.service.context.compaction.strategy": {
       "UnifiedContextStrategy.__call__": [
         ["wrapper", "await self._run_queued_compressions(messages)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_queued_compressions"],
-        ["awaitable", "await run.started(trigger='usage_threshold', tokens_before=tokens_before)", "unresolved"],
+        ["awaitable", "await run.started(trigger='context_overflow' if overflow_forced else 'usage_threshold', tokens_before=tokens_before)", "unresolved"],
         ["wrapper", "await self._run_phase1(messages, previous_count=previous_count, usage=usage, tokens_before=tokens_before)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase1"],
         ["wrapper", "await self._run_phase2(messages)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase2"],
         ["wrapper", "await self._run_phase3(messages)", "unresolved", "chrys.service.context.compaction.strategy.UnifiedContextStrategy._run_phase3"],

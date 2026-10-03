@@ -54,6 +54,7 @@ from chrys.foundation.events.types import (
     InvocationToolCallResult,
     InvocationToolCallStart,
     SessionReady,
+    ToolCompacted,
     UsageUpdate,
     UserMessage,
     Warning,
@@ -275,6 +276,143 @@ class TestMainAgentNonStreaming:
             assert marker.get("additional_properties", {}).get("_interrupted_by") == "error"
             assert marker.get("contents", [{}])[0].get("text") == OUTPUT_TRUNCATED_REASON
             assert raw_messages[2].get("additional_properties", {}).get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN
+        finally:
+            await ctx.cleanup()
+
+    @pytest.mark.parametrize("text", ["", "   "], ids=["empty", "whitespace"])
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_reply_cut_off_before_any_output_makes_the_retry_compact_first(
+        self,
+        tmp_path: Path,
+        fast_validation_backoff: None,
+        stream: bool,
+        text: str,
+    ) -> None:
+        """The input left no room to answer: the turn still fails, and its Retry compacts before resending."""
+        ctx = await create_test_engine(
+            [
+                MockResponse(tool_calls=[("echo", "call-1", {"message": "x" * 4000})]),
+                MockResponse(text="first answer"),
+                MockResponse(text=text, finish_reason="length"),
+                MockResponse(text="recovered answer"),
+            ],
+            tmp_path,
+            stream=stream,
+            compaction=CompactionConfig(enabled=True),
+        )
+        errors: list[Error] = []
+        compacted: list[ToolCompacted] = []
+
+        async def _on_error(ev: Error) -> None:
+            errors.append(ev)
+
+        async def _on_compacted(ev: ToolCompacted) -> None:
+            compacted.append(ev)
+
+        await ctx.bus.subscribe(Error, _on_error)
+        await ctx.bus.subscribe(ToolCompacted, _on_compacted)
+
+        try:
+            await ctx.send_message("first")
+            await ctx.send_message("second")
+
+            assert ctx.mock_client.call_count == 3
+            assert [error.message for error in errors] == [OUTPUT_TRUNCATED_REASON]
+            assert compacted == []
+
+            await ctx.send_retry()
+
+            assert ctx.mock_client.call_count == 4
+            assert [event.phase for event in compacted] == ["phase1"]
+            assert extract_final_messages(ctx.events) == ["first answer", "recovered answer"]
+        finally:
+            await ctx.cleanup()
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.asyncio
+    async def test_an_empty_reply_after_hidden_reasoning_does_not_make_the_retry_compact(
+        self,
+        tmp_path: Path,
+        fast_validation_backoff: None,
+        stream: bool,
+    ) -> None:
+        """Usage counts reasoning the API did not return: the output limit ran out, not the window."""
+        ctx = await create_test_engine(
+            [
+                MockResponse(tool_calls=[("echo", "call-1", {"message": "x" * 4000})]),
+                MockResponse(text="first answer"),
+                MockResponse(
+                    finish_reason="length",
+                    usage_details={"output_token_count": 4096, "reasoning_output_token_count": 4096},
+                ),
+                MockResponse(text="recovered answer"),
+            ],
+            tmp_path,
+            stream=stream,
+            compaction=CompactionConfig(enabled=True),
+        )
+        errors: list[Error] = []
+        compacted: list[ToolCompacted] = []
+
+        async def _on_error(ev: Error) -> None:
+            errors.append(ev)
+
+        async def _on_compacted(ev: ToolCompacted) -> None:
+            compacted.append(ev)
+
+        await ctx.bus.subscribe(Error, _on_error)
+        await ctx.bus.subscribe(ToolCompacted, _on_compacted)
+
+        try:
+            await ctx.send_message("first")
+            await ctx.send_message("second")
+            assert [error.message for error in errors] == [OUTPUT_TRUNCATED_REASON]
+
+            await ctx.send_retry()
+
+            assert ctx.mock_client.call_count == 4
+            assert extract_final_messages(ctx.events) == ["first answer", "recovered answer"]
+            assert compacted == []
+        finally:
+            await ctx.cleanup()
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_reply_cut_off_after_reasoning_does_not_make_the_next_turn_compact(
+        self,
+        tmp_path: Path,
+        fast_validation_backoff: None,
+        stream: bool,
+    ) -> None:
+        """Reasoning was generated, so the window was not full: the validation retry is the whole response."""
+        ctx = await create_test_engine(
+            [
+                MockResponse(tool_calls=[("echo", "call-1", {"message": "x" * 4000})]),
+                MockResponse(text="first answer"),
+                MockResponse(reasoning_text="thinking", finish_reason="length"),
+                MockResponse(text="second answer"),
+                MockResponse(text="third answer"),
+            ],
+            tmp_path,
+            stream=stream,
+            compaction=CompactionConfig(enabled=True),
+        )
+        compacted: list[ToolCompacted] = []
+
+        async def _on_compacted(ev: ToolCompacted) -> None:
+            compacted.append(ev)
+
+        await ctx.bus.subscribe(ToolCompacted, _on_compacted)
+
+        try:
+            await ctx.send_message("first")
+            await ctx.send_message("second")
+            await ctx.send_message("third")
+
+            assert ctx.mock_client.call_count == 5
+            assert extract_final_messages(ctx.events) == ["first answer", "second answer", "third answer"]
+            assert compacted == []
         finally:
             await ctx.cleanup()
 

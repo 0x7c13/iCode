@@ -53,7 +53,9 @@ class _ScriptedClient:
     """Innermost fake wire client.
 
     Non-stream turns are ``ChatResponse`` objects; stream turns are lists of
-    ``ChatResponseUpdate``. Records every call's messages/options/kwargs.
+    ``ChatResponseUpdate``. An exception as a turn fails the call, and one in
+    a stream turn fails the stream there. Records every call's
+    messages/options/kwargs.
     """
 
     def __init__(self, turns: list[Any], *, result_hook: Callable[[ChatResponse], ChatResponse] | None = None) -> None:
@@ -82,12 +84,16 @@ class _ScriptedClient:
         if not stream:
 
             async def _resolve() -> ChatResponse:
+                if isinstance(turn, BaseException):
+                    raise turn
                 return turn
 
             return _resolve()
 
         async def _gen() -> Any:
-            for update in turn:
+            for update in [turn] if isinstance(turn, BaseException) else turn:
+                if isinstance(update, BaseException):
+                    raise update
                 yield update
 
         rs: ResponseStream[ChatResponseUpdate, ChatResponse] = ResponseStream(

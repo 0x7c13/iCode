@@ -221,6 +221,25 @@ class CompactionAdmissionState(Protocol):
 
 
 @runtime_checkable
+class ContextOverflowSink(Protocol):
+    """Strategy that takes a provider's verdict that the context window is full.
+
+    Separate from :class:`CompactionAdmissionState` on purpose: that
+    protocol's isinstance check gates the output-cap clamp, which a strategy
+    without this method must keep.
+    """
+
+    def note_context_overflow(self, exc: BaseException | None = None) -> bool:
+        """Make the next pass compact whatever the local estimate says.
+
+        *exc* is the provider's rejection, or ``None`` when no error carried
+        the verdict.  Returns whether compacting and resending the same
+        request can help.
+        """
+        ...
+
+
+@runtime_checkable
 class CompactionStrategy(Protocol):
     """Protocol for strategies run by ``BaseChatClient`` before model calls.
 
