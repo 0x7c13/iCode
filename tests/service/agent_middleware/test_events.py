@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import textwrap
+from collections import UserDict
 from types import SimpleNamespace
 
 import pytest
@@ -291,6 +292,23 @@ async def test_tool_event_middleware_sets_invocation_order_before_awaited_start_
 
     release_first_start.set()
     await asyncio.gather(first_task, second_task)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(7, 7), (0, 0), (-2, -2), ("12", 12), (" 7 ", 7), ("bad", None), (None, None), (True, None), (False, None)],
+)
+def test_tool_invocation_order_reads_ints_and_rejects_bools(raw: object, expected: int | None) -> None:
+    order = get_tool_invocation_order(_ctx("tool", metadata={_TOOL_INVOCATION_ORDER_KEY: raw}))
+
+    assert order == expected and type(order) is type(expected)
+
+
+def test_tool_invocation_order_needs_a_dict_with_the_key() -> None:
+    assert get_tool_invocation_order(_ctx("tool")) is None
+    ctx = _ctx("tool")
+    ctx.metadata = UserDict({_TOOL_INVOCATION_ORDER_KEY: 7})
+    assert get_tool_invocation_order(ctx) is None
 
 
 async def test_intermediate_text_delivered_before_any_parallel_tool_start() -> None:

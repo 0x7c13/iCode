@@ -612,6 +612,10 @@ class StatusBar(Widget):
         self._set_flash_trail(self._flash_display_trail())
         self._refresh_details_pointer()
 
+    def flash_completed(self) -> None:
+        """Flash how long the run took; the elapsed time follows later locale switches."""
+        self.flash(STATUS_COMPLETED.bind(elapsed=self._format_elapsed()))
+
     def hide(self) -> None:
         """Hide the status bar."""
         self._flash = None

@@ -394,6 +394,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         path = self._session_file(session_id)
         return path if path.exists() else None
 
+    def resolve_session_file(self, session_id: str) -> Path | None:
+        """The session's ``session.json`` path; None when it has none.
+
+        A session still in the legacy flat layout is migrated first, so this
+        may write to disk and raise the I/O and lock errors migration raises.
+        """
+        return self._resolve_session_file(session_id)
+
     @staticmethod
     def _read_json_file(path: Path) -> dict[str, Any] | None:
         """Read a JSON object from *path*, returning ``None`` on invalid input."""

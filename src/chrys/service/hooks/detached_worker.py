@@ -28,9 +28,9 @@ async def _run_child(cmd: list[str], *, cwd: str, env: dict[str, str]) -> int | 
         "env": env,
     }
     if sys.platform == "win32":
-        from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+        from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
-        kwargs.update(_windows_hidden_subprocess_kwargs())
+        kwargs.update(windows_hidden_subprocess_kwargs())
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

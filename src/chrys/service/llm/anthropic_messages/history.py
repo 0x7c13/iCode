@@ -7,9 +7,11 @@
 A chat message becomes one wire message per run of blocks that share a wire
 role, in their original order: tool calls go out as ``assistant`` and local
 tool results as ``user`` whatever message carries them; other blocks, hosted
-results included, keep their message's role. Two repairs keep the request
+results included, keep their message's role. Repairs keep the request
 valid: an assistant message's thinking without a signature is dropped (the API
-rejects it), and so is a wire message left with no blocks.
+rejects it), and so are blank text and a wire message left with no blocks; a
+tool-call id another provider minted (``functions.read_file:0``) is sent as an
+id the API accepts, the same for the call and its result.
 
 Hosted-tool history from another provider is replaced by the neutral summary
 :func:`cross_provider_hosted_degradations` writes, sent as assistant context.
@@ -17,14 +19,17 @@ Hosted-tool history from another provider is replaced by the neutral summary
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.hosted_tools import ANTHROPIC_HOSTED_WIRE_BLOCK_KEY
-from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY, _get_data_bytes_as_str
+from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
+from chrys.service.llm.images import UNSUPPORTED_IMAGE_TEXT, wire_image
 
 if TYPE_CHECKING:
     from chrys.kernel import Content, Message
@@ -38,6 +43,10 @@ _ROLE_OF_BLOCK_TYPE: Final[Mapping[str, str]] = {
     "server_tool_use": "assistant",
     "tool_result": "user",
 }
+
+
+# The tool-use ids the API accepts.
+_TOOL_ID: Final = re.compile(r"[A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,25 +144,30 @@ def _add_thinking(content: Content, blocks: list[_Block]) -> None:
 def _encode_content(content: Content) -> dict[str, Any] | None:
     match content.type:
         case "text":
-            # The API rejects empty text blocks.
-            return {"type": "text", "text": content.text} if content.text else None
+            # The API rejects blank text blocks.
+            return {"type": "text", "text": content.text} if content.text and not content.text.isspace() else None
         case "data" | "uri":
             if (image := _image_block(content)) is None:
                 logger.debug("Ignoring unsupported data content media type: %s", content.media_type)
             return image
         case "function_call":
-            return {"type": "tool_use", "id": content.call_id, "name": content.name, "input": content.parse_arguments()}
+            return {
+                "type": "tool_use",
+                "id": _wire_tool_id(content.call_id),
+                "name": content.name,
+                "input": content.parse_arguments(),
+            }
         case "function_result":
             return {
                 "type": "tool_result",
-                "tool_use_id": content.call_id,
-                "content": _tool_result_blocks(content) or (content.result if content.result is not None else ""),
+                "tool_use_id": _wire_tool_id(content.call_id),
+                "content": _tool_result_blocks(content) or _tool_result_text(content.result),
                 "is_error": content.exception is not None,
             }
         case "mcp_server_tool_call":
             return {
                 "type": "mcp_tool_use",
-                "id": content.call_id,
+                "id": _wire_tool_id(content.call_id),
                 "name": content.tool_name,
                 "server_name": content.server_name or "",
                 "input": content.parse_arguments() or {},
@@ -161,7 +175,7 @@ def _encode_content(content: Content) -> dict[str, Any] | None:
         case "mcp_server_tool_result":
             return {
                 "type": "mcp_tool_result",
-                "tool_use_id": content.call_id,
+                "tool_use_id": _wire_tool_id(content.call_id),
                 "content": content.output if content.output is not None else "",
             }
         case _:
@@ -169,12 +183,32 @@ def _encode_content(content: Content) -> dict[str, Any] | None:
             return None
 
 
+def _wire_tool_id(call_id: str | None) -> str | None:
+    """*call_id* as an id the API accepts.
+
+    An id it rejects maps to one derived from its value, so a call and its
+    result keep matching. An empty id is sent as it is.
+    """
+    if not call_id or _TOOL_ID.fullmatch(call_id):
+        return call_id
+    digest = hashlib.sha256(call_id.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"toolu_chrys_{digest[:32]}"
+
+
+def _tool_result_text(result: Any) -> Any:
+    """A tool result's own value, or ``""`` for none or blank text, which the API rejects."""
+    if result is None or (isinstance(result, str) and result.isspace()):
+        return ""
+    return result
+
+
 def _tool_result_blocks(result: Content) -> list[dict[str, Any]]:
-    """The text and image items of a tool result; other items are not sent."""
+    """The text and image items of a tool result; blank text and other items are not sent."""
     blocks: list[dict[str, Any]] = []
     for item in result.items or ():
         if item.type == "text":
-            blocks.append({"type": "text", "text": item.text or ""})
+            if item.text and not item.text.isspace():
+                blocks.append({"type": "text", "text": item.text})
         elif item.type in ("data", "uri") and (image := _image_block(item)) is not None:
             blocks.append(image)
         else:
@@ -183,12 +217,15 @@ def _tool_result_blocks(result: Content) -> list[dict[str, Any]]:
 
 
 def _image_block(content: Content) -> dict[str, Any] | None:
-    """A ``data`` or ``uri`` content as an image block; None when it is no image."""
-    if not content.has_top_level_media_type("image"):
+    """A ``data`` or ``uri`` content as an image block; None when it is no image.
+
+    An image the API can't read goes out as a text block saying so; a link
+    saved without a type (older sessions kept MCP links that way) is no image.
+    """
+    if content.media_type is None or not content.has_top_level_media_type("image"):
         return None
-    if content.type == "data":
-        return {
-            "type": "image",
-            "source": {"data": _get_data_bytes_as_str(content), "media_type": content.media_type, "type": "base64"},
-        }
-    return {"type": "image", "source": {"type": "url", "url": content.uri}}
+    if (image := wire_image(content)) is None:
+        return {"type": "text", "text": UNSUPPORTED_IMAGE_TEXT}
+    if image.data is not None:
+        return {"type": "image", "source": {"data": image.data, "media_type": image.media_type, "type": "base64"}}
+    return {"type": "image", "source": {"type": "url", "url": image.uri}}

@@ -158,8 +158,8 @@ def _stream_parse(blocks: list[Any]) -> ChatResponse:
             )
         if block.type in {"server_tool_use", "mcp_tool_use", "tool_use"}:
             list(state.updates_for(SimpleNamespace(type="content_block_stop", index=index)))
-    if (held := state.release_held()) is not None:
-        updates.append(held)
+    updates.extend(state.updates_for(SimpleNamespace(type="message_stop")))
+    state.finish()
     return ChatResponse.from_updates(updates)
 
 

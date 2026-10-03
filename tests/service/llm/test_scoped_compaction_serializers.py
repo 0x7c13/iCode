@@ -22,6 +22,7 @@ from chrys.service.llm.openai_responses.history import (
     OPENAI_SHELL_OUTPUT_TYPE_SHELL_CALL,
 )
 from chrys.service.llm.openai_responses.replay import encode_input
+from tests.support.images import image_bytes
 
 
 class _LenTokenizer:
@@ -45,7 +46,7 @@ def _representative_slice() -> tuple[Message, ...]:
         "reused",
         result=[
             Content.from_text("start-" + "x" * 12_000 + "-finish"),
-            Content.from_data(b"image-bytes", "image/png"),
+            Content.from_data(image_bytes("PNG"), "image/png"),
         ],
     )
     shell_result = Content.from_function_result(

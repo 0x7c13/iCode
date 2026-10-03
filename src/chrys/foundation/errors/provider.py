@@ -169,8 +169,9 @@ def in_band_failure_retryable(code: str) -> bool:
     """Whether a request whose response failed with *code* may succeed when sent again.
 
     Adapters raising :class:`ProviderResponseError` for a failure the
-    response itself reported decide its retry by this; an unknown code may
-    pass.
+    response itself reported decide its retry by this, and the classifier
+    applies it to an error an SDK raised from inside a stream; an unknown
+    code may pass.
     """
     return _code_kind(code) not in _FINAL_IN_BAND_KINDS
 

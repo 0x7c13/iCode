@@ -26,6 +26,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Never, cast
 
+from chrys.foundation.platform.c_api import declare_functions, struct_fields
 from chrys.foundation.platform.child_reap import install_stopped_child_reap_fix
 from chrys.foundation.text.encoding import decode_bytes, is_mostly_text
 
@@ -54,12 +55,66 @@ class _ProcessStatus:
 
 @dataclass(frozen=True)
 class _WindowsProcessAPI:
-    """Typed handles and structure factories for the lazy Win32 process API."""
+    """Typed handle for the lazily loaded Win32 process API."""
 
     kernel32: ctypes.CDLL
-    StartupInfoExW: type[Any]
-    ProcessInformation: type[Any]
-    ExtendedLimitInformation: type[Any]
+
+
+class _StartupInfoW(ctypes.Structure):
+    """``STARTUPINFOW``."""
+
+    _fields_ = struct_fields(
+        (wintypes.DWORD, "cb"),
+        (wintypes.LPWSTR, "lpReserved lpDesktop lpTitle"),
+        (wintypes.DWORD, "dwX dwY dwXSize dwYSize dwXCountChars dwYCountChars dwFillAttribute dwFlags"),
+        (wintypes.WORD, "wShowWindow cbReserved2"),
+        (ctypes.POINTER(ctypes.c_ubyte), "lpReserved2"),
+        (wintypes.HANDLE, "hStdInput hStdOutput hStdError"),
+    )
+
+
+class _StartupInfoExW(ctypes.Structure):
+    """``STARTUPINFOEXW``: the startup info plus a process/thread attribute list."""
+
+    _fields_ = struct_fields((_StartupInfoW, "StartupInfo"), (wintypes.LPVOID, "lpAttributeList"))
+
+
+class _ProcessInformation(ctypes.Structure):
+    """``PROCESS_INFORMATION``, filled in by ``CreateProcessW``."""
+
+    _fields_ = struct_fields((wintypes.HANDLE, "hProcess hThread"), (wintypes.DWORD, "dwProcessId dwThreadId"))
+
+
+class _IoCounters(ctypes.Structure):
+    """``IO_COUNTERS``."""
+
+    _fields_ = struct_fields(
+        (ctypes.c_ulonglong, "ReadOperationCount WriteOperationCount OtherOperationCount"),
+        (ctypes.c_ulonglong, "ReadTransferCount WriteTransferCount OtherTransferCount"),
+    )
+
+
+class _BasicLimitInformation(ctypes.Structure):
+    """``JOBOBJECT_BASIC_LIMIT_INFORMATION``."""
+
+    _fields_ = struct_fields(
+        (ctypes.c_longlong, "PerProcessUserTimeLimit PerJobUserTimeLimit"),
+        (wintypes.DWORD, "LimitFlags"),
+        (ctypes.c_size_t, "MinimumWorkingSetSize MaximumWorkingSetSize"),
+        (wintypes.DWORD, "ActiveProcessLimit"),
+        (ctypes.c_size_t, "Affinity"),
+        (wintypes.DWORD, "PriorityClass SchedulingClass"),
+    )
+
+
+class _ExtendedLimitInformation(ctypes.Structure):
+    """``JOBOBJECT_EXTENDED_LIMIT_INFORMATION``, the job's kill-on-close setting among them."""
+
+    _fields_ = struct_fields(
+        (_BasicLimitInformation, "BasicLimitInformation"),
+        (_IoCounters, "IoInfo"),
+        (ctypes.c_size_t, "ProcessMemoryLimit JobMemoryLimit PeakProcessMemoryUsed PeakJobMemoryUsed"),
+    )
 
 
 @functools.cache
@@ -363,131 +418,59 @@ def terminate_process_group(process_group_id: int) -> bool:
     return True
 
 
+@functools.cache
 def _windows_process_api() -> _WindowsProcessAPI:
-    """Load Win32 process, Job Object, and attribute-list functions lazily."""
+    """Load the Win32 process, Job Object, and attribute-list functions once."""
     kernel32 = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
-
-    class _StartupInfoW(ctypes.Structure):
-        _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("lpReserved", wintypes.LPWSTR),
-            ("lpDesktop", wintypes.LPWSTR),
-            ("lpTitle", wintypes.LPWSTR),
-            ("dwX", wintypes.DWORD),
-            ("dwY", wintypes.DWORD),
-            ("dwXSize", wintypes.DWORD),
-            ("dwYSize", wintypes.DWORD),
-            ("dwXCountChars", wintypes.DWORD),
-            ("dwYCountChars", wintypes.DWORD),
-            ("dwFillAttribute", wintypes.DWORD),
-            ("dwFlags", wintypes.DWORD),
-            ("wShowWindow", wintypes.WORD),
-            ("cbReserved2", wintypes.WORD),
-            ("lpReserved2", ctypes.POINTER(ctypes.c_ubyte)),
-            ("hStdInput", wintypes.HANDLE),
-            ("hStdOutput", wintypes.HANDLE),
-            ("hStdError", wintypes.HANDLE),
-        ]
-
-    class _StartupInfoExW(ctypes.Structure):
-        _fields_ = [("StartupInfo", _StartupInfoW), ("lpAttributeList", wintypes.LPVOID)]
-
-    class _ProcessInformation(ctypes.Structure):
-        _fields_ = [
-            ("hProcess", wintypes.HANDLE),
-            ("hThread", wintypes.HANDLE),
-            ("dwProcessId", wintypes.DWORD),
-            ("dwThreadId", wintypes.DWORD),
-        ]
-
-    class _IoCounters(ctypes.Structure):
-        _fields_ = [
-            (name, ctypes.c_ulonglong)
-            for name in (
-                "ReadOperationCount",
-                "WriteOperationCount",
-                "OtherOperationCount",
-                "ReadTransferCount",
-                "WriteTransferCount",
-                "OtherTransferCount",
-            )
-        ]
-
-    class _BasicLimitInformation(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_longlong),
-            ("PerJobUserTimeLimit", ctypes.c_longlong),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class _ExtendedLimitInformation(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", _BasicLimitInformation),
-            ("IoInfo", _IoCounters),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
-    kernel32.SetInformationJobObject.restype = wintypes.BOOL
-    kernel32.InitializeProcThreadAttributeList.argtypes = [
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.POINTER(ctypes.c_size_t),
-    ]
-    kernel32.InitializeProcThreadAttributeList.restype = wintypes.BOOL
-    kernel32.UpdateProcThreadAttribute.argtypes = [
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        ctypes.c_size_t,
-        wintypes.LPVOID,
-        ctypes.c_size_t,
-        wintypes.LPVOID,
-        wintypes.LPVOID,
-    ]
-    kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
-    kernel32.DeleteProcThreadAttributeList.argtypes = [wintypes.LPVOID]
-    kernel32.CreateProcessW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.LPWSTR,
-        wintypes.LPVOID,
-        wintypes.LPVOID,
-        wintypes.BOOL,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.LPCWSTR,
-        ctypes.POINTER(_StartupInfoExW),
-        ctypes.POINTER(_ProcessInformation),
-    ]
-    kernel32.CreateProcessW.restype = wintypes.BOOL
-    kernel32.SetHandleInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]
-    kernel32.SetHandleInformation.restype = wintypes.BOOL
-    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    kernel32.TerminateJobObject.restype = wintypes.BOOL
-    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-    kernel32.TerminateProcess.restype = wintypes.BOOL
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    return _WindowsProcessAPI(
-        kernel32=kernel32,
-        StartupInfoExW=_StartupInfoExW,
-        ProcessInformation=_ProcessInformation,
-        ExtendedLimitInformation=_ExtendedLimitInformation,
+    declare_functions(
+        kernel32,
+        {
+            "CreateJobObjectW": (wintypes.HANDLE, [wintypes.LPVOID, wintypes.LPCWSTR]),
+            "SetInformationJobObject": (
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD],
+            ),
+            "InitializeProcThreadAttributeList": (
+                wintypes.BOOL,
+                [wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)],
+            ),
+            # List, flags, attribute, value and its size, then the reserved previous-value and return-size slots.
+            "UpdateProcThreadAttribute": (
+                wintypes.BOOL,
+                [
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    ctypes.c_size_t,
+                    wintypes.LPVOID,
+                    ctypes.c_size_t,
+                    wintypes.LPVOID,
+                    wintypes.LPVOID,
+                ],
+            ),
+            "DeleteProcThreadAttributeList": (None, [wintypes.LPVOID]),
+            "CreateProcessW": (
+                wintypes.BOOL,
+                [
+                    wintypes.LPCWSTR,
+                    wintypes.LPWSTR,
+                    wintypes.LPVOID,
+                    wintypes.LPVOID,
+                    wintypes.BOOL,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.LPCWSTR,
+                    ctypes.POINTER(_StartupInfoExW),
+                    ctypes.POINTER(_ProcessInformation),
+                ],
+            ),
+            "SetHandleInformation": (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]),
+            "TerminateJobObject": (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
+            "TerminateProcess": (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
+            "GetExitCodeProcess": (wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
+            "CloseHandle": (wintypes.BOOL, [wintypes.HANDLE]),
+        },
     )
+    return _WindowsProcessAPI(kernel32=kernel32)
 
 
 def _raise_windows_process_error(api: _WindowsProcessAPI, message: str) -> None:
@@ -499,7 +482,7 @@ def _windows_create_job(api: _WindowsProcessAPI) -> int:
     job = api.kernel32.CreateJobObjectW(None, None)
     if not job:
         _raise_windows_process_error(api, "Unable to create a Windows Job Object.")
-    info = api.ExtendedLimitInformation()
+    info = _ExtendedLimitInformation()
     info.BasicLimitInformation.LimitFlags = 0x00002000
     if not api.kernel32.SetInformationJobObject(
         job,
@@ -665,37 +648,36 @@ async def _spawn_windows_managed_stdio_process(
             if not api.kernel32.SetHandleInformation(parent_handle, HANDLE_FLAG_INHERIT, 0):
                 _raise_windows_process_error(api, "Unable to protect a parent stdio handle.")
 
-        size = ctypes.c_size_t()
-        api.kernel32.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
-        attribute_buffer = ctypes.create_string_buffer(size.value)
-        attribute_list = ctypes.cast(attribute_buffer, wintypes.LPVOID)
-        if not api.kernel32.InitializeProcThreadAttributeList(attribute_list, 2, 0, ctypes.byref(size)):
-            _raise_windows_process_error(api, "Unable to initialize Windows process attributes.")
-
-        job_array = (wintypes.HANDLE * 1)(job_handle)
-        handle_array = (wintypes.HANDLE * 3)(stdin_child, stdout_child, stderr_child)
+        # The child joins the job as it is created and inherits only its three stdio handles.
+        # The attribute list points into these arrays, so they stay referenced until
+        # DeleteProcThreadAttributeList in the finally below.
         PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
-        if not api.kernel32.UpdateProcThreadAttribute(
-            attribute_list,
-            0,
-            PROC_THREAD_ATTRIBUTE_JOB_LIST,
-            ctypes.cast(job_array, wintypes.LPVOID),
-            ctypes.sizeof(job_array),
-            None,
-            None,
-        ):
-            _raise_windows_process_error(api, "Unable to attach the Windows Job Object atomically.")
-        if not api.kernel32.UpdateProcThreadAttribute(
-            attribute_list,
-            0,
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            ctypes.cast(handle_array, wintypes.LPVOID),
-            ctypes.sizeof(handle_array),
-            None,
-            None,
-        ):
-            _raise_windows_process_error(api, "Unable to restrict inherited Windows handles.")
+        job_array = (wintypes.HANDLE * 1)(job_handle)
+        handle_array = (wintypes.HANDLE * 3)(stdin_child, stdout_child, stderr_child)
+        attributes = (
+            (PROC_THREAD_ATTRIBUTE_JOB_LIST, job_array, "Unable to attach the Windows Job Object atomically."),
+            (PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handle_array, "Unable to restrict inherited Windows handles."),
+        )
+        size = ctypes.c_size_t()
+        api.kernel32.InitializeProcThreadAttributeList(None, len(attributes), 0, ctypes.byref(size))
+        attribute_buffer = ctypes.create_string_buffer(size.value)
+        candidate = ctypes.cast(attribute_buffer, wintypes.LPVOID)
+        if not api.kernel32.InitializeProcThreadAttributeList(candidate, len(attributes), 0, ctypes.byref(size)):
+            _raise_windows_process_error(api, "Unable to initialize Windows process attributes.")
+        # Named only once initialized: the finally below deletes whatever attribute_list names.
+        attribute_list = candidate
+        for attribute, value, failure in attributes:
+            if not api.kernel32.UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                attribute,
+                ctypes.cast(value, wintypes.LPVOID),
+                ctypes.sizeof(value),
+                None,
+                None,
+            ):
+                _raise_windows_process_error(api, failure)
 
         application = _windows_resolve_application(command, env, cwd)
         if not ntpath.isabs(application):
@@ -718,15 +700,18 @@ async def _spawn_windows_managed_stdio_process(
         command_line = ctypes.create_unicode_buffer(command_line_text)
         environment = _windows_environment_block(env)
 
-        startup = api.StartupInfoExW()
-        startup.StartupInfo.cb = ctypes.sizeof(startup)
-        startup.StartupInfo.dwFlags = 0x00000101
-        startup.StartupInfo.wShowWindow = 0
-        startup.StartupInfo.hStdInput = stdin_child
-        startup.StartupInfo.hStdOutput = stdout_child
-        startup.StartupInfo.hStdError = stderr_child
-        startup.lpAttributeList = attribute_list
-        process_info = api.ProcessInformation()
+        startup = _StartupInfoExW(
+            _StartupInfoW(
+                cb=ctypes.sizeof(_StartupInfoExW),
+                dwFlags=0x00000101,  # STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES
+                wShowWindow=0,  # SW_HIDE
+                hStdInput=stdin_child,
+                hStdOutput=stdout_child,
+                hStdError=stderr_child,
+            ),
+            attribute_list,
+        )
+        process_info = _ProcessInformation()
         creation_flags = _CREATE_NEW_CONSOLE | 0x00000400 | 0x00080000
         if not api.kernel32.CreateProcessW(
             application,
@@ -859,7 +844,7 @@ async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncIterator[as
     # - CREATE_NO_WINDOW: child shares the parent's console → can modify it.
     # - DETACHED_PROCESS: child has NO console → cmd.exe / pwsh / powershell fail.
     if sys.platform == "win32" and "creationflags" not in kwargs:
-        for k, v in _windows_hidden_subprocess_kwargs().items():
+        for k, v in windows_hidden_subprocess_kwargs().items():
             kwargs.setdefault(k, v)
 
     # Detach from the parent's stdin unless a caller asked for something else.
@@ -1044,7 +1029,7 @@ async def _run_windows_tree_kill(argv: list[str]) -> bool:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            **_windows_hidden_subprocess_kwargs(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except OSError:
         return False

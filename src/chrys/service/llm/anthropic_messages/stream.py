@@ -6,9 +6,16 @@
 
 A local ``tool_use`` block streams its input as JSON fragments; the call is
 emitted once, complete. From the first such block on, every later block is
-held too, and everything held is released in block order before the message
-delta (some consumers treat its finish reason as terminal) or the message
-stop, or when the stream ends.
+held too; hosted work held that way is reported at once as
+:class:`~chrys.foundation.hosted_tools.HeldHostedEvidence`. Everything held is
+released in block order when the stream says how the message ends: before the
+message delta that carries its stop reason (some consumers treat its finish
+reason as terminal), or at the message stop.
+
+A stream that ends before either lost the rest of the message, and the calls
+it held may be cut short: :meth:`StreamState.finish` raises a retryable
+truncation and none of them runs. A message that stops for a refusal yet asks
+for calls raises too: its own verdict is that it should not go on.
 
 Server-tool and MCP calls are emitted when their block starts and again,
 refreshed in place, as their input streams.
@@ -28,8 +35,10 @@ from anthropic.types.beta import (
     BetaRawMessageStreamEvent,
 )
 
-from chrys.foundation.hosted_tools import HostedToolPhase
-from chrys.kernel import ChatResponseUpdate, Content
+from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.hosted_tools import HeldHostedEvidence, HostedToolPhase
+from chrys.kernel import ChatResponseUpdate, Content, UsageDetails, normalize_stream_usage
+from chrys.service.llm.chat_completions.decode import refused_calls_error
 
 from .decode import decode_blocks, decode_stop_reason, decode_usage, stream_context_input, token_count
 from .server_tools import apply_streamed_input
@@ -68,29 +77,55 @@ class StreamState:
         self._held: dict[int, list[ChatResponseUpdate]] = {}
         self._hold_from: int | None = None
         """Index of the first unreleased ``tool_use`` block; later blocks are held."""
+        self._reported: set[int] = set()
+        """Ids of the held hosted contents already reported; held, they stay alive."""
         self._hosted_blocks: set[int] = set()
         self._hosted_calls: dict[int, Content] = {}
         self._hosted_input: dict[int, list[str]] = {}
         self._first_cache_read: int | None = None
+        self._usage: UsageDetails | None = None
+        """The usage reported so far, the latest value of each key."""
+        self._stop_reason: str | None = None
+        self._ended = False
+        """The stream said how the message ends: a stop reason or the message stop."""
 
     def updates_for(self, event: BetaRawMessageStreamEvent) -> Iterator[ChatResponseUpdate]:
         """The updates *event* releases, in the order the consumer sees them."""
-        if event.type in ("message_delta", "message_stop") and (released := self.release_held()) is not None:
-            yield released
         update = self._decode(event)
+        if (
+            self._ended
+            and event.type in ("message_delta", "message_stop")
+            and (released := self._release()) is not None
+        ):
+            yield released
         if update is None:
             return
         # An update without contents is never held: the stream-idle watchdog
         # sees provider traffic while content waits.
         if update.contents and (index := self._held_index(event)) is not None:
             self._held.setdefault(index, []).append(update)
+            if (evidence := self._hosted_evidence(update.contents)) is not None:
+                yield evidence
         else:
             yield update
 
-    def release_held(self) -> ChatResponseUpdate | None:
+    def finish(self) -> None:
+        """Check the stream said how the message ends; raise a retryable truncation when it did not."""
+        if not self._ended:
+            raise ProviderResponseError(
+                "stream_truncated",
+                "The stream ended before the message finished.",
+                retryable=True,
+                usage_details=self._usage,
+            )
+
+    def _release(self) -> ChatResponseUpdate | None:
         """Everything held, in block order, as one update; None when nothing is."""
         if not (self._tool_uses or self._held):
             return None
+        if self._tool_uses and self._stop_reason == "refusal":
+            # Hosted work held here was reported as it arrived.
+            raise refused_calls_error(usage_details=self._usage)
         contents: list[Content] = []
         raws: list[Any] = []
         for index in sorted(self._tool_uses.keys() | self._held.keys()):
@@ -101,7 +136,16 @@ class StreamState:
                 if update.raw_representation is not None:
                     raws.append(update.raw_representation)
         self._hold_from = None
+        self._reported.clear()
         return ChatResponseUpdate(contents=contents, raw_representation=raws or None) if contents else None
+
+    def _hosted_evidence(self, contents: list[Content]) -> ChatResponseUpdate | None:
+        """Report held hosted work once per content: the retry gates count it before it is released."""
+        fresh = [content for content in contents if content.provider_hosted and id(content) not in self._reported]
+        if not fresh:
+            return None
+        self._reported.update(id(content) for content in fresh)
+        return ChatResponseUpdate(contents=[], raw_representation=HeldHostedEvidence(tuple(fresh)))
 
     def _held_index(self, event: BetaRawMessageStreamEvent) -> int | None:
         """The block index under which *event*'s update is held; None when it is not held."""
@@ -113,6 +157,9 @@ class StreamState:
             return event.index
         return None
 
+    def _take_usage(self, usage: UsageDetails) -> None:
+        self._usage = normalize_stream_usage([self._usage or {}, usage])
+
     def _decode(self, event: Any) -> ChatResponseUpdate | None:
         match event.type:
             case "message_start":
@@ -120,6 +167,7 @@ class StreamState:
             case "message_delta":
                 return self._message_delta(event)
             case "message_stop":
+                self._ended = True
                 self._hosted_blocks.clear()
                 self._hosted_calls.clear()
                 self._hosted_input.clear()
@@ -139,6 +187,7 @@ class StreamState:
         self._first_cache_read = token_count(message.usage.cache_read_input_tokens if message.usage else None)
         contents = decode_blocks(message.content)
         if message.usage and (usage := decode_usage(message.usage)):
+            self._take_usage(usage)
             contents.append(Content.from_usage(usage_details=usage))
         return ChatResponseUpdate(
             role="assistant",
@@ -155,9 +204,13 @@ class StreamState:
             context_input = stream_context_input(event.usage, first_cache_read=self._first_cache_read)
             if context_input is not None:
                 usage["context_input_token_count"] = context_input
+            self._take_usage(usage)
+        if stop_reason := event.delta.stop_reason:
+            self._stop_reason = stop_reason
+            self._ended = True
         return ChatResponseUpdate(
             contents=[Content.from_usage(usage_details=usage, raw_representation=event.usage)] if usage else [],
-            finish_reason=decode_stop_reason(event.delta.stop_reason),
+            finish_reason=decode_stop_reason(stop_reason),
             raw_representation=event,
         )
 

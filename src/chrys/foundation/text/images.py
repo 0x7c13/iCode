@@ -58,6 +58,34 @@ def is_image_media_type(media_type: Any) -> bool:
     return top_level == "image"
 
 
+_WIRE_IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+_IMAGE_MEDIA_TYPE_ALIASES = {"image/jpg": "image/jpeg"}
+
+
+def wire_image_media_type(data: bytes | None, declared: str | None) -> str | None:
+    """The media type model APIs accept for an image: PNG, JPEG, GIF or WebP; None for any other.
+
+    Bytes decide when there are any: their signature names the type whatever
+    *declared* says, and bytes without one of these signatures are no image
+    a model API reads. Without bytes (an image URL) only *declared* can tell.
+    """
+    if data is not None:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        return None
+    if not isinstance(declared, str):
+        return None
+    media_type = declared.split(";", 1)[0].strip().lower()
+    media_type = _IMAGE_MEDIA_TYPE_ALIASES.get(media_type, media_type)
+    return media_type if media_type in _WIRE_IMAGE_MEDIA_TYPES else None
+
+
 def detect_image_media_type(path: str | Path, data: bytes | None = None) -> str | None:
     """Return a supported image media type from magic bytes or extension."""
     if data is not None:
@@ -96,8 +124,11 @@ def load_image_file(path: Path, media_type: str | None = None) -> LoadedImage:
         raise ImageProcessingError("This file is not a supported image. Use PNG, JPEG, or WebP.")
 
     width, height = inspect_image_dimensions(data)
-    if len(data) <= MAX_IMAGE_BYTES:
-        return LoadedImage(data=data, media_type=detected_media_type, width=width, height=height)
+    # Sent as it is only when the bytes are a format model APIs read; other
+    # bytes behind an image name (a renamed BMP) are converted like an
+    # oversized image.
+    if len(data) <= MAX_IMAGE_BYTES and (wire_media_type := wire_image_media_type(data, None)) is not None:
+        return LoadedImage(data=data, media_type=wire_media_type, width=width, height=height)
 
     compressed = compress_image_data(data)
     compressed_width, compressed_height = inspect_image_dimensions(compressed)

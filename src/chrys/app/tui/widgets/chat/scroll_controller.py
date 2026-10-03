@@ -525,10 +525,10 @@ class ChatScrollController:
             self.set_scroll_y_programmatically(new_y)
         self.sync_scroll_to_bottom_button()
 
-    def watch_virtual_size(self, old: object, new: object) -> None:
+    def watch_virtual_size(self, old: Size, new: Size) -> None:
         """Post-layout hook: re-engage anchor, sync scrollbar, toggle spacer."""
-        old_h = getattr(old, "height", 0)
-        new_h = getattr(new, "height", 0)
+        old_h = old.height
+        new_h = new.height
         if (
             self.agent_running
             and new_h > old_h

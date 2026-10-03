@@ -362,7 +362,7 @@ async def test_injection_notification_captures_session_before_checkpoint_yields(
     injection = engine.current.loaded.injection
     injection.queue("delayed delivery", injection_id="queued")
     try:
-        await injection.process(SimpleNamespace(messages=[Message("user", ["anchor"])]), call_next)
+        await injection.process(SimpleNamespace(messages=[Message("user", ["anchor"])], options=None), call_next)
         await asyncio.wait_for(delivered.wait(), timeout=5)
         assert len(events) == 1
         assert events[0].session_id == original_id

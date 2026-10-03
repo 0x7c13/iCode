@@ -108,7 +108,7 @@ class _ApprovalPort:
     ) -> SimpleNamespace:
         dialog = SimpleNamespace(
             request_id=event.request_id,
-            _tool_name=event.tool_name,
+            tool_name=event.tool_name,
             user_decision_submitted=False,
             is_dismissed=False,
             callback=on_result,
@@ -134,7 +134,7 @@ class _ApprovalPort:
         target.append((event.approved, event.reason))
 
     def approval_dialog_tool_name(self, dialog: SimpleNamespace) -> str:
-        return dialog._tool_name
+        return dialog.tool_name
 
     def debug(self, key: str, message: str = "") -> None:
         self.debug_calls.append((key, message))

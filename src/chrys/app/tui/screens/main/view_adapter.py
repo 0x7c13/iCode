@@ -46,7 +46,6 @@ from chrys.app.tui.widgets.chrome.image_paste import clipboard_image_dir_for_ses
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_AGENT_LOAD_FAILED,
-    STATUS_COMPLETED,
     STATUS_INTERACTIVE_MODE,
     STATUS_INTERRUPTED,
     STATUS_RETRYING,
@@ -332,8 +331,7 @@ class MainScreenViewAdapter:
         self._screen.query_one(StatusBar).flash(text, **kwargs)
 
     def flash_turn_complete(self) -> None:
-        status = self._screen.query_one(StatusBar)
-        status.flash(STATUS_COMPLETED.bind(elapsed=status._format_elapsed()))
+        self._screen.query_one(StatusBar).flash_completed()
 
     def mark_terminal_title_completed(self) -> None:
         self._screen._mark_terminal_title_completed()
@@ -1233,7 +1231,7 @@ class MainScreenViewAdapter:
         from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
 
         if isinstance(dialog, ApprovalDialog):
-            return dialog._tool_name
+            return dialog.tool_name
         return ""
 
     def notify_approval_required(self) -> None:

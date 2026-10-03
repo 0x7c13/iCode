@@ -359,7 +359,7 @@ class GitDiffCalibrator:
         return canonical_git_pathspecs(specs)
 
     def _run_git_namelist(self, args: list[str], out: set[str]) -> bool:
-        from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+        from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
         executable = shutil.which("git")
         if executable is None:
@@ -375,7 +375,7 @@ class GitDiffCalibrator:
                 env=git_subprocess_env(),
                 timeout=_GIT_TIMEOUT,
                 check=False,
-                **_windows_hidden_subprocess_kwargs(),
+                **windows_hidden_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired, OSError:
             logger.debug("GitDiffCalibrator: git command failed: %s", args, exc_info=True)

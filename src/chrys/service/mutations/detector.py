@@ -93,7 +93,7 @@ class ShellMutationDetector:
     ) -> list[tuple[str, MutationOp]]:
         """Parse a shell command and return likely mutation targets.
 
-        Leverages ``shell_tokens._split_on_operators()`` for command
+        Leverages ``shell_tokens.split_on_operators()`` for command
         splitting, then applies per-command heuristics to extract
         file arguments.
 
@@ -105,12 +105,12 @@ class ShellMutationDetector:
         Returns:
             List of ``(absolute_path, expected_operation)`` tuples.
         """
-        from chrys.foundation.util.shell_tokens import _split_on_operators
+        from chrys.foundation.util.shell_tokens import split_on_operators
 
         resolve_cwd = cwd or os.getcwd()
         targets: list[tuple[str, MutationOp]] = []
 
-        segments = _split_on_operators(command)
+        segments = split_on_operators(command)
         for segment in segments:
             segment = segment.strip()
             if not segment:

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from anthropic.types.beta import (
     BetaInputJSONDelta,
+    BetaMCPToolUseBlock,
     BetaMessageDeltaUsage,
     BetaRawContentBlockDeltaEvent,
     BetaRawContentBlockStartEvent,
@@ -22,8 +23,11 @@ from anthropic.types.beta import (
     BetaToolUseBlock,
 )
 
+from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.hosted_tools import HeldHostedEvidence
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
 from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
+from chrys.service.llm.anthropic_messages.stream import StreamState
 
 
 class _FakeMessages:
@@ -46,12 +50,15 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
     class _SdkStream:
         def __init__(self) -> None:
             self.closed = 0
+            self._events = [_message_stop()]
 
         def __aiter__(self):
             return self
 
         async def __anext__(self):
-            raise StopAsyncIteration
+            if not self._events:
+                raise StopAsyncIteration
+            return self._events.pop(0)
 
         async def close(self) -> None:
             self.closed += 1
@@ -77,9 +84,7 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
     assert sdk_stream.closed == 1
 
 
-async def _stream_response(
-    events: Sequence[BetaRawMessageStreamEvent],
-) -> tuple[list[ChatResponseUpdate], ChatResponse]:
+def _open_stream(events: Sequence[BetaRawMessageStreamEvent]) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
     anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_FakeMessages(events)))
     client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
@@ -87,8 +92,14 @@ async def _stream_response(
         options={},
         stream=True,
     )
-
     assert isinstance(stream, ResponseStream)
+    return stream
+
+
+async def _stream_response(
+    events: Sequence[BetaRawMessageStreamEvent],
+) -> tuple[list[ChatResponseUpdate], ChatResponse]:
+    stream = _open_stream(events)
     updates = [update async for update in stream]
     response = await stream.get_final_response()
     return updates, response
@@ -105,7 +116,7 @@ async def _stream_function_calls(events: Sequence[BetaRawMessageStreamEvent]) ->
 
 @pytest.mark.asyncio
 async def test_additional_beta_flags_are_forwarded_only_in_betas() -> None:
-    messages_client = _FakeMessages([])
+    messages_client = _FakeMessages([_message_stop()])
     anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
     client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
@@ -131,7 +142,7 @@ async def test_additional_beta_flags_from_chat_options_survive_public_get_respon
     boundary (options mapping in, ``messages.create`` kwargs out): the flag is
     folded into ``betas`` and the raw key never reaches the provider call,
     whether carried in options or in client kwargs."""
-    messages_client = _FakeMessages([])
+    messages_client = _FakeMessages([_message_stop()])
     anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
     client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client.get_response(
@@ -180,14 +191,121 @@ def _message_stop() -> BetaRawMessageStopEvent:
     return BetaRawMessageStopEvent(type="message_stop")
 
 
-def _tool_use_tail(output_tokens: int) -> list[BetaRawMessageStreamEvent]:
-    """The closing events of a message that stopped to call tools."""
-    finish = BetaRawMessageDeltaEvent(
+def _message_delta(stop_reason: str | None, *, output_tokens: int) -> BetaRawMessageDeltaEvent:
+    return BetaRawMessageDeltaEvent(
         type="message_delta",
-        delta={"stop_reason": "tool_use", "stop_sequence": None},
+        delta={"stop_reason": stop_reason, "stop_sequence": None},  # type: ignore[typeddict-item]
         usage=BetaMessageDeltaUsage(output_tokens=output_tokens),
     )
-    return [finish, _message_stop()]
+
+
+def _tool_use_tail(output_tokens: int) -> list[BetaRawMessageStreamEvent]:
+    """The closing events of a message that stopped to call tools."""
+    return [_message_delta("tool_use", output_tokens=output_tokens), _message_stop()]
+
+
+def _mcp_start(index: int, call_id: str) -> BetaRawContentBlockStartEvent:
+    block = BetaMCPToolUseBlock(type="mcp_tool_use", id=call_id, name="search", server_name="docs", input={})
+    return BetaRawContentBlockStartEvent(type="content_block_start", index=index, content_block=block)
+
+
+async def _read_until_failure(
+    events: Sequence[BetaRawMessageStreamEvent],
+) -> tuple[list[ChatResponseUpdate], ProviderResponseError]:
+    updates: list[ChatResponseUpdate] = []
+    with pytest.raises(ProviderResponseError) as raised:
+        async for update in _open_stream(events):
+            updates.append(update)
+    return updates, raised.value
+
+
+def _sent_calls(updates: Sequence[ChatResponseUpdate]) -> list[Content]:
+    return [content for update in updates for content in update.contents if content.type == "function_call"]
+
+
+@pytest.mark.parametrize(
+    ("tail", "output_tokens"),
+    [([], None), ([_message_delta(None, output_tokens=7)], 7)],
+    ids=["eof", "delta_without_stop_reason"],
+)
+async def test_a_stream_that_ends_before_saying_how_its_message_ends_is_a_retryable_truncation(
+    tail: list[BetaRawMessageStreamEvent], output_tokens: int | None
+) -> None:
+    """The held call may be cut short: it is never sent, and the next attempt asks again."""
+    events = [_tool_start(0, "call-a", "zsh"), _json_delta(0, '{"command":"rm -rf bu'), *tail]
+
+    updates, failure = await _read_until_failure(events)
+
+    assert (failure.code, failure.retryable) == ("stream_truncated", True)
+    assert (failure.usage_details or {}).get("output_token_count") == output_tokens
+    assert _sent_calls(updates) == []
+
+
+async def test_a_message_stop_alone_ends_the_stream() -> None:
+    events = [_tool_start(0, "call-a", "zsh"), _json_delta(0, '{"command":"ls"}'), _message_stop()]
+
+    assert [call.call_id for call in await _stream_function_calls(events)] == ["call-a"]
+
+
+async def test_a_message_refused_with_calls_raises_before_any_call_is_sent() -> None:
+    events = [
+        _tool_start(0, "call-a", "zsh"),
+        _json_delta(0, '{"command":"ls"}'),
+        _block_stop(0),
+        _message_delta("refusal", output_tokens=9),
+        _message_stop(),
+    ]
+
+    updates, failure = await _read_until_failure(events)
+
+    assert (failure.code, failure.retryable) == ("content_filter", False)
+    assert (failure.usage_details or {}).get("output_token_count") == 9
+    assert _sent_calls(updates) == []
+
+
+async def test_a_message_refused_without_calls_ends_as_filtered() -> None:
+    events = [
+        _text_start(0),
+        _text_delta(0, "I can't help."),
+        _block_stop(0),
+        _message_delta("refusal", output_tokens=4),
+    ]
+
+    _, response = await _stream_response([*events, _message_stop()])
+
+    assert response.finish_reason == "content_filter"
+    assert response.text == "I can't help."
+
+
+def test_hosted_work_held_behind_a_call_is_reported_once_as_it_arrives() -> None:
+    """The retry gates count it at once; the contents still go out only in block order."""
+    state = StreamState()
+    events = [
+        _tool_start(0, "call-a", "zsh"),
+        _json_delta(0, '{"command":"ls"}'),
+        _mcp_start(1, "mcptoolu_1"),
+        _json_delta(1, '{"q":'),
+        _json_delta(1, '"x"}'),
+        _block_stop(1),
+        _block_stop(0),
+    ]
+
+    held = [update for event in events for update in state.updates_for(event)]
+
+    assert [update.contents for update in held if update.contents] == []
+    evidence = [
+        update.raw_representation for update in held if isinstance(update.raw_representation, HeldHostedEvidence)
+    ]
+    assert [[content.call_id for content in item.contents] for item in evidence] == [["mcptoolu_1"]]  # type: ignore[attr-defined]
+
+    released = [update for event in _tool_use_tail(output_tokens=5) for update in state.updates_for(event)]
+    state.finish()
+    contents = ChatResponse.from_updates([*held, *released]).messages[0].contents
+    assert [(content.type, content.call_id) for content in contents] == [
+        ("function_call", "call-a"),
+        ("mcp_server_tool_call", "mcptoolu_1"),
+    ]
+    assert contents[1] is evidence[0].contents[0]  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

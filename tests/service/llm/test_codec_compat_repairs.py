@@ -9,6 +9,7 @@ alike.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -108,6 +109,64 @@ def test_anthropic_drops_unsigned_thinking_and_the_messages_it_empties() -> None
         {"role": "user", "content": [{"type": "text", "text": "before"}]},
         {"role": "assistant", "content": [{"type": "thinking", "thinking": "signed", "signature": "sig-1"}]},
         {"role": "user", "content": [{"type": "text", "text": "after"}]},
+    ]
+
+
+def test_anthropic_sends_another_providers_tool_call_ids_as_ids_it_accepts() -> None:
+    """Kimi-style ids map by value, the same for the call and its result; native ids go as they are."""
+    ids = ["functions.read_file:0", "functions.read_file:1", "toolu_01-native_ID"]
+    history = [
+        Message("user", ["read both"]),
+        Message("assistant", [Content.from_function_call(call_id=i, name="read_file", arguments="{}") for i in ids]),
+        Message("tool", [Content.from_function_result(call_id=i, result="ok") for i in ids]),
+    ]
+
+    wire = encode_messages(history)
+    _, calls, results = wire
+
+    sent = [block["id"] for block in calls["content"]]
+    assert [block["tool_use_id"] for block in results["content"]] == sent
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]+", call_id) for call_id in sent)
+    assert len(set(sent)) == 3
+    assert sent[2] == ids[2]
+    assert encode_messages(history) == wire
+    assert [content.call_id for content in history[1].contents] == ids
+
+
+def test_anthropic_drops_blank_text_the_api_rejects() -> None:
+    wire = encode_messages(
+        [
+            Message("user", ["read"]),
+            Message(
+                "assistant",
+                [Content.from_text(" \n"), Content.from_function_call(call_id="toolu_1", name="read", arguments="{}")],
+            ),
+            Message(
+                "tool",
+                [
+                    Content.from_function_result(call_id="toolu_1", result=" \n"),
+                    Content.from_function_result(
+                        call_id="toolu_2", result=[Content.from_text(" "), Content.from_text("kept")]
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    assert wire[1:] == [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "read", "input": {}}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "", "is_error": False},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_2",
+                    "content": [{"type": "text", "text": "kept"}],
+                    "is_error": False,
+                },
+            ],
+        },
     ]
 
 

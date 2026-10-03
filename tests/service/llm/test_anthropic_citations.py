@@ -20,7 +20,7 @@ from chrys.kernel import Annotation
 from chrys.service.llm.anthropic_messages.decode import decode_citations
 from chrys.service.llm.clients import create_client
 from tests.support.scripted_wire import ScriptedWire, pin_wire_inputs, route_clients_to
-from tests.support.wire_cases._kit import Case, anth_message, json_reply, weather_question
+from tests.support.wire_cases._kit import Case, anth_message, anth_replies, weather_question
 
 
 def _without_raw(annotation: Annotation) -> dict[str, Any]:
@@ -130,7 +130,9 @@ def test_each_citation_type_decodes_its_own_fields(citation: Any, expected: dict
     assert annotations[0]["raw_representation"] is citation
 
 
-async def test_a_blocking_response_carries_the_document_title(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streamed"])
+async def test_a_response_carries_its_citations(stream: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream sends each citation as a delta of the text block it cites."""
     pin_wire_inputs(monkeypatch)
     message = anth_message(
         message_id="msg_cited",
@@ -151,14 +153,23 @@ async def test_a_blocking_response_carries_the_document_title(monkeypatch: pytes
             }
         ],
     )
-    case = Case(provider="anthropic", replies=(json_reply(message),), messages=weather_question, options=dict)
+    case = Case(
+        provider="anthropic",
+        replies=anth_replies([message], stream=stream),
+        messages=weather_question,
+        options=dict,
+        stream=stream,
+    )
     wire = ScriptedWire(case.replies)
     route_clients_to(wire.transport, monkeypatch)
     stack = await create_client(case.profile(), session_id="citations")
     try:
-        response = await stack.inner.inner.get_response(case.messages(), options={})
+        result = stack.inner.inner.get_response(case.messages(), options={}, stream=stream)
+        response = await (result.get_final_response() if stream else result)
     finally:
         await stack.aclose()
+
+    assert response.text == "The sky is blue."
 
     [text] = [content for content in response.messages[0].contents if content.type == "text"]
     assert [_without_raw(annotation) for annotation in text.annotations or []] == [

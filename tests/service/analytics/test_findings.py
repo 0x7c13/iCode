@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from chrys.service.analytics.findings import ContextCarryingLoad, evaluate_findings
 from chrys.service.analytics.model import (
     ActionClass,
@@ -22,6 +24,7 @@ from chrys.service.analytics.model import (
     TurnAttemptRef,
     ValidationMetrics,
     WallBucket,
+    least_precision,
 )
 
 
@@ -339,3 +342,17 @@ def _change(row: ChangeVerificationRow | None = None) -> ChangeVerification:
 
 def _rule_ids(findings: tuple[FindingRow, ...]) -> set[str]:
     return {finding.rule_id for finding in findings}
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ((), Precision.EXACT),
+        ((Precision.EXACT, Precision.ESTIMATED), Precision.ESTIMATED),
+        ((Precision.MISSING, Precision.ESTIMATED), Precision.MISSING),
+        ((Precision.UNRESOLVED, Precision.MISSING, Precision.EXACT), Precision.UNRESOLVED),
+    ],
+)
+def test_least_precision_takes_the_least_precise_value(values: tuple[Precision, ...], expected: Precision) -> None:
+    assert least_precision(values) is expected
+    assert least_precision(value for value in values) is expected

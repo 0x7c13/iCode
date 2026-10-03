@@ -427,7 +427,6 @@ def create_user_text_markdown_parser() -> MarkdownIt:
 
 def _token_to_content(
     token: Token,
-    get_style: Callable[[str], Style] | None = None,
     *,
     open_links: bool = True,
     math_compiler: Callable[[str], CompiledMath] = compile_math,
@@ -436,7 +435,6 @@ def _token_to_content(
 
     Args:
         token: A markdown token.
-        get_style: Optional callable to resolve component class styles.
         open_links: Emit terminal hyperlinks for allowed external destinations.
 
     Returns:

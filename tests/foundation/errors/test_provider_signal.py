@@ -173,26 +173,40 @@ async def test_an_http_error_carrying_a_code_only_responses_report_is_read_by_it
 
 
 @pytest.mark.parametrize(
-    ("code", "kind"),
+    ("code", "kind", "retryable"),
     [
-        ("network_error", ErrorKind.STREAM_TRUNCATED),
-        ("insufficient_system_resource", ErrorKind.OVERLOADED),
-        ("invalid_prompt", ErrorKind.REQUEST_REJECTED),
-        ("cyber_policy", ErrorKind.CONTENT_FILTERED),
-        ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED),
-        ("invalid_image_url", ErrorKind.REQUEST_REJECTED),
+        ("network_error", ErrorKind.STREAM_TRUNCATED, True),
+        ("insufficient_system_resource", ErrorKind.OVERLOADED, True),
+        ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
+        ("cyber_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
+        ("invalid_image_url", ErrorKind.REQUEST_REJECTED, False),
+        ("invalid_request_error", ErrorKind.REQUEST_REJECTED, False),
     ],
 )
-def test_an_error_a_stream_reports_in_band_is_named_by_its_code(code: str, kind: ErrorKind) -> None:
+def test_an_error_a_stream_reports_in_band_is_named_and_retried_by_its_code(
+    code: str, kind: ErrorKind, retryable: bool
+) -> None:
     # The SDK raises an error event inside a 200 stream as a bare APIError:
-    # the code names how that response failed. The retry stays the stream's.
+    # the code names how that response failed, and a retry meets a final
+    # failure again, as when an adapter raises it.
     request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
     carrying = classify_error(APIError("It broke.", request, body={"code": code, "message": "It broke."}))
     plain = classify_error(APIError("It broke.", request, body={"code": "vendor_specific", "message": "It broke."}))
 
     assert carrying.kind is kind
-    assert plain.kind is ErrorKind.UNKNOWN
-    assert carrying.retryable == plain.retryable
+    assert carrying.retryable is retryable
+    assert in_band_failure_retryable(code) is retryable
+    assert (plain.kind, plain.retryable) == (ErrorKind.UNKNOWN, True)
+
+
+def test_an_error_a_stream_reports_in_band_with_only_a_broad_type_keeps_its_retry() -> None:
+    # Only a code names the failure; the type is broad (OpenAI files many
+    # errors under ``invalid_request_error``), so it names the kind alone.
+    request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
+    typed = classify_error(APIError("It broke.", request, body={"type": "invalid_request_error", "message": "x"}))
+
+    assert (typed.kind, typed.retryable) == (ErrorKind.REQUEST_REJECTED, True)
 
 
 def test_owner_terminal_veto_outranks_a_retryable_provider_response_error() -> None:

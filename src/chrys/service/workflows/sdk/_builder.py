@@ -645,7 +645,7 @@ def _validate(d: WorkflowDefinition) -> list[dict[str, Any]]:
     for node_id in d.node_order:
         scopes.setdefault(d.nodes[node_id].parent_loop, []).append(node_id)
     for scope_id, members in scopes.items():
-        _check_acyclic(d, members, scope_id)
+        _check_acyclic(d, members)
         if scope_id is None:
             root = d.start
         else:
@@ -675,7 +675,7 @@ def _validate(d: WorkflowDefinition) -> list[dict[str, Any]]:
     return warnings
 
 
-def _check_acyclic(d: WorkflowDefinition, members: list[str], scope_id: Optional[str]) -> None:
+def _check_acyclic(d: WorkflowDefinition, members: list[str]) -> None:
     """Iterative three-colour DFS: a long chain must not depend on the recursion limit."""
     member_set = set(members)
     color: dict[str, int] = {}

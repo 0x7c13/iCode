@@ -444,6 +444,8 @@ def anth_events(message: Mapping[str, Any]) -> list[tuple[str | None, Any]]:
         kind = block["type"]
         if kind == "text":
             emit("content_block_start", index=index, content_block={"type": "text", "text": ""})
+            for citation in block.get("citations") or ():
+                emit("content_block_delta", index=index, delta={"type": "citations_delta", "citation": citation})
             text = block["text"]
             for start in range(0, len(text), _SPLIT):
                 emit(

@@ -865,8 +865,8 @@ def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(
             super().append(message)
 
     class _FakeStatusBar:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, _message: str) -> None:
             order.append("status")
@@ -916,8 +916,8 @@ def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(
 
 def test_final_agent_message_render_failure_releases_turn_without_absorb() -> None:
     class _FakeStatusBar:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, _message: str) -> None:
             pass
@@ -1000,8 +1000,8 @@ async def test_terminal_render_completion_cannot_stop_successor_generation() -> 
     state.run.started_at = datetime.now(UTC)
 
     class _Status:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, _message: str) -> None:
             return

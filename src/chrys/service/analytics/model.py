@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from array import array
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -17,6 +18,20 @@ class Precision(StrEnum):
     ESTIMATED = "estimated"
     MISSING = "missing"
     UNRESOLVED = "unresolved"
+
+
+_PRECISION_ORDER = {
+    Precision.EXACT: 0,
+    Precision.ESTIMATED: 1,
+    Precision.MISSING: 2,
+    Precision.UNRESOLVED: 3,
+}
+
+
+def least_precision(values: Iterable[Precision]) -> Precision:
+    """The least precise of *values*, in the order exact, estimated, missing, unresolved; exact when empty."""
+    precisions = list(values)
+    return max(precisions, key=_PRECISION_ORDER.__getitem__) if precisions else Precision.EXACT
 
 
 class TimelineDiagnosticCode(StrEnum):

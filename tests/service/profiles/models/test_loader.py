@@ -182,6 +182,27 @@ vision: 1
     assert profile.vision is True
 
 
+@pytest.mark.parametrize(
+    ("yaml_value", "verify_ssl", "stream"),
+    [
+        (None, True, False),
+        ('" FaLsE "', False, False),
+        ('"on"', True, True),
+        ('""', False, False),
+        ('"sometimes"', True, True),
+        ("0", False, False),
+    ],
+    ids=["missing", "spaced-false", "on", "empty", "unknown-string", "zero"],
+)
+def test_bool_fields_read_yaml_spellings_and_keep_their_defaults(
+    tmp_path: Path, yaml_value: str | None, verify_ssl: bool, stream: bool
+) -> None:
+    fields = "" if yaml_value is None else f"verify_ssl: {yaml_value}\nstream: {yaml_value}\n"
+    profile = load_profile_from_yaml(_write(tmp_path / "x.yaml", f"name: B\n{fields}"))
+
+    assert (profile.verify_ssl, profile.stream) == (verify_ssl, stream)
+
+
 def test_invalid_numeric_field_raises_load_error(tmp_path: Path) -> None:
     p = _write(tmp_path / "bad.yaml", "name: Bad\nhttp_read_timeout: nope\n")
 

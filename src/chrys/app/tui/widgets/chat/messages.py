@@ -536,6 +536,11 @@ class AgentMessage(Widget):
             self._processed_text_stale = False
         return self._processed_text
 
+    @property
+    def profile_name(self) -> str:
+        """The name of the agent that wrote this message; empty when none was given."""
+        return self._profile_name
+
     def _header_text(self) -> Text:
         label = self._copy_label()
         arrow = "\u25b6" if self.collapsed else "\u25c7"

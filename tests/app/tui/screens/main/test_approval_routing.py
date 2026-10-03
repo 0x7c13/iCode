@@ -62,7 +62,7 @@ class _FakeApprovalDialog:
         presentation_kind: str = "",
     ) -> None:
         self.caller_name = caller_name
-        self._tool_name = tool_name
+        self.tool_name = tool_name
         self.tool_kind = tool_kind
         self.args = args or {}
         self.judging = judging
@@ -507,7 +507,7 @@ def test_parallel_judges_finish_out_of_order(monkeypatch) -> None:
     # req-2 skipped, req-3 pushed with flagged verdict pending.
     assert len(app.pushed) == 2
     d3, _ = app.pushed[1]
-    assert d3._tool_name == "t3"
+    assert d3.tool_name == "t3"
     # Flagged verdict delivered after mount (not synchronously).
     assert d3.received_verdict is None
     assert len(d3.after_refresh_calls) == 1

@@ -135,8 +135,7 @@ class AnthropicMessagesClient(WireClient):
                 async for event in events:
                     for update in state.updates_for(event):
                         yield update
-                if (rest := state.release_held()) is not None:
-                    yield rest
+                state.finish()
             finally:
                 if events is not None:
                     await _close_event_stream(events)

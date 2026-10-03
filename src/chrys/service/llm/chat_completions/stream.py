@@ -172,6 +172,12 @@ class StreamState:
         calls = self._release(finished) if finished and not self._settled else None
         if self._refused and self._calls_released:
             # A refusal may follow calls an earlier choice finished with.
+            # Not while a call is still pending, on purpose: settling then
+            # would hold the rest of the reply to the tail's bound and could
+            # lose the usage it reports. A stream that then ends or breaks off
+            # still raises the refusal (:meth:`failure`); only one that goes
+            # quiet before any finish reason is left to the stall watchdog,
+            # which sends the request again.
             self._settled = True
         if self._settled:
             if any(content.type == "usage" for content in update.contents):

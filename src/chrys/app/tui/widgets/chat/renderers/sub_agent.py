@@ -621,9 +621,8 @@ class SubAgentToolCall(BaseToolCard):
         else:
             self.remove_class("-sleeping")
 
-    def _update_result_widget(self, *, lazy: bool = False) -> None:
+    def _show_completion_controls(self) -> None:
         """Expose copy/details affordances without mounting the final answer inline."""
-        del lazy
         self.add_class("-done")
         self._show_tool_copy_button()
 
@@ -1171,7 +1170,7 @@ class SubAgentToolCall(BaseToolCard):
                 panel.border_title = Text(self.tool_name)
                 panel.border_subtitle = render_text(widget_localizer(self), TOOL_CARD_INTERRUPTED.bind())
                 self.query_one("#sa-label", Static).update(self._label_text(duration_ms))
-            self._update_result_widget(lazy=bool(kwargs.get("lazy")))
+            self._show_completion_controls()
             return
         render_status = tool_result_render_status(
             result,
@@ -1195,7 +1194,7 @@ class SubAgentToolCall(BaseToolCard):
                 panel.border_title = Text(self.tool_name)
                 panel.border_subtitle = render_text(widget_localizer(self), TOOL_CARD_REJECTED.bind())
                 self.query_one("#sa-label", Static).update(self._label_text(duration_ms))
-            self._update_result_widget(lazy=bool(kwargs.get("lazy")))
+            self._show_completion_controls()
             return
         if render_status == "error":
             self._set_error(result, duration_ms)
@@ -1212,7 +1211,7 @@ class SubAgentToolCall(BaseToolCard):
         with suppress(Exception):
             self.query_one("#sa-label", Static).update(self._label_text(duration_ms))
             self._update_title()
-        self._update_result_widget(lazy=bool(kwargs.get("lazy")))
+        self._show_completion_controls()
 
     def set_error(self, error: str) -> None:
         """Mark this sub-agent call as failed."""
@@ -1232,7 +1231,7 @@ class SubAgentToolCall(BaseToolCard):
         with suppress(Exception):
             self.query_one("#sa-label", Static).update(self._label_text(duration_ms))
             self._update_title()
-        self._update_result_widget()
+        self._show_completion_controls()
 
     # --- Paused / retry / resumed state ---
 

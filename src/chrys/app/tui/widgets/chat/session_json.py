@@ -251,7 +251,7 @@ class SessionJsonPanel(ScrollView):
     def _resolve_session_path(self, session_id: str) -> Path | None:
         """Resolve the on-disk session JSON path for the given session ID."""
         store = JsonFileStateStore()
-        return store._resolve_session_file(session_id)
+        return store.resolve_session_file(session_id)
 
     def set_status(self, message: str) -> None:
         """Show a single-line status message instead of JSON content."""

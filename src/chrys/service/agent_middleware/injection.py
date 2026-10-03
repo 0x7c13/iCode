@@ -398,7 +398,7 @@ class InjectionMiddleware(ChatMiddleware):
         context: ChatContext,
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
-        request_options = getattr(context, "options", None)
+        request_options = context.options
         if request_options and request_options.get("continuation_token") is not None:
             # A continuation poll retrieves an already-created response — the
             # provider ignores request messages, so consuming an injection
