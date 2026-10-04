@@ -24,7 +24,11 @@ from tests.kernel._fakes import (
     _user,
     _WireRetryPolicy,
 )
-from tests.support.provider_errors import openai_context_overflow, openai_status
+from tests.support.provider_errors import (
+    anthropic_thinking_binding_rejection,
+    openai_context_overflow,
+    openai_status,
+)
 
 _NOT_OVERFLOW = {
     "payload_too_large": (
@@ -102,6 +106,21 @@ async def test_other_rejections_are_not_noted(stream: bool, name: str) -> None:
     await _fail(error, strategy=sink, stream=stream, policy=_WireRetryPolicy())
 
     assert sink.notes == []
+
+
+@pytest.mark.parametrize("with_policy", [True, False], ids=["local_retry", "no_wire_policy"])
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_thinking_binding_refusal_naming_the_window_is_not_noted(stream: bool, with_policy: bool) -> None:
+    """Compacting cannot fix thinking bound to another conversation; the Anthropic client handles it."""
+    error = await anthropic_thinking_binding_rejection(names_the_window=True)
+    sink = _OverflowSink()
+    policy = _WireRetryPolicy() if with_policy else None
+
+    wire_calls = await _fail(error, strategy=sink, stream=stream, policy=policy)
+
+    assert sink.notes == []
+    assert wire_calls == 1
+    assert policy is None or policy.retries == []
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])

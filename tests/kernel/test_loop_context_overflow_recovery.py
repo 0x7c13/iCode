@@ -32,7 +32,7 @@ from tests.kernel._fakes import (
     _WireRetryPolicy,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
-from tests.support.provider_errors import openai_context_overflow
+from tests.support.provider_errors import anthropic_thinking_binding_rejection, openai_context_overflow
 
 
 def _answer(*, stream: bool) -> Any:
@@ -112,6 +112,21 @@ async def test_a_second_overflow_in_the_same_call_fails(stream: bool) -> None:
     assert raised.value is second
     assert sink.notes == [first, second]
     assert [retry[3] for retry in policy.retries] == [first]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_thinking_binding_refusal_after_the_resend_fails_without_a_note(stream: bool) -> None:
+    overflow = await openai_context_overflow()
+    refusal = await anthropic_thinking_binding_rejection(names_the_window=True)
+    sink = _OverflowSink()
+    policy = _WireRetryPolicy()
+
+    with pytest.raises(type(refusal)) as raised:
+        await _run([overflow, refusal], stream=stream, sink=sink, policy=policy)
+
+    assert raised.value is refusal
+    assert sink.notes == [overflow]
+    assert [retry[3] for retry in policy.retries] == [overflow]
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])

@@ -47,9 +47,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO
 
 from chrys.foundation.platform import windows_program_files_dirs
+from chrys.foundation.platform.output_capture import BoundedCapture, drain_process_pipes
 from chrys.foundation.platform.process import (
     SubprocessStoppedError,
-    decode_subprocess_output,
     managed_subprocess,
     wait_for_subprocess,
 )
@@ -67,6 +67,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOOK_RESULT_FILE_MAX_BYTES = 1 * 1024 * 1024
+
+HOOK_OUTPUT_CAPTURE_LIMIT_BYTES = 256 * 1024
+"""Bytes kept of a waited-for hook's stdout and of its stderr; decisions come from the result file."""
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -243,14 +246,16 @@ class HookRunner:
                 env=invocation.env,
             ) as proc:
                 process_group_id = getattr(proc, "pid", None) if sys.platform != "win32" else None
-                stdout, stderr = await wait_for_subprocess(
-                    proc.communicate(),
+                stdout = BoundedCapture(HOOK_OUTPUT_CAPTURE_LIMIT_BYTES)
+                stderr = BoundedCapture(HOOK_OUTPUT_CAPTURE_LIMIT_BYTES)
+                await wait_for_subprocess(
+                    drain_process_pipes(proc, stdout, stderr),
                     timeout=hook.execution.timeout_seconds,
                     process_group_id=process_group_id,
                 )
                 result.exit_code = proc.returncode
-                result.stdout = decode_subprocess_output(stdout) if stdout else ""
-                result.stderr = decode_subprocess_output(stderr) if stderr else ""
+                result.stdout = stdout.snapshot().text()
+                result.stderr = stderr.snapshot().text()
         except TimeoutError:
             result.timed_out = True
             logger.warning(

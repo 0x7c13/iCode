@@ -5,15 +5,16 @@
 """Build the ``messages.create`` arguments of one call.
 
 :func:`build_request` decides every request field: the renamed chat options,
-the default output cap, the encoded history and system prompt, the beta set,
-the user id, tool declarations and structured output. The client stamps its
-Chrys headers on the result.
+the default output cap, the encoded history and system prompt, the thinking
+block binding, the ``anthropic-beta`` header, the user id, tool declarations
+and structured output. The client stamps its Chrys headers on the result.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.kernel import (
@@ -24,16 +25,29 @@ from chrys.kernel import (
     prepend_instructions_to_messages,
     validate_tool_mode,
 )
+from chrys.service.profiles.models.options import AUTO_INTERLEAVED_THINKING_OPTION, THINKING_BLOCK_BINDING_OPTION
 
-from .history import encode_messages
+from .history import encode_history
+from .thinking_binding import (
+    BINDING_CONTROLS_BETA,
+    INTERLEAVED_THINKING_BETA,
+    ThinkingBindingPolicy,
+    apply_thinking_binding,
+    resolve_thinking_binding,
+)
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+    from chrys.kernel import Content
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BETAS: Final = ("mcp-client-2025-04-04", "code-execution-2025-08-25")
-"""Betas every request enables; ``additional_beta_flags`` adds to them."""
+"""Betas every request enables unless its ``extra_headers`` name the betas themselves."""
+
+BETA_HEADER: Final = "anthropic-beta"
 
 FALLBACK_MAX_OUTPUT_TOKENS: Final = 16 * 1024
 """Output cap of a call that sets none: the Messages API requires one.
@@ -50,11 +64,40 @@ _RENAMED_OPTIONS: Final = (("stop", "stop_sequences"), ("instructions", "system"
 # Chat options build_request reads itself instead of copying them, and ``stream``,
 # which the call site sets.
 _OPTIONS_NOT_COPIED: Final = frozenset(
-    {"instructions", "response_format", "additional_beta_flags", "allow_multiple_tool_calls", "stream"}
+    {
+        "instructions",
+        "response_format",
+        "additional_beta_flags",
+        "betas",
+        "allow_multiple_tool_calls",
+        "stream",
+        THINKING_BLOCK_BINDING_OPTION,
+        AUTO_INTERLEAVED_THINKING_OPTION,
+    }
 )
 
-# Call keywords that configure the call and never become request fields.
-_CALL_SETTINGS: Final = frozenset({"thread", "middleware", "additional_beta_flags"})
+# Call keywords that configure the call and never become request fields. The
+# betas and thinking settings are read from the options only.
+_CALL_SETTINGS: Final = frozenset(
+    {
+        "thread",
+        "middleware",
+        "additional_beta_flags",
+        "betas",
+        THINKING_BLOCK_BINDING_OPTION,
+        AUTO_INTERLEAVED_THINKING_OPTION,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltRequest:
+    """The ``messages.create`` arguments of one call and what they replay."""
+
+    request: dict[str, Any]
+    policy: ThinkingBindingPolicy
+    thinking: tuple[Content, ...]
+    """The reasoning contents the request's thinking blocks replay; none when ``extra_body`` sends its own messages."""
 
 
 def build_request(
@@ -63,12 +106,22 @@ def build_request(
     call_kwargs: Mapping[str, Any],
     *,
     model: str,
-) -> dict[str, Any]:
-    """Return the request for *messages* under *options*, without Chrys headers.
+    base_url: object,
+    default_headers: Mapping[str, object],
+    origin: ReasoningOrigin | None = None,
+    skip_thinking: Collection[Content] = (),
+) -> BuiltRequest:
+    """Return the request for *messages* under *options*, without Chrys headers, and what it replays.
 
     Options set to None are left out. Call keywords become request fields too,
     except private (underscore) names and :data:`_CALL_SETTINGS`. *model* is
-    used when neither sets one.
+    used when neither sets one. *base_url* is where the SDK client sends the
+    request and *default_headers* the headers it adds to every request.
+    *origin* is the endpoint the request goes to: thinking another one issued
+    is left out, and so is the thinking of the contents in *skip_thinking*.
+    The result's ``thinking`` lists the reasoning contents the request
+    replays: passed back as *skip_thinking*, they build the same request
+    without that thinking.
     """
     if instructions := options.get("instructions"):
         messages = prepend_instructions_to_messages(list(messages), instructions, role="system")
@@ -87,11 +140,13 @@ def build_request(
         request["model"] = model
     if not request.get("max_tokens"):
         request["max_tokens"] = FALLBACK_MAX_OUTPUT_TOKENS
-    request["messages"] = encode_messages(messages)
+    policy = resolve_thinking_binding(request, options, base_url=base_url)
+    apply_thinking_binding(request, policy)
+    history = encode_history(messages, origin=origin, skip=skip_thinking)
+    request["messages"] = history.messages
     if messages and isinstance(messages[0], Message) and messages[0].role == "system":
         request["system"] = messages[0].text
-    request["betas"] = {*DEFAULT_BETAS, *options.get("additional_beta_flags", [])}
-    request.setdefault("extra_headers", {})
+    request["extra_headers"] = _with_beta_header(request.get("extra_headers"), options, default_headers, policy)
     if user := request.pop("user", None):
         # The Messages API takes the end-user id as ``metadata.user_id``.
         metadata = dict(request.get("metadata") or {})
@@ -102,7 +157,56 @@ def build_request(
         request.update(tool_fields)
     if (response_format := options.get("response_format")) is not None:
         request["output_config"] = _output_config_with_format(request.get("output_config"), response_format)
-    return request
+    extra_body = request.get("extra_body")
+    sends_own_messages = isinstance(extra_body, Mapping) and "messages" in extra_body
+    return BuiltRequest(request, policy, () if sends_own_messages else history.thinking)
+
+
+def _with_beta_header(
+    extra_headers: object,
+    options: Mapping[str, Any],
+    default_headers: Mapping[str, object],
+    policy: ThinkingBindingPolicy,
+) -> dict[str, Any]:
+    """*extra_headers* with one ``anthropic-beta`` header in place of every spelling of it.
+
+    The header lists :data:`DEFAULT_BETAS`, ``additional_beta_flags``,
+    ``betas`` and the client's default ``anthropic-beta`` header, in that
+    order; an ``anthropic-beta`` header *extra_headers* names itself replaces
+    them all. The betas *policy* needs follow either way. Comma-separated
+    values are split, and each beta is listed once. A request with no beta
+    gets no header.
+    """
+    headers = dict(extra_headers) if isinstance(extra_headers, Mapping) else {}
+    if any(_is_beta_header(name) and not isinstance(value, str) for name, value in headers.items()):
+        # Left as written, so the request's header check refuses the value.
+        return headers
+    explicit = [headers.pop(name) for name in list(headers) if _is_beta_header(name)]
+    sources: list[object] = explicit or [
+        DEFAULT_BETAS,
+        options.get("additional_beta_flags"),
+        options.get("betas"),
+        *(value for name, value in default_headers.items() if _is_beta_header(name) and isinstance(value, str)),
+    ]
+    if policy.controls_beta:
+        sources.append(BINDING_CONTROLS_BETA)
+    if policy.interleaved_beta:
+        sources.append(INTERLEAVED_THINKING_BETA)
+    if betas := dict.fromkeys(beta for source in sources for beta in _betas_in(source)):
+        headers[BETA_HEADER] = ",".join(betas)
+    return headers
+
+
+def _is_beta_header(name: object) -> bool:
+    return isinstance(name, str) and name.lower() == BETA_HEADER
+
+
+def _betas_in(value: object) -> list[str]:
+    """The betas a string, or each item of a list, names: comma-separated, blanks dropped."""
+    if value is None:
+        return []
+    items = value if isinstance(value, Iterable) and not isinstance(value, str | Mapping) else [value]
+    return [beta for item in items for beta in (part.strip() for part in str(item).split(",")) if beta]
 
 
 def _rename_options(fields: dict[str, Any]) -> None:

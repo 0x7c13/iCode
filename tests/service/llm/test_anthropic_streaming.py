@@ -71,7 +71,9 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
 
     client = AnthropicMessagesClient(
         model="claude-test",
-        sdk_client=SimpleNamespace(beta=SimpleNamespace(messages=_Messages())),  # type: ignore[arg-type]
+        sdk_client=SimpleNamespace(
+            base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_Messages())
+        ),  # type: ignore[arg-type]
     )
     response_stream = client._inner_get_response(
         messages=[Message("user", ["hi"])],
@@ -85,7 +87,9 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
 
 
 def _open_stream(events: Sequence[BetaRawMessageStreamEvent]) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
-    anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_FakeMessages(events)))
+    anthropic_client = SimpleNamespace(
+        base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_FakeMessages(events))
+    )
     client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
         messages=[Message("user", ["Explore the repository"])],
@@ -114,53 +118,62 @@ async def _stream_function_calls(events: Sequence[BetaRawMessageStreamEvent]) ->
     return _function_calls(response)
 
 
+_DEFAULT_BETA_HEADER = "mcp-client-2025-04-04,code-execution-2025-08-25"
+
+
 @pytest.mark.asyncio
-async def test_additional_beta_flags_are_forwarded_only_in_betas() -> None:
+async def test_beta_options_are_written_into_the_anthropic_beta_header() -> None:
     messages_client = _FakeMessages([_message_stop()])
-    anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
+    anthropic_client = SimpleNamespace(
+        base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=messages_client)
+    )
     client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
         messages=[Message("user", ["hi"])],
-        options={"additional_beta_flags": ["x-beta"]},
+        options={"additional_beta_flags": ["x-beta"], "betas": ["y-beta"]},
         stream=True,
         additional_beta_flags=["must-not-leak"],
+        betas=["must-not-leak-either"],
     )
 
     assert isinstance(stream, ResponseStream)
     assert [update async for update in stream] == []
     assert len(messages_client.calls) == 1
     request_kwargs = messages_client.calls[0]
-    betas = request_kwargs["betas"]
-    assert isinstance(betas, set)
-    assert "x-beta" in betas
+    assert "betas" not in request_kwargs
     assert "additional_beta_flags" not in request_kwargs
+    extra_headers = request_kwargs["extra_headers"]
+    assert isinstance(extra_headers, dict)
+    assert extra_headers["anthropic-beta"] == f"{_DEFAULT_BETA_HEADER},x-beta,y-beta"
 
 
 @pytest.mark.asyncio
-async def test_additional_beta_flags_from_chat_options_survive_public_get_response() -> None:
+async def test_beta_options_from_chat_options_survive_public_get_response() -> None:
     """Model-profile ``chat_options`` enter through the public ``get_response``
-    boundary (options mapping in, ``messages.create`` kwargs out): the flag is
-    folded into ``betas`` and the raw key never reaches the provider call,
-    whether carried in options or in client kwargs."""
+    boundary (options mapping in, ``messages.create`` kwargs out): the betas
+    are written into the ``anthropic-beta`` header and the raw keys never reach
+    the provider call, whether carried in options or in client kwargs."""
     messages_client = _FakeMessages([_message_stop()])
-    anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
+    anthropic_client = SimpleNamespace(
+        base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=messages_client)
+    )
     client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client.get_response(
         [Message("user", ["hi"])],
         stream=True,
-        options={"additional_beta_flags": ["x-beta"]},
-        client_kwargs={"additional_beta_flags": ["must-not-leak"]},
+        options={"additional_beta_flags": ["x-beta"], "betas": ["y-beta"]},
+        client_kwargs={"additional_beta_flags": ["must-not-leak"], "betas": ["must-not-leak-either"]},
     )
 
     assert [update async for update in stream] == []
     assert len(messages_client.calls) == 1
     request_kwargs = messages_client.calls[0]
-    betas = request_kwargs["betas"]
-    assert isinstance(betas, set)
-    assert "x-beta" in betas
-    # kwargs-borne flags are filtered out, not folded (no real caller uses them).
-    assert "must-not-leak" not in betas
+    # kwargs-borne betas are filtered out, not folded (no real caller uses them).
+    assert "betas" not in request_kwargs
     assert "additional_beta_flags" not in request_kwargs
+    extra_headers = request_kwargs["extra_headers"]
+    assert isinstance(extra_headers, dict)
+    assert extra_headers["anthropic-beta"] == f"{_DEFAULT_BETA_HEADER},x-beta,y-beta"
 
 
 def _tool_start(index: int, call_id: str, name: str) -> BetaRawContentBlockStartEvent:

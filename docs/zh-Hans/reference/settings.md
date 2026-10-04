@@ -93,7 +93,7 @@ Hooks 是 iCode 在特定事件时运行的外部命令。项目 Hooks 与项目
 | `mutations.parallel_implicit_tools` | `CHRYS_PARALLEL_IMPLICIT_TOOLS` | `true` | 布尔值；允许同一会话中的 Shell、技能脚本等可能改动文件的工具并行运行。设为 `false` 更容易判断文件改动来自哪次工具调用 |
 | `mutations.coordination.enabled` | `CHRYS_MUTATION_COORDINATION` | `true` | 布尔值；协助区分共享工作目录的不同 iCode 会话造成的文件改动 |
 
-工具自身还可能有独立的输出限制，例如 MCP 返回结果和技能资源的限制。将 `tools.result.ceiling_tokens` 设为 `0` 不会关闭这些限制，也不能恢复已被工具截断的内容。
+工具自身还可能有独立的输出限制，例如 MCP 返回结果和技能资源的限制。将 `tools.result.ceiling_tokens` 设为 `0` 不会关闭这些限制，也不能恢复已被工具截断的内容。此外，Shell 命令和技能脚本的每一路输出最多保留 32 MiB，与这些 token 限制无关。
 
 ### 网络工具
 

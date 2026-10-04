@@ -33,7 +33,12 @@ from enum import Enum
 from time import monotonic_ns
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from chrys.foundation.errors import clean_error_message, invalidates_continuation_token, is_context_overflow
+from chrys.foundation.errors import (
+    clean_error_message,
+    invalidates_continuation_token,
+    is_context_overflow,
+    is_thinking_binding_rejection,
+)
 from chrys.foundation.retry import StreamStall
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.foundation.trajectory.context import (
@@ -1236,9 +1241,16 @@ class _WireCaller:
         # the strategy compacts before the next request instead of letting
         # it resend the rejected input. Runs before any retry decision, so
         # service-side runs (no wire policy) are noted too. Returns whether
-        # compacting and resending can help.
+        # compacting and resending can help. Thinking the service refused
+        # as bound to another conversation is no full window, even when the
+        # refusal names it: the client resends without that thinking, or
+        # the profile asked for the refusal.
         strategy = self._compaction_strategy
-        if not isinstance(strategy, ContextOverflowSink) or not is_context_overflow(exc):
+        if (
+            not isinstance(strategy, ContextOverflowSink)
+            or not is_context_overflow(exc)
+            or is_thinking_binding_rejection(exc)
+        ):
             return False
         return strategy.note_context_overflow(exc)
 

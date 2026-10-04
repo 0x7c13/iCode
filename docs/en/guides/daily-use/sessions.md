@@ -35,6 +35,8 @@ To find and resume another session, press **F1**, click `f1 Sessions`, or enter 
 
 When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.
 
+If a resumed conversation continues on a different model service than before, some earlier reasoning may be left out; see [Switch the current model profile](../configuration/models.md#switch-the-current-model-profile).
+
 ## Delete old sessions
 
 Open the "Chat Sessions" window and first check the session ID, directory, and last active time. If you are unsure, resume the session to check its contents, then return to the "Chat Sessions" window. Select a session you no longer need and click "Delete".

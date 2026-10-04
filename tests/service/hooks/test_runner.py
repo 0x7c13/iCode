@@ -30,7 +30,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.loader import load_hooks_project
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun
-from tests.support.waiting import wait_for, wait_until
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 
 @pytest.fixture
@@ -231,6 +231,33 @@ async def test_decision_via_result_file(runner: HookRunner) -> None:
     # stdout reserved for logs, not the decision.
     assert "debug log line" in result.stdout
     assert result.decision == {"action": "block", "reason": "policy: nope"}
+
+
+@pytest.mark.asyncio
+async def test_noisy_hook_output_is_bounded_and_the_decision_still_comes_from_the_result_file(
+    runner: HookRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner_mod, "HOOK_OUTPUT_CAPTURE_LIMIT_BYTES", 3000)
+    script = textwrap.dedent(
+        """
+        import json, os, sys
+        for i in range(2000):
+            sys.stdout.write("log %04d %s\\n" % (i, "o" * 80))
+            sys.stderr.write("err %04d %s\\n" % (i, "e" * 80))
+        print("last log line")
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            json.dump({"action": "block", "reason": "policy: nope"}, f)
+        """
+    )
+    hook = _command_hook(argv=[sys.executable, "-c", script], timeout=ENGINE_TURN_TIMEOUT)
+
+    result = await runner.run_and_wait(hook, {"profile": "Code"})
+
+    assert result.decision == {"action": "block", "reason": "policy: nope"}
+    assert result.stdout.startswith("log 0000 ") and result.stdout.rstrip().endswith("last log line")
+    assert result.stderr.startswith("err 0000 ") and result.stderr.rstrip().endswith("err 1999 " + "e" * 80)
+    assert "bytes omitted" in result.stdout and len(result.stdout) < 3100
+    assert "bytes omitted" in result.stderr and len(result.stderr) < 3100
 
 
 @pytest.mark.asyncio

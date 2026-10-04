@@ -79,6 +79,9 @@ _TIMEOUT_PHASES: dict[str, TimeoutPhase] = {
 }
 _TIMEOUT_MODULES = frozenset({"httpx", "httpcore"})
 
+# What Anthropic says when replayed thinking no longer matches the conversation before it.
+_THINKING_BINDING_PHRASE = "bound to a different conversation"
+
 # Kinds no retry can fix, whatever the transient layers say.
 _NON_RETRYABLE_KINDS = frozenset({ErrorKind.QUOTA_EXHAUSTED, ErrorKind.CONTEXT_OVERFLOW, ErrorKind.PAYLOAD_TOO_LARGE})
 
@@ -208,6 +211,25 @@ def is_context_overflow(exc: BaseException) -> bool:
     ``request_too_large`` / 413 is an oversized payload, not an overflow.
     """
     return classify_error(exc).kind is ErrorKind.CONTEXT_OVERFLOW
+
+
+def is_thinking_binding_rejection(exc: BaseException) -> bool:
+    """Return whether Anthropic refused replayed thinking as bound to a different conversation.
+
+    The service binds each signed thinking block to the request before it and
+    answers a changed one with a 400 ``invalid_request_error`` saying so. All
+    three are read from the one provider signal: a gateway that rewrites the
+    text is missed rather than every invalid request caught. The text may
+    also name the context window, so *exc* can be an overflow as well.
+    """
+    signal = classify_error(exc).signal
+    return (
+        signal is not None
+        and signal.status_code == 400
+        and signal.error_type == "invalid_request_error"
+        and signal.message is not None
+        and _THINKING_BINDING_PHRASE in signal.message
+    )
 
 
 def context_overflow_limit(exc: BaseException) -> int | None:

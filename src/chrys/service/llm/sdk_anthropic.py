@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 
-from chrys.service.llm.sdk_retry import DeterministicConnectionRetryGuard
+from chrys.service.llm.sdk_retry import DeterministicConnectionDecisionGuard
 
 
-class RetryGuardedAsyncAnthropic(DeterministicConnectionRetryGuard, AsyncAnthropic):
+class RetryGuardedAsyncAnthropic(DeterministicConnectionDecisionGuard, AsyncAnthropic):
     """``AsyncAnthropic`` that does not retry a connection error that cannot self-heal."""

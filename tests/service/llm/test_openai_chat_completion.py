@@ -804,6 +804,9 @@ def test_model_class_name_is_sanitized() -> None:
     _Digest.__name__ = "天气 Digest"
     prepared = _prepared_response_format(_Digest)
     assert prepared["json_schema"]["name"] == "Digest"
+    assert prepared["json_schema"]["strict"] is True
+    assert prepared["json_schema"]["schema"]["additionalProperties"] is False
+    assert prepared["json_schema"]["schema"]["required"] == ["answer"]
 
 
 # ───────────────────────── cache_write_tokens extraction ─────────────────────────

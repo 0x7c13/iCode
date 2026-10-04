@@ -17,6 +17,7 @@ import pytest
 import chrys.service.tools.builtins.shell as shell_module
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import ShellInfo
+from chrys.foundation.text.tool_output import truncate_output as _truncate_output
 from chrys.service.tools.builtins.shell import (
     ShellTools,
     _await_pty_master_drained,
@@ -24,7 +25,6 @@ from chrys.service.tools.builtins.shell import (
     _prepare_pipe_command,
     _process_carriage_returns,
     _strip_ansi,
-    _truncate_output,
     shell_progress_callback,
 )
 from tests.support.pty_masters import linux_style_master
@@ -1038,7 +1038,7 @@ async def test_pty_trace_prefix_wraps_execution(shell: ShellTools, tmp_path: Pat
     finally:
         shell_trace_argv.reset(token)
     assert returncode == 0
-    assert "traced-hello" in output
+    assert "traced-hello" in output.text()
     assert marker.exists()  # the wrapper really interposed
 
 
@@ -1053,7 +1053,7 @@ async def test_pipe_trace_prefix_wraps_execution(shell: ShellTools, tmp_path: Pa
     finally:
         shell_trace_argv.reset(token)
     assert returncode == 0
-    assert "traced-hello" in stdout
+    assert "traced-hello" in stdout.text()
     assert marker.exists()
 
 

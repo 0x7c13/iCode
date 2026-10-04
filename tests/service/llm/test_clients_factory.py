@@ -9,6 +9,7 @@ network I/O or requiring valid API keys.
 
 from __future__ import annotations
 
+import errno
 import os
 import ssl
 import sys
@@ -17,6 +18,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.foundation.errors import is_deterministic_connection_error
 from chrys.foundation.util.chrys_headers import (
     MODEL_ID_HEADER,
     PARENT_SESSION_ID_HEADER,
@@ -39,6 +41,7 @@ from chrys.service.llm.clients import (
 )
 from chrys.service.llm.openai_responses import ResponsesApiClient
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.network_faults import SimulatedWindowsError
 
 
 def _profile(
@@ -553,20 +556,39 @@ def _create_real_provider_client(
     )
 
 
-async def _send_real_provider_request(provider: str, client: Any) -> None:
+async def _send_real_provider_request(provider: str, client: Any, *, stream: bool = False) -> None:
     if provider == "openai":
-        await client.chat.completions.create(model="test-model", messages=[{"role": "user", "content": "hi"}])
+        await client.chat.completions.create(
+            model="test-model", messages=[{"role": "user", "content": "hi"}], stream=stream
+        )
         return
     await client.messages.create(
         model="test-model",
         max_tokens=1,
         messages=[{"role": "user", "content": "hi"}],
+        stream=stream,
     )
 
 
+def _surfaced_transport_error(provider: str, error: BaseException) -> BaseException:
+    """Return the transport failure a provider SDK raised on its first attempt.
+
+    The OpenAI guard re-raises the transport error itself; the Anthropic SDK
+    raises its ``APIConnectionError`` caused by it. Either way Chrys's own
+    retry lanes must reach the same no-retry verdict.
+    """
+    assert is_deterministic_connection_error(error)
+    if provider == "openai":
+        return error
+    assert type(error).__name__ == "APIConnectionError"
+    assert error.__cause__ is not None
+    return error.__cause__
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
-async def test_provider_sdk_does_not_retry_deterministic_tls_failure(provider: str) -> None:
+async def test_provider_sdk_does_not_retry_deterministic_tls_failure(provider: str, stream: bool) -> None:
     """The guard handles the argument-only TLS cause produced by pinned httpcore."""
     import httpcore
     import httpx
@@ -589,13 +611,15 @@ async def test_provider_sdk_does_not_retry_deterministic_tls_failure(provider: s
     client = _create_real_provider_client(provider, http_client, max_retries=3)
 
     try:
-        with pytest.raises(httpx.ConnectError) as info:
-            await _send_real_provider_request(provider, client)
+        with pytest.raises(Exception) as info:
+            await _send_real_provider_request(provider, client, stream=stream)
     finally:
         await client.close()
 
-    assert type(info.value.__cause__).__module__.partition(".")[0] == "httpcore"
-    assert isinstance(info.value.__cause__.args[0], ssl.SSLCertVerificationError)
+    error = _surfaced_transport_error(provider, info.value)
+    assert isinstance(error, httpx.ConnectError)
+    assert type(error.__cause__).__module__.partition(".")[0] == "httpcore"
+    assert isinstance(error.__cause__.args[0], ssl.SSLCertVerificationError)
     assert attempts == 1
 
 
@@ -611,25 +635,34 @@ async def test_provider_sdk_does_not_retry_real_anyio_tls_verification_failure(
     import httpx
 
     timeout = httpx.Timeout(connect=10, read=5, write=5, pool=5)
+    attempts = 0
+
+    async def _count(request: httpx.Request) -> None:
+        nonlocal attempts
+        attempts += 1
+
     async with local_http_server(
         b"unused",
         scheme="https",
         ssl_context=self_signed_server_ssl_context,
     ) as server:
-        http_client = httpx.AsyncClient(timeout=timeout, trust_env=False)
+        http_client = httpx.AsyncClient(timeout=timeout, trust_env=False, event_hooks={"request": [_count]})
         base_url = f"{server.url}/v1" if provider == "openai" else server.url
         client = _create_real_provider_client(provider, http_client, max_retries=2, base_url=base_url)
         client._calculate_retry_timeout = lambda *_args, **_kwargs: 0.0
 
         try:
-            with pytest.raises(httpx.ConnectError) as info:
+            with pytest.raises(Exception) as info:
                 await _send_real_provider_request(provider, client)
         finally:
             await client.close()
 
-    core_error = info.value.__cause__
+    error = _surfaced_transport_error(provider, info.value)
+    assert isinstance(error, httpx.ConnectError)
+    core_error = error.__cause__
     assert isinstance(core_error, httpcore.ConnectError)
     assert any(isinstance(arg, ssl.SSLCertVerificationError) for arg in core_error.args)
+    assert attempts == 1
 
 
 @pytest.mark.asyncio
@@ -656,11 +689,12 @@ async def test_provider_sdk_does_not_retry_proxy_authentication_failure(provider
     client = _create_real_provider_client(provider, http_client, max_retries=3)
 
     try:
-        with pytest.raises(httpx.ProxyError):
+        with pytest.raises(Exception) as info:
             await _send_real_provider_request(provider, client)
     finally:
         await client.close()
 
+    assert isinstance(_surfaced_transport_error(provider, info.value), httpx.ProxyError)
     assert attempts == 1
 
 
@@ -692,6 +726,60 @@ async def test_provider_sdk_preserves_retries_for_ambiguous_tls_alert(provider: 
         await client.close()
 
     assert type(info.value).__name__ == "APIConnectionError"
+    assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_openai_sdk_leaves_a_retry_after_beyond_two_minutes_to_chrys() -> None:
+    """The OpenAI SDK waits out a ``Retry-After`` of up to two minutes; past that it does not retry."""
+    import httpx
+
+    attempts = 0
+
+    async def _rate_limit(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        body = {"error": {"message": "rate limited", "type": "rate_limit_error", "code": "rate_limit"}}
+        return httpx.Response(429, headers={"retry-after": "121"}, json=body, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(_rate_limit))
+    client = _create_real_provider_client("openai", http_client, max_retries=2)
+
+    try:
+        with pytest.raises(Exception) as info:
+            await _send_real_provider_request("openai", client)
+    finally:
+        await client.close()
+
+    assert type(info.value).__name__ == "RateLimitError"
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+async def test_provider_sdk_preserves_retries_for_windows_buffer_exhaustion(provider: str) -> None:
+    """A bare WinError 10055 (no buffer space) is a resource shortage a later attempt can outlive."""
+    import httpx
+
+    attempts = 0
+
+    async def _fail_without_buffers(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise SimulatedWindowsError(errno.ENOBUFS, "No buffer space available", 10055)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(_fail_without_buffers))
+    client = _create_real_provider_client(provider, http_client, max_retries=2)
+    client._calculate_retry_timeout = lambda *_args, **_kwargs: 0.0
+
+    try:
+        with pytest.raises(Exception) as info:
+            await _send_real_provider_request(provider, client)
+    finally:
+        await client.close()
+
+    assert type(info.value).__name__ == "APIConnectionError"
+    assert isinstance(info.value.__cause__, SimulatedWindowsError)
     assert attempts == 3
 
 

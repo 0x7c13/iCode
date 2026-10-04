@@ -98,7 +98,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
     )
 ```
 
-脚本通过 `CHRYS_HOOK_RESULT` 指定的结果文件返回 `action: block` 和拒绝原因。
+脚本通过 `CHRYS_HOOK_RESULT` 指定的结果文件返回 `action: block` 和拒绝原因。脚本打印到标准输出或标准错误的内容不作为操作决定读取，iCode 对两者各最多保留 256 KiB（开头和结尾）。
 
 `on_error: block` 表示脚本无法启动、超时或返回非零退出码时也拒绝工具调用，适合需要失败时保持限制的检查。这个钩子只会阻止匹配的 `filesystem.write` 调用；Shell 命令不受影响。
 

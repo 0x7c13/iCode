@@ -14,7 +14,7 @@ _ANSI_RE = re.compile(
     r"|\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences (title, hyperlinks)
     r"|[()][0-2AB]"  # Charset designation
     r"|[\x20-\x2F][\x30-\x7E]"  # Two-byte ESC sequences
-    r"|[=>NOcDEHMZ78]"  # Single-byte ESC sequences
+    r"|[=>NOcDEHMZ78\\]"  # Single-byte ESC sequences and a lone string terminator (ST)
     r")"
 )
 

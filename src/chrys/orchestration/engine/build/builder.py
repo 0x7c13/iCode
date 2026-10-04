@@ -684,6 +684,7 @@ async def build_agent(
         mcp_tools_by_server: dict[str, list[str]] = {}
         if profile.tools.mcp:
             from chrys.service.mcp.adapter import MCPAdapter
+            from chrys.service.mcp.thinking_warning import warn_if_tool_loading_unbinds_thinking
 
             reserved_tool_names = chrys_reserved_tool_names()
             reserved_tool_names.update(tool.name for tool in tools)
@@ -733,6 +734,7 @@ async def build_agent(
             mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp, progress=_mcp_progress)
             mcp_tools_by_server = mcp_adapter.tool_names_by_server
             tools.extend(mcp_tools)
+            warn_if_tool_loading_unbinds_thinking(profile, active_profile, chat_options, mcp_tools_by_server)
 
         # Build skills provider (if configured)
         await _progress(AGENT_LOAD_PHASE_SKILLS, "Loading skills", status=AGENT_LOAD_STATUS_RUNNING)

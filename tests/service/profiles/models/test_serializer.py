@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -192,6 +193,20 @@ def test_stream_requires_finish_reason_round_trips(tmp_path: Path) -> None:
     assert data["stream_requires_finish_reason"] is True
     assert "stream_requires_finish_reason" not in profile_to_dict(ModelProfile(id="d", name="D"))
     assert load_profile_from_yaml(path).stream_requires_finish_reason is True
+
+
+@pytest.mark.parametrize("binding", ["drop_block", "error", "off"])
+def test_thinking_settings_round_trip_through_disk(fake_config_dir: Path, binding: Any) -> None:
+    profile = ModelProfile(id="c", name="Claude", thinking_block_binding=binding, auto_interleaved_thinking=False)
+
+    raw = yaml.safe_load(save_profile(profile).read_text(encoding="utf-8"))
+    loaded = load_profile_from_yaml(fake_config_dir / "models" / "c.yaml")
+
+    assert (raw["thinking_block_binding"], raw["auto_interleaved_thinking"]) == (binding, False)
+    assert (loaded.thinking_block_binding, loaded.auto_interleaved_thinking) == (binding, False)
+    defaults = profile_to_dict(ModelProfile(id="d", name="D"))
+    assert "thinking_block_binding" not in defaults
+    assert "auto_interleaved_thinking" not in defaults
 
 
 @pytest.mark.parametrize("stream", [True, False])

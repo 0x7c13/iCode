@@ -6,8 +6,8 @@ requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = [
-    "anthropic==0.107.1",
-    "openai==2.44.0",
+    "anthropic==0.125.0",
+    "openai==2.54.0",
     # Range, not a pin: the otel packages ship as one release train (api/sdk/
     # exporter on 1.x, instrumentation on the matching 0.NNbM line) and are
     # bumped together. uv.lock holds the resolved version.

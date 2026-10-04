@@ -76,6 +76,7 @@ from .decode import (
 from .hosted import decode_hosted_item, image_data_uri, item_properties, refresh_in_place
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
     from chrys.kernel import UsageDetails
 
     from .client import ResponsesVariant
@@ -186,10 +187,19 @@ class _Update:
 class StreamState:
     """Reads the events of one stream, in order."""
 
-    def __init__(self, options: Mapping[str, Any], *, model: str, variant: ResponsesVariant) -> None:
+    def __init__(
+        self,
+        options: Mapping[str, Any],
+        *,
+        model: str,
+        variant: ResponsesVariant,
+        origin: ReasoningOrigin | None = None,
+    ) -> None:
         self._options = options
         self._model = model
         self._variant = variant
+        # The endpoint that sends the stream, stamped on its reasoning.
+        self._origin = origin
         self._slots: dict[Any, OutputSlot] = {}
         # Contents waiting behind a function call not yet done, by output
         # index, and the hosted ones among them not yet reported.
@@ -348,10 +358,12 @@ class StreamState:
         return hosted_contents(unsent, self._variant.hosted_provider)
 
     def _remember_reasoning(self, contents: list[Content]) -> None:
-        if self._backfills_reasoning:
-            for content in contents:
-                if content.id:
-                    self._reasoning.setdefault(content.id, []).append(content)
+        """Stamp new reasoning contents with the endpoint, and keep them for a later payload."""
+        for content in contents:
+            if self._origin is not None:
+                self._origin.stamp(content.additional_properties)
+            if self._backfills_reasoning and content.id:
+                self._reasoning.setdefault(content.id, []).append(content)
 
     def _backfill_reasoning(self, item: Any, *, final: bool) -> bool:
         """Put a reasoning item's payload on the last content sent for it; False when none was.

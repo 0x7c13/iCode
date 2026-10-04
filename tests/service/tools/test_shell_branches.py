@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ import pytest
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import WorkingDir, Workspace
 from chrys.foundation.platform import ShellInfo
+from chrys.foundation.platform.output_capture import CapturedOutput
+from chrys.foundation.text.tool_output import truncate_output as _truncate_output
 from chrys.foundation.tool_result_metadata import (
     SHELL_EXIT_CODE_METADATA_KEY,
     SHELL_TIMED_OUT_METADATA_KEY,
@@ -43,7 +46,6 @@ from chrys.service.tools.builtins.shell import (
     _kill_pty_process,
     _shell_argv_variants,
     _Timeout,
-    _truncate_output,
     shell_progress_callback,
     shell_result_metadata,
 )
@@ -184,11 +186,13 @@ async def test_execute_records_exit_code_metadata(runtime: SessionEnvironment, m
     shell = ShellTools(runtime)
     metadata: dict[str, object] = {}
 
-    async def _pty_done(*_a: Any, **_kw: Any) -> tuple[str, int]:
-        return "boom", 7
+    async def _pty_done(command: str, shell: ShellInfo, cwd: str, timeout: int | float) -> tuple[CapturedOutput, int]:
+        return CapturedOutput(b"boom", b"", 4), 7
 
-    async def _pipe_done(*_a: Any, **_kw: Any) -> tuple[str, int, str]:
-        return "boom", 7, ""
+    async def _pipe_done(
+        command: str, shell: ShellInfo, cwd: str, timeout: int | float
+    ) -> tuple[CapturedOutput, int, CapturedOutput]:
+        return CapturedOutput(b"boom", b"", 4), 7, CapturedOutput(b"", b"", 0)
 
     if IS_UNIX:
         monkeypatch.setattr(shell, "_execute_pty", _pty_done)
@@ -210,8 +214,8 @@ async def test_execute_records_timeout_metadata(runtime: SessionEnvironment, mon
     shell = ShellTools(runtime)
     metadata: dict[str, object] = {}
 
-    async def _timeout(*_a: Any, **_kw: Any) -> tuple[str, int]:
-        raise _Timeout(output="before")
+    async def _timeout(command: str, shell: ShellInfo, cwd: str, timeout: int | float) -> tuple[CapturedOutput, int]:
+        raise _Timeout(output=CapturedOutput(b"before", b"", 6))
 
     if IS_UNIX:
         monkeypatch.setattr(shell, "_execute_pty", _timeout)
@@ -281,10 +285,18 @@ async def test_bound_result_propagates_completed_spill_result_on_cancellation(
 ) -> None:
     completed = "[bounded completed shell result]"
 
-    async def cancelled_after_completion(*_args: object) -> str:
+    async def cancelled_after_completion(
+        dir_path: Path | None,
+        prefix: str,
+        text: str,
+        budget: int,
+        captures: Sequence[CapturedOutput] = (),
+        *,
+        lead: str = "",
+    ) -> str:
         raise SyncToolCancelledAfterCompletion(completed)
 
-    monkeypatch.setattr(shell_mod, "truncate_with_spill", cancelled_after_completion)
+    monkeypatch.setattr(shell_mod, "bound_process_output", cancelled_after_completion)
 
     with pytest.raises(SyncToolCancelledAfterCompletion) as exc_info:
         await ShellTools(runtime)._bound_result("x" * 10_000, 100)
@@ -635,9 +647,9 @@ async def test_stream_pipe_emits_progress(runtime: SessionEnvironment) -> None:
 
     stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
 
-    # All three lines concatenated into stdout bytes
-    assert b"line-one" in stdout and b"line-two" in stdout and b"line-three" in stdout
-    assert stderr == b"some stderr\n"
+    # All three lines concatenated into the stdout capture
+    assert stdout == CapturedOutput(b"line-one\nline-two\nline-three\n", b"", 29)
+    assert stderr == CapturedOutput(b"some stderr\n", b"", 12)
 
     # Callback was invoked at least once (possibly coalesced) with cleaned lines
     flat = [line for batch in received for line in batch]
@@ -663,8 +675,8 @@ async def test_stream_pipe_progress_uses_subprocess_decoder(monkeypatch: pytest.
 
     stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
 
-    assert stdout == b"caf\xe9\n"
-    assert stderr == b""
+    assert stdout == CapturedOutput(b"caf\xe9\n", b"", 5)
+    assert stderr == CapturedOutput(b"", b"", 0)
     assert [line for batch in received for line in batch] == ["café"]
 
 
@@ -682,8 +694,8 @@ async def test_stream_pipe_preserves_blank_progress_lines(runtime: SessionEnviro
 
     stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
 
-    assert stdout == b"[line 1]\r\n\r\n[line 2]\r\n\n[line 3]\r\n"
-    assert stderr == b""
+    assert stdout.head == b"[line 1]\r\n\r\n[line 2]\r\n\n[line 3]\r\n"
+    assert stderr.seen == 0
     flat = [line for batch in received for line in batch]
     assert flat == ["[line 1]", "", "[line 2]", "", "[line 3]"]
 
@@ -699,8 +711,8 @@ async def test_stream_pipe_bare_carriage_return_is_not_blank_line(runtime: Sessi
 
     stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
 
-    assert stdout == b"\r"
-    assert stderr == b""
+    assert stdout == CapturedOutput(b"\r", b"", 1)
+    assert stderr.seen == 0
     assert received == []
 
 

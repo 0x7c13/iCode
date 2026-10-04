@@ -37,10 +37,18 @@ from anthropic.types.beta import (
 
 from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import HeldHostedEvidence, HostedToolPhase
+from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.kernel import ChatResponseUpdate, Content, UsageDetails, normalize_stream_usage
 from chrys.service.llm.chat_completions.decode import refused_calls_error
 
-from .decode import decode_blocks, decode_stop_reason, decode_usage, stream_context_input, token_count
+from .decode import (
+    decode_blocks,
+    decode_stop_reason,
+    decode_usage,
+    log_input_transformations,
+    stream_context_input,
+    token_count,
+)
 from .server_tools import apply_streamed_input
 
 logger = logging.getLogger(__name__)
@@ -72,7 +80,9 @@ class _ToolUse:
 class StreamState:
     """The decoding state of one streamed response."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, origin: ReasoningOrigin | None = None) -> None:
+        # The endpoint that sends the stream, stamped on its thinking.
+        self._origin = origin
         self._tool_uses: dict[int, _ToolUse] = {}
         self._held: dict[int, list[ChatResponseUpdate]] = {}
         self._hold_from: int | None = None
@@ -184,8 +194,9 @@ class StreamState:
 
     def _message_start(self, event: Any) -> ChatResponseUpdate:
         message = event.message
+        log_input_transformations(message)
         self._first_cache_read = token_count(message.usage.cache_read_input_tokens if message.usage else None)
-        contents = decode_blocks(message.content)
+        contents = decode_blocks(message.content, origin=self._origin)
         if message.usage and (usage := decode_usage(message.usage)):
             self._take_usage(usage)
             contents.append(Content.from_usage(usage_details=usage))
@@ -199,6 +210,8 @@ class StreamState:
         )
 
     def _message_delta(self, event: Any) -> ChatResponseUpdate:
+        # Only the last delta carries them, and only when another model took over mid-stream.
+        log_input_transformations(event)
         usage = decode_usage(event.usage)
         if usage is not None:
             context_input = stream_context_input(event.usage, first_cache_read=self._first_cache_read)
@@ -221,7 +234,7 @@ class StreamState:
                 self._hold_from = index
             self._tool_uses[index] = _ToolUse(block.id, block.name, block.input, raw_parts=[block])
             return ChatResponseUpdate(contents=[], raw_representation=event)
-        contents = decode_blocks([block])
+        contents = decode_blocks([block], origin=self._origin)
         if block.type == "thinking":
             # Some gateways omit the signature on the start event. An empty
             # one, as the official start event carries, keeps this block from
@@ -242,7 +255,7 @@ class StreamState:
     def _block_delta(self, event: Any) -> ChatResponseUpdate:
         delta, index = event.delta, event.index
         if delta.type != "input_json_delta":
-            return ChatResponseUpdate(contents=decode_blocks([delta]), raw_representation=event)
+            return ChatResponseUpdate(contents=decode_blocks([delta], origin=self._origin), raw_representation=event)
         if index in self._hosted_blocks:
             parts = self._hosted_input.setdefault(index, [])
             parts.append(delta.partial_json)

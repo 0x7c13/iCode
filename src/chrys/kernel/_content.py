@@ -17,6 +17,7 @@ from typing import Any, ClassVar, Final, Literal, TypeGuard, TypeVar, cast
 from typing_extensions import TypedDict
 
 from chrys.foundation.hosted_tools import PRESENTATION_TEXT_SEGMENT_ID_KEY, HostedToolFamily
+from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY
 
 from .exceptions import AdditionItemMismatch, ContentError
 
@@ -1649,6 +1650,11 @@ class Content:
             _ANTHROPIC_REDACTED_THINKING_KEY
         ):
             raise AdditionItemMismatch("Cannot merge redacted and ordinary Anthropic reasoning contents")
+        # Each side replays only to the endpoint that issued it.
+        if self.additional_properties.get(REASONING_ORIGIN_KEY) != other.additional_properties.get(
+            REASONING_ORIGIN_KEY
+        ):
+            raise AdditionItemMismatch("Cannot merge reasoning contents from different endpoints")
 
         # Concatenate text, handling None values
         self_text = self.text or ""  # type: ignore[attr-defined]

@@ -11,7 +11,8 @@ import pytest
 
 from chrys.foundation.events.types import Error, InvocationMessage
 from tests.support.mock_provider_turns import mock_provider_profile, run_mock_provider_turn
-from tests.support.provider_errors import anthropic_error_event
+from tests.support.provider_errors import anthropic_error_event, anthropic_thinking_binding_body
+from tests.support.wire_cases._kit import anth_message, anth_replies, anth_text
 
 
 def _sse(*events: dict[str, object]) -> bytes:
@@ -145,3 +146,38 @@ async def test_a_stream_cut_off_after_hosted_work_behind_a_call_is_not_sent_agai
     assert len(turn.requests) == 1
     assert turn.retries == []
     assert isinstance(turn.terminal, Error)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["send", "stream"])
+async def test_thinking_refused_as_bound_elsewhere_is_resent_without_it_and_no_retry(
+    stream: bool, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client resends the refused request itself: the turn sees one answer and announces no retry."""
+    call = anth_message(
+        message_id="msg_call",
+        content=[
+            {"type": "thinking", "thinking": "Run it.", "signature": "sig-call"},
+            {"type": "tool_use", "id": "toolu_1", "name": "zsh", "input": {}},
+        ],
+        stop_reason="tool_use",
+    )
+    first, done = anth_replies([call, anth_text("done", message_id="msg_done")], stream=stream)
+    responses = [
+        httpx.Response(first.status, headers=list(first.headers), content=first.body),
+        httpx.Response(400, json=anthropic_thinking_binding_body()),
+        httpx.Response(done.status, headers=list(done.headers), content=done.body),
+    ]
+
+    turn = await run_mock_provider_turn(
+        agent_engine, monkeypatch, mock_provider_profile("anthropic", stream=stream), lambda _: responses.pop(0)
+    )
+
+    assert len(turn.requests) == 3
+    assert turn.retries == []
+    assert isinstance(turn.terminal, InvocationMessage)
+    assert turn.terminal.text == "done"
+    refused, resent = (json.loads(request.content) for request in turn.requests[1:])
+    assert [block["type"] for block in refused["messages"][1]["content"]] == ["thinking", "tool_use"]
+    assert [block["type"] for block in resent["messages"][1]["content"]] == ["tool_use"]
+    assert resent["messages"][2] == refused["messages"][2]
+    assert resent["messages"][2]["content"][0]["type"] == "tool_result"

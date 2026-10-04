@@ -14,11 +14,12 @@ from chrys.foundation.errors import (
     classify_error,
     context_overflow_limit,
     is_context_overflow,
+    is_thinking_binding_rejection,
     may_be_context_overflow,
 )
 from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
 from chrys.service.agent_middleware.validators import OUTPUT_TRUNCATED_REASON
-from tests.support.provider_errors import openai_status, raised_while_handling
+from tests.support.provider_errors import anthropic_thinking_binding_rejection, openai_status, raised_while_handling
 
 # Provider phrasings, after pi-mono's overflow patterns.
 _OVERFLOW_MESSAGES = [
@@ -193,3 +194,11 @@ async def test_only_an_overflow_names_a_limit() -> None:
 
     assert context_overflow_limit(server_error) is None
     assert context_overflow_limit(RuntimeError("400: This model's maximum context length is 128000 tokens.")) == 128000
+
+
+async def test_a_thinking_binding_refusal_naming_the_context_window_is_both() -> None:
+    """The text alone makes it an overflow; the loop checks the binding refusal before acting on that."""
+    exc = await anthropic_thinking_binding_rejection(names_the_window=True)
+
+    assert is_context_overflow(exc) is True
+    assert is_thinking_binding_rejection(exc) is True

@@ -5,13 +5,18 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+from unittest import mock
 
 import pytest
 
 from chrys.foundation.util.chrys_headers import MODEL_ID_HEADER, SESSION_ID_HEADER
 from chrys.foundation.util.env_templates import EnvVarResolutionError
+from chrys.service.profiles.models import options as options_module
 from chrys.service.profiles.models.options import (
+    AUTO_INTERLEAVED_THINKING_OPTION,
     STREAM_REQUIRES_FINISH_REASON_OPTION,
+    THINKING_BLOCK_BINDING_OPTION,
     effective_chat_options,
     is_anthropic_claude_profile,
     lacks_anthropic_prompt_cache_option,
@@ -575,3 +580,43 @@ def test_a_profile_without_the_finish_reason_requirement_adds_no_option() -> Non
     profile = ModelProfile(id="p", name="Profile", provider="glm-openai", model_id="m")
 
     assert STREAM_REQUIRES_FINISH_REASON_OPTION not in (effective_chat_options(profile) or {})
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "deepseek-openai", "glm-openai", "mock"])
+@pytest.mark.parametrize(
+    ("binding", "interleaved", "expected"),
+    [
+        ("auto", True, {}),
+        ("drop_block", True, {THINKING_BLOCK_BINDING_OPTION: "drop_block"}),
+        ("error", True, {THINKING_BLOCK_BINDING_OPTION: "error"}),
+        ("off", False, {THINKING_BLOCK_BINDING_OPTION: "off", AUTO_INTERLEAVED_THINKING_OPTION: False}),
+        ("auto", False, {AUTO_INTERLEAVED_THINKING_OPTION: False}),
+    ],
+    ids=["defaults", "drop-block", "error", "both", "interleaved-off"],
+)
+def test_thinking_settings_reach_only_anthropic_clients_and_only_when_changed(
+    provider: str, binding: Any, interleaved: bool, expected: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = ModelProfile(
+        id="p",
+        name="Profile",
+        provider=provider,
+        model_id="m",
+        max_output_tokens=0,
+        thinking_block_binding=binding,
+        auto_interleaved_thinking=interleaved,
+    )
+    parsed = {"thinking": {"type": "adaptive"}}
+    monkeypatch.setattr(
+        options_module, "parse_chat_options", mock.create_autospec(parse_chat_options, return_value=parsed)
+    )
+
+    options = effective_chat_options(profile) or {}
+
+    settings = {
+        key: options[key] for key in (THINKING_BLOCK_BINDING_OPTION, AUTO_INTERLEAVED_THINKING_OPTION) if key in options
+    }
+    assert settings == (expected if provider == "anthropic" else {})
+    assert options["thinking"] == {"type": "adaptive"}
+    # The settings ride only on the effective copy.
+    assert parsed == {"thinking": {"type": "adaptive"}}

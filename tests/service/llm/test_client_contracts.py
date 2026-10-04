@@ -799,25 +799,20 @@ async def test_the_user_agent_names_chrys_python_and_the_sdk(combo: str, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# The SDK retry hook Chrys overrides
+# The SDK retry hooks Chrys overrides
 # ---------------------------------------------------------------------------
 
 
-def _sdk_clients() -> list[Any]:
-    import anthropic._base_client
-    import openai._base_client
-
-    return [openai._base_client.AsyncAPIClient, anthropic._base_client.AsyncAPIClient]
-
-
-@pytest.mark.parametrize("sdk_client", _sdk_clients(), ids=["openai", "anthropic"])
-def test_the_sdk_sleeps_for_a_retry_inside_the_handler_that_caught_the_error(sdk_client: Any) -> None:
-    """Chrys's guard reads the handled error with ``sys.exception()`` and forwards keywords only.
+def test_the_openai_sdk_sleeps_for_a_retry_inside_the_handler_that_caught_the_error() -> None:
+    """Chrys's OpenAI guard reads the handled error with ``sys.exception()`` and forwards keywords only.
 
     So the hook must stay a coroutine taking keywords only, and every call
     site in ``request()`` must sit inside the ``except`` block that caught the
     error, the generic ``except Exception`` one included.
     """
+    import openai._base_client
+
+    sdk_client = openai._base_client.AsyncAPIClient
     hook = sdk_client._sleep_for_retry
     assert inspect.iscoroutinefunction(hook)
     parameters = list(inspect.signature(hook).parameters.values())[1:]
@@ -837,6 +832,49 @@ def test_the_sdk_sleeps_for_a_retry_inside_the_handler_that_caught_the_error(sdk
 
     visit(tree, None)
     assert "Exception" in handlers
+
+
+def test_the_anthropic_sdk_asks_whether_to_retry_with_the_caught_error() -> None:
+    """Chrys's Anthropic guard decides from the error the SDK hands ``_should_retry_exception``.
+
+    So the hook must stay a plain method taking that one error, and
+    ``request()`` must call it from the ``except`` block that caught the
+    attempt's error, passing exactly that error, before any retry sleep.
+    """
+    import anthropic._base_client
+
+    sdk_client = anthropic._base_client.AsyncAPIClient
+    hook = sdk_client._should_retry_exception
+    assert not inspect.iscoroutinefunction(hook)
+    parameters = list(inspect.signature(hook).parameters.values())
+    assert [parameter.kind for parameter in parameters] == [inspect.Parameter.POSITIONAL_OR_KEYWORD] * 2
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(sdk_client.request)))
+    decisions: list[str] = []
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler):
+            continue
+        calls = [
+            node
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_should_retry_exception"
+        ]
+        for call in calls:
+            assert [ast.unparse(arg) for arg in call.args] == [handler.name], (
+                f"line {call.lineno}: not the caught error"
+            )
+            sleeps = [
+                node.lineno
+                for node in ast.walk(handler)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_sleep_for_retry"
+            ]
+            assert all(line > call.lineno for line in sleeps), f"line {call.lineno}: sleeps before deciding"
+            decisions.append(ast.unparse(handler.type) if handler.type is not None else "")
+    assert decisions == ["Exception"]
 
 
 # ---------------------------------------------------------------------------

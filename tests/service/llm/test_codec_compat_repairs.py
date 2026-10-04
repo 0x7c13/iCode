@@ -100,8 +100,14 @@ def test_anthropic_drops_unsigned_thinking_and_the_messages_it_empties() -> None
                     Content.from_text_reasoning(text="signed", protected_data="sig-1"),
                 ],
             ),
-            Message("assistant", [Content.from_text_reasoning(text="unsigned only")]),
-            Message("user", ["after"]),
+            Message(
+                "assistant",
+                [Content.from_text_reasoning(text="unsigned only"), Content.from_text_reasoning(protected_data="")],
+            ),
+            Message(
+                "user",
+                ["after", Content.from_text_reasoning(text="unsigned"), Content.from_text_reasoning(protected_data="")],
+            ),
         ]
     )
 
@@ -110,6 +116,32 @@ def test_anthropic_drops_unsigned_thinking_and_the_messages_it_empties() -> None
         {"role": "assistant", "content": [{"type": "thinking", "thinking": "signed", "signature": "sig-1"}]},
         {"role": "user", "content": [{"type": "text", "text": "after"}]},
     ]
+
+
+def test_anthropic_replays_thinking_streamed_without_text_with_its_own_signature() -> None:
+    """Thinking streamed without its text assembles with no text: it is an empty block the signature after it signs."""
+    wire = encode_messages(
+        [
+            Message("user", ["go"]),
+            Message(
+                "assistant",
+                [
+                    Content.from_text_reasoning(text="visible", protected_data=""),
+                    Content.from_text_reasoning(protected_data="sig-1"),
+                    Content.from_text_reasoning(protected_data=""),
+                    Content.from_text_reasoning(protected_data="sig-2"),
+                ],
+            ),
+        ]
+    )
+
+    assert wire[1] == {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "visible", "signature": "sig-1"},
+            {"type": "thinking", "thinking": "", "signature": "sig-2"},
+        ],
+    }
 
 
 def test_anthropic_sends_another_providers_tool_call_ids_as_ids_it_accepts() -> None:

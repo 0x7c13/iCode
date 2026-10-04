@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from openai.types.responses.response_usage import ResponseUsage
     from pydantic import BaseModel
 
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
     from .client import ResponsesVariant
 
 logger = logging.getLogger(__name__)
@@ -66,9 +68,16 @@ class OpenAIContinuationToken(ContinuationToken):
 
 
 def decode_response(
-    response: Response | ParsedResponse[BaseModel], options: Mapping[str, Any], *, variant: ResponsesVariant
+    response: Response | ParsedResponse[BaseModel],
+    options: Mapping[str, Any],
+    *,
+    variant: ResponsesVariant,
+    origin: ReasoningOrigin | None = None,
 ) -> ChatResponse:
-    """A blocking response as one assistant message plus response metadata."""
+    """A blocking response as one assistant message plus response metadata.
+
+    Its reasoning is stamped with *origin*, the endpoint that sent it.
+    """
     # ParsedResponse's type argument is erased at runtime; requests only ever
     # ask the SDK to parse into Pydantic models.
     parsed = cast("BaseModel | None", response.output_parsed) if isinstance(response, ParsedResponse) else None
@@ -81,6 +90,10 @@ def decode_response(
     contents: list[Content] = []
     for item in output:
         contents.extend(_decode_item(item, metadata, variant.hosted_provider))
+    if origin is not None:
+        for content in contents:
+            if content.type == "text_reasoning":
+                origin.stamp(content.additional_properties)
     hosted = [content for content in contents if content.provider_hosted]
     usage = decode_usage(response.usage, variant=variant) if response.usage else None
     reason = finish_reason(response)
@@ -352,8 +365,9 @@ def decode_usage(usage: ResponseUsage, *, variant: ResponsesVariant) -> UsageDet
         if (cached := getattr(inputs, "cached_tokens", None)) is not None:
             details["openai.cached_input_tokens"] = cached  # type: ignore[typeddict-unknown-key]
             details["cache_read_input_token_count"] = cached
-        # Not in the SDK's model (kept as an extra field): billed explicit
-        # prompt caching reports it.
+        # Billed explicit prompt caching reports it. The SDK's model requires
+        # it, but its response parsing leaves it unset when an
+        # OpenAI-compatible service omits it.
         if (written := getattr(inputs, "cache_write_tokens", None)) is not None:
             details["openai.cache_write_tokens"] = written  # type: ignore[typeddict-unknown-key]
             details["cache_creation_input_token_count"] = written

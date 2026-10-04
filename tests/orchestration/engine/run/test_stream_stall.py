@@ -408,7 +408,9 @@ class TestStreamStallPerChunk:
 
                 return _stream()
 
-        anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_DelayedMessages()))
+        anthropic_client = SimpleNamespace(
+            base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_DelayedMessages())
+        )
         client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
@@ -469,7 +471,9 @@ class TestStreamStallPerChunk:
 
                 return _stream()
 
-        anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_DelayedMessages()))
+        anthropic_client = SimpleNamespace(
+            base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_DelayedMessages())
+        )
         client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,

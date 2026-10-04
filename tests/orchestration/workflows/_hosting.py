@@ -108,13 +108,16 @@ def make_host(
     settings: Settings | None = None,
     approval_mode: ApprovalMode | None = ApprovalMode.BYPASS,
     surface: SessionSurface | None = None,
+    models: Sequence[ModelProfile] = (),
 ) -> ChrysSessionHost:
-    models = ModelProfileRegistry()
-    models.register(
+    model_registry = ModelProfileRegistry()
+    model_registry.register(
         ModelProfile(
             id="mock-profile", name="mock", provider="mock", model_id="mock", stream=stream, chat_options=chat_options
         )
     )
+    for model in models:
+        model_registry.register(model)
     agents = AgentProfileRegistry()
     for profile in profiles or (make_profile(),):
         agents.register(profile)
@@ -124,7 +127,7 @@ def make_host(
         loaded_settings=loaded_settings,
         approval_mode=approval_mode,
         agent_registry=agents,
-        model_registry=models,
+        model_registry=model_registry,
         state_store=JsonFileStateStore(tmp_path / "sessions"),
         cwd=str(project) if project is not None else None,
         workspace=workspace,

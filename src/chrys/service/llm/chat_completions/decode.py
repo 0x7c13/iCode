@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
     from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
     from .client import ChatCompletionsVariant
 
 logger = logging.getLogger(__name__)
@@ -50,9 +52,9 @@ _CONTEXT_WINDOW_FILLED: Final = "model_context_window_exceeded"
 # The usage breakdowns, in reporting order: the details object, the prefix of
 # the keys its counts are reported under, and each count with the kernel key
 # it also fills and whether a zero is kept. The SDK fields are read directly,
-# so a details value of the wrong shape fails the decode. Not in the SDK
-# model, ``cache_write_tokens`` is kept as an extra field when present; billed
-# explicit prompt caching reports it.
+# so a details value of the wrong shape fails the decode. Billed explicit
+# prompt caching reports ``cache_write_tokens``; services that omit it leave
+# the SDK's optional field unset.
 _BREAKDOWNS: tuple[tuple[str, str, tuple[tuple[str, str | None, bool], ...]], ...] = (
     (
         "completion_tokens_details",
@@ -198,12 +200,17 @@ def has_refusal(message: ChatCompletionMessage | ChoiceDelta | None) -> bool:
 
 
 def decode_completion(
-    response: ChatCompletion, options: Mapping[str, Any], *, variant: ChatCompletionsVariant
+    response: ChatCompletion,
+    options: Mapping[str, Any],
+    *,
+    variant: ChatCompletionsVariant,
+    origin: ReasoningOrigin | None = None,
 ) -> ChatResponse:
     """A whole completion as a chat response with one assistant message per choice.
 
     Tool calls of a response that refused or was filtered fail the whole
-    response before it lands.
+    response before it lands. Reasoning the endpoint *origin* alone can read
+    is stamped with it.
     """
     ensure_choices(response)
     metadata = response_metadata(response)
@@ -225,9 +232,13 @@ def decode_completion(
             finish = FinishReason(reason)
         # Text, then calls, then reasoning: unlike a delta, a whole message
         # has no chunk boundary that could split its text.
-        contents = [*text_contents(choice), *choice_calls, *message_reasoning(choice.message)]
+        contents = [*text_contents(choice), *choice_calls, *message_reasoning(choice.message, origin=origin)]
         messages.append(
-            Message(role="assistant", contents=contents, additional_properties=message_reasoning_props(choice.message))
+            Message(
+                role="assistant",
+                contents=contents,
+                additional_properties=message_reasoning_props(choice.message, origin=origin),
+            )
         )
     return ChatResponse(
         messages=messages,
@@ -257,7 +268,7 @@ def decode_usage(usage: CompletionUsage, *, variant: ChatCompletionsVariant) -> 
         if not (source := getattr(usage, group)):
             continue
         for name, kernel_key, keep_zero in entries:
-            count = getattr(source, name, None) if name == "cache_write_tokens" else getattr(source, name)
+            count = getattr(source, name)
             if count is None or not (count or keep_zero):
                 continue
             counts[f"{prefix}/{name}"] = count

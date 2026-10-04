@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from openai import AsyncOpenAI
 
-from chrys.service.llm.sdk_retry import DeterministicConnectionRetryGuard
+from chrys.service.llm.sdk_retry import DeterministicConnectionSleepGuard
 
 
-class RetryGuardedAsyncOpenAI(DeterministicConnectionRetryGuard, AsyncOpenAI):
+class RetryGuardedAsyncOpenAI(DeterministicConnectionSleepGuard, AsyncOpenAI):
     """``AsyncOpenAI`` that does not retry a connection error that cannot self-heal."""

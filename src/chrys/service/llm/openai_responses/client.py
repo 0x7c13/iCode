@@ -9,6 +9,9 @@ They run over a configured ``AsyncOpenAI`` client and own closing it.
 the answer. A continuation token in the options resumes a background
 response instead of sending a new request.
 
+Requests to OpenAI's own endpoint route the prompt cache by the session id
+the session headers carry, unless the options set ``prompt_cache_key``.
+
 DeepSeek's Responses endpoint maps onto chat and keeps nothing: requests
 carry no stored-response handle, a requested ``store`` goes out as false,
 and reasoning comes back as plaintext. :data:`DEEPSEEK_RESPONSES` describes
@@ -20,19 +23,22 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterable, Awaitable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, override
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Self, cast, override
 
 from openai import AsyncStream, BadRequestError
 
 from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.errors.route import origin_of
+from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream
 from chrys.kernel.exceptions import ChatClientException
 from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
+from chrys.service.llm.providers import PROVIDERS
 from chrys.service.llm.wire_client import RequestHeaders, WireClient
 
 from .decode import decode_response
-from .request import build_request, reject_stateful_options
+from .request import build_request, reject_stateful_options, set_prompt_cache_key
 from .stream import StreamState
 
 if TYPE_CHECKING:
@@ -48,6 +54,10 @@ if TYPE_CHECKING:
     from .decode import OpenAIContinuationToken
 
 _SERVED_MODEL_HEADER = "x-ms-served-model"
+_OPENAI_ORIGIN: Final = origin_of(PROVIDERS["openai"].default_base_url)
+
+REASONING_PROTOCOL: Final = "openai_responses"
+"""The protocol a reasoning stamp names for these clients."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,10 +141,23 @@ class ResponsesApiClient(WireClient):
     async def _close_sdk_client(self) -> None:
         await self.sdk_client.close()
 
+    def reasoning_origin(self) -> ReasoningOrigin | None:
+        """The endpoint this client's reasoning comes from, and the only one its encrypted reasoning replays to."""
+        return ReasoningOrigin.of(REASONING_PROTOCOL, self.sdk_client.base_url)
+
     def _build_request(self, messages: Sequence[Message], options: Mapping[str, Any]) -> dict[str, Any]:
-        request = build_request(messages, options, model=self.model, variant=self.VARIANT)
+        request = build_request(
+            messages, options, model=self.model, variant=self.VARIANT, origin=self.reasoning_origin()
+        )
+        set_prompt_cache_key(request, options, session_id=self._prompt_cache_session())
         self._stamp_request_headers(request)
         return request
+
+    def _prompt_cache_session(self) -> str | None:
+        """The session id that routes the prompt cache: on OpenAI's own endpoint only."""
+        if self._request_headers is None or origin_of(self.sdk_client.base_url) != _OPENAI_ORIGIN:
+            return None
+        return self._request_headers.route_session_id()
 
     @override
     def _send(
@@ -184,7 +207,7 @@ class ResponsesApiClient(WireClient):
         return chat_response
 
     def _decoded(self, response: Any, raw: Any, options: Mapping[str, Any]) -> ChatResponse:
-        chat_response = decode_response(response, options, variant=self.VARIANT)
+        chat_response = decode_response(response, options, variant=self.VARIANT, origin=self.reasoning_origin())
         # Telemetry wrappers may hide the headers; the response stands without them.
         if (model := served_model(getattr(raw, "headers", None))) is not None:
             chat_response.model = model
@@ -211,7 +234,7 @@ class ResponsesApiClient(WireClient):
             # Resuming sends no new request.
             request = {} if token is not None else self._build_request(messages, validated)
             response_format = validated.get("response_format")
-            state = StreamState(validated, model=self.model, variant=self.VARIANT)
+            state = StreamState(validated, model=self.model, variant=self.VARIANT, origin=self.reasoning_origin())
             try:
                 if token is None and "text_format" in request:
                     # The SDK's parsing stream keeps partial structured output

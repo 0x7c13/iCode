@@ -12,6 +12,7 @@ from chrys.service.skills import runner as runner_mod
 from chrys.service.skills.model import Skill, SkillScript
 from chrys.service.skills.runner import SubprocessScriptRunner
 from chrys.service.tools.builtins.shell_filter import ShellCommandFilter, is_safe_readonly_command, parse_commands
+from tests.support.processes import ExitedProcess
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -75,13 +76,7 @@ async def test_skill_runner_prepends_positional_arguments_before_keyword_flags(
     async def fake_managed_subprocess(*cmd: object, **_kwargs: object):
         captured_cmd[:] = [str(part) for part in cmd]
 
-        class _Proc:
-            returncode = 0
-
-            async def communicate(self) -> tuple[bytes, bytes]:
-                return b"ok\n", b""
-
-        yield _Proc()
+        yield ExitedProcess(b"ok\n")
 
     monkeypatch.setattr("chrys.service.skills.runner.managed_subprocess", fake_managed_subprocess)
     monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])

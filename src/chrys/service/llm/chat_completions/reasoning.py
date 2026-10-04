@@ -8,7 +8,9 @@ fields: ``reasoning_details`` (OpenRouter; structured), ``reasoning_content``
 sometimes a mirror of one of the others). Each captured value is stamped
 with the field it came from, and replay sends it back under that field only.
 Replay depends on the dialect, never on the provider: Kimi runs on the plain
-``openai`` provider.
+``openai`` provider. ``reasoning_details`` may hold state only the endpoint
+that sent it can read, so it is stamped with that endpoint and replays only
+there; plaintext replays anywhere.
 """
 
 from __future__ import annotations
@@ -18,10 +20,13 @@ import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from chrys.foundation.reasoning_origin import replays_to
 from chrys.kernel import Content, Message
 from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
     from .client import ChatCompletionsVariant
 
 logger = logging.getLogger(__name__)
@@ -55,40 +60,49 @@ def reasoning_fields(source: Any) -> dict[str, Any]:
 # --- capture ----------------------------------------------------------------
 
 
-def message_reasoning(message: Any) -> list[Content]:
-    """A whole choice message's reasoning: one protected JSON payload per field."""
+def message_reasoning(message: Any, *, origin: ReasoningOrigin | None = None) -> list[Content]:
+    """A whole choice message's reasoning: one protected JSON payload per field.
+
+    ``reasoning_details`` is stamped with *origin*, the endpoint that sent it.
+    """
     return [
         Content.from_text_reasoning(
-            protected_data=json.dumps(value), additional_properties={REASONING_FORMAT_KEY: name}
+            protected_data=json.dumps(value), additional_properties=_capture_props(name, origin)
         )
         for name, value in reasoning_fields(message).items()
     ]
 
 
-def message_reasoning_props(message: Any) -> dict[str, Any]:
+def message_reasoning_props(message: Any, *, origin: ReasoningOrigin | None = None) -> dict[str, Any]:
     """The same fields as message properties, the leading one named as the format.
 
     They duplicate the contents :func:`message_reasoning` returns; replay
-    prefers the contents.
+    prefers the contents. A ``reasoning_details`` among them is stamped with
+    *origin*.
     """
     props = reasoning_fields(message)
     if props:
         props[REASONING_FORMAT_KEY] = next(iter(props))
+    if origin is not None and REASONING_DETAILS_FIELD in props:
+        origin.stamp(props)
     return props
 
 
-def delta_reasoning(fields: Mapping[str, Any], *, include_plain: bool) -> list[Content]:
+def delta_reasoning(
+    fields: Mapping[str, Any], *, include_plain: bool, origin: ReasoningOrigin | None = None
+) -> list[Content]:
     """The reasoning contents of one streamed delta's fields.
 
-    ``reasoning_details`` stays a protected payload. A plaintext field is the
-    display text itself, left out when *include_plain* is false.
+    ``reasoning_details`` stays a protected payload, stamped with *origin*. A
+    plaintext field is the display text itself, left out when
+    *include_plain* is false.
     """
     contents: list[Content] = []
     for name, value in fields.items():
         if name == REASONING_DETAILS_FIELD:
             contents.append(
                 Content.from_text_reasoning(
-                    protected_data=json.dumps(value), additional_properties={REASONING_FORMAT_KEY: name}
+                    protected_data=json.dumps(value), additional_properties=_capture_props(name, origin)
                 )
             )
         elif not include_plain:
@@ -98,6 +112,14 @@ def delta_reasoning(fields: Mapping[str, Any], *, include_plain: bool) -> list[C
         else:
             logger.debug("Ignoring non-string Chat Completions reasoning delta of type %s", type(value).__name__)
     return contents
+
+
+def _capture_props(field: str, origin: ReasoningOrigin | None) -> dict[str, Any]:
+    """A captured content's properties: its field, and for ``reasoning_details`` the endpoint."""
+    props: dict[str, Any] = {REASONING_FORMAT_KEY: field}
+    if origin is not None and field == REASONING_DETAILS_FIELD:
+        origin.stamp(props)
+    return props
 
 
 # --- replay -----------------------------------------------------------------
@@ -139,20 +161,21 @@ def pad_reasoning_content(wire: list[dict[str, Any]]) -> None:
             message.setdefault(REASONING_CONTENT_FIELD, "")
 
 
-def contribution(content: Content) -> tuple[str, Any] | None:
-    """The field and value one reasoning content replays as, or ``None``.
+def contribution(content: Content, *, origin: ReasoningOrigin | None = None) -> tuple[str, Any] | None:
+    """The field and value one reasoning content replays as to the endpoint *origin*, or ``None``.
 
-    The format stamp names the field. A stamp naming none of these fields
-    belongs to another dialect, whose state would be forged by replaying it
-    here. A protected payload replays when it decodes as JSON to something
-    other than ``null``; anything else is another provider's opaque state
-    (Responses encrypted reasoning, Anthropic signatures) and silences the
-    content's text as well. Without a payload, a stamped content replays its
-    text. An unstamped content, from before the stamp existed, replays only a
+    Reasoning another endpoint issued replays as nothing. The format stamp
+    names the field. A stamp naming none of these fields belongs to another
+    dialect, whose state would be forged by replaying it here. A protected
+    payload replays when it decodes as JSON to something other than
+    ``null``; anything else is another provider's opaque state (Responses
+    encrypted reasoning, Anthropic signatures) and silences the content's
+    text as well. Without a payload, a stamped content replays its text. An
+    unstamped content, from before the stamp existed, replays only a
     decodable payload, as ``reasoning_details``.
     """
     properties = content.additional_properties
-    if properties.get(_ANTHROPIC_REDACTED_THINKING_KEY):
+    if properties.get(_ANTHROPIC_REDACTED_THINKING_KEY) or not replays_to(properties, origin):
         return None
     stamp = properties.get(REASONING_FORMAT_KEY)
     field = stamp if stamp in REASONING_FIELDS else None
@@ -184,23 +207,30 @@ def fold(fields: dict[str, Any], field: str, payload: Any) -> None:
     fields[field] = payload
 
 
-def replayable_fields(message: Message) -> dict[str, Any]:
-    """The reasoning fields a message replays, aggregated in capture order.
+def replayable_fields(message: Message, *, origin: ReasoningOrigin | None = None) -> dict[str, Any]:
+    """The reasoning fields a message replays to the endpoint *origin*, aggregated in capture order.
 
     Its contents decide (see :func:`contribution`); the copy kept in the
     message properties fills in only fields no content supplied.
     """
     fields: dict[str, Any] = {}
     for content in message.contents:
-        if content.type == "text_reasoning" and (found := contribution(content)) is not None:
+        if content.type == "text_reasoning" and (found := contribution(content, origin=origin)) is not None:
             fold(fields, *found)
-    fields.update(stored_reasoning(message, skip=fields))
+    fields.update(stored_reasoning(message, skip=fields, origin=origin))
     return fields
 
 
-def stored_reasoning(message: Message, *, skip: Collection[str] = ()) -> dict[str, Any]:
-    """The reasoning fields kept in the message properties, except those in *skip*."""
+def stored_reasoning(
+    message: Message, *, skip: Collection[str] = (), origin: ReasoningOrigin | None = None
+) -> dict[str, Any]:
+    """The reasoning fields kept in the message properties, except those in *skip*.
+
+    A ``reasoning_details`` an endpoint other than *origin* sent is left out.
+    """
     properties = message.additional_properties
+    if not replays_to(properties, origin):
+        skip = {*skip, REASONING_DETAILS_FIELD}
     return {
         name: properties[name] for name in REASONING_FIELDS if name not in skip and properties.get(name) is not None
     }

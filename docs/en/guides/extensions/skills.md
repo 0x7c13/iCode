@@ -51,6 +51,8 @@ To check or adjust an agent's skill configuration:
 
 > **Note**: Skill scripts run as local processes without sandbox isolation. Before installing a third-party skill, inspect its `SKILL.md`, scripts, and other related files, and install skills only from trusted sources. iCode runs skill scripts through the `run_skill_script` tool. Whether this tool requires confirmation depends on the agent's approval rules and the [current approval mode](../configuration/approval.md).
 
+When a skill script prints more than 32 MiB to standard output or standard error, iCode keeps only the beginning and end of that output; the middle is not saved, and the result tells the agent how much was left out.
+
 ## Confirm that skills have loaded
 
 After you save the agent's configuration and return to the session, iCode reloads its skills. If you add skill directories or change their files directly on disk, iCode does not monitor those changes in real time. The next time you send a message, iCode rescans the current agent's enabled skills directories before processing the message.

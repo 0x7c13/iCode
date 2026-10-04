@@ -24,6 +24,7 @@ import httpx
 from openai import BadRequestError
 
 from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream, report_wire_progress
 from chrys.kernel.exceptions import ChatClientException
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
     from chrys.service.llm.observer import WireCallObserver
 
 logger = logging.getLogger(__name__)
+
+REASONING_PROTOCOL: Final = "chat_completions"
+"""The protocol a reasoning stamp names for these clients."""
 
 # How long what follows the end a stream reported is waited for while nothing
 # comes that adds to the answer: a connection held open after it must not hold
@@ -177,8 +181,14 @@ class ChatCompletionsClient(WireClient):
             return "Unknown"
         return str(self.sdk_client.base_url)
 
+    def reasoning_origin(self) -> ReasoningOrigin | None:
+        """The endpoint this client's reasoning comes from, and the only one its ``reasoning_details`` replay to."""
+        return ReasoningOrigin.of(REASONING_PROTOCOL, self.sdk_client.base_url)
+
     def _build_request(self, messages: Sequence[Message], options: Mapping[str, Any]) -> dict[str, Any]:
-        request = build_request(messages, options, model=self.model, variant=self.VARIANT)
+        request = build_request(
+            messages, options, model=self.model, variant=self.VARIANT, origin=self.reasoning_origin()
+        )
         self._stamp_request_headers(request)
         return request
 
@@ -199,7 +209,9 @@ class ChatCompletionsClient(WireClient):
             # The raw wrapper (it adds ``X-Stainless-Raw-Response: true``)
             # keeps the status, headers and body the diagnostics quote.
             raw = await self.sdk_client.chat.completions.with_raw_response.create(stream=False, **request)
-            return decode_completion(parse_completion(raw), options, variant=self.VARIANT)
+            return decode_completion(
+                parse_completion(raw), options, variant=self.VARIANT, origin=self.reasoning_origin()
+            )
         except ChatClientException, ProviderResponseError:
             # Already the failure to report; wrapping would hide its verdict.
             raise
@@ -219,7 +231,7 @@ class ChatCompletionsClient(WireClient):
         requires_finish_reason = options.get(STREAM_REQUIRES_FINISH_REASON_OPTION) is True
 
         async def updates() -> AsyncIterable[ChatResponseUpdate]:
-            state = StreamState(self.VARIANT)
+            state = StreamState(self.VARIANT, origin=self.reasoning_origin())
             sdk_stream: Any = None
             try:
                 # The same raw wrapper as the blocking path, for the same reason.

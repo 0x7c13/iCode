@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import stat
+import threading
 from pathlib import Path
 from threading import Event as ThreadEvent
 
@@ -13,10 +14,11 @@ import pytest
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import secure_open_owner_only_binary
+from chrys.foundation.platform.output_capture import CapturedOutput, capture_limit_footer
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.kernel.tools import SyncToolCancelledAfterCompletion
 from chrys.service.tools import spill
-from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME, format_spill_notice, truncate_with_spill, try_spill_text
+from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME, bound_process_output, format_spill_notice, try_spill_text
 
 _tokenizer = MixedLanguageTokenizer()
 
@@ -99,7 +101,7 @@ async def test_spill_finalizer_carries_completed_result_through_cancellation(
 
     async def capture_completed() -> str:
         try:
-            return await truncate_with_spill(tmp_path, "shell", "x" * 10_000, 100)
+            return await bound_process_output(tmp_path, "shell", "x" * 10_000, 100)
         except SyncToolCancelledAfterCompletion as exc:
             return exc.completed_result
 
@@ -151,3 +153,61 @@ def test_reserved_footer_is_included_in_single_fit_check(tmp_path: Path, monkeyp
 
     assert info is None
     assert not path.exists()
+
+
+async def test_a_lead_opens_the_bounded_result_and_stays_out_of_the_spill(tmp_path: Path) -> None:
+    lead = "Error: command timed out after 7 seconds.\n"
+    text = "\n".join(f"line {i} " + "x" * 60 for i in range(400))
+    notice = format_spill_notice(tmp_path.resolve() / TOOL_RESULTS_DIR_NAME / "shell_12345678.txt", text)
+    # Room for little more than the lead and the spill notice: a bound that
+    # kept the start of the lead and text together would lose the lead.
+    budget = _tokenizer.count_tokens(lead) + _tokenizer.count_tokens(f"{spill._spill_fit_marker(text)}\n{notice}") + 4
+
+    result = await bound_process_output(tmp_path, "shell", text, budget, lead=lead)
+
+    assert result.startswith(lead)
+    assert "Full output saved to:" in result
+    assert _tokenizer.count_tokens(result) <= budget
+    [spilled] = (tmp_path / TOOL_RESULTS_DIR_NAME).glob("shell_*.txt")
+    assert spilled.read_text(encoding="utf-8") == text
+
+
+# 230: room is left for only part of a truncation marker beside the lead and
+# the note; 300: the lead and the note alone fill the budget.
+@pytest.mark.parametrize("name_length", [230, 300])
+async def test_a_budget_too_small_for_the_lead_and_the_capture_note_keeps_the_error_line(
+    tmp_path: Path, name_length: int
+) -> None:
+    lead = "Error: Script '" + "x" * name_length + ".py' timed out after 30s.\n[partial output]\n"
+    text = "\n".join(f"line {i}" for i in range(400))
+    captures = (CapturedOutput(b"a", b"b", 100_000),)
+
+    result = await bound_process_output(tmp_path, "skill", text, 100, captures, lead=lead)
+
+    assert result.startswith("Error: Script 'xxx")
+    assert "timed out after 30s." in result
+    assert "[partial output]" not in result
+    assert result.endswith(f"\n{capture_limit_footer(captures)}")
+    assert _tokenizer.count_tokens(result) <= 100
+
+
+async def test_a_text_too_long_to_fit_is_bounded_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_thread = threading.get_ident()
+    counted_on_loop: list[int] = []
+    truncate_output = spill.truncate_output
+
+    def recording_truncate_output(
+        text: str, max_tokens: int, *, head_ratio: float = 1 / 3, truncation_suffix: str = ""
+    ) -> str:
+        if threading.get_ident() == loop_thread:
+            counted_on_loop.append(len(text))
+        return truncate_output(text, max_tokens, head_ratio=head_ratio, truncation_suffix=truncation_suffix)
+
+    monkeypatch.setattr(spill, "truncate_output", recording_truncate_output)
+
+    result = await bound_process_output(tmp_path, "shell", "x" * 1_000, 100)
+
+    assert counted_on_loop == []
+    assert _tokenizer.count_tokens(result) <= 100

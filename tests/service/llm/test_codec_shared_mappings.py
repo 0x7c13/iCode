@@ -19,7 +19,7 @@ from chrys.service.llm.anthropic_messages.request import build_request
 from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
 from chrys.service.llm.openai_responses.decode import decode_response
 from chrys.service.llm.openai_responses.request import encode_tools
-from tests.support.wire_cases._kit import resp_message, resp_response
+from tests.support.wire_cases._kit import RESP_USAGE_2, resp_message, resp_response
 
 
 def _lookup(city: str, unit: str = "c") -> str:
@@ -46,8 +46,22 @@ def test_anthropic_end_user_id_never_lands_in_the_callers_metadata() -> None:
     metadata = {"trace": "t-1"}
     messages = [Message(role="user", contents=["hi"])]
 
-    first = build_request(messages, {"user": "user-1", "metadata": metadata}, {}, model="claude-test")
-    second = build_request(messages, {"user": "user-2", "metadata": metadata}, {}, model="claude-test")
+    first = build_request(
+        messages,
+        {"user": "user-1", "metadata": metadata},
+        {},
+        model="claude-test",
+        base_url="https://api.anthropic.com",
+        default_headers={},
+    ).request
+    second = build_request(
+        messages,
+        {"user": "user-2", "metadata": metadata},
+        {},
+        model="claude-test",
+        base_url="https://api.anthropic.com",
+        default_headers={},
+    ).request
 
     assert metadata == {"trace": "t-1"}
     assert first["metadata"] == {"trace": "t-1", "user_id": "user-1"}
@@ -58,8 +72,10 @@ def test_responses_decode_keeps_log_probabilities_off_the_sdk_response() -> None
     message: dict[str, Any] = resp_message("msg_1", "Sunny.")
     logprobs = [{"token": "Sunny", "bytes": [83], "logprob": -0.1, "top_logprobs": []}]
     message["content"][0]["logprobs"] = logprobs
+    # Validation requires every usage field the SDK models, cache writes included.
+    usage = {**RESP_USAGE_2, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0}}
     response = Response.model_validate(
-        {**resp_response(response_id="resp_1", output=[message]), "metadata": {"trace": "t-1"}}
+        {**resp_response(response_id="resp_1", output=[message], usage=usage), "metadata": {"trace": "t-1"}}
     )
 
     decoded = decode_response(response, {}, variant=OPENAI_RESPONSES)

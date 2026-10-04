@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
+from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.kernel import (
     Annotation,
     ChatResponse,
@@ -53,16 +54,40 @@ _FINISH_REASONS: Final[Mapping[str, FinishReasonLiteral]] = {
 _CONTAINER_TOOLS: Final = frozenset({"code_execution", "bash_code_execution", "text_editor_code_execution"})
 
 
-def decode_message(message: BetaMessage, *, response_format: Any) -> ChatResponse:
-    """A blocking response as one assistant message.
+def log_input_transformations(source: object) -> None:
+    """Log at DEBUG the blocks the service changed in the request before the model saw it.
+
+    *source* is a message or a ``message_delta`` event. Only each entry's
+    type, reason and path are logged, never block content or signatures.
+    """
+    # The SDK does not model the field yet: it is an extra attribute of its model.
+    entries = getattr(source, "input_transformations", None)
+    if not entries or not isinstance(entries, list):
+        return
+    logger.debug(
+        "The service changed %d block(s) of the request: %s",
+        len(entries),
+        [tuple(_entry_field(entry, name) for name in ("type", "reason", "path")) for entry in entries],
+    )
+
+
+def _entry_field(entry: object, name: str) -> object:
+    return entry.get(name) if isinstance(entry, Mapping) else getattr(entry, name, None)
+
+
+def decode_message(
+    message: BetaMessage, *, response_format: Any, origin: ReasoningOrigin | None = None
+) -> ChatResponse:
+    """A blocking response as one assistant message, its thinking stamped with *origin*.
 
     A message that stops for a refusal yet asks for tool calls raises: the
     calls are never run.
     """
+    log_input_transformations(message)
     usage = decode_usage(message.usage)
     if usage is not None and (estimate := blocking_context_estimate(message.usage, message.content)) is not None:
         usage["context_input_token_estimate"] = estimate
-    contents = decode_blocks(message.content)
+    contents = decode_blocks(message.content, origin=origin)
     if message.stop_reason == "refusal" and any(content.type == "function_call" for content in contents):
         hosted = [content for content in contents if content.provider_hosted]
         raise refused_calls_error(hosted, usage_details=usage)
@@ -84,9 +109,18 @@ def decode_stop_reason(stop_reason: str | None) -> FinishReason | None:
     return FinishReason(_FINISH_REASONS.get(stop_reason, stop_reason))
 
 
-def decode_blocks(blocks: Sequence[Any]) -> list[Content]:
-    """Decode content blocks, or the deltas of streamed ones; unsupported blocks are skipped."""
-    return [content for block in blocks if (content := _decode_block(block)) is not None]
+def decode_blocks(blocks: Sequence[Any], *, origin: ReasoningOrigin | None = None) -> list[Content]:
+    """Decode content blocks, or the deltas of streamed ones; unsupported blocks are skipped.
+
+    Thinking, signatures and redacted thinking are stamped with *origin*, the
+    endpoint that sent them.
+    """
+    contents = [content for block in blocks if (content := _decode_block(block)) is not None]
+    if origin is not None:
+        for content in contents:
+            if content.type == "text_reasoning":
+                origin.stamp(content.additional_properties)
+    return contents
 
 
 def _decode_block(block: Any) -> Content | None:

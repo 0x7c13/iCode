@@ -34,6 +34,8 @@ from .reasoning import (
 )
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
     from .client import ChatCompletionsVariant
 
 logger = logging.getLogger(__name__)
@@ -61,9 +63,13 @@ def sanitize_author_name(name: str | None) -> str | None:
 
 
 def encode_messages(
-    messages: Sequence[Message], *, variant: ChatCompletionsVariant, request_has_tools: bool = False
+    messages: Sequence[Message],
+    *,
+    variant: ChatCompletionsVariant,
+    request_has_tools: bool = False,
+    origin: ReasoningOrigin | None = None,
 ) -> list[dict[str, Any]]:
-    """The request's ``messages``.
+    """The request's ``messages``, sent to the endpoint *origin*.
 
     Each kernel message is encoded and canonicalized on its own, so the
     fragments of different messages never merge.
@@ -73,7 +79,9 @@ def encode_messages(
     wire = [
         part
         for message in messages
-        for part in canonicalize_tool_call_messages(encode_message(message, variant=variant, replay_reasoning=replay))
+        for part in canonicalize_tool_call_messages(
+            encode_message(message, variant=variant, replay_reasoning=replay, origin=origin)
+        )
     ]
     if replay and variant.reasoning_with_tools:
         pad_reasoning_content(wire)
@@ -81,9 +89,13 @@ def encode_messages(
 
 
 def encode_message(
-    message: Message, *, variant: ChatCompletionsVariant, replay_reasoning: bool = True
+    message: Message,
+    *,
+    variant: ChatCompletionsVariant,
+    replay_reasoning: bool = True,
+    origin: ReasoningOrigin | None = None,
 ) -> list[dict[str, Any]]:
-    """The wire messages for one kernel message, before canonicalization."""
+    """The wire messages for one kernel message, before canonicalization, sent to the endpoint *origin*."""
     if message.role in ("system", "developer"):
         # A plain string: some compatible endpoints reject a list for these
         # roles. Reasoning never replays on them.
@@ -94,25 +106,27 @@ def encode_message(
         if name := sanitize_author_name(message.author_name):
             instruction["name"] = name
         return [instruction]
-    if replay_reasoning and message.role == "assistant" and replayable_fields(message):
-        return encode_reasoning_message(message)
+    if replay_reasoning and message.role == "assistant" and replayable_fields(message, origin=origin):
+        return encode_reasoning_message(message, origin=origin)
     if variant.strict_messages:
         return _strict_messages(message)
-    return _standard_messages(message, replay_reasoning=replay_reasoning)
+    return _standard_messages(message, replay_reasoning=replay_reasoning, origin=origin)
 
 
-def _standard_messages(message: Message, *, replay_reasoning: bool) -> list[dict[str, Any]]:
+def _standard_messages(
+    message: Message, *, replay_reasoning: bool, origin: ReasoningOrigin | None
+) -> list[dict[str, Any]]:
     """One wire message per content; calls in a row share one message.
 
     Replayed reasoning rides the next message with content or calls, and the
     copy kept in the message properties rides every one.
     """
-    stored = stored_reasoning(message) if replay_reasoning else {}
+    stored = stored_reasoning(message, origin=origin) if replay_reasoning else {}
     wire: list[dict[str, Any]] = []
     pending: dict[str, Any] = {}
     for content in message.contents:
         if content.type == "text_reasoning":
-            if replay_reasoning and (found := contribution(content)) is not None:
+            if replay_reasoning and (found := contribution(content, origin=origin)) is not None:
                 fold(pending, *found)
             continue
         if content.type == "function_call" and wire and "tool_calls" in wire[-1]:
@@ -185,8 +199,8 @@ def _strict_messages(message: Message) -> list[dict[str, Any]]:
     return wire
 
 
-def encode_reasoning_message(message: Message) -> list[dict[str, Any]]:
-    """An assistant message whose reasoning replays, as runs around its tool results.
+def encode_reasoning_message(message: Message, *, origin: ReasoningOrigin | None = None) -> list[dict[str, Any]]:
+    """An assistant message whose reasoning replays to the endpoint *origin*, as runs around its tool results.
 
     The text and calls between two results form one run and go out as one
     wire message, so text and its calls never reach the wire split. Its
@@ -231,7 +245,7 @@ def encode_reasoning_message(message: Message) -> list[dict[str, Any]]:
     for content in message.contents:
         kind = content.type
         if kind == "text_reasoning":
-            if (found := contribution(content)) is not None:
+            if (found := contribution(content, origin=origin)) is not None:
                 fold(reasoning, *found)
                 supplied.add(found[0])
         elif kind == "function_call":
@@ -259,7 +273,7 @@ def encode_reasoning_message(message: Message) -> list[dict[str, Any]]:
             standalone["content"] = [encode_content(content)]
             wire.append(standalone)
     end_run(keep_reasoning_alone=True)
-    _attach_reasoning(wire, message, stored_reasoning(message, skip=supplied))
+    _attach_reasoning(wire, message, stored_reasoning(message, skip=supplied, origin=origin))
     return wire
 
 
