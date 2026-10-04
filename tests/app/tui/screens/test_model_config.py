@@ -702,6 +702,21 @@ async def test_model_config_form_keeps_fields_it_has_no_control_for() -> None:
     assert saved.stream_requires_finish_reason is True
 
 
+async def test_model_config_form_keeps_the_thinking_settings_it_has_no_control_for() -> None:
+    registry, profile = single_profile_registry(
+        provider="anthropic", model_id="claude-opus-5-5", thinking_block_binding="off", auto_interleaved_thinking=False
+    )
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, _pilot):
+        saved = screen._build_profile_from_form()
+        # A profile the registry no longer holds keeps nothing: it gets the defaults.
+        registry.remove(profile.id)
+        unstored = screen._build_profile_from_form()
+
+    assert (saved.thinking_block_binding, saved.auto_interleaved_thinking) == ("off", False)
+    assert (unstored.thinking_block_binding, unstored.auto_interleaved_thinking) == ("auto", True)
+
+
 @pytest.mark.parametrize("provider", ["openai", "deepseek-openai"])
 async def test_model_config_responses_capable_provider_api_style_round_trip(provider: str) -> None:
     registry = ModelProfileRegistry()

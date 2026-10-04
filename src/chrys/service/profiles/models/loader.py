@@ -18,8 +18,10 @@ from chrys.service.profiles.models.schema import (
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
     VALID_API_STYLES,
+    VALID_THINKING_BLOCK_BINDINGS,
     ApiStyle,
     ModelProfile,
+    ThinkingBlockBinding,
 )
 
 if TYPE_CHECKING:
@@ -81,6 +83,20 @@ def _coerce_api_style(data: dict[str, object], path: Path) -> ApiStyle:
         API_STYLE_CHAT_COMPLETIONS,
     )
     return API_STYLE_CHAT_COMPLETIONS
+
+
+def _coerce_thinking_block_binding(data: dict[str, object], path: Path) -> ThinkingBlockBinding:
+    value = data.get("thinking_block_binding", "auto")
+    if value is False:
+        # YAML reads a bare ``off`` as false.
+        return "off"
+    if not isinstance(value, str) or value not in VALID_THINKING_BLOCK_BINDINGS:
+        msg = (
+            f"Model profile field 'thinking_block_binding' must be one of "
+            f"{', '.join(sorted(VALID_THINKING_BLOCK_BINDINGS))} in {path}, got {value!r}"
+        )
+        raise ModelProfileLoadError(msg)
+    return cast("ThinkingBlockBinding", value)
 
 
 def _migrate_chat_options_output_cap(data: dict[str, object], path: Path) -> tuple[Any, int]:
@@ -232,6 +248,8 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
             stream=coerce_bool(data.get("stream"), default=True),
             vision=coerce_bool(data.get("vision"), default=False),
             stream_requires_finish_reason=coerce_bool(data.get("stream_requires_finish_reason"), default=False),
+            thinking_block_binding=_coerce_thinking_block_binding(data, path),
+            auto_interleaved_thinking=coerce_bool(data.get("auto_interleaved_thinking"), default=True),
         )
     except ModelProfileLoadError:
         raise

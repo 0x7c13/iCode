@@ -14,6 +14,7 @@ from uuid import UUID
 import pytest
 
 import chrys.service.state._fork as fork_module
+from chrys.foundation.models.history_markers import ANTHROPIC_THINKING_STRIPPED_KEY
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.text.mentions import format_file_mention
 from chrys.foundation.util.session_ids import session_short_id
@@ -314,6 +315,43 @@ async def test_fork_drops_the_turn_registry_that_names_the_parents_log(tmp_path:
         assert TRAJECTORY_STATE_KEY not in envelope["state"], name
     parent_envelope = json.loads((parent_dir / "session.json").read_text(encoding="utf-8"))
     assert parent_envelope["state"][TRAJECTORY_STATE_KEY] == registry
+
+
+async def test_refused_thinking_stays_marked_through_save_load_and_fork(tmp_path: Path) -> None:
+    """Thinking the service refused is never replayed, also after a restart or in a fork."""
+
+    def refused(text: str) -> Content:
+        content = Content.from_text_reasoning(text=text, protected_data=f"sig-{text}")
+        content.additional_properties[ANTHROPIC_THINKING_STRIPPED_KEY] = True
+        return content
+
+    store = JsonFileStateStore(tmp_path)
+    await store.save_session(
+        "parent",
+        {
+            "messages": [Message("user", ["hi"]), Message("assistant", [refused("live"), Content.from_text("ok")])],
+            "compressed_msgs": [
+                CompressedBlock(
+                    compressed_context_id="ctx_refused",
+                    messages=[Message("assistant", [refused("archived"), Content.from_text("earlier")])],
+                    summary_text="summary",
+                    marker_id="turn_1",
+                    turn_range=(1, 1),
+                    created_at="2026-03-17T00:00:00+00:00",
+                )
+            ],
+        },
+    )
+    fork_id = store.fork_session("parent")
+
+    for session_id in ("parent", fork_id):
+        state = await store.load_session(session_id)
+        assert state is not None
+        [live] = state["messages"][1].contents[:1]
+        [archived] = state["compressed_msgs"][0].messages[0].contents[:1]
+        assert (live.text, archived.text) == ("live", "archived")
+        assert live.additional_properties[ANTHROPIC_THINKING_STRIPPED_KEY] is True, session_id
+        assert archived.additional_properties[ANTHROPIC_THINKING_STRIPPED_KEY] is True, session_id
 
 
 async def test_fork_session_retries_short_id_collisions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

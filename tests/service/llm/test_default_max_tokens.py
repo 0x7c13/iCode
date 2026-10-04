@@ -67,7 +67,9 @@ async def _admitted_options(client: Any, options: dict[str, Any]) -> dict[str, A
 
 
 def _anthropic_request(options: dict[str, Any]) -> dict[str, Any]:
-    return build_request(_messages(), options, {}, model="claude-test")
+    return build_request(
+        _messages(), options, {}, model="claude-test", base_url="https://api.anthropic.com", default_headers={}
+    ).request
 
 
 def test_anthropic_defaults_max_tokens_and_preserves_explicit_value() -> None:
@@ -184,7 +186,9 @@ def test_openai_responses_omits_default_max_tokens_and_preserves_explicit_values
 
 @pytest.mark.asyncio
 async def test_provider_preparation_receives_admitted_output_caps() -> None:
-    anthropic = AnthropicMessagesClient(model="claude-test", sdk_client=SimpleNamespace())  # type: ignore[arg-type]
+    anthropic = AnthropicMessagesClient(
+        model="claude-test", sdk_client=SimpleNamespace(base_url="https://api.anthropic.com", default_headers={})
+    )  # type: ignore[arg-type]
     anthropic_options = await _admitted_options(anthropic, {"max_tokens": 4096})
     assert _anthropic_request(anthropic_options)["max_tokens"] == 1
 
@@ -203,7 +207,9 @@ async def test_provider_preparation_receives_admitted_output_caps() -> None:
 
 @pytest.mark.asyncio
 async def test_anthropic_admission_respects_thinking_budget() -> None:
-    client = AnthropicMessagesClient(model="claude-test", sdk_client=SimpleNamespace())  # type: ignore[arg-type]
+    client = AnthropicMessagesClient(
+        model="claude-test", sdk_client=SimpleNamespace(base_url="https://api.anthropic.com", default_headers={})
+    )  # type: ignore[arg-type]
     strategy = _AdmissionStrategy(last_included_tokens=99)
     options = {"max_tokens": 4096, "thinking": {"type": "enabled", "budget_tokens": 20}}
 

@@ -42,7 +42,8 @@ Some settings don't belong in Chat Options:
 - **Output length**: use the "Max Output Tokens" field. Rows such as `max_tokens` are refused at save.
 - **Streaming**: use the "Streaming" checkbox, which is on by default; uncheck it to turn streaming off. Don't add a `stream` row.
 - **Model**: use the "Model" field.
-- **HTTP headers**: use the "HTTP Extra Headers" rows, or an `extra_headers` row whose value is a JSON object.
+- **HTTP headers**: use the "HTTP Extra Headers" rows, or an `extra_headers` row whose value is a JSON object. For Anthropic's `anthropic-beta` header, "HTTP Extra Headers" add to iCode's beta flags, while an `extra_headers` row replaces them; see [Anthropic](#anthropic).
+- **Claude thinking settings**: use the `thinking_block_binding` and `auto_interleaved_thinking` lines of the profile file; see [Claude thinking settings](./models.md#claude-thinking-settings).
 
 iCode builds the messages, tools, and system prompt itself, so fields such as `messages` are refused at save.
 
@@ -134,11 +135,13 @@ Provider "Anthropic", base URL `https://api.anthropic.com`. Don't add `/v1` to t
 | Adaptive thinking | `thinking` | `{"type": "adaptive"}` |
 | Thinking with a fixed budget (older models) | `thinking` | `{"type": "enabled", "budget_tokens": 8000}` |
 | Effort | `output_config` | `{"effort": "medium"}` |
-| Interleaved thinking on supported older models | `additional_beta_flags` | `["interleaved-thinking-2025-05-14"]` |
+| Interleaved thinking on older models at another address | `additional_beta_flags` | `["interleaved-thinking-2025-05-14"]` |
 
 - Use `adaptive` only on models that support it; recent models reject the older `enabled`/`budget_tokens` form. For ordinary fixed-budget thinking, set "Max Output Tokens" higher than `budget_tokens` (manual interleaved thinking has different budget rules).
 - Newer Claude models reject non-default `temperature`, `top_p`, and `top_k` values, so leave them unset.
-- `additional_beta_flags` is an iCode setting that adds beta flags to the request. Adaptive thinking already interleaves automatically; it does not need the example flag. Manual interleaving depends on the exact model, and accepting a beta flag does not mean it takes effect.
+- `additional_beta_flags` and `betas` add beta flags to the request, as does an `anthropic-beta` header in "HTTP Extra Headers". iCode sends them all, after its own flags, in one `anthropic-beta` header. An `anthropic-beta` key in an `extra_headers` row replaces all of these flags, iCode's own included; iCode then adds only the flags the thinking settings need.
+- With fixed-budget thinking at Anthropic's own address, iCode adds the interleaved-thinking flag itself; see [Claude thinking settings](./models.md#claude-thinking-settings). At another address, add it yourself as in the table above. Adaptive thinking already interleaves and needs no flag. Interleaving depends on the exact model, and accepting a beta flag does not mean it takes effect.
+- With Claude Opus 5.5, Fable 5.1 or Sonnet 5.5 and adaptive thinking at Anthropic's own address, iCode asks the service to leave out earlier thinking that no longer matches the conversation; see [Claude thinking settings](./models.md#claude-thinking-settings). A `block_binding` you write into `thinking` yourself is sent as written, and iCode adds the beta flag it needs.
 
 Documentation: [Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), [Adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/thinking), [Extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking), [Effort](https://platform.claude.com/docs/en/build-with-claude/effort), [Beta headers](https://platform.claude.com/docs/en/api/beta-headers).
 

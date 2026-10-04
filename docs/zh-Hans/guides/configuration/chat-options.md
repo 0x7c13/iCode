@@ -42,7 +42,8 @@ iCode 会尽量把值当作 JSON 解析：
 - **输出长度**：使用“最大输出词元数”字段。保存时会拒绝 `max_tokens` 等行。
 - **流式输出**：使用“流式输出”复选框，默认开启，取消勾选即可关闭。不要添加 `stream` 行。
 - **模型**：使用“模型”字段。
-- **HTTP 请求头**：使用“HTTP 附加请求头”各行，或者添加一行 `extra_headers`，值为 JSON 对象。
+- **HTTP 请求头**：使用“HTTP 附加请求头”各行，或者添加一行 `extra_headers`，值为 JSON 对象。对于 Anthropic 的 `anthropic-beta` 请求头，“HTTP 附加请求头”会添加到 iCode 的 Beta 标志之后，而 `extra_headers` 行会替换它们，详见 [Anthropic](#anthropic)。
+- **Claude 思考设置**：使用配置文件中的 `thinking_block_binding` 和 `auto_interleaved_thinking` 两行，详见 [Claude 思考设置](./models.md#claude-思考设置)。
 
 消息、工具和系统提示词由 iCode 自行构建，因此保存时会拒绝 `messages` 等字段。
 
@@ -134,11 +135,13 @@ GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，�
 | 自适应思考 | `thinking` | `{"type": "adaptive"}` |
 | 固定预算的思考（较早的模型） | `thinking` | `{"type": "enabled", "budget_tokens": 8000}` |
 | 投入程度（effort） | `output_config` | `{"effort": "medium"}` |
-| 较早模型的交错思考（需模型支持） | `additional_beta_flags` | `["interleaved-thinking-2025-05-14"]` |
+| 其他地址上较早模型的交错思考 | `additional_beta_flags` | `["interleaved-thinking-2025-05-14"]` |
 
 - 只有支持自适应思考的模型才能使用 `adaptive`；较新的模型会拒绝旧的 `enabled` / `budget_tokens` 形式。普通固定预算思考要求“最大输出词元数”大于 `budget_tokens`，手动交错思考的预算规则有所不同。
 - 较新的 Claude 模型会拒绝非默认的 `temperature`、`top_p` 和 `top_k` 值，请不要设置。
-- `additional_beta_flags` 是 iCode 自己的设置，用于给请求增加 Beta 标志。自适应思考已自动支持交错思考，无需示例中的标志。手动交错思考的支持情况因模型而异，服务接受某个 Beta 标志并不代表它实际生效。
+- `additional_beta_flags` 和 `betas` 用于给请求增加 Beta 标志，“HTTP 附加请求头”中的 `anthropic-beta` 也一样。iCode 会把它们排在自己的标志之后，合并到同一个 `anthropic-beta` 请求头中发送。`extra_headers` 行中的 `anthropic-beta` 会替换所有这些标志，包括 iCode 自己的标志；此时 iCode 只补上思考设置所需的标志。
+- 在 Anthropic 官方地址上使用固定预算的思考时，iCode 会自动添加交错思考的标志，详见 [Claude 思考设置](./models.md#claude-思考设置)。在其他地址上，请按上表自行添加。自适应思考已自动支持交错思考，无需该标志。交错思考的支持情况因模型而异，服务接受某个 Beta 标志并不代表它实际生效。
+- 在 Anthropic 官方地址上，Claude Opus 5.5、Fable 5.1 或 Sonnet 5.5 使用自适应思考时，iCode 会请服务略去与对话对不上的早先思考内容，详见 [Claude 思考设置](./models.md#claude-思考设置)。你在 `thinking` 中自己写的 `block_binding` 会原样发送，iCode 会补上它所需的 Beta 标志。
 
 官方文档：[Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)、[Adaptive thinking](https://platform.claude.com/docs/en/build-with-claude/thinking)、[Extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)、[Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Beta headers](https://platform.claude.com/docs/en/api/beta-headers)。
 

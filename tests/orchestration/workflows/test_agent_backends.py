@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -27,7 +28,14 @@ from chrys.service.acp_client.spawn import AcpSpawnResult
 from chrys.service.acp_client.spec import AcpAgentSpec
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.mcp.adapter import MCPAdapter
-from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile, MCPServerConfig, ToolsConfig
+from chrys.service.profiles.agents.schema import (
+    AcpAgentConfig,
+    AgentProfile,
+    MCPServerConfig,
+    ModelConfig,
+    ToolsConfig,
+)
+from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.runtime_metadata import TOTAL_SESSION_TOKENS_KEY
 from chrys.service.state.store import JsonFileStateStore
 from chrys.service.workflows.layout import run_dir
@@ -96,6 +104,53 @@ async def test_workflow_agent_uses_session_mcp_cache_and_releases_its_acquisitio
     finally:
         await host.shutdown()
     assert fake.exit_count == 1
+
+
+@pytest.mark.parametrize(
+    ("chat_options", "warned"),
+    [("", True), ('{"thinking": {"type": "disabled"}}', False)],
+    ids=["no-thinking-option", "thinking-disabled"],
+)
+async def test_workflow_agent_warns_once_when_its_on_demand_mcp_tools_can_unbind_its_thinking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, chat_options: str, warned: bool
+) -> None:
+    """The node's own model and chat options decide the warning; the session's mock model would not warn."""
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), MockChatClient(responses=[MockResponse(text="done")])])
+    profile = make_profile("MCP")
+    profile.model = ModelConfig(profile_id="claude")
+    profile.tools.mcp = [
+        MCPServerConfig(name=name, transport="stdio", command="unused", use_progressive_disclosure=True)
+        for name in ("alpha", "down", "beta")
+    ]
+
+    async def connect(_adapter: MCPAdapter, config: MCPServerConfig) -> list[object]:
+        if config.name == "down":
+            raise RuntimeError("server down")
+        return []
+
+    monkeypatch.setattr(MCPAdapter, "connect", create_autospec(MCPAdapter.connect, side_effect=connect))
+    project = make_project(tmp_path)
+    write_workflow(project, "mcp", _workflow("MCP"))
+    claude = ModelProfile(
+        id="claude", name="Claude 5.5", provider="anthropic", model_id="claude-opus-5-5", chat_options=chat_options
+    )
+    host = make_host(tmp_path, project=project, profiles=[make_profile(), profile], models=[claude])
+    try:
+        await confirm(host, "mcp")
+        with caplog.at_level(logging.WARNING, logger="chrys.service.mcp.thinking_warning"):
+            result, _events = await run(host, "mcp")
+        assert result.outcome.value == "completed"
+    finally:
+        await host.shutdown()
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "chrys.service.mcp.thinking_warning"]
+    if warned:
+        [message] = messages
+        assert message.startswith(
+            "Agent 'MCP' on model profile 'Claude 5.5': MCP server(s) 'alpha', 'beta' load tools on demand"
+        )
+    else:
+        assert messages == []
 
 
 async def test_cancellation_while_mcp_shell_opens_disconnects_partial_acquisition(

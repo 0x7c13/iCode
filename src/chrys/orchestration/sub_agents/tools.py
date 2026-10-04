@@ -104,6 +104,7 @@ from chrys.service.hooks.events import HookEvent
 from chrys.service.llm.clients import create_client, effective_model_base_url
 from chrys.service.llm.route_sessions import derive_llm_route_session_id, llm_parent_session_id, llm_route_session_id
 from chrys.service.mcp.adapter import MCPAdapter
+from chrys.service.mcp.thinking_warning import warn_if_tool_loading_unbinds_thinking
 from chrys.service.profiles.agents.schema import DEFAULT_SUB_AGENT_CONCURRENCY
 from chrys.service.profiles.models.options import effective_chat_options, uses_responses_compact_continuation
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
@@ -518,6 +519,9 @@ class SubAgentTools:
                 mcp_tools = await mcp_adapter.connect_all(profile.tools.mcp)
                 self._mcp_adapters[tool_name] = mcp_adapter
                 tools.extend(mcp_tools)
+                warn_if_tool_loading_unbinds_thinking(
+                    profile, sub_active_profile, chat_options, mcp_adapter.tool_names_by_server
+                )
 
             # Wire compaction + usage tracking for sub-agents.  Compression
             # tools (compress_context, recall_context, list_compressed_contexts)

@@ -3905,13 +3905,17 @@
       "AnthropicMessagesClient._close_sdk_client": [
         ["awaitable", "await self.sdk_client.close()", "unresolved"]
       ],
+      "AnthropicMessagesClient._create": [
+        ["awaitable", "await self._sdk_create(built.request, stream=stream)", "unresolved"],
+        ["awaitable", "await self._sdk_create(resend.request, stream=stream)", "unresolved"]
+      ],
       "AnthropicMessagesClient._open_stream.updates": [
-        ["awaitable", "await self.sdk_client.beta.messages.create(**request, stream=True)", "unresolved"],
+        ["wrapper", "await self._create(built, messages, options, kwargs, stream=True)", "unresolved", "chrys.service.llm.anthropic_messages.client.AnthropicMessagesClient._create"],
         ["async_iteration", "async for event in events", "unresolved"],
         ["wrapper", "await _close_event_stream(events)", "unresolved", "chrys.service.llm.anthropic_messages.client._close_event_stream"]
       ],
       "AnthropicMessagesClient._send.response": [
-        ["awaitable", "await self.sdk_client.beta.messages.create(**request, stream=False)", "unresolved"]
+        ["wrapper", "await self._create(built, messages, options, kwargs, stream=False)", "unresolved", "chrys.service.llm.anthropic_messages.client.AnthropicMessagesClient._create"]
       ],
       "AnthropicMessagesClient.aclose": [
         ["awaitable", "await self._close_sdk()", "unresolved"]

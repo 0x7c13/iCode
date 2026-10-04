@@ -1915,6 +1915,8 @@ class ModelConfigScreen(BaseDialog[str]):
             stream=self.query_one("#mc-stream", Checkbox).value,
             vision=self.query_one("#mc-vision", Checkbox).value,
             stream_requires_finish_reason=stored is not None and stored.stream_requires_finish_reason,
+            thinking_block_binding=stored.thinking_block_binding if stored is not None else "auto",
+            auto_interleaved_thinking=stored.auto_interleaved_thinking if stored is not None else True,
         )
 
     async def _save_only(self) -> ModelProfile | None:

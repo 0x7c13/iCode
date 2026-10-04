@@ -52,6 +52,11 @@ STREAM_REQUIRES_FINISH_REASON_OPTION = "stream_requires_finish_reason"
 # The Responses option that routes OpenAI's prompt cache; a client sets one
 # itself unless the options do (a null: none).
 PROMPT_CACHE_KEY_OPTION = "prompt_cache_key"
+# The Anthropic options that carry ``ModelProfile.thinking_block_binding`` and
+# ``ModelProfile.auto_interleaved_thinking`` to the client when they are not
+# the defaults; neither is sent.
+THINKING_BLOCK_BINDING_OPTION = "thinking_block_binding"
+AUTO_INTERLEAVED_THINKING_OPTION = "auto_interleaved_thinking"
 _CHAT_COMPLETIONS_PROVIDERS = frozenset({"openai", "deepseek-openai", "glm-openai"})
 
 PROTECTED_TOP_LEVEL_CHAT_OPTION_KEYS = frozenset(
@@ -266,6 +271,15 @@ def effective_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
         if effective is None or effective is opts:
             effective = dict(opts or {})
         effective[STREAM_REQUIRES_FINISH_REASON_OPTION] = True
+    if profile.provider == "anthropic":
+        if profile.thinking_block_binding != "auto":
+            if effective is None or effective is opts:
+                effective = dict(opts or {})
+            effective[THINKING_BLOCK_BINDING_OPTION] = profile.thinking_block_binding
+        if not profile.auto_interleaved_thinking:
+            if effective is None or effective is opts:
+                effective = dict(opts or {})
+            effective[AUTO_INTERLEAVED_THINKING_OPTION] = False
     return effective
 
 

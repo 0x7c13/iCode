@@ -41,7 +41,14 @@ from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.kernel import ChatResponseUpdate, Content, UsageDetails, normalize_stream_usage
 from chrys.service.llm.chat_completions.decode import refused_calls_error
 
-from .decode import decode_blocks, decode_stop_reason, decode_usage, stream_context_input, token_count
+from .decode import (
+    decode_blocks,
+    decode_stop_reason,
+    decode_usage,
+    log_input_transformations,
+    stream_context_input,
+    token_count,
+)
 from .server_tools import apply_streamed_input
 
 logger = logging.getLogger(__name__)
@@ -187,6 +194,7 @@ class StreamState:
 
     def _message_start(self, event: Any) -> ChatResponseUpdate:
         message = event.message
+        log_input_transformations(message)
         self._first_cache_read = token_count(message.usage.cache_read_input_tokens if message.usage else None)
         contents = decode_blocks(message.content, origin=self._origin)
         if message.usage and (usage := decode_usage(message.usage)):
@@ -202,6 +210,8 @@ class StreamState:
         )
 
     def _message_delta(self, event: Any) -> ChatResponseUpdate:
+        # Only the last delta carries them, and only when another model took over mid-stream.
+        log_input_transformations(event)
         usage = decode_usage(event.usage)
         if usage is not None:
             context_input = stream_context_input(event.usage, first_cache_read=self._first_cache_read)

@@ -30,7 +30,7 @@ def _make_anthropic_client(*, session_id: str | None = None, parent_session_id: 
     """Construct the production Anthropic stack over a placeholder SDK client."""
     return _assemble_stack(
         AnthropicMessagesClient,
-        SimpleNamespace(base_url="https://api.anthropic.com"),  # type: ignore[arg-type]
+        SimpleNamespace(base_url="https://api.anthropic.com", default_headers={}),  # type: ignore[arg-type]
         model_id="claude-default",
         session_id=session_id,
         parent_session_id=parent_session_id,
@@ -86,7 +86,8 @@ def test_anthropic_response_format_uses_ga_output_config() -> None:
             "additionalProperties": False,
         },
     }
-    assert "structured-outputs-2025-11-13" not in prepared["betas"]
+    assert "structured-outputs-2025-11-13" not in prepared["extra_headers"]["anthropic-beta"]
+    assert "betas" not in prepared
 
 
 def test_anthropic_response_format_preserves_output_config_without_mutating_caller() -> None:

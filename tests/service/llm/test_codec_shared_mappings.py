@@ -46,8 +46,22 @@ def test_anthropic_end_user_id_never_lands_in_the_callers_metadata() -> None:
     metadata = {"trace": "t-1"}
     messages = [Message(role="user", contents=["hi"])]
 
-    first = build_request(messages, {"user": "user-1", "metadata": metadata}, {}, model="claude-test")
-    second = build_request(messages, {"user": "user-2", "metadata": metadata}, {}, model="claude-test")
+    first = build_request(
+        messages,
+        {"user": "user-1", "metadata": metadata},
+        {},
+        model="claude-test",
+        base_url="https://api.anthropic.com",
+        default_headers={},
+    ).request
+    second = build_request(
+        messages,
+        {"user": "user-2", "metadata": metadata},
+        {},
+        model="claude-test",
+        base_url="https://api.anthropic.com",
+        default_headers={},
+    ).request
 
     assert metadata == {"trace": "t-1"}
     assert first["metadata"] == {"trace": "t-1", "user_id": "user-1"}

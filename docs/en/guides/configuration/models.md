@@ -68,6 +68,25 @@ Clicking "Clone" saves the copy immediately, but does not switch the current mod
 
 If you edit the model profile currently in use, the updated configuration applies to subsequent requests after you save it and close the configuration window.
 
+### Claude thinking settings
+
+Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 tie the thinking they return to the conversation before it. When that earlier conversation changes, for example after iCode compacts the context, the model service may refuse to read that thinking back. When one of these models uses adaptive thinking (`"thinking": {"type": "adaptive"}` in ["Chat Options"](./chat-options.md#anthropic)) at Anthropic's own address, iCode asks the service to leave out thinking that no longer matches instead of refusing the request. The model then sees less of its earlier reasoning, but the request goes through. On accounts where the service would not otherwise check this, the request makes it check, so such thinking is left out there too.
+
+To change this, open the profile's file in the `models` folder of the iCode configuration directory (`~/.chrys/models/` on macOS and Linux, `%APPDATA%\chrys\models\` on Windows; the file's `name:` line shows the profile name), add a `thinking_block_binding` line with one of these values, and restart iCode:
+
+| Value | What iCode asks the service |
+| --- | --- |
+| `auto` (default) | As described above. |
+| `drop_block` | To leave out thinking that no longer matches, at any address and with any model, when thinking is adaptive or has a fixed budget. |
+| `error` | To refuse a request with thinking that no longer matches, at any address and with any model, when thinking is adaptive or has a fixed budget. |
+| `off` | Nothing. A `block_binding` you write into `thinking` in "Chat Options" is still sent as written. |
+
+If the service still refuses a request because of thinking that no longer matches, iCode sends the request once more without the earlier thinking it read back, and doesn't send that thinking again. This costs one extra request, and the model no longer sees that earlier reasoning. With `error`, iCode reports the refusal instead.
+
+With fixed-budget thinking (`"type": "enabled"`) at Anthropic's own address, iCode also turns on thinking between tool calls, except on Claude Haiku 4.5 and Claude Opus 4.6, which don't support it in that mode. To turn this off, add the line `auto_interleaved_thinking: false`.
+
+Saving the profile in the "Model Configuration" window keeps these lines.
+
 ### Delete a model profile
 
 Deleting a profile removes its local model profile file and **cannot be undone in iCode**. Once you are sure you no longer need the profile:

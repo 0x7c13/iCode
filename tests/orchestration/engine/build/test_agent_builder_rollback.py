@@ -11,9 +11,11 @@ with orphaned MCP subprocesses or an un-exited Agent.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -40,6 +42,7 @@ from chrys.orchestration.invoker.origin import invocation_routing_key
 from chrys.service.context.compaction.last_words import CompactionStatus
 from chrys.service.context.memory_loader import MemoryContent
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
+from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.profiles.agents.schema import (
     AcpAgentConfig,
     AgentProfile,
@@ -105,9 +108,11 @@ def test_runtime_api_style_labels_openai_compatible_transports() -> None:
 @contextmanager
 def _build_agent_env(
     *,
-    mcp_mock: MagicMock | None,
+    mcp_mock: MagicMock | MCPAdapter | None,
     agent_mock: MagicMock,
     tool_registry: object | None = None,
+    model_profile: ModelProfile | None = None,
+    chat_options: dict[str, Any] | None = None,
 ):
     """Patch every external dependency of ``build_agent`` so the test drives
     only the rollback logic.
@@ -142,9 +147,9 @@ def _build_agent_env(
         patch.object(
             ab,
             "resolve_selection_for_agent",
-            return_value=ModelSelection(ModelProfile(id="test-id", name="test"), "override"),
+            return_value=ModelSelection(model_profile or ModelProfile(id="test-id", name="test"), "override"),
         ),
-        patch.object(ab, "effective_chat_options", return_value={}),
+        patch.object(ab, "effective_chat_options", return_value=chat_options or {}),
         patch.object(ab, "LoopRecorder", return_value=MagicMock()),
         patch.object(runtime_factory_module, "SystemReminderMiddleware", reminder_cls),
         patch.object(runtime_factory_module, "LastWordsGenerator", last_words_cls),
@@ -1222,3 +1227,55 @@ async def test_agent_load_progress_maps_builder_and_mcp_states_without_changing_
         ("Failed MCP server srv", AGENT_LOAD_STATUS_FAILED, "srv", "srv", ""),
         ("Loading MCP server srv", AGENT_LOAD_STATUS_RUNNING, "srv", "srv", ""),
     ]
+
+
+@pytest.mark.parametrize(
+    ("chat_options", "warned"),
+    [({}, True), ({"thinking": {"type": "disabled"}}, False)],
+    ids=["no-thinking-option", "thinking-disabled"],
+)
+async def test_build_warns_once_when_on_demand_mcp_tools_can_unbind_thinking(
+    caplog: pytest.LogCaptureFixture, chat_options: dict[str, Any], warned: bool
+) -> None:
+    servers = [
+        MCPServerConfig(name=name, transport="stdio", command="python", use_progressive_disclosure=True)
+        for name in ("alpha", "down", "beta")
+    ]
+    servers.append(
+        MCPServerConfig(
+            name="idle", transport="stdio", command="python", use_progressive_disclosure=True, enabled=False
+        )
+    )
+    profile = AgentProfile(name="test", tools=ToolsConfig(mcp=servers))
+    model = ModelProfile(id="claude", name="Claude 5.5", provider="anthropic", model_id="claude-opus-5-5")
+    adapter = MCPAdapter()
+
+    async def connect(_adapter: MCPAdapter, config: MCPServerConfig) -> list[Any]:
+        if config.name == "down":
+            raise RuntimeError("server down")
+        return []
+
+    try:
+        with (
+            _build_agent_env(
+                mcp_mock=adapter, agent_mock=_agent_mock(), model_profile=model, chat_options=chat_options
+            ),
+            patch.object(MCPAdapter, "connect", new=create_autospec(MCPAdapter.connect, side_effect=connect)),
+            patch.object(ab, "TurnBindings", return_value=MagicMock()),
+            patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+            patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
+            patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
+            caplog.at_level(logging.WARNING, logger="chrys.service.mcp.thinking_warning"),
+        ):
+            await _invoke_build_agent(profile)
+    finally:
+        await adapter.disconnect_all()
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "chrys.service.mcp.thinking_warning"]
+    if warned:
+        [message] = messages
+        assert message.startswith(
+            "Agent 'test' on model profile 'Claude 5.5': MCP server(s) 'alpha', 'beta' load tools on demand"
+        )
+    else:
+        assert messages == []

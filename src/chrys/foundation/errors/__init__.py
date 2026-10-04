@@ -21,6 +21,7 @@ from .classify import (
     is_context_overflow,
     is_read_timeout,
     is_retryable,
+    is_thinking_binding_rejection,
     may_be_context_overflow,
 )
 from .formatting import EMPTY_EXCEPTION_MESSAGES, clean_error_message
@@ -59,6 +60,7 @@ __all__ = [
     "is_deterministic_connection_error",
     "is_read_timeout",
     "is_retryable",
+    "is_thinking_binding_rejection",
     "iter_explicit_graph",
     "may_be_context_overflow",
     "origin_of",

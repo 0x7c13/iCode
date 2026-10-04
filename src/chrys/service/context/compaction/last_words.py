@@ -66,7 +66,12 @@ from chrys.kernel import (
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
 from chrys.service.llm.one_shot import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
-from chrys.service.profiles.models.options import PROMPT_CACHE_KEY_OPTION, STREAM_REQUIRES_FINISH_REASON_OPTION
+from chrys.service.profiles.models.options import (
+    AUTO_INTERLEAVED_THINKING_OPTION,
+    PROMPT_CACHE_KEY_OPTION,
+    STREAM_REQUIRES_FINISH_REASON_OPTION,
+    THINKING_BLOCK_BINDING_OPTION,
+)
 from chrys.service.trajectory.compaction import current_compaction_operation_id
 from chrys.service.trajectory.retries import RetryBackoffTrace
 
@@ -117,6 +122,9 @@ _FALLBACK_ALLOWED_OPTION_KEYS = frozenset(
         # A key the profile sets is the note's key too; one it turns off with
         # a null rides in extra_body (see _generate_once).
         PROMPT_CACHE_KEY_OPTION,
+        # The note's thinking binds and interleaves as the profile says.
+        THINKING_BLOCK_BINDING_OPTION,
+        AUTO_INTERLEAVED_THINKING_OPTION,
     }
 )
 

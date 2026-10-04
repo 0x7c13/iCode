@@ -8,7 +8,7 @@ import asyncio
 import base64
 import json
 from types import ModuleType
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 from openai.types.chat.chat_completion import ChatCompletion, Choice
@@ -32,7 +32,11 @@ from chrys.service.llm import one_shot
 from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.chat_completions import client as chat_completions_client
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
-from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
+from chrys.service.profiles.models.options import (
+    AUTO_INTERLEAVED_THINKING_OPTION,
+    STREAM_REQUIRES_FINISH_REASON_OPTION,
+    THINKING_BLOCK_BINDING_OPTION,
+)
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES, ModelProfile
 from tests.service.context.compaction._compaction_helpers import _anthropic_fetched_pdf_exchange
 from tests.service.context.compaction._last_words_helpers import (
@@ -49,7 +53,7 @@ from tests.service.context.compaction._last_words_helpers import (
 from tests.support.openai_chat_wire import ChatReply, scripted_openai
 from tests.support.provider_errors import openai_status
 from tests.support.scripted_wire import ScriptedWire, pin_wire_inputs, route_clients_to
-from tests.support.wire_cases._kit import resp_message, resp_replies, resp_response
+from tests.support.wire_cases._kit import anth_replies, anth_text, resp_message, resp_replies, resp_response
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
 
@@ -427,8 +431,10 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
     captured: dict = {}
 
     class _Client:
-        async def get_response(self, _messages, *_args, **kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs["options"])
+        async def get_response(self, _messages: list[Message], *, stream: bool, options: dict[str, object]) -> object:
+            # Every setting reaches the client inside the options, never as a keyword of its own.
+            assert stream is False
+            captured.update(options)
 
             class _Response:
                 usage_details = None
@@ -501,6 +507,78 @@ async def test_a_fallback_note_keeps_the_prompt_cache_key_the_profile_sets(
     assert body.get("prompt_cache_key") == expected_key
     assert ("prompt_cache_key" in body) is (expected_key is not None)
     assert "user_tag" not in body
+
+
+@pytest.mark.parametrize(
+    ("binding", "interleaved", "expected"),
+    [
+        ("error", True, {THINKING_BLOCK_BINDING_OPTION: "error"}),
+        ("off", True, {THINKING_BLOCK_BINDING_OPTION: "off"}),
+        ("auto", False, {AUTO_INTERLEAVED_THINKING_OPTION: False}),
+    ],
+    ids=["error", "off", "interleaved_off"],
+)
+async def test_a_fallback_note_keeps_the_profile_thinking_settings(
+    tmp_path, binding: Any, interleaved: bool, expected: dict[str, object]
+) -> None:
+    captured: dict = {}
+
+    class _Client:
+        async def get_response(self, _messages: list[Message], *, stream: bool, options: dict[str, object]) -> object:
+            # Every setting reaches the client inside the options, never as a keyword of its own.
+            assert stream is False
+            captured.update(options)
+
+            class _Response:
+                usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
+                raw_text = structured_note()
+
+            return _Response()
+
+    profile = ModelProfile(
+        id="claude",
+        name="claude",
+        provider="anthropic",
+        model_id="claude-opus-5-5",
+        stream=False,
+        thinking_block_binding=binding,
+        auto_interleaved_thinking=interleaved,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+
+    assert captured == {"max_tokens": DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS, **expected}
+
+
+@pytest.mark.parametrize("interleaved", [True, False], ids=["automatic", "turned_off"])
+async def test_a_streamed_fallback_note_sends_the_interleaved_beta_as_the_profile_says(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, interleaved: bool
+) -> None:
+    pin_wire_inputs(monkeypatch)
+    wire = ScriptedWire(anth_replies([anth_text(structured_note(), message_id="msg_note")], stream=True))
+    route_clients_to(wire.transport, monkeypatch)
+    profile = ModelProfile(
+        id="claude",
+        name="claude",
+        provider="anthropic",
+        model_id="claude-sonnet-4-5",
+        api_key="sk-ant-note",
+        chat_options=json.dumps({"thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        stream=True,
+        auto_interleaved_thinking=interleaved,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
+    try:
+        await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+    finally:
+        await gen.aclose()
+
+    [request] = wire.requests
+    [betas] = request.headers.get_list("anthropic-beta")
+    assert ("interleaved-thinking-2025-05-14" in betas.split(",")) is interleaved
+    assert AUTO_INTERLEAVED_THINKING_OPTION not in json.loads(request.content)
 
 
 @pytest.mark.parametrize("requires_finish_reason", [True, False], ids=["requires_a_finish_reason", "lenient"])

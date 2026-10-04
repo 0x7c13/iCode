@@ -54,6 +54,27 @@ _FINISH_REASONS: Final[Mapping[str, FinishReasonLiteral]] = {
 _CONTAINER_TOOLS: Final = frozenset({"code_execution", "bash_code_execution", "text_editor_code_execution"})
 
 
+def log_input_transformations(source: object) -> None:
+    """Log at DEBUG the blocks the service changed in the request before the model saw it.
+
+    *source* is a message or a ``message_delta`` event. Only each entry's
+    type, reason and path are logged, never block content or signatures.
+    """
+    # The SDK does not model the field yet: it is an extra attribute of its model.
+    entries = getattr(source, "input_transformations", None)
+    if not entries or not isinstance(entries, list):
+        return
+    logger.debug(
+        "The service changed %d block(s) of the request: %s",
+        len(entries),
+        [tuple(_entry_field(entry, name) for name in ("type", "reason", "path")) for entry in entries],
+    )
+
+
+def _entry_field(entry: object, name: str) -> object:
+    return entry.get(name) if isinstance(entry, Mapping) else getattr(entry, name, None)
+
+
 def decode_message(
     message: BetaMessage, *, response_format: Any, origin: ReasoningOrigin | None = None
 ) -> ChatResponse:
@@ -62,6 +83,7 @@ def decode_message(
     A message that stops for a refusal yet asks for tool calls raises: the
     calls are never run.
     """
+    log_input_transformations(message)
     usage = decode_usage(message.usage)
     if usage is not None and (estimate := blocking_context_estimate(message.usage, message.content)) is not None:
         usage["context_input_token_estimate"] = estimate

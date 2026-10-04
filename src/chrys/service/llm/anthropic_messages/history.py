@@ -12,7 +12,9 @@ valid: an assistant message's thinking without a signature is dropped (the API
 rejects it), and so are blank text and a wire message left with no blocks; a
 tool-call id another provider minted (``functions.read_file:0``) is sent as an
 id the API accepts, the same for the call and its result. Thinking another
-endpoint issued is left out: only its issuer can check the signature.
+endpoint issued is left out: only its issuer can check the signature, and so
+is thinking a request was accepted without after the service refused it as
+bound to a different conversation (:data:`THINKING_STRIPPED_KEY`).
 
 Hosted-tool history from another provider is replaced by the neutral summary
 :func:`cross_provider_hosted_degradations` writes, sent as assistant context.
@@ -23,11 +25,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.hosted_tools import ANTHROPIC_HOSTED_WIRE_BLOCK_KEY
+from chrys.foundation.models.history_markers import ANTHROPIC_THINKING_STRIPPED_KEY as THINKING_STRIPPED_KEY
 from chrys.foundation.reasoning_origin import replays_to
 from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
@@ -59,11 +62,22 @@ class _Block:
     wire: dict[str, Any]
     assistant_context: bool = False
     """Sent as ``assistant`` whatever its type: a summary of foreign hosted-tool history."""
+    thinking: tuple[Content, ...] = ()
+    """The reasoning contents a thinking or redacted thinking block is encoded from, a signature it took included."""
 
     def role(self, message_role: str) -> str:
         if self.assistant_context:
             return "assistant"
         return _ROLE_OF_BLOCK_TYPE.get(self.wire.get("type"), message_role)
+
+
+@dataclass(frozen=True, slots=True)
+class EncodedHistory:
+    """The wire messages of a history and the reasoning contents their thinking blocks replay."""
+
+    messages: list[dict[str, Any]]
+    thinking: tuple[Content, ...]
+    """Every content a sent thinking or redacted thinking block is encoded from, each once, in order."""
 
 
 def encode_messages(messages: Sequence[Message], *, origin: ReasoningOrigin | None = None) -> list[dict[str, Any]]:
@@ -72,13 +86,39 @@ def encode_messages(messages: Sequence[Message], *, origin: ReasoningOrigin | No
     *origin* is the endpoint the request goes to: thinking, signatures and
     redacted thinking another endpoint issued are left out.
     """
+    return encode_history(messages, origin=origin).messages
+
+
+def encode_history(
+    messages: Sequence[Message], *, origin: ReasoningOrigin | None = None, skip: Collection[Content] = ()
+) -> EncodedHistory:
+    """Encode *messages* like :func:`encode_messages`, leaving out the thinking of the contents in *skip*.
+
+    A thinking block is left out when any content it is encoded from is in
+    *skip* (by identity) or carries :data:`THINKING_STRIPPED_KEY`. Blocks are
+    matched with their signatures first and left out after, so a signature
+    never moves to the thinking before the block left out.
+    """
     history = messages[1:] if messages and messages[0].role == "system" else messages
     summaries = cross_provider_hosted_degradations(history, target_provider="anthropic")
+    skipped = {id(content) for content in skip}
     wire_messages: list[dict[str, Any]] = []
+    thinking: dict[int, Content] = {}
     for message in history:
         role = "assistant" if message.role == "assistant" else "user"
-        wire_messages.extend(_by_role(_encode_blocks(message, role, summaries, origin), role))
-    return wire_messages
+        blocks = [
+            block
+            for block in _encode_blocks(message, role, summaries, origin)
+            if not any(id(content) in skipped or _was_stripped(content) for content in block.thinking)
+        ]
+        for block in blocks:
+            thinking.update((id(content), content) for content in block.thinking)
+        wire_messages.extend(_by_role(blocks, role))
+    return EncodedHistory(wire_messages, tuple(thinking.values()))
+
+
+def _was_stripped(content: Content) -> bool:
+    return content.additional_properties.get(THINKING_STRIPPED_KEY) is True
 
 
 def _by_role(blocks: list[_Block], message_role: str) -> list[dict[str, Any]]:
@@ -126,7 +166,7 @@ def _is_unsigned_thinking(wire: Mapping[str, Any]) -> bool:
 def _add_thinking(content: Content, blocks: list[_Block]) -> None:
     properties = content.additional_properties
     if properties.get(_ANTHROPIC_REDACTED_THINKING_KEY):
-        blocks.append(_Block({"type": "redacted_thinking", "data": content.protected_data}))
+        blocks.append(_Block({"type": "redacted_thinking", "data": content.protected_data}, thinking=(content,)))
         return
     if content.id or properties.get("reasoning_text") or properties.get("openai_reasoning_format"):
         # Another protocol's reasoning (Responses items carry an id and a
@@ -136,19 +176,20 @@ def _add_thinking(content: Content, blocks: list[_Block]) -> None:
     if content.text is None:
         # A streamed signature arrives as its own fragment and signs the
         # thinking block before it.
-        previous = blocks[-1].wire if blocks else None
+        previous = blocks[-1] if blocks else None
         if (
             content.protected_data
             and previous is not None
-            and previous.get("type") == "thinking"
-            and "signature" not in previous
+            and previous.wire.get("type") == "thinking"
+            and "signature" not in previous.wire
         ):
-            previous["signature"] = content.protected_data
+            previous.wire["signature"] = content.protected_data
+            blocks[-1] = replace(previous, thinking=(*previous.thinking, content))
         return
     thinking: dict[str, Any] = {"type": "thinking", "thinking": content.text}
     if content.protected_data:
         thinking["signature"] = content.protected_data
-    blocks.append(_Block(thinking))
+    blocks.append(_Block(thinking, thinking=(content,)))
 
 
 def _encode_content(content: Content) -> dict[str, Any] | None:
