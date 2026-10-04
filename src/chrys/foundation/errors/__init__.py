@@ -12,9 +12,11 @@ model, logs, ACP and headless output.
 from __future__ import annotations
 
 from ._legacy import RETRYABLE_STATUS_CODES, RETRYABLE_TYPE_NAMES
+from ._walk import iter_explicit_graph
 from .classify import (
     ErrorClassification,
     classify_error,
+    context_overflow_limit,
     invalidates_continuation_token,
     is_context_overflow,
     is_read_timeout,
@@ -50,12 +52,14 @@ __all__ = [
     "TimeoutPhase",
     "classify_error",
     "clean_error_message",
+    "context_overflow_limit",
     "in_band_failure_retryable",
     "invalidates_continuation_token",
     "is_context_overflow",
     "is_deterministic_connection_error",
     "is_read_timeout",
     "is_retryable",
+    "iter_explicit_graph",
     "may_be_context_overflow",
     "origin_of",
     "route_of",

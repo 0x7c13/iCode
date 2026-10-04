@@ -45,7 +45,7 @@ def test_load_minimal_profile(tmp_path: Path) -> None:
     assert profile.bypass_proxy is False
     assert profile.http_headers == ""
     assert profile.chat_options == ""
-    assert profile.stream is False
+    assert profile.stream is True
     assert profile.vision is False
     assert profile.stream_requires_finish_reason is False
 
@@ -183,24 +183,25 @@ vision: 1
 
 
 @pytest.mark.parametrize(
-    ("yaml_value", "verify_ssl", "stream"),
+    ("yaml_value", "verify_ssl", "stream", "vision"),
     [
-        (None, True, False),
-        ('" FaLsE "', False, False),
-        ('"on"', True, True),
-        ('""', False, False),
-        ('"sometimes"', True, True),
-        ("0", False, False),
+        (None, True, True, False),
+        ("null", True, True, False),
+        ('" FaLsE "', False, False, False),
+        ('"on"', True, True, True),
+        ('""', False, False, False),
+        ('"sometimes"', True, True, True),
+        ("0", False, False, False),
     ],
-    ids=["missing", "spaced-false", "on", "empty", "unknown-string", "zero"],
+    ids=["missing", "null", "spaced-false", "on", "empty", "unknown-string", "zero"],
 )
 def test_bool_fields_read_yaml_spellings_and_keep_their_defaults(
-    tmp_path: Path, yaml_value: str | None, verify_ssl: bool, stream: bool
+    tmp_path: Path, yaml_value: str | None, verify_ssl: bool, stream: bool, vision: bool
 ) -> None:
-    fields = "" if yaml_value is None else f"verify_ssl: {yaml_value}\nstream: {yaml_value}\n"
+    fields = "" if yaml_value is None else f"verify_ssl: {yaml_value}\nstream: {yaml_value}\nvision: {yaml_value}\n"
     profile = load_profile_from_yaml(_write(tmp_path / "x.yaml", f"name: B\n{fields}"))
 
-    assert (profile.verify_ssl, profile.stream) == (verify_ssl, stream)
+    assert (profile.verify_ssl, profile.stream, profile.vision) == (verify_ssl, stream, vision)
 
 
 def test_invalid_numeric_field_raises_load_error(tmp_path: Path) -> None:

@@ -149,7 +149,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
     ),
     [
         pytest.param(
-            ModelProfile(id="t", name="t", model_id="deepseek-chat", max_output_tokens=8192),
+            ModelProfile(id="t", name="t", model_id="deepseek-chat", max_output_tokens=8192, stream=False),
             {},
             8192,
             "8192-token output cap",
@@ -165,6 +165,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
                 model_id="claude-test",
                 max_output_tokens=0,  # unknown cap — this case targets the unclamped math
                 chat_options='{"thinking": {"type": "enabled", "budget_tokens": 16000}}',
+                stream=False,
             ),
             {"max_output_tokens": 12000},
             12000 + 16000,
@@ -180,6 +181,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
                 model_id="deepseek-chat",
                 max_output_tokens=8192,
                 chat_options='{"max_tokens": 20000}',
+                stream=False,
             ),
             {},
             8192,
@@ -442,6 +444,7 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
             '"response_format":{"type":"json_schema"},"schema":{"huge":true},"store":true,'
             '"previous_response_id":"resp","conversation_id":"conv","unknown_input":"drop"}'
         ),
+        stream=False,
     )
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
     gen._client = _Client()  # type: ignore[assignment]
@@ -560,6 +563,7 @@ async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_p
         model_id="small",
         max_context_tokens=12_000,
         max_output_tokens=500,
+        stream=False,
     )
     gen = LastWordsGenerator(profile=profile, template="T" * 100_000, log_dir=tmp_path)
     gen._client = _Client()  # type: ignore[assignment]
@@ -615,6 +619,7 @@ async def test_fallback_format_correction_is_readmitted_and_shrunk(tmp_path, mon
         # the shared guidance/contract text shifts both and moves this line.
         max_context_tokens=9_560,
         max_output_tokens=500,
+        stream=False,
     )
     client = _Client()
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
@@ -696,6 +701,7 @@ async def test_fallback_small_window_final_candidate_is_provider_authoritative(t
         model_id="small-window",
         max_context_tokens=9_000,
         max_output_tokens=8_192,
+        stream=False,
     )
     client = _Client()
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
@@ -755,6 +761,7 @@ async def test_fallback_bypass_never_raises_max_tokens_above_model_cap(tmp_path)
         model_id="tiny-cap",
         max_context_tokens=2_000,
         max_output_tokens=256,
+        stream=False,
     )
     client = _Client()
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, max_output_tokens=256)

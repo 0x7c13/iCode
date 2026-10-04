@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import yaml
 from textual.containers import Vertical
 from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
 
@@ -29,6 +30,7 @@ from chrys.app.tui.screens.models.screen import (
 )
 from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
+from chrys.service.profiles.models.loader import load_profile_from_yaml
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.app.tui.screens._model_config_support import (
@@ -40,6 +42,7 @@ from tests.app.tui.screens._model_config_support import (
     single_profile_registry,
 )
 from tests.support.paths import SRC_ROOT
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for, wait_until
 
 pytestmark = pytest.mark.usefixtures("isolated_model_config_dir", "clear_model_profile_env")
@@ -148,7 +151,7 @@ async def test_model_config_clone_saves_copy_with_new_id(
         bypass_proxy=True,
         http_headers=json.dumps({"X-Team": "platform"}),
         chat_options=json.dumps({"temperature": 0.7}),
-        stream=True,
+        stream=False,
     )
     registry.register(profile)
 
@@ -179,7 +182,7 @@ async def test_model_config_clone_saves_copy_with_new_id(
     assert copied.bypass_proxy == profile.bypass_proxy
     assert copied.http_headers == profile.http_headers
     assert copied.chat_options == profile.chat_options
-    assert copied.stream == profile.stream
+    assert copied.stream is False
     assert (tmp_path / "models" / f"{copied.id}.yaml").is_file()
 
 
@@ -922,8 +925,8 @@ async def test_model_config_sections_are_ordered_and_titled() -> None:
     assert vision_is_last_in_model_options is True
 
 
-async def test_model_config_transport_checkboxes_default_secure_and_proxy_enabled() -> None:
-    """Default model transport settings verify TLS and honor configured proxies."""
+async def test_model_config_transport_checkboxes_default_secure_proxy_enabled_and_streaming() -> None:
+    """Default model transport settings verify TLS, honor configured proxies, and stream."""
 
     registry, profile = single_profile_registry()
 
@@ -937,13 +940,72 @@ async def test_model_config_transport_checkboxes_default_secure_and_proxy_enable
 
     assert skip_tls.value is False
     assert bypass_proxy.value is False
-    assert stream.value is False
+    assert stream.value is True
     assert vision.value is False
     assert tls_hint.display is False
     assert saved.verify_ssl is True
     assert saved.bypass_proxy is False
-    assert saved.stream is False
+    assert saved.stream is True
     assert saved.vision is False
+
+
+async def test_model_config_first_profile_on_empty_registry_streams(tmp_path: Path) -> None:
+    """The profile seeded into an empty registry opens with Streaming checked and stores no ``stream`` key."""
+    registry = ModelProfileRegistry()
+
+    async with open_model_config(registry) as (screen, pilot):
+        await wait_for(
+            lambda: screen._selected_profile_id is not None,
+            pilot=pilot,
+            description="seeded profile selected",
+        )
+        seeded_id = screen._selected_profile_id
+        checked = screen.query_one("#mc-stream", Checkbox).value
+
+    assert checked is True
+    raw = yaml.safe_load((tmp_path / "models" / f"{seeded_id}.yaml").read_text(encoding="utf-8"))
+    assert "stream" not in raw
+
+
+async def test_model_config_new_profile_streams_and_an_unchecked_save_reopens_unchecked(tmp_path: Path) -> None:
+    """New never inherits the previous profile's Streaming off; unchecking it and saving writes ``stream: false``."""
+    registry, profile = single_profile_registry(stream=False)
+
+    async with open_model_config(registry, global_default_profile_id=profile.id) as (screen, pilot):
+        stream = screen.query_one("#mc-stream", Checkbox)
+        assert stream.value is False
+
+        await click_when_settled(pilot, "#mc-new")
+        await wait_for(
+            lambda: screen._selected_profile_id not in {None, profile.id},
+            pilot=pilot,
+            description="new profile selected",
+        )
+        new_id = screen._selected_profile_id
+        checked_on_new = stream.value
+
+        screen.query_one("#mc-model", Input).value = "gpt-test"
+        stream.value = False
+        captured = _capture_notifications(screen)
+        await click_when_settled(pilot, "#mc-save")
+        await wait_for(
+            lambda: ("information", "Model profile saved") in captured,
+            pilot=pilot,
+            description="new profile saved with streaming off",
+        )
+
+    assert checked_on_new is True
+    assert new_id is not None
+    path = tmp_path / "models" / f"{new_id}.yaml"
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["stream"] is False
+
+    reloaded = load_profile_from_yaml(path)
+    reopened_registry = ModelProfileRegistry()
+    reopened_registry.register(reloaded)
+    async with open_model_config(reopened_registry, global_default_profile_id=new_id) as (screen, _pilot):
+        reopened_checked = screen.query_one("#mc-stream", Checkbox).value
+
+    assert reopened_checked is False
 
 
 async def test_model_config_max_output_tokens_round_trip() -> None:

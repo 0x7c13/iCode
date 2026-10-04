@@ -90,6 +90,7 @@ async def test_child_stall_preserves_final_attempt_and_timeout_payload(monkeypat
 
     class Compaction:
         value = "original"
+        max_context_tokens = 200_000
 
         def snapshot_retry_state(self):
             return self.value

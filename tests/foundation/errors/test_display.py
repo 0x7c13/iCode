@@ -341,7 +341,11 @@ def test_display_fields_returns_message_and_hint(monkeypatch: pytest.MonkeyPatch
     _classified(monkeypatch, ErrorKind.DNS_FAILED, _DIRECT)
     description = _describe(_Probe(False))
     assert description is not None
-    monkeypatch.setattr(display_module, "describe_error", lambda _exc, *, retry_notice=False: description)
+    monkeypatch.setattr(
+        display_module,
+        "describe_error",
+        lambda _exc, *, retry_notice=False, max_context_tokens=None: description,
+    )
 
     message, hint = display_fields(RuntimeError("stand-in"))
 
@@ -358,6 +362,49 @@ def test_only_a_retry_notice_names_a_stalled_stream(
     message, hint = display_fields(RuntimeError("stand-in"), retry_notice=retry_notice)
 
     assert (_key(message), hint) == (key, None)
+
+
+@pytest.mark.parametrize(
+    ("retry_notice", "key"), [(True, "retry.context_overflow"), (False, "error.kind.context_overflow")]
+)
+def test_a_retry_notice_for_a_context_overflow_announces_the_resend_after_compacting(
+    monkeypatch: pytest.MonkeyPatch, retry_notice: bool, key: str
+) -> None:
+    _classified(monkeypatch, ErrorKind.CONTEXT_OVERFLOW, _DIRECT)
+
+    message, hint = display_fields(RuntimeError("stand-in"), retry_notice=retry_notice)
+
+    assert (_key(message), hint) == (key, None)
+
+
+_NAMES_131072 = "400: This model's maximum context length is 131072 tokens."
+_MISMATCH = "error.kind.context_overflow_config_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("text", "configured", "key", "args"),
+    [
+        (
+            _NAMES_131072,
+            200_000,
+            _MISMATCH,
+            {"configured_max_context_tokens": 200_000, "server_max_context_tokens": 131_072},
+        ),
+        (_NAMES_131072, 131_072, "error.kind.context_overflow", {}),
+        (_NAMES_131072, None, "error.kind.context_overflow", {}),
+        ("400: prompt is too long", 200_000, "error.kind.context_overflow", {}),
+    ],
+    ids=["server_limit_below_profile", "server_limit_equal", "window_unknown", "no_limit_named"],
+)
+def test_an_overflow_says_which_window_to_set_when_the_server_names_a_smaller_one(
+    monkeypatch: pytest.MonkeyPatch, text: str, configured: int | None, key: str, args: dict[str, object]
+) -> None:
+    _classified(monkeypatch, ErrorKind.CONTEXT_OVERFLOW, _DIRECT)
+
+    message, hint = display_fields(RuntimeError(text), max_context_tokens=configured)
+
+    assert message is not None
+    assert (_key(message), _args(message), hint) == (key, args, None)
 
 
 def test_display_fields_is_empty_for_raw_text_kinds(monkeypatch: pytest.MonkeyPatch) -> None:

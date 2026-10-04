@@ -326,6 +326,15 @@ msgstr ""
 msgid "error.kind.context_overflow"
 msgstr ""
 
+#. English: The model profile's maximum context window
+#. ({configured_max_context_tokens}) is larger than the server's limit
+#. ({server_max_context_tokens}). Set "Max Context Window" in the model profile
+#. to {server_max_context_tokens} or less.
+#. chrys-meta={"fingerprint":"c3820643c41aae09c4bba74bfd172ca069645c682651c497e6111a106a80fcd5","multiline":false,"placeholders":["configured_max_context_tokens","server_max_context_tokens"]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.context_overflow_config_mismatch"
+msgstr ""
+
 #. English: Can't resolve {host}. Check your network connection and DNS; if the
 #. address is wrong, fix the base URL in the model profile.
 #. chrys-meta={"fingerprint":"29b0bbc25ea2e5f23ac617e71a561bb685f224d4af035681cdbafe465b7f99fc","multiline":false,"placeholders":["host"]}
@@ -586,6 +595,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5be1263df8739ec915d380c3d1e24cf7bbb0b24a3cf6791e8829b90f1f90c471","multiline":false,"placeholders":["discarded","names"]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "restore.sub_agents_discarded"
+msgstr ""
+
+#. English: The context window is full. Compacting the context before one
+#. retry.
+#. chrys-meta={"fingerprint":"4590c026541e884340855fb290e2e5e0e43ee38b846f8c90257d1e986fe28054","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "retry.context_overflow"
 msgstr ""
 
 #. English: Invalid response: {reason}

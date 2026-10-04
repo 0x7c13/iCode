@@ -18,8 +18,9 @@ from mcp import ClientSession, types
 from mcp.shared.context import RequestContext
 
 import chrys.service.mcp.owned as owned_mcp
-from chrys.kernel import ChatResponse, Message
+from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.middleware import FunctionInvocationContext
+from chrys.kernel.types import ChatResponseUpdate
 from chrys.service.mcp._http_transport import _HTTPMCPTool
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.errors import (
@@ -34,6 +35,7 @@ from chrys.service.mcp.owned import (
     MCPTool,
 )
 from chrys.service.profiles.agents.schema import MCPServerConfig
+from tests.kernel._fakes import _final_response, _result_contents, _stack, _text_response, _text_update, _user
 from tests.service.mcp._helpers import (
     _as_client_session,
     _FakeConnectionTool,
@@ -259,6 +261,42 @@ async def test_mcp_generated_tool_cannot_override_bound_remote_name() -> None:
     (call,) = session.tool_calls
     assert call.name == "safe"
     assert call.arguments == {"value": "ok"}
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+@pytest.mark.parametrize(
+    ("arguments", "server_calls"),
+    [("oops", []), ("[1]", []), ("null", []), ("", [{}]), ('{"state": "open"}', [{"state": "open"}])],
+    ids=["word", "array", "null", "empty", "object"],
+)
+async def test_mcp_tool_called_through_the_loop_never_runs_on_non_object_arguments(
+    stream: bool, arguments: str, server_calls: list[dict[str, Any]]
+) -> None:
+    """A lenient remote schema would accept the parser's ``{"raw": ...}`` wrapper; the server must not be called."""
+    tool = MCPTool(name="m")
+    session = await _load_calling_remote_tools(
+        tool,
+        _mcp_remote_tool(
+            "list_issues",
+            input_schema={
+                "type": "object",
+                "properties": {"state": {"type": "string"}, "limit": {"type": "integer"}},
+            },
+        ),
+    )
+    (function,) = tool.functions
+    call = Content.from_function_call("c1", function.name, arguments=arguments)
+    if stream:
+        turns: list[Any] = [[ChatResponseUpdate(contents=[call], role="assistant")], [_text_update("done")]]
+    else:
+        turns = [ChatResponse(messages=[Message("assistant", [call])]), _text_response()]
+    layer, _wire = _stack(turns)
+
+    response = await _final_response(layer, [_user()], stream=stream, options={"tools": [function]})
+
+    assert [server_call.arguments for server_call in session.tool_calls] == server_calls
+    (result,) = _result_contents(response)
+    assert str(result.result).startswith("Error: ") is (not server_calls)
 
 
 async def test_mcp_declared_remote_name_argument_is_data_not_dispatch_control() -> None:

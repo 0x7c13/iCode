@@ -40,7 +40,7 @@ A profile can have only one `extra_body` row, so put every such field into the s
 Some settings don't belong in Chat Options:
 
 - **Output length**: use the "Max Output Tokens" field. Rows such as `max_tokens` are refused at save.
-- **Streaming**: use the "Streaming" checkbox. Don't add a `stream` row.
+- **Streaming**: use the "Streaming" checkbox, which is on by default; uncheck it to turn streaming off. Don't add a `stream` row.
 - **Model**: use the "Model" field.
 - **HTTP headers**: use the "HTTP Extra Headers" rows, or an `extra_headers` row whose value is a JSON object.
 

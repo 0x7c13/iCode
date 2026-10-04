@@ -122,6 +122,7 @@ def _make_settings_and_models() -> tuple[Settings, ModelProfileRegistry]:
             provider="mock",
             model_id="mock",
             max_context_tokens=100_000,
+            stream=False,
         )
     )
     return Settings(model_profile="mock-profile"), registry

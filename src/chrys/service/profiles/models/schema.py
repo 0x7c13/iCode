@@ -48,7 +48,7 @@ class ModelProfile:
     bypass_proxy: bool = False  # Route this profile's LLM traffic around configured proxies
     http_headers: str = ""  # JSON object of additional provider HTTP headers
     chat_options: str = ""  # JSON object of provider request options
-    stream: bool = False  # Stream response
+    stream: bool = True  # Stream response
     vision: bool = False  # Supports image input
     # Chat Completions: a stream that ends without a finish reason fails as
     # truncated instead of being accepted with a warning.

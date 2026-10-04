@@ -654,6 +654,17 @@ async def test_model_profile_context_fingerprint_includes_chat_options() -> None
     )
 
 
+async def test_model_profile_context_fingerprint_ignores_streaming() -> None:
+    """Toggling streaming keeps a service session resumable: it is not part of the fingerprint."""
+    streaming = ModelProfile(id="p", name="P", provider="openai", api_style="responses", model_id="gpt-5")
+    non_streaming = ModelProfile(
+        id="p", name="P", provider="openai", api_style="responses", model_id="gpt-5", stream=False
+    )
+
+    assert streaming.stream is True
+    assert model_profile_context_fingerprint(streaming) == model_profile_context_fingerprint(non_streaming)
+
+
 async def test_model_profile_context_fingerprint_includes_openai_account_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

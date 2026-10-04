@@ -87,6 +87,7 @@ from chrys.foundation.trajectory.event_types import ValidationReason
 from chrys.kernel import (
     ChatResponse,
     ChatResponseUpdate,
+    ContextOverflowSink,
     Message,
     ResponseStream,
     in_internal_side_call,
@@ -338,6 +339,23 @@ def _hosted_commit_labels_from_plan(plan: ResponsePresentationPlan) -> tuple[str
         if label not in labels:
             labels.append(label)
     return tuple(labels)
+
+
+def _note_output_truncated(context: ChatContext, verdict: ValidationResult, response: ChatResponse) -> None:
+    """Tell the compaction strategy when the input left the reply no room.
+
+    A length stop with nothing generated stays terminal; the next request
+    compacts first. A reasoning-only length stop is not this: the model did
+    generate, so the window was not full. Neither is an empty reply whose
+    usage counts reasoning tokens the API did not return.
+    """
+    if verdict.code != ValidationReason.OUTPUT_TRUNCATED:
+        return
+    if (response.usage_details or {}).get("reasoning_output_token_count"):
+        return
+    strategy = context.kwargs.get("compaction_strategy")
+    if isinstance(strategy, ContextOverflowSink):
+        strategy.note_context_overflow()
 
 
 class ResponseValidationMiddleware(ChatMiddleware):
@@ -635,6 +653,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
                 return
 
             verdict = self._validator.validate(result)
+            _note_output_truncated(context, verdict, result)
             hosted_commits = () if verdict.ok else _hosted_commit_labels(result)
             give_up = not verdict.ok and self._gives_up(
                 verdict,
@@ -786,6 +805,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
                         return
 
                     verdict = self._validator.validate(final)
+                    _note_output_truncated(context, verdict, final)
                     hosted_commits = () if verdict.ok else _hosted_commit_labels(final)
                     give_up = not verdict.ok and self._gives_up(
                         verdict,

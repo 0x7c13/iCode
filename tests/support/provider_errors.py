@@ -71,6 +71,21 @@ async def openai_status(status: int, body: Any) -> BaseException:
     raise AssertionError(f"HTTP {status} did not raise")
 
 
+OPENAI_CONTEXT_OVERFLOW_BODY = {
+    "error": {
+        "type": "invalid_request_error",
+        "code": "context_length_exceeded",
+        "message": "This model's maximum context length is 131072 tokens. "
+        "However, your messages resulted in 140000 tokens.",
+    }
+}
+
+
+async def openai_context_overflow() -> BaseException:
+    """Return the 400 an OpenAI-compatible service answers when the input exceeds the model's window."""
+    return await openai_status(400, OPENAI_CONTEXT_OVERFLOW_BODY)
+
+
 async def anthropic_status(status: int, body: Any) -> BaseException:
     """Return the real Anthropic SDK error for one HTTP error response."""
 

@@ -22,7 +22,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.net.route_probe import default_route_available, is_local_target
 
-from .classify import ErrorClassification, classify_error
+from .classify import ErrorClassification, classify_error, context_overflow_limit
 from .kinds import NETWORK_KINDS, ErrorKind
 from .route import Origin
 
@@ -101,6 +101,14 @@ _CONTEXT_OVERFLOW = msg(
         "Check that the profile's context window matches the model's real one."
     ),
 )
+_CONTEXT_OVERFLOW_CONFIG_MISMATCH = msg(
+    "error.kind.context_overflow_config_mismatch",
+    fallback=(
+        "The model profile's maximum context window ({configured_max_context_tokens}) is larger than the server's "
+        'limit ({server_max_context_tokens}). Set "Max Context Window" in the model profile '
+        "to {server_max_context_tokens} or less."
+    ),
+)
 _PAYLOAD_TOO_LARGE = msg(
     "error.kind.payload_too_large",
     fallback="The request is too large (for example, an image or attachment). Make it smaller and try again.",
@@ -114,6 +122,9 @@ _CONTENT_FILTERED = msg(
 )
 _STREAM_TRUNCATED = msg("error.kind.stream_truncated", fallback="The model's response was cut off.")
 _STREAM_STALLED = msg("retry.stream_stalled", fallback="Stream stalled")
+_CONTEXT_OVERFLOW_RESEND = msg(
+    "retry.context_overflow", fallback="The context window is full. Compacting the context before one retry."
+)
 # The probe checks the device {app} runs on: under ``icode serve`` that is the
 # server, not the device showing the browser.
 _MAYBE_OFFLINE = msg(
@@ -213,29 +224,48 @@ def describe_error(
     *,
     route_probe: Callable[[], bool | None] = default_route_available,
     retry_notice: bool = False,
+    max_context_tokens: int | None = None,
 ) -> ErrorDescription | None:
     """Describe *exc* for the user, or None when the raw text is the best description.
 
     *route_probe* runs only for a direct request to a public host that
     failed to resolve or connect; it adds a hint and never changes the
     message.  A *retry_notice* also names a stalled stream; a paused
-    sub-agent's card already labels a stall by its pause reason.
+    sub-agent's card already labels a stall by its pause reason.  A retry
+    notice for a context overflow is the one resend after compacting.
+    *max_context_tokens*, the failed request's configured window, lets an
+    overflow whose provider names a smaller limit say which value to set.
     """
     result = classify_error(exc)
     kind = result.kind
     if kind is ErrorKind.STREAM_STALLED and retry_notice:
         return ErrorDescription(kind, _STREAM_STALLED.bind())
+    if kind is ErrorKind.CONTEXT_OVERFLOW and retry_notice:
+        return ErrorDescription(kind, _CONTEXT_OVERFLOW_RESEND.bind())
     if (definition := _HOSTLESS_MESSAGES.get(kind)) is not None:
-        return ErrorDescription(kind, definition.bind()) if result.from_model_service else None
+        if not result.from_model_service:
+            return None
+        if kind is ErrorKind.CONTEXT_OVERFLOW and max_context_tokens is not None:
+            limit = context_overflow_limit(exc)
+            if limit is not None and limit < max_context_tokens:
+                return ErrorDescription(
+                    kind,
+                    _CONTEXT_OVERFLOW_CONFIG_MISMATCH.bind(
+                        configured_max_context_tokens=max_context_tokens, server_max_context_tokens=limit
+                    ),
+                )
+        return ErrorDescription(kind, definition.bind())
     if kind in NETWORK_KINDS:
         return _describe_network(result, route_probe)
     return None
 
 
-def display_fields(exc: BaseException, *, retry_notice: bool = False) -> tuple[MessageRef | None, MessageRef | None]:
+def display_fields(
+    exc: BaseException, *, retry_notice: bool = False, max_context_tokens: int | None = None
+) -> tuple[MessageRef | None, MessageRef | None]:
     """Return ``(display_message, display_hint)`` for a failure event; ``(None, None)`` on any internal error."""
     try:
-        description = describe_error(exc, retry_notice=retry_notice)
+        description = describe_error(exc, retry_notice=retry_notice, max_context_tokens=max_context_tokens)
     except Exception:
         logger.debug("Describing an error for display failed", exc_info=True)
         return None, None
