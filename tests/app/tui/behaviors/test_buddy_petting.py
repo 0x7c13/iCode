@@ -18,6 +18,7 @@ from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.foundation.events.bus import EventBus
 from tests.support.buddies import HeldPetReply, HeldSaveFile, assert_reply_gate_open
+from tests.support.tui_helpers import discard_worker
 from tests.support.waiting import wait_for, wait_until
 
 pytestmark = pytest.mark.usefixtures("buddy_reply_gate_left_open")
@@ -54,7 +55,7 @@ class _SuggestionScreen:
     def action_sessions(self) -> None:
         return
 
-    def _chdir(self, _arg: str) -> None:
+    def start_chdir(self, _arg: str) -> None:
         return
 
     def _copy_agent_responses(self, _arg: str) -> None:
@@ -69,7 +70,7 @@ class _SuggestionScreen:
     def action_show_rollback(self, _arg: str = "") -> None:
         return
 
-    def _set_approval_mode(self, _arg: str) -> None:
+    def start_approval_mode_change(self, _arg: str) -> None:
         return
 
     def _open_model_config(self) -> None:
@@ -92,7 +93,7 @@ class _SuggestionScreen:
 
 
 def _make_handler(screen: _SuggestionScreen) -> SuggestionHandler:
-    view = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    view = MainScreenViewAdapter(screen, state=screen.state)  # type: ignore[arg-type]
     return SuggestionHandler(
         state=screen.state,
         services=screen.services,
@@ -118,13 +119,13 @@ def _make_handler(screen: _SuggestionScreen) -> SuggestionHandler:
             browse_session_list=screen.action_sessions,
             edit_session_title=lambda: None,
             apply_session_title=lambda _title: None,
-            change_directory=screen._chdir,
+            change_directory=screen.start_chdir,
             copy_conversation=screen._copy_agent_responses,
             fold_tools=screen._toggle_fold,
             open_diff=screen.action_show_diff,
             open_rollback=screen.action_show_rollback,
             get_approval_mode=lambda: "manual",
-            change_approval_mode=screen._set_approval_mode,
+            change_approval_mode=screen.start_approval_mode_change,
             configure_model=screen._open_model_config,
             configure_agent=screen._open_agent_config,
             configure_agent_tab=screen._open_agent_config_tab,
@@ -135,7 +136,7 @@ def _make_handler(screen: _SuggestionScreen) -> SuggestionHandler:
         ),
         callbacks=SuggestionCallbacks(
             notify_warning=lambda message, title, timeout: screen.notify(message, title=title, timeout=timeout),
-            show_file_suggestions=lambda: None,
+            start_worker=discard_worker,
             submit_user_text=lambda _text: None,
             start_agent_profile_switch=lambda _profile: None,
             start_model_profile_switch=lambda _profile: None,

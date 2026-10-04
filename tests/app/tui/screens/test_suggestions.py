@@ -35,7 +35,7 @@ def test_view_adapter_suggestions_ignore_teardown_nomatches() -> None:
         return screen.input_bar
 
     screen.query_one = query_one
-    view = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    view = MainScreenViewAdapter(screen, state=screen.state)  # type: ignore[arg-type]
 
     view.show_suggestions("files", [SuggestionItem(value="a.py", label="a.py", kind="file")])
     view.show_suggestions_loading("files", title="Files")
@@ -255,7 +255,7 @@ def test_model_trigger_does_not_bypass_locked_runtime_selection(selection_source
 
 
 def _register_agent_profiles(screen: SuggestionScreen) -> None:
-    screen._agent_registry = AgentRegistryStub(
+    screen.services.agent_registry = AgentRegistryStub(
         [
             AgentProfileStub(name="Code", description="Code agent"),
             AgentProfileStub(name="QA", description="QA agent"),

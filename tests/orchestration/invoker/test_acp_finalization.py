@@ -12,6 +12,7 @@ from chrys.foundation.events.types import InvocationPaused
 from chrys.orchestration.invoker.contracts import AbortCause
 from tests.orchestration.sub_agents._acp_fakes import make_controller
 from tests.service.acp_client.helpers import make_spec
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 async def test_acp_abort_result_and_cancel_active_finalize_once(tmp_path, monkeypatch):
@@ -69,7 +70,13 @@ async def test_acp_abort_result_and_cancel_active_finalize_once(tmp_path, monkey
     running = asyncio.create_task(caller(), name="abort-result")
     cancelling = None
     try:
-        await asyncio.wait_for(paused.wait(), 5)
+        # The window spawns and initializes the stub agent: a cold process start.
+        await wait_for(
+            lambda: paused.is_set() or running.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="ACP sub-agent paused",
+        )
+        assert paused.is_set(), running.result()
         assert shell.request_abort() is True
         await asyncio.wait_for(abort_entered.wait(), 5)
         cancelling = asyncio.create_task(cancel(), name="cancel-active")

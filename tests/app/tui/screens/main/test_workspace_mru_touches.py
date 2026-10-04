@@ -10,12 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from chrys.app.tui.screens.main.state import MainScreenState, SessionViewState
 from chrys.foundation.events.types import (
     SessionReady,
     SessionRestored,
     WorkspaceUpdated,
 )
 from tests.support.tui_helpers import (
+    fake_session_title,
+    main_screen_state_at,
     make_backend_handler,
     make_session_handler,
     stale_file_cache,
@@ -69,14 +72,13 @@ def _make_mru_workspace_screen(calls: list[tuple[str, object]]) -> SimpleNamespa
             return shell
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = main_screen_state_at("/repo/current")
+    state.runtime.profile = "Code Agent"
     return SimpleNamespace(
-        _profile="Code Agent",
-        _has_messages=False,
-        _chdir_original_cwd=None,
-        _chdir_current_cwd="/repo/current",
+        _state=state,
         _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
         query_one=query_one,
-        _set_terminal_title_for_cwd=lambda _cwd: None,
+        _session_title=fake_session_title(),
         _debug=lambda *_args: None,
     )
 
@@ -123,12 +125,7 @@ def test_session_ready_schedules_mru_touches_for_all_roots(monkeypatch: pytest.M
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _agent_registry=None,
-        _model_registry=None,
-        _creating_new_session=False,
-        _restoring_session=True,
-        _profile="",
-        _state_store=None,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
         query_one=_query_one,
         _update_subtitle=lambda: None,
         _debug=lambda *_args: None,
@@ -207,14 +204,10 @@ def test_session_restored_schedules_mru_touches_for_all_roots(monkeypatch: pytes
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _state_store=None,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
         query_one=query_one,
         _set_has_messages=lambda _value: None,
-        _set_terminal_title_for_cwd=lambda _cwd: None,
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(),
         _events=SimpleNamespace(finish_agent_load=lambda _message: None),
         _debug=lambda *_args: None,
     )

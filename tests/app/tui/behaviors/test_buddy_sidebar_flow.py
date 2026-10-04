@@ -12,6 +12,7 @@ from textual.widgets import Static, TabbedContent
 
 from chrys.app.features.buddy import actions, lifecycle
 from chrys.app.tui.screens.main.buddy_command import BuddyCommandController
+from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.sidebar import buddy as buddy_module
 from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
@@ -48,7 +49,7 @@ class _SidebarApp(App[None]):
         return self.sidebar.query_one(TabbedContent).active
 
     def controller(self) -> BuddyCommandController:
-        return BuddyCommandController(MainScreenViewAdapter(self.screen))  # type: ignore[arg-type]
+        return BuddyCommandController(MainScreenViewAdapter(self.screen, state=MainScreenState()))  # type: ignore[arg-type]
 
     def toasts(self) -> list[tuple[str, str]]:
         """Live toasts as (severity, text), oldest first."""

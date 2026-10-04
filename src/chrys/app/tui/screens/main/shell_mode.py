@@ -28,18 +28,18 @@ class ShellModeController:
         state: MainScreenState,
         shell_view: ShellModeView,
         focus_view: InputFocusView,
-        set_shell_mode: Callable[[bool], None],
         set_shell_mode_state: Callable[[bool], None],
-        set_fullscreen_terminal: Callable[[bool], None],
+        panel_focus_changed: Callable[[], None],
         dismiss_suggestions: Callable[[], None],
         debug: Callable[[str, str], None],
     ) -> None:
         self._state = state
         self._shell_view = shell_view
         self._focus_view = focus_view
-        self._set_shell_mode = set_shell_mode
         self._set_shell_mode_state = set_shell_mode_state
-        self._set_fullscreen_terminal = set_fullscreen_terminal
+        # Told after every shell or fullscreen-terminal state change, which
+        # moves what ``keeps_panel_focus`` reports.
+        self._panel_focus_changed = panel_focus_changed
         self._dismiss_suggestions = dismiss_suggestions
         self._debug = debug
 
@@ -48,7 +48,7 @@ class ShellModeController:
         if active:
             self._dismiss_suggestions()
         self._state.shell.active = active
-        self._set_shell_mode(active)
+        self._panel_focus_changed()
         if active:
             self._shell_view.enter_shell_mode()
         else:
@@ -60,10 +60,6 @@ class ShellModeController:
         if self._state.shell.active:
             self._set_shell_mode_state(False)
 
-    async def send_interrupt(self) -> None:
-        """Send Ctrl+C to the shell PTY."""
-        await self._shell_view.send_shell_interrupt()
-
     def command_executed(self, command: str) -> None:
         """Record shell command execution for debug sidebar visibility."""
         self._debug("ShellCommand", command[:60])
@@ -71,7 +67,7 @@ class ShellModeController:
     def set_alternate_screen_active(self, active: bool) -> None:
         """Enter or exit fullscreen terminal pass-through mode."""
         self._state.shell.fullscreen_terminal = active
-        self._set_fullscreen_terminal(active)
+        self._panel_focus_changed()
         self._shell_view.set_alternate_screen_active(active)
 
     def exit_on_shell_closed(self) -> None:

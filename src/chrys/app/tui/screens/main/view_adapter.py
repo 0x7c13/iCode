@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.diff.rollback_modal import RollbackModalState
     from chrys.app.tui.screens.main.engine_read_model import RollbackReadState
     from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.events.types import ProvisionalPresentation
@@ -110,16 +111,20 @@ class MainScreenViewAdapter:
         self,
         screen: MainScreen,
         *,
+        state: MainScreenState,
         state_store: StateStore | None = None,
         locale_controller: LocaleController | None = None,
     ) -> None:
         self._screen = screen
+        self._state = state
         self._state_store = state_store
         self._locale_controller = locale_controller
         self._rollback_progress_modal: RollbackProgressModal | None = None
         self._input_restore_generation = 0
         # The sessions browser's surface filter per mode (workflow mode or not), kept while the app runs.
         self._session_surfaces: dict[bool, frozenset[SessionSurface]] = {}
+        # The status bar as shell mode found it, restored when shell mode exits.
+        self._shell_status_snapshot: dict = {}
 
     # -------------------------------------------------------------- #
     # Generic screen effects
@@ -225,13 +230,13 @@ class MainScreenViewAdapter:
     # -------------------------------------------------------------- #
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
-        self._screen._set_terminal_title_for_user_message(text)
+        self._screen._session_title.set_terminal_title_for_user_message(text)
 
     def clear_terminal_title_result(self) -> None:
-        self._screen._clear_terminal_title_result()
+        self._screen._session_title.clear_terminal_title_result()
 
     def set_terminal_title_for_cwd(self, cwd: str | None = None) -> None:
-        self._screen._set_terminal_title_for_cwd(cwd)
+        self._screen._session_title.set_terminal_title_for_cwd(cwd)
 
     def current_chat_session_id(self) -> str:
         return self._screen.query_one(ChatPanel).session_id
@@ -334,10 +339,10 @@ class MainScreenViewAdapter:
         self._screen.query_one(StatusBar).flash_completed()
 
     def mark_terminal_title_completed(self) -> None:
-        self._screen._mark_terminal_title_completed()
+        self._screen._session_title.mark_terminal_title_completed()
 
     def mark_terminal_title_failed(self) -> None:
-        self._screen._mark_terminal_title_failed()
+        self._screen._session_title.mark_terminal_title_failed()
 
     def start_tool_status(self, tool_name: str) -> None:
         status = self._screen.query_one(StatusBar)
@@ -375,13 +380,13 @@ class MainScreenViewAdapter:
         generated: str | None = None,
         fallback: str | None = None,
     ) -> None:
-        self._screen._set_session_title_state(custom=custom, generated=generated, fallback=fallback)
+        self._screen._session_title.set_session_title_state(custom=custom, generated=generated, fallback=fallback)
 
     def reset_session_title_state(self) -> None:
-        self._screen._reset_session_title_state()
+        self._screen._session_title.reset_session_title_state()
 
     def session_custom_title(self) -> str:
-        return self._screen._session_custom_title
+        return self._screen._session_title.custom_title
 
     def set_context_usage_state(self, state: ContextUsageState | None) -> None:
         self._screen.context_usage_state = state
@@ -559,7 +564,7 @@ class MainScreenViewAdapter:
 
     def sync_main_surface(self) -> None:
         dashboard = self._screen.query_one(TrajectoryDashboard)
-        shell = self._screen._shell_mode
+        shell = self._state.shell.active
         workflow = self._screen._workflow.workflow_mode
         dashboard.display = dashboard.foreground and not shell
         self._screen._workflow_panel.display = workflow and not dashboard.foreground and not shell
@@ -678,7 +683,7 @@ class MainScreenViewAdapter:
         # The rolled-back session's file is gone; stale title state would
         # otherwise keep suppressing future auto-title updates (a custom
         # title in UI state blocks them) and pin a stale terminal title.
-        self._screen._reset_session_title_state()
+        self.reset_session_title_state()
         if session_id:
             self._screen.chat_session_id = session_id
             panel.set_session_id(session_id)
@@ -1426,7 +1431,7 @@ class MainScreenViewAdapter:
         shell = self._screen.query_one(ShellPanel)
         status = self._screen.query_one(StatusBar)
         sidebar = self._screen.query_one(SidebarPanel)
-        self._screen._sb_saved = status.snapshot()
+        self._shell_status_snapshot = status.snapshot()
         if dashboard.suspend_for_shell_mode():
             session_json.suspend_for_shell_mode()
         else:
@@ -1457,12 +1462,9 @@ class MainScreenViewAdapter:
         sidebar.remove_class("-shell-active")
         # Restore last for the same reason flash runs last in enter_shell_mode:
         # its map rebuild must see the fully restored layout.
-        status.restore(self._screen._sb_saved)
+        status.restore(self._shell_status_snapshot)
         if not dashboard_restored and input_bar.display:
             input_bar.focus_input()
-
-    async def send_shell_interrupt(self) -> None:
-        await self._screen.query_one(ShellPanel).send_interrupt()
 
     def set_alternate_screen_active(self, active: bool) -> None:
         status = self._screen.query_one(StatusBar)
@@ -1474,7 +1476,7 @@ class MainScreenViewAdapter:
             status.flash(STATUS_INTERACTIVE_MODE.bind(), warn=True)
             self._screen.query_one(ShellPanel).query_one(Terminal).focus()
             return
-        if self._screen._shell_mode:
+        if self._state.shell.active:
             status.flash(STATUS_SHELL_MODE.bind(), warn=True)
             self._screen.query_one(ShellPanel).query_one(Terminal).focus()
         else:
@@ -1524,7 +1526,7 @@ class MainScreenViewAdapter:
             rollback_modal.handoff_to_session_restore()
 
         def _restore_input_focus(_result: None = None) -> None:
-            if self._screen._shell_mode or self._screen._fullscreen_terminal:
+            if self._state.shell.active or self._state.shell.fullscreen_terminal:
                 return
             with contextlib.suppress(Exception):
                 self._screen.query_one(InputBar).focus_input()

@@ -111,7 +111,7 @@ async def test_starting_worker_can_be_cancelled_before_acceptance(
             await host.start()
             main = app._main_screen
             assert main is not None
-            await wait_for(lambda: not main._agent_loading and app.screen is main, pilot=pilot)
+            await wait_for(lambda: not main._state.run.agent_loading and app.screen is main, pilot=pilot)
             await open_workflow(main, pilot, "slow")
             block.touch()
             assert main._workflow.run_control.start("")

@@ -285,7 +285,7 @@ async def test_builtin_demo_runs_from_selection_to_persisted_outputs(
             await host.start()
             main = app._main_screen
             assert main is not None
-            await wait_for(lambda: not main._agent_loading and app.screen is main, pilot=pilot)
+            await wait_for(lambda: not main._state.run.agent_loading and app.screen is main, pilot=pilot)
             main.action_workflow()
             panel = main.query_one(WorkflowPanel)
             await wait_for(lambda: bool(main._workflow.browser._picker.selection.rows), pilot=pilot)

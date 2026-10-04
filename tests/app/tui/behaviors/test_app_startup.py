@@ -14,6 +14,7 @@ import pytest
 
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
 from chrys.foundation.events.bus import EventBus
@@ -22,6 +23,7 @@ from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import RuntimeBootstrap
+from tests.support.tui_helpers import main_screen_parts
 
 
 def test_tui_startup_profile_resolves_preferred_agent() -> None:
@@ -417,13 +419,15 @@ def test_tui_help_does_not_offer_profile(monkeypatch: pytest.MonkeyPatch, capsys
 
 
 def _attach_startup_facade(screen: object) -> object:
-    """Add the public MainScreen startup facade to lightweight test doubles."""
+    """Add MainScreen's startup facade to a lightweight double, over the double's ``_state``."""
+    state, _services, _live_diff = main_screen_parts(screen)
 
     def set_startup_agent_loading(value: bool) -> None:
+        state.run.agent_loading = value
         screen._set_agent_loading(value)  # type: ignore[attr-defined]
 
     def is_startup_agent_loading() -> bool:
-        return bool(getattr(screen, "_agent_loading", False))
+        return state.run.agent_loading
 
     async def restore_startup_session(session_id: str) -> bool:
         await screen._sessions.do_session_restore(session_id, allow_while_loading=True)  # type: ignore[attr-defined]
@@ -460,10 +464,9 @@ async def test_start_engine_surfaces_early_startup_failure() -> None:
             flashes.append((rendered, error))
 
     class _Screen:
-        _agent_loading = True
+        _state = MainScreenState(run=RunState(agent_loading=True))
 
         def _set_agent_loading(self, value: bool) -> None:
-            self._agent_loading = value
             loading_states.append(value)
 
         def query_one(self, cls: type) -> _StatusBar:
@@ -597,14 +600,14 @@ async def test_start_engine_falls_back_when_restore_emits_no_success() -> None:
             return SimpleNamespace(session_id=session_id)
 
     class _Screen:
-        _agent_loading = True
+        loading = True
 
         def set_startup_agent_loading(self, value: bool) -> None:
-            self._agent_loading = value
+            self.loading = value
             calls.append(("loading", value))
 
         def is_startup_agent_loading(self) -> bool:
-            return self._agent_loading
+            return self.loading
 
         async def dismiss_startup_load_dialog_before_restore(self) -> None:
             return
@@ -648,6 +651,7 @@ async def test_start_engine_falls_back_when_restore_emits_no_success() -> None:
 
 async def test_main_screen_startup_restore_requires_matching_success_event() -> None:
     from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.screens.main.state import MainScreenServices
     from chrys.foundation.events.types import SessionRestored
 
     bus = EventBus()
@@ -662,7 +666,7 @@ async def test_main_screen_startup_restore_requires_matching_success_event() -> 
                 await bus.publish(SessionRestored(session_id=session_id))
 
     screen = object.__new__(MainScreen)
-    screen._bus = bus
+    screen._services = MainScreenServices(bus=bus)
     screen._sessions = _Sessions(publish_success=False)
     assert await MainScreen.restore_startup_session(screen, "session-1") is False
 
@@ -839,8 +843,6 @@ async def test_start_engine_missing_startup_session_warns_and_continues() -> Non
             flashes.append((format_message(message) if isinstance(message, MessageRef) else message, error))
 
     class _Screen:
-        _agent_loading = False
-
         def _set_agent_loading(self, value: bool) -> None:
             calls.append(("loading", value))
 
@@ -906,7 +908,6 @@ async def test_start_engine_startup_session_restore_failure_warns_and_continues(
             flashes.append((format_message(message) if isinstance(message, MessageRef) else message, error))
 
     class _Screen:
-        _agent_loading = False
         _sessions = _Sessions()
 
         def _set_agent_loading(self, value: bool) -> None:
@@ -1015,13 +1016,13 @@ async def test_start_engine_flushes_deferred_settings_warnings_when_falling_back
             return
 
     class _Screen:
-        _agent_loading = True
+        loading = True
 
         def set_startup_agent_loading(self, value: bool) -> None:
-            self._agent_loading = value
+            self.loading = value
 
         def is_startup_agent_loading(self) -> bool:
-            return self._agent_loading
+            return self.loading
 
         async def dismiss_startup_load_dialog_before_restore(self) -> None:
             return

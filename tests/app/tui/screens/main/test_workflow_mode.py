@@ -64,7 +64,7 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
             await wait_for(lambda: bool(requests), pilot=pilot)
             assert main._workflow.awaiting_engine and engine.snapshot.kind == "idle"
         else:
-            main._begin_pending_submit(composer.value)
+            main._state.submit.begin(composer.value)
         await assert_mode_locked()
 
         if workflow:
@@ -78,7 +78,7 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
             )
             await bus.publish(events.WorkflowRunStarted(run_id="run", manifest=preview.manifest))
         else:
-            main._clear_pending_submit()
+            main._state.submit.clear()
             main._set_agent_running(True)
             # Presentation may become busy before the backend acquires its lease.
             await assert_mode_locked()

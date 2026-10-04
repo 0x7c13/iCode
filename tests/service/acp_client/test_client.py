@@ -24,7 +24,7 @@ from chrys.service.acp_client import (
 )
 from chrys.service.acp_client import _transport as transport_mod
 from chrys.service.acp_client import client as client_mod
-from tests.support.waiting import wait_for, wait_until
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 from .helpers import CallbackRecorder, connected_client, make_spec, residual_client_tasks
 
@@ -253,9 +253,14 @@ async def test_protocol_version_mismatch_and_sdk_coercions_are_config_errors(
 async def test_connect_cancellation_rolls_back_spawn_and_preserves_cancellation(tmp_path: Path) -> None:
     client = AcpAgentClient(make_spec(tmp_path, scenario="initialize_stall"), CallbackRecorder())
     connect_task = asyncio.create_task(client.connect())
-    await wait_for(lambda: client._spawn is not None, description="ACP child spawn")
+    # Spawning the stub is a cold process start.
+    await wait_for(
+        lambda: client._spawn is not None or connect_task.done(),
+        timeout=ENGINE_TURN_TIMEOUT,
+        description="ACP child spawn",
+    )
     spawn = client._spawn
-    assert spawn is not None
+    assert spawn is not None, connect_task.result()
     await client.cancel()
     assert not client.stateful_phase_started
 

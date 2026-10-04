@@ -18,6 +18,7 @@ from chrys.app.tui.notifications import drivers as notification_drivers
 from chrys.app.tui.notifications.drivers import MacOSNotificationDriver, NotificationDeliveryResult, NotificationPayload
 from chrys.app.tui.notifications.service import NotificationService
 from chrys.app.tui.notifications.settings import NOTIFICATIONS_TITLE, NotificationEvent, NotificationSettings
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.app.tui.screens.settings.panes.notifications import (
     _SUPPRESS_WHILE_FOCUSED,
     _TEST_BUTTON,
@@ -31,7 +32,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.ask_user import AskUserQuestion
 from chrys.foundation.models.invocations import InvocationOrigin
 from tests.support.notifications import RecordingNotificationDriver
-from tests.support.tui_helpers import make_backend_handler
+from tests.support.tui_helpers import fake_session_title, make_backend_handler
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -657,11 +658,8 @@ async def test_final_agent_message_notifies_only_for_live_run() -> None:
 
     screen = SimpleNamespace(
         app=app,
-        _agent_running=True,
-        _pending_user_message_render_active=False,
-        _deferred_agent_messages=[],
-        _mark_terminal_title_completed=lambda: None,
-        _set_agent_running=lambda running: setattr(screen, "_agent_running", running),
+        _state=MainScreenState(run=RunState(agent_running=True)),
+        _session_title=fake_session_title(),
         query_one=query_one,
         _debug=lambda *_args: None,
     )
@@ -705,14 +703,8 @@ async def test_error_notifies_only_for_live_turn_errors() -> None:
 
     screen = SimpleNamespace(
         app=app,
-        _agent_running=True,
-        _agent_loading=False,
-        _restoring_session=False,
-        _pending_user_submit_active=False,
-        _pending_user_submit_text="",
-        _pending_user_submit_blocked=False,
-        _mark_terminal_title_failed=lambda: None,
-        _set_agent_running=lambda running: setattr(screen, "_agent_running", running),
+        _state=MainScreenState(run=RunState(agent_running=True)),
+        _session_title=fake_session_title(),
         query_one=query_one,
         _debug=lambda *_args: None,
     )
@@ -731,11 +723,7 @@ async def test_session_in_use_error_does_not_notify() -> None:
     app = _FakeApp()
     screen = SimpleNamespace(
         app=app,
-        _agent_running=True,
-        _agent_loading=False,
-        _restoring_session=False,
-        _pending_user_submit_active=False,
-        _set_agent_running=lambda running: setattr(screen, "_agent_running", running),
+        _state=MainScreenState(run=RunState(agent_running=True)),
         _debug=lambda *_args: None,
     )
     handler = make_backend_handler(screen)

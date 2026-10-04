@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chrys.app.tui.screens.main.diff_controller import LiveDiffTracker
 from chrys.app.tui.screens.main.event_handlers import (
     BackendEventHandler,
 )
@@ -23,10 +24,10 @@ def _make_handler() -> tuple[BackendEventHandler, dict[str, LiveFileMutation]]:
     """Create a BackendEventHandler with a minimal mock screen.
 
     Returns ``(handler, live_file_mutations_dict)`` — the dict is the
-    shared mutable mapping on the mock screen.
+    mapping the screen's live-diff tracker accumulates into.
     """
     live: dict[str, LiveFileMutation] = {}
-    screen = SimpleNamespace(_live_file_mutations=live)
+    screen = SimpleNamespace(_live_diff=LiveDiffTracker(file_mutations=live))
     handler = make_backend_handler(screen)
     return handler, live
 

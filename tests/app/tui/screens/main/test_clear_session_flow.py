@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,13 +13,19 @@ from typing import Any
 import pytest
 
 from chrys.app.tui.screens.main.navigation import MainNavigationController
-from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.screens.main.state import (
+    MainScreenServices,
+    MainScreenState,
+    RunState,
+    SessionViewState,
+    SubmitCoordinator,
+)
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Error, SessionClear, SessionDeleted
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.service.state.store import JsonFileStateStore
-from tests.support.tui_helpers import make_backend_handler, make_session_handler, pending_submit_defaults
+from tests.support.tui_helpers import make_backend_handler, make_session_handler
 
 _SESSION_ID = "4201eebc-ca45-4328-8882-272f3d7c41cb"
 
@@ -67,7 +73,7 @@ class _Harness:
         self.view = _FakeNavigationView(session_id)
         self.submit_pending = submit_pending
         self.deleted: list[str] = []
-        self.workers: list[Awaitable[None]] = []
+        self.workers: list[Callable[[], Awaitable[object]]] = []
 
         async def _delete_current_and_new(session_id: str) -> None:
             self.deleted.append(session_id)
@@ -78,9 +84,9 @@ class _Harness:
         async def _flush() -> None:
             return None
 
-        def _start_worker(awaitable: Awaitable[None]) -> object:
-            self.workers.append(awaitable)
-            return awaitable
+        def _start_worker(work: Callable[[], Awaitable[object]]) -> object:
+            self.workers.append(work)
+            return work
 
         self.navigation = MainNavigationController(
             services=MainScreenServices(bus=EventBus(), state_store=state_store),
@@ -104,7 +110,7 @@ class _Harness:
 
     async def run_workers(self) -> None:
         while self.workers:
-            await self.workers.pop(0)
+            await self.workers.pop(0)()
 
     def confirm(self, result: bool) -> None:
         self.view.dialogs[-1]["on_result"](result)
@@ -233,33 +239,27 @@ def test_clear_confirmed_after_session_changed_does_not_delete() -> None:
     assert harness.deleted == []
 
 
-def _make_clear_screen(bus: EventBus, loading: list[bool]) -> SimpleNamespace:
-    def set_agent_loading(value: bool) -> None:
-        screen._agent_loading = value
-        loading.append(value)
-
-    screen = SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=False,
-        _has_messages=True,
-        _creating_new_session=False,
-        _bus=bus,
+def _make_clear_screen(bus: EventBus, loading: list[bool], creating: list[bool]) -> SimpleNamespace:
+    return SimpleNamespace(
+        _state=MainScreenState(run=RunState(has_messages=True)),
+        _services=MainScreenServices(bus=bus),
         notify=lambda *_args, **_kwargs: None,
-        _set_agent_loading=set_agent_loading,
+        _set_agent_loading=loading.append,
+        _set_creating_new_session=creating.append,
         _debug=lambda *_args: None,
     )
-    return screen
 
 
 def test_delete_current_and_new_publishes_session_clear_with_input_blocked() -> None:
     """/clear is ONE backend op: input is blocked and the new-session flag set before it is published."""
     bus = EventBus()
     loading: list[bool] = []
+    creating: list[bool] = []
     seen: list[tuple[str, bool, bool]] = []
-    screen = _make_clear_screen(bus, loading)
+    screen = _make_clear_screen(bus, loading, creating)
 
     async def fake_backend(event: SessionClear) -> None:
-        seen.append((event.session_id, screen._agent_loading, screen._creating_new_session))
+        seen.append((event.session_id, screen._state.run.agent_loading, screen._state.session.creating_new_session))
         await bus.publish(SessionDeleted(session_id=event.session_id))
 
     async def run() -> None:
@@ -272,14 +272,16 @@ def test_delete_current_and_new_publishes_session_clear_with_input_blocked() -> 
     # Acknowledged delete: the fresh session's own load/ready events own the
     # flags from here, so nothing is reset optimistically.
     assert loading == [True]
-    assert screen._creating_new_session is True
+    assert creating == [True]
+    assert screen._state.session.creating_new_session is True
 
 
 def test_delete_current_and_new_without_ack_resets_new_session_state() -> None:
     """No ``SessionDeleted`` acknowledgement means nothing was deleted: undo the optimistic UI state."""
     bus = EventBus()
     loading: list[bool] = []
-    screen = _make_clear_screen(bus, loading)
+    creating: list[bool] = []
+    screen = _make_clear_screen(bus, loading, creating)
 
     async def failing_backend(event: SessionClear) -> None:
         await bus.publish(Error(code="session_clear_failed", message="Failed to delete session: boom"))
@@ -291,7 +293,8 @@ def test_delete_current_and_new_without_ack_resets_new_session_state() -> None:
     asyncio.run(run())
 
     assert loading == [True, False]
-    assert screen._creating_new_session is False
+    assert creating == [True, False]
+    assert screen._state.session.creating_new_session is False
 
 
 @pytest.mark.parametrize(
@@ -311,11 +314,11 @@ def test_delete_current_and_new_is_ignored_while_busy(running: bool, loading: bo
         published.append(event)
 
     screen = SimpleNamespace(
-        _agent_running=running,
-        _agent_loading=loading,
-        _pending_user_submit_active=submitting,
-        _has_messages=True,
-        _bus=SimpleNamespace(publish=publish),
+        _state=MainScreenState(
+            run=RunState(agent_running=running, agent_loading=loading, has_messages=True),
+            submit=SubmitCoordinator(active=submitting),
+        ),
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         _set_agent_loading=loading_calls.append,
     )
     handler = make_session_handler(screen)
@@ -334,6 +337,7 @@ def test_session_clear_error_toasts_and_keeps_session_without_retry_mode() -> No
     unlocked: list[None] = []
     running: list[bool] = []
     loading: list[bool] = []
+    creating: list[bool] = []
     errors_added: list[str] = []
 
     class _FakeStatusBar:
@@ -366,18 +370,12 @@ def test_session_clear_error_toasts_and_keeps_session_without_retry_mode() -> No
     def notify(message: str, *, title: str, severity: str, **_kwargs: object) -> None:
         notifications.append((title, severity, message))
 
-    def set_agent_loading(value: bool) -> None:
-        screen._agent_loading = value
-        loading.append(value)
-
-    defaults = pending_submit_defaults()
+    state = MainScreenState(run=RunState(agent_loading=True), session=SessionViewState(creating_new_session=True))
     screen = SimpleNamespace(
-        _restoring_session=False,
-        _agent_loading=True,
-        _creating_new_session=True,
-        **defaults,
+        _state=state,
         _set_agent_running=running.append,
-        _set_agent_loading=set_agent_loading,
+        _set_agent_loading=loading.append,
+        _set_creating_new_session=creating.append,
         query_one=query_one,
         notify=notify,
         _debug=lambda *_args: None,
@@ -390,7 +388,8 @@ def test_session_clear_error_toasts_and_keeps_session_without_retry_mode() -> No
 
     assert notifications == [("Clear Session", "error", "The current session was kept: Failed to delete session: boom")]
     assert loading == [False]
-    assert screen._creating_new_session is False
+    assert creating == [False]
+    assert state.session.creating_new_session is False
     assert unlocked == [None]
     assert running == []
     assert flashes == []

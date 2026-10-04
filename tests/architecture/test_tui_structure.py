@@ -352,7 +352,7 @@ def test_main_screen_view_adapter_is_the_extracted_screen_back_reference() -> No
             "screen-import",
         ),
         (
-            "from chrys.app.tui.screens.main.screen import _parse_copy_arguments\n",
+            "from chrys.app.tui.screens.main.screen import _SESSIONS_BINDING\n",
             "screen-import",
         ),
         (

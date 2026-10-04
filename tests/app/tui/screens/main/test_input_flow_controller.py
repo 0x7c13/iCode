@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.models.invocations import InvocationOrigin
 from tests.support.tui_helpers import (
+    fake_session_title,
     make_backend_handler,
     status_text,
 )
@@ -116,11 +118,8 @@ def _make_input_flow_controller(
     async def _default_handle_error(event: Error) -> None:
         view.calls.append(f"error:{event.message}")
 
-    def _unexpected_start_worker(awaitable: object) -> None:
-        close = getattr(awaitable, "close", None)
-        if callable(close):
-            close()
-        raise AssertionError(f"unexpected worker scheduling: {awaitable!r}")
+    def _unexpected_start_worker(work: object) -> None:
+        raise AssertionError(f"unexpected worker scheduling: {work!r}")
 
     def _set_agent_running(value: bool) -> None:
         state.run.agent_running = value
@@ -146,6 +145,12 @@ def _make_input_flow_controller(
         debug=lambda *_args: None,
     )
     return controller, state, view
+
+
+async def _run_started(scheduled: list[Callable[[], Awaitable[object]]]) -> None:
+    """Run the work the controller handed its worker hook, as the started workers would."""
+    while scheduled:
+        await scheduled.pop(0)()
 
 
 def test_input_bar_retry_leaves_status_action_until_admission() -> None:
@@ -196,7 +201,7 @@ def test_inline_status_retry_resumes_without_consuming_input_draft() -> None:
 
     flow = SimpleNamespace(request_retry=lambda text: calls.append(("retry", text)))
     screen = SimpleNamespace(
-        _agent_loading=False,
+        _state=MainScreenState(),
         query_one=query_one,
         _input_flow=flow,
         _model_unconfigured=lambda: False,
@@ -209,12 +214,12 @@ def test_inline_status_retry_resumes_without_consuming_input_draft() -> None:
     assert calls == [("retry", "")]
 
 
-def test_do_retry_ignores_duplicate_while_retry_submit_is_pending() -> None:
+def test_request_retry_ignores_duplicate_while_retry_submit_is_pending() -> None:
     state = MainScreenState()
     state.submit.active = True
     controller, _state, view = _make_input_flow_controller(EventBus(), state=state)
 
-    asyncio.run(controller.retry("duplicate note"))
+    controller.request_retry("duplicate note")
 
     assert view.calls == []
 
@@ -241,12 +246,11 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
     assert state.submit.text == "first note"
     assert view.calls == [("retry_pending", True)]
     assert len(scheduled) == 1
-    task = asyncio.create_task(scheduled.pop())
+    task = asyncio.create_task(scheduled.pop()())
     try:
         async with asyncio.timeout(5):
             await entered.wait()
             controller.request_retry("duplicate click")
-            await controller.retry("duplicate keyboard submit")
             assert not scheduled
             assert published == ["first note"]
             if outcome == "cancelled":
@@ -274,7 +278,8 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
     else:
         assert "hide_status_action" not in view.calls
         # A later intentional attempt is available again after rejection/cancel.
-        await controller.retry("try again")
+        controller.request_retry("try again")
+        await _run_started(scheduled)
         assert published == ["first note", "try again"]
 
 
@@ -342,19 +347,20 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
     view = _FlowView()
     screen = SimpleNamespace(
         _state=state,
-        _agent_running=False,
-        _mark_terminal_title_failed=lambda: None,
+        _session_title=fake_session_title(),
         query_one=query_one,
         _debug=lambda *_args: None,
         notify=lambda message, **kwargs: order.append(f"notify:{status_text(message)}:{kwargs['severity']}"),
     )
     handler = make_backend_handler(screen)
     handler._agent_load_dialog = None
+    scheduled: list[Callable[[], Awaitable[object]]] = []
     controller, _state, _view = _make_input_flow_controller(
         bus,
         state=state,
         view=view,
         handle_error=handler.on_error,
+        start_worker=scheduled.append,
     )
 
     async def _fail_retry(_event: UserRetry) -> None:
@@ -365,7 +371,8 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         await bus.subscribe(UserRetry, _fail_retry)
         await bus.subscribe(Error, handler.on_error)
         await bus.subscribe(Warning, handler.on_warning)
-        await controller.retry(text)
+        controller.request_retry(text)
+        await _run_started(scheduled)
 
     asyncio.run(_run())
 
@@ -442,7 +449,7 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
                 panel.hide_trailing_status_action()
 
             def set_retry_pending(self, pending: bool) -> None:
-                MainScreenViewAdapter(screen).set_retry_pending(pending)
+                MainScreenViewAdapter(screen, state=MainScreenState()).set_retry_pending(pending)
 
         def query_one(cls):
             if cls is ChatPanel:
@@ -455,13 +462,15 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
 
         screen = SimpleNamespace(
             _state=state,
-            _agent_running=False,
             query_one=query_one,
             notify=lambda message, **_kwargs: notifications.append(status_text(message)),
             _debug=lambda *_args: None,
         )
         handler = make_backend_handler(screen)
-        controller, _, _ = _make_input_flow_controller(bus, state=state, view=View(), handle_error=handler.on_error)
+        scheduled: list[Callable[[], Awaitable[object]]] = []
+        controller, _, _ = _make_input_flow_controller(
+            bus, state=state, view=View(), handle_error=handler.on_error, start_worker=scheduled.append
+        )
         attempts = 0
 
         async def retry(_event: UserRetry) -> None:
@@ -477,7 +486,8 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
         await bus.subscribe(Error, handler.on_error)
         await bus.subscribe(Warning, handler.on_warning)
         for attempt in range(1, 3):
-            await controller.retry("https://example.com/document")
+            controller.request_retry("https://example.com/document")
+            await _run_started(scheduled)
             assert notifications == ["Cannot start yet"] * attempt
             assert card.is_mounted and row.display
             assert not button.disabled and not input_bar.retry_pending
@@ -485,7 +495,8 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
             assert not state.run.agent_running
             assert not state.submit.active and not state.submit.is_retry
 
-        await controller.retry("https://example.com/document")
+        controller.request_retry("https://example.com/document")
+        await _run_started(scheduled)
         assert attempts == 3
         assert card.is_mounted and not row.display
         assert not input_bar.retry_pending
@@ -725,8 +736,7 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
     view = _FlowView()
     screen = SimpleNamespace(
         _state=state,
-        _agent_running=False,
-        _mark_terminal_title_failed=lambda: None,
+        _session_title=fake_session_title(),
         query_one=query_one,
         _debug=lambda *_args: None,
     )

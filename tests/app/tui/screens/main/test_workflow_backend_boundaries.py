@@ -75,7 +75,7 @@ async def test_workflow_shares_the_launch_approval_badge_and_its_errors_stay_sco
         await bus.publish(events.ApprovalModeUpdated(mode="manual", session_id="workflow"))
         assert main.header_approval_mode is ApprovalMode.AUTO
         async with capture_event_sequence(bus, events.SetApprovalMode) as changes:
-            await main._set_approval_mode("bypass").wait()
+            await main._config_actions.start_approval_mode_change("bypass").wait()
             assert len(changes) == 1
             assert (changes[0].mode, changes[0].session_id, changes[0].persist) == ("bypass", None, True)
             # The echo updates the shared badge without sending another mode request.

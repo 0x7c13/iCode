@@ -311,7 +311,7 @@ workflow = wf.build()
             await host.start()
             main = app._main_screen
             assert main is not None
-            await wait_for(lambda: not main._agent_loading and app.screen is main, pilot=pilot)
+            await wait_for(lambda: not main._state.run.agent_loading and app.screen is main, pilot=pilot)
             await open_workflow(main, pilot, "agent_question")
             await start_workflow(pilot)
             await wait_for(
@@ -378,7 +378,7 @@ async def test_workflow_structured_questions_resolve_the_node_through_the_dialog
             await host.start()
             main = app._main_screen
             assert main is not None
-            await wait_for(lambda: not main._agent_loading and app.screen is main, pilot=pilot)
+            await wait_for(lambda: not main._state.run.agent_loading and app.screen is main, pilot=pilot)
             await open_workflow(main, pilot, "structured")
             await start_workflow(pilot)
             await wait_for(

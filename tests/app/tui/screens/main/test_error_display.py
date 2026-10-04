@@ -11,6 +11,7 @@ from typing import Any
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.event_handlers import BackendEventHandler
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.errors.display import _DNS_FAILED, _MAYBE_OFFLINE
@@ -22,7 +23,7 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
 )
 from chrys.foundation.i18n import Localizer, MessageRef
-from tests.support.tui_helpers import make_backend_handler, pending_submit_defaults
+from tests.support.tui_helpers import make_backend_handler
 
 _RAW = "Connection error."
 _DNS = _DNS_FAILED.bind(host="api.example.com")
@@ -98,10 +99,7 @@ def _handler(
     widgets = {"StatusBar": status, "InputBar": input_bar, "ChatPanel": panel}
 
     screen = SimpleNamespace(
-        _restoring_session=False,
-        _agent_loading=loading,
-        **{**pending_submit_defaults(), "_agent_running": running},
-        _set_agent_running=lambda _value: None,
+        _state=MainScreenState(run=RunState(agent_running=running, agent_loading=loading)),
         query_one=lambda cls: widgets[cls.__name__],
         _debug=lambda key, message: surfaces.debug.append((key, message)),
     )

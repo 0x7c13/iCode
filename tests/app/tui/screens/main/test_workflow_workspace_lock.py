@@ -128,7 +128,7 @@ async def test_bound_workspace_shows_the_same_modal_and_chat_still_changes_direc
             await wait_for(lambda: app.screen is main, pilot=pilot)
             assert controller.session_id == "bound" and controller.project_cwd == str(project)
             main._set_workflow_mode(False)
-            await main._chdir(str(other)).wait()
+            await main._workspace_actions.start_chdir(str(other)).wait()
             assert [event.primary_cwd for event in changes] == [str(other)]
             assert controller.project_cwd == str(project)
 
@@ -180,7 +180,7 @@ async def test_draft_workspace_change_reloads_preview_for_the_new_directory(
         await wait_for(lambda: app.screen is main, pilot=pilot)
         original = main._workflow_panel.preview
         async with capture_event_sequence(bus, events.WorkspaceChange) as changes:
-            await main._chdir(str(other)).wait()
+            await main._workspace_actions.start_chdir(str(other)).wait()
             assert not changes
         await wait_for(
             lambda: (
@@ -255,7 +255,7 @@ async def test_empty_draft_workspace_change_updates_welcome_and_new_session_pick
         )
         assert panel.preview is None and not main._workflow.session_id
         async with capture_event_sequence(bus, events.WorkspaceChange) as changes:
-            await main._chdir(str(other)).wait()
+            await main._workspace_actions.start_chdir(str(other)).wait()
             assert not changes
         assert main._workspace_cwd() == str(original)
         await wait_for(lambda: str(panel.border_subtitle) == str(other), pilot=pilot)

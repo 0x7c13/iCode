@@ -16,6 +16,7 @@ from textual.widgets import Button, TextArea
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
 from chrys.app.tui.screens.main.screen import MainScreen
+from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome import input_bar as input_bar_module
@@ -248,7 +249,7 @@ async def test_prompt_history_loading_is_dismissed_before_main_view_transition(
             assert suggestions.is_visible is False
             assert suggestions.is_loading is False
             if transition == "shell":
-                assert app.main_screen._shell_mode is True
+                assert app.main_screen._state.shell.active is True
             else:
                 assert app.main_screen._dashboard_visible() is True
         finally:
@@ -353,15 +354,15 @@ async def test_main_screen_reactive_sources_apply_existing_side_effects() -> Non
         await pilot.pause()
         input_bar = app.main_screen.query_one(InputBar)
         app.main_screen._suggestions.file_cache = {"stale": object()}
-        app.main_screen._live_call_paths["call"] = "src/app.py"
-        app.main_screen._live_file_mutations["src/app.py"] = object()
+        app.main_screen._live_diff.call_paths["call"] = "src/app.py"
+        app.main_screen._live_diff.file_mutations["src/app.py"] = object()
 
         app.main_screen.agent_running_state = True
         await pilot.pause()
 
-        assert app.main_screen._agent_running is True
-        assert app.main_screen._live_call_paths == {}
-        assert app.main_screen._live_file_mutations == {}
+        assert app.main_screen._state.run.agent_running is True
+        assert app.main_screen._live_diff.call_paths == {}
+        assert app.main_screen._live_diff.file_mutations == {}
 
         input_bar.lock_with_text()
         app.main_screen.agent_running_state = False
@@ -369,9 +370,9 @@ async def test_main_screen_reactive_sources_apply_existing_side_effects() -> Non
         app.main_screen.has_messages_state = True
         await pilot.pause()
 
-        assert app.main_screen._agent_running is False
-        assert app.main_screen._agent_loading is False
-        assert app.main_screen._has_messages is True
+        assert app.main_screen._state.run.agent_running is False
+        assert app.main_screen._state.run.agent_loading is False
+        assert app.main_screen._state.run.has_messages is True
         assert app.main_screen._suggestions.file_cache is None
         assert input_bar.locked is False
 
@@ -666,7 +667,7 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
 
         input_bar.agent_running = False
         adapter_screen = type("_AdapterScreen", (), {"query_one": lambda _self, _type: input_bar})()
-        adapter = MainScreenViewAdapter(adapter_screen)  # type: ignore[arg-type]
+        adapter = MainScreenViewAdapter(adapter_screen, state=MainScreenState())  # type: ignore[arg-type]
         adapter.set_retry_mode(True, label=INPUT_RETRY.bind())
         assert str(send.label) == "重试"
         assert controller.switch_locale("en").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
@@ -684,7 +685,7 @@ async def test_input_bar_relocalizes_semantic_state_and_cell_width_in_place(
 
 def _draft_restore_adapter(input_bar: InputBar) -> MainScreenViewAdapter:
     screen = type("_AdapterScreen", (), {"query_one": lambda _self, _type: input_bar})()
-    return MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    return MainScreenViewAdapter(screen, state=MainScreenState())  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalRequest,
@@ -52,7 +53,9 @@ async def test_main_and_child_approval_edits_reach_their_own_cards(tmp_path, mon
             cards.append((invocation_id, call_id, args))
 
     panel = Panel()
-    handler = make_backend_handler(SimpleNamespace(_agent_running=True, query_one=lambda _: panel))
+    handler = make_backend_handler(
+        SimpleNamespace(_state=MainScreenState(run=RunState(agent_running=True)), query_one=lambda _: panel)
+    )
 
     async def approve(event: ApprovalRequest):
         args = {"prompt": "edited prompt"} if event.tool_name == "Explore" else {"path": str(target)}
@@ -129,7 +132,9 @@ async def test_waiting_approval_keeps_captured_origin_after_unbind(
             cards.append((invocation_id, call_id, args))
 
     panel = Panel()
-    handler = make_backend_handler(SimpleNamespace(_agent_running=True, query_one=lambda _: panel))
+    handler = make_backend_handler(
+        SimpleNamespace(_state=MainScreenState(run=RunState(agent_running=True)), query_one=lambda _: panel)
+    )
 
     async def approve(event):
         if event.tool_name == ("Explore" if kind == "turn" else "read_file"):

@@ -13,7 +13,7 @@ answers in one line when it is petted. The package is split by concern:
 | `commands.py` | `/buddy` subcommands and the info card |
 | `replies.py` | The one-line answer to a pet, from a model or a stock line |
 | `lifecycle.py` | The hook every frontend calls, on its event loop, after a successful turn |
-| `pixel_sprites.py`, `pixel_renderer.py`, `animation.py`, `portrait.py` | Artwork and its rendering |
+| `sprites/*.toml`, `pixel_sprites.py`, `pixel_renderer.py`, `animation.py`, `portrait.py` | Artwork and its rendering |
 
 The TUI adds `app/tui/buddy_reply.py::PetReplyFlow`, which the sidebar panel and
 `/buddy pet` share: a thinking toast now, the answer when it arrives, and one
@@ -94,15 +94,17 @@ order, and each one refreshes the panel in place when it does.
 # Pixel portraits
 
 All 28 species use a **20 × 16 RGBA canvas**, rendered as 20 terminal columns
-and eight rows of TrueColor half blocks (`▀`). The digit strings in
-`pixel_sprites.py` are palette indices, not characters displayed to the user.
+and eight rows of TrueColor half blocks (`▀`).
 
 ## Artwork
 
-Each species has three distinct poses in `DEFAULT_PIXEL_FRAMES` and its own
-`SPECIES_PALETTES` entry. Every row must contain 20 palette indices and every
-pose must contain 16 rows. Palette roles are `0` for transparency, `3` for the
-body shadow, and `4` for pupils; other colors belong to that species' design.
+Artwork is data: each species has one `sprites/<species>.toml` file holding its
+`[palette]` (index → `[r, g, b, a]`) and three distinct poses as `[[frames]]`
+tables. Each pose's `rows` are 16 strings of 20 palette-index digits, which are
+not characters displayed to the user. `pixel_sprites.py` loads a file on first
+use and rejects one whose size or indices don't fit. Palette roles are `0` for
+transparency, `3` for the body shadow, and `4` for pupils; other colors belong
+to that species' design.
 
 Keep the silhouette recognizable at native size. Features that distinguish
 similar animals include:

@@ -19,7 +19,7 @@ from chrys.app.tui.screens.main.diff_controller import (
     _lifecycle_task_completed_successfully,
 )
 from chrys.app.tui.screens.main.live_diff import LiveFileMutation
-from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
 from chrys.foundation.events.bus import EventBus
@@ -760,21 +760,24 @@ def test_persistence_newer_than_captured_live_turn_remains_authoritative() -> No
     assert loaded == persisted
 
 
-def _show_diff_for_test_screen(screen: SimpleNamespace) -> None:
+def _show_diff_for_test_screen(
+    screen: SimpleNamespace,
+    *,
+    state_store: object | None,
+    agent_running: bool,
+    file_mutations: dict[str, LiveFileMutation],
+) -> None:
     session_id = screen.query_one(object).session_id
     live_diff = LiveDiffTracker(
         owner=LiveDiffOwner(session_id=session_id, session_generation=0, run_generation=0),
-        file_mutations=screen._live_file_mutations,
+        file_mutations=file_mutations,
     )
     controller = DiffController(
-        services=MainScreenServices(
-            bus=EventBus(),
-            state_store=screen._state_store,
-        ),
+        services=MainScreenServices(bus=EventBus(), state_store=state_store),
         live_diff=live_diff,
-        view=MainScreenViewAdapter(screen),  # type: ignore[arg-type]
-        workspace_cwd=screen._workspace_cwd,
-        is_agent_running=lambda: screen._agent_running,
+        view=MainScreenViewAdapter(screen, state=MainScreenState()),  # type: ignore[arg-type]
+        workspace_cwd=lambda: "/repo",
+        is_agent_running=lambda: agent_running,
         run_generation=lambda: 0,
         session_generation=lambda: 0,
     )
@@ -805,16 +808,12 @@ def test_action_show_diff_opens_when_only_all_entries_survive(monkeypatch) -> No
     pushed: list[object] = []
     notifications: list[tuple[tuple, dict]] = []
     screen = SimpleNamespace(
-        _state_store=object(),
-        _agent_running=False,
-        _live_file_mutations={},
         app=SimpleNamespace(push_screen=pushed.append),
         query_one=lambda _cls: SimpleNamespace(session_id="session-1"),
         notify=lambda *args, **kwargs: notifications.append((args, kwargs)),
-        _workspace_cwd=lambda: "/repo",
     )
 
-    _show_diff_for_test_screen(screen)
+    _show_diff_for_test_screen(screen, state_store=object(), agent_running=False, file_mutations={})
 
     assert notifications == []
     assert len(pushed) == 1
@@ -834,25 +833,22 @@ def test_action_show_diff_keeps_live_metadata_only_change() -> None:
     pushed: list[object] = []
     notifications: list[tuple[tuple, dict]] = []
     screen = SimpleNamespace(
-        _state_store=None,
-        _agent_running=True,
-        _live_file_mutations={
-            "/repo/Power.yaml": make_live_mutation(
-                "name: Power\n",
-                "name: Power\n",
-                "modify",
-                bytes_changed=True,
-                before_hash="hash-with-bom",
-                after_hash="hash-without-bom",
-            )
-        },
         app=SimpleNamespace(push_screen=pushed.append),
         query_one=lambda _cls: SimpleNamespace(session_id=""),
         notify=lambda *args, **kwargs: notifications.append((args, kwargs)),
-        _workspace_cwd=lambda: "/repo",
     )
+    file_mutations = {
+        "/repo/Power.yaml": make_live_mutation(
+            "name: Power\n",
+            "name: Power\n",
+            "modify",
+            bytes_changed=True,
+            before_hash="hash-with-bom",
+            after_hash="hash-without-bom",
+        )
+    }
 
-    _show_diff_for_test_screen(screen)
+    _show_diff_for_test_screen(screen, state_store=None, agent_running=True, file_mutations=file_mutations)
 
     assert notifications == []
     assert len(pushed) == 1
@@ -892,25 +888,22 @@ def test_action_show_diff_drops_all_entry_when_live_change_restores_original_byt
     monkeypatch.setattr(diff_pkg, "load_diff_entries_by_period", fake_load_diff_entries_by_period)
     pushed: list[object] = []
     screen = SimpleNamespace(
-        _state_store=object(),
-        _agent_running=True,
-        _live_file_mutations={
-            "/repo/Power.yaml": make_live_mutation(
-                "B\n",
-                "A\n",
-                "modify",
-                bytes_changed=True,
-                before_hash="hash-B",
-                after_hash="hash-A",
-            ),
-        },
         app=SimpleNamespace(push_screen=pushed.append),
         query_one=lambda _cls: SimpleNamespace(session_id="session-1"),
         notify=lambda *_args, **_kwargs: None,
-        _workspace_cwd=lambda: "/repo",
     )
+    file_mutations = {
+        "/repo/Power.yaml": make_live_mutation(
+            "B\n",
+            "A\n",
+            "modify",
+            bytes_changed=True,
+            before_hash="hash-B",
+            after_hash="hash-A",
+        ),
+    }
 
-    _show_diff_for_test_screen(screen)
+    _show_diff_for_test_screen(screen, state_store=object(), agent_running=True, file_mutations=file_mutations)
 
     assert len(pushed) == 1
     assert isinstance(pushed[0], DiffScreen)
@@ -946,20 +939,16 @@ def test_show_diff_opens_loading_screen_before_attribution_refresh(
             return False
 
     screen = SimpleNamespace(
-        _state_store=None,
-        _live_file_mutations={},
-        _workspace_cwd=lambda: "/repo/workspace",
-        _agent_running=False,
         query_one=lambda _cls: SimpleNamespace(session_id=""),
         notify=lambda message, **_kwargs: notified.append(message),
         app=SimpleNamespace(push_screen=pushed.append),
     )
     controller = DiffController(
         services=MainScreenServices(bus=EventBus(), engine_provider=_FakeEngine),
-        live_diff=LiveDiffTracker(file_mutations=screen._live_file_mutations),
-        view=MainScreenViewAdapter(screen),  # type: ignore[arg-type]
-        workspace_cwd=screen._workspace_cwd,
-        is_agent_running=lambda: screen._agent_running,
+        live_diff=LiveDiffTracker(),
+        view=MainScreenViewAdapter(screen, state=MainScreenState()),  # type: ignore[arg-type]
+        workspace_cwd=lambda: "/repo/workspace",
+        is_agent_running=lambda: False,
         run_generation=lambda: 0,
         session_generation=lambda: 0,
     )

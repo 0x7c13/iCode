@@ -119,7 +119,7 @@ def test_file_suggestions_rescan_when_cwd_changes_without_explicit_invalidation(
     """The @ file cache is scoped by cwd, not just by prior scan existence."""
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
-    screen._chdir_current_cwd = "/repo-a"
+    screen._set_workspace_cwd("/repo-a")
     scans: list[str] = []
 
     def fake_getcwd() -> str:
@@ -132,7 +132,7 @@ def test_file_suggestions_rescan_when_cwd_changes_without_explicit_invalidation(
     asyncio.run(handler.show_file_suggestions_async())
     assert suggestion_values(screen.suggestion_list.last_items) == ["a.py"]
 
-    screen._chdir_current_cwd = "/repo-b"
+    screen._set_workspace_cwd("/repo-b")
     asyncio.run(handler.show_file_suggestions_async())
 
     assert scans == ["/repo-a", "/repo-b"]
@@ -143,7 +143,7 @@ async def test_file_trigger_opens_loading_popup_before_cold_scan_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     gate = _hold_cold_scan(monkeypatch, paths=["ready.py"])
 
@@ -168,7 +168,7 @@ async def test_file_trigger_opens_loading_popup_before_cold_scan_is_ready(
 def test_file_suggestions_show_disabled_truncation_row(monkeypatch) -> None:
     """A bounded scan advertises truncation instead of silently omitting files."""
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
 
     async def truncated_scan(root: str) -> ProjectPathScanResult:
@@ -197,7 +197,7 @@ def test_file_suggestions_show_disabled_truncation_row(monkeypatch) -> None:
 def test_file_suggestions_show_no_file_rows_for_empty_scan(monkeypatch) -> None:
     """A session from another machine may point at a workspace with no local files."""
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "Z:\\Fake\\MissingWorkspace"
+    screen._set_workspace_cwd("Z:\\Fake\\MissingWorkspace")
     handler = make_suggestion_handler(screen)
 
     _patch_scan(monkeypatch, {"Z:\\Fake\\MissingWorkspace": []})
@@ -227,7 +227,7 @@ def test_file_suggestion_enter_without_selection_does_not_submit_text() -> None:
 def test_file_suggestions_discard_scan_when_cwd_changes_mid_scan(monkeypatch) -> None:
     """A scan result is cached only if its root is still current when it returns."""
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo-a"
+    screen._set_workspace_cwd("/repo-a")
     handler = make_suggestion_handler(screen)
     scans: list[str] = []
 
@@ -236,7 +236,7 @@ def test_file_suggestions_discard_scan_when_cwd_changes_mid_scan(monkeypatch) ->
 
     async def scan_and_chdir(root: str) -> ProjectPathScanResult:
         if root == "/repo-a":
-            screen._chdir_current_cwd = "/repo-b"
+            screen._set_workspace_cwd("/repo-b")
             return scan_result(root, [ProjectPathSuggestion(path="stale.py", kind="file")])
         return scan_result(root, [ProjectPathSuggestion(path="fresh.py", kind="file")])
 
@@ -321,7 +321,7 @@ async def test_dismissed_suggestions_do_not_receive_stale_file_rows(
 ) -> None:
     monkeypatch.setattr(suggestions_module, "_FILE_QUERY_DEBOUNCE_SECONDS", 0)
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
     handler._suggestion_mode = "files"
@@ -339,7 +339,7 @@ async def test_switching_modes_invalidates_pending_file_query(
 ) -> None:
     monkeypatch.setattr(suggestions_module, "_FILE_QUERY_DEBOUNCE_SECONDS", 0)
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
     handler._suggestion_mode = "files"
@@ -357,7 +357,7 @@ async def test_rapid_file_typing_keeps_one_active_query_and_runs_latest(
 ) -> None:
     monkeypatch.setattr(suggestions_module, "_FILE_QUERY_DEBOUNCE_SECONDS", 0)
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     handler._suggestion_mode = "files"
     handler.file_cache = [ProjectPathSuggestion(path="placeholder.py", kind="file")]
@@ -405,7 +405,7 @@ async def test_typing_file_query_before_cold_scan_completion_replays_latest_quer
 ) -> None:
     monkeypatch.setattr(suggestions_module, "_FILE_QUERY_DEBOUNCE_SECONDS", 0)
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     gate = _hold_cold_scan(monkeypatch, paths=["alpha.py", "src/foo.py"])
 
@@ -425,7 +425,7 @@ async def test_cache_invalidation_during_index_build_discards_stale_warmup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     scans: list[str] = []
 
@@ -524,7 +524,7 @@ async def test_interrupting_a_file_warmup_never_reopens_file_suggestions(
     cache stays empty, no follow-up scan is queued, and the popup is not reopened.
     """
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     hold = case.hold(monkeypatch, handler)
 
@@ -547,7 +547,7 @@ async def test_dismiss_before_warmup_starts_does_not_restore_file_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     scans: list[str] = []
     _patch_scan(monkeypatch, {"/repo": ["stale.py"]}, roots=scans)
@@ -566,7 +566,7 @@ async def test_mode_switch_before_warmup_worker_scans_skips_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     scans: list[str] = []
     deferred_workers: list[DeferredWorker] = []
@@ -597,7 +597,7 @@ async def test_detached_screen_does_not_receive_file_query_result(
 ) -> None:
     monkeypatch.setattr(suggestions_module, "_FILE_QUERY_DEBOUNCE_SECONDS", 0)
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     handler.file_cache = [ProjectPathSuggestion(path="src/chrome/file.py", kind="file")]
     handler._suggestion_mode = "files"
@@ -611,7 +611,7 @@ async def test_detached_screen_does_not_receive_file_query_result(
 
 async def test_index_warmup_build_does_not_starve_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo"
+    screen._set_workspace_cwd("/repo")
     handler = make_suggestion_handler(screen)
     original_build = handler._build_file_index
 

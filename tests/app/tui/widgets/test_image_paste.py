@@ -706,7 +706,7 @@ async def test_main_screen_paste_fallback_skips_shell_mode(tmp_path: Path) -> No
 
     async with app.run_test() as pilot:
         input_bar = app.main_screen.query_one(InputBar)
-        app.main_screen._shell_mode = True
+        app.main_screen._state.shell.active = True
         await pilot.pause()
 
         event = Paste(str(image))

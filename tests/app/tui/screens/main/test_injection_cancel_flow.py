@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -40,7 +40,7 @@ def _make_controller(
     state: MainScreenState,
     bus: EventBus,
     view: _FakeInputFlowView,
-    workers: list[Awaitable[None]],
+    workers: list[Callable[[], Awaitable[object]]],
 ) -> InputFlowController:
     async def _noop_agent_message(_event: object) -> None:
         return None
@@ -80,7 +80,7 @@ async def test_queue_injection_tracks_pending_id_and_publishes_it() -> None:
     state = MainScreenState()
     bus = EventBus()
     view = _FakeInputFlowView()
-    workers: list[Awaitable[None]] = []
+    workers: list[Callable[[], Awaitable[object]]] = []
     controller = _make_controller(state, bus, view, workers)
     messages = await _collect(bus, UserMessage)
 
@@ -99,7 +99,7 @@ async def test_cancel_pending_injection_unlocks_and_publishes_cancel() -> None:
     state = MainScreenState()
     bus = EventBus()
     view = _FakeInputFlowView()
-    workers: list[Awaitable[None]] = []
+    workers: list[Callable[[], Awaitable[object]]] = []
     controller = _make_controller(state, bus, view, workers)
     messages = await _collect(bus, UserMessage)
     cancels = await _collect(bus, UserInjectCancel)
@@ -108,8 +108,8 @@ async def test_cancel_pending_injection_unlocks_and_publishes_cancel() -> None:
     injection_id = messages[0].injection_id
 
     assert controller.cancel_pending_injection() is True
-    for worker in workers:
-        await worker
+    for work in workers:
+        await work()
 
     assert state.pending_injection.active is False
     assert view.calls[-1] == "unlock_input_keep_if_locked"
@@ -121,13 +121,13 @@ async def test_cancel_without_pending_injection_is_noop() -> None:
     state = MainScreenState()
     bus = EventBus()
     view = _FakeInputFlowView()
-    workers: list[Awaitable[None]] = []
+    workers: list[Callable[[], Awaitable[object]]] = []
     controller = _make_controller(state, bus, view, workers)
     cancels = await _collect(bus, UserInjectCancel)
 
     assert controller.cancel_pending_injection() is False
-    for worker in workers:
-        await worker
+    for work in workers:
+        await work()
 
     assert cancels == []
     assert view.calls == []
@@ -139,7 +139,7 @@ async def test_blocked_injection_submit_clears_pending_tracking() -> None:
     state = MainScreenState()
     bus = EventBus()
     view = _FakeInputFlowView()
-    workers: list[Awaitable[None]] = []
+    workers: list[Callable[[], Awaitable[object]]] = []
     controller = _make_controller(state, bus, view, workers)
 
     async def _block(_event: UserMessage) -> None:
@@ -203,7 +203,7 @@ def _make_navigation(
         delete_current_and_new=_unused_async,
         restore_session=_unused_async,
         flush_notifications=_unused_flush,
-        start_worker=asyncio.ensure_future,
+        start_worker=lambda work: asyncio.ensure_future(work()),
         debug=lambda _key, _msg: None,
     )
 

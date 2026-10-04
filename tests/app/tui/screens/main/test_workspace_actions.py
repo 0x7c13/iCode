@@ -14,6 +14,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.tui_helpers import discard_worker
 
 
 class _RecordingView:
@@ -34,7 +35,7 @@ def _make_controller(view: _RecordingView, services: MainScreenServices, cwd: st
         state=state,
         services=services,
         view=view,  # type: ignore[arg-type]
-        callbacks=WorkspaceCallbacks(start_apply_chdir=lambda _path: None, debug=lambda *_args: None),
+        callbacks=WorkspaceCallbacks(start_worker=discard_worker, debug=lambda *_args: None),
     )
 
 

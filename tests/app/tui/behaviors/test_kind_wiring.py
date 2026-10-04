@@ -45,6 +45,7 @@ from chrys.foundation.tool_kinds import (
     KIND_SLEEP,
     KIND_SUB_AGENT,
 )
+from tests.support.tui_helpers import discard_worker
 
 # ── _DETAIL_KEYS in approval dialog ──────────────────────────────────────
 
@@ -226,13 +227,7 @@ def test_profile_switch_registers_sub_agent_exact_tool_names() -> None:
 
     screen = SimpleNamespace(
         _events=_FakeEvents(),
-        _has_messages=False,
-        _profile="Code",
-        _profile_switch_from=None,
-        _profile_switch_to=None,
-        _profile_switch_seq=0,
         query_one=query_one,
-        _workspace_cwd=lambda: "/repo/current",
         _update_subtitle=lambda: None,
         _debug=lambda *_args: None,
     )
@@ -244,7 +239,7 @@ def test_profile_switch_registers_sub_agent_exact_tool_names() -> None:
         SessionHandler(
             state=state,
             services=MainScreenServices(bus=EventBus()),
-            view=MainScreenViewAdapter(screen),  # type: ignore[arg-type]
+            view=MainScreenViewAdapter(screen, state=state),  # type: ignore[arg-type]
             callbacks=SessionCallbacks(
                 set_agent_loading=lambda _value: None,
                 set_has_messages=lambda value: setattr(state.run, "has_messages", value),
@@ -253,11 +248,10 @@ def test_profile_switch_registers_sub_agent_exact_tool_names() -> None:
                 set_profile_display=lambda value: setattr(state.runtime, "profile", value),
                 set_active_model_profile_id=lambda _value: None,
                 set_workspace_cwd=lambda value: setattr(state.workspace_marker, "current_cwd", value),
-                set_workspace_original_cwd=lambda value: setattr(state.workspace_marker, "original_cwd", value),
                 update_subtitle=lambda: None,
                 update_toc=lambda: None,
                 clear_suggestion_file_cache=lambda: None,
-                start_session_restore=lambda _session_id: None,
+                start_worker=discard_worker,
                 post_gc_message=lambda _message: None,
                 debug=lambda _key, _message="": None,
                 refresh_model_indicator=lambda: None,

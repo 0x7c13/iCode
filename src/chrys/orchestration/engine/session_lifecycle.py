@@ -1871,7 +1871,7 @@ class SessionLifecycle:
             ),
         )
         # Restore-time UsageUpdate must follow SessionRestored so the TUI has
-        # already bound the new ``_main_usage_source_id`` before classifying it as
+        # already bound the new ``main_usage_source_id`` before classifying it as
         # the session window — otherwise the chat panel keeps stale window tokens
         # from the previous session.  Route through the ordered chain so any
         # pending sub-agent UsageUpdate that was in-flight before the switch can't
