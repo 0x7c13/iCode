@@ -53,6 +53,9 @@ type StatusMessage = MessageRef | str
 type StatusTrail = StatusMessage | tuple[StatusMessage, ...]
 type InputLabel = MessageRef | str
 type ConfirmMessage = StatusMessage | Text
+# Runs async work in a screen worker. The work is called only once the worker
+# starts, so a worker cancelled before it runs leaves no unawaited coroutine.
+type StartWorker = Callable[[Callable[[], Awaitable[object]]], object]
 
 
 class EventPublisher(Protocol):
@@ -108,7 +111,6 @@ class ShellModeView(Protocol):
 
     def enter_shell_mode(self) -> None: ...
     def exit_shell_mode(self) -> None: ...
-    async def send_shell_interrupt(self) -> None: ...
     def set_alternate_screen_active(self, active: bool) -> None: ...
 
 

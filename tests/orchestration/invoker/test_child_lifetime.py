@@ -35,6 +35,7 @@ from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.sub_agent_logs import SubAgentSessionLogWriter
 from tests.support.acp_fixtures import STUB_SCRIPT
 from tests.support.paths import SRC_ROOT
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 @pytest.mark.parametrize("cancel_at_end", [False, True])
@@ -134,7 +135,13 @@ async def test_returned_child_retains_registry_until_writer_usage_and_end_hook_f
         )
     task = asyncio.create_task(tools.get_tools()[0].func(prompt="work"))
     try:
-        await asyncio.wait_for(end_entered.wait(), timeout=5)
+        # For the ACP backend the window spawns and initializes the stub agent: a cold process start.
+        await wait_for(
+            lambda: end_entered.is_set() or task.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="sub-agent end hook entered",
+        )
+        assert end_entered.is_set(), task.result()
         assert not task.done()
         assert tools._total_active == 1
         assert bool(tools._live_approvals) is (backend == "kernel")

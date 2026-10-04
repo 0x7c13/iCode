@@ -13,22 +13,21 @@ from PIL.PngImagePlugin import PngInfo
 
 from chrys.app.features.buddy.model import Species
 from chrys.app.features.buddy.pixel_sprites import (
-    DEFAULT_PIXEL_FRAMES,
     PIXEL_HEIGHT,
     PIXEL_WIDTH,
-    SPECIES_PALETTES,
     build_pixel_frame,
     load_external_pixel_frame,
+    species_sprite,
 )
 
 
 @pytest.mark.parametrize("species", list(Species))
 def test_idle_artwork_has_no_unmapped_or_transparent_features(species: Species) -> None:
-    for frame_idx, rows in enumerate(DEFAULT_PIXEL_FRAMES[species]):
+    for frame_idx, rows in enumerate(species_sprite(species).frames):
         image = build_pixel_frame(species, frame_idx)
         for y, row in enumerate(rows):
             for x, index in enumerate(row):
-                assert int(index) in SPECIES_PALETTES[species], (species, frame_idx, x, y, index)
+                assert int(index) in species_sprite(species).palette, (species, frame_idx, x, y, index)
                 assert bool(image.getpixel((x, y))[3]) == (index != "0")
 
 
@@ -64,7 +63,7 @@ def test_every_builtin_pose_has_a_visible_blink(species: Species, frame: int) ->
 @pytest.mark.parametrize("blink", [False, True])
 def test_blinks_preserve_visible_pupils(species: Species, blink: bool) -> None:
     for frame_idx in range(6):
-        rows = DEFAULT_PIXEL_FRAMES[species][frame_idx % 3]
+        rows = species_sprite(species).frames[frame_idx % 3]
         idle = build_pixel_frame(species, frame_idx % 3)
         base = build_pixel_frame(species, frame_idx)
         actual = build_pixel_frame(species, frame_idx, blink=blink)
@@ -77,7 +76,7 @@ def test_blinks_preserve_visible_pupils(species: Species, blink: bool) -> None:
         # eye color, even for single-pixel eyes and during a closed-eye pose.
         for x, y in eye_pixels:
             if (x, y + 1) not in eye_pixels:
-                assert actual.getpixel((x, y)) == SPECIES_PALETTES[species][4], (species, frame_idx, blink)
+                assert actual.getpixel((x, y)) == species_sprite(species).palette[4], (species, frame_idx, blink)
         for y in range(base.height):
             for x in range(base.width):
                 if (x, y) not in eye_pixels:
@@ -173,5 +172,5 @@ def test_narrow_pixel_frames_keep_visible_pupils(species: Species, width: int, b
         image = build_pixel_frame(species, frame, blink=blink, width=width)
         assert image.size == (width, PIXEL_HEIGHT)
         colors = {color for _, color in image.getcolors()}
-        assert SPECIES_PALETTES[species][4] in colors
-        assert colors <= set(SPECIES_PALETTES[species].values())
+        assert species_sprite(species).palette[4] in colors
+        assert colors <= set(species_sprite(species).palette.values())

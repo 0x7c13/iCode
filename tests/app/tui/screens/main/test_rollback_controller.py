@@ -17,7 +17,7 @@ from chrys.app.tui.screens.diff import RollbackProgressModal
 from chrys.app.tui.screens.diff.rollback_modal import RollbackLoadCancelled
 from chrys.app.tui.screens.main.ports import RollbackView
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
-from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -34,6 +34,10 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.todos import TodoItem
 from tests.support.tui_helpers import (
+    ScreenSetters,
+    fake_session_title,
+    main_screen_parts,
+    main_screen_state_at,
     make_session_handler,
     stale_file_cache,
 )
@@ -64,7 +68,7 @@ class _RollbackProjectionFenceMixin:
 
 
 def _adapter_for(screen: SimpleNamespace) -> MainScreenViewAdapter:
-    return MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    return MainScreenViewAdapter(screen, state=MainScreenState())  # type: ignore[arg-type]
 
 
 def _make_rollback_controller(
@@ -101,31 +105,39 @@ def _make_rollback_controller(
 
 
 def _make_rollback_controller_for_test(screen: SimpleNamespace) -> RollbackController:
-    def _reset_welcome_workspace_marker(cwd: str) -> None:
-        screen._chdir_original_cwd = None
-        screen._chdir_current_cwd = cwd
+    """Wire a RollbackController to the fake's ``_state`` and ``_services``, as MainScreen wires its own.
 
-    def _set_has_messages(value: bool) -> None:
-        screen._set_has_messages(value)
+    The session id, generation and turn-lifecycle task stay inert defaults.
+    """
+    state, services, _live_diff = main_screen_parts(screen)
+    setters = ScreenSetters(screen, state, services)
+
+    def _reset_welcome_workspace_marker(cwd: str) -> None:
+        state.workspace_marker.original_cwd = None
+        setters.set_workspace_cwd(cwd)
 
     def _post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
         if isinstance(messages, list):
             messages.append(message)
 
-    return _make_rollback_controller(
-        view=_adapter_for(screen),
-        engine_provider=lambda: screen._engine,
-        workspace_cwd=screen._workspace_cwd,
-        profile_name=lambda: screen._profile,
+    return RollbackController(
+        services=services,
+        view=MainScreenViewAdapter(screen, state=state, state_store=services.state_store),  # type: ignore[arg-type]
+        workspace_cwd=lambda: state.workspace_marker.current_cwd,
+        is_agent_busy=lambda: state.run.agent_running or state.run.agent_loading or services.execution_busy(),
+        current_session_id=lambda: "session-1",
+        session_generation=lambda: 1,
+        turn_lifecycle_task=lambda: None,
+        profile_name=lambda: state.runtime.profile,
         reset_welcome_workspace_marker=_reset_welcome_workspace_marker,
-        set_has_messages=_set_has_messages,
+        set_has_messages=setters.set_has_messages,
         post_gc_message=_post_gc_message,
         debug=screen._debug,
     )
 
 
-def test_open_rollback_modal_uses_workspace_cwd(monkeypatch) -> None:
+def test_show_rollback_uses_workspace_cwd(monkeypatch) -> None:
     import chrys.app.tui.screens.diff as diff_pkg
 
     seen_cwds: list[str] = []
@@ -175,13 +187,16 @@ def test_open_rollback_modal_uses_workspace_cwd(monkeypatch) -> None:
             state_reads.append("prompts")
             return {}
 
+        def execution_busy(self) -> bool:
+            return False
+
     monkeypatch.setattr(diff_pkg, "RollbackModal", _FakeRollbackModal)
+    engine = _FakeEngine()
     screen = SimpleNamespace(
-        _engine=_FakeEngine(),
-        _profile="",
+        _state=main_screen_state_at("/repo/workspace"),
+        _services=MainScreenServices(bus=EventBus(), engine_provider=lambda: engine),
         _set_has_messages=lambda _value: None,
         _debug=lambda *_args: None,
-        _workspace_cwd=lambda: "/repo/workspace",
         app=SimpleNamespace(push_screen=lambda modal, _callback=None: pushed.append(modal)),
         notify=lambda *_args, **_kwargs: None,
     )
@@ -1035,10 +1050,10 @@ def test_rollback_result_surfaces_exclusions_and_warnings() -> None:
     """
     notifications: list[tuple[str, dict]] = []
     debug_details: list[str] = []
+    state = main_screen_state_at("/repo/workspace")
+    state.runtime.profile = "Code"
     screen = SimpleNamespace(
-        _engine=None,
-        _profile="Code",
-        _workspace_cwd=lambda: "/repo/workspace",
+        _state=state,
         notify=lambda msg, **kwargs: notifications.append((msg, kwargs)),
         _debug=lambda _title, detail: debug_details.append(detail),
     )
@@ -1195,14 +1210,13 @@ def test_welcome_rollback_keeps_logo_metadata_and_suppresses_chdir_marker() -> N
             return shell
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = main_screen_state_at("/repo/current")
+    state.runtime.profile = "Code Agent"
+    state.run.has_messages = True
+    state.workspace_marker.original_cwd = "/repo/original"
     screen = SimpleNamespace(
-        _engine=None,
-        _profile="Code Agent",
-        _has_messages=True,
+        _state=state,
         _gc_messages=[],
-        _chdir_original_cwd="/repo/original",
-        _chdir_current_cwd="/repo/current",
-        _workspace_cwd=lambda: "/repo/current",
         context_usage_state=ContextUsageState.with_window(
             used_tokens=12_000,
             max_context_tokens=180_000,
@@ -1211,14 +1225,15 @@ def test_welcome_rollback_keeps_logo_metadata_and_suppresses_chdir_marker() -> N
         _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
         query_one=query_one,
         _update_toc=lambda: calls.append(("toc", None)),
-        _set_terminal_title_for_cwd=terminal_title_cwds.append,
-        _reset_session_title_state=lambda: calls.append(("reset_title_state", None)),
+        _session_title=fake_session_title(
+            set_terminal_title_for_cwd=terminal_title_cwds.append,
+            reset_session_title_state=lambda: calls.append(("reset_title_state", None)),
+        ),
         notify=lambda *_args, **_kwargs: None,
         _debug=lambda *_args: None,
     )
 
     def set_has_messages(value: bool) -> None:
-        screen._has_messages = value
         input_bar.has_messages = value
 
     screen._set_has_messages = set_has_messages
@@ -1229,8 +1244,8 @@ def test_welcome_rollback_keeps_logo_metadata_and_suppresses_chdir_marker() -> N
     assert ("reset_title_state", None) in calls
     asyncio.run(make_session_handler(screen).on_workspace_updated(WorkspaceUpdated(primary_cwd="/repo/next")))
 
-    assert screen._has_messages is False
-    assert screen._chdir_original_cwd is None
+    assert state.run.has_messages is False
+    assert state.workspace_marker.original_cwd is None
     assert input_bar.retry_mode is False
     assert screen.context_usage_state == ContextUsageState.with_window(
         used_tokens=0,
@@ -1299,24 +1314,21 @@ def test_welcome_rollback_clears_todo_state() -> None:
             return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = main_screen_state_at("/repo/current")
+    state.runtime.profile = "Code Agent"
+    state.run.has_messages = True
+    state.workspace_marker.original_cwd = "/repo/original"
     screen = SimpleNamespace(
-        _engine=None,
-        _profile="Code Agent",
-        _has_messages=True,
-        _chdir_original_cwd="/repo/original",
-        _chdir_current_cwd="/repo/current",
-        _workspace_cwd=lambda: "/repo/current",
+        _state=state,
+        _set_has_messages=lambda _value: None,
         context_usage_state=None,
         todo_state=TodoListState(items=(TodoItem(content="obsolete", status="in_progress"),)),
         query_one=query_one,
         _update_toc=lambda: None,
-        _set_terminal_title_for_cwd=lambda cwd=None: None,
-        _reset_session_title_state=lambda: None,
+        _session_title=fake_session_title(),
         notify=lambda *_args, **_kwargs: None,
         _debug=lambda *_args: None,
     )
-    screen._set_has_messages = lambda value: setattr(screen, "_has_messages", value)
-
     asyncio.run(
         _make_rollback_controller_for_test(screen).on_result(RollbackResult(session_id="session-1", target_turn=0))
     )

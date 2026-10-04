@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import TYPE_CHECKING
 
 from chrys.app.tui.i18n import LocaleSwitchStatus
 from chrys.app.tui.language import LANGUAGE_PICKER_TITLE
@@ -20,7 +20,7 @@ from chrys.orchestration.startup import catalog_load_warning
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
-    from chrys.app.tui.screens.main.ports import NavigationView
+    from chrys.app.tui.screens.main.ports import NavigationView, StartWorker
 
 
 _CONFIRM_INTERRUPT = msg("tui.main.confirm.interrupt", fallback="Interrupt")
@@ -71,7 +71,7 @@ class MainNavigationController:
         delete_current_and_new: Callable[[str], Awaitable[None]],
         restore_session: Callable[[str | WorkflowSessionPick], Awaitable[None]],
         flush_notifications: Callable[[], Awaitable[None]],
-        start_worker: Callable[[Awaitable[None]], object],
+        start_worker: StartWorker,
         debug: Callable[[str, str], None],
         locale_controller: LocaleController | None = None,
     ) -> None:
@@ -108,7 +108,7 @@ class MainNavigationController:
         """Stop the shell panel, flush notification settings, and exit."""
         self._view.stop_shell()
         try:
-            self._start_worker(self._quit_after_notification_flush())
+            self._start_worker(self._quit_after_notification_flush)
         except RuntimeError:
             self._view.exit_app()
 
@@ -134,9 +134,9 @@ class MainNavigationController:
 
         if isinstance(session_id, str) and session_id.startswith(SessionsScreen.DELETE_AND_NEW_PREFIX):
             deleted_id = session_id[len(SessionsScreen.DELETE_AND_NEW_PREFIX) :]
-            self._start_worker(self._delete_current_and_new(deleted_id))
+            self._start_worker(partial(self._delete_current_and_new, deleted_id))
         elif session_id is not None:
-            self._start_worker(self._restore_session(session_id))
+            self._start_worker(partial(self._restore_session, session_id))
 
     def toggle_sidebar(self) -> None:
         """Toggle the sidebar unless agent loading is active."""
@@ -333,7 +333,7 @@ class MainNavigationController:
         # Only delete the session the dialog named; bail if the screen moved on.
         if not session_id or self._view.current_session_id() != session_id:
             return
-        self._start_worker(self._delete_current_and_new(session_id))
+        self._start_worker(partial(self._delete_current_and_new, session_id))
 
     def scroll_to_turn(self, turn_id: str) -> None:
         """Route a TOC turn to the surface currently in the foreground."""
@@ -341,11 +341,3 @@ class MainNavigationController:
             self._view.select_trajectory_turn(turn_id)
         else:
             self._view.scroll_chat_to_turn(turn_id)
-
-
-def start_awaitable(awaitable: Coroutine[Any, Any, None]) -> object:
-    """Start an awaitable from sync fallback code."""
-    try:
-        return asyncio.create_task(awaitable)
-    except RuntimeError:
-        return asyncio.run(awaitable)

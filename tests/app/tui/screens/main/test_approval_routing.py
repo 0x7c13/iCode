@@ -13,6 +13,7 @@ import pytest
 from chrys.app.tui.screens.main.event_handlers import (
     BackendEventHandler,
 )
+from chrys.app.tui.screens.main.state import MainScreenServices
 from chrys.foundation.events.types import (
     ApprovalAutoFulfillBlocked,
     ApprovalRequest,
@@ -156,7 +157,7 @@ def _make_approval_handler(monkeypatch) -> tuple[BackendEventHandler, _FakeApp, 
 
     screen = SimpleNamespace(
         app=app,
-        _bus=bus,
+        _services=MainScreenServices(bus=bus),
         _debug=_debug,
         _handle_approval_response=_handle_approval_response,
         run_worker=_run_worker,

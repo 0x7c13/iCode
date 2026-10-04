@@ -10,12 +10,20 @@ from types import SimpleNamespace
 
 from rich.text import Text
 
+from chrys.app.tui.screens.main.state import (
+    MainScreenServices,
+    MainScreenState,
+    RuntimeState,
+    SessionViewState,
+    UsageViewState,
+)
 from chrys.app.tui.support.gc_freeze import (
     GcReclaimReason,
     GcReclaimRequested,
 )
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
+from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
     AgentRuntimeUpdated,
@@ -28,6 +36,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.todos import TodoItem
 from tests.support.tui_helpers import (
+    fake_session_title,
     make_backend_handler,
     status_trail,
 )
@@ -85,14 +94,10 @@ def test_session_ready_during_restore_refreshes_memory_file_status() -> None:
             return status
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    services = MainScreenServices(bus=EventBus(), active_model_profile_id="old-model")
     screen = SimpleNamespace(
-        _agent_registry=None,
-        _model_registry=None,
-        _active_model_profile_id="old-model",
-        _creating_new_session=False,
-        _restoring_session=True,
-        _profile="",
-        _state_store=None,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
+        _services=services,
         query_one=_query_one,
         _update_subtitle=lambda: None,
         _debug=lambda *_args: None,
@@ -123,7 +128,7 @@ def test_session_ready_during_restore_refreshes_memory_file_status() -> None:
     assert "1 hook" in status_trail(tool_info["trail"])
     assert "tooltip" not in tool_info
     assert flash_calls == []
-    assert screen._active_model_profile_id == "ready-model"
+    assert services.active_model_profile_id == "ready-model"
 
 
 def _run_existing_session_ready(
@@ -194,15 +199,8 @@ def _run_existing_session_ready(
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _agent_registry=None,
-        _model_registry=None,
-        _creating_new_session=False,
-        _restoring_session=False,
+        _state=MainScreenState(usage=UsageViewState(last_usage_tokens=19635, last_total_session_tokens=253535)),
         _gc_messages=[],
-        _profile="",
-        _state_store=None,
-        _last_usage_tokens=19635,
-        _last_total_session_tokens=253535,
         context_usage_state=initial_context_usage,
         query_one=query_one,
         _update_subtitle=lambda: calls.append(("subtitle", None)),
@@ -314,7 +312,7 @@ def test_agent_runtime_updated_refreshes_resource_counts_without_model_trail() -
         )
     )
 
-    assert screen._runtime_details is runtime_details
+    assert handler._state.runtime.details is runtime_details
     trail = status_trail(tool_info["trail"])
     assert trail == "2 tools · 1 skill · 1 hook · 1 file"
     assert "DeepSeek-V4-Flash" not in trail
@@ -403,20 +401,16 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
             return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = MainScreenState(session=SessionViewState(creating_new_session=True))
+    creating: list[bool] = []
     screen = SimpleNamespace(
-        _agent_registry=None,
-        _model_registry=None,
-        _creating_new_session=True,
-        _restoring_session=False,
-        _profile="",
-        _state_store=_FakeStateStore(),
+        _state=state,
+        _set_creating_new_session=creating.append,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
         _set_agent_loading=lambda value: calls.append(("agent_loading", value)),
-        _set_terminal_title_for_cwd=record_terminal_title_cwd,
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=record_terminal_title_cwd),
         _update_subtitle=lambda: calls.append(("subtitle", None)),
         _update_toc=lambda: calls.append(("toc", None)),
         _debug=lambda *_args: None,
@@ -437,7 +431,8 @@ def test_session_ready_for_new_session_resets_terminal_title_to_cwd() -> None:
         )
     )
 
-    assert screen._creating_new_session is False
+    assert state.session.creating_new_session is False
+    assert creating == [False]
     assert input_bar.retry_mode is False
     assert terminal_title_cwds == ["/workspace/new"]
     assert ("session_id", "session-new") in calls
@@ -457,10 +452,12 @@ def test_usage_update_uses_source_id_for_session_window() -> None:
     debug_log: list[tuple[str, str]] = []
     context_usage_states: list[ContextUsageState] = []
 
+    screen_state = MainScreenState(
+        runtime=RuntimeState(main_usage_source_id="session-main"),
+        usage=UsageViewState(last_usage_tokens=13_614, last_total_session_tokens=13_614),
+    )
     screen = SimpleNamespace(
-        _main_usage_source_id="session-main",
-        _last_usage_tokens=13_614,
-        _last_total_session_tokens=13_614,
+        _state=screen_state,
         context_usage_state=ContextUsageState.with_window(
             used_tokens=13_614,
             max_context_tokens=180_000,
@@ -492,9 +489,9 @@ def test_usage_update_uses_source_id_for_session_window() -> None:
         ("Usage[Code]", "71,250 (35.6%) local=70,350 source=sub-agent-3"),
     ]
     # Main window must not move while a sub-agent fires usage updates...
-    assert screen._last_usage_tokens == 13_614
+    assert screen_state.usage.last_usage_tokens == 13_614
     # ...but cumulative session totals always advance.
-    assert screen._last_total_session_tokens == 233_903
+    assert screen_state.usage.last_total_session_tokens == 233_903
     # Sidebar used/max gauge is NOT touched by sub-agent events; only the
     # session-totals state advances.
     assert [(state.used_tokens, state.max_context_tokens, state.update_window) for state in context_usage_states] == [
@@ -518,8 +515,8 @@ def test_usage_update_uses_source_id_for_session_window() -> None:
         )
     )
 
-    assert screen._last_usage_tokens == 19_635
-    assert screen._last_total_session_tokens == 253_535
+    assert screen_state.usage.last_usage_tokens == 19_635
+    assert screen_state.usage.last_total_session_tokens == 253_535
     # Main-session event refreshes the gauge via explicit routed view-state.
     assert screen.context_usage_state == ContextUsageState.with_window(
         used_tokens=19_635,
@@ -603,21 +600,17 @@ def test_session_ready_for_new_session_clears_todo_state() -> None:
             return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = MainScreenState(session=SessionViewState(creating_new_session=True))
+    creating: list[bool] = []
     screen = SimpleNamespace(
-        _agent_registry=None,
-        _model_registry=None,
-        _creating_new_session=True,
-        _restoring_session=False,
-        _profile="",
-        _state_store=_FakeStateStore(),
+        _state=state,
+        _set_creating_new_session=creating.append,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         todo_state=TodoListState(items=(TodoItem(content="stale from old session"),)),
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
         _set_agent_loading=lambda value: calls.append(("agent_loading", value)),
-        _set_terminal_title_for_cwd=lambda cwd=None: calls.append(("title", cwd)),
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd=None: calls.append(("title", cwd))),
         _update_subtitle=lambda: None,
         _update_toc=lambda: None,
         _debug=lambda *_args: None,
@@ -638,7 +631,8 @@ def test_session_ready_for_new_session_clears_todo_state() -> None:
         )
     )
 
-    assert screen._creating_new_session is False
+    assert state.session.creating_new_session is False
+    assert creating == [False]
     assert screen.todo_state == TodoListState()
 
 

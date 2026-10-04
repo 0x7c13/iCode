@@ -105,14 +105,14 @@ async def test_alternate_screen_and_compact_dock_share_sidebar_restoration(
         # alternate screen after the theme picker has already opened.
         terminal = main.query_one(Terminal)
         terminal.post_message(Terminal.AlternateScreenChanged(terminal, True))
-        await wait_for(lambda: main._fullscreen_terminal and not sidebar.display, pilot=pilot)
+        await wait_for(lambda: main._state.shell.fullscreen_terminal and not sidebar.display, pilot=pilot)
         await pilot.press("end", "enter")
         await wait_for(lambda: main.theme_editor is not None and app.screen is main, pilot=pilot)
         assert not sidebar.display
 
         async def leave_alternate() -> None:
             terminal.post_message(Terminal.AlternateScreenChanged(terminal, False))
-            await wait_for(lambda: not main._fullscreen_terminal, pilot=pilot)
+            await wait_for(lambda: not main._state.shell.fullscreen_terminal, pilot=pilot)
 
         async def close_editor() -> None:
             await click_when_settled(pilot, "#theme-close")

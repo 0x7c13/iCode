@@ -24,9 +24,6 @@ class _FakeShellModeView:
     def exit_shell_mode(self) -> None:
         self.calls.append("exit")
 
-    async def send_shell_interrupt(self) -> None:
-        self.calls.append("interrupt")
-
     def set_alternate_screen_active(self, active: bool) -> None:
         self.calls.append(("alternate", active))
 
@@ -50,25 +47,19 @@ def _make_shell_mode_controller(
     focus_view: _FakeFocusView | None = None,
     shell_mode_states: list[bool] | None = None,
     dismiss_suggestions: Callable[[], None] | None = None,
+    panel_focus_changed: Callable[[], None] | None = None,
 ) -> tuple[ShellModeController, MainScreenState, _FakeShellModeView, _FakeFocusView, list[bool]]:
     state = state or MainScreenState()
     shell_view = shell_view or _FakeShellModeView()
     focus_view = focus_view or _FakeFocusView()
     shell_mode_states = shell_mode_states if shell_mode_states is not None else []
 
-    def _set_shell_mode(active: bool) -> None:
-        state.shell.active = active
-
-    def _set_fullscreen(active: bool) -> None:
-        state.shell.fullscreen_terminal = active
-
     controller = ShellModeController(
         state=state,
         shell_view=shell_view,
         focus_view=focus_view,
-        set_shell_mode=_set_shell_mode,
         set_shell_mode_state=shell_mode_states.append,
-        set_fullscreen_terminal=_set_fullscreen,
+        panel_focus_changed=panel_focus_changed or (lambda: None),
         dismiss_suggestions=dismiss_suggestions or (lambda: None),
         debug=lambda *_args: None,
     )
@@ -261,36 +252,27 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _shell_mode=False,
         _workflow=SimpleNamespace(workflow_mode=False),
         _workflow_panel=SimpleNamespace(display=False),
         _sync_workflow_timer=lambda: None,
-        _fullscreen_terminal=False,
-        _sb_saved={},
         query_one=query_one,
         _debug=lambda *_args: None,
     )
     state = MainScreenState()
-    adapter = MainScreenViewAdapter(screen)
-
-    def set_shell_mode(active: bool) -> None:
-        screen._shell_mode = active
-        state.shell.active = active
-
+    adapter = MainScreenViewAdapter(screen, state=state)
     controller = ShellModeController(
         state=state,
         shell_view=adapter,
         focus_view=_FakeFocusView(),
-        set_shell_mode=set_shell_mode,
         set_shell_mode_state=lambda active: setattr(screen, "shell_mode_state", active),
-        set_fullscreen_terminal=lambda active: setattr(screen, "_fullscreen_terminal", active),
+        panel_focus_changed=lambda: None,
         dismiss_suggestions=lambda: None,
         debug=lambda *_args: None,
     )
 
     controller.apply(True)
 
-    assert screen._shell_mode is True
+    assert state.shell.active is True
     assert chat.display is False
     assert input_bar.display is False
     assert footer.display is False
@@ -299,13 +281,29 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
 
     controller.apply(False)
 
-    assert screen._shell_mode is False
+    assert state.shell.active is False
     assert chat.display is True
     assert input_bar.display is True
     assert footer.display is True
     assert ("shell_hide", None) in calls
     assert ("session_json_finish", False) in calls
     assert ("input_focus", None) in calls
+
+
+def test_panel_focus_hears_each_shell_and_fullscreen_change_after_the_state_lands() -> None:
+    state = MainScreenState()
+    observed: list[tuple[bool, bool]] = []
+    controller, _state, _shell_view, _focus_view, _shell_mode_states = _make_shell_mode_controller(
+        state=state,
+        panel_focus_changed=lambda: observed.append((state.shell.active, state.shell.fullscreen_terminal)),
+    )
+
+    controller.apply(True)
+    controller.set_alternate_screen_active(True)
+    controller.set_alternate_screen_active(False)
+    controller.apply(False)
+
+    assert observed == [(True, False), (True, True), (True, False), (False, False)]
 
 
 def test_terminal_exit_events_write_screen_shell_source() -> None:

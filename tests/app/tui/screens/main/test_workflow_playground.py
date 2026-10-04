@@ -76,7 +76,7 @@ async def _playground_awaiting_retry(tmp_path: Path, monkeypatch: pytest.MonkeyP
             await host.start()
             main = app._main_screen
             assert main is not None
-            await wait_for(lambda: not main._agent_loading and app.screen is main, pilot=pilot)
+            await wait_for(lambda: not main._state.run.agent_loading and app.screen is main, pilot=pilot)
             await open_workflow(main, pilot, "test_workflow_playground")
             await start_workflow(pilot)
             await wait_for(lambda: any(state.state == "awaiting_retry" for state in states), pilot=pilot, timeout=15)

@@ -189,21 +189,15 @@ class BackendEventCallbacks:
     set_agent_loading: Callable[[bool], None]
     set_has_messages: Callable[[bool], None]
     set_profile_display: Callable[[str], None]
-    set_runtime_details: Callable[[AgentRuntimeDetails], None]
     set_active_model_profile_id: Callable[[str], None]
-    set_main_usage_source_id: Callable[[str], None]
-    set_last_usage_tokens: Callable[[int], None]
-    set_last_total_session_tokens: Callable[[int], None]
     set_creating_new_session: Callable[[bool], None]
     set_restoring_session: Callable[[bool], None]
     set_workspace_cwd: Callable[[str], None]
-    set_workspace_original_cwd: Callable[[str | None], None]
     refresh_git_branch: Callable[[], None]
     update_subtitle: Callable[[], None]
     update_toc: Callable[[], None]
     on_session_fork_error: Callable[[Error, str, NotificationSeverity], None]
     on_session_clear_error: Callable[[Error, str], None]
-    block_pending_user_submit: Callable[[], None]
     handle_approval_response: Callable[[str, bool, str, dict[str, object] | None], ApprovalResponseWorker | None]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
@@ -386,7 +380,6 @@ class BackendEventHandler:
     @runtime_metadata.setter
     def runtime_metadata(self, value: AgentRuntimeDetails) -> None:
         self._state.runtime.details = value
-        self._callbacks.set_runtime_details(value)
 
     @property
     def approval_mode(self) -> ApprovalMode:
@@ -403,7 +396,6 @@ class BackendEventHandler:
     @main_usage_source_id.setter
     def main_usage_source_id(self, value: str) -> None:
         self._state.runtime.main_usage_source_id = value
-        self._callbacks.set_main_usage_source_id(value)
 
     @property
     def creating_new_session(self) -> bool:
@@ -430,7 +422,6 @@ class BackendEventHandler:
     @last_usage_tokens.setter
     def last_usage_tokens(self, value: int) -> None:
         self._state.usage.last_usage_tokens = value
-        self._callbacks.set_last_usage_tokens(value)
 
     @property
     def last_total_session_tokens(self) -> int:
@@ -439,7 +430,6 @@ class BackendEventHandler:
     @last_total_session_tokens.setter
     def last_total_session_tokens(self, value: int) -> None:
         self._state.usage.last_total_session_tokens = value
-        self._callbacks.set_last_total_session_tokens(value)
 
     @property
     def context_usage_state(self) -> ContextUsageState | None:
@@ -462,7 +452,6 @@ class BackendEventHandler:
     @chdir_original_cwd.setter
     def chdir_original_cwd(self, value: str | None) -> None:
         self._state.workspace_marker.original_cwd = value
-        self._callbacks.set_workspace_original_cwd(value)
 
     @property
     def pending_user_submit_active(self) -> bool:
@@ -484,7 +473,6 @@ class BackendEventHandler:
 
     def block_pending_user_submit(self) -> None:
         self._state.submit.block()
-        self._callbacks.block_pending_user_submit()
 
     def notify(
         self,
@@ -1434,8 +1422,8 @@ class BackendEventHandler:
 
         The parent is normally still running (awaiting the sub-agent's
         tool call result), so in the happy path no gate is needed.  But
-        during a user interrupt the frontend flips ``_agent_running`` to
-        False BEFORE the backend cascade finishes, so a late
+        during a user interrupt the frontend flips the run state's
+        ``agent_running`` to False BEFORE the backend cascade finishes, so a late
         ``InvocationPaused`` that was already in-flight when interrupt
         fired can arrive after the UI has already torn the run down.
         Skipping it here keeps cards from flickering into a stale paused
@@ -1612,7 +1600,7 @@ class BackendEventHandler:
         # empty event as the main window, but that silently mis-routed any
         # caller that forgot to set ``usage_source_id`` and also misclassified
         # parent usage that arrived before SessionReady set
-        # ``_main_usage_source_id``.
+        # ``main_usage_source_id``.
         is_session_window = bool(s.main_usage_source_id) and (event.usage_source_id == s.main_usage_source_id)
         if is_session_window:
             s.last_usage_tokens = event.total_tokens

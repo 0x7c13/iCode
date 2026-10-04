@@ -10,6 +10,7 @@ import inspect
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from chrys.app.tui.i18n import render_str
@@ -65,6 +66,7 @@ from chrys.service.session.persistence import has_real_messages
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
+    from chrys.app.tui.screens.main.ports import StartWorker
     from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
     from chrys.foundation.events.bus import EventBus
     from chrys.service.context.providers.history import CompressedBlock
@@ -131,11 +133,10 @@ class SessionCallbacks:
     set_profile_display: Callable[[str], None]
     set_active_model_profile_id: Callable[[str], None]
     set_workspace_cwd: Callable[[str], None]
-    set_workspace_original_cwd: Callable[[str | None], None]
     update_subtitle: Callable[[], None]
     update_toc: Callable[[], None]
     clear_suggestion_file_cache: Callable[[], None]
-    start_session_restore: Callable[[str], object]
+    start_worker: StartWorker
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
@@ -319,7 +320,6 @@ class SessionHandler:
     @chdir_original_cwd.setter
     def chdir_original_cwd(self, value: str | None) -> None:
         self._state.workspace_marker.original_cwd = value
-        self._callbacks.set_workspace_original_cwd(value)
 
     @property
     def profile_switch_from(self) -> str | None:
@@ -359,7 +359,8 @@ class SessionHandler:
         return self._view.push_screen(screen, callback)
 
     def start_session_restore(self, session_id: str) -> object:
-        return self._callbacks.start_session_restore(session_id)
+        """Run :meth:`do_session_restore` in a screen worker."""
+        return self._callbacks.start_worker(partial(self.do_session_restore, session_id))
 
     def workspace_cwd(self) -> str:
         return self.chdir_current_cwd or self._state.workspace.current_cwd or safe_getcwd()

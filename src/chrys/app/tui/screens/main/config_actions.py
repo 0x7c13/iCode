@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
@@ -38,7 +39,7 @@ _CONFIGURATION_UPDATED = msg("tui.config.updated", fallback="Configuration updat
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.notifications import NotificationService
-    from chrys.app.tui.screens.main.ports import ProfileDescriptionProvider, RuntimeConfigView
+    from chrys.app.tui.screens.main.ports import ProfileDescriptionProvider, RuntimeConfigView, StartWorker
     from chrys.app.tui.screens.main.settings_coordinator import SettingsCoordinator
     from chrys.service.profiles.models.registry import ModelProfileRegistry
 
@@ -47,12 +48,9 @@ if TYPE_CHECKING:
 class RuntimeConfigCallbacks:
     """Screen-owned effects required by runtime/config actions."""
 
-    set_approval_mode: Callable[[str], object]
-    start_agent_profile_switch: Callable[[str], object]
-    start_model_config_result: Callable[[str], object]
+    start_worker: StartWorker
     set_profile_display: Callable[[str], None]
     update_subtitle: Callable[[], None]
-    start_agent_config_result: Callable[[str], object]
     debug: Callable[[str, str], None]
     notification_service: Callable[[], NotificationService]
     settings_coordinator: Callable[[], SettingsCoordinator]
@@ -112,7 +110,7 @@ class RuntimeConfigController:
 
         def _on_result(result: ApprovalMode | None) -> None:
             if result is not None:
-                self._callbacks.set_approval_mode(result.value)
+                self.start_approval_mode_change(result.value)
 
         self._view.push_screen(ApprovalModeScreen(self._state.runtime.approval_mode), _on_result)
 
@@ -129,7 +127,7 @@ class RuntimeConfigController:
 
         def _on_result(result: str | None) -> None:
             if result:
-                self._callbacks.start_agent_profile_switch(result)
+                self.start_agent_profile_switch(result)
 
         self._view.push_screen(AgentsScreen(self._services.agent_registry, self._state.runtime.profile), _on_result)
 
@@ -184,6 +182,10 @@ class RuntimeConfigController:
             return
         await self._services.bus.publish(SettingsReload())
 
+    def start_agent_profile_switch(self, profile_name: str) -> object:
+        """Run :meth:`switch_agent_profile` in a screen worker."""
+        return self._callbacks.start_worker(partial(self.switch_agent_profile, profile_name))
+
     async def switch_agent_profile(self, profile_name: str) -> None:
         """Publish an AgentProfileSwitch event to the backend."""
         if self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy():
@@ -224,7 +226,7 @@ class RuntimeConfigController:
                 return
 
             def _on_result(result: str) -> None:
-                self._callbacks.start_model_config_result(result)
+                self._callbacks.start_worker(partial(self.on_model_config_result, result))
                 self._view.focus_input()
 
             self._view.push_screen(
@@ -348,7 +350,7 @@ class RuntimeConfigController:
                 read_only=self._state.run.agent_running or self._services.execution_busy(),
                 **kwargs,
             ),
-            self._callbacks.start_agent_config_result,
+            self._start_agent_config_result,
         )
 
     def on_agent_config_saved(self, new_display: str | None, new_registry_name: str | None) -> None:
@@ -370,6 +372,9 @@ class RuntimeConfigController:
 
         if new_registry_name is not None:
             self._state.runtime.pending_active_switch = new_registry_name
+
+    def _start_agent_config_result(self, result: str) -> None:
+        self._callbacks.start_worker(partial(self.on_agent_config_result, result))
 
     async def on_agent_config_result(self, result: str) -> None:
         """Handle agent config modal result — reload and optionally switch."""
@@ -413,6 +418,10 @@ class RuntimeConfigController:
         await self._services.bus.publish(SettingsReload())
         self._view.notify(_CONFIGURATION_UPDATED.bind(), title=_SETTINGS_TITLE.bind())
         self._callbacks.debug("AgentConfig", result)
+
+    def start_approval_mode_change(self, arg: str) -> object:
+        """Run :meth:`set_approval_mode` in a screen worker."""
+        return self._callbacks.start_worker(partial(self.set_approval_mode, arg))
 
     async def set_approval_mode(self, arg: str) -> None:
         """Publish SetApprovalMode for the requested approval mode.

@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from chrys.app.tui.screens.main.ports import InputFlowView
+from chrys.app.tui.screens.main.ports import InputFlowView, StartWorker
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
@@ -35,7 +36,7 @@ class InputFlowController:
         state: MainScreenState,
         services: MainScreenServices,
         view: InputFlowView,
-        start_worker: Callable[[Awaitable[None]], object],
+        start_worker: StartWorker,
         handle_agent_message: Callable[[InvocationMessage], Awaitable[None]],
         handle_error: Callable[[Error], Awaitable[None]],
         set_agent_running: Callable[[bool], None],
@@ -67,19 +68,15 @@ class InputFlowController:
     def submit_user_text(self, text: str) -> None:
         """Submit normal user text as a new turn or mid-run injection."""
         if self._state.run.agent_running:
-            self._start_worker(self.queue_injection(text))
+            self._start_worker(partial(self.queue_injection, text))
             return
-        self._start_worker(self.send_user_message(text))
-
-    def request_interrupt(self) -> None:
-        """Schedule an interrupt from a sync Textual event handler."""
-        self._start_worker(self.publish_interrupt())
+        self._start_worker(partial(self.send_user_message, text))
 
     def request_retry(self, text: str = "") -> None:
         """Schedule retry/continue from a sync Textual event handler."""
         event = self._begin_retry(text)
         if event is not None:
-            self._start_worker(self._publish_retry(event))
+            self._start_worker(partial(self._publish_retry, event))
 
     async def send_user_message(self, text: str) -> None:
         """Publish and render a normal user message."""
@@ -150,7 +147,7 @@ class InputFlowController:
         pending.clear()
         self._view.unlock_input_keep_if_locked()
         if injection_id is not None:
-            self._start_worker(self._publish_inject_cancel(injection_id))
+            self._start_worker(partial(self._publish_inject_cancel, injection_id))
         return True
 
     async def _publish_inject_cancel(self, injection_id: str) -> None:
@@ -195,12 +192,6 @@ class InputFlowController:
         self._post_gc_message(terminal_request)
         self._view.set_retry_mode(True, label=INPUT_CONTINUE.bind())
         self._debug("UserInterrupt", "")
-
-    async def retry(self, text: str = "") -> None:
-        """Retry the last failed/interrupted run from current state."""
-        event = self._begin_retry(text)
-        if event is not None:
-            await self._publish_retry(event)
 
     def _begin_retry(self, text: str) -> UserRetry | None:
         """Reserve admission before scheduling, including same-tick clicks."""

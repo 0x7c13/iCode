@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.foundation.events.types import (
     InvocationMessage,
     InvocationPresentationAttemptAccepted,
@@ -34,7 +35,9 @@ async def test_nested_text_and_retractions_stay_on_the_owning_card(origin: Invoc
             calls.append(("rejected", invocation_id, attempt_id))
 
     panel = Panel()
-    handler = make_backend_handler(SimpleNamespace(_agent_running=True, query_one=lambda _: panel))
+    handler = make_backend_handler(
+        SimpleNamespace(_state=MainScreenState(run=RunState(agent_running=True)), query_one=lambda _: panel)
+    )
     event = projection_event(origin, phase)
     if isinstance(event, InvocationMessage):
         await handler.on_agent_message(event)
