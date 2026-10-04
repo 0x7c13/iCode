@@ -8,19 +8,21 @@ contracts now pin the owned stack directly:
 ``ToolLoopLayer(ChatMiddlewareLayer(BaseChatClient))``.
 
 1. **Tool-loop accumulation**: the loop keeps ONE ``prepped_messages`` list and
-   grows it via ``extend(response.messages)`` each
-   iteration (``kernel/loop.py:858,923``), so per-call middleware snapshots grow
+   grows it via ``extend(response.messages)`` each iteration
+   (``kernel/loop.py::_LoopRun._queue_batch``, consumed injections via
+   ``_LoopRun._queue_consumed_injections``), so per-call middleware snapshots grow
    strictly by appending — earlier snapshots are identity-prefixes of later ones.
    ``LoopRecorder`` derives interrupt-recovery messages from its
    ``initial_count`` arithmetic and suppresses crash-recovery checkpoints via a
-   ``(len, last-message-hash)`` key (kernel/loop.py LoopRecorder, #405); both break if
-   the loop ever rebuilds instead of appends. Service-side continuations
+   ``(len, last-message-hash)`` key
+   (``kernel/_loop_recorder.py::LoopRecorder._should_suppress_checkpoint``);
+   both break if the loop ever rebuilds instead of appends. Service-side continuations
    (``conversation_id`` set) instead RESET the list to just the newest tool-result
-   message (non-streaming ``kernel/loop.py:875-925``, streaming ``:986-1027``) — the
+   message (the same two steps, shared by the blocking and streaming drivers) — the
    reason ``capture_service_loop_messages`` must retain earlier iterations.
 
 2. **Per-call shallow copy** (``ChatMiddlewareLayer``): every model call builds
-   ``ChatContext(messages=list(prepped_messages))`` (``kernel/middleware.py``) and
+   ``ChatContext(messages=list(messages))`` over that call's wire view (``kernel/middleware.py``) and
    the inner request sends ``context.messages`` as observed AFTER the pipeline
    (``ChatMiddlewareLayer.get_response``). SystemReminderMiddleware swaps enriched copies into
    that per-call list (system_reminder.py:249-264) and InjectionMiddleware replaces
@@ -279,8 +281,9 @@ class TestToolLoopAccumulation:
 
     async def test_service_continuation_resets_prepped_to_latest_tool_result(self) -> None:
         """``conversation_id`` flips accumulate→reset: the next call sends ONLY the new
-        tool-result message (``kernel/loop.py:875-925``). ``capture_service_loop_messages``
-        exists to reconstruct the dropped history for pause-time local replay (#405).
+        tool-result message (``kernel/loop.py::_LoopRun._queue_batch``).
+        ``capture_service_loop_messages`` exists to reconstruct the dropped history for
+        pause-time local replay.
         """
         recorder = _RecordingChatMiddleware()
         client = _ScriptedChatClient(
@@ -299,9 +302,10 @@ class TestToolLoopAccumulation:
         assert [content.type for content in only.contents] == ["function_result"]
 
     async def test_streaming_service_continuation_resets_identically(self) -> None:
-        """The streaming loop has its OWN reset branch (``kernel/loop.py:986-1027``);
-        Chrys runs service-side continuations through the streaming path in production,
-        so pin it separately from the non-streaming branch above.
+        """The streaming driver reaches the reset through its own iterations
+        (``kernel/loop.py::_LoopRun.stream``); Chrys runs service-side continuations
+        through the streaming path in production, so pin it separately from the
+        blocking driver above.
         """
         recorder = _RecordingChatMiddleware()
         client = _ScriptedChatClient(
@@ -349,10 +353,10 @@ class TestChatContextShallowCopy:
         await client.get_response(caller_messages, options={"tools": [_echo_tool()]})
 
         first, second = seen_contexts
-        # A NEW list object on EVERY call. The cross-call check is the load-bearing
-        # one: the loop's own ``prepped_messages = list(messages)`` already insulates
-        # the caller's list, so only call-to-call distinctness proves the layer copies
-        # per call rather than handing prepped_messages through.
+        # A NEW list object on EVERY call, never the caller's. Through the loop
+        # this holds even without the layer's own copy, since every request is a
+        # fresh wire view (``_WireCaller._call``); the layer's copy of the exact
+        # list it is handed is pinned in ``test_middleware.py::TestOwnChatLayer``.
         assert first.messages is not caller_messages
         assert first.messages is not second.messages
         # Per-call views: a fresh wrapper each call, but the content objects

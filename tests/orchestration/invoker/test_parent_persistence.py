@@ -111,7 +111,7 @@ async def test_cascade_commits_before_repair_and_terminal_writer_upgrades_real_r
     monkeypatch.setattr(SubAgentSessionLogWriter, "write", create_autospec(original_write, side_effect=write))
     # Observe the actual recorder's raw result as it is committed by the kernel,
     # before final history repair can hide an omitted terminal upgrade.
-    from chrys.kernel.loop import LoopRecorder
+    from chrys.kernel import LoopRecorder
 
     original_record = LoopRecorder._interrupt_slot
 

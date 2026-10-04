@@ -14,6 +14,7 @@ so importing service code here would create a cycle.
 
 from chrys.foundation.observability.gate import TELEMETRY_GATE, configure_telemetry
 
+from ._loop_recorder import LoopRecorder, LoopRecorderSnapshot
 from .agent import Agent
 from .client import (
     CONVERSATION_HANDLE_KEYS,
@@ -66,7 +67,7 @@ from .instrumentation import (
     AgentTelemetryLayer,
     ChatTelemetryLayer,
 )
-from .loop import LoopRecorder, StallExhaustedAction, ToolLoopLayer, WireRetryPolicy
+from .loop import ConsumedInjectionMessageProbe, StallExhaustedAction, ToolLoopLayer, WireRetryPolicy
 from .middleware import (
     ChatContext,
     ChatMiddleware,
@@ -178,6 +179,7 @@ __all__ = [
     "CompactionCallContext",
     "CompactionProjectionAtomicityError",
     "CompactionStrategy",
+    "ConsumedInjectionMessageProbe",
     "Content",
     "ContentError",
     "ContextOverflowSink",
@@ -196,6 +198,7 @@ __all__ = [
     "LastWordsCompleter",
     "LastWordsToolCallError",
     "LoopRecorder",
+    "LoopRecorderSnapshot",
     "Message",
     "MiddlewareSplit",
     "MiddlewareTermination",

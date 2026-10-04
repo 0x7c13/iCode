@@ -24,8 +24,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_FAILED_METADATA_KEY,
 )
 from chrys.foundation.util.session_ids import session_short_id
-from chrys.kernel import Message
-from chrys.kernel.loop import LoopRecorder
+from chrys.kernel import LoopRecorder, Message
 from chrys.kernel.tools import SyncToolCancelledAfterCompletion
 from chrys.service.state.serializers import serialized_message_payload
 from chrys.service.state.store import JsonFileStateStore

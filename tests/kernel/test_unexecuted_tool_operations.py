@@ -27,7 +27,7 @@ from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.writer import EmitResult
 from chrys.kernel import FunctionTool
 from chrys.kernel._content import Content
-from chrys.kernel.loop import _record_unexecuted_tool_operation
+from chrys.kernel._tool_execution import _record_unexecuted_tool_operation
 from chrys.kernel.types import ChatResponse, ChatResponseUpdate, Message
 from chrys.service.trajectory.session import SessionTrajectory, trajectory_events_path
 from tests.kernel._fakes import _final_response, _stack, _text_response, _text_update, _user

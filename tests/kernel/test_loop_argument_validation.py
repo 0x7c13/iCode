@@ -16,7 +16,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_FAILED_METADATA_KEY,
 )
 from chrys.kernel import FunctionTool, tool
-from chrys.kernel.loop import (
+from chrys.kernel._tool_execution import (
     _middleware_arguments_equal,
 )
 from chrys.kernel.middleware import (

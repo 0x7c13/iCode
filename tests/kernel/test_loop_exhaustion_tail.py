@@ -14,10 +14,9 @@ from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.foundation.trajectory.metadata import (
     OPERATION_ID_KEY,
 )
-from chrys.kernel import AgentSession
+from chrys.kernel import AgentSession, LoopRecorder
 from chrys.kernel.loop import (
     _MAX_ITERATIONS_FALLBACK_TEXT,
-    LoopRecorder,
     _strip_unexecutable_calls_from_update,
 )
 from chrys.kernel.middleware import (
@@ -489,6 +488,38 @@ class TestExhaustionTailStrip:
         assert response.messages[-1].text == _MAX_ITERATIONS_FALLBACK_TEXT
 
     @pytest.mark.asyncio
+    async def test_stream_stopped_at_the_fallback_has_already_recorded_the_withheld_handles(self) -> None:
+        # The fallback update is a suspension point: a consumer that stops
+        # there never resumes the tail, so the handles the strip withholds
+        # must already be recorded on the session by then.
+        session = AgentSession()
+        final_update = ChatResponseUpdate(
+            contents=[Content.from_function_call(call_id="c2", name="echo", arguments={"text": "b"})],
+            role="assistant",
+            conversation_id="conv-svc",
+            response_id="resp-svc",
+        )
+        layer, _wire = _stack(
+            [[_call_update("c1", "echo", {"text": "a"})], [final_update]],
+            max_iterations=1,
+        )
+        stream = layer.get_response(
+            [_user()],
+            stream=True,
+            options={"tools": [_make_tool()], "store": True},
+            client_kwargs={"session": session},
+        )
+        stopped_at_fallback = False
+        async for update in stream:
+            if update.text == _MAX_ITERATIONS_FALLBACK_TEXT:
+                stopped_at_fallback = True
+                break
+        await stream.aclose()
+        assert stopped_at_fallback
+        assert {"conv-svc", "resp-svc"} <= session.invalidated_service_session_ids
+        assert session.service_session_id is None
+
+    @pytest.mark.asyncio
     async def test_service_tail_restores_fresh_handle_after_finalization(self) -> None:
         # Entering the service-stored tail clears the consumed handle; a
         # successfully finalized, non-invalidated tail restores the fresh one.
@@ -521,7 +552,7 @@ class TestExhaustionTailStrip:
         # calls unanswered — the early return must carry the same invalidation
         # verdict as the exhaustion strip.
         # Streaming: termination on a NON-last iteration — the verdict must not
-        # lean on the last-iteration pre-clear, and ``_finalize`` must withhold
+        # lean on the last-iteration pre-clear, and ``finalize_stream`` must withhold
         # the handles ``from_updates`` would restore from the raw updates.
         class _Terminate(FunctionMiddleware):
             async def process(

@@ -23,6 +23,7 @@ from chrys.kernel import (
     AgentSession,
     ContextProvider,
     InMemoryHistoryProvider,
+    LoopRecorder,
     ServiceFallbackHistoryProvider,
     SessionContext,
     UsageDetails,
@@ -33,7 +34,6 @@ from chrys.kernel.agent import (
     _get_tool_name,
     _merge_options,
 )
-from chrys.kernel.loop import LoopRecorder
 from chrys.kernel.middleware import ChatMiddleware, FunctionMiddleware
 from chrys.kernel.types import (
     AgentResponse,
