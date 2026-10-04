@@ -50,9 +50,9 @@ _CONTEXT_WINDOW_FILLED: Final = "model_context_window_exceeded"
 # The usage breakdowns, in reporting order: the details object, the prefix of
 # the keys its counts are reported under, and each count with the kernel key
 # it also fills and whether a zero is kept. The SDK fields are read directly,
-# so a details value of the wrong shape fails the decode. Not in the SDK
-# model, ``cache_write_tokens`` is kept as an extra field when present; billed
-# explicit prompt caching reports it.
+# so a details value of the wrong shape fails the decode. Billed explicit
+# prompt caching reports ``cache_write_tokens``; services that omit it leave
+# the SDK's optional field unset.
 _BREAKDOWNS: tuple[tuple[str, str, tuple[tuple[str, str | None, bool], ...]], ...] = (
     (
         "completion_tokens_details",
@@ -257,7 +257,7 @@ def decode_usage(usage: CompletionUsage, *, variant: ChatCompletionsVariant) -> 
         if not (source := getattr(usage, group)):
             continue
         for name, kernel_key, keep_zero in entries:
-            count = getattr(source, name, None) if name == "cache_write_tokens" else getattr(source, name)
+            count = getattr(source, name)
             if count is None or not (count or keep_zero):
                 continue
             counts[f"{prefix}/{name}"] = count

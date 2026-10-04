@@ -4053,7 +4053,7 @@
       ]
     },
     "chrys.service.llm.sdk_retry": {
-      "DeterministicConnectionRetryGuard._sleep_for_retry": [
+      "DeterministicConnectionSleepGuard._sleep_for_retry": [
         ["awaitable", "await super()._sleep_for_retry(**kwargs)", "unresolved"]
       ]
     },

@@ -352,8 +352,9 @@ def decode_usage(usage: ResponseUsage, *, variant: ResponsesVariant) -> UsageDet
         if (cached := getattr(inputs, "cached_tokens", None)) is not None:
             details["openai.cached_input_tokens"] = cached  # type: ignore[typeddict-unknown-key]
             details["cache_read_input_token_count"] = cached
-        # Not in the SDK's model (kept as an extra field): billed explicit
-        # prompt caching reports it.
+        # Billed explicit prompt caching reports it. The SDK's model requires
+        # it, but its response parsing leaves it unset when an
+        # OpenAI-compatible service omits it.
         if (written := getattr(inputs, "cache_write_tokens", None)) is not None:
             details["openai.cache_write_tokens"] = written  # type: ignore[typeddict-unknown-key]
             details["cache_creation_input_token_count"] = written

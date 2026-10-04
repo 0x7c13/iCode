@@ -24,6 +24,7 @@ from chrys.kernel import Message
 from chrys.service.llm.openai_responses import ResponsesApiClient
 from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
 from chrys.service.llm.openai_responses.decode import decode_usage
+from tests.service.llm._responses_wire import Script, blocking, respond
 
 
 class _FakeAsyncOpenAI:
@@ -424,11 +425,13 @@ def test_model_class_text_format_valid_name_passes_identical() -> None:
 
 
 def _usage(**detail_kwargs: Any) -> ResponseUsage:
+    # Built without validation: the SDK requires cache_write_tokens, but an
+    # OpenAI-compatible service may leave it out.
     return ResponseUsage(
         input_tokens=10,
         output_tokens=2,
         total_tokens=12,
-        input_tokens_details=InputTokensDetails(cached_tokens=3, **detail_kwargs),
+        input_tokens_details=InputTokensDetails.model_construct(cached_tokens=3, **detail_kwargs),
         output_tokens_details=OutputTokensDetails(reasoning_tokens=1),
     )
 
@@ -453,3 +456,27 @@ def test_cache_write_tokens_absent_omits_both_keys() -> None:
     assert "openai.cache_write_tokens" not in details
     assert "cache_creation_input_token_count" not in details
     assert details["cache_read_input_token_count"] == 3
+
+
+_ANSWER = {
+    "type": "message",
+    "id": "msg_1",
+    "role": "assistant",
+    "status": "completed",
+    "content": [{"type": "output_text", "text": "Sunny.", "annotations": []}],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_service_that_omits_cache_write_tokens_keeps_its_cache_reads(stream: bool) -> None:
+    """The SDK's own response parsing tolerates the missing field, and a zero cache read survives."""
+    reply = Script().started().text(0, "msg_1", "Sunny.").finished(_ANSWER).reply() if stream else blocking(_ANSWER)
+
+    response, _ = await respond(reply, stream=stream)
+
+    usage = response.usage_details
+    assert usage is not None
+    assert usage["cache_read_input_token_count"] == 0
+    assert "cache_creation_input_token_count" not in usage
+    assert "openai.cache_write_tokens" not in usage
