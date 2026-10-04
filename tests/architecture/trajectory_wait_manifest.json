@@ -396,6 +396,9 @@
       "_LoopRun._run_tool_batch": [
         ["wrapper", "await _execute_function_calls(function_calls=function_calls, result_commits=result_commits, tool_options=self._options, custom_args=self._additional_function_arguments, invocation_session=self._session, pipeline=self._pipeline, result_carrier_item_id=result_carrier_item_id, response_truncated=response_truncated, truncated_final_function_call_ids=_truncated_final_function_call_ids(response, function_calls) if response_truncated else None, tool_result_ceiling_tokens=self._tool_result_ceiling_tokens, dispatch_observer=self._trajectory.mark_tool_operations_dispatched)", "unresolved", "chrys.kernel._tool_execution._execute_function_calls"]
       ],
+      "_LoopRun.close_abandoned_read": [
+        ["awaitable", "await reading.aclose()", "unresolved"]
+      ],
       "_LoopRun.run_blocking": [
         ["wrapper", "await self._blocking_iterations()", "unresolved", "chrys.kernel.loop._LoopRun._blocking_iterations"],
         ["awaitable", "await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)", "unresolved"]
@@ -455,6 +458,9 @@
         ["wrapper", "await self._pause_between_continuation_polls()", "unresolved", "chrys.kernel.loop._WireCaller._pause_between_continuation_polls"],
         ["wrapper", "await self._schedule_overflow_resend(policy, exc)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_overflow_resend"],
         ["wrapper", "await self._schedule_retry(policy, exc, message=clean_error_message(exc), attempt=retry_attempt, max_attempts=policy.max_retries)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_retry"]
+      ],
+      "_WireCaller.streaming_response._close_abandoned_attempt": [
+        ["awaitable", "await inner_stream.aclose()", "unresolved"]
       ],
       "_WireCaller.streaming_response._updates": [
         ["wrapper", "await self._call(prepped, as_stream=True, stream_update_filter=stream_update_filter, request_message_observer=request_message_observer)", "unresolved", "chrys.kernel.loop._WireCaller._call"],
@@ -3571,6 +3577,9 @@
       "ResponseValidationMiddleware._observe_failed_response": [
         ["wrapper", "await self._notify_contents_observed(contents, is_final=True)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_contents_observed"]
       ],
+      "ResponseValidationMiddleware._validated_response_stream._close_active_result": [
+        ["awaitable", "await reading.aclose()", "unresolved"]
+      ],
       "ResponseValidationMiddleware._validated_response_stream._updates": [
         ["wrapper", "await self._notify_attempt_started(continuation=continuation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_started"],
         ["awaitable", "await call_next()", "unresolved"],
@@ -3588,8 +3597,7 @@
         ["wrapper", "await self._notify_attempt_accepted(final.messages or [])", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_accepted"],
         ["wrapper", "await self._notify_attempt_rejected(verdict.reason)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_attempt_rejected"],
         ["awaitable", "await result.aclose()", "unresolved"],
-        ["wrapper", "await self._note_retry(verdict.reason, attempt, validation=validation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._note_retry"],
-        ["awaitable", "await active_result.aclose()", "unresolved"]
+        ["wrapper", "await self._note_retry(verdict.reason, attempt, validation=validation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._note_retry"]
       ],
       "ResponseValidationMiddleware.process": [
         ["wrapper", "await self._notify_response_started(continuation=continuation)", "unresolved", "chrys.service.agent_middleware.response_validation.ResponseValidationMiddleware._notify_response_started"],
