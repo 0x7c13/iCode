@@ -37,11 +37,12 @@ from chrys.foundation.util.time import parse_created_at
 from chrys.kernel import (
     Agent,
     AgentSession,
+    ConsumedInjectionMessageProbe,
+    LoopRecorderSnapshot,
     StallExhaustedAction,
     WireRetryPolicy,
     resolve_storage_mode_and_handles,
 )
-from chrys.kernel.loop import ConsumedInjectionMessageProbe, LoopRecorderSnapshot
 from chrys.orchestration.engine.run.resume import TurnPassState, TurnResumePolicy
 from chrys.orchestration.invoker.attempts import (
     AgentRunKwargs,

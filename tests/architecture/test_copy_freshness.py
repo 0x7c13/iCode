@@ -39,6 +39,7 @@ from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.retry import restore_message_properties, snapshot_message_properties
 from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.kernel import AgentSession, LoopRecorder
+from chrys.kernel._loop_recorder import _message_snapshot
 from chrys.kernel._types import (
     _coalesce_code_interpreter_content,
     _coalesce_text_content,
@@ -47,7 +48,7 @@ from chrys.kernel._types import (
 from chrys.kernel.client import _wire_message_view
 from chrys.kernel.compaction import apply_compaction
 from chrys.kernel.identity import ContentList, WeakIdentityRegistry
-from chrys.kernel.loop import _message_snapshot, _strip_echoed_update
+from chrys.kernel.loop import _strip_echoed_update
 from chrys.kernel.types import ChatResponseUpdate, Content, Message
 from chrys.orchestration.engine.loader import _preserved_history_state
 from chrys.orchestration.engine.run.bindings import TurnBindings

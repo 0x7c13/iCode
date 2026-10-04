@@ -6,10 +6,11 @@
 
 This module provides ``FunctionTool`` construction, schema generation,
 serialization and invocation,
-``SKIP_PARSING``, ``tool()``, and ``normalize_tools()``. Telemetry remains a
-loop concern in ``loop.py``; ``FunctionTool.invoke`` intentionally stays free
-of observability and decorative logging. Explicit-null restoration is
-classified and applied by the finite static policy in ``_null_overlay.py``.
+``SKIP_PARSING``, ``tool()``, and ``normalize_tools()``. Tool-invocation
+telemetry lives in ``_tool_execution.py``; ``FunctionTool.invoke``
+intentionally stays free of observability and decorative logging.
+Explicit-null restoration is classified and applied by the finite static
+policy in ``_null_overlay.py``.
 
 HARD RULE: kernel modules may import only the stdlib, intra-package modules,
 allowed third-party packages, and downward ``chrys.foundation.*`` modules.

@@ -269,7 +269,7 @@ class _SpanProbe:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import contextlib
 
-        from chrys.kernel import loop as loop_module
+        from chrys.kernel import _tool_execution as tool_execution_module
 
         self.spans: list[_SpanProbe._Span] = []
         self.histogram = self._Histogram()
@@ -278,14 +278,14 @@ class _SpanProbe:
         @contextlib.contextmanager
         def fake_span(attributes: dict[Any, Any]) -> Any:
             span = probe._Span(
-                f"{attributes[loop_module.OtelAttr.OPERATION]} {attributes[loop_module.OtelAttr.TOOL_NAME]}",
+                f"{attributes[tool_execution_module.OtelAttr.OPERATION]} {attributes[tool_execution_module.OtelAttr.TOOL_NAME]}",
                 attributes,
             )
             probe.spans.append(span)
             yield span
 
-        monkeypatch.setattr(loop_module, "get_function_span", lambda *, attributes: fake_span(attributes))
-        monkeypatch.setattr(loop_module, "_FUNCTION_DURATION_HISTOGRAM", self.histogram)
+        monkeypatch.setattr(tool_execution_module, "get_function_span", lambda *, attributes: fake_span(attributes))
+        monkeypatch.setattr(tool_execution_module, "_FUNCTION_DURATION_HISTOGRAM", self.histogram)
 
 
 @pytest.fixture

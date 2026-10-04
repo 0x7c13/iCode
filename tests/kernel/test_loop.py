@@ -32,12 +32,11 @@ from chrys.foundation.trajectory.metadata import (
     OPERATION_ID_KEY,
 )
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
-from chrys.kernel import AgentSession, FunctionTool, tool
+from chrys.kernel import AgentSession, FunctionTool, LoopRecorder, tool
 from chrys.kernel.exceptions import ModelVisibleToolError, ToolExecutionException
 from chrys.kernel.loop import (
     DEFAULT_MAX_CONSECUTIVE_ERRORS,
     DEFAULT_MAX_ITERATIONS,
-    LoopRecorder,
     ToolLoopLayer,
     _extract_function_calls,
 )

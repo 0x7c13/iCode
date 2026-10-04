@@ -28,10 +28,24 @@ from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
 
 class _HostedCallClient:
-    """Wire client whose single response carries one provider-hosted call."""
+    """Client whose single blocking response carries one provider-hosted call, then ``tail``."""
 
-    def get_response(self, messages: object, **kwargs: object) -> object:
-        del messages, kwargs
+    def __init__(self, tail: Content) -> None:
+        self._tail = tail
+
+    def get_response(
+        self,
+        messages: Sequence[Message],
+        *,
+        stream: bool,
+        options: Mapping[str, Any] | None,
+        function_invocation_kwargs: Mapping[str, Any] | None,
+        compaction_strategy: object,
+        tokenizer: object,
+        client_kwargs: Mapping[str, Any] | None,
+    ) -> Awaitable[ChatResponse]:
+        del messages, options, function_invocation_kwargs, compaction_strategy, tokenizer, client_kwargs
+        assert stream is False
 
         async def _resolve() -> ChatResponse:
             return ChatResponse(
@@ -46,7 +60,7 @@ class _HostedCallClient:
                                 hosted_family="search",
                                 hosted_provider="openai",
                             ),
-                            Content.from_text("done"),
+                            self._tail,
                         ],
                     )
                 ]
@@ -57,10 +71,10 @@ class _HostedCallClient:
 
 @pytest.mark.asyncio
 async def test_a_cycle_interrupted_while_recording_hosted_calls_is_still_closed() -> None:
-    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_HostedCallClient()))
-    # 1 = the cycle's start marker, 2 = the exchange that landed, 3 = the
-    # hosted call the response carried.
-    sink = CancelAckSink(at=3)
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_HostedCallClient(Content.from_text("done"))))
+    # 1 = the cycle's start marker, 2 = the hosted call the response carried
+    # (a client that is not a wire client reports no exchange of its own).
+    sink = CancelAckSink(at=2)
     context = make_context(sink)
 
     with pytest.raises(asyncio.CancelledError):
@@ -69,10 +83,38 @@ async def test_a_cycle_interrupted_while_recording_hosted_calls_is_still_closed(
             client_kwargs={TRAJECTORY_CONTEXT_KWARG: context},
         )
 
-    assert sink.only(EventType.HOSTED_CALL_OBSERVED)
+    assert sink.drafts[1].event_type == EventType.HOSTED_CALL_OBSERVED, "the cancel must land on the hosted call"
     started = sink.only(EventType.MODEL_CYCLE_STARTED)
     finished = sink.only(EventType.MODEL_CYCLE_FINISHED)
     assert finished.operation_id == started.operation_id
+
+
+@pytest.mark.asyncio
+async def test_a_landed_call_is_settled_when_the_hosted_call_records_are_interrupted() -> None:
+    """Closing the cycle hands the landed call's operation to the loop before
+    the hosted-call records await, so an interrupt there still settles it."""
+
+    @tool(name="echo")
+    async def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    layer = InvariantCheckedToolLoopLayer(
+        ChatMiddlewareLayer(_HostedCallClient(Content.from_function_call("c1", "echo", arguments={"text": "x"})))
+    )
+    # 1 = the cycle's start marker, 2 = the hosted call the response carried
+    # (a client that is not a wire client reports no exchange of its own).
+    sink = CancelAckSink(at=2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await layer.get_response(
+            [Message("user", ["hi"])],
+            options={"tools": [echo]},
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+
+    assert sink.drafts[1].event_type == EventType.HOSTED_CALL_OBSERVED, "the cancel must land on the hosted call"
+    assert sink.only(EventType.TOOL_OPERATION_FINISHED).payload["outcome"] == ToolOutcome.FILTERED
+    sink.assert_operations_settled()
 
 
 class _ReportingWireClient(WireClient):
@@ -310,9 +352,11 @@ async def test_a_wall_clock_jump_does_not_stretch_the_cycle_it_spans(monkeypatch
         # The step lands between the two reads a duration would have used.
         return 1_700_000_000_000_000_000 + (hour_ns if calls > 1 else 0)
 
-    monkeypatch.setattr(loop_module, "time_ns", jumping_time_ns)
+    # The loop module imports no wall clock today; ``raising=False`` still
+    # catches one imported later to time the cycle.
+    monkeypatch.setattr(loop_module, "time_ns", jumping_time_ns, raising=False)
 
-    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_HostedCallClient()))
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_HostedCallClient(Content.from_text("done"))))
     sink = FakeSink()
 
     await layer.get_response(

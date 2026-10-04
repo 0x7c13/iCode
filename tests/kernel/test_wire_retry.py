@@ -19,8 +19,10 @@ from chrys.kernel import (
     ChatClientException,
     ChatResponse,
     ChatResponseUpdate,
+    ConsumedInjectionMessageProbe,
     Content,
     FunctionTool,
+    LoopRecorder,
     Message,
     ResponseStream,
     StallExhaustedAction,
@@ -30,7 +32,6 @@ from chrys.kernel import (
     wire_progress_scope,
 )
 from chrys.kernel import loop as loop_module
-from chrys.kernel.loop import ConsumedInjectionMessageProbe, LoopRecorder
 from chrys.kernel.middleware import ChatMiddleware, ChatMiddlewareLayer
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
