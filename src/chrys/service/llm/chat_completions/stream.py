@@ -67,6 +67,8 @@ if TYPE_CHECKING:
     from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
     from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
     from .client import ChatCompletionsVariant
 
 logger = logging.getLogger(__name__)
@@ -115,8 +117,10 @@ class _ChoiceState:
 class StreamState:
     """The assembly state of one stream."""
 
-    def __init__(self, variant: ChatCompletionsVariant) -> None:
+    def __init__(self, variant: ChatCompletionsVariant, *, origin: ReasoningOrigin | None = None) -> None:
         self._variant = variant
+        # The endpoint that sends the stream, stamped on its reasoning_details.
+        self._origin = origin
         self._choices: dict[int, _ChoiceState] = {}
         self._next_order = 0
         # A choice finished with a finish reason.
@@ -324,7 +328,7 @@ class StreamState:
         # A delta's fields carry no order among themselves: one that mixes
         # them reads as reasoning ending and the answer starting, so chunking
         # alone never moves reasoning into the answer text.
-        contents.extend(delta_reasoning(fields, include_plain=include_plain))
+        contents.extend(delta_reasoning(fields, include_plain=include_plain, origin=self._origin))
         contents.extend(text_contents(choice))
         return contents
 

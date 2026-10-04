@@ -17,6 +17,7 @@ from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
 from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.util.chrys_headers import X_SESSION_ID_HEADER
 from chrys.kernel import Content, Message
 from chrys.kernel.client import _ClientLastWordsCompleter, start_with_wire_progress
 from chrys.service.context.compaction.last_words import (
@@ -32,7 +33,7 @@ from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.chat_completions import client as chat_completions_client
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
 from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
-from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.schema import API_STYLE_RESPONSES, ModelProfile
 from tests.service.context.compaction._compaction_helpers import _anthropic_fetched_pdf_exchange
 from tests.service.context.compaction._last_words_helpers import (
     FailingFallbackClient,
@@ -47,6 +48,8 @@ from tests.service.context.compaction._last_words_helpers import (
 )
 from tests.support.openai_chat_wire import ChatReply, scripted_openai
 from tests.support.provider_errors import openai_status
+from tests.support.scripted_wire import ScriptedWire, pin_wire_inputs, route_clients_to
+from tests.support.wire_cases._kit import resp_message, resp_replies, resp_response
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
 
@@ -456,6 +459,48 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
         "reasoning_effort": "low",
         "max_tokens": DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS,
     }
+
+
+@pytest.mark.parametrize(
+    ("chat_options", "expected_key"),
+    [
+        ({}, "note-session"),
+        ({"prompt_cache_key": "mine"}, "mine"),
+        ({"extra_body": {"prompt_cache_key": "nested", "user_tag": "drop"}}, "nested"),
+        ({"prompt_cache_key": None}, None),
+        ({"extra_body": {"prompt_cache_key": None}}, None),
+    ],
+    ids=["automatic", "top_level", "extra_body", "top_level_null", "extra_body_null"],
+)
+async def test_a_fallback_note_keeps_the_prompt_cache_key_the_profile_sets(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, chat_options: dict[str, object], expected_key: str | None
+) -> None:
+    pin_wire_inputs(monkeypatch)
+    note = resp_response(response_id="resp_note", output=[resp_message("msg_note", structured_note())])
+    wire = ScriptedWire(resp_replies([note], stream=False))
+    route_clients_to(wire.transport, monkeypatch)
+    profile = ModelProfile(
+        id="cache",
+        name="cache",
+        provider="openai",
+        api_style=API_STYLE_RESPONSES,
+        model_id="model",
+        api_key="sk-cache",
+        chat_options=json.dumps(chat_options),
+        stream=False,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, session_id="note-session")
+    try:
+        await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+    finally:
+        await gen.aclose()
+
+    [request] = wire.requests
+    body = json.loads(request.content)
+    assert request.headers[X_SESSION_ID_HEADER] == "note-session"
+    assert body.get("prompt_cache_key") == expected_key
+    assert ("prompt_cache_key" in body) is (expected_key is not None)
+    assert "user_tag" not in body
 
 
 @pytest.mark.parametrize("requires_finish_reason", [True, False], ids=["requires_a_finish_reason", "lenient"])

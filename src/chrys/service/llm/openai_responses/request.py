@@ -8,10 +8,12 @@
 the chat names it spells differently, and adds the input (:mod:`.replay`),
 tools, tool choice and the ``text`` configuration a response format becomes.
 A stateless variant first drops every stored-response handle.
+:func:`set_prompt_cache_key` then picks the key that routes the prompt cache.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -25,10 +27,12 @@ from chrys.service.llm._structured_outputs import (
     _sanitize_response_format_name,
     _strictify_response_schema,
 )
+from chrys.service.profiles.models.options import PROMPT_CACHE_KEY_OPTION
 
 from .replay import encode_input
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
     from chrys.kernel import Message
 
     from .client import ResponsesVariant
@@ -53,12 +57,18 @@ _NOT_COPIED = frozenset(
 _RENAMED = (("allow_multiple_tool_calls", "parallel_tool_calls"), ("max_tokens", "max_output_tokens"))
 _STORED_RESPONSE_HANDLES = ("conversation_id", "previous_response_id", "conversation")
 _ENCRYPTED_REASONING = "reasoning.encrypted_content"
+_PROMPT_CACHE_KEY_MAX_CHARS = 64
 
 
 def build_request(
-    messages: Sequence[Message], options: Mapping[str, Any], *, model: str, variant: ResponsesVariant
+    messages: Sequence[Message],
+    options: Mapping[str, Any],
+    *,
+    model: str,
+    variant: ResponsesVariant,
+    origin: ReasoningOrigin | None = None,
 ) -> dict[str, Any]:
-    """The create request for *messages* under validated chat *options*."""
+    """The create request for *messages* under validated chat *options*, sent to the endpoint *origin*."""
     if variant.stateless:
         options = stateless_view(options)
     service_side = continues_stored_response(options)
@@ -78,7 +88,7 @@ def build_request(
     if not request.get("include"):
         request.pop("include", None)
 
-    request_input = encode_input(messages, service_side=service_side, variant=variant)
+    request_input = encode_input(messages, service_side=service_side, variant=variant, origin=origin)
     if not request_input:
         raise ChatClientInvalidRequestException("Messages are required for chat completions")
     request["input"] = request_input
@@ -113,6 +123,30 @@ def build_request(
     if parse_target:
         request["text_format"] = _named_parse_target(parse_target)
     return request
+
+
+def set_prompt_cache_key(request: dict[str, Any], options: Mapping[str, Any], *, session_id: str | None) -> None:
+    """Route the request's prompt cache by *session_id* unless the options set the key.
+
+    A key the options set goes out as written, from ``extra_body`` before
+    the top level; a null in either place sends no key at all. A session id
+    longer than the API takes is sent as its SHA-256 hex digest.
+    """
+    extra_body = options.get("extra_body")
+    nested = extra_body if isinstance(extra_body, Mapping) else {}
+    if (PROMPT_CACHE_KEY_OPTION in nested and nested[PROMPT_CACHE_KEY_OPTION] is None) or (
+        PROMPT_CACHE_KEY_OPTION in options and options[PROMPT_CACHE_KEY_OPTION] is None
+    ):
+        request.pop(PROMPT_CACHE_KEY_OPTION, None)
+        sent = request.get("extra_body")
+        if isinstance(sent, Mapping) and PROMPT_CACHE_KEY_OPTION in sent:
+            request["extra_body"] = {name: value for name, value in sent.items() if name != PROMPT_CACHE_KEY_OPTION}
+        return
+    if PROMPT_CACHE_KEY_OPTION in nested or options.get(PROMPT_CACHE_KEY_OPTION) is not None or not session_id:
+        return
+    if len(session_id) > _PROMPT_CACHE_KEY_MAX_CHARS:
+        session_id = hashlib.sha256(session_id.encode("utf-8", "surrogatepass")).hexdigest()
+    request[PROMPT_CACHE_KEY_OPTION] = session_id
 
 
 def continues_stored_response(options: Mapping[str, Any]) -> bool:

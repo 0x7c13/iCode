@@ -118,6 +118,8 @@ OpenAI、DeepSeek、GLM、Kimi 的 Chat Completions 接口和通义千问在支�
 
 GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，自动缓存写入也会计费。较早的模型使用 `prompt_cache_retention`，取值可能为 `in_memory` 或 `24h`，取决于具体模型，两类设置不能混用。请保留 `implicit` 模式：`explicit` 模式需要在内容块上添加缓存断点，Chat 选项表单不会添加这些断点。
 
+使用 Responses 且地址为 OpenAI 官方地址时，iCode 还会把会话 ID 作为 `prompt_cache_key` 发送，同一会话的请求共用一个缓存键；子智能体和工作流中的智能体各用自己的键。要使用自定义的键，请添加 `prompt_cache_key` 行；不想发送，请将其值设为 `null`。
+
 除非需要服务端续接，否则请不要设置 `store`：iCode 默认发送 `false`，这仍然允许提示词缓存。设为 `true` 后，iCode 的上下文压缩会被禁用。
 
 官方文档：[Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、[Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)、[Responses API 参考](https://developers.openai.com/api/reference/resources/responses/methods/create)、[Chat Completions API 参考](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。

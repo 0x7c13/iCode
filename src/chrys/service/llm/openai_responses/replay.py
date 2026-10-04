@@ -7,8 +7,9 @@ from history, and the API accepts one only next to the calls it led to. So
 history is cut into positional groups (:func:`partition_groups`): a call
 message with the reasoning around it and the outputs that answer it, or a
 message standing alone. :func:`plan_groups` rebuilds each group's reasoning
-items and degrades a group that cannot replay them safely: it then goes out
-without reasoning or hosted MCP calls, its function calls without item ids.
+items and degrades a group that cannot replay them safely, encrypted
+reasoning another endpoint issued included: it then goes out without
+reasoning or hosted MCP calls, its function calls without item ids.
 :func:`encode_input` encodes history with those plans.
 """
 
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from itertools import groupby
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.reasoning_origin import replays_to
 from chrys.kernel.compaction import (
     GROUP_ANNOTATION_KEY,
     GROUP_HAS_REASONING_KEY,
@@ -58,6 +60,7 @@ from .history import (
 from .hosted import coalesce_pending_results
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
     from chrys.kernel import Content, Message
     from chrys.kernel.exchanges import PairingKey
 
@@ -109,6 +112,9 @@ class ReplayPlan:
     mcp_wire_ids: list[str] = field(default_factory=list)
     mcp_result_ids: list[str] = field(default_factory=list)
     degraded: bool = False
+    # Degraded only because another endpoint issued some of the reasoning:
+    # expected after a switch, not a fault.
+    foreign_reasoning: bool = False
 
     def degrade(self) -> None:
         """Switch the group to the form that always replays."""
@@ -123,8 +129,14 @@ class ReplayPlan:
                     self.calls_without_id.add(key)
 
 
-def encode_input(messages: Sequence[Message], *, service_side: bool, variant: ResponsesVariant) -> list[dict[str, Any]]:
-    """Encode history as input items.
+def encode_input(
+    messages: Sequence[Message],
+    *,
+    service_side: bool,
+    variant: ResponsesVariant,
+    origin: ReasoningOrigin | None = None,
+) -> list[dict[str, Any]]:
+    """Encode history as input items for the endpoint *origin*.
 
     Pending hosted results join their calls within one exchange only: call
     ids may repeat in a later one.
@@ -132,7 +144,9 @@ def encode_input(messages: Sequence[Message], *, service_side: bool, variant: Re
     groups = partition_groups(messages)
     provider = variant.hosted_provider
     degradations = hosted_degradations(messages, provider=provider, service_side=service_side)
-    plans = [ReplayPlan(group) for group in groups] if service_side else plan_groups(groups, variant=variant)
+    plans = (
+        [ReplayPlan(group) for group in groups] if service_side else plan_groups(groups, variant=variant, origin=origin)
+    )
     items: list[dict[str, Any]] = []
     for _, batch in groupby(plans, key=_batch_key):
         batch_items = [
@@ -304,10 +318,12 @@ def _pairing_keys(message: Message, types: frozenset[str]) -> set[PairingKey]:
     }
 
 
-def plan_groups(groups: Sequence[ReplayGroup], *, variant: ResponsesVariant) -> list[ReplayPlan]:
-    """Plan every group of a request that replays local history."""
+def plan_groups(
+    groups: Sequence[ReplayGroup], *, variant: ResponsesVariant, origin: ReasoningOrigin | None = None
+) -> list[ReplayPlan]:
+    """Plan every group of a request to the endpoint *origin* that replays local history."""
     result_owners = _result_owners(groups)
-    plans = [_plan_group(group, result_owners, variant=variant) for group in groups]
+    plans = [_plan_group(group, result_owners, variant=variant, origin=origin) for group in groups]
     _degrade_reused_ids(plans)
     # A result whose call was degraded cannot replay without it. Results
     # without an owner stay until coalescing drops them: their position
@@ -318,19 +334,30 @@ def plan_groups(groups: Sequence[ReplayGroup], *, variant: ResponsesVariant) -> 
             for content in message.contents:
                 if content.type == "mcp_server_tool_result" and result_owners.get(id(content)) in degraded_positions:
                     plan.dropped.add(id(content))
-    if degraded := [plan for plan in plans if plan.degraded]:
+    degraded = [plan for plan in plans if plan.degraded]
+    if faulty := [plan for plan in degraded if not plan.foreign_reasoning]:
         logger.warning(
             "Degraded stateless reasoning replay: groups=%s reasoning_ids=%s call_ids=%s",
-            [plan.group.position for plan in degraded],
-            list(dict.fromkeys(name for plan in degraded for name in plan.reasoning_ids)),
-            list(dict.fromkeys(name for plan in degraded for name in plan.call_ids)),
+            [plan.group.position for plan in faulty],
+            list(dict.fromkeys(name for plan in faulty for name in plan.reasoning_ids)),
+            list(dict.fromkeys(name for plan in faulty for name in plan.call_ids)),
         )
+    if foreign := [plan for plan in degraded if plan.foreign_reasoning]:
+        logger.debug("Left out reasoning another endpoint issued: groups=%s", [plan.group.position for plan in foreign])
     return plans
 
 
-def _plan_group(group: ReplayGroup, result_owners: Mapping[int, int], *, variant: ResponsesVariant) -> ReplayPlan:
+def _plan_group(
+    group: ReplayGroup,
+    result_owners: Mapping[int, int],
+    *,
+    variant: ResponsesVariant,
+    origin: ReasoningOrigin | None,
+) -> ReplayPlan:
     occurrences = _reasoning_occurrences(group)
-    reasoning_items, replayable = _rebuilt_reasoning(occurrences, encrypted=variant.encrypted_reasoning)
+    reasoning_items, replayable, only_foreign = _rebuilt_reasoning(
+        occurrences, encrypted=variant.encrypted_reasoning, origin=origin
+    )
     plan = ReplayPlan(group, reasoning_items)
     plan.reasoning_ids = [occurrence[0].id or "<missing>" for occurrence in occurrences]
     tools = [
@@ -341,12 +368,13 @@ def _plan_group(group: ReplayGroup, result_owners: Mapping[int, int], *, variant
     ]
 
     invalid = bool(occurrences) and not replayable
+    faulty = invalid and not only_foreign
     if group.annotated_reasoning_tool_call and tools and not occurrences:
         # Compaction saw reasoning here that history no longer has.
-        invalid = True
+        faulty = True
         plan.reasoning_ids.append("<missing>")
     if group.annotated_reasoning_tool_call and occurrences and not tools:
-        invalid = True
+        faulty = True
 
     def encode(message: Message, content: Content) -> dict[str, Any]:
         return encode_content(
@@ -402,9 +430,10 @@ def _plan_group(group: ReplayGroup, result_owners: Mapping[int, int], *, variant
         content.call_id for _, content in tools if content.type == "mcp_server_tool_result" and content.call_id
     ]
     plan.wire_ids.extend(plan.mcp_wire_ids)
-    if invalid or unsafe:
+    if invalid or faulty or unsafe:
         plan.dropped.update(unsafe)
         plan.degrade()
+        plan.foreign_reasoning = not (faulty or unsafe)
     return plan
 
 
@@ -503,19 +532,33 @@ def _reasoning_occurrences(group: ReplayGroup) -> list[list[Content]]:
 
 
 def _rebuilt_reasoning(
-    occurrences: Sequence[Sequence[Content]], *, encrypted: bool
-) -> tuple[dict[int, dict[str, Any]], bool]:
-    """Each occurrence's reasoning item, and whether all of them replay.
+    occurrences: Sequence[Sequence[Content]], *, encrypted: bool, origin: ReasoningOrigin | None
+) -> tuple[dict[int, dict[str, Any]], bool, bool]:
+    """Rebuild each occurrence's reasoning item.
 
-    OpenAI replays the encrypted payload; an occurrence without one cannot
-    replay. Plaintext dialects replay the reasoning text; an occurrence
-    captured from Chat Completions is left out without degrading the group.
+    Returns the items, whether every occurrence replays, and whether the
+    ones that do not are all ones another endpoint issued (False when every
+    one replays).
+
+    OpenAI replays the encrypted payload; an occurrence without one, or with
+    one an endpoint other than *origin* issued, cannot replay. Plaintext
+    dialects replay the reasoning text; an occurrence captured from Chat
+    Completions is left out without degrading the group.
     """
-    build = _encrypted_item if encrypted else _plaintext_item
-    items = {id(contents[0]): item for contents in occurrences if (item := build(contents)) is not None}
     if encrypted:
-        return items, len(items) == len(occurrences)
-    return items, all(map(_plaintext_replayable, occurrences))
+        foreign = {
+            id(contents[0])
+            for contents in occurrences
+            if not all(replays_to(content.additional_properties, origin) for content in contents)
+        }
+        items = {
+            id(contents[0]): item
+            for contents in occurrences
+            if id(contents[0]) not in foreign and (item := _encrypted_item(contents)) is not None
+        }
+        return items, len(items) == len(occurrences), bool(foreign) and len(items) + len(foreign) == len(occurrences)
+    items = {id(contents[0]): item for contents in occurrences if (item := _plaintext_item(contents)) is not None}
+    return items, all(map(_plaintext_replayable, occurrences)), False
 
 
 def _encrypted_item(contents: Sequence[Content]) -> dict[str, Any] | None:

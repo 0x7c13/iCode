@@ -28,6 +28,7 @@ from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
 from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import HOSTED_WIRE_REPLAY_PROPERTY_KEYS
+from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY
 from chrys.foundation.text.images import inspect_image_dimensions
 from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY
 
@@ -787,6 +788,7 @@ def _serialize_content(content: Content) -> dict[str, Any]:
     additional_properties = payload.get("additional_properties")
     if isinstance(additional_properties, dict):
         additional_properties.pop(EXECUTION_STAMP_KEY, None)
+        additional_properties.pop(REASONING_ORIGIN_KEY, None)
         for key in HOSTED_WIRE_REPLAY_PROPERTY_KEYS:
             additional_properties.pop(key, None)
     # ``items`` mirrors ``result`` for function_result content; exclude it

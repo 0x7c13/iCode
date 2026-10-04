@@ -118,6 +118,8 @@ On Responses, use `reasoning` rather than `reasoning_effort`. iCode translates i
 
 GPT-5.6 and later use `prompt_cache_options` with a `30m` TTL; automatic cache writes are billable. Earlier models use `prompt_cache_retention`, with values such as `in_memory` or `24h` depending on the model. These settings are not interchangeable. Keep `mode` implicit: explicit mode requires content-block breakpoints, which the Chat Options form does not add.
 
+On Responses with OpenAI's own address, iCode also sends the session ID as `prompt_cache_key`, so requests from one session share a cache key; sub-agents and workflow agents use their own. To use a key of your own, add a `prompt_cache_key` row. To send none, set its value to `null`.
+
 Leave `store` unset unless you want service-side continuation: iCode sends `false` by default, which still allows prompt caching. Setting it to `true` disables iCode's context compaction.
 
 Documentation: [Reasoning](https://developers.openai.com/api/docs/guides/reasoning), [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create), [Chat Completions API reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).

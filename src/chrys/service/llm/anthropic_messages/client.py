@@ -14,8 +14,9 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterable, Awaitable, Mapping, Sequence
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, ClassVar, Self, override
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Self, override
 
+from chrys.foundation.reasoning_origin import ReasoningOrigin
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Message, ResponseStream
 from chrys.service.llm.wire_client import RequestHeaders, WireClient
@@ -33,6 +34,9 @@ if TYPE_CHECKING:
     type AnthropicSdkClient = AsyncAnthropic | AsyncAnthropicBedrock | AsyncAnthropicFoundry | AsyncAnthropicVertex
 
 logger = logging.getLogger(__name__)
+
+REASONING_PROTOCOL: Final = "anthropic_messages"
+"""The protocol a reasoning stamp names for this client."""
 
 
 class AnthropicMessagesClient(WireClient):
@@ -91,13 +95,17 @@ class AnthropicMessagesClient(WireClient):
     async def _close_sdk_client(self) -> None:
         await self.sdk_client.close()
 
+    def reasoning_origin(self) -> ReasoningOrigin | None:
+        """The endpoint this client's thinking comes from, and the only one it replays to."""
+        return ReasoningOrigin.of(REASONING_PROTOCOL, self.sdk_client.base_url)
+
     def _build_request(
         self,
         messages: Sequence[Message],
         options: Mapping[str, Any],
         call_kwargs: Mapping[str, Any],
     ) -> dict[str, Any]:
-        request = build_request(messages, options, call_kwargs, model=self.model)
+        request = build_request(messages, options, call_kwargs, model=self.model, origin=self.reasoning_origin())
         self._stamp_request_headers(request)
         return request
 
@@ -113,7 +121,9 @@ class AnthropicMessagesClient(WireClient):
 
         async def response() -> ChatResponse:
             message = await self.sdk_client.beta.messages.create(**request, stream=False)  # type: ignore[misc]
-            return decode_message(message, response_format=options.get("response_format"))
+            return decode_message(
+                message, response_format=options.get("response_format"), origin=self.reasoning_origin()
+            )
 
         return response()
 
@@ -128,7 +138,7 @@ class AnthropicMessagesClient(WireClient):
         request = self._build_request(messages, options, kwargs)
 
         async def updates() -> AsyncIterable[ChatResponseUpdate]:
-            state = StreamState()
+            state = StreamState(origin=self.reasoning_origin())
             events: Any = None
             try:
                 events = await self.sdk_client.beta.messages.create(**request, stream=True)  # type: ignore[misc]

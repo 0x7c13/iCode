@@ -49,6 +49,9 @@ class ProtectedChatOptionsWarning:
 # The Chat Completions option that carries ``ModelProfile.stream_requires_finish_reason``
 # to the client; it is never sent.
 STREAM_REQUIRES_FINISH_REASON_OPTION = "stream_requires_finish_reason"
+# The Responses option that routes OpenAI's prompt cache; a client sets one
+# itself unless the options do (a null: none).
+PROMPT_CACHE_KEY_OPTION = "prompt_cache_key"
 _CHAT_COMPLETIONS_PROVIDERS = frozenset({"openai", "deepseek-openai", "glm-openai"})
 
 PROTECTED_TOP_LEVEL_CHAT_OPTION_KEYS = frozenset(
@@ -238,6 +241,17 @@ def effective_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
             # gate, conversation-id learning, session persistence) agrees
             # with what the service actually stores.
             effective["store"] = False
+        extra_body = effective.get("extra_body")
+        if (
+            PROMPT_CACHE_KEY_OPTION in effective
+            and effective[PROMPT_CACHE_KEY_OPTION] is None
+            and (extra_body is None or isinstance(extra_body, Mapping))
+        ):
+            # A null asks for no prompt cache key, but the agent drops options
+            # set to null, which would leave the client choosing one: the null
+            # rides in extra_body, which keeps it.
+            del effective[PROMPT_CACHE_KEY_OPTION]
+            effective["extra_body"] = {**(extra_body or {}), PROMPT_CACHE_KEY_OPTION: None}
     if profile.max_output_tokens > 0 and (
         effective is None or all(effective.get(alias) is None for alias in OUTPUT_CAP_OPTION_ALIASES)
     ):

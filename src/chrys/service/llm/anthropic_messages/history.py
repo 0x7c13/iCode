@@ -11,7 +11,8 @@ results included, keep their message's role. Repairs keep the request
 valid: an assistant message's thinking without a signature is dropped (the API
 rejects it), and so are blank text and a wire message left with no blocks; a
 tool-call id another provider minted (``functions.read_file:0``) is sent as an
-id the API accepts, the same for the call and its result.
+id the API accepts, the same for the call and its result. Thinking another
+endpoint issued is left out: only its issuer can check the signature.
 
 Hosted-tool history from another provider is replaced by the neutral summary
 :func:`cross_provider_hosted_degradations` writes, sent as assistant context.
@@ -27,11 +28,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from chrys.foundation.hosted_tools import ANTHROPIC_HOSTED_WIRE_BLOCK_KEY
+from chrys.foundation.reasoning_origin import replays_to
 from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
 from chrys.service.llm.images import UNSUPPORTED_IMAGE_TEXT, wire_image
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
     from chrys.kernel import Content, Message
 
 logger = logging.getLogger(__name__)
@@ -63,14 +66,18 @@ class _Block:
         return _ROLE_OF_BLOCK_TYPE.get(self.wire.get("type"), message_role)
 
 
-def encode_messages(messages: Sequence[Message]) -> list[dict[str, Any]]:
-    """Encode *messages* after a leading system message, which the request sends as ``system``."""
+def encode_messages(messages: Sequence[Message], *, origin: ReasoningOrigin | None = None) -> list[dict[str, Any]]:
+    """Encode *messages* after a leading system message, which the request sends as ``system``.
+
+    *origin* is the endpoint the request goes to: thinking, signatures and
+    redacted thinking another endpoint issued are left out.
+    """
     history = messages[1:] if messages and messages[0].role == "system" else messages
     summaries = cross_provider_hosted_degradations(history, target_provider="anthropic")
     wire_messages: list[dict[str, Any]] = []
     for message in history:
         role = "assistant" if message.role == "assistant" else "user"
-        wire_messages.extend(_by_role(_encode_blocks(message, role, summaries), role))
+        wire_messages.extend(_by_role(_encode_blocks(message, role, summaries, origin), role))
     return wire_messages
 
 
@@ -86,7 +93,9 @@ def _by_role(blocks: list[_Block], message_role: str) -> list[dict[str, Any]]:
     return grouped
 
 
-def _encode_blocks(message: Message, role: str, summaries: Mapping[int, str | None]) -> list[_Block]:
+def _encode_blocks(
+    message: Message, role: str, summaries: Mapping[int, str | None], origin: ReasoningOrigin | None
+) -> list[_Block]:
     blocks: list[_Block] = []
     for content in message.contents:
         if id(content) in summaries:
@@ -98,7 +107,8 @@ def _encode_blocks(message: Message, role: str, summaries: Mapping[int, str | No
         if content.hosted_provider == "anthropic" and isinstance(received, Mapping):
             blocks.append(_Block(dict(received)))
         elif content.type == "text_reasoning":
-            _add_thinking(content, blocks)
+            if replays_to(content.additional_properties, origin):
+                _add_thinking(content, blocks)
         elif (wire := _encode_content(content)) is not None:
             blocks.append(_Block(wire))
     if role == "assistant":

@@ -30,7 +30,7 @@ def _make_anthropic_client(*, session_id: str | None = None, parent_session_id: 
     """Construct the production Anthropic stack over a placeholder SDK client."""
     return _assemble_stack(
         AnthropicMessagesClient,
-        object(),  # type: ignore[arg-type]
+        SimpleNamespace(base_url="https://api.anthropic.com"),  # type: ignore[arg-type]
         model_id="claude-default",
         session_id=session_id,
         parent_session_id=parent_session_id,

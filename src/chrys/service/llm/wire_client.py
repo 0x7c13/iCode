@@ -97,6 +97,12 @@ class RequestHeaders:
     parent_session_id: str | None = None
     use_route_session_context: bool = False
 
+    def route_session_id(self) -> str | None:
+        """The session the request being built belongs to, as the session headers name it."""
+        if self.use_route_session_context:
+            return llm_route_session_id.get() or self.session_id
+        return self.session_id
+
     def stamp(self, request: dict[str, Any]) -> None:
         """Set the metadata headers on a built request, including the ``X-Session-ID`` alias.
 
@@ -105,11 +111,10 @@ class RequestHeaders:
         remaining ones must be sendable over HTTP.
         """
         model_id = request.get("model")
+        session_id = self.route_session_id()
         if self.use_route_session_context:
-            session_id = llm_route_session_id.get() or self.session_id
             parent_session_id = llm_parent_session_id.get() or self.parent_session_id
         else:
-            session_id = self.session_id
             parent_session_id = self.parent_session_id
         if not model_id and not session_id and not parent_session_id:
             # No Chrys metadata to merge — any caller-supplied extra headers

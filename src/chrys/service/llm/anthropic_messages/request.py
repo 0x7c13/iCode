@@ -30,6 +30,8 @@ from .history import encode_messages
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BETAS: Final = ("mcp-client-2025-04-04", "code-execution-2025-08-25")
@@ -63,12 +65,14 @@ def build_request(
     call_kwargs: Mapping[str, Any],
     *,
     model: str,
+    origin: ReasoningOrigin | None = None,
 ) -> dict[str, Any]:
     """Return the request for *messages* under *options*, without Chrys headers.
 
     Options set to None are left out. Call keywords become request fields too,
     except private (underscore) names and :data:`_CALL_SETTINGS`. *model* is
-    used when neither sets one.
+    used when neither sets one. *origin* is the endpoint the request goes to:
+    thinking another one issued is left out.
     """
     if instructions := options.get("instructions"):
         messages = prepend_instructions_to_messages(list(messages), instructions, role="system")
@@ -87,7 +91,7 @@ def build_request(
         request["model"] = model
     if not request.get("max_tokens"):
         request["max_tokens"] = FALLBACK_MAX_OUTPUT_TOKENS
-    request["messages"] = encode_messages(messages)
+    request["messages"] = encode_messages(messages, origin=origin)
     if messages and isinstance(messages[0], Message) and messages[0].role == "system":
         request["system"] = messages[0].text
     request["betas"] = {*DEFAULT_BETAS, *options.get("additional_beta_flags", [])}

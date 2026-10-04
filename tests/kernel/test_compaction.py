@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, get_args
 import pytest
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY, ReasoningOrigin
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY, build_execution_stamp
 from chrys.kernel import Content, Message
@@ -359,6 +360,15 @@ class TestAnnotationDeterminismAndIncrementalStability:
 
         assert chrys_compaction._serialize_message(message) == baseline
         assert EXECUTION_STAMP_KEY in result.additional_properties
+
+    def test_reasoning_origin_stamp_is_excluded_from_token_serialization(self) -> None:
+        reasoning = Content.from_text_reasoning(text="thinking", protected_data="sig")
+        message = Message(role="assistant", contents=[reasoning])
+        baseline = chrys_compaction._serialize_message(message)
+        ReasoningOrigin("anthropic_messages", "https://api.anthropic.com:443").stamp(reasoning.additional_properties)
+
+        assert chrys_compaction._serialize_message(message) == baseline
+        assert REASONING_ORIGIN_KEY in reasoning.additional_properties
 
     def test_hosted_wire_replay_mirror_is_excluded_from_token_serialization(self) -> None:
         payload = {"encrypted_content": "x" * 4_096}

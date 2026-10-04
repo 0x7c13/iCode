@@ -66,7 +66,7 @@ from chrys.kernel import (
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
 from chrys.service.llm.one_shot import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
-from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_OPTION
+from chrys.service.profiles.models.options import PROMPT_CACHE_KEY_OPTION, STREAM_REQUIRES_FINISH_REASON_OPTION
 from chrys.service.trajectory.compaction import current_compaction_operation_id
 from chrys.service.trajectory.retries import RetryBackoffTrace
 
@@ -114,6 +114,9 @@ _FALLBACK_ALLOWED_OPTION_KEYS = frozenset(
         # The model's streams always end with a finish reason: a note cut off
         # without one fails here as on every other call.
         STREAM_REQUIRES_FINISH_REASON_OPTION,
+        # A key the profile sets is the note's key too; one it turns off with
+        # a null rides in extra_body (see _generate_once).
+        PROMPT_CACHE_KEY_OPTION,
     }
 )
 
@@ -1610,6 +1613,10 @@ class LastWordsGenerator:
         client = await self._get_client()
         profile_options = self._profile_chat_options()
         options = {key: value for key, value in profile_options.items() if key in _FALLBACK_ALLOWED_OPTION_KEYS}
+        extra_body = profile_options.get("extra_body")
+        if isinstance(extra_body, Mapping) and PROMPT_CACHE_KEY_OPTION in extra_body:
+            # Of extra_body, only the prompt cache key, or its null, applies to the note.
+            options["extra_body"] = {PROMPT_CACHE_KEY_OPTION: extra_body[PROMPT_CACHE_KEY_OPTION]}
         options["max_tokens"] = max_tokens
         report_wire_progress()
         try:

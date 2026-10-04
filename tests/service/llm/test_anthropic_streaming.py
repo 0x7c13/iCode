@@ -71,7 +71,7 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
 
     client = AnthropicMessagesClient(
         model="claude-test",
-        sdk_client=SimpleNamespace(beta=SimpleNamespace(messages=_Messages())),  # type: ignore[arg-type]
+        sdk_client=SimpleNamespace(base_url="https://api.anthropic.com", beta=SimpleNamespace(messages=_Messages())),  # type: ignore[arg-type]
     )
     response_stream = client._inner_get_response(
         messages=[Message("user", ["hi"])],
@@ -85,7 +85,9 @@ async def test_anthropic_adapter_closes_sdk_stream_after_consumption() -> None:
 
 
 def _open_stream(events: Sequence[BetaRawMessageStreamEvent]) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
-    anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_FakeMessages(events)))
+    anthropic_client = SimpleNamespace(
+        base_url="https://api.anthropic.com", beta=SimpleNamespace(messages=_FakeMessages(events))
+    )
     client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
         messages=[Message("user", ["Explore the repository"])],
@@ -117,7 +119,9 @@ async def _stream_function_calls(events: Sequence[BetaRawMessageStreamEvent]) ->
 @pytest.mark.asyncio
 async def test_additional_beta_flags_are_forwarded_only_in_betas() -> None:
     messages_client = _FakeMessages([_message_stop()])
-    anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
+    anthropic_client = SimpleNamespace(
+        base_url="https://api.anthropic.com", beta=SimpleNamespace(messages=messages_client)
+    )
     client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client._inner_get_response(
         messages=[Message("user", ["hi"])],
@@ -143,7 +147,9 @@ async def test_additional_beta_flags_from_chat_options_survive_public_get_respon
     folded into ``betas`` and the raw key never reaches the provider call,
     whether carried in options or in client kwargs."""
     messages_client = _FakeMessages([_message_stop()])
-    anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=messages_client))
+    anthropic_client = SimpleNamespace(
+        base_url="https://api.anthropic.com", beta=SimpleNamespace(messages=messages_client)
+    )
     client = AnthropicMessagesClient(model="claude-test", sdk_client=anthropic_client)  # type: ignore[arg-type]
     stream = client.get_response(
         [Message("user", ["hi"])],

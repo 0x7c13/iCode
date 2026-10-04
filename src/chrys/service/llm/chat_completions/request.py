@@ -31,6 +31,8 @@ from chrys.service.profiles.models.options import STREAM_REQUIRES_FINISH_REASON_
 from .history import encode_messages
 
 if TYPE_CHECKING:
+    from chrys.foundation.reasoning_origin import ReasoningOrigin
+
     from .client import ChatCompletionsVariant
 
 logger = logging.getLogger(__name__)
@@ -43,9 +45,14 @@ _RENAMED_OPTIONS = (("allow_multiple_tool_calls", "parallel_tool_calls"), ("max_
 
 
 def build_request(
-    messages: Sequence[Message], options: Mapping[str, Any], *, model: str, variant: ChatCompletionsVariant
+    messages: Sequence[Message],
+    options: Mapping[str, Any],
+    *,
+    model: str,
+    variant: ChatCompletionsVariant,
+    origin: ReasoningOrigin | None = None,
 ) -> dict[str, Any]:
-    """The keyword arguments of one ``chat.completions.create`` call, before the headers are stamped."""
+    """The keyword arguments of one ``chat.completions.create`` call to the endpoint *origin*, before the headers are stamped."""
     _require_single_choice(options)
     if instructions := options.get("instructions"):
         messages = prepend_instructions_to_messages(list(messages), instructions, role="system")
@@ -55,7 +62,7 @@ def build_request(
     tool_fields = encode_tools(tools) if tools is not None else {}
     if messages and "messages" not in request:
         request["messages"] = encode_messages(
-            messages, variant=variant, request_has_tools=bool(tool_fields.get("tools"))
+            messages, variant=variant, request_has_tools=bool(tool_fields.get("tools")), origin=origin
         )
     if "messages" not in request:
         raise ChatClientInvalidRequestException("Messages are required for chat completions")
