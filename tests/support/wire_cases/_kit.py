@@ -458,7 +458,8 @@ def anth_events(message: Mapping[str, Any]) -> list[tuple[str | None, Any]]:
                 "content_block_start", index=index, content_block={"type": "thinking", "thinking": "", "signature": ""}
             )
             text = block["thinking"]
-            for start in range(0, len(text), _SPLIT):
+            # Omitted thinking still streams one empty delta, as the service does.
+            for start in range(0, len(text) or 1, _SPLIT):
                 emit(
                     "content_block_delta",
                     index=index,

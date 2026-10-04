@@ -373,20 +373,38 @@ async def test_only_the_reasoning_the_request_sent_is_marked(stream: bool, monke
     stray_signature = Content.from_text_reasoning(protected_data="sig-stray")
     split_text = Content.from_text_reasoning(text="c")
     split_signature = Content.from_text_reasoning(protected_data="sig-c")
+    # Thinking streamed without its text: an empty block its signature signs.
+    omitted = Content.from_text_reasoning(protected_data="")
+    omitted_signature = Content.from_text_reasoning(protected_data="sig-e")
     redacted = _redacted()
+    # Thinking without text that no signature follows is never sent.
+    lone_omitted = Content.from_text_reasoning(protected_data="")
     foreign = _issued_elsewhere("d", "sig-d")
-    history = _tool_turn(unsigned, signed, stray_signature, foreign, split_text, split_signature, redacted)
+    history = _tool_turn(
+        unsigned,
+        signed,
+        stray_signature,
+        foreign,
+        split_text,
+        split_signature,
+        omitted,
+        omitted_signature,
+        redacted,
+        lone_omitted,
+    )
 
     _, (refused, resent) = await _call(history, [_REFUSAL, _ok(stream=stream)], monkeypatch, stream=stream)
 
     assert _thinking_blocks(refused) == [
         {"type": "thinking", "thinking": "b", "signature": "sig-b"},
         {"type": "thinking", "thinking": "c", "signature": "sig-c"},
+        {"type": "thinking", "thinking": "", "signature": "sig-e"},
         {"type": "redacted_thinking", "data": "opaque"},
     ]
     assert _thinking_blocks(resent) == []
-    assert [_stripped(content) for content in (signed, split_text, split_signature, redacted)] == [True] * 4
-    assert [_stripped(content) for content in (unsigned, stray_signature, foreign)] == [False] * 3
+    sent = (signed, split_text, split_signature, omitted, omitted_signature, redacted)
+    assert [_stripped(content) for content in sent] == [True] * 6
+    assert [_stripped(content) for content in (unsigned, stray_signature, foreign, lone_omitted)] == [False] * 4
 
     _, [next_request] = await _call(history, [_ok(stream=stream)], monkeypatch, stream=stream)
 

@@ -8,13 +8,13 @@ A chat message becomes one wire message per run of blocks that share a wire
 role, in their original order: tool calls go out as ``assistant`` and local
 tool results as ``user`` whatever message carries them; other blocks, hosted
 results included, keep their message's role. Repairs keep the request
-valid: an assistant message's thinking without a signature is dropped (the API
-rejects it), and so are blank text and a wire message left with no blocks; a
-tool-call id another provider minted (``functions.read_file:0``) is sent as an
-id the API accepts, the same for the call and its result. Thinking another
-endpoint issued is left out: only its issuer can check the signature, and so
-is thinking a request was accepted without after the service refused it as
-bound to a different conversation (:data:`THINKING_STRIPPED_KEY`).
+valid: thinking without a signature is dropped (the API rejects it), and so
+are blank text and a wire message left with no blocks; a tool-call id another
+provider minted (``functions.read_file:0``) is sent as an id the API accepts,
+the same for the call and its result. Thinking another endpoint issued is
+left out: only its issuer can check the signature, and so is thinking a
+request was accepted without after the service refused it as bound to a
+different conversation (:data:`THINKING_STRIPPED_KEY`).
 
 Hosted-tool history from another provider is replaced by the neutral summary
 :func:`cross_provider_hosted_degradations` writes, sent as assistant context.
@@ -108,7 +108,7 @@ def encode_history(
         role = "assistant" if message.role == "assistant" else "user"
         blocks = [
             block
-            for block in _encode_blocks(message, role, summaries, origin)
+            for block in _encode_blocks(message, summaries, origin)
             if not any(id(content) in skipped or _was_stripped(content) for content in block.thinking)
         ]
         for block in blocks:
@@ -134,7 +134,7 @@ def _by_role(blocks: list[_Block], message_role: str) -> list[dict[str, Any]]:
 
 
 def _encode_blocks(
-    message: Message, role: str, summaries: Mapping[int, str | None], origin: ReasoningOrigin | None
+    message: Message, summaries: Mapping[int, str | None], origin: ReasoningOrigin | None
 ) -> list[_Block]:
     blocks: list[_Block] = []
     for content in message.contents:
@@ -151,9 +151,7 @@ def _encode_blocks(
                 _add_thinking(content, blocks)
         elif (wire := _encode_content(content)) is not None:
             blocks.append(_Block(wire))
-    if role == "assistant":
-        blocks = [block for block in blocks if not _is_unsigned_thinking(block.wire)]
-    return blocks
+    return [block for block in blocks if not _is_unsigned_thinking(block.wire)]
 
 
 def _is_unsigned_thinking(wire: Mapping[str, Any]) -> bool:
@@ -173,20 +171,19 @@ def _add_thinking(content: Content, blocks: list[_Block]) -> None:
         # marker, Chat Completions dialects stamp their format): sending it as
         # thinking would forge a signature.
         return
-    if content.text is None:
+    if content.text is None and content.protected_data:
         # A streamed signature arrives as its own fragment and signs the
         # thinking block before it.
         previous = blocks[-1] if blocks else None
-        if (
-            content.protected_data
-            and previous is not None
-            and previous.wire.get("type") == "thinking"
-            and "signature" not in previous.wire
-        ):
+        if previous is not None and previous.wire.get("type") == "thinking" and "signature" not in previous.wire:
             previous.wire["signature"] = content.protected_data
             blocks[-1] = replace(previous, thinking=(*previous.thinking, content))
         return
-    thinking: dict[str, Any] = {"type": "thinking", "thinking": content.text}
+    # Thinking streamed without its text (an empty start and an empty delta)
+    # assembles with no text and the start's empty signature: it is an empty
+    # block, which the signature fragment after it signs; without one, the
+    # block is unsigned and dropped.
+    thinking: dict[str, Any] = {"type": "thinking", "thinking": content.text or ""}
     if content.protected_data:
         thinking["signature"] = content.protected_data
     blocks.append(_Block(thinking, thinking=(content,)))

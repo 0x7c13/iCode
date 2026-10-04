@@ -104,18 +104,20 @@ def test_streamed_redacted_and_ordinary_thinking_round_trip_separately(redacted_
 
 
 @pytest.mark.parametrize("start_signature", [None, ""], ids=["start-without-signature", "start-with-empty-signature"])
-@pytest.mark.parametrize("texts", [("A", "B"), ("", "")], ids=["thinking", "omitted"])
+@pytest.mark.parametrize(
+    "texts", [("A", "B"), ("", ""), (None, None)], ids=["thinking", "omitted", "omitted-without-delta"]
+)
 def test_streamed_adjacent_thinking_blocks_keep_their_own_signatures(
-    start_signature: str | None, texts: tuple[str, str]
+    start_signature: str | None, texts: tuple[str | None, str | None]
 ) -> None:
-    """A gateway that omits ``signature`` on the start event must not merge two thinking blocks."""
+    """Each block keeps its own signature: omitted thinking, with an empty delta or none, and a start without one."""
     state = StreamState()
     start_fields = {} if start_signature is None else {"signature": start_signature}
     events: list[Any] = []
     for index, (text, signature) in enumerate(zip(texts, ("S1", "S2"), strict=True)):
         block = BetaThinkingBlock.model_construct(type="thinking", thinking="", **start_fields)
         events.append(SimpleNamespace(type="content_block_start", index=index, content_block=block))
-        if text:
+        if text is not None:
             events.append(
                 SimpleNamespace(
                     type="content_block_delta", index=index, delta=SimpleNamespace(type="thinking_delta", thinking=text)
@@ -134,8 +136,8 @@ def test_streamed_adjacent_thinking_blocks_keep_their_own_signatures(
     prepared = _replayed_blocks(response.messages[0])
 
     assert prepared == [
-        {"type": "thinking", "thinking": texts[0], "signature": "S1"},
-        {"type": "thinking", "thinking": texts[1], "signature": "S2"},
+        {"type": "thinking", "thinking": texts[0] or "", "signature": "S1"},
+        {"type": "thinking", "thinking": texts[1] or "", "signature": "S2"},
     ]
 
 
