@@ -93,7 +93,7 @@ Changing the session storage root does not automatically move existing sessions.
 | `mutations.parallel_implicit_tools` | `CHRYS_PARALLEL_IMPLICIT_TOOLS` | `true` | Boolean; allow tools that may modify files, such as shell commands and skill scripts, to run in parallel within the same session. Setting this to `false` makes it easier to identify which tool call caused a file change |
 | `mutations.coordination.enabled` | `CHRYS_MUTATION_COORDINATION` | `true` | Boolean; help distinguish file changes made by different iCode sessions sharing a working directory |
 
-Tools may also have their own output limits, such as limits on MCP results and skill resources. Setting `tools.result.ceiling_tokens` to `0` does not disable those limits or recover content that a tool has already truncated.
+Tools may also have their own output limits, such as limits on MCP results and skill resources. Setting `tools.result.ceiling_tokens` to `0` does not disable those limits or recover content that a tool has already truncated. Separately from these token limits, shell commands and skill scripts keep at most 32 MiB of each output stream.
 
 ### Web tools
 

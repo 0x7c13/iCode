@@ -1308,36 +1308,117 @@ def _is_subprocess_text(decoded: str) -> bool:
 def _decode_utf16_output(raw: bytes | bytearray) -> str | None:
     """Decode subprocess output that is clearly UTF-16 text."""
     data = bytes(raw)
+    layout = _utf16_layout(data)
+    if layout is None:
+        return None
+    codec, bom_length = layout
     try:
-        if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-            decoded = data.decode("utf-16")
-            return decoded if is_mostly_text(decoded) else None
+        decoded = data[bom_length:].decode(codec)
     except UnicodeDecodeError:
         return None
+    # ASCII-only UTF-16 without a BOM is indistinguishable from NUL-delimited
+    # UTF-8/ASCII output.  Preserve the bytes in that ambiguous case.
+    if not bom_length and decoded.isascii():
+        return None
+    return decoded if is_mostly_text(decoded) else None
 
+
+def _utf16_layout(data: bytes) -> tuple[str, int] | None:
+    """Return the UTF-16 codec *data*'s BOM or NUL layout shows, and the BOM's length."""
+    if data.startswith(codecs.BOM_UTF16_LE):
+        return "utf-16-le", len(codecs.BOM_UTF16_LE)
+    if data.startswith(codecs.BOM_UTF16_BE):
+        return "utf-16-be", len(codecs.BOM_UTF16_BE)
     if len(data) < 4 or b"\x00" not in data:
         return None
 
     even = data[0::2]
     odd = data[1::2]
-    if not even or not odd:
-        return None
-
     even_nul_ratio = even.count(0) / len(even)
     odd_nul_ratio = odd.count(0) / len(odd)
     if odd_nul_ratio >= 0.20 and odd_nul_ratio >= max(even_nul_ratio * 4, 0.20):
-        encoding = "utf-16-le"
-    elif even_nul_ratio >= 0.20 and even_nul_ratio >= max(odd_nul_ratio * 4, 0.20):
-        encoding = "utf-16-be"
-    else:
-        return None
+        return "utf-16-le", 0
+    if even_nul_ratio >= 0.20 and even_nul_ratio >= max(odd_nul_ratio * 4, 0.20):
+        return "utf-16-be", 0
+    return None
 
+
+def decode_split_output(head: bytes, tail: bytes, tail_offset: int) -> tuple[str, str]:
+    """Decode the kept head and tail of an output stream whose middle was dropped.
+
+    *tail_offset* is where *tail* started in the stream. One codec, chosen
+    from both parts so the cut cannot flip the choice, decodes both, and only
+    the edges at the cut are repaired: a character the cut left incomplete at
+    the end of *head* is dropped, and *tail* starts at its first whole
+    character. When no one codec fits both parts, each is decoded on its own
+    with :func:`decode_subprocess_output`.
+    """
+    if sys.platform == "win32":
+        utf16 = _decode_utf16_split(head, tail, tail_offset)
+        if utf16 is not None:
+            return utf16
+    skipped = _utf8_continuation_prefix_length(tail)
+    utf8_tail = tail[skipped:]
+    if sys.platform != "win32":
+        return _decode_split_with("utf-8", head, utf8_tail)
+
+    code_page = None if _windows_uses_utf8() else _windows_console_encoding()
+    utf8 = _strict_split("utf-8", head, utf8_tail)
+    if utf8 is not None:
+        head_text, tail_text = utf8
+        repaired = skipped > 0 or len(head_text.encode("utf-8")) < len(head)
+        # Bytes dropped as the pieces of a character the cut split are no
+        # evidence for UTF-8 when every character kept is ASCII: the console
+        # code page may read those bytes as text.
+        if not (code_page and repaired and head_text.isascii() and tail_text.isascii()):
+            return utf8
+    if code_page:
+        with contextlib.suppress(LookupError):
+            # A cut inside a double-byte character leaves its trail byte first.
+            parts = next(
+                (parts for k in range(4) if (parts := _strict_split(code_page, head, tail[k:])) is not None), None
+            )
+            if parts is not None and all(_is_subprocess_text(part) for part in parts):
+                return parts
+    if utf8 is not None:
+        return utf8
+    return decode_subprocess_output(head), decode_subprocess_output(tail)
+
+
+def _utf8_continuation_prefix_length(data: bytes) -> int:
+    """Count the UTF-8 continuation bytes, at most three, that start *data*."""
+    length = 0
+    while length < min(3, len(data)) and data[length] & 0xC0 == 0x80:
+        length += 1
+    return length
+
+
+def _strict_split(codec: str, head: bytes, tail: bytes) -> tuple[str, str] | None:
+    """Decode both parts with *codec*, dropping a cut character at the end of *head*; None when either fails."""
     try:
-        decoded = data.decode(encoding)
+        head_text = codecs.getincrementaldecoder(codec)("strict").decode(head, final=False)
+        return head_text, codecs.getincrementaldecoder(codec)("strict").decode(tail, final=True)
     except UnicodeDecodeError:
         return None
-    # ASCII-only UTF-16 without a BOM is indistinguishable from NUL-delimited
-    # UTF-8/ASCII output.  Preserve the bytes in that ambiguous case.
-    if not any(ord(ch) > 0x7F for ch in decoded):
+
+
+def _decode_split_with(codec: str, head: bytes, tail: bytes) -> tuple[str, str]:
+    head_text = codecs.getincrementaldecoder(codec)("replace").decode(head, final=False)
+    return head_text, codecs.getincrementaldecoder(codec)("replace").decode(tail, final=True)
+
+
+def _decode_utf16_split(head: bytes, tail: bytes, tail_offset: int) -> tuple[str, str] | None:
+    """Decode both parts as UTF-16 when *head* clearly is UTF-16 text."""
+    layout = _utf16_layout(head[: len(head) - len(head) % 2])
+    if layout is None:
         return None
-    return decoded if is_mostly_text(decoded) else None
+    codec, bom_length = layout
+    tail = tail[tail_offset % 2 :]
+    # The cut may split a surrogate pair; its low half cannot start a character.
+    high_byte = 1 if codec == "utf-16-le" else 0
+    if len(tail) >= 2 and 0xDC <= tail[high_byte] <= 0xDF:
+        tail = tail[2:]
+    head_text, tail_text = _decode_split_with(codec, head[bom_length:], tail)
+    if not bom_length and head_text.isascii() and tail_text.isascii():
+        return None
+    return (head_text, tail_text) if is_mostly_text(head_text + tail_text) else None

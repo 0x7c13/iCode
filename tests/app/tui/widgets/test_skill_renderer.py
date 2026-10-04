@@ -13,7 +13,7 @@ from chrys.app.tui.widgets.chat import tool_renderers
 from chrys.app.tui.widgets.chat.renderers.skill import SkillToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chat.tool_renderers import create_tool_widget
-from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY
+from chrys.foundation.tool_result_metadata import PARTIAL_OUTPUT_LABEL, TOOL_FAILED_METADATA_KEY
 
 _RENDERER_MODULES = (
     "chrys.app.tui.widgets.chat.renderers.ask_user",
@@ -314,6 +314,30 @@ def test_script_result_exit_suffix_removal_strips_only_trailing_newlines() -> No
     assert not is_error
     assert subtitle == "exit 0"
     assert display.plain == "  indented\nbody"
+
+
+def test_timed_out_script_result_previews_what_the_script_printed() -> None:
+    tool = SkillToolCall("c1", "run_skill_script", args={"skill_name": "docs", "script_name": "scripts/hang.py"})
+    printed = "\n".join(f"line {i}" for i in range(400))
+
+    display, subtitle, is_error = tool._format_result(
+        f"Error: Script 'hang.py' timed out after 30s.\n{PARTIAL_OUTPUT_LABEL}\n{printed}"
+    )
+
+    assert is_error
+    assert subtitle == "error"
+    lines = "\n".join(f"line {i}" for i in range(8))
+    assert display.plain == f"Error: Script 'hang.py' timed out after 30s.\n{lines}\n..."
+
+
+def test_script_error_without_output_is_shown_whole() -> None:
+    tool = SkillToolCall("c1", "run_skill_script", args={"skill_name": "docs", "script_name": "scripts/x.py"})
+    error = "Error: Script 'x.py' failed to start.\nfirst detail\nsecond detail"
+
+    display, _subtitle, is_error = tool._format_result(error)
+
+    assert is_error
+    assert display.plain == error
 
 
 def test_large_resource_preview_does_not_split_full_output() -> None:

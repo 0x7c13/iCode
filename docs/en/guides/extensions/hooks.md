@@ -98,7 +98,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
     )
 ```
 
-The script returns `action: block` and the rejection reason through the result file specified by `CHRYS_HOOK_RESULT`.
+The script returns `action: block` and the rejection reason through the result file specified by `CHRYS_HOOK_RESULT`. What a script prints to standard output or standard error is not read as a decision, and iCode keeps at most 256 KiB of each, from the beginning and the end.
 
 `on_error: block` also rejects the tool call if the script fails to start, times out, or returns a nonzero exit code. Use it for checks that must keep the restriction in place when they fail. This hook blocks only matching `filesystem.write` calls; shell commands are unaffected.
 

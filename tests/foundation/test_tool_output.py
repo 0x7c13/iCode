@@ -154,6 +154,9 @@ def test_keep_whole_r9_literal_counterexample_uses_complete_join_count() -> None
 
 def test_cleaning_helpers_match_shell_semantics() -> None:
     assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+    assert strip_ansi("\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\") == "link"
+    # The end of a sequence whose start is in other output.
+    assert strip_ansi("title\x1b\\rest") == "titlerest"
     assert process_carriage_returns("10%\r50%\r100%\r\ndone") == "100%\ndone"
 
 

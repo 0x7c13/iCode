@@ -89,6 +89,15 @@
         ["wrapper", "await _sleep(secs, kernel32=kernel32)", "unresolved", "chrys.foundation.patches.textual_win_sleep._sleep"]
       ]
     },
+    "chrys.foundation.platform.output_capture": {
+      "drain_process_pipes": [
+        ["gather", "await asyncio.gather(pump(proc.stdout, stdout), pump(proc.stderr, stderr))", "unresolved"],
+        ["sync_primitive", "await proc.wait()", "unresolved"]
+      ],
+      "drain_process_pipes.pump": [
+        ["awaitable", "await stream.read(_READ_CHUNK_BYTES)", "unresolved"]
+      ]
+    },
     "chrys.foundation.platform.process": {
       "ManagedStdioProcess.wait": [
         ["sync_primitive", "await self._process.wait()", "unresolved"],
@@ -3886,8 +3895,7 @@
     "chrys.service.hooks.runner": {
       "HookRunner.run_and_wait": [
         ["async_context", "async with managed_subprocess(*invocation.cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=invocation.cwd, env=invocation.env)", "unresolved"],
-        ["wrapper", "await wait_for_subprocess(proc.communicate(), timeout=hook.execution.timeout_seconds, process_group_id=process_group_id)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"],
-        ["subprocess", "proc.communicate()", "unresolved"]
+        ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=hook.execution.timeout_seconds, process_group_id=process_group_id)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
       ],
       "HookRunner.spawn_detached": [
         ["thread_pool", "await asyncio.to_thread(subprocess.Popen, worker_cmd, **kwargs)", "unresolved"]
@@ -4504,9 +4512,9 @@
     "chrys.service.skills.runner": {
       "SubprocessScriptRunner.__call__": [
         ["async_context", "async with managed_subprocess(*cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=resolved_cwd, env=env)", "unresolved"],
-        ["wrapper", "await wait_for_subprocess(proc.communicate(), timeout=self._timeout, process_group_id=process_group_id)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"],
-        ["subprocess", "proc.communicate()", "unresolved"],
-        ["wrapper", "await truncate_with_spill(self._session_dir, 'skill', canonical, budget)", "unresolved", "chrys.service.tools.spill.truncate_with_spill"]
+        ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout_capture, stderr_capture), timeout=self._timeout, process_group_id=process_group_id)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"],
+        ["wrapper", "await bound_process_output(self._session_dir, 'skill', canonical, budget, captures)", "unresolved", "chrys.service.tools.spill.bound_process_output"],
+        ["wrapper", "await bound_process_output(self._session_dir, 'skill', partial, budget, captures, lead=f'{error}\\n{PARTIAL_OUTPUT_LABEL}\\n')", "unresolved", "chrys.service.tools.spill.bound_process_output"]
       ]
     },
     "chrys.service.state.store": {
@@ -4617,7 +4625,7 @@
     },
     "chrys.service.tools.builtins.shell": {
       "ShellTools._bound_result": [
-        ["wrapper", "await truncate_with_spill(self._session_dir, 'shell', canonical, budget)", "unresolved", "chrys.service.tools.spill.truncate_with_spill"]
+        ["wrapper", "await bound_process_output(self._session_dir, 'shell', canonical, budget, captures, lead=lead)", "unresolved", "chrys.service.tools.spill.bound_process_output"]
       ],
       "ShellTools._execute_pipe": [
         ["async_context", "async with AsyncExitStack()", "unresolved"],
@@ -4633,8 +4641,8 @@
       "ShellTools._execute_pty._drain": [
         ["awaitable", "await reader.read(64 * 1024)", "unresolved"],
         ["awaitable", "await reader.read(64 * 1024)", "unresolved"],
-        ["awaitable", "await progress_cb(pending)", "unresolved"],
-        ["awaitable", "await progress_cb(pending)", "unresolved"]
+        ["awaitable", "await progress_cb(pending.take())", "unresolved"],
+        ["awaitable", "await progress_cb(pending.take())", "unresolved"]
       ],
       "ShellTools._execute_pty._wait_then_release": [
         ["sync_primitive", "await proc.wait()", "unresolved"],
@@ -4649,15 +4657,15 @@
       ],
       "ShellTools._stream_pipe._drain_stdout": [
         ["awaitable", "await proc.stdout.read(64 * 1024)", "unresolved"],
-        ["awaitable", "await progress_cb(list(pending))", "unresolved"],
-        ["awaitable", "await progress_cb(list(pending))", "unresolved"]
+        ["awaitable", "await progress_cb(pending.take())", "unresolved"],
+        ["awaitable", "await progress_cb(pending.take())", "unresolved"]
       ],
       "ShellTools.execute": [
         ["wrapper", "await self._execute_pipe(command, shell, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pipe"],
-        ["wrapper", "await self._bound_result('\\n'.join(parts), budget)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
+        ["wrapper", "await self._bound_result('\\n'.join(parts), budget, (stdout, stderr))", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
         ["wrapper", "await self._execute_pty(command, shell, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pty"],
-        ["wrapper", "await self._bound_result('\\n'.join(parts), budget)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
-        ["wrapper", "await self._bound_result(canonical, budget)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"]
+        ["wrapper", "await self._bound_result('\\n'.join(parts), budget, (merged,))", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
+        ["wrapper", "await self._bound_result(partial, budget, exc.captures, lead=f'{message}\\n')", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"]
       ],
       "_await_pty_master_drained": [
         ["sleep", "await asyncio.sleep(0)", "event-loop-yield"]
@@ -4779,13 +4787,13 @@
       ]
     },
     "chrys.service.tools.spill": {
+      "bound_process_output": [
+        ["wrapper", "await run_spill_finalizer(_spill_and_truncate_text, dir_path, prefix, lead, text, budget, footer)", "unresolved", "chrys.service.tools.spill.run_spill_finalizer"]
+      ],
       "run_spill_finalizer": [
         ["thread_pool", "asyncio.to_thread(function, *args)", "unresolved"],
         ["shield", "await asyncio.shield(worker)", "unresolved"],
         ["shield", "await asyncio.shield(worker)", "unresolved"]
-      ],
-      "truncate_with_spill": [
-        ["wrapper", "await run_spill_finalizer(_spill_and_truncate_text, dir_path, prefix, text, budget)", "unresolved", "chrys.service.tools.spill.run_spill_finalizer"]
       ]
     },
     "chrys.service.trajectory.approvals": {

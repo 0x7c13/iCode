@@ -445,7 +445,7 @@ Scripts locate the current hook's input and result files through environment var
 
 iCode provides both an input file and a result file every time a hook runs. Both files are deleted after the hook finishes; do not save their paths for later use.
 
-Scripts read event information from the input file and write to the [result file](#result-file) when they need to return a decision. Standard output and standard error are not read as decisions.
+Scripts read event information from the input file and write to the [result file](#result-file) when they need to return a decision. Standard output and standard error are not read as decisions; iCode keeps at most 256 KiB of each, from the beginning and the end. This limit does not apply to the log files of hooks with `detach` enabled.
 
 ### Base fields
 

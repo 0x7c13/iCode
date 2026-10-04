@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,9 +17,14 @@ from uuid import uuid4
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes, secure_unlink_owner_verified
+from chrys.foundation.platform.output_capture import CapturedOutput, capture_limit_footer
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.text.tool_output import truncate_output
-from chrys.foundation.tool_result_metadata import record_payload_truncation
+from chrys.foundation.tool_result_metadata import (
+    record_payload_truncation,
+    result_text_exit_code,
+    result_text_without_exit_code,
+)
 from chrys.kernel.tools import SyncToolCancelledAfterCompletion
 
 logger = logging.getLogger(__name__)
@@ -27,6 +32,9 @@ logger = logging.getLogger(__name__)
 TOOL_RESULTS_DIR_NAME = "tool_results"
 
 _tokenizer = MixedLanguageTokenizer()
+
+_MARKER_TOKENS = 20
+"""Room for a truncation marker, whose counts stay under nine digits for any output a capture keeps."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,12 +69,16 @@ def _ensure_owner_only_directory(path: Path) -> None:
         os.close(fd)
 
 
-def format_spill_notice(path: Path, text: str) -> str:
-    """Format the bounded-result notice for a spill at *path*."""
+def format_spill_notice(path: Path, text: str, *, kept_only: bool = False) -> str:
+    """Format the bounded-result notice for a spill at *path*.
+
+    *kept_only* says the spill holds only what a bounded capture kept.
+    """
     line_count = text.count("\n") + 1
     token_count = _tokenizer.count_tokens(text)
+    saved = "Kept output" if kept_only else "Full output"
     return (
-        f"[Full output saved to: {path}\n"
+        f"[{saved} saved to: {path}\n"
         f"{line_count} lines, ~{token_count} tokens. Use read_file or shell tools to inspect it.]"
     )
 
@@ -84,6 +96,8 @@ def try_spill_text(
     text: str,
     budget: int,
     reserved_footer: str = "",
+    *,
+    kept_only: bool = False,
 ) -> SpillInfo | None:
     """Write *text* under the session if its complete notice can fit."""
     if dir_path is None:
@@ -101,7 +115,7 @@ def try_spill_text(
     # stays lexical so the secure writer can still reject a planted
     # ``tool_results`` symlink/reparse point instead of following it.
     path = canonical_dir / TOOL_RESULTS_DIR_NAME / f"{prefix}_{uuid4().hex[:8]}.txt"
-    notice = format_spill_notice(path, text)
+    notice = format_spill_notice(path, text, kept_only=kept_only)
     footer = "\n".join(part for part in (_spill_fit_marker(text), reserved_footer, notice) if part)
     if _tokenizer.count_tokens(footer) > budget:
         record_payload_truncation(text)
@@ -120,13 +134,40 @@ def try_spill_text(
     return SpillInfo(path=path, notice=notice)
 
 
-def _spill_and_truncate_text(dir_path: Path | None, prefix: str, text: str, budget: int) -> str:
-    info = try_spill_text(dir_path, prefix, text, budget)
-    bounded = truncate_output(text, budget, truncation_suffix=info.notice if info else "")
+def _spill_and_truncate_text(
+    dir_path: Path | None, prefix: str, lead: str, text: str, budget: int, capture_footer: str
+) -> str:
+    body, footer = text, ""
+    if capture_footer:
+        # The capture's note goes right before a trailing exit code, which
+        # readers take from the very end of the result; a later bound that
+        # keeps the end of the result keeps both.
+        footer = f"\n{capture_footer}"
+        exit_code = result_text_exit_code(text)
+        if exit_code is not None:
+            body = result_text_without_exit_code(text)
+            footer += f"\n[exit_code: {exit_code}]"
+        whole = lead + body + footer
+        if truncate_output(whole, budget) == whole:
+            return whole
+    # Token counts are floored per text, so two texts can count one more
+    # together than apart.
+    reserved = sum(_tokenizer.count_tokens(part) + 1 for part in (lead, footer) if part)
+    if reserved + _MARKER_TOKENS > budget:
+        # No room for the output beside the error line and the note: keep the
+        # error line alone (without one, the output), cut in the middle if
+        # need be, then the note if it still fits.
+        room = budget - _tokenizer.count_tokens(footer) - 1
+        if not footer or room < 1:
+            footer, room = "", budget
+        return truncate_output(lead.partition("\n")[0] or body, room, head_ratio=1 / 2) + footer
+    budget -= reserved
+    info = try_spill_text(dir_path, prefix, text, budget, kept_only=bool(footer))
+    bounded = truncate_output(body, budget, truncation_suffix=info.notice if info else "")
     if info is not None and info.notice not in bounded:
         discard_spill(info)
-        return truncate_output(text, budget)
-    return bounded
+        bounded = truncate_output(body, budget)
+    return lead + bounded + footer
 
 
 async def run_spill_finalizer[T](function: Callable[..., T], /, *args: Any) -> T:
@@ -148,6 +189,30 @@ async def run_spill_finalizer[T](function: Callable[..., T], /, *args: Any) -> T
         raise SyncToolCancelledAfterCompletion(completed) from None
 
 
-async def truncate_with_spill(dir_path: Path | None, prefix: str, text: str, budget: int) -> str:
-    """Spill and bound completed producer output without losing it to cancellation."""
-    return await run_spill_finalizer(_spill_and_truncate_text, dir_path, prefix, text, budget)
+async def bound_process_output(
+    dir_path: Path | None,
+    prefix: str,
+    text: str,
+    budget: int,
+    captures: Sequence[CapturedOutput] = (),
+    *,
+    lead: str = "",
+) -> str:
+    """Bound a finished process's result to *budget*, spilling it when it does not fit.
+
+    When *captures* dropped output, the trajectory records how many bytes the
+    process wrote and a note saying what was not kept comes last, or just
+    before a trailing exit code. *lead* (an error line, perhaps with a label
+    under it) opens the result whatever the bound keeps of *text*; when the
+    budget leaves *text* no room beside the lead and that note, only the
+    lead's first line is kept, cut short if need be. A spill holds only
+    *text*. The spill and the bounded view survive cancellation of the caller.
+    """
+    footer = capture_limit_footer(captures)
+    whole = lead + text
+    # Every character counts at least a quarter token, so a longer text cannot
+    # fit, and counting it here would hold the event loop.
+    if not footer and len(whole) <= 4 * (budget + 1) and truncate_output(whole, budget) == whole:
+        return whole
+    record_payload_truncation(whole, original_bytes=sum(capture.seen for capture in captures) if footer else None)
+    return await run_spill_finalizer(_spill_and_truncate_text, dir_path, prefix, lead, text, budget, footer)

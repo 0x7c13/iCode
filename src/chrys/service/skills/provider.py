@@ -683,8 +683,9 @@ class ChrysSkillsProvider(ContextProvider):
             FunctionTool(
                 name=RUN_SKILL_SCRIPT_TOOL_NAME,
                 description=(
-                    "Runs a script associated with a skill. Large output is truncated to max_tokens and, when "
-                    "possible, the complete cleaned result is saved under the current session directory."
+                    "Runs a script associated with a skill. Large output is truncated to max_tokens; very large "
+                    "output keeps only its beginning and end, and the middle cannot be recovered. When possible, "
+                    "the kept output is saved under the current session directory."
                 ),
                 func=_run_script,
                 input_model={
