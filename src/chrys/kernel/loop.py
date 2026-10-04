@@ -117,6 +117,10 @@ class WireRetryPolicy(Protocol):
     stall_timeout_seconds: float | None
     stall_max_retries: int
     stall_exhausted_action: StallExhaustedAction
+    # Probe for the hosted tool calls a replay must not re-run (side-effectful
+    # or of unknown safety) that the current wire attempt already ran
+    # server-side; None when the caller has no such probe.
+    hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None
 
     def backoff_seconds(self, attempt: int) -> int: ...
 
@@ -1216,14 +1220,13 @@ class _WireCaller:
         if CONTINUATION_POLL_INTERVAL_SECONDS > 0:
             await asyncio.sleep(CONTINUATION_POLL_INTERVAL_SECONDS)
 
-    def _hosted_commits_vetoing_replay(self, policy: Any) -> tuple[str, ...]:
-        # Upward-safe seam: a policy may expose the hosted tool calls the
-        # failed attempt already executed server-side (hosted MCP / hosted
-        # shell). Without a live continuation token a retry re-creates the
-        # request and re-runs those side effects; with one it merely
-        # resumes the same response, which is safe.
-        hosted_probe = getattr(policy, "hosted_commits_in_flight", None)
-        hosted_commits = tuple(hosted_probe()) if callable(hosted_probe) else ()
+    def _hosted_commits_vetoing_replay(self, policy: WireRetryPolicy) -> tuple[str, ...]:
+        # Without a live continuation token a retry re-creates the request
+        # and re-runs the hosted tool calls the failed attempt already
+        # executed server-side; with one it merely resumes the same
+        # response, which is safe.
+        hosted_probe = policy.hosted_commits_in_flight
+        hosted_commits = tuple(hosted_probe()) if hosted_probe is not None else ()
         if hosted_commits and self._options.get("continuation_token") is None:
             return hosted_commits
         return ()
@@ -1337,10 +1340,13 @@ class _WireCaller:
         request_message_observer: Callable[[Sequence[Message]], None],
     ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
         final_response: ChatResponse | None = None
+        # The provider stream of the attempt being read; None once it was
+        # read to its end.
+        inner_stream: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
         logical_stream: ResponseStream[ChatResponseUpdate, ChatResponse]
 
         async def _updates() -> AsyncIterable[ChatResponseUpdate]:
-            nonlocal final_response
+            nonlocal final_response, inner_stream
             retry_attempt = 0
             stall_retry_attempt = 0
             overflow_recovered = False
@@ -1348,7 +1354,7 @@ class _WireCaller:
                 policy = self._policy
                 if policy is not None and policy.is_interrupted():
                     raise asyncio.CancelledError
-                inner_stream: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
+                inner_stream = None
                 try:
                     while True:
                         raw_stream = await self._call(
@@ -1487,7 +1493,17 @@ class _WireCaller:
                 raise RuntimeError("Logical streaming call ended without a final response.")
             return final_response
 
-        logical_stream = ResponseStream(_updates(), finalizer=_finalizer)
+        async def _close_abandoned_attempt() -> None:
+            # A close of this logical call mid-response closes the provider
+            # stream it was reading, as ``_LoopRun.close_abandoned_read`` does
+            # one level up; one already closed or read to its end is a no-op.
+            if inner_stream is not None:
+                try:
+                    await inner_stream.aclose()
+                except Exception:
+                    logger.debug("Failed to close abandoned provider stream", exc_info=True)
+
+        logical_stream = ResponseStream(_updates(), finalizer=_finalizer).with_cleanup_hook(_close_abandoned_attempt)
         return logical_stream
 
 
@@ -1508,7 +1524,8 @@ class _LoopRun:
     messages, tool ordinal, error and call counters, aggregated usage — lives
     for the run; the caller's history is read when a driver starts. Only the
     streaming driver writes ``_latest_usage``, ``_final_messages`` and
-    ``_service_state_invalidated``, which ``finalize_stream`` reads.
+    ``_service_state_invalidated``, which ``finalize_stream`` reads, and
+    ``_reading``, which ``close_abandoned_read`` reads and clears.
 
     Writes outside the run: ``tool_choice`` in the run's options, and
     ``tools`` through each tool batch (normalized per batch, so the next
@@ -1581,6 +1598,9 @@ class _LoopRun:
         # the response from raw updates, which still carry those continuation
         # ids, so it withholds them again.
         self._service_state_invalidated = False
+        # The logical call the streaming driver is reading; None once it was
+        # read to its end.
+        self._reading: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
 
     # -- steps both drivers share ------------------------------------------
 
@@ -1817,6 +1837,8 @@ class _LoopRun:
         # Delegating the body to an inner generator would lose the
         # GeneratorExit: closing this generator does not close one it is
         # iterating, so the inner body would see it only at garbage collection.
+        # For the same reason the logical call it is reading is closed apart,
+        # by ``close_abandoned_read``.
         interrupted = False
         try:
             self._start()
@@ -1844,8 +1866,10 @@ class _LoopRun:
                     stream_update_filter=echo_filter,
                     request_message_observer=self._wire_request_observer,
                 )
+                self._reading = logical_stream
                 async for update in logical_stream:
                     yield update
+                self._reading = None
                 # Triggers the inner stream's finalizer and result hooks (the
                 # wire client's intermediate-text hook runs before tool
                 # extraction below — "hook before tool detection" ordering).
@@ -1924,6 +1948,7 @@ class _LoopRun:
                 request_message_observer=self._wire_request_observer,
             )
             tail_stripped_call = False
+            self._reading = final_logical_stream
             async for update in final_logical_stream:
                 kept = _strip_unexecutable_calls_from_update(update, suppress_finish_reason=tail_stripped_call)
                 if kept is not update:
@@ -1945,6 +1970,7 @@ class _LoopRun:
                     # invalidation) is the sole writer once the stream ends.
                     kept.__dict__["_chrys_exhaustion_tail_update"] = True
                     yield kept
+            self._reading = None
             final_response = await final_logical_stream.get_final_response()
             _remove_echo_emptied_message_shells(final_response)
             self._land(final_response)
@@ -2004,6 +2030,28 @@ class _LoopRun:
             raise
         finally:
             await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)
+
+    async def close_abandoned_read(self) -> None:
+        """Cleanup hook of the run's stream: close the logical call it was reading.
+
+        A logical call is left unread when the consumer closes the run's
+        stream mid-response, or when the run fails between two pulls of it.
+        On every other exit it was read to its end, or it ended by itself
+        (error, cancellation) and closing it again has no effect. Closing it
+        closes the provider stream under it, so that stream's own cleanup
+        hooks (usage, telemetry) run before the close or the failure reaches
+        the consumer. The hook runs after ``stream`` exited and aborted its
+        trajectory, never from a ``GeneratorExit`` handler: finalization
+        closes each abandoned generator in a task of its own, and a handler
+        closing another generator would collide with that generator's own
+        close.
+        """
+        reading, self._reading = self._reading, None
+        if reading is not None:
+            try:
+                await reading.aclose()
+            except Exception:
+                logger.debug("Failed to close an abandoned logical stream", exc_info=True)
 
     def finalize_stream(self, updates: Sequence[ChatResponseUpdate]) -> ChatResponse:
         # Inner result hooks already ran via get_final_response; do not run them again.
@@ -2201,7 +2249,7 @@ class ToolLoopLayer:
         )
         if not stream:
             return run.run_blocking()
-        return ResponseStream(run.stream(), finalizer=run.finalize_stream)
+        return ResponseStream(run.stream(), finalizer=run.finalize_stream).with_cleanup_hook(run.close_abandoned_read)
 
 
 async def _resolve_response(value: Any) -> ChatResponse:
