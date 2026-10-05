@@ -4599,6 +4599,10 @@
         ["timeout", "await asyncio.wait_for(proc.communicate(operands), timeout=5)", "unresolved"],
         ["subprocess", "proc.communicate(operands)", "unresolved"]
       ],
+      "_drain_until_stopped": [
+        ["multi_wait", "await asyncio.wait((drain, stopped), return_when=asyncio.FIRST_COMPLETED)", "unresolved"],
+        ["gather", "await asyncio.gather(drain, stopped, return_exceptions=True)", "unresolved"]
+      ],
       "_glob_impl": [
         ["timeout", "async with asyncio.timeout(_TIMEOUT)", "unresolved"],
         ["wrapper", "await _search_files(root, pattern, respect_gitignore)", "unresolved", "chrys.service.tools.builtins.search._search_files"]
@@ -4608,13 +4612,11 @@
         ["wrapper", "await _directory_is_gitignored(root)", "unresolved", "chrys.service.tools.builtins.search._directory_is_gitignored"],
         ["wrapper", "await _search_files(root, glob, respect_gitignore)", "unresolved", "chrys.service.tools.builtins.search._search_files"],
         ["wrapper", "await _run_rg([*encoding_args['utf-8'], '-'])", "unresolved", "chrys.service.tools.builtins.search._run_rg"],
-        ["wrapper", "await _run_rg([*args, *batch], cwd=search_cwd)", "unresolved", "chrys.service.tools.builtins.search._run_rg"],
-        ["thread_pool", "await asyncio.to_thread(_parse_grep_jsonl, stdout, root, max_results - total_matches, seen_matches={key for key, entry in all_entries.items() if entry.marker == '>'}, skip_binary=globbed_directory)", "unresolved"]
+        ["wrapper", "await _run_rg([*args, *batch], cwd=search_cwd, consume=parser.feed)", "unresolved", "chrys.service.tools.builtins.search._run_rg"]
       ],
       "_run_rg": [
         ["async_context", "async with managed_subprocess(rg, *args, cwd=cwd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)", "unresolved"],
-        ["timeout", "await asyncio.wait_for(proc.communicate(), timeout=timeout)", "unresolved"],
-        ["subprocess", "proc.communicate()", "unresolved"]
+        ["timeout", "await asyncio.wait_for(_drain_until_stopped(proc, stdout, stderr), timeout=timeout)", "unresolved"]
       ],
       "_search_files": [
         ["wrapper", "await _directory_is_gitignored(root)", "unresolved", "chrys.service.tools.builtins.search._directory_is_gitignored"],

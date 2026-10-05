@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -59,13 +60,17 @@ async def test_deleted_search_directory_does_not_claim_ripgrep_is_missing(
     removed = False
 
     async def remove_before_spawn(
-        args: list[str], *, timeout: int = 30, cwd: str | None = None
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
     ) -> tuple[str, str, int]:
         nonlocal removed
         if not removed and ((phase == "listing" and "--files" in args) or (phase == "content" and "--json" in args)):
             shutil.rmtree(root)
             removed = True
-        return await original_run(args, timeout=timeout, cwd=cwd)
+        return await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_run_rg", remove_before_spawn)
     metadata: dict[str, object] = {}

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -51,8 +51,14 @@ async def test_content_error_flood_is_bounded_in_results_and_persisted_metadata(
     (tmp_path / "visible.py").write_text("NEEDLE\n" if has_matches else "nothing\n", encoding="utf-8")
     original_run = search._run_rg
 
-    async def failing_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
-        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd)
+    async def failing_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
+        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
         return (stdout, error_flood, 2) if "--json" in args else (stdout, stderr, code)
 
     monkeypatch.setattr(search, "_run_rg", failing_run)
@@ -82,11 +88,17 @@ async def test_listing_error_flood_is_bounded_before_entering_metadata(
     original_run = search._run_rg
     listings = 0
 
-    async def failing_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def failing_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         nonlocal listings
         assert "--files" in args  # Discovery failures must not be mistaken for a complete candidate set.
         listings += 1
-        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd)
+        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
         return (stdout, error_flood, 2) if listings == failed_listing else (stdout, stderr, code)
 
     monkeypatch.setattr(search, "_run_rg", failing_run)
@@ -115,9 +127,15 @@ async def test_errors_accumulate_across_batches_and_encodings_without_overwritin
     original_run = search._run_rg
     content_calls = 0
 
-    async def failing_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def failing_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         nonlocal content_calls
-        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd)
+        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
         if "--json" in args:
             content_calls += 1
             diagnostics = {1: "first error\nits cause\n", 2: "", 4: "rg: third error\n  \n"}
@@ -154,7 +172,13 @@ async def test_errors_accumulate_across_batches_and_encodings_without_overwritin
 async def test_missing_diagnostics_keep_the_exit_code_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: str
 ) -> None:
-    async def failing_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def failing_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         return "", stderr, 2
 
     monkeypatch.setattr(search, "_run_rg", failing_run)
@@ -189,11 +213,23 @@ async def test_repeated_file_error_across_encodings_is_reported_once(
         (tmp_path / "deleted.py").unlink()
         return files
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         nonlocal failed_passes
-        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd)
+        printed = bytearray()
+
+        def tee(chunk: bytes) -> bool:
+            printed.extend(chunk)
+            return consume is None or consume(chunk)
+
+        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd, consume=tee if consume else None)
         if "--json" in args:
-            assert code == 2 and stdout
+            assert code == 2 and printed
             failed_passes += 1
         return stdout, stderr, code
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -126,9 +126,15 @@ async def test_empty_candidates_validate_only_against_empty_stdin(
     calls: list[list[str]] = []
     run_rg = search._run_rg
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         calls.append(args)
-        return await run_rg(args, timeout=timeout, cwd=cwd)
+        return await run_rg(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_run_rg", recording_run)
     result = await search.grep("NEEDLE", path=str(tmp_path), glob="*.py")
@@ -194,7 +200,13 @@ async def test_search_timeout_covers_candidate_discovery(
 ) -> None:
     cancelled = False
 
-    async def blocked_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def blocked_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         nonlocal cancelled
         try:
             await asyncio.Event().wait()

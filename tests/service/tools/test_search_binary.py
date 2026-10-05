@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -87,29 +86,27 @@ async def test_glob_still_lists_binary_files(tmp_path: Path) -> None:
     assert "binary.py" in result
 
 
-async def test_dense_globbed_grep_allows_event_loop_progress_during_parsing(
+async def test_dense_globbed_grep_lets_the_event_loop_run_between_output_chunks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "dense.py").write_text("NEEDLE\n" * 10_000, encoding="utf-8")
     loop = asyncio.get_running_loop()
-    loop_progressed = threading.Event()
-    original_parse = search._parse_grep_jsonl
+    loop_progressed = asyncio.Event()
+    chunks_after_progress = 0
 
-    def parse_after_loop_progress(
-        stdout: str,
-        root: str,
-        max_results: int,
-        *,
-        seen_matches: set[tuple[str, int]] | None = None,
-        skip_binary: bool = False,
-    ) -> search.GrepParseResult:
-        # This callback cannot run if parsing still occupies the event loop.
-        loop.call_soon_threadsafe(loop_progressed.set)
-        assert loop_progressed.wait(timeout=5), "Search parsing blocked the event loop"
-        return original_parse(stdout, root, max_results, seen_matches=seen_matches, skip_binary=skip_binary)
+    class ObservedStream(search._GrepStream):
+        def feed(self, chunk: bytes) -> bool:
+            nonlocal chunks_after_progress
+            if loop_progressed.is_set():
+                chunks_after_progress += 1
+            else:
+                # This callback cannot run until parsing gives the event loop a turn.
+                loop.call_soon(loop_progressed.set)
+            return super().feed(chunk)
 
-    monkeypatch.setattr(search, "_parse_grep_jsonl", parse_after_loop_progress)
+    monkeypatch.setattr(search, "_GrepStream", ObservedStream)
     result = await search.grep("NEEDLE", path=str(tmp_path), glob="*.py", context_lines=0)
 
+    assert chunks_after_progress, "Search parsing held the event loop for the whole output"
     assert "Found 50 match(es)" in result
     assert "limited to 50" in result

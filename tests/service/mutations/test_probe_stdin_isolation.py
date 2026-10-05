@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 import chrys.service.mutations.trace as trace_mod
-from chrys.service.mutations import git_calibrator, git_state
+from chrys.service.mutations import git_state
 from chrys.service.mutations.git_calibrator import GitDiffCalibrator
 from chrys.service.mutations.trace import FSATRACE_PATH_ENV, resolve_fsatrace
 
@@ -103,7 +103,6 @@ def _protocol_stdin() -> Iterator[int]:
 def python_as_git(monkeypatch: pytest.MonkeyPatch) -> str:
     """Resolve ``git`` to the interpreter so ``args=["-c", code]`` runs *code*."""
     monkeypatch.setattr(git_state.shutil, "which", lambda _name: sys.executable)
-    monkeypatch.setattr(git_calibrator.shutil, "which", lambda _name: sys.executable)
     return sys.executable
 
 
@@ -142,7 +141,7 @@ def test_calibrator_namelist_gives_the_child_devnull_stdin_and_leaves_the_protoc
     calibrator = GitDiffCalibrator(str(tmp_path))
     out: set[str] = set()
     with _protocol_stdin() as read_fd:
-        assert calibrator._run_git_namelist(["-c", _READ_STDIN_AND_REPORT], out) is True
+        assert calibrator._run_git_namelist(["-c", _READ_STDIN_AND_REPORT_NUL], out) is True
         assert out == {os.path.normpath(os.path.join(calibrator._root, "consumed=0"))}
         assert os.read(read_fd, len(_PROTOCOL_LINE) + 16) == _PROTOCOL_LINE
 

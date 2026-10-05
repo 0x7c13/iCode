@@ -12,9 +12,10 @@ from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.service.tools.builtins.search import (
     _MAX_LINE_DISPLAY_CHARS,
+    GrepParseResult,
     LongLine,
     SearchTools,
-    _parse_grep_jsonl,
+    _GrepStream,
     _to_posix,
     glob,
     grep,
@@ -162,7 +163,7 @@ async def test_grep_skips_hidden_dirs(tmp_path: Path) -> None:
     assert "secret.py" not in result
 
 
-# -- grep / _parse_grep_jsonl — long-line truncation ----------------------------
+# -- grep — long-line truncation -----------------------------------------------
 
 
 async def test_grep_long_match_line(tmp_path: Path) -> None:
@@ -222,7 +223,14 @@ async def test_grep_multiple_long_lines_across_files(tmp_path: Path) -> None:
     assert "b.py" in result
 
 
-# -- _parse_grep_jsonl unit tests for truncation --------------------------------
+# -- _GrepStream unit tests for truncation --------------------------------------
+
+
+def _parse(stdout: str) -> GrepParseResult:
+    """Feed *stdout* as rg prints it, every record ending in a newline."""
+    stream = _GrepStream("/root", 50)
+    stream.feed(stdout.encode() + b"\n")
+    return stream.result
 
 
 def _make_rg_json_line(entry_type: str, path: str, line_num: int, text: str) -> str:
@@ -240,11 +248,11 @@ def _make_rg_json_line(entry_type: str, path: str, line_num: int, text: str) -> 
 
 
 def test_parse_grep_jsonl_truncates_long_lines() -> None:
-    """_parse_grep_jsonl truncates lines > _MAX_LINE_DISPLAY_CHARS."""
+    """_GrepStream truncates lines > _MAX_LINE_DISPLAY_CHARS."""
     long_text = "x" * (_MAX_LINE_DISPLAY_CHARS + 500)
     stdout = _make_rg_json_line("match", "/root/file.py", 1, long_text)
 
-    parsed = _parse_grep_jsonl(stdout, "/root", max_results=50)
+    parsed = _parse(stdout)
     assert parsed.match_count == 1
     assert len(parsed.entries) == 1
     # Entry text is truncated
@@ -260,7 +268,7 @@ def test_parse_grep_jsonl_exact_limit_not_truncated() -> None:
     exact_text = "a" * _MAX_LINE_DISPLAY_CHARS
     stdout = _make_rg_json_line("match", "/root/file.py", 1, exact_text)
 
-    parsed = _parse_grep_jsonl(stdout, "/root", max_results=50)
+    parsed = _parse(stdout)
     assert parsed.match_count == 1
     assert parsed.entries[0].text == exact_text
     assert parsed.long_lines == []
@@ -333,7 +341,7 @@ def test_parse_grep_jsonl_context_line_truncated() -> None:
     ]
     stdout = "\n".join(lines)
 
-    parsed = _parse_grep_jsonl(stdout, "/root", max_results=50)
+    parsed = _parse(stdout)
     assert parsed.match_count == 1
     assert len(parsed.entries) == 2
     # Context line truncated
