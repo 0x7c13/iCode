@@ -36,6 +36,8 @@ _CLIPBOARD_IMAGE_KEEP_BYTES = 512 * 1024 * 1024
 _WINDOWS_CLIPBOARD_GRAB_ATTEMPTS = 5
 _WINDOWS_CLIPBOARD_GRAB_DELAY_SECONDS = 0.02
 _MACOS_CLIPBOARD_IMAGE_CLASSES = ("PNGf", "TIFF", "JPEG", "GIFf")
+# The formats those classes carry; Pillow decodes no other from the clipboard.
+_MACOS_CLIPBOARD_IMAGE_FORMATS = ("PNG", "TIFF", "JPEG", "GIF")
 _MACOS_CLASS_OPEN = chr(0x00AB)
 _MACOS_CLASS_CLOSE = chr(0x00BB)
 
@@ -113,7 +115,7 @@ def _grab_macos_clipboard_image() -> object | None:
         if data is None:
             continue
         try:
-            with Image.open(BytesIO(data)) as image:
+            with Image.open(BytesIO(data), formats=_MACOS_CLIPBOARD_IMAGE_FORMATS) as image:
                 image.load()
                 return image.copy()
         except UnidentifiedImageError, OSError, ValueError:

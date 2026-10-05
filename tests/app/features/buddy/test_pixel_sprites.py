@@ -19,6 +19,7 @@ from chrys.app.features.buddy.pixel_sprites import (
     load_external_pixel_frame,
     species_sprite,
 )
+from tests.support.images import image_bytes
 
 
 @pytest.mark.parametrize("species", list(Species))
@@ -114,7 +115,7 @@ def test_external_artwork_is_decoded_once_and_returns_independent_frames(tmp_pat
         for _ in range(10):
             frame = build_pixel_frame(Species.RABBIT)
             assert frame.getpixel((0, 0)) == (20, 40, 60, 255)
-        opened.assert_called_once_with(path)
+        opened.assert_called_once_with(path, formats=("PNG",))
 
 
 def test_external_artwork_cache_tracks_same_size_edits(tmp_path, monkeypatch) -> None:
@@ -139,6 +140,15 @@ def test_external_artwork_recovers_after_missing_invalid_and_removed_files(tmp_p
     assert build_pixel_frame(Species.RABBIT).getpixel((0, 0)) == (20, 40, 60, 255)
     path.unlink()
     assert load_external_pixel_frame(Species.RABBIT, 0) is None
+
+
+def test_external_artwork_is_read_only_as_png(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "rabbit_0.png"
+    monkeypatch.setattr("chrys.app.features.buddy.pixel_sprites._get_assets_dir", lambda: tmp_path)
+    path.write_bytes(image_bytes("BMP", size=(16, 10)))
+    assert load_external_pixel_frame(Species.RABBIT, 0) is None
+    Image.new("RGBA", (16, 10), (20, 40, 60, 255)).save(path)
+    assert build_pixel_frame(Species.RABBIT).getpixel((0, 0)) == (20, 40, 60, 255)
 
 
 def test_external_artwork_retries_transient_read_errors_without_a_file_edit(tmp_path, monkeypatch) -> None:

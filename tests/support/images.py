@@ -10,7 +10,7 @@ from PIL import Image
 
 
 def image_bytes(image_format: str = "PNG", *, size: tuple[int, int] = (2, 2)) -> bytes:
-    """Encode a solid *size* image in Pillow's *image_format* (``PNG``, ``JPEG``, ``GIF``, ``WEBP``, ``BMP``)."""
+    """Encode a solid *size* image in any format Pillow writes (``PNG``, ``JPEG``, ``BMP``, ``TIFF``, …)."""
     out = BytesIO()
     Image.new("RGB", size, (200, 40, 40)).save(out, format=image_format)
     return out.getvalue()

@@ -129,7 +129,8 @@ def _get_assets_dir() -> Path:
 @lru_cache(maxsize=128)
 def _load_external_asset(target_path: Path, _revision: tuple[int, int, int]) -> Image.Image:
     """Keep only resized artwork in a bounded cache, invalidated by file changes."""
-    with Image.open(target_path) as opened:
+    # Custom artwork is PNG by contract; no other decoder reads the file.
+    with Image.open(target_path, formats=("PNG",)) as opened:
         img = opened.convert("RGBA")
         if img.size != (PIXEL_WIDTH, PIXEL_HEIGHT):
             img = img.resize((PIXEL_WIDTH, PIXEL_HEIGHT), Image.Resampling.NEAREST)
