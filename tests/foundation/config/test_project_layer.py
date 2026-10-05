@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -629,20 +630,26 @@ def test_the_users_own_hooks_and_skills_are_not_reported_when_the_workspace_is_h
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
-def test_a_folder_that_cannot_be_listed_does_not_hide_the_project_skills(config_dir: Path, project_root: Path) -> None:
+def test_a_folder_that_cannot_be_listed_does_not_hide_the_project_skills(
+    config_dir: Path, project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     freeze_process_env()
     skills = _write_project_skill(project_root)
-    locked = [skills / f"locked-{index}" for index in range(3)]
-    for folder in locked:
-        folder.mkdir()
-        folder.chmod(0)
+    locked = skills / "locked"
+    locked.mkdir()
+    list_folder = Path.iterdir
+
+    def locked_first(self: Path) -> Iterator[Path]:
+        return iter(sorted(list_folder(self), key=lambda child: child.name != "locked"))
+
+    monkeypatch.setattr(Path, "iterdir", locked_first)
+    locked.chmod(0)
     try:
-        if os.access(locked[0], os.R_OK):
+        if os.access(locked, os.R_OK):
             pytest.skip("Permission bits do not apply to this user")
         sources = load_settings(project_root=project_root).dormant_project_sources
     finally:
-        for folder in locked:
-            folder.chmod(0o755)
+        locked.chmod(0o755)
 
     assert [(source.key, source.path) for source in sources] == [("project.skills_enabled", skills)]
 
