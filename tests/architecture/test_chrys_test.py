@@ -986,6 +986,7 @@ def test_builtin_profiles_select_service_engine_and_application_consumers() -> N
         "scripts/build.ps1",
         "scripts/build_offline_dist.sh",
         "scripts/build_offline_dist.ps1",
+        "scripts/offline_wheel_overrides.txt",
         ".github/workflows/ci.yml",
         ".github/workflows/cd.yml",
     ],
