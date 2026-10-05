@@ -1,0 +1,164 @@
+name: Pillow manylinux2014 wheels
+
+# Pillow stopped publishing manylinux2014 (glibc 2.17) wheels in 12.3.0, while
+# the offline Linux binaries promise a glibc 2.17 floor (2.18 on aarch64, set by
+# the vendored ripgrep). This workflow rebuilds the CPython 3.14 wheel the
+# offline distribution bundles with Pillow's own recipe — its cibuildwheel
+# config, native dependency script and test suite — inside the manylinux2014
+# image. Every input is pinned: Pillow and its two auxiliary repositories by
+# commit, cibuildwheel by commit and the build images by digest.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev/pillow-manylinux2014]
+    paths: [.github/workflows/pillow-manylinux2014.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pillow-manylinux2014-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PILLOW_VERSION: "12.3.0"
+  PILLOW_COMMIT: bb1d8e8ab8d29048624d96e3ee53cecf7c13d13d
+  # Pillow's build and test scripts download each repository's main branch;
+  # these are the main commits current at the 12.3.0 release.
+  PILLOW_DEPENDS_COMMIT: 8aa03253ae251784d8cbee25d783fefde7589a70
+  TEST_IMAGES_COMMIT: 7077675d2cda485d63de4aefe0fefbf6f655c5a0
+  GLIBC_FLOOR: "2.17"
+  FORCE_COLOR: 1
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            artifact: x86_64
+            os: ubuntu-24.04
+            arch: x86_64
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:5e3012db7af44490157351ba6726fd92e8dba9b421ea819ac7925b4478ad3f17 # 2026.06.04-1
+          # Pillow built libavif as Release rather than MinSizeRel on
+          # manylinux2014 x86_64 until it dropped the platform; this leg checks
+          # whether that is still needed.
+          - name: x86_64 (libavif Release)
+            artifact: x86_64-libavif-release
+            os: ubuntu-24.04
+            arch: x86_64
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:5e3012db7af44490157351ba6726fd92e8dba9b421ea819ac7925b4478ad3f17 # 2026.06.04-1
+            libavif_build_type: Release
+          - name: aarch64
+            artifact: aarch64
+            os: ubuntu-24.04-arm
+            arch: aarch64
+            image: quay.io/pypa/manylinux2014_aarch64@sha256:88be65bf6654ffb068b2c07fb321ce1a128ccc092b62bbb79027217dbdec12ae # 2026.06.04-1
+    steps:
+      - name: Check out Pillow
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: python-pillow/Pillow
+          ref: ${{ env.PILLOW_COMMIT }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Check out Pillow's dependency sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: python-pillow/pillow-depends
+          ref: ${{ env.PILLOW_DEPENDS_COMMIT }}
+          # wheels-dependencies.sh downloads main unless this directory exists.
+          path: build/pillow-depends-main
+          persist-credentials: false
+
+      - name: Check out Pillow's test images
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: python-pillow/test-images
+          ref: ${{ env.TEST_IMAGES_COMMIT }}
+          path: test-images-main
+          persist-credentials: false
+
+      - name: Stage test images
+        run: |
+          # wheels-test.sh downloads main and moves it into Tests/images unless
+          # test-images-main exists, so do its move here.
+          mv test-images-main/* Tests/images/
+
+      - name: Build libavif as Release
+        if: matrix.libavif_build_type == 'Release'
+        run: |
+          script=.github/workflows/wheels-dependencies.sh
+          test "$(grep -c -- '-DCMAKE_BUILD_TYPE=MinSizeRel' "$script")" = 1
+          sed -i 's/-DCMAKE_BUILD_TYPE=MinSizeRel/-DCMAKE_BUILD_TYPE=Release/' "$script"
+          git diff --stat
+
+      - name: Build and test wheel
+        uses: pypa/cibuildwheel@f03ac7617d6cff873ccf24cc0d567ef5ba5a9e6d # v4.0.0
+        env:
+          CIBW_PLATFORM: linux
+          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD: cp314-manylinux_${{ matrix.arch }}
+          # Only the image for this leg's architecture is used.
+          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.image }}
+          CIBW_MANYLINUX_AARCH64_IMAGE: ${{ matrix.image }}
+          CIBW_ENVIRONMENT_PASS_LINUX: FORCE_COLOR
+        with:
+          output-dir: wheelhouse
+
+      - name: Embed SBOM
+        run: |
+          mkdir sbom
+          python3 .github/generate-sbom.py "sbom/pillow-${PILLOW_VERSION}.cdx.json"
+          python3 .github/embed-sbom.py wheelhouse sbom
+
+      - name: Check glibc floor
+        run: |
+          python3 - wheelhouse "$GLIBC_FLOOR" <<'PYCODE'
+          import re
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheelhouse, floor_text = Path(sys.argv[1]), sys.argv[2]
+          floor = tuple(int(part) for part in floor_text.split("."))
+          wheels = sorted(wheelhouse.glob("*.whl"))
+          if len(wheels) != 1:
+              sys.exit(f"expected exactly one wheel, found {[w.name for w in wheels]}")
+          worst, offenders, scanned = (0,), [], 0
+          with zipfile.ZipFile(wheels[0]) as archive:
+              for name in archive.namelist():
+                  blob = archive.read(name)
+                  if not blob.startswith(b"\x7fELF"):
+                      continue
+                  scanned += 1
+                  versions = {
+                      tuple(int(part) for part in match[6:].split(b"."))
+                      for match in re.findall(rb"GLIBC_\d+\.\d+(?:\.\d+)?", blob)
+                  }
+                  top = max(versions, default=(0,))
+                  worst = max(worst, top)
+                  if top > floor:
+                      offenders.append(f"GLIBC_{'.'.join(map(str, top))}  {name}")
+          print(f"{wheels[0].name}: {scanned} ELF objects, highest GLIBC_{'.'.join(map(str, worst))}")
+          if not scanned:
+              sys.exit("no ELF objects found in the wheel")
+          if offenders:
+              sys.exit("objects above the glibc floor:\n  " + "\n  ".join(offenders))
+          PYCODE
+
+      - name: Record wheel hash
+        run: |
+          cd wheelhouse
+          sha256sum -- *.whl | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pillow-${{ env.PILLOW_VERSION }}-${{ matrix.artifact }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
