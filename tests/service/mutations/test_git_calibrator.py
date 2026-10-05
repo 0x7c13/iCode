@@ -1178,14 +1178,31 @@ def test_covered_paths_never_probe_old_head_or_flag_truncation(
     assert calibrator.detection_truncated is False
 
 
+@pytest.mark.parametrize(
+    ("tracked", "expected_listings"),
+    [
+        (False, [("diff", False), ("diff", False), ("ls-files", True)]),
+        # Modified tracked files fill the first listing, so the later two never run.
+        (True, [("diff", True)]),
+    ],
+    ids=["untracked", "tracked"],
+)
 def test_too_many_dirty_files_stop_git_listing_once_past_the_limit(
     tmp_path: Path,
     git_repo_factory: Callable[[Path], Path],
     monkeypatch: pytest.MonkeyPatch,
+    tracked: bool,
+    expected_listings: list[tuple[str, bool]],
 ) -> None:
     _init_git_repo(tmp_path, git_repo_factory)
-    for index in range(git_calibrator.MAX_DIRTY_FILES + 100):
-        (tmp_path / f"untracked_{index:04}.txt").write_text("new\n", encoding="utf-8")
+    dirty = [tmp_path / f"dirty_{index:04}.txt" for index in range(git_calibrator.MAX_DIRTY_FILES + 100)]
+    for path in dirty:
+        path.write_text("new\n", encoding="utf-8")
+    if tracked:
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "dirty"], cwd=tmp_path, capture_output=True, check=True)
+        for path in dirty:
+            path.write_text("changed\n", encoding="utf-8")
     original_stream = git_calibrator._run_git_nul_stream
     listings: list[tuple[str, bool]] = []
 
@@ -1201,7 +1218,7 @@ def test_too_many_dirty_files_stop_git_listing_once_past_the_limit(
 
     assert calibrator.capture_before() == []
     assert calibrator.detection_truncated is True
-    assert listings[-1] == ("ls-files", True)
+    assert listings == expected_listings
     assert len(calibrator._before_paths) == git_calibrator.MAX_DIRTY_FILES + 1
 
 
