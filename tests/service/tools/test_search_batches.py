@@ -182,7 +182,7 @@ async def test_deleted_candidate_preserves_readable_matches_and_reports_partial_
     else:
         assert "a.py:1" in result or "c.py:1" in result
     if max_results == 1 and not split_batches:
-        # rg is stopped at the second match; whatever it said about the missing file is cut off with it.
+        # rg is stopped at the second match: the result says it is limited, and rg's errors are not reported.
         assert "(limited to 1)" in result and "Error" not in result
         assert TOOL_FAILED_METADATA_KEY not in metadata
         return

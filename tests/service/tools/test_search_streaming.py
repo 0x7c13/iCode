@@ -19,7 +19,7 @@ import pytest
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.service.tools.builtins import search
 from chrys.service.tools.result_metadata import tool_result_metadata
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 @dataclass
@@ -128,6 +128,7 @@ async def test_a_full_result_stops_an_rg_whose_launcher_has_exited(
     try:
         await wait_for(
             lambda: task.done() or (bool(observed_rg.spawned) and observed_rg.spawned[0].returncode is not None),
+            timeout=ENGINE_TURN_TIMEOUT,
             description="the launcher exited",
         )
         assert not task.done()
@@ -270,6 +271,26 @@ async def test_a_globbed_file_keeps_its_too_long_match_note_when_its_later_match
     assert result.startswith(f"Found 1 match(es) in {tmp_path} (limited to 2)")
     assert "mixed.js:2" in result and "NEEDLE two" not in result
     assert result.endswith("each): mixed.js:1]")
+
+
+async def test_a_globbed_file_builds_only_the_matches_that_could_fill_the_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "dense.txt").write_text("NEEDLE\n" * 5_000, encoding="utf-8")
+    real_rel_path = search._GrepStream._rel_path
+    built: list[dict[str, Any]] = []
+
+    def counting_rel_path(self: search._GrepStream, path_data: dict[str, Any]) -> str:
+        built.append(path_data)
+        return real_rel_path(self, path_data)
+
+    monkeypatch.setattr(search._GrepStream, "_rel_path", counting_rel_path)
+
+    result = await search.grep("NEEDLE", path=str(tmp_path), glob="*.txt", context_lines=0, max_results=3)
+
+    assert result.startswith(f"Found 3 match(es) in {tmp_path} (limited to 3)")
+    # The file's matches wait for its end record; once one more than the result shows waits, the rest are dropped unbuilt.
+    assert len(built) == 4
 
 
 @pytest.mark.parametrize("tool", ["grep", "glob"])

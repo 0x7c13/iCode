@@ -793,6 +793,9 @@ class _GrepStream:
             return
         if entry_type not in ("match", "context"):
             return
+        waiting = self._pending_matches.get(key, 0)
+        if self._skip_binary and waiting > self._max_results - self.result.match_count:
+            return  # Enough of this file waits to fill the result; a dense file sends many more.
         rel_path = self._rel_path(path_data)
         if cut:
             # The line itself was not kept: a match is named by its file and line, its context dropped.
@@ -804,9 +807,6 @@ class _GrepStream:
         if not self._skip_binary:
             self._keep(item)
             return
-        waiting = self._pending_matches.get(key, 0)
-        if waiting > self._max_results - self.result.match_count:
-            return  # Enough of this file waits to fill the result.
         if self._counts(item):
             self._pending_matches[key] = waiting + 1
         self._pending.setdefault(key, []).append(item)
@@ -980,7 +980,8 @@ async def _grep_impl(
                         skip_binary=globbed_directory,
                     )
                     _, stderr, returncode = await _run_rg([*args, *batch], cwd=search_cwd, consume=parser.feed)
-                    # An rg stopped because the result is full was killed: its exit code and stderr say nothing.
+                    # A full result already says it is limited. The rg stopped for it was killed: its exit code
+                    # is the kill's, and its stderr names only the files it reached before then.
                     if not parser.full and returncode not in (0, 1):
                         errors.add(stderr, returncode)
                         if returncode == 2 and not parser.saw_output:
