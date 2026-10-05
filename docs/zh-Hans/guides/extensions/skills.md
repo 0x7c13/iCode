@@ -129,15 +129,15 @@ description: 根据提交记录起草面向用户的发布说明
 
 | 内容 | 加载要求 |
 | --- | --- |
-| frontmatter | 必须存在，且顶层内容应为 YAML 键值对象 |
+| frontmatter | 必须存在，且顶层内容应为 YAML 键值对象，不能使用锚点（`&`）或别名（`*`） |
 | `name` | 必填；必须与 Skill 目录名完全一致；长度为 1～64 个字符；只能包含小写字母、数字和连字符（`-`）。不能包含大写字母、下划线（`_`）等其他字符，也不能以连字符开头或结尾，不能包含连续连字符 |
-| `description` | 必填；长度不超过 1024 个字符。建议同时说明 Skill 用途和适用场景，帮助智能体判断何时加载 |
-| `compatibility` | 可选；长度不超过 500 个字符 |
-| `license`、`allowed-tools` | 可选；iCode 读取字段值，但不额外校验其内容 |
-| `metadata` | 可选；必须是 YAML 对象，否则 iCode 不会保留该字段 |
+| `description` | 必填；须为文本，长度不超过 1024 个字符。建议同时说明 Skill 用途和适用场景，帮助智能体判断何时加载 |
+| `compatibility` | 可选；须为文本，长度不超过 500 个字符 |
+| `license`、`allowed-tools` | 可选；iCode 读取其文本，但不额外校验其内容 |
+| `metadata` | 可选；必须是值为纯文本或数字的 YAML 对象，否则 iCode 不会保留该字段 |
 | 正文 | iCode 不额外限制长度或结构 |
 
-为了确保 Skill 能够稳定加载，请使用有效的 YAML 编写 frontmatter。缺少 frontmatter、`name` 或 `description`，或者字段值未通过上述校验时，iCode 不会加载该 Skill。
+为了确保 Skill 能够稳定加载，请使用有效的 YAML 编写 frontmatter。缺少 frontmatter、`name` 或 `description`，或者字段值未通过上述校验时，iCode 不会加载该 Skill。可选字段写成列表或对象时会被忽略。
 
 几个可选字段分别用于：
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import date
 from html import escape as xml_escape
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -88,8 +89,12 @@ DEFAULT_SEARCH_DEPTH = 2
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9]*-[a-z0-9])*[a-z0-9]*$")
 
 # YAML frontmatter delimited by "---" lines; the \uFEFF (regex-level escape)
-# allows an optional UTF-8 BOM before the opening delimiter.
-FRONTMATTER_RE = re.compile(r"\A\uFEFF?---\s*$(.+?)^---\s*$", re.MULTILINE | re.DOTALL)
+# allows an optional UTF-8 BOM before the opening delimiter. Each delimiter is one
+# line, so a file of blank lines with no closing one fails in linear time.
+FRONTMATTER_RE = re.compile(r"\A\uFEFF?---[ \t]*\r?\n(.*?)^---[ \t]*\r?$", re.MULTILINE | re.DOTALL)
+
+# What a YAML scalar loads as; a list or mapping is none of these.
+_SCALAR_TYPES = (str, int, float, date)
 
 # Tolerant fallback for frontmatter that is not valid YAML: top-level
 # "key: value" lines with optional single/double quoting.
@@ -116,7 +121,8 @@ def validate_skill_metadata(name: str | None, description: str | None, compatibi
 
 
 def _coerce_scalar(value: object) -> str | None:
-    if value is None:
+    """Return a scalar field as text; None when it is absent, a list or a mapping."""
+    if not isinstance(value, _SCALAR_TYPES):
         return None
     return value if isinstance(value, str) else str(value)
 
@@ -144,6 +150,12 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | Non
 
     yaml_block = match.group(1)
     try:
+        # An alias expands before any length check: a few KiB of them can load as gigabytes.
+        if any(
+            isinstance(event, yaml.NodeEvent) and event.anchor is not None
+            for event in yaml.parse(yaml_block, Loader=yaml.SafeLoader)
+        ):
+            return None, "YAML frontmatter must not use anchors or aliases"
         data = yaml.safe_load(yaml_block)
     except yaml.YAMLError as exc:
         fields = _fallback_line_parse(yaml_block)
@@ -160,7 +172,10 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | Non
 
 
 def _parse_metadata(value: object) -> dict[str, str] | None:
-    if not isinstance(value, dict):
+    """Return a flat mapping of scalars as text; anything else is dropped whole."""
+    if not isinstance(value, dict) or not all(
+        item is None or isinstance(item, _SCALAR_TYPES) for pair in value.items() for item in pair
+    ):
         return None
     return {str(k): str(v) for k, v in value.items()}
 
@@ -358,13 +373,19 @@ def load_file_skill(
 
     try:
         content = skill_file.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         return SkillLoadFailure(skill_dir=skill_dir, reason=f"failed to read SKILL.md: {exc}")
 
     fields, parse_error = parse_frontmatter(content)
     if fields is None:
         return SkillLoadFailure(skill_dir=skill_dir, reason=parse_error or "invalid frontmatter")
 
+    for key in ("name", "description"):
+        value = fields.get(key)
+        if value is not None and not isinstance(value, _SCALAR_TYPES):
+            return SkillLoadFailure(
+                skill_dir=skill_dir, reason=f"frontmatter `{key}` must be text, not a list or mapping"
+            )
     name = _coerce_scalar(fields.get("name"))
     description = _coerce_scalar(fields.get("description"))
     compatibility = _coerce_scalar(fields.get("compatibility"))
@@ -445,14 +466,18 @@ def discover_file_skills(
     logger.info("Discovered %d potential skill directories", len(discovered))
 
     for skill_dir in discovered:
-        loaded = load_file_skill(
-            skill_dir,
-            resource_extensions=resource_extensions,
-            script_extensions=script_extensions,
-            search_depth=search_depth,
-            script_filter=script_filter,
-            resource_filter=resource_filter,
-        )
+        try:
+            loaded = load_file_skill(
+                skill_dir,
+                resource_extensions=resource_extensions,
+                script_extensions=script_extensions,
+                search_depth=search_depth,
+                script_filter=script_filter,
+                resource_filter=resource_filter,
+            )
+        except Exception as exc:
+            # One SKILL.md that breaks the parser (YAML nested too deep, say) fails alone.
+            loaded = SkillLoadFailure(skill_dir=skill_dir, reason=f"failed to load SKILL.md: {exc}")
         if isinstance(loaded, SkillLoadFailure):
             logger.error("Failed to load skill from '%s': %s", loaded.skill_dir, loaded.reason)
             failures.append(loaded)

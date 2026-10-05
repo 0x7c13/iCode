@@ -129,15 +129,15 @@ description: Draft user-facing release notes from commit history
 
 | Content | Loading requirements |
 | --- | --- |
-| frontmatter | Required; the top-level content must be a YAML mapping |
+| frontmatter | Required; the top-level content must be a YAML mapping, without anchors (`&`) or aliases (`*`) |
 | `name` | Required; must exactly match the skill directory name; 1-64 characters long; may contain only lowercase letters, digits, and hyphens (`-`). Uppercase letters, underscores (`_`), and other characters are not allowed. Must not start or end with a hyphen or contain consecutive hyphens |
-| `description` | Required; at most 1,024 characters. Describe both the skill's purpose and when to use it to help the agent decide when to load it |
-| `compatibility` | Optional; at most 500 characters |
-| `license`, `allowed-tools` | Optional; iCode reads their values without further validation |
-| `metadata` | Optional; must be a YAML mapping, otherwise iCode does not retain this field |
+| `description` | Required; text of at most 1,024 characters. Describe both the skill's purpose and when to use it to help the agent decide when to load it |
+| `compatibility` | Optional; text of at most 500 characters |
+| `license`, `allowed-tools` | Optional; iCode reads their text without further validation |
+| `metadata` | Optional; must be a YAML mapping whose values are plain text or numbers, otherwise iCode does not retain this field |
 | Body | iCode imposes no additional length or structure restrictions |
 
-Use valid YAML for the frontmatter to ensure that the skill loads reliably. iCode does not load a skill if its frontmatter, `name`, or `description` is missing, or if field values fail the validation rules above.
+Use valid YAML for the frontmatter to ensure that the skill loads reliably. iCode does not load a skill if its frontmatter, `name`, or `description` is missing, or if field values fail the validation rules above. An optional field given as a list or mapping is ignored.
 
 The optional fields serve the following purposes:
 

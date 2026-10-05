@@ -17,6 +17,7 @@ from chrys.service.skills.loader import (
 )
 from chrys.service.skills.model import Skill, SkillLoadFailure, SkillResource
 from chrys.service.skills.provider import ChrysSkillsProvider
+from tests.support.cpu_guard import cpu_bounded
 from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
@@ -596,3 +597,123 @@ def test_build_inline_skill_content_without_resources_emits_empty_blocks() -> No
     content = build_inline_skill_content(name="demo", description="d", instructions="i")
 
     assert content.endswith("<resources />\n\n<scripts />")
+
+
+# ---------------------------------------------------------------------------
+# SKILL.md files from untrusted repositories
+# ---------------------------------------------------------------------------
+
+
+def test_frontmatter_without_a_closing_line_is_rejected_in_linear_time(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "blank-lines"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---" + " \n" * 30_000 + "Body.\n", encoding="utf-8")
+
+    loaded = cpu_bounded(lambda: _load(skill_dir))
+
+    assert isinstance(loaded, SkillLoadFailure)
+    assert "does not contain YAML frontmatter" in loaded.reason
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_frontmatter_blocks_match_with_either_newline(tmp_path: Path, newline: str) -> None:
+    for name, block in (("empty-block", ""), ("plain-block", f"name: plain-block{newline}description: d{newline}")):
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_bytes(f"---{newline}{block}---{newline}Body.{newline}".encode())
+
+    empty, plain = _load(tmp_path / "empty-block"), _load(tmp_path / "plain-block")
+
+    assert isinstance(empty, SkillLoadFailure) and empty.reason == "frontmatter is missing a `name`"
+    assert isinstance(plain, Skill) and plain.description == "d"
+
+
+def test_a_skill_md_that_cannot_be_read_or_parsed_fails_alone(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "good")
+    not_utf8 = tmp_path / "not-utf8"
+    not_utf8.mkdir()
+    (not_utf8 / "SKILL.md").write_bytes(b"---\nname: not-utf8\ndescription: \xff\n---\n")
+    too_deep = tmp_path / "too-deep"
+    too_deep.mkdir()
+    nested = "[" * 5_000 + "]" * 5_000
+    (too_deep / "SKILL.md").write_text(
+        f"---\nname: too-deep\ndescription: d\nlicense: {nested}\n---\n", encoding="utf-8"
+    )
+
+    skills, failures = discover_file_skills([str(tmp_path)], script_extensions=(".py",))
+
+    assert [skill.name for skill in skills] == ["good"]
+    reasons = {os.path.basename(failure.skill_dir): failure.reason for failure in failures}
+    assert reasons.keys() == {"not-utf8", "too-deep"}
+    assert reasons["not-utf8"].startswith("failed to read SKILL.md: 'utf-8' codec can't decode")
+    assert reasons["too-deep"].startswith("failed to load SKILL.md: maximum recursion depth exceeded")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    ["description: &shared d\nlicense: *shared", "description: d\nlicense: &unused MIT"],
+    ids=["alias", "anchor"],
+)
+def test_frontmatter_with_an_anchor_or_alias_fails(tmp_path: Path, fields: str) -> None:
+    skill_dir = tmp_path / "aliased"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(f"---\nname: aliased\n{fields}\n---\n", encoding="utf-8")
+
+    loaded = _load(skill_dir)
+
+    assert isinstance(loaded, SkillLoadFailure)
+    assert loaded.reason == "YAML frontmatter must not use anchors or aliases"
+
+
+@pytest.mark.parametrize("field", ["name", "description"])
+@pytest.mark.parametrize("value", ["[typed]", "{text: typed}"], ids=["list", "mapping"])
+def test_a_name_or_description_that_is_not_text_fails(tmp_path: Path, field: str, value: str) -> None:
+    skill_dir = tmp_path / "typed"
+    skill_dir.mkdir()
+    fields = {"name": "typed", "description": "d", field: value}
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {fields['name']}\ndescription: {fields['description']}\n---\n", encoding="utf-8"
+    )
+
+    loaded = _load(skill_dir)
+
+    assert isinstance(loaded, SkillLoadFailure)
+    assert loaded.reason == f"frontmatter `{field}` must be text, not a list or mapping"
+
+
+def test_optional_fields_that_are_not_text_are_dropped(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "loose-fields"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: loose-fields\n"
+        "description: d\n"
+        "license: [MIT]\n"
+        "compatibility: {chrys: 1}\n"
+        "allowed-tools: [shell, search]\n"
+        "metadata:\n"
+        "  author: someone\n"
+        "  nested: {deep: value}\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert (skill.license, skill.compatibility, skill.allowed_tools, skill.metadata) == (None, None, None, None)
+
+
+def test_flat_metadata_keeps_numbers_and_dates_as_text(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "flat-metadata"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: flat-metadata\ndescription: d\nlicense: 2\nmetadata:\n  count: 3\n  released: 2026-10-05\n---\n",
+        encoding="utf-8",
+    )
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert skill.license == "2"
+    assert skill.metadata == {"count": "3", "released": "2026-10-05"}
