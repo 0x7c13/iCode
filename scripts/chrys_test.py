@@ -128,6 +128,7 @@ ARCHITECTURE_RULES = (
     ),
     TestRule("tests/architecture/test_hygiene_llm_client_owners.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_optional_imports.py", ("src/chrys/**",)),
+    TestRule("tests/architecture/test_hygiene_pillow_formats.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_reminder_sources.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_session_surface.py"),
     TestRule("tests/architecture/test_hygiene_source_asserts.py"),

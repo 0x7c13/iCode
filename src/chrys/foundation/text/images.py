@@ -22,6 +22,10 @@ IMAGE_MIME_BY_EXTENSION: dict[str, str] = {
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 MAX_IMAGE_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
+# The only formats Pillow decodes for an attached or viewed image: the four
+# model APIs read plus BMP, which converts. A file in any other format behind
+# an image name never reaches the rest of Pillow's decoders.
+IMAGE_DECODE_FORMATS: tuple[str, ...] = ("PNG", "JPEG", "GIF", "WEBP", "BMP")
 
 COMPRESSED_IMAGE_MEDIA_TYPE = "image/jpeg"
 _COMPRESSED_IMAGE_HEADROOM_BYTES = 128 * 1024
@@ -140,14 +144,14 @@ def load_image_file(path: Path, media_type: str | None = None) -> LoadedImage:
     )
 
 
-def inspect_image_dimensions(data: bytes) -> tuple[int, int]:
-    """Decode image metadata and validate dimensions."""
+def inspect_image_dimensions(data: bytes, *, formats: tuple[str, ...] = IMAGE_DECODE_FORMATS) -> tuple[int, int]:
+    """Decode image metadata, in one of *formats*, and validate dimensions."""
     from PIL import Image, UnidentifiedImageError
 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(data)) as opened:
+            with Image.open(BytesIO(data), formats=formats) as opened:
                 validate_image_dimensions(opened.size)
                 return opened.size
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
@@ -158,14 +162,16 @@ def inspect_image_dimensions(data: bytes) -> tuple[int, int]:
         ) from exc
 
 
-def compress_image_data(data: bytes, *, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
-    """Compress image bytes to a JPEG under *max_bytes*."""
+def compress_image_data(
+    data: bytes, *, max_bytes: int = MAX_IMAGE_BYTES, formats: tuple[str, ...] = IMAGE_DECODE_FORMATS
+) -> bytes:
+    """Compress image bytes, in one of *formats*, to a JPEG under *max_bytes*."""
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(data)) as opened:
+            with Image.open(BytesIO(data), formats=formats) as opened:
                 validate_image_dimensions(opened.size)
                 opened = ImageOps.exif_transpose(opened)
                 image = _to_jpeg_rgb(opened)

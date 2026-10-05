@@ -265,6 +265,17 @@ def test_parse_image_mentions_converts_an_unsupported_format_behind_a_supported_
     assert attachment.data.startswith(b"\xff\xd8\xff")
 
 
+def test_parse_image_mentions_refuses_a_format_pillow_may_not_decode(tmp_path: Path) -> None:
+    """A TIFF behind an image name never reaches Pillow's TIFF decoder."""
+    _write(tmp_path / "shot.png", image_bytes("TIFF"))
+
+    result = parse_image_mentions("look at @shot.png", cwd=tmp_path)
+
+    assert result.attachments == []
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("@shot.png: This file could not be read as a supported image.")
+
+
 def test_parse_image_mentions_types_an_image_by_its_bytes(tmp_path: Path) -> None:
     jpeg = image_bytes("JPEG")
     _write(tmp_path / "shot.png", jpeg)
@@ -360,7 +371,7 @@ def test_parse_image_mentions_pillow_decompression_bomb_is_error(
 
     from PIL import Image as PILImage
 
-    def raise_decompression_bomb(_data: object) -> object:
+    def raise_decompression_bomb(_data: object, *, formats: tuple[str, ...]) -> object:
         raise PILImage.DecompressionBombError("too many pixels")
 
     monkeypatch.setattr(PILImage, "open", raise_decompression_bomb)
@@ -381,7 +392,7 @@ def test_parse_image_mentions_pillow_decompression_warning_is_error(
 
     from PIL import Image as PILImage
 
-    def raise_decompression_warning(_data: object) -> object:
+    def raise_decompression_warning(_data: object, *, formats: tuple[str, ...]) -> object:
         raise PILImage.DecompressionBombWarning("too many pixels")
 
     monkeypatch.setattr(PILImage, "open", raise_decompression_warning)

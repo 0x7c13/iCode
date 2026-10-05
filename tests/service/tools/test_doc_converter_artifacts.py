@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import struct
 import threading
+from io import BytesIO
 from pathlib import Path
+from typing import IO
 from unittest.mock import patch
 
 import pytest
@@ -29,6 +32,7 @@ from tests.service.tools._doc_converter_fakes import (
     _png_bytes,
     _session_artifact_path,
 )
+from tests.support.images import image_bytes
 
 
 def test_document_image_sink_deduplicates_and_commits_returned_occurrences(tmp_path: Path) -> None:
@@ -323,6 +327,61 @@ def test_document_image_sink_skips_normalized_image_over_per_file_limit(tmp_path
     assert len(sink.warnings) == 1
     assert "could not be decoded or normalized" in sink.warnings[0]
     assert not (tmp_path / "session" / "doc_converter").exists()
+
+
+@pytest.mark.parametrize("image_format", ["TIFF", "JPEG2000"])
+def test_document_image_sink_converts_scanned_page_formats(tmp_path: Path, image_format: str) -> None:
+    """pypdf hands scanned PDF pages over as TIFF or JPEG 2000."""
+    root = tmp_path / "session" / "doc_converter"
+    sink = DocumentImageSink(root, source_stem="report")
+
+    assert sink.try_reserve_occurrence()
+    occurrence = sink.save_image(image_bytes(image_format), location="Page 1", ordinal=1, source_name="scan")
+
+    assert occurrence is not None
+    assert [path.suffix for path in root.iterdir()] == [".jpg"]
+
+
+def _emf_header() -> bytes:
+    """An enhanced metafile's header record, which Pillow identifies as WMF (rasterized through GDI on Windows)."""
+    return struct.pack(
+        "<II4i4i4sIIIHHIIIiiii",
+        *(1, 88, 0, 0, 15, 9, 0, 0, 400, 240, b" EMF", 0x10000, 88, 1, 1, 0, 0, 0, 0, 1024, 768, 270, 203),
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "pillow_format"),
+    [pytest.param(image_bytes("PCX"), "PCX", id="pcx"), pytest.param(_emf_header(), "WMF", id="emf")],
+)
+def test_document_image_sink_skips_formats_pillow_may_not_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data: bytes, pillow_format: str
+) -> None:
+    from PIL import Image
+
+    real_open = Image.open
+    assert real_open(BytesIO(data), formats=(pillow_format,)).format == pillow_format
+    # Off Windows Pillow cannot rasterize a metafile at all, so the skip alone
+    # proves nothing there: every open must also leave the format out.
+    allowed: list[tuple[str, ...] | None] = []
+
+    def recording_open(
+        fp: str | IO[bytes], mode: str = "r", formats: list[str] | tuple[str, ...] | None = None
+    ) -> Image.Image:
+        allowed.append(None if formats is None else tuple(formats))
+        return real_open(fp, mode, formats)
+
+    monkeypatch.setattr(Image, "open", recording_open)
+    sink = DocumentImageSink(tmp_path / "session" / "doc_converter", source_stem="report")
+
+    assert sink.try_reserve_occurrence()
+    occurrence = sink.save_image(data, location="Page 1", ordinal=1, source_name="clip")
+
+    assert allowed
+    assert all(formats is not None and pillow_format not in formats for formats in allowed)
+    assert occurrence is None
+    assert len(sink.warnings) == 1
+    assert "could not be decoded or normalized" in sink.warnings[0]
 
 
 def test_document_image_and_markdown_names_are_utf8_byte_bounded(tmp_path: Path) -> None:

@@ -345,6 +345,20 @@ def test_view_image_converts_an_unsupported_format_behind_a_supported_name(tmp_p
     assert base64.b64decode(image.uri.partition(",")[2]).startswith(b"\xff\xd8\xff")
 
 
+def test_view_image_refuses_a_format_pillow_may_not_decode(tmp_path: Path) -> None:
+    """A TIFF behind an image name never reaches Pillow's TIFF decoder."""
+    f = tmp_path / "renamed.png"
+    f.write_bytes(image_bytes("TIFF"))
+
+    result = view_image(str(f))
+
+    assert len(result) == 1
+    assert result[0].type == "text"
+    text = result[0].text or ""
+    assert text.startswith("Error: ")
+    assert "could not be read as a supported image" in text
+
+
 def test_runtime_bound_view_image_resolves_relative_paths_from_runtime_cwd(tmp_path: Path, monkeypatch) -> None:
     """Instance view_image should resolve relative paths against the workspace cwd."""
     project = tmp_path / "project"
