@@ -676,8 +676,9 @@ see [configuration.md](configuration.md#type-script).
 
 Hooks are arbitrary subprocesses and run without an in-process
 approval prompt. This applies equally to the global file and any
-project file. If you `git clone` a repository and run Chrys inside
-it, the project's hooks will fire. Treat the project file as
-executable code committed to the repo, the same way you would
-treat a `Makefile` or a `.github/workflows/*.yml`. See
+project file. A project file loads only while the user's own
+`project.hooks_enabled` setting is on (default off; a project file
+cannot set it). Once it is on, treat the project file as executable
+code committed to the repo, the same way you would treat a
+`Makefile` or a `.github/workflows/*.yml`. See
 [project-hooks.md](project-hooks.md) for the layered merge rules.
