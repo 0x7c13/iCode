@@ -618,11 +618,17 @@ def test_merge_global_only() -> None:
     assert merged.sources == ["/cfg/hooks.yaml"]
 
 
-def test_merge_same_source_file_uses_global_once(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    source = tmp_path / ".chrys" / "hooks" / "hooks.yaml"
+@pytest.mark.parametrize("project_spelling", ["home", "HOME"])
+def test_merge_same_source_file_uses_global_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, project_spelling: str
+) -> None:
+    source = tmp_path / "home" / ".chrys" / "hooks" / "hooks.yaml"
     source.parent.mkdir(parents=True)
     source.write_text("version: 1\nhooks: []\n", encoding="utf-8")
-    project = HooksFile(hooks=[_hook(id_="same")], source=str(source))
+    project_source = tmp_path / project_spelling / ".chrys" / "hooks" / "hooks.yaml"
+    if not project_source.exists():
+        pytest.skip("Case-sensitive filesystem: the other spelling is another file")
+    project = HooksFile(hooks=[_hook(id_="same")], source=str(project_source))
     global_ = HooksFile(hooks=[_hook(id_="same")], source=str(source))
 
     with caplog.at_level("WARNING", logger="chrys.service.hooks.loader"):

@@ -95,10 +95,13 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 
 #### Project trust
 
+Project settings, hooks, and skills come with the repository you open, so all three are off by default. When the working directory has any of them that are not loaded, iCode shows a notice naming the setting to turn on.
+
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Load project settings | Reads `.chrys/settings.yaml` in the current working directory and applies its project settings, such as request retries, automatic session titles, and working directory notices. See [Project-level settings](../../reference/settings.md#project-level-settings) for allowed keys and override restrictions. | On close |
 | Load project hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
+| Load project skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
 
 #### Diagnostics
 

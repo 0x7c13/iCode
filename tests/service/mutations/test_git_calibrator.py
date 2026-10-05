@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from chrys.foundation.platform import get_platform
-from chrys.service.mutations import git_calibrator
+from chrys.service.mutations import git_calibrator, git_state
 from chrys.service.mutations.git_calibrator import GitDiffCalibrator
 from chrys.service.mutations.git_state import GitDeltaResult, read_git_target_kind, repo_relative_git_path
 from chrys.service.mutations.store import SnapshotPolicy, SnapshotStore
@@ -1176,6 +1176,50 @@ def test_covered_paths_never_probe_old_head_or_flag_truncation(
 
     assert changes == []
     assert calibrator.detection_truncated is False
+
+
+@pytest.mark.parametrize(
+    ("tracked", "expected_listings"),
+    [
+        (False, [("diff", False), ("diff", False), ("ls-files", True)]),
+        # Modified tracked files fill the first listing, so the later two never run.
+        (True, [("diff", True)]),
+    ],
+    ids=["untracked", "tracked"],
+)
+def test_too_many_dirty_files_stop_git_listing_once_past_the_limit(
+    tmp_path: Path,
+    git_repo_factory: Callable[[Path], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tracked: bool,
+    expected_listings: list[tuple[str, bool]],
+) -> None:
+    _init_git_repo(tmp_path, git_repo_factory)
+    dirty = [tmp_path / f"dirty_{index:04}.txt" for index in range(git_calibrator.MAX_DIRTY_FILES + 100)]
+    for path in dirty:
+        path.write_text("new\n", encoding="utf-8")
+    if tracked:
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "dirty"], cwd=tmp_path, capture_output=True, check=True)
+        for path in dirty:
+            path.write_text("changed\n", encoding="utf-8")
+    original_stream = git_calibrator._run_git_nul_stream
+    listings: list[tuple[str, bool]] = []
+
+    def recording_stream(
+        root: str, args: list[str], *, timeout: float, consume: Callable[[bytes], bool]
+    ) -> git_state._StreamResult:
+        stream = original_stream(root, args, timeout=timeout, consume=consume)
+        listings.append((args[0], stream.stopped))
+        return stream
+
+    monkeypatch.setattr(git_calibrator, "_run_git_nul_stream", recording_stream)
+    calibrator = GitDiffCalibrator(str(tmp_path))
+
+    assert calibrator.capture_before() == []
+    assert calibrator.detection_truncated is True
+    assert listings == expected_listings
+    assert len(calibrator._before_paths) == git_calibrator.MAX_DIRTY_FILES + 1
 
 
 @pytest.mark.asyncio

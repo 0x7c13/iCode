@@ -998,11 +998,35 @@ msgstr ""
 msgid "settings.project.hooks_enabled.label"
 msgstr ""
 
-#. English: Found project settings in {path} ({keys}), but project
-#. configuration is off. Enable project.config_enabled to apply them.
-#. chrys-meta={"fingerprint":"ae8899729b39ac64f5ec5a4c7a10bbef446b335409de32c8786bfc4efe5831c4","multiline":false,"placeholders":["keys","path"]}
+#. English: Load project skills
+#. chrys-meta={"fingerprint":"b61cadb426631200c2b3bae39f2d7327581e11726f2d5bc6dd1f029a5c5805c5","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.project.skills_enabled.label"
+msgstr ""
+
+#. English: Found project settings in {path} ({keys}), but they are not loaded.
+#. To apply them, turn on Load project settings under Settings → Security →
+#. Project trust (project.config_enabled).
+#. chrys-meta={"fingerprint":"b0e3dbf84eeb05e707cea468caca1d59f2b66a1c3be0b7b08be880e0172acd34","multiline":false,"placeholders":["keys","path"]}
 #: src/chrys/foundation/config/warnings.py
 msgid "settings.project_config_dormant"
+msgstr ""
+
+#. English: Found project hooks in {path}, but they are not loaded. To run
+#. them, turn on Load project hooks under Settings → Security → Project trust
+#. (project.hooks_enabled).
+#. chrys-meta={"fingerprint":"5ec1234a8618ca2a204bd38c28f662e4600c42779c85aa5f670f458d731f99a8","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.project_hooks_dormant"
+msgstr ""
+
+#. English: Found project skills in {path}. They are not loaded automatically;
+#. to load them, turn on Load project skills under Settings → Security →
+#. Project trust (project.skills_enabled) and keep the agent's Load skills from
+#. working folder option on.
+#. chrys-meta={"fingerprint":"f6443d8c10bf7c5ebc4b047d577fbd2eebc4f00ed9a1072eaa4659a93753f10e","multiline":false,"placeholders":["path"]}
+#: src/chrys/foundation/config/warnings.py
+msgid "settings.project_skills_dormant"
 msgstr ""
 
 #. English: Ignoring {source}={raw}: expected a boolean.
@@ -2179,8 +2203,9 @@ msgstr ""
 msgid "tui.agent_config.skills.allowed_extensions"
 msgstr ""
 
-#. English: Already covered by working-folder auto-load
-#. chrys-meta={"fingerprint":"aff2725bf66edb43304b41388c03984d7f5b963ba8213135528cf5727b31de9e","multiline":false,"placeholders":[]}
+#. English: Also auto-loaded when Load skills from working folder and Load
+#. project skills are on
+#. chrys-meta={"fingerprint":"368fd9084cf4958687877508adc37f6530c8653bbe63de9ed4599f65424275c8","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.auto_load_covered"
 msgstr ""
@@ -2235,9 +2260,10 @@ msgid "tui.agent_config.skills.load_working_folder"
 msgstr ""
 
 #. English: Auto-load skills from the agents skills directory under the current
-#. working folder. Reloaded automatically when the workspace cwd changes
-#. (/chdir or file picker).
-#. chrys-meta={"fingerprint":"1871508914771cc951a19761148ed62a4d771b16e321b228c8016abdb962f347","multiline":false,"placeholders":[]}
+#. working folder when Load project skills is on under Settings → Security →
+#. Project trust. Reloaded automatically when the workspace cwd changes (/chdir
+#. or file picker).
+#. chrys-meta={"fingerprint":"ac4c8359baf2210072172b628ea16e352768bb6eb35b90c0e8a564e3730a815b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/skills.py
 msgid "tui.agent_config.skills.load_working_folder_tooltip"
 msgstr ""
@@ -9192,6 +9218,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"99df1dbc7a7b0f8d3bf942ea97ded135e0e66c9e0658622f106f76092e31f2d4","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.project.hooks_enabled"
+msgstr ""
+
+#. English: Load the skills in <workspace>/.agents/skills alongside your own.
+#. chrys-meta={"fingerprint":"90be5d34d370632b13543da780cdca3ca6d059b2112d5e79c5f17cc39232edbb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.project.skills_enabled"
 msgstr ""
 
 #. English: Per-turn snapshots kept for /rollback; default {default}.

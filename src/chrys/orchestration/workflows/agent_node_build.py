@@ -283,7 +283,10 @@ async def build_kernel_node(
         warn_if_tool_loading_unbinds_thinking(profile, model, chat_options, mcp_adapter.tool_names_by_server)
     web_tools.check_names(tools)
     skills_provider, skill_warnings = await create_skills_provider(
-        profile.skills, runtime=environment, session_dir=res.session_dir
+        profile.skills,
+        runtime=environment,
+        session_dir=res.session_dir,
+        project_skills_enabled=res.settings.project_skills_enabled,
     )
     for warn in skill_warnings:
         await res.bus.publish(Warning(code=warn.code, message=warn.message, session_id=session_id))

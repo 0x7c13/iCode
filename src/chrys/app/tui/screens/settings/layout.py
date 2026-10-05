@@ -97,6 +97,10 @@ _HINT_PROJECT_HOOKS_ENABLED = msg(
     "tui.settings.hint.project.hooks_enabled",
     fallback="Run the hooks defined in <workspace>/.chrys/hooks alongside your global hooks.",
 )
+_HINT_PROJECT_SKILLS_ENABLED = msg(
+    "tui.settings.hint.project.skills_enabled",
+    fallback="Load the skills in <workspace>/.agents/skills alongside your own.",
+)
 HINT_PROJECT_CONFIG_DORMANT = msg(
     "tui.settings.hint.project.config_dormant",
     fallback="Project settings found ({count} key) — enable to apply them.",
@@ -334,6 +338,7 @@ TABS: tuple[SettingsTab, ...] = (
                 (
                     SettingRowSpec(PROJECT_CONFIG_KEY, hint=_HINT_PROJECT_CONFIG_ENABLED),
                     SettingRowSpec("project.hooks_enabled", hint=_HINT_PROJECT_HOOKS_ENABLED),
+                    SettingRowSpec("project.skills_enabled", hint=_HINT_PROJECT_SKILLS_ENABLED),
                 ),
             ),
             SettingsSection(

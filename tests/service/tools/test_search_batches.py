@@ -8,7 +8,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -104,10 +104,16 @@ async def test_globbed_content_search_uses_relative_paths_from_search_root(
     content_calls: list[tuple[list[str], str | None]] = []
     original_run = search._run_rg
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if "--json" in args:
             content_calls.append((args, cwd))
-        return await original_run(args, timeout=timeout, cwd=cwd)
+        return await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_run_rg", recording_run)
     result = await search.grep("NEEDLE", path=str(root), glob="*.py", context_lines=0)
@@ -135,9 +141,10 @@ def test_relative_json_paths_are_resolved_against_root(
         {"type": "match", "data": {"path": encoded_path, "line_number": 1, "lines": {"text": "NEEDLE\n"}}}
     )
 
-    parsed = search._parse_grep_jsonl(output, str(root), 50)
+    stream = search._GrepStream(str(root), 50)
+    stream.feed(output.encode() + b"\n")
 
-    assert parsed.entries[0].rel_path == "nested/module.py"
+    assert stream.result.entries[0].rel_path == "nested/module.py"
 
 
 @pytest.mark.parametrize("split_batches", [True, False])
@@ -174,6 +181,11 @@ async def test_deleted_candidate_preserves_readable_matches_and_reports_partial_
         assert "a.py:1" in result and "c.py:1" in result
     else:
         assert "a.py:1" in result or "c.py:1" in result
+    if max_results == 1 and not split_batches:
+        # rg is stopped at the second match: the result says it is limited, and rg's errors are not reported.
+        assert "(limited to 1)" in result and "Error" not in result
+        assert TOOL_FAILED_METADATA_KEY not in metadata
+        return
     assert "Error: search results may be incomplete" in result
     assert "b_deleted.py" in result
     assert metadata[PROCESS_EXIT_CODE_METADATA_KEY] == 2

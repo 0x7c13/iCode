@@ -39,7 +39,7 @@ Either location can use `hooks.yml` or `hooks.json` instead. If a directory cont
 
 ## Loading configuration files
 
-Project hooks are enabled by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn off **Load project hooks** in the **Project trust** section of **Security**.
+Project hooks are not loaded by default, because they come with the repository you open. To load them, press **F10** in the terminal user interface (TUI) to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Security** (`project.hooks_enabled`). When the working directory has project hooks that are not loaded, iCode shows a notice. Global hooks are always loaded.
 
 Editing a hook configuration file on disk does not take effect immediately. After editing, switch sessions or restart iCode to reload the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
 

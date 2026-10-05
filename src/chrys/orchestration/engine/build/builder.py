@@ -745,6 +745,7 @@ async def build_agent(
             profile.skills,
             runtime=runtime,
             session_dir=effective_session_dir,
+            project_skills_enabled=settings.project_skills_enabled,
         )
         if skills_provider is not None:
             context_providers.append(skills_provider)

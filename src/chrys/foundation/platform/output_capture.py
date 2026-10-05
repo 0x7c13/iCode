@@ -13,6 +13,7 @@ import asyncio
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from chrys.foundation.platform.process import decode_split_output, decode_subprocess_output
 
@@ -54,6 +55,12 @@ class CapturedOutput:
         return f"{head}\n[... {self.dropped} bytes omitted ...]\n{tail}"
 
 
+class StreamSink(Protocol):
+    """Takes an output stream's bytes as they arrive."""
+
+    def feed(self, chunk: bytes, /) -> None: ...
+
+
 class BoundedCapture:
     """Keep the head and tail of one output stream within a byte limit."""
 
@@ -91,12 +98,12 @@ def capture_limit_footer(captures: Sequence[CapturedOutput]) -> str:
 
 async def drain_process_pipes(
     proc: asyncio.subprocess.Process,
-    stdout: BoundedCapture,
-    stderr: BoundedCapture,
+    stdout: StreamSink,
+    stderr: StreamSink,
 ) -> None:
     """Read *proc*'s output pipes to their end in parallel, then wait for it to exit."""
 
-    async def pump(stream: asyncio.StreamReader | None, capture: BoundedCapture) -> None:
+    async def pump(stream: asyncio.StreamReader | None, capture: StreamSink) -> None:
         if stream is None:
             return
         while chunk := await stream.read(_READ_CHUNK_BYTES):

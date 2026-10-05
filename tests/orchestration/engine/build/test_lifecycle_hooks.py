@@ -277,7 +277,7 @@ async def test_hook_manager_build_normalizes_missing_global_hooks_to_none(
     monkeypatch.setattr("chrys.service.hooks.loader.merge_hooks_files", _fake_merge_hooks_files)
 
     with pytest.raises(_StopStartup):
-        await engine.loader.build_hook_manager(project_root=str(project_root))
+        await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
 
     assert seen["project"] is None
     assert seen["global_"] is None
@@ -311,7 +311,7 @@ async def test_hook_manager_build_for_settings_only_global_hooks_file(
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_dir", _fake_load_hooks_dir)
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_project", _fake_load_hooks_project)
 
-    manager = await engine.loader.build_hook_manager(project_root=str(project_root))
+    manager = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
 
     assert manager is not None
     assert manager.file.settings.shutdown_grace_seconds == 9.0
@@ -326,7 +326,7 @@ async def test_hook_manager_build_uses_isolated_global_config_dir(
     project_root.mkdir()
     engine = _Engine(project_root)
 
-    assert await engine.loader.build_hook_manager(project_root=str(project_root)) is None
+    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True) is None
 
     hooks_dir = _isolate_hook_config_dir / "hooks"
     hooks_dir.mkdir(parents=True)
@@ -343,7 +343,7 @@ hooks:
         encoding="utf-8",
     )
 
-    manager = await engine.loader.build_hook_manager(project_root=str(project_root))
+    manager = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
 
     assert manager is not None
     assert [hook.id for hook in manager.file.hooks] == ["isolated-global-hook"]
@@ -372,7 +372,7 @@ hooks:
     )
     engine = _Engine(project_root)
 
-    with_project = await engine.loader.build_hook_manager(project_root=str(project_root))
+    with_project = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
     assert with_project is not None
     assert [hook.id for hook in with_project.file.hooks] == ["project-hook"]
 
@@ -411,7 +411,7 @@ async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
     await engine.loader.reload(
         profile,
         operation="settings_reload",
-        staged_loaded=LoadedSettings(settings=Settings(project_hooks_enabled=True), provenance={}),
+        staged_loaded=LoadedSettings(settings=Settings(project_hooks_enabled=False), provenance={}),
     )
     assert builds == []
     assert engine.session.hook_manager is old_manager
@@ -419,12 +419,12 @@ async def test_settings_reload_flipping_project_hooks_rebuilds_the_hook_manager(
     await engine.loader.reload(
         profile,
         operation="settings_reload",
-        staged_loaded=LoadedSettings(settings=Settings(project_hooks_enabled=False), provenance={}),
+        staged_loaded=LoadedSettings(settings=Settings(project_hooks_enabled=True), provenance={}),
     )
     if engine.session.outbox_recovery_task is not None:
         await engine.session.outbox_recovery_task
 
-    assert builds == [(workspace.primary_cwd, False)]
+    assert builds == [(workspace.primary_cwd, True)]
     assert old_manager.closed is True
     assert engine.session.hook_manager is new_manager
 
@@ -465,7 +465,7 @@ async def test_hook_manager_config_warning_keeps_legacy_text_and_semantics(
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_dir", _load_global)
     monkeypatch.setattr("chrys.service.hooks.loader.load_hooks_project", _load_project)
 
-    assert await engine.loader.build_hook_manager(project_root=str(project_root)) is None
+    assert await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True) is None
 
     assert len(warnings) == 1
     if invalid_source == "global":
@@ -533,7 +533,7 @@ async def test_hook_with_an_invalid_regex_is_skipped_with_a_warning_naming_it_an
     await engine.event_bus.subscribe(Warning, _capture)
     monkeypatch.setattr(session_hooks, "get_platform", _fake_get_platform)
 
-    manager = await engine.loader.build_hook_manager(project_root=str(project_root))
+    manager = await engine.loader.build_hook_manager(project_root=str(project_root), project_hooks_enabled=True)
 
     assert manager is not None
     assert [hook.id for hook in manager.file.hooks] == ["guard-sudo"]

@@ -10,6 +10,7 @@ from chrys.foundation.config.coercion import CoerceReason, invalid
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import (
     DormantProjectConfig,
+    DormantProjectSource,
     LoadedSettings,
     SettingsWarning,
     load_settings,
@@ -206,3 +207,27 @@ def test_dormant_project_config_reports_once_per_file_with_its_keys() -> None:
     assert "session.title.auto" in event.message
     assert "llm.retry.max_transient" in event.message
     assert "project.config_enabled" in event.message
+
+
+def test_dormant_project_hooks_and_skills_each_name_the_setting_to_turn_on() -> None:
+    hooks_file = Path("/repo/.chrys/hooks/hooks.yaml")
+    skills_dir = Path("/repo/.agents/skills")
+    loaded = LoadedSettings(
+        settings=Settings(),
+        provenance={},
+        dormant_project_sources=(
+            DormantProjectSource(key="project.hooks_enabled", path=hooks_file),
+            DormantProjectSource(key="project.skills_enabled", path=skills_dir),
+        ),
+    )
+
+    hooks, skills = settings_warning_events(loaded)
+
+    assert hooks.code == "project_hooks_dormant"
+    assert str(hooks_file) in hooks.message
+    assert "Load project hooks" in hooks.message
+    assert "project.hooks_enabled" in hooks.message
+    assert skills.code == "project_skills_dormant"
+    assert str(skills_dir) in skills.message
+    assert "Load project skills" in skills.message
+    assert "project.skills_enabled" in skills.message

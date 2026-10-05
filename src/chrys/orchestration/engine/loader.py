@@ -298,7 +298,7 @@ class AgentLoader:
         )
 
     async def build_hook_manager(
-        self, *, project_root: str, project_hooks_enabled: bool = True, session_id: str | None = None
+        self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None = None
     ) -> HookManager | None:
         return await SessionHookFactory(self._bus)(
             project_root=project_root,

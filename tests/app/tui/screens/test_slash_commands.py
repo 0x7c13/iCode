@@ -469,7 +469,7 @@ def test_suggestion_chrome_renders_chinese_at_show_boundary_without_translating_
         for item in screen.suggestion_list.last_items
         if isinstance(item, SuggestionItem) and item.kind == "skill" and item.value == "runtime"
     )
-    assert skill.section == "已加载技能"
+    assert skill.section == "已加载 Skills"
     assert skill.disabled_reason == "被 /runtime 遮蔽"
     assert "Skill [blue]description" in skill.label.plain
 

@@ -33,6 +33,6 @@ If you know the target path, enter the following command in the input field to s
 
 After the switch, the new working directory path appears at the right end of the conversation area's bottom border. The agent uses the new working directory as the default location for subsequent file reads, commands, and other operations.
 
-When switching working directories, iCode reloads the current agent and loads memory and skills from the new working directory. For configuration details, see [Configure memory](../configuration/memory.md) and [Install and use skills](../extensions/skills.md).
+When switching working directories, iCode reloads the current agent and loads memory and skills from the new working directory (its skills only while “Load project skills” is on). For configuration details, see [Configure memory](../configuration/memory.md) and [Install and use skills](../extensions/skills.md).
 
 Switching working directories does not create a new session; the current conversation history is preserved. When working on an unrelated project, first enter `/new` to create a new session, then switch working directories in that session. This avoids recording the working directory change in the original session or mixing context from different projects.

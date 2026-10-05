@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import date
 from html import escape as xml_escape
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -54,6 +55,8 @@ MAX_SEARCH_DEPTH = 2
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 MAX_COMPATIBILITY_LENGTH = 500
+MAX_FRONTMATTER_LENGTH = 16 * 1024
+MAX_FRONTMATTER_DEPTH = 64
 
 # Text-based formats that are safe to advertise (and read) as skill resources.
 # Binary assets (images, fonts, archives) are deliberately excluded.
@@ -88,12 +91,49 @@ DEFAULT_SEARCH_DEPTH = 2
 VALID_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9]*-[a-z0-9])*[a-z0-9]*$")
 
 # YAML frontmatter delimited by "---" lines; the \uFEFF (regex-level escape)
-# allows an optional UTF-8 BOM before the opening delimiter.
-FRONTMATTER_RE = re.compile(r"\A\uFEFF?---\s*$(.+?)^---\s*$", re.MULTILINE | re.DOTALL)
+# allows an optional UTF-8 BOM before the opening delimiter. Each delimiter is one
+# line, so a file of blank lines with no closing one fails in linear time.
+FRONTMATTER_RE = re.compile(r"\A\uFEFF?---[ \t]*\r?\n(.*?)^---[ \t]*\r?$", re.MULTILINE | re.DOTALL)
+
+# What a YAML scalar loads as; a list or mapping is none of these.
+_SCALAR_TYPES = (str, int, float, date)
+
+
+class _FrontmatterRefused(Exception):
+    """Frontmatter the loader will not compose; the message is the reason."""
+
+
+class _FrontmatterLoader(yaml.SafeLoader):
+    """``SafeLoader`` that refuses anchors, aliases and deep nesting as it composes each node.
+
+    An alias expands before any length check: a few KiB of them can load as
+    gigabytes. Refusing node by node keeps the parse lazy, so nesting past
+    :data:`MAX_FRONTMATTER_DEPTH` stops after work that does not grow with the
+    document; scanning it whole first would cost time that grows with its nesting.
+    """
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._depth = 0
+
+    def compose_node(self, parent: yaml.Node | None, index: object) -> yaml.Node | None:
+        event = self.peek_event()
+        if isinstance(event, yaml.NodeEvent) and event.anchor is not None:
+            raise _FrontmatterRefused("YAML frontmatter must not use anchors or aliases")
+        if self._depth >= MAX_FRONTMATTER_DEPTH:
+            raise _FrontmatterRefused(f"YAML frontmatter must not nest more than {MAX_FRONTMATTER_DEPTH} levels deep")
+        self._depth += 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
 
 # Tolerant fallback for frontmatter that is not valid YAML: top-level
-# "key: value" lines with optional single/double quoting.
-_LINE_KV_RE = re.compile(r"^([\w-]+)\s*:\s*(?:[\"'](.+?)[\"']|(.+?))\s*$", re.MULTILINE)
+# "key: value" lines with optional single/double quoting. The value runs to its
+# line's end with no backtracking, so a long line costs linear time.
+_LINE_KV_RE = re.compile(r"^([\w-]+)\s*:\s*(\S.*)$", re.MULTILINE)
+_QUOTES = "\"'"
 
 
 def validate_skill_metadata(name: str | None, description: str | None, compatibility: str | None = None) -> str | None:
@@ -116,7 +156,8 @@ def validate_skill_metadata(name: str | None, description: str | None, compatibi
 
 
 def _coerce_scalar(value: object) -> str | None:
-    if value is None:
+    """Return a scalar field as text; None when it is absent, a list or a mapping."""
+    if not isinstance(value, _SCALAR_TYPES):
         return None
     return value if isinstance(value, str) else str(value)
 
@@ -125,9 +166,10 @@ def _fallback_line_parse(yaml_block: str) -> dict[str, object]:
     """Parse top-level ``key: value`` lines from frontmatter that is not valid YAML."""
     fields: dict[str, object] = {}
     for match in _LINE_KV_RE.finditer(yaml_block):
-        key = match.group(1).lower()
-        value = match.group(2) if match.group(2) is not None else match.group(3)
-        fields.setdefault(key, value)
+        value = match.group(2).rstrip()
+        if len(value) > 2 and value[0] in _QUOTES and value[-1] in _QUOTES:
+            value = value[1:-1]
+        fields.setdefault(match.group(1).lower(), value)
     return fields
 
 
@@ -143,14 +185,23 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | Non
         return None, "SKILL.md does not contain YAML frontmatter delimited by '---' lines"
 
     yaml_block = match.group(1)
+    if len(yaml_block) > MAX_FRONTMATTER_LENGTH:
+        return None, f"YAML frontmatter must be {MAX_FRONTMATTER_LENGTH} characters or fewer"
+    loader: _FrontmatterLoader | None = None
     try:
-        data = yaml.safe_load(yaml_block)
+        loader = _FrontmatterLoader(yaml_block)  # Raises at once on a character YAML does not allow.
+        data = loader.get_single_data()
+    except _FrontmatterRefused as exc:
+        return None, str(exc)
     except yaml.YAMLError as exc:
         fields = _fallback_line_parse(yaml_block)
         if fields:
             logger.warning("SKILL.md frontmatter is not valid YAML (%s); using tolerant line parsing", exc)
             return fields, None
         return None, f"invalid YAML frontmatter: {exc}"
+    finally:
+        if loader is not None:
+            loader.dispose()
 
     if data is None:
         return {}, None
@@ -160,7 +211,10 @@ def parse_frontmatter(content: str) -> tuple[dict[str, object] | None, str | Non
 
 
 def _parse_metadata(value: object) -> dict[str, str] | None:
-    if not isinstance(value, dict):
+    """Return a flat mapping of scalars as text; anything else is dropped whole."""
+    if not isinstance(value, dict) or not all(
+        item is None or isinstance(item, _SCALAR_TYPES) for pair in value.items() for item in pair
+    ):
         return None
     return {str(k): str(v) for k, v in value.items()}
 
@@ -358,13 +412,19 @@ def load_file_skill(
 
     try:
         content = skill_file.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         return SkillLoadFailure(skill_dir=skill_dir, reason=f"failed to read SKILL.md: {exc}")
 
     fields, parse_error = parse_frontmatter(content)
     if fields is None:
         return SkillLoadFailure(skill_dir=skill_dir, reason=parse_error or "invalid frontmatter")
 
+    for key in ("name", "description"):
+        value = fields.get(key)
+        if value is not None and not isinstance(value, _SCALAR_TYPES):
+            return SkillLoadFailure(
+                skill_dir=skill_dir, reason=f"frontmatter `{key}` must be text, not a list or mapping"
+            )
     name = _coerce_scalar(fields.get("name"))
     description = _coerce_scalar(fields.get("description"))
     compatibility = _coerce_scalar(fields.get("compatibility"))
@@ -445,14 +505,18 @@ def discover_file_skills(
     logger.info("Discovered %d potential skill directories", len(discovered))
 
     for skill_dir in discovered:
-        loaded = load_file_skill(
-            skill_dir,
-            resource_extensions=resource_extensions,
-            script_extensions=script_extensions,
-            search_depth=search_depth,
-            script_filter=script_filter,
-            resource_filter=resource_filter,
-        )
+        try:
+            loaded = load_file_skill(
+                skill_dir,
+                resource_extensions=resource_extensions,
+                script_extensions=script_extensions,
+                search_depth=search_depth,
+                script_filter=script_filter,
+                resource_filter=resource_filter,
+            )
+        except Exception as exc:
+            # One SKILL.md that breaks the loader (a YAML date with no such day, say) fails alone.
+            loaded = SkillLoadFailure(skill_dir=skill_dir, reason=f"failed to load SKILL.md: {exc}")
         if isinstance(loaded, SkillLoadFailure):
             logger.error("Failed to load skill from '%s': %s", loaded.skill_dir, loaded.reason)
             failures.append(loaded)

@@ -581,6 +581,7 @@ class SubAgentTools:
                 profile.skills,
                 runtime=runtime,
                 session_dir=self._session_dir,
+                project_skills_enabled=settings.project_skills_enabled,
             )
             if skills_provider is not None:
                 shared_providers.append(skills_provider)

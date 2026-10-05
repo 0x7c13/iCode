@@ -101,7 +101,7 @@ def test_completion_labels_localize_without_changing_values() -> None:
         "打开提示词编辑器",
         "打开工具设置",
         "打开子智能体设置",
-        "打开技能设置",
+        "打开 Skills 设置",
         "打开 MCP 服务器设置",
         "打开记忆设置",
         "打开压缩设置",

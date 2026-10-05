@@ -326,7 +326,7 @@ def _isolate_auto_skill_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_collect_skill_paths_auto_loads_cwd_agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With the toggle on (default), non-empty <cwd>/.agents/skills is auto-included."""
+    """With project skills enabled and the toggle on (default), non-empty <cwd>/.agents/skills is auto-included."""
     from chrys.service.skills.adapter import _collect_skill_paths
 
     # Isolate the user-level dirs so only the cwd path can show up.
@@ -341,8 +341,22 @@ def test_collect_skill_paths_auto_loads_cwd_agents_dir(tmp_path: Path, monkeypat
     cwd_skills.mkdir(parents=True)
     (cwd_skills / "demo").mkdir()  # non-empty sentinel
 
-    paths = _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd))
+    paths = _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd), project_skills_enabled=True)
     assert str(cwd_skills) in paths
+
+
+def test_collect_skill_paths_skips_cwd_dir_until_project_skills_are_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The user's ``project.skills_enabled`` setting gates ``<cwd>/.agents/skills`` before the profile toggle."""
+    from chrys.service.skills.adapter import _collect_skill_paths
+
+    monkeypatch.setattr("chrys.service.skills.adapter.user_agents_dir", lambda: tmp_path / "no_user")
+    cwd = tmp_path / "project"
+    cwd_skills = cwd / ".agents" / "skills"
+    (cwd_skills / "demo").mkdir(parents=True)
+
+    assert str(cwd_skills) not in _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd))
 
 
 def test_collect_skill_paths_skips_cwd_dir_when_toggle_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,6 +377,7 @@ def test_collect_skill_paths_skips_cwd_dir_when_toggle_off(tmp_path: Path, monke
     paths = _collect_skill_paths(
         SkillsConfig(auto_load_cwd_agents_skills=False),
         runtime=_make_runtime(cwd),
+        project_skills_enabled=True,
     )
     assert str(cwd_skills) not in paths
 
@@ -380,7 +395,7 @@ def test_collect_skill_paths_includes_cwd_when_dir_missing(tmp_path: Path, monke
     cwd = tmp_path / "empty_project"
     cwd.mkdir()
 
-    paths = _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd))
+    paths = _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd), project_skills_enabled=True)
     assert str((cwd / ".agents" / "skills").resolve()) in paths
 
 
@@ -397,7 +412,7 @@ def test_collect_skill_paths_includes_cwd_when_dir_empty(tmp_path: Path, monkeyp
     cwd = tmp_path / "project"
     (cwd / ".agents" / "skills").mkdir(parents=True)  # exists but empty
 
-    paths = _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd))
+    paths = _collect_skill_paths(SkillsConfig(), runtime=_make_runtime(cwd), project_skills_enabled=True)
     assert str((cwd / ".agents" / "skills").resolve()) in paths
 
 
@@ -419,7 +434,7 @@ def test_collect_skill_paths_no_runtime_skips_cwd(tmp_path: Path, monkeypatch: p
     (cwd_skills / "demo").mkdir()
     monkeypatch.chdir(cwd)
 
-    paths = _collect_skill_paths(SkillsConfig(), runtime=None)
+    paths = _collect_skill_paths(SkillsConfig(), runtime=None, project_skills_enabled=True)
     assert str(cwd_skills) not in paths
 
 

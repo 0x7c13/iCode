@@ -1,6 +1,6 @@
 # 智能体配置文件参考
 
-智能体配置文件（Agent Profile）是保存在本机的 YAML 文件，用于定义智能体的名称、指令、模型、工具、审批策略、技能、记忆、上下文压缩和子智能体。本页列出 YAML 文件的加载与修改规则，以及可用字段、默认值和约束。
+智能体配置文件（Agent Profile）是保存在本机的 YAML 文件，用于定义智能体的名称、指令、模型、工具、审批策略、Skills、记忆、上下文压缩和子智能体。本页列出 YAML 文件的加载与修改规则，以及可用字段、默认值和约束。
 
 如需通过终端用户界面（Terminal User Interface，TUI）配置智能体，参阅[配置智能体](../guides/configuration/agents.md)。需要手工编辑 YAML 时，以本页为准。
 
@@ -80,7 +80,7 @@ icode agents
 | `model` | 对象 | `{}` | 绑定模型配置，见 [model](#model)。 |
 | `tools` | 对象 | `{}` | 配置内置工具、MCP 和 Shell 过滤，见 [tools](#tools)。 |
 | `approval` | 对象 | 见下文 | 配置哪些工具调用需要审批，见 [approval](#approval)。 |
-| `skills` | 对象 | 见下文 | 配置技能来源和内嵌技能，见 [skills](#skills)。 |
+| `skills` | 对象 | 见下文 | 配置 Skill 来源和内嵌 Skill，见 [skills](#skills)。 |
 | `memory` | 对象 | `{}` | 配置自动加载的参考文件，见 [memory](#memory)。 |
 | `compaction` | 对象 | 见下文 | 配置上下文压缩，见 [compaction](#compaction)。 |
 | `sub_agents` | 对象 | 见下文 | 配置可调用的子智能体，见 [sub_agents](#sub_agents)。 |
@@ -379,7 +379,7 @@ approval:
 
 省略 `overrides` 时，iCode 使用默认覆盖项 `shell: require`、`filesystem.write: require` 和 `todo: skip`。显式设置 `overrides: {}` 会清空这些默认覆盖项，未匹配其他规则的工具均使用 `default`。
 
-技能脚本是例外：`run_skill_script` 默认需要审批。如需修改该行为，需要在 `overrides` 中显式配置 `skill`、`run_skill_script` 或 `skill.run_skill_script` 的审批级别。
+Skill 脚本是例外：`run_skill_script` 默认需要审批。如需修改该行为，需要在 `overrides` 中显式配置 `skill`、`run_skill_script` 或 `skill.run_skill_script` 的审批级别。
 
 网络工具也是例外：`web_search` 和 `web_fetch` 类别的工具默认需要审批，即使 `default` 为 `auto`。该规则在 `overrides` 中的规则之后、`default` 之前生效。如需修改，在 `overrides` 中显式配置该类别或工具名称的审批级别，例如 `web_search: auto`。
 
@@ -407,37 +407,37 @@ skills:
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `paths` | 字符串列表 | `[]` | 额外的技能搜索根目录。iCode 在每个目录及其最多两层子目录中查找 `SKILL.md`；找到后不再搜索该技能目录的内部。相对路径按当前[工作目录](../guides/daily-use/workspaces.md)解析；路径开头的 `~` 由 iCode 展开为当前用户主目录。 |
-| `inline` | 对象列表 | `[]` | 直接写在配置中的技能，见下文。 |
-| `script_timeout` | 正整数 | `300` | 技能脚本最长运行秒数。 |
-| `script_extensions` | 字符串列表 | `[.py, .sh, .ps1]` | 允许作为技能脚本运行的扩展名；所需解释器必须已经安装。 |
+| `paths` | 字符串列表 | `[]` | 额外的 Skill 搜索根目录。iCode 在每个目录及其最多两层子目录中查找 `SKILL.md`；找到后不再搜索该 Skill 目录的内部。相对路径按当前[工作目录](../guides/daily-use/workspaces.md)解析；路径开头的 `~` 由 iCode 展开为当前用户主目录。 |
+| `inline` | 对象列表 | `[]` | 直接写在配置中的 Skill，见下文。 |
+| `script_timeout` | 正整数 | `300` | Skill 脚本最长运行秒数。 |
+| `script_extensions` | 字符串列表 | `[.py, .sh, .ps1]` | 允许作为 Skill 脚本运行的扩展名；所需解释器必须已经安装。 |
 | `auto_load_user_agents_skills` | 布尔值 | `true` | 是否加载 Agent Skills 用户级共享目录。 |
-| `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`。切换工作目录后重新加载。 |
+| `auto_load_cwd_agents_skills` | 布尔值 | `true` | 是否加载当前工作目录的 `.agents/skills`；还需在设置中开启“加载项目 Skills”（`project.skills_enabled`）。切换工作目录后重新加载。 |
 
-iCode 用户技能目录始终加载；Agent Skills 用户级共享目录和当前工作目录技能目录默认加载，可分别通过两个 `auto_load_*` 字段关闭。用户级技能目录路径见[技能安装位置](../guides/extensions/skills.md#技能安装位置)。
+iCode 用户 Skill 目录始终加载；Agent Skills 用户级共享目录默认加载；当前工作目录 Skill 目录在设置中开启“加载项目 Skills”后加载。两者可分别通过两个 `auto_load_*` 字段关闭。用户级 Skill 目录路径见[Skill 安装位置](../guides/extensions/skills.md#skill-安装位置)。
 
-多个来源出现同名技能时，优先级从高到低为：`paths` 中靠前的目录、iCode 用户技能目录、Agent Skills 用户级共享目录、当前工作目录技能目录、`inline` 中靠前的定义。同一个搜索根目录中存在多个同名技能时，发现顺序不确定；为确保加载指定版本，请只保留其中一个。
+多个来源出现同名 Skill 时，优先级从高到低为：`paths` 中靠前的目录、iCode 用户 Skill 目录、Agent Skills 用户级共享目录、当前工作目录 Skill 目录、`inline` 中靠前的定义。同一个搜索根目录中存在多个同名 Skill 时，发现顺序不确定；为确保加载指定版本，请只保留其中一个。
 
-> **注意**：技能脚本作为本地进程运行，不受安全沙箱隔离。将目录加入 `paths` 或启用自动加载来源前，请检查其中的 `SKILL.md`、脚本和其他相关文件，只加载可信技能。允许某种脚本扩展名不会自动安装对应解释器。
+> **注意**：Skill 脚本作为本地进程运行，不受安全沙箱隔离。将目录加入 `paths` 或启用自动加载来源前，请检查其中的 `SKILL.md`、脚本和其他相关文件，只加载可信 Skill。允许某种脚本扩展名不会自动安装对应解释器。
 
 ### skills.inline
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `name` | 字符串 | 必填 | 1～64 个字符，可使用小写字母、数字和连字符；连字符不能连续出现，也不能位于开头或结尾。 |
-| `description` | 字符串 | 必填 | 非空，最长 1024 个字符。用于帮助智能体判断何时加载技能。 |
-| `instructions` | 字符串 | 空 | 技能加载后提供给智能体的操作说明。 |
-| `resources` | 对象列表 | `[]` | 随技能加载的内嵌文本资源，见下表。 |
+| `description` | 字符串 | 必填 | 非空，最长 1024 个字符。用于帮助智能体判断何时加载 Skill。 |
+| `instructions` | 字符串 | 空 | Skill 加载后提供给智能体的操作说明。 |
+| `resources` | 对象列表 | `[]` | 随 Skill 加载的内嵌文本资源，见下表。 |
 
 | `resources` 子字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `name` | 字符串 | 必填 | 资源标识，不是文件路径；同一技能内不要使用仅大小写不同的重复名称。 |
+| `name` | 字符串 | 必填 | 资源标识，不是文件路径；同一 Skill 内不要使用仅大小写不同的重复名称。 |
 | `description` | 字符串 | 空 | 资源用途说明。 |
 | `content` | 字符串 | 空 | 文本资源内容。内容为空的资源会被忽略。 |
 
-内嵌技能不支持文件资源或脚本。需要引用文件或运行脚本时，应创建包含 `SKILL.md` 的目录技能，并通过 `skills.paths` 或上述自动加载的技能目录加载。
+内嵌 Skill 不支持文件资源或脚本。需要引用文件或运行脚本时，应创建包含 `SKILL.md` 的目录 Skill，并通过 `skills.paths` 或上述自动加载的 Skill 目录加载。
 
-技能的安装步骤、目录规范、加载验证和使用方式详见[安装和使用技能](../guides/extensions/skills.md)。
+Skill 的安装步骤、目录规范、加载验证和使用方式详见[安装和使用 Skills](../guides/extensions/skills.md)。
 
 ## memory
 
