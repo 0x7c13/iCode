@@ -62,7 +62,7 @@ on it, so one minified line can print megabytes. A longer record keeps only
 """
 _RECORD_HEAD_BYTES = 64 * 1024
 _MAX_STDERR_BYTES = 64 * 1024
-_MAX_OVERSIZED_FILES_SHOWN = 10
+_MAX_OVERSIZED_LINES_SHOWN = 10
 
 
 @dataclass(slots=True)
@@ -854,16 +854,16 @@ class _GrepStream:
             self.result.long_lines.append(long_line)
 
 
-def _oversized_note(files: set[str]) -> str:
-    if not files:
+def _oversized_note(lines: set[tuple[str, int]]) -> str:
+    if not lines:
         return ""
-    names = sorted(files)
-    shown = ", ".join(names[:_MAX_OVERSIZED_FILES_SHOWN])
-    more = len(names) - _MAX_OVERSIZED_FILES_SHOWN
+    ordered = sorted(lines)
+    shown = ", ".join(f"{rel_path}:{line_num}" for rel_path, line_num in ordered[:_MAX_OVERSIZED_LINES_SHOWN])
+    more = len(ordered) - _MAX_OVERSIZED_LINES_SHOWN
     if more > 0:
-        shown += f" and {more} more file(s)"
+        shown += f" and {more} more line(s)"
     limit = _MAX_RECORD_BYTES // (1024 * 1024)
-    return f"\n\n[Matching lines too long to show (over {limit} MiB of search output each) in: {shown}]"
+    return f"\n\n[Matching lines too long to show (over {limit} MiB of search output each): {shown}]"
 
 
 def _format_matches(entries: list[GrepEntry]) -> list[str]:
@@ -1047,7 +1047,7 @@ async def _grep_impl(
     if all_long_lines:
         details = ", ".join(f"{ll.rel_path}:{ll.line_num} ({ll.actual_length} chars)" for ll in all_long_lines)
         result += f"\n\n[Long lines truncated to {_MAX_LINE_DISPLAY_CHARS} chars: {details}]"
-    result += _oversized_note({rel_path for rel_path, _ in oversized})
+    result += _oversized_note(oversized)
     if errors.exit_code is not None:
         record_process_result(errors.exit_code)
         result += "\n\n" + tool_error(

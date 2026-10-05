@@ -42,7 +42,9 @@ def observed_rg(monkeypatch: pytest.MonkeyPatch) -> _ObservedRg:
     async def recording_spawn(*args: Any, **kwargs: Any) -> AsyncIterator[asyncio.subprocess.Process]:
         async with spawn(*args, **kwargs) as proc:
             observed.spawned.append(proc)
-            observed.processes.append(psutil.Process(proc.pid))
+            # A launcher that exits at once may already be reaped.
+            with contextlib.suppress(psutil.NoSuchProcess):
+                observed.processes.append(psutil.Process(proc.pid))
             yield proc
 
     class CountingStdout(search._RgStdout):
@@ -55,7 +57,8 @@ def observed_rg(monkeypatch: pytest.MonkeyPatch) -> _ObservedRg:
                 self._started = True
                 # A launcher's child that has output left to write is still alive here.
                 with contextlib.suppress(psutil.NoSuchProcess):
-                    observed.processes.extend(observed.processes[-1].children(recursive=True))
+                    for launcher in observed.processes[-1:]:
+                        observed.processes.extend(launcher.children(recursive=True))
             observed.read += len(chunk)
             super().feed(chunk)
 
@@ -160,7 +163,7 @@ async def test_a_match_too_long_to_keep_is_named_without_its_line(
         )
         assert "short.js" not in result
     assert "x" * 1000 not in result
-    assert result.endswith("[Matching lines too long to show (over 1 MiB of search output each) in: bundle.js]")
+    assert result.endswith("[Matching lines too long to show (over 1 MiB of search output each): bundle.js:1]")
 
 
 @pytest.fixture
@@ -183,7 +186,7 @@ async def test_matches_too_long_to_keep_fill_the_result_so_their_context_stays_b
     assert result.startswith(f"Found matches for /NEEDLE/ in {tmp_path}, but every matching line is too long to show")
     assert "(limited to 1)" in result
     assert 0 < result.count("context") <= 2
-    assert result.endswith("in: wide.txt]")
+    assert result.endswith("each): wide.txt:1]")
 
 
 async def test_matches_too_long_to_keep_fill_the_result_across_file_batches(
@@ -202,7 +205,7 @@ async def test_matches_too_long_to_keep_fill_the_result_across_file_batches(
     assert result.startswith(f"Found matches for /NEEDLE/ in {tmp_path}, but every matching line is too long to show")
     assert "(limited to 1)" in result
     assert result.count("context") == 1
-    assert result.endswith("in: a.txt]")
+    assert result.endswith("each): a.txt:1]")
 
 
 @pytest.mark.parametrize("glob", [None, "*.txt"])
@@ -247,6 +250,16 @@ def test_a_match_too_long_to_keep_is_named_by_its_file_and_line(
     assert stream.result.match_count == 1 and not stream.result.entries
 
 
+def test_the_too_long_note_names_ten_lines_in_order_and_counts_the_rest() -> None:
+    lines = {("b.js", line) for line in range(1, 7)} | {("a.js", line) for line in (10, 2, 3, 4, 5, 6)}
+
+    note = search._oversized_note(lines)
+
+    assert note.endswith(
+        "each): a.js:2, a.js:3, a.js:4, a.js:5, a.js:6, a.js:10, b.js:1, b.js:2, b.js:3, b.js:4 and 2 more line(s)]"
+    )
+
+
 async def test_a_globbed_file_keeps_its_too_long_match_note_when_its_later_matches_fill_the_result(
     tmp_path: Path, small_records: int
 ) -> None:
@@ -256,7 +269,7 @@ async def test_a_globbed_file_keeps_its_too_long_match_note_when_its_later_match
 
     assert result.startswith(f"Found 1 match(es) in {tmp_path} (limited to 2)")
     assert "mixed.js:2" in result and "NEEDLE two" not in result
-    assert result.endswith("in: mixed.js]")
+    assert result.endswith("each): mixed.js:1]")
 
 
 @pytest.mark.parametrize("tool", ["grep", "glob"])
