@@ -10,10 +10,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from chrys.service.skills.loader import (
+    MAX_FRONTMATTER_DEPTH,
+    MAX_FRONTMATTER_LENGTH,
     build_inline_skill_content,
     discover_file_skills,
     discover_skill_directories,
     load_file_skill,
+    parse_frontmatter,
 )
 from chrys.service.skills.model import Skill, SkillLoadFailure, SkillResource
 from chrys.service.skills.provider import ChrysSkillsProvider
@@ -108,6 +111,20 @@ def test_load_file_skill_tolerant_fallback_for_sloppy_plain_scalars(tmp_path: Pa
 
     assert isinstance(skill, Skill)
     assert skill.description == "use this: that"
+
+
+def test_load_file_skill_tolerant_fallback_for_a_character_yaml_does_not_allow(tmp_path: Path) -> None:
+    """YAML refuses a control character before parsing anything; the line fallback still reads the fields."""
+    skill_dir = tmp_path / "form-feed"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: form-feed\n# page\x0c break\ndescription: d\n---\nBody.\n", encoding="utf-8"
+    )
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert (skill.name, skill.description) == ("form-feed", "d")
 
 
 def test_load_file_skill_list_frontmatter_fails(tmp_path: Path) -> None:
@@ -633,20 +650,20 @@ def test_a_skill_md_that_cannot_be_read_or_parsed_fails_alone(tmp_path: Path) ->
     not_utf8 = tmp_path / "not-utf8"
     not_utf8.mkdir()
     (not_utf8 / "SKILL.md").write_bytes(b"---\nname: not-utf8\ndescription: \xff\n---\n")
-    too_deep = tmp_path / "too-deep"
-    too_deep.mkdir()
-    nested = "[" * 5_000 + "]" * 5_000
-    (too_deep / "SKILL.md").write_text(
-        f"---\nname: too-deep\ndescription: d\nlicense: {nested}\n---\n", encoding="utf-8"
+    no_such_day = tmp_path / "no-such-day"
+    no_such_day.mkdir()
+    # YAML reads this as a date, and building it raises ValueError rather than a YAML error.
+    (no_such_day / "SKILL.md").write_text(
+        "---\nname: no-such-day\ndescription: d\nlicense: 2024-02-30\n---\n", encoding="utf-8"
     )
 
     skills, failures = discover_file_skills([str(tmp_path)], script_extensions=(".py",))
 
     assert [skill.name for skill in skills] == ["good"]
     reasons = {os.path.basename(failure.skill_dir): failure.reason for failure in failures}
-    assert reasons.keys() == {"not-utf8", "too-deep"}
+    assert reasons.keys() == {"not-utf8", "no-such-day"}
     assert reasons["not-utf8"].startswith("failed to read SKILL.md: 'utf-8' codec can't decode")
-    assert reasons["too-deep"].startswith("failed to load SKILL.md: maximum recursion depth exceeded")
+    assert reasons["no-such-day"].startswith("failed to load SKILL.md: day ")
 
 
 @pytest.mark.parametrize(
@@ -663,6 +680,63 @@ def test_frontmatter_with_an_anchor_or_alias_fails(tmp_path: Path, fields: str) 
 
     assert isinstance(loaded, SkillLoadFailure)
     assert loaded.reason == "YAML frontmatter must not use anchors or aliases"
+
+
+@pytest.mark.parametrize(("lists", "loads"), [(MAX_FRONTMATTER_DEPTH - 1, True), (MAX_FRONTMATTER_DEPTH, False)])
+def test_frontmatter_nested_past_the_depth_limit_fails(tmp_path: Path, lists: int, loads: bool) -> None:
+    skill_dir = tmp_path / "nested"
+    skill_dir.mkdir()
+    # The top mapping is one level, so the innermost list sits one level below *lists*.
+    nested = "[" * lists + "]" * lists
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: nested\ndescription: d\nlicense: {nested}\n---\n", encoding="utf-8"
+    )
+
+    loaded = _load(skill_dir)
+
+    if loads:
+        assert isinstance(loaded, Skill)
+    else:
+        assert isinstance(loaded, SkillLoadFailure)
+        assert loaded.reason == f"YAML frontmatter must not nest more than {MAX_FRONTMATTER_DEPTH} levels deep"
+
+
+def test_frontmatter_nested_far_too_deep_stops_after_bounded_work() -> None:
+    nested = "[" * 8_000 + "]" * 8_000
+    content = f"---\nname: nested\ndescription: d\nlicense: {nested}\n---\n"
+
+    fields, reason = cpu_bounded(lambda: parse_frontmatter(content), bound_seconds=2)
+
+    assert fields is None
+    assert reason == f"YAML frontmatter must not nest more than {MAX_FRONTMATTER_DEPTH} levels deep"
+
+
+@pytest.mark.parametrize(("length", "loads"), [(MAX_FRONTMATTER_LENGTH, True), (MAX_FRONTMATTER_LENGTH + 1, False)])
+def test_frontmatter_longer_than_the_limit_fails(tmp_path: Path, length: int, loads: bool) -> None:
+    skill_dir = tmp_path / "sized"
+    skill_dir.mkdir()
+    head = "name: sized\ndescription: d\n"
+    block = head + "#" + "x" * (length - len(head) - 2) + "\n"
+    assert len(block) == length
+    (skill_dir / "SKILL.md").write_text(f"---\n{block}---\n", encoding="utf-8")
+
+    loaded = _load(skill_dir)
+
+    if loads:
+        assert isinstance(loaded, Skill)
+    else:
+        assert isinstance(loaded, SkillLoadFailure)
+        assert loaded.reason == f"YAML frontmatter must be {MAX_FRONTMATTER_LENGTH} characters or fewer"
+
+
+def test_the_line_fallback_reads_a_long_line_in_linear_time() -> None:
+    padding = " " * (MAX_FRONTMATTER_LENGTH - 64)
+    content = f"---\nnote: not: yaml\nname: spaced{padding}out\ndescription: 'quoted'\n---\n"
+
+    fields, reason = cpu_bounded(lambda: parse_frontmatter(content), bound_seconds=0.1)
+
+    assert reason is None
+    assert fields == {"note": "not: yaml", "name": f"spaced{padding}out", "description": "quoted"}
 
 
 @pytest.mark.parametrize("field", ["name", "description"])

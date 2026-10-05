@@ -129,7 +129,7 @@ description: Draft user-facing release notes from commit history
 
 | Content | Loading requirements |
 | --- | --- |
-| frontmatter | Required; the top-level content must be a YAML mapping, without anchors (`&`) or aliases (`*`) |
+| frontmatter | Required; the top-level content must be a YAML mapping, without anchors (`&`) or aliases (`*`), at most 16,384 characters long and nested at most 64 levels deep |
 | `name` | Required; must exactly match the skill directory name; 1-64 characters long; may contain only lowercase letters, digits, and hyphens (`-`). Uppercase letters, underscores (`_`), and other characters are not allowed. Must not start or end with a hyphen or contain consecutive hyphens |
 | `description` | Required; text of at most 1,024 characters. Describe both the skill's purpose and when to use it to help the agent decide when to load it |
 | `compatibility` | Optional; text of at most 500 characters |
