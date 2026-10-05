@@ -412,9 +412,9 @@ skills:
 | `script_timeout` | Positive integer | `300` | Maximum runtime for a skill script, in seconds. |
 | `script_extensions` | List of strings | `[.py, .sh, .ps1]` | Extensions allowed for skill scripts. The required interpreters must already be installed. |
 | `auto_load_user_agents_skills` | Boolean | `true` | Whether to load the user-level shared Agent Skills directory. |
-| `auto_load_cwd_agents_skills` | Boolean | `true` | Whether to load `.agents/skills` in the current working directory. Reloaded when switching working directories. |
+| `auto_load_cwd_agents_skills` | Boolean | `true` | Whether to load `.agents/skills` in the current working directory; “Load project skills” (`project.skills_enabled`) must also be on in settings. Reloaded when switching working directories. |
 
-The iCode user skills directory is always loaded. The user-level shared Agent Skills directory and the current working directory's skills directory are loaded by default; each can be disabled with its corresponding `auto_load_*` field. For user-level directory paths, see [Skill installation locations](../guides/extensions/skills.md#skill-installation-locations).
+The iCode user skills directory is always loaded. The user-level shared Agent Skills directory is loaded by default; the current working directory's skills directory loads once “Load project skills” is on in settings. Each can be disabled with its corresponding `auto_load_*` field. For user-level directory paths, see [Skill installation locations](../guides/extensions/skills.md#skill-installation-locations).
 
 When multiple sources contain skills with the same name, precedence from highest to lowest is: earlier directories in `paths`, the iCode user skills directory, the user-level shared Agent Skills directory, the current working directory's skills directory, and earlier definitions in `inline`. If one search root contains multiple skills with the same name, discovery order is unspecified. Keep only one to ensure that the intended version loads.
 

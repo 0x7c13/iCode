@@ -51,9 +51,9 @@ iCode provides the event's JSON input file through the `CHRYS_HOOK_PAYLOAD_FILE`
 
 ### 3. Load and verify
 
-Switch sessions or restart iCode to apply the configuration on disk.
+Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Security**. If it is already on, switch sessions or restart iCode to apply the configuration on disk.
 
-In the terminal user interface (TUI), enter `/runtime` and open the **Hooks** tab. You should see `record-turn`. Submit a message and wait for the current turn to end, then check `hook-events.log` in the working directory. It should contain a line like this:
+In the TUI, enter `/runtime` and open the **Hooks** tab. You should see `record-turn`. Submit a message and wait for the current turn to end, then check `hook-events.log` in the working directory. It should contain a line like this:
 
 ```text
 turn=1 status=ok

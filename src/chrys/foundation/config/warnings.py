@@ -100,10 +100,29 @@ _REJECTED_PROJECT_LOOSENS = msg(
 _PROJECT_CONFIG_DORMANT = msg(
     "settings.project_config_dormant",
     fallback=(
-        "Found project settings in {path} ({keys}), but project configuration is off. "
-        "Enable project.config_enabled to apply them."
+        "Found project settings in {path} ({keys}), but they are not loaded. To apply them, turn on "
+        "Load project settings under Settings → Security → Project trust (project.config_enabled)."
     ),
 )
+_PROJECT_HOOKS_DORMANT = msg(
+    "settings.project_hooks_dormant",
+    fallback=(
+        "Found project hooks in {path}, but they are not loaded. To run them, turn on "
+        "Load project hooks under Settings → Security → Project trust (project.hooks_enabled)."
+    ),
+)
+_PROJECT_SKILLS_DORMANT = msg(
+    "settings.project_skills_dormant",
+    fallback=(
+        "Found project skills in {path}. They are not loaded automatically; to load them, turn on "
+        "Load project skills under Settings → Security → Project trust (project.skills_enabled) and keep the "
+        "agent's Load skills from working folder option on."
+    ),
+)
+_DORMANT_SOURCE_MESSAGES: Mapping[str, tuple[str, MessageDef]] = {
+    "project.hooks_enabled": ("project_hooks_dormant", _PROJECT_HOOKS_DORMANT),
+    "project.skills_enabled": ("project_skills_dormant", _PROJECT_SKILLS_DORMANT),
+}
 
 _REASON_MESSAGES: Mapping[CoerceReason, MessageDef] = {
     CoerceReason.EXPECTED_BOOL: _REJECTED_BOOL,
@@ -236,4 +255,8 @@ def settings_warning_events(
                 display_message=display_message,
             )
         )
+    for source in loaded.dormant_project_sources:
+        code, message = _DORMANT_SOURCE_MESSAGES[source.key]
+        display_message = message.bind(path=str(source.path))
+        events.append(Warning(code=code, message=format_message(display_message), display_message=display_message))
     return events

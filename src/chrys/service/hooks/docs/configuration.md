@@ -120,10 +120,10 @@ that cwd rebuilds the hook manager; profile/model switches that keep the
 same cwd reuse the current manager.
 
 Trust model: a project hooks file ships with the repo and runs
-arbitrary subprocesses without an in-process approval prompt. The
-same trust model applies to global hooks, `<cwd>/.agents/skills/`,
-and `AGENTS.md` auto-load. Cloning a repo and running Chrys inside
-it is a trust decision.
+arbitrary subprocesses without tool approval. It loads only while the
+user's own `project.hooks_enabled` setting is on (default off; a
+project file cannot set it). Otherwise the file is never opened, and
+the settings load reports it as a `project_hooks_dormant` warning.
 
 ---
 

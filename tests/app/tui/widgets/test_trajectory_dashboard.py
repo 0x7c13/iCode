@@ -627,7 +627,7 @@ async def test_theme_and_locale_refresh_invalidate_both_dashboard_cache_levels(t
         pytest.param(DashboardTab.OVERVIEW, False, "会话信息", id="overview"),
         pytest.param(DashboardTab.TIMELINE, False, "第 1 轮", id="timeline"),
         pytest.param(DashboardTab.TIMELINE, True, "依赖图 · 第 1 轮", id="dependency-graph"),
-        pytest.param(DashboardTab.INSIGHTS, False, "技能", id="insights"),
+        pytest.param(DashboardTab.INSIGHTS, False, "MCP 服务器", id="insights"),
     ],
 )
 async def test_pages_draw_in_the_dashboard_locale_and_theme(

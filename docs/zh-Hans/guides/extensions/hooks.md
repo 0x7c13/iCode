@@ -51,9 +51,9 @@ iCode 通过 `CHRYS_HOOK_PAYLOAD_FILE` 环境变量提供本次事件的 JSON �
 
 ### 3. 加载并验证
 
-切换会话或重启 iCode，使磁盘上的配置生效。
+项目钩子默认不加载。在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全”-“项目信任”区域勾选“加载项目钩子”。如果已经勾选，切换会话或重启 iCode，使磁盘上的配置生效。
 
-在终端用户界面（Terminal User Interface，TUI）中输入 `/runtime`，打开“钩子”标签页，应能看到 `record-turn`。提交一条消息并等待当前轮结束后，检查工作目录中的 `hook-events.log`。文件应出现类似内容：
+在 TUI 中输入 `/runtime`，打开“钩子”标签页，应能看到 `record-turn`。提交一条消息并等待当前轮结束后，检查工作目录中的 `hook-events.log`。文件应出现类似内容：
 
 ```text
 turn=1 status=ok

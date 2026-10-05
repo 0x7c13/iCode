@@ -126,7 +126,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
         assert status_bar.query_one("#status-text", Static).render().plain == "正在思考"
         assert status_bar.query_one("#status-trail", Static).render().plain == "  (1分 1秒 · 1 次工具调用)"
         tool_info = status_bar.query_one("#status-tool-info", Static)
-        assert tool_info.render().plain == "2 个工具 · 1 项技能 · 2 个钩子 · 1 个文件"
+        assert tool_info.render().plain == "2 个工具 · 1 个 Skill · 2 个钩子 · 1 个文件"
         assert tool_info.tooltip is not None
         assert tool_info.tooltip.plain == "点击查看详情"
 

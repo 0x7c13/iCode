@@ -167,7 +167,11 @@ def _same_source_file(project: HooksFile | None, global_: HooksFile | None) -> b
     """Return True when project/global inputs came from the same hooks file."""
     if project is None or global_ is None or not project.source or not global_.source:
         return False
-    return Path(project.source).resolve() == Path(global_.source).resolve()
+    try:
+        # By identity: on a caseless disk two spellings of one file differ in case.
+        return Path(project.source).samefile(global_.source)
+    except OSError:
+        return Path(project.source).resolve() == Path(global_.source).resolve()
 
 
 def _merge_settings(project: HooksFile | None, global_: HooksFile | None) -> HookSettings:
