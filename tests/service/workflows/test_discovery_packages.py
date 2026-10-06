@@ -328,6 +328,61 @@ def test_a_folder_over_a_limit_is_refused(
     )
 
 
+def test_a_member_hashed_in_chunks_gets_the_whole_file_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _package(_project(tmp_path), "x", {"tool.bin": bytes(range(256)) * 3})
+    [whole] = _discover(tmp_path).sources
+    monkeypatch.setattr(discovery_module, "_HASH_CHUNK_BYTES", 5)
+
+    [chunked] = _discover(tmp_path).sources
+
+    assert chunked.source_digest == whole.source_digest
+    assert chunked.package is not None and chunked.package.total_bytes == len(b"# x entry\n") + 768
+
+
+def test_a_member_that_grows_after_the_size_check_is_read_in_chunks_only_past_the_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(discovery_module, "MAX_PACKAGE_BYTES", 40)
+    monkeypatch.setattr(discovery_module, "_HASH_CHUNK_BYTES", 4)
+    folder = _package(_project(tmp_path), "x", {"tool.bin": b"small"})
+    real_open = discovery_module.secure_open_owner_verified_binary
+    reads: list[int] = []
+
+    class Counted:
+        def __init__(self, path: Path) -> None:
+            self._handle = real_open(path)
+
+        def __enter__(self) -> Counted:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            self._handle.close()
+
+        def read(self, size: int) -> bytes:
+            chunk = self._handle.read(size)
+            reads.append(len(chunk))
+            return chunk
+
+    def grow_then_open(path: Path) -> object:
+        if Path(path).name != "tool.bin":
+            return real_open(path)
+        with open(path, "ab") as grown:
+            grown.write(b"y" * 1000)
+        return Counted(path)
+
+    monkeypatch.setattr(discovery_module, "secure_open_owner_verified_binary", grow_then_open)
+
+    with pytest.raises(WorkflowSourceError) as raised:
+        read_source(folder / "x.py", SOURCE_KIND_PROJECT, layout=LAYOUT_PACKAGE)
+
+    assert str(raised.value) == (
+        "the workflow folder is larger than 40 bytes in total"
+        " (hidden entries such as .venv and bytecode caches in __pycache__ don't count)"
+    )
+    # tool.bin sorts before the entry, so it is read with the whole budget: 41 bytes, never the other 964.
+    assert sum(reads) == 41 and max(reads) == 4
+
+
 def test_hidden_entries_and_bytecode_caches_are_outside_the_digest(tmp_path: Path) -> None:
     folder = _package(_project(tmp_path), "x", {"helpers.py": b"VALUE = 1\n"})
     [before] = _discover(tmp_path).sources

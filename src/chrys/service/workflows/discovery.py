@@ -58,12 +58,13 @@ RESERVED_GLOBAL_NAME: Final = "sdk"
 """The global directory keeps the worker SDK cache under this name, in any letter case."""
 
 MAX_PACKAGE_ENTRIES: Final = 1000
-MAX_PACKAGE_BYTES: Final = 16 * 1024 * 1024
+MAX_PACKAGE_BYTES: Final = 512 * 1024 * 1024
 MAX_PACKAGE_DEPTH: Final = 16
 PACKAGE_DIGEST_FORMAT: Final = "chrys-workflow-package-1"
 PYCACHE_DIR_NAME: Final = "__pycache__"
 _CACHED_BYTECODE_NAME: Final = re.compile(r"[^.]+\..+\.pyc(?:\.\d+)?")
 """How Python names a bytecode cache (and its temporary copy) in ``__pycache__``; no import can name one."""
+_HASH_CHUNK_BYTES: Final = 1024 * 1024
 
 SourceErrorReason = Literal[
     "link", "not_regular", "unsupported_file", "unreadable", "too_large", "package_too_large", "reserved"
@@ -424,11 +425,14 @@ def _read_package(entry: Path, entry_payload: bytes) -> WorkflowPackage:
     signature: list[tuple[str, int, int]] = []
     total = 0
     for relpath, path, info in _walk_package(entry.parent):
-        payload = entry_payload if relpath == entry.name else _read_member(path, relpath, MAX_PACKAGE_BYTES - total)
-        total += len(payload)
+        if relpath == entry.name:
+            digest, size = hashlib.sha256(entry_payload).hexdigest(), len(entry_payload)
+        else:
+            digest, size = _hash_member(path, relpath, MAX_PACKAGE_BYTES - total)
+        total += size
         if total > MAX_PACKAGE_BYTES:
             raise _package_too_large(entry.parent, f"is larger than {MAX_PACKAGE_BYTES} bytes in total")
-        files.append([relpath, hashlib.sha256(payload).hexdigest()])
+        files.append([relpath, digest])
         signature.append((relpath, info.st_mtime_ns, info.st_size))
     if not any(relpath == entry.name for relpath, _ in files):
         raise WorkflowSourceError("unreadable", str(entry), "the workflow folder changed while it was read")
@@ -441,12 +445,19 @@ def _read_package(entry: Path, entry_payload: bytes) -> WorkflowPackage:
     )
 
 
-def _read_member(path: Path, relpath: str, budget: int) -> bytes:
+def _hash_member(path: Path, relpath: str, budget: int) -> tuple[str, int]:
+    """*path*'s SHA-256 and size, read in chunks and only one byte past *budget*, so a big file is never held whole."""
+    digest = hashlib.sha256()
+    size = 0
+    limit = max(budget, 0) + 1
     try:
         with secure_open_owner_verified_binary(path) as handle:
-            return handle.read(max(budget, 0) + 1)
+            while size < limit and (chunk := handle.read(min(_HASH_CHUNK_BYTES, limit - size))):
+                digest.update(chunk)
+                size += len(chunk)
     except OSError as exc:
         raise WorkflowSourceError("unreadable", str(path), f"could not read {relpath}", detail=_detail(exc)) from exc
+    return digest.hexdigest(), size
 
 
 def _walk_package(directory: Path) -> Iterator[tuple[str, Path, os.stat_result]]:
