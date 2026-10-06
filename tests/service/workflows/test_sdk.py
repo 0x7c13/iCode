@@ -495,23 +495,20 @@ def test_switch_and_join_edges_remember_their_declaring_line() -> None:
 
 
 def test_declaration_sites_stay_out_of_the_manifest_and_of_equality() -> None:
-    def build() -> Workflow:
-        wf = WorkflowBuilder("same")
-        a = wf.python("a", body_fn)
-        b = wf.python("b", body_fn)
-        wf.start(a)
-        wf.edge(a, b)
-        wf.output(b)
-        return wf.build()
-
-    first = build()
-    elsewhere = {"build": build, "WorkflowBuilder": WorkflowBuilder, "body_fn": body_fn}
-    exec(compile("\n\n\nsecond = build()\n", __file__, "exec"), elsewhere)
-    second = elsewhere["second"]
-    assert canonical_json(first.manifest()) == canonical_json(second.manifest())
-    assert "site" not in canonical_json(first.manifest())
-    assert first.definition.nodes["a"] == second.definition.nodes["a"]
-    assert first.definition.edges == second.definition.edges
+    source = (
+        "wf = WorkflowBuilder('same')\na = wf.python('a', body_fn)\nb = wf.python('b', body_fn)\n"
+        "wf.start(a)\nwf.edge(a, b)\nwf.output(b)\nworkflow = wf.build()\n"
+    )
+    first, second = ({"WorkflowBuilder": WorkflowBuilder, "body_fn": body_fn} for _ in range(2))
+    exec(compile(source, __file__, "exec"), first)
+    exec(compile("\n\n\n" + source, __file__, "exec"), second)  # the same workflow, declared three lines lower
+    one, other = first["workflow"].definition, second["workflow"].definition
+    assert (one.nodes["a"].site, other.nodes["a"].site) == ((__file__, 2), (__file__, 5))
+    assert (one.edges["a->b"].site, other.edges["a->b"].site) == ((__file__, 5), (__file__, 8))
+    assert canonical_json(first["workflow"].manifest()) == canonical_json(second["workflow"].manifest())
+    assert "site" not in canonical_json(first["workflow"].manifest())
+    assert one.nodes == other.nodes
+    assert one.edges == other.edges
 
 
 def test_code_built_under_a_made_up_name_is_located_at_the_line_that_ran_it(monkeypatch: pytest.MonkeyPatch) -> None:

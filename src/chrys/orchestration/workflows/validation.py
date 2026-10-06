@@ -269,9 +269,15 @@ def _resolve(check: _Check, argument: str, workspace: Path, config_dir: Path) ->
         raise _StageFailed(
             _error("path_not_workflow", "resolve", "a workflow is a .py file or a folder", file=str(target))
         )
-    if stat.S_ISDIR(info.st_mode) and _is_workflow_dir(target, config_dir):
+    inner = _workflow_dir_of(target, config_dir) if stat.S_ISDIR(info.st_mode) else None
+    if inner == target:
         message = "this folder holds workflows; pass one of the workflow files or folders in it"
         raise _StageFailed(_error("path_not_workflow", "resolve", message, file=str(target)))
+    if inner is not None:
+        hint = f"pass one of the workflow files or folders in {inner}"
+        raise _StageFailed(
+            _error("path_not_workflow", "resolve", "this folder is not a workflow", file=str(target), hint=hint)
+        )
     folder = _enclosing_workflow_folder(target, config_dir) if stat.S_ISREG(info.st_mode) else None
     if folder is not None:
         message = f"{target.name} is a file of the workflow folder {folder.name}, not a workflow of its own"
@@ -285,7 +291,10 @@ def _resolve(check: _Check, argument: str, workspace: Path, config_dir: Path) ->
     kind = _kind_of(root, config_dir)
     candidate = recognize_candidate(root, entry, kind, reserves_sdk=kind == SOURCE_KIND_GLOBAL)
     if candidate is None:
-        raise _StageFailed(_unrecognized(root / entry.name, folder=stat.S_ISDIR(info.st_mode), kind=kind))
+        listed = _is_workflow_dir(root, config_dir)
+        raise _StageFailed(
+            _unrecognized(root / entry.name, folder=stat.S_ISDIR(info.st_mode), kind=kind, listed=listed)
+        )
     problem = candidate.problem
     if problem is not None:
         raise _StageFailed(_error(_problem_code(problem), "resolve", str(problem), file=problem.path))
@@ -325,6 +334,14 @@ def _is_workflow_dir(folder: Path, config_dir: Path) -> bool:
     if folder.name == WORKFLOWS_DIR_NAME and folder.parent.name == PROJECT_CONFIG_DIR_NAME:
         return True
     return is_global_workflows_dir(folder, config_dir) or _same(folder, BUILTIN_DIR)
+
+
+def _workflow_dir_of(folder: Path, config_dir: Path) -> Path | None:
+    """*folder* when discovery lists workflows in it, else the workflow directory it holds as a project or ``.chrys`` folder."""
+    for inner in (folder, folder / WORKFLOWS_DIR_NAME, folder / PROJECT_CONFIG_DIR_NAME / WORKFLOWS_DIR_NAME):
+        if _is_workflow_dir(inner, config_dir) and _is_folder(_lstat(inner)):
+            return inner
+    return None
 
 
 def _enclosing_workflow_folder(path: Path, config_dir: Path) -> Path | None:
@@ -369,7 +386,8 @@ def _not_found(argument: str, target: Path, workspace: Path, config_dir: Path) -
     return _error("path_not_found", "resolve", "no such file or folder", file=str(target), hint=hint)
 
 
-def _unrecognized(path: Path, *, folder: bool, kind: str) -> Diagnostic:
+def _unrecognized(path: Path, *, folder: bool, kind: str, listed: bool) -> Diagnostic:
+    """Why *path* is no workflow; *listed* says whether it sits in a directory discovery lists workflows in."""
     name = path.name
     if name.startswith((".", "_")):
         message = "names that start with '.' or '_' are never loaded as workflows"
@@ -389,7 +407,7 @@ def _unrecognized(path: Path, *, folder: bool, kind: str) -> Diagnostic:
     alike = [found for found in python if found.casefold() == wanted.casefold()]
     if alike:
         hint = f"found {alike[0]}; the entry must be named exactly {wanted}"
-    elif len(python) == 1:
+    elif len(python) == 1 and listed:  # elsewhere the one Python file may be a project's own module
         hint = f"rename {python[0]} to {wanted}"
     message = f"a workflow folder needs an entry file named {wanted}"
     return _error("entry_missing", "resolve", message, file=str(path), hint=hint)

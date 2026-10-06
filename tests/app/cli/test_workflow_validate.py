@@ -245,12 +245,17 @@ def test_paths_that_name_no_workflow_say_why(project: Path, validate: Validate) 
     _plant(project / "notes.txt", "")
     _plant(workflows / "review" / "review.py", CHAIN)
     _plant(workflows / "review" / "lib" / "steps.py", "")
+    _plant(project / "main.py", "")
+    _plant(project / "tools" / "main.py", "")
     cases = {
         "known": ("path_not_found", f"to check workflow 'known', pass its path: {workflows / 'known.py'}"),
         ".chrys/workflows/cased": ("entry_missing", "found Cased.py; the entry must be named exactly cased.py"),
         ".chrys/workflows/_private.py": ("name_ignored", None),
         "notes.txt": ("path_not_workflow", None),
         ".chrys/workflows/": ("path_not_workflow", None),
+        ".": ("path_not_workflow", f"pass one of the workflow files or folders in {workflows}"),
+        ".chrys": ("path_not_workflow", f"pass one of the workflow files or folders in {workflows}"),
+        "tools": ("entry_missing", None),  # its one Python file may be anything: no rename is suggested
         ".chrys/workflows/review/lib/steps.py": (
             "path_not_workflow",
             f"validate the folder: {workflows / 'review'}",

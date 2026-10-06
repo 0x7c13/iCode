@@ -858,7 +858,7 @@ FAIL code-review (package): 1 error
 | --- | --- | --- |
 | `path_not_found` | `resolve` | 路径不存在。若有工作流使用该 ID，提示中会给出其路径 |
 | `path_is_link` | `resolve` | 工作流或文件夹的入口文件是链接 |
-| `path_not_workflow` | `resolve` | 路径不指向单个工作流：不是 `.py` 文件或文件夹，是存放工作流的目录或工作流文件夹中的文件，文件夹的入口文件不是普通文件，或与所在文件夹列出的拼写不同 |
+| `path_not_workflow` | `resolve` | 路径不指向单个工作流：不是 `.py` 文件或文件夹，是存放工作流的目录（或包含它的项目文件夹、`.chrys` 文件夹）或工作流文件夹中的文件，文件夹的入口文件不是普通文件，或与所在文件夹列出的拼写不同 |
 | `name_ignored` | `resolve` | iCode 从不加载该名称，例如以 `.` 或 `_` 开头的名称 |
 | `name_reserved` | `resolve` | `sdk` 在全局工作流文件夹中是保留名称 |
 | `entry_missing` | `resolve` | 文件夹中没有与其同名的入口文件 |

@@ -858,7 +858,7 @@ Each item in `diagnostics` contains:
 | --- | --- | --- |
 | `path_not_found` | `resolve` | Nothing exists at the path. If a workflow has that ID, the hint gives its path |
 | `path_is_link` | `resolve` | The workflow, or a folder's entry file, is a link |
-| `path_not_workflow` | `resolve` | The path names no single workflow: it is not a `.py` file or a folder, it is a directory that holds workflows or a file inside a workflow folder, the folder's entry file is not a regular file, or it is spelled differently from its folder listing |
+| `path_not_workflow` | `resolve` | The path names no single workflow: it is not a `.py` file or a folder, it is a directory that holds workflows (or the project or `.chrys` folder around one) or a file inside a workflow folder, the folder's entry file is not a regular file, or it is spelled differently from its folder listing |
 | `name_ignored` | `resolve` | iCode never loads this name, for example one starting with `.` or `_` |
 | `name_reserved` | `resolve` | `sdk` is reserved in the global workflow directory |
 | `entry_missing` | `resolve` | The folder has no entry file with its exact name |
