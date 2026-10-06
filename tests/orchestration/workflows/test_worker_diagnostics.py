@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -95,6 +96,27 @@ async def test_a_failure_in_a_helper_is_placed_there_with_the_way_the_entry_reac
         assert (diagnostic.column, diagnostic.end_line, diagnostic.end_column) == (19, 2, 26)
     else:
         assert diagnostic.column is None
+
+
+async def test_the_traceback_keeps_only_the_workflow_s_own_frames_of_every_chained_exception(
+    launch: Launcher, interpreter: str, workspace: Path, tmp_path: Path
+) -> None:
+    helpers_text = (
+        "import json\n\ntry:\n    json.loads('{')\nexcept ValueError as exc:\n    raise RuntimeError('bad') from exc\n"
+    )
+    folder = _write(tmp_path / "wf", {"wf.py": BUILDER + "import helpers\n" + VALID_TAIL, "helpers.py": helpers_text})
+    client = await launch(interpreter=interpreter)
+    entry = folder / "wf.py"
+    with pytest.raises(WorkerRpcError) as failed:
+        await client.load(
+            entry.read_bytes(), filename=str(entry), workspace=workspace, package_dir=str(folder), diagnose=True
+        )
+    text = failed.value.traceback
+    helpers = str(folder / "helpers.py")
+    # The cause's frames (json's own dropped), then the raise reached through the import (the worker's dropped).
+    assert re.findall(r'File "([^"]+)", line (\d+)', text) == [(helpers, "4"), (str(entry), "2"), (helpers, "6")]
+    assert "direct cause" in text
+    assert text.endswith("RuntimeError: bad\n")
 
 
 async def test_every_broken_file_of_a_folder_is_reported_before_anything_runs(

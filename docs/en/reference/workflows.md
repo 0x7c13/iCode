@@ -852,7 +852,7 @@ Each item in `diagnostics` contains:
 | `source_line` | String or `null`: the text of `line` |
 | `notes` | Array of objects with `message`, `file`, and `line`: how the code was reached, innermost first |
 | `hint` | String or `null`: a suggested fix |
-| `traceback` | String or `null`: the Python traceback of a load failure |
+| `traceback` | String or `null`: the Python traceback of a load failure, with only the frames of your own files (not the standard library, installed packages or iCode) |
 
 | Code | Stage | Meaning |
 | --- | --- | --- |

@@ -814,6 +814,7 @@ class Host:
             if places is None:
                 self.send(_error(request_id, ERROR_LOAD_FAILED, message, data))
                 return None
+            data["traceback"] = _diagnostic(_user_traceback(exc, places), tail=True)
             data.update(_diagnostics_data([_failure_diagnostic(exc, places, self.sdk.WorkflowValidationError)]))
             self.send(_error(request_id, ERROR_LOAD_FAILED, message, data))
             return None
@@ -1516,6 +1517,23 @@ def _failure_diagnostic(exc: BaseException, places: _Places, validation_error: A
         return _placed_failure(exc, places, validation_error)
     except Exception:  # a diagnostic that can't be placed still reports the failure
         return _record("load_error", _describe(exc), None)
+
+
+def _user_traceback(exc: BaseException, places: _Places) -> str:
+    """*exc*'s traceback, chained exceptions included, with only the frames of the author's own code."""
+    try:
+        shown = traceback.TracebackException.from_exception(exc, limit=sys.maxsize)
+        pending = [shown]
+        while pending:
+            current = pending.pop()
+            current.stack = traceback.StackSummary.from_list(
+                [frame for frame in current.stack if places.is_user(frame.filename)]
+            )
+            pending.extend(chained for chained in (current.__cause__, current.__context__) if chained is not None)
+            pending.extend(getattr(current, "exceptions", None) or ())  # an exception group's members, Python 3.11+
+        return "".join(shown.format())
+    except Exception:  # the whole traceback still beats none
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
 def _placed_failure(exc: BaseException, places: _Places, validation_error: Any) -> Dict[str, Any]:

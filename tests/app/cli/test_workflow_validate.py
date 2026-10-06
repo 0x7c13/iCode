@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -208,7 +209,8 @@ def test_a_build_error_points_at_the_declaration_and_at_build(project: Path, val
     (diagnostic,) = report["diagnostics"]
     assert (code, diagnostic["code"], diagnostic["line"], diagnostic["node"]) == (1, "sdk_validation_error", 4, "lost")
     assert diagnostic["notes"] == [{"message": "build() was called at", "file": str(project / "wf.py"), "line": 7}]
-    assert diagnostic["traceback"].startswith("Traceback")
+    # Only the workflow's own frames: the SDK's and the worker's are left out.
+    assert re.findall(r'File "([^"]+)", line (\d+)', diagnostic["traceback"]) == [(str(project / "wf.py"), "7")]
 
 
 def test_a_file_without_a_workflow_says_how_to_bind_one(project: Path, validate: Validate) -> None:

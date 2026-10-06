@@ -852,7 +852,7 @@ FAIL code-review (package): 1 error
 | `source_line` | 字符串或 `null`：`line` 行的文本 |
 | `notes` | 对象数组，每项包含 `message`、`file`、`line`：代码是如何执行到此处的，由内向外 |
 | `hint` | 字符串或 `null`：修改建议 |
-| `traceback` | 字符串或 `null`：加载失败时的 Python traceback |
+| `traceback` | 字符串或 `null`：加载失败时的 Python traceback，只保留你自己文件中的帧（不含标准库、已安装的包和 iCode 自身） |
 
 | 代码 | 阶段 | 含义 |
 | --- | --- | --- |
