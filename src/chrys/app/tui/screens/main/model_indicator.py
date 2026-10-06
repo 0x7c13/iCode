@@ -38,6 +38,13 @@ _GENERIC_LOCKED_TOOLTIP = msg(
     "tui.model_indicator.tooltip.locked.generic",
     fallback="Model selection is locked.",
 )
+_AGENT_LOCKED_NOTICE = msg(
+    "tui.model_indicator.notice.locked.agent",
+    fallback=(
+        "{agent} is bound to the model {model}, so the model cannot be switched here. "
+        "To change it, press F2 and edit the agent's model on its Basic tab."
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +77,20 @@ def is_model_selection_locked(details: RuntimeModelDetails, *, runtime_confirmed
     if not runtime_confirmed:
         return False
     return details.selection_source not in _USER_OWNED_SOURCES
+
+
+def model_lock_notice(details: RuntimeModelDetails, agent_label: str) -> MessageRef:
+    """Explain a locked model tag, naming where the user can lift the lock.
+
+    Picks its reason by the same ``selection_source`` branches as the locked
+    tooltip in :func:`compute_model_indicator_state`.
+    """
+    source = details.selection_source
+    if source == "agent" and agent_label:
+        return _AGENT_LOCKED_NOTICE.bind(agent=agent_label, model=details.name)
+    if source == "override":
+        return _OVERRIDE_LOCKED_TOOLTIP.bind()
+    return _GENERIC_LOCKED_TOOLTIP.bind()
 
 
 def fmt_context_size(tokens: int) -> str:

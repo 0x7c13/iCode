@@ -119,7 +119,7 @@ After switching, the status bar shows the new model profile name. The profile cu
 
 The conversation continues with the new profile. Some model services return the model's reasoning in a form only that service can read back, such as Claude's thinking or OpenAI's encrypted reasoning. If the new profile sends requests to a different service address, iCode leaves that earlier reasoning out of its requests. Your messages, the model's replies and the results of tools iCode ran are still sent; results of tools the model service ran itself in the same step may be left out too. Switch back to a profile with the original address, and that reasoning is sent again. Reasoning saved by earlier iCode versions is still sent as before.
 
-If the model profile name in the status bar is not clickable, the current agent is bound to a specific model profile. In this case, entering `$` does not display the model profile list either. You must first [change the agent's model settings](./agents.md#set-the-model-an-agent-uses) before you can switch model profiles. You also cannot switch while the agent is running.
+If the model profile name in the status bar is grayed out, the current agent is bound to a specific model profile, and clicking it only shows a notice about the binding. In this case, entering `$` does not display the model profile list either. You must first [change the agent's model settings](./agents.md#set-the-model-an-agent-uses) before you can switch model profiles. You also cannot switch while the agent is running.
 
 ### Verify a model profile
 

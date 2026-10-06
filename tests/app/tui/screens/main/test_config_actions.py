@@ -507,6 +507,100 @@ def test_select_model_tag_ignores_unconfirmed_runtime_profile() -> None:
     assert picker._current_profile_id == ""
 
 
+class _BusyEngine:
+    def execution_busy(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "agent",
+            (
+                "Code [Agent] is bound to the model Bound [模型], so the model cannot be switched here. "
+                "To change it, press F2 and edit the agent's model on its Basic tab."
+            ),
+        ),
+        ("override", "This session is pinned to this model."),
+        ("inherited", "Model selection is locked."),
+    ],
+)
+def test_locked_model_tag_explains_its_lock_even_while_a_run_is_busy(source: str, expected: str) -> None:
+    state = MainScreenState()
+    state.runtime.profile = "Code [Agent]"
+    state.runtime.details_confirmed = True
+    state.runtime.details.model = RuntimeModelDetails(
+        profile_id="bound", name="Bound [模型]", selection_source=cast(Any, source)
+    )
+    view = _View()
+    controller = RuntimeConfigController(
+        state=state,
+        services=MainScreenServices(bus=EventBus(), engine_provider=cast(Any, _BusyEngine)),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.on_model_tag_clicked("locked")
+
+    assert view.pushed == []
+    assert len(view.notifications) == 1
+    message, title, severity, timeout = view.notifications[0]
+    assert Localizer("en").render(cast(Any, message)) == expected
+    assert title.definition.key == "tui.config.title.model_locked"
+    assert severity == "warning"
+    assert timeout == 6
+
+
+def test_agent_model_lock_notice_is_translated() -> None:
+    state = MainScreenState()
+    state.runtime.profile = "Code"
+    state.runtime.details_confirmed = True
+    state.runtime.details.model = RuntimeModelDetails(profile_id="bound", name="Bound", selection_source="agent")
+    view = _View()
+    controller = RuntimeConfigController(
+        state=state,
+        services=MainScreenServices(bus=EventBus()),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.on_model_tag_clicked("locked")
+
+    message = view.notifications[0][0]
+    expected = (
+        "智能体“Code”绑定了模型“Bound”，无法在此切换模型。"  # noqa: RUF001
+        "如需更改，请按 F2，在该智能体的“基本”标签页中修改模型配置。"  # noqa: RUF001
+    )
+    assert Localizer("zh-Hans").render(cast(Any, message)) == expected
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        ("profile", "Cannot switch agents while the agent is busy"),
+        ("model", "Cannot switch models while the agent is busy"),
+    ],
+)
+def test_busy_selector_click_names_the_selector_it_blocked(selector: str, expected: str) -> None:
+    view = _View()
+    controller = RuntimeConfigController(
+        state=MainScreenState(),
+        services=MainScreenServices(bus=EventBus()),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.on_selector_busy(cast(Any, selector))
+
+    assert view.pushed == []
+    assert len(view.notifications) == 1
+    message, title, severity, _timeout = view.notifications[0]
+    assert Localizer("en").render(cast(Any, message)) == expected
+    assert Localizer("en").render(cast(Any, title)) == "Busy"
+    assert severity == "warning"
+
+
 def test_view_adapter_open_runtime_details_pushes_runtime_details_dialog() -> None:
     pushed: list[object] = []
 

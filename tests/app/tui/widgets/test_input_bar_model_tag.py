@@ -13,7 +13,7 @@ from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState, comp
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.foundation.events.types import RuntimeModelDetails
 from chrys.foundation.i18n import Localizer
-from tests.support.tui_helpers import delay_resize_dispatch
+from tests.support.tui_helpers import click_when_settled, delay_resize_dispatch
 from tests.support.waiting import wait_for
 
 
@@ -22,6 +22,7 @@ class _TagApp(App[None]):
         super().__init__()
         self.profile_clicks = 0
         self.model_click_modes: list[str] = []
+        self.busy_selectors: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield StatusBar()
@@ -31,6 +32,9 @@ class _TagApp(App[None]):
 
     def on_status_bar_model_tag_clicked(self, event: StatusBar.ModelTagClicked) -> None:
         self.model_click_modes.append(event.mode)
+
+    def on_status_bar_selector_busy(self, event: StatusBar.SelectorBusy) -> None:
+        self.busy_selectors.append(event.selector)
 
 
 def _selectable_model_state(label: str = "Selectable Model") -> ModelIndicatorState:
@@ -143,7 +147,7 @@ async def test_normal_layout_prioritizes_flash_status_over_runtime_details() -> 
 
 
 @pytest.mark.asyncio
-async def test_agent_model_tag_is_literal_locked_and_not_clickable() -> None:
+async def test_agent_model_tag_is_literal_locked_and_reports_its_lock_even_while_busy() -> None:
     state = compute_model_indicator_state(
         RuntimeModelDetails(
             profile_id="bound",
@@ -170,10 +174,19 @@ async def test_agent_model_tag_is_literal_locked_and_not_clickable() -> None:
         assert tag.has_class("-locked")
         assert tag.styles.pointer == "default"
 
-        await pilot.click("#model-tag")
+        await click_when_settled(pilot, "#model-tag")
         await pilot.pause()
 
-        assert pilot.app.model_click_modes == []
+        assert pilot.app.model_click_modes == ["locked"]
+
+        # The lock outlasts the run, so it wins over the busy notice.
+        bar.agent_running = True
+        await pilot.pause()
+        await click_when_settled(pilot, "#model-tag")
+        await pilot.pause()
+
+        assert pilot.app.model_click_modes == ["locked", "locked"]
+        assert pilot.app.busy_selectors == []
 
 
 @pytest.mark.asyncio
@@ -188,9 +201,13 @@ async def test_profile_and_model_tags_share_all_transient_interaction_guards() -
         profile_tag = bar.query_one("#profile-tag", Static)
         model_tag = bar.query_one("#model-tag", Static)
 
-        async def click_both() -> None:
-            await pilot.click("#profile-tag")
-            await pilot.click("#model-tag")
+        async def click_both(*, shown: bool = True) -> None:
+            for selector in ("#profile-tag", "#model-tag"):
+                if shown:
+                    await click_when_settled(pilot, selector)
+                else:
+                    # Shell mode hides the selectors, so no settled click can land on them.
+                    await pilot.click(selector)
             await pilot.pause()
 
         assert profile_tag.styles.pointer == "pointer"
@@ -199,21 +216,32 @@ async def test_profile_and_model_tags_share_all_transient_interaction_guards() -
         assert pilot.app.profile_clicks == 1
         assert pilot.app.model_click_modes == ["select"]
 
-        for attribute in ("agent_running", "agent_loading", "shell_mode", "input_locked"):
-            setattr(bar, attribute, True)
+        guards = {
+            "agent_running": lambda value: setattr(bar, "agent_running", value),
+            "agent_loading": lambda value: setattr(bar, "agent_loading", value),
+            "input_locked": lambda value: setattr(bar, "input_locked", value),
+            "execution_busy": bar.set_execution_busy,
+            "shell_mode": lambda value: setattr(bar, "shell_mode", value),
+        }
+        for guard, set_guard in guards.items():
+            set_guard(True)
             await pilot.pause()
-            assert profile_tag.styles.pointer == "default", attribute
-            assert model_tag.styles.pointer == "default", attribute
-            assert not profile_tag.has_class("-locked"), attribute
-            assert not model_tag.has_class("-locked"), attribute
-            await click_both()
+            assert profile_tag.styles.pointer == "default", guard
+            assert model_tag.styles.pointer == "default", guard
+            assert not profile_tag.has_class("-locked"), guard
+            assert not model_tag.has_class("-locked"), guard
+            await click_both(shown=guard != "shell_mode")
             assert pilot.app.profile_clicks == 1
             assert pilot.app.model_click_modes == ["select"]
+            # A run explains the ignored click; shell mode hides the selectors instead.
+            expected_busy = [] if guard == "shell_mode" else ["profile", "model"]
+            assert pilot.app.busy_selectors == expected_busy, guard
+            pilot.app.busy_selectors.clear()
 
-            setattr(bar, attribute, False)
+            set_guard(False)
             await pilot.pause()
-            assert profile_tag.styles.pointer == "pointer", attribute
-            assert model_tag.styles.pointer == "pointer", attribute
+            assert profile_tag.styles.pointer == "pointer", guard
+            assert model_tag.styles.pointer == "pointer", guard
 
         assert profile_tag.render().plain == "Code [Agent]"
         assert model_tag.render().plain == "Selectable Model"

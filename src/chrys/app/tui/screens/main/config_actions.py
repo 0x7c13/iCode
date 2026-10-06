@@ -11,12 +11,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
+from chrys.app.tui.screens.main.model_indicator import model_lock_notice
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.foundation.events.types import SetApprovalMode
 from chrys.foundation.i18n import msg
 from chrys.service.approval.policy import ApprovalMode
 
 _BUSY_TITLE = msg("tui.config.title.busy", fallback="Busy")
+_MODEL_LOCKED_TITLE = msg("tui.config.title.model_locked", fallback="Model Locked")
 _MODEL_SETTINGS_TITLE = msg("tui.config.title.model_settings", fallback="Model Settings")
 _AGENT_TITLE = msg("tui.config.title.agent", fallback="Agent")
 _SETTINGS_TITLE = msg("tui.config.title.settings", fallback="Settings")
@@ -30,6 +32,14 @@ _AGENT_CONFIG_LOADING = msg(
     fallback="Cannot open config while agent is loading",
 )
 _AGENT_SWITCHED = msg("tui.config.agent.switched", fallback="Switched to {label}")
+_AGENT_SWITCH_BUSY = msg(
+    "tui.config.agent.switch_busy",
+    fallback="Cannot switch agents while the agent is busy",
+)
+_MODEL_SWITCH_BUSY = msg(
+    "tui.config.model.switch_busy",
+    fallback="Cannot switch models while the agent is busy",
+)
 _NO_MAIN_AGENTS = msg(
     "tui.config.agent.no_main_profiles",
     fallback="No main agent profiles available — add one to continue.",
@@ -131,8 +141,17 @@ class RuntimeConfigController:
 
         self._view.push_screen(AgentsScreen(self._services.agent_registry, self._state.runtime.profile), _on_result)
 
+    def on_selector_busy(self, selector: Literal["profile", "model"]) -> None:
+        """Tell the user why a status-bar selector ignored a click during a run."""
+        message = _AGENT_SWITCH_BUSY if selector == "profile" else _MODEL_SWITCH_BUSY
+        self._view.notify(message.bind(), title=_BUSY_TITLE.bind(), severity="warning")
+
     def on_model_tag_clicked(self, mode: Literal["configure", "select", "locked"]) -> None:
         """Route model-tag actions to configuration or profile selection."""
+        if mode == "locked":
+            # The lock outlasts any run, so it is explained even while one is busy.
+            self._explain_model_lock()
+            return
         if self._services.execution_busy():
             return
         match mode:
@@ -160,8 +179,14 @@ class RuntimeConfigController:
                     ModelsScreen(self._services.model_registry, current_profile_id),
                     _on_result,
                 )
-            case "locked":
-                return
+
+    def _explain_model_lock(self) -> None:
+        self._view.notify(
+            model_lock_notice(self._state.runtime.details.model, self._state.runtime.profile),
+            title=_MODEL_LOCKED_TITLE.bind(),
+            severity="warning",
+            timeout=6,
+        )
 
     async def on_model_picked(self, profile_id: str) -> None:
         """Persist a picked model profile and request a backend settings reload."""

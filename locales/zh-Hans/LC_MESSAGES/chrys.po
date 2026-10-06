@@ -4813,6 +4813,12 @@ msgstr "智能体加载时无法打开配置"
 msgid "tui.config.agent.no_main_profiles"
 msgstr "没有可用的主智能体配置——请添加一个配置后再继续。"
 
+#. English: Cannot switch agents while the agent is busy
+#. chrys-meta={"fingerprint":"c59ce3a84f2aa2243bc53bd12756072e79290fa0ee7eecad2bf463aa03369da9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.agent.switch_busy"
+msgstr "智能体运行时无法切换智能体"
+
 #. English: Switched to {label}
 #. chrys-meta={"fingerprint":"129c70389d91a69e3fd2c9a4d2b8fbc18c4a4992770bcfa47ffd93582e19d737","multiline":false,"placeholders":["label"]}
 #: src/chrys/app/tui/screens/main/config_actions.py
@@ -4824,6 +4830,12 @@ msgstr "已切换到 {label}"
 #: src/chrys/app/tui/screens/main/config_actions.py
 msgid "tui.config.model.loading"
 msgstr "智能体加载时无法打开模型配置"
+
+#. English: Cannot switch models while the agent is busy
+#. chrys-meta={"fingerprint":"2b46772c1db233b045e4a826e08690161223e6e692288dc66699d49552f45143","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.model.switch_busy"
+msgstr "智能体运行时无法切换模型"
 
 #. English: Model profile updated
 #. chrys-meta={"fingerprint":"0d96dde41eb59fc83767faee89c24ca79966a3ed77b253d42b0c0bc2503dabad","multiline":false,"placeholders":[]}
@@ -4842,6 +4854,12 @@ msgstr "智能体"
 #: src/chrys/app/tui/screens/main/config_actions.py
 msgid "tui.config.title.busy"
 msgstr "忙碌"
+
+#. English: Model Locked
+#. chrys-meta={"fingerprint":"9dcf3536dad1ba7aa26374c5b68650957b97fed093b244da6c5d8b88bb021b62","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/config_actions.py
+msgid "tui.config.title.model_locked"
+msgstr "模型已锁定"
 
 #. English: Model Settings
 #. chrys-meta={"fingerprint":"983a0ac7f334c4f861ffaa6490135949cea473c0efa45c46369d0c2a53396557","multiline":false,"placeholders":[]}
@@ -7902,6 +7920,14 @@ msgstr "模型未配置或未选择"
 #: src/chrys/app/tui/screens/main/model_indicator.py
 msgid "tui.model_indicator.label.select"
 msgstr "选择模型"
+
+#. English: {agent} is bound to the model {model}, so the model cannot be
+#. switched here. To change it, press F2 and edit the agent's model on its
+#. Basic tab.
+#. chrys-meta={"fingerprint":"7dc7e77cdd1c09bf4af4ecda0518a11c2936dd26b245310114b5394a48ca4a87","multiline":false,"placeholders":["agent","model"]}
+#: src/chrys/app/tui/screens/main/model_indicator.py
+msgid "tui.model_indicator.notice.locked.agent"
+msgstr "智能体“{agent}”绑定了模型“{model}”，无法在此切换模型。如需更改，请按 F2，在该智能体的“基本”标签页中修改模型配置。"
 
 #. English: Open model settings
 #. chrys-meta={"fingerprint":"248240667e5a67688457292177b5ca3e9967cb120c2fcec0237435946995a7c8","multiline":false,"placeholders":[]}
@@ -13264,11 +13290,23 @@ msgstr "正在加载工作流 · {name}"
 msgid "tui.workflow.loop_iteration"
 msgstr "迭代 {iteration}/{maximum}"
 
+#. English: Cannot switch app mode while the agent is busy
+#. chrys-meta={"fingerprint":"c787ea6a87253683ab2f0bb95c7df1bb4a92d636d8e2d02c7907b266cd6c6d3c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.mode.agent_busy"
+msgstr "智能体运行时无法切换应用模式"
+
 #. English:  APP MODE: {mode}
 #. chrys-meta={"fingerprint":"51e9ef4a8f8ecccde57e65e521a2569c2e31bf54f1ef37c03419f6c7b81adb91","multiline":false,"placeholders":["mode"]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.mode.badge"
 msgstr " 应用模式：{mode} "
+
+#. English: Busy
+#. chrys-meta={"fingerprint":"a9c58612686934ef18a443da044d7a0d81b9c35390dfc9ef9acc91d62a95c5fb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.mode.busy_title"
+msgstr "忙碌"
 
 #. English: Chat
 #. chrys-meta={"fingerprint":"6f3d1883841694bc43cd5e19295cc29be33ce21fe16df5c5ebc23e4a823d0b32","multiline":false,"placeholders":[]}
@@ -13293,6 +13331,12 @@ msgstr "应用模式"
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.mode.workflow"
 msgstr "工作流"
+
+#. English: Cannot switch app mode while a workflow is running
+#. chrys-meta={"fingerprint":"c6044fa7788fd1bb3d207771beb3675fb8e4450f813fc8abc01e4be8888fb597","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.mode.workflow_busy"
+msgstr "工作流运行时无法切换应用模式"
 
 #. English: Select and run a workflow
 #. chrys-meta={"fingerprint":"87249d10e5fbb2450e92cbda67c7a0fb6bcbee9e4adb9fde4b5d5eb01fc5565c","multiline":false,"placeholders":[]}
