@@ -38,7 +38,16 @@ class WorkflowRow:
 
     @property
     def workflow_id(self) -> str:
-        return Path(self.source.path).stem if isinstance(self.source, SkippedSource) else self.source.workflow_id
+        if isinstance(self.source, SkippedSource):
+            return self.source.workflow_id or Path(self.source.path).stem
+        return self.source.workflow_id
+
+    @property
+    def package_folder(self) -> str | None:
+        """The folder of a folder workflow, listed or skipped; ``None`` for a single-file workflow."""
+        if isinstance(self.source, SkippedSource):
+            return self.source.path if self.source.workflow_id == Path(self.source.path).name else None
+        return None if self.source.package is None else self.source.package.directory
 
 
 class WorkflowList(MenuOptionList):
@@ -113,11 +122,11 @@ class WorkflowSelection(Vertical):
             source = text.render(text.SOURCES[row.source.source_kind].bind(), self.locale_controller)
             shadowed = " · " + text.render(text.SHADOWED.bind(), self.locale_controller) if row.shadowed else ""
             current = row.source == self.current_source
-            label = row.title or row.workflow_id
-            detail = f"{row.workflow_id} · {source}{shadowed}"
+            label = text.shown(row.title or row.workflow_id)
+            detail = f"{text.shown(row.workflow_id)} · {source}{shadowed}"
             if isinstance(row.source, SkippedSource):
-                label = f"⚠ {row.workflow_id} · {source}{shadowed}"
-                detail = row.source.reason
+                label = f"⚠ {text.shown(row.workflow_id)} · {source}{shadowed}"
+                detail = text.shown(row.source.reason)
             options.append(MenuOption(label, detail, current=current, dim=row.shadowed))
         picker.set_items(options)
         if selected is not None:
@@ -126,7 +135,7 @@ class WorkflowSelection(Vertical):
             )
         picker.highlighted = min(highlighted, len(rows) - 1) if rows else None
         self._warnings_widget.display = bool(warnings)
-        self._warnings_widget.update(Text(warnings))
+        self._warnings_widget.update(Text(text.shown(warnings, block=True)))
 
     def selected_row(self) -> WorkflowRow | None:
         index = self.list.highlighted

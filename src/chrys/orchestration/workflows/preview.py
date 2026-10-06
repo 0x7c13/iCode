@@ -51,6 +51,7 @@ REJECT_SPEC_CHANGED: Final = "spec_changed"
 REJECT_NOT_CONFIRMED: Final = "not_confirmed"
 
 SDK_ARTIFACT_DIR_NAME: Final = "sdk"
+BYTECODE_CACHE_DIR_NAME: Final = ".pycache"
 
 
 class WorkflowPreviewError(Exception):
@@ -146,7 +147,7 @@ def ledger_entry_for(
         canonical_path=source.canonical_path,
         source_kind=source.source_kind,
         workflow_id=source.workflow_id,
-        entry_digest=load.entry_digest,
+        entry_digest=source.source_digest,
         manifest_digest=load.manifest_digest,
         schema_version=load.manifest["schema_version"],
         spec_digest=digest,
@@ -155,8 +156,13 @@ def ledger_entry_for(
 
 
 def sdk_artifact_dir(config_dir: Path) -> Path:
-    """Where the injected SDK lives; discovery only scans top-level files, so the directory never collides."""
+    """Where the injected SDK lives; discovery reserves the name ``sdk`` in the global directory, so it never collides."""
     return config_dir / WORKFLOWS_DIR_NAME / SDK_ARTIFACT_DIR_NAME
+
+
+def worker_bytecode_cache_dir(config_dir: Path) -> Path:
+    """The private bytecode cache of every workflow worker; discovery ignores hidden names, so it never collides."""
+    return config_dir / WORKFLOWS_DIR_NAME / BYTECODE_CACHE_DIR_NAME
 
 
 async def materialize_runtime_sdk(config_dir: Path) -> SdkArtifact:
@@ -179,20 +185,29 @@ async def load_workflow(
     environment: PreparedEnvironment,
     sdk: SdkArtifact,
     workspace: Path,
+    bytecode_cache: Path,
     ask_handler: AskHandler | None = None,
     emit_handler: EmitHandler | None = None,
 ) -> LoadedWorkflow:
     """Start a fresh worker and execute the file in it; on any failure the worker is closed before raising."""
     try:
         client = await WorkflowWorkerClient.launch(
-            environment=environment, sdk=sdk, workspace=workspace, ask_handler=ask_handler, emit_handler=emit_handler
+            environment=environment,
+            sdk=sdk,
+            workspace=workspace,
+            bytecode_cache=bytecode_cache,
+            ask_handler=ask_handler,
+            emit_handler=emit_handler,
         )
     except WorkerStartError as exc:
         raise WorkflowPreviewError(PREVIEW_WORKER_START_FAILED, str(exc)) from exc
+    package_dir = source.package.directory if source.package is not None else None
     try:
-        load = await client.load(source.source, filename=source.canonical_path, workspace=workspace)
+        load = await client.load(
+            source.source, filename=source.canonical_path, workspace=workspace, package_dir=package_dir
+        )
         manifest = load.manifest
-        digest = spec_digest(load.entry_digest, load.manifest_digest, manifest["schema_version"])
+        digest = spec_digest(source.source_digest, load.manifest_digest, manifest["schema_version"])
     except WorkerRpcError as exc:
         await _close_worker(client)
         raise WorkflowPreviewError(
@@ -215,13 +230,16 @@ async def preview_workflow(
     *,
     sdk: SdkArtifact,
     workspace: Path,
+    bytecode_cache: Path,
     on_environment_ready: Callable[[PreparedEnvironment], Awaitable[None]] | None = None,
 ) -> WorkflowPreview:
     """Prepare the environment and load the file on a worker that is closed before returning."""
     environment = await prepare_workflow_environment(source, sdk=sdk)
     if on_environment_ready is not None:
         await on_environment_ready(environment)
-    loaded = await load_workflow(source, environment=environment, sdk=sdk, workspace=workspace)
+    loaded = await load_workflow(
+        source, environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache
+    )
     await _close_worker(loaded.client)
     return WorkflowPreview(
         source=source,

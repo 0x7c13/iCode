@@ -11,14 +11,16 @@ active_source before deleting a workflow that might be running.
 from __future__ import annotations
 
 import asyncio
+import os
 import stat
-from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from chrys.foundation.events.types import WorkflowPreviewProgress
 from chrys.foundation.models.workflow_session import WorkflowIdentity
+from chrys.foundation.platform.files import can_unlink_owner_verified, secure_unlink_owner_verified
 from chrys.orchestration.workflows.preview import (
     REJECT_NOT_CONFIRMED,
     REJECT_SPEC_CHANGED,
@@ -28,18 +30,28 @@ from chrys.orchestration.workflows.preview import (
     WorkflowTrustDeclined,
     materialize_runtime_sdk,
     preview_workflow,
+    worker_bytecode_cache_dir,
 )
 from chrys.service.workflows import discovery as discovery_module
 from chrys.service.workflows.discovery import (
+    LAYOUT_PACKAGE,
+    PRECEDENCE,
+    RESERVED_GLOBAL_NAME,
     SOURCE_KIND_BUILTIN,
+    SOURCE_KIND_GLOBAL,
     SOURCE_KIND_PROJECT,
     Discovery,
     WorkflowSource,
     discover_workflows,
     global_workflows_dir,
+    is_global_workflows_dir,
+    is_link_stat,
+    package_signature,
+    precedence,
     project_workflows_dir,
     read_builtin_manifest,
-    read_source,
+    read_entry_bytes,
+    workflow_entry_path,
 )
 from chrys.service.workflows.ledger import ConfirmationLedger, ledger_path
 
@@ -48,8 +60,21 @@ if TYPE_CHECKING:
     from chrys.service.workflows.environment import PreparedEnvironment
 
 
+_DELETE_SCOPE = "Only workflows directly in a global or project workflow directory can be deleted."
+
+type _PathState = tuple[int, ...] | None
+
+
 class WorkflowNotFoundError(KeyError):
     """No discovered workflow has the requested id."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Observed:
+    """A preview this catalog made, with the state of every path that could shadow it when it was discovered."""
+
+    preview: WorkflowPreview
+    shadowing: tuple[_PathState, ...]
 
 
 class WorkflowCatalog:
@@ -59,7 +84,7 @@ class WorkflowCatalog:
         self.config_dir = config_dir
         self.project_cwd = project_cwd
         self._bus = bus
-        self._previews: dict[str, WorkflowPreview] = {}
+        self._previews: dict[str, _Observed] = {}
 
     def discover(self) -> Discovery:
         return discover_workflows(config_dir=self.config_dir, project_cwd=self.project_cwd)
@@ -73,9 +98,9 @@ class WorkflowCatalog:
             manifest = read_builtin_manifest(source.workflow_id)
             title = manifest.get("title") if manifest is not None else None
             return title if isinstance(title, str) else None
-        preview = self._previews.get(source.canonical_path)
-        if preview is not None and preview.source.entry_sha256 == source.entry_sha256:
-            return preview.title
+        observed = self._previews.get(source.canonical_path)
+        if observed is not None and observed.preview.source.source_digest == source.source_digest:
+            return observed.preview.title
         entry = (ledger if ledger is not None else self.ledger()).recorded(source.canonical_path, source.source_kind)
         return entry.title if entry is not None else None
 
@@ -97,7 +122,7 @@ class WorkflowCatalog:
         the caller; their threads may finish later. Cancellation drains any worker.
         """
         async with asyncio.timeout(timeout) as deadline:
-            source = (await asyncio.to_thread(self.discover)).find(workflow_id)
+            source, shadowing = await asyncio.to_thread(self._discover_one, workflow_id)
             if source is None:
                 raise WorkflowNotFoundError(f"Workflow not found: {workflow_id}")
             if expected_identity is not None and expected_identity != source.identity:
@@ -133,7 +158,7 @@ class WorkflowCatalog:
             if not approved:
                 ledger = await asyncio.to_thread(self.ledger)
                 recorded = ledger.recorded(source.canonical_path, source.source_kind)
-                if recorded is None or recorded.entry_digest != source.entry_sha256:
+                if recorded is None or recorded.entry_digest != source.source_digest:
                     await authorize_source()
 
             async def report(
@@ -167,61 +192,141 @@ class WorkflowCatalog:
                 await report("graph")
 
             preview = await preview_workflow(
-                source, sdk=sdk, workspace=self.project_cwd, on_environment_ready=environment_ready
+                source,
+                sdk=sdk,
+                workspace=self.project_cwd,
+                bytecode_cache=worker_bytecode_cache_dir(self.config_dir),
+                on_environment_ready=environment_ready,
             )
             await report("ready", title=preview.title, node_count=len(preview.manifest["nodes"]))
-        self._previews[source.canonical_path] = preview
+        self._previews[source.canonical_path] = _Observed(preview, shadowing)
         return preview
 
     def confirm(self, preview: WorkflowPreview) -> None:
         self.ledger().confirm(preview.ledger_entry())
 
     def candidate_paths(self, source: WorkflowSource) -> tuple[Path, ...]:
-        """The selected entry followed by every source that could shadow it."""
-        paths = [Path(source.canonical_path)]
-        if source.source_kind == SOURCE_KIND_BUILTIN:
-            paths.append(global_workflows_dir(self.config_dir) / f"{source.workflow_id}.py")
-        if source.source_kind != SOURCE_KIND_PROJECT:
-            paths.append(project_workflows_dir(self.project_cwd) / f"{source.workflow_id}.py")
-        return tuple(paths)
+        """The selected entry (and its folder), followed by every path whose change could shadow it."""
+        entry = Path(source.canonical_path)
+        own = (entry, entry.parent) if source.package is not None else (entry,)
+        return (*own, *self._shadowing_paths(source))
 
     def is_current(self, preview: WorkflowPreview) -> bool:
-        """Check the entry bytes and precedence; a replacement or newly shadowed preview is stale."""
+        """Whether a run would still load what *preview* shows.
+
+        Reads only the entry: a folder's other files are compared by their
+        metadata and the paths that could shadow the preview by their ``lstat``
+        state when it was discovered, so a candidate that was skipped then is
+        not read again on every check. Admission rediscovers and compares the
+        confirmed digest, so a change this misses can't run unconfirmed.
+        """
         source = preview.source
         try:
-            if read_source(Path(source.canonical_path), source.source_kind) != source:
+            if read_entry_bytes(Path(source.canonical_path), source.source_kind) != source.source:
+                return False
+            package = source.package
+            if package is not None and package_signature(Path(package.directory)) != package.signature:
                 return False
         except OSError:
             return False
-        for path in self.candidate_paths(source)[1:]:
-            try:
-                read_source(path, SOURCE_KIND_PROJECT)
-            except OSError:
-                continue
-            return False
-        return True
+        shadowing = _path_states(self._shadowing_paths(source))
+        observed = self._previews.get(source.canonical_path)
+        if observed is None or observed.preview is not preview:
+            return all(state is None for state in shadowing)
+        return shadowing == observed.shadowing
+
+    def check_delete(self, canonical_path: str) -> None:
+        """Raise the ``ValueError`` or ``OSError`` :meth:`delete` would raise for *canonical_path*, deleting nothing."""
+        self._deletion(canonical_path)
 
     def delete(self, canonical_path: str) -> None:
-        """Unlink a direct user workflow file (including a symlink itself), then forget its confirmation."""
+        """Delete a user workflow, then forget its confirmation; run history stays.
+
+        A file workflow is unlinked (a symlink itself, never its target). A
+        folder workflow loses only its entry file, so the folder stops being a
+        workflow while everything else in it (a ``.git``, a ``.venv``, data)
+        stays; *canonical_path* may name the entry or the folder.
+        """
+        path, folder_entry = self._deletion(canonical_path)
+        if not folder_entry:
+            path.unlink()
+        elif not secure_unlink_owner_verified(path):
+            raise ValueError(f"{path} could not be deleted safely; remove it yourself.")
+        self.ledger().remove(str(path))
+        self._previews.pop(str(path), None)
+
+    def _deletion(self, canonical_path: str) -> tuple[Path, bool]:
+        """The file :meth:`delete` removes and whether it is a folder's entry; raises when it would refuse."""
         path = Path(canonical_path)
-        canonical = path.parent.resolve() / path.name
-        directories = {
+        roots = {
             global_workflows_dir(self.config_dir).resolve(),
             project_workflows_dir(self.project_cwd).resolve(),
         }
-        if (
-            not path.is_absolute()
-            or path != canonical
-            or canonical.parent not in directories
-            or canonical.is_relative_to(discovery_module.BUILTIN_DIR.resolve())
-            or canonical.suffix != ".py"
-            or canonical.name.startswith((".", "_"))
-            or not canonical.stem
-        ):
-            raise ValueError("Only files directly in a global or project workflow directory can be deleted.")
-        mode = canonical.lstat().st_mode
-        if not stat.S_ISREG(mode) and not stat.S_ISLNK(mode):
-            raise ValueError("Only a regular workflow file or symlink can be deleted.")
-        canonical.unlink()
-        self.ledger().remove(str(canonical))
-        self._previews.pop(str(canonical), None)
+        if not path.is_absolute() or path.is_relative_to(discovery_module.BUILTIN_DIR.resolve()):
+            raise ValueError(_DELETE_SCOPE)
+        if path.parent in roots and not path.name.startswith((".", "_")):
+            # A folder argument stands for its entry, found by its exact listed name as discovery finds it.
+            info = path.lstat()
+            if is_link_stat(info) and path.suffix != ".py":
+                raise ValueError(f"{path} is a link; remove the link yourself.")
+            if stat.S_ISDIR(info.st_mode) and not is_link_stat(info) and f"{path.name}.py" in os.listdir(path):
+                path = path / f"{path.name}.py"
+        folder = path.parent
+        if folder.parent in roots and path.name == f"{folder.name}.py" and not folder.name.startswith((".", "_")):
+            if is_link_stat(folder.lstat()):
+                raise ValueError(f"{folder} is a link; remove the link yourself.")
+            info = path.lstat()
+            if is_link_stat(info):
+                raise ValueError(f"{path} is a link; remove the link yourself.")
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"{path} is not a regular file; remove it yourself.")
+            if not can_unlink_owner_verified(path):
+                # The deletion's own gates; what they leave in practice is a file another user owns.
+                raise ValueError(f"{path} could not be verified as yours to delete; remove it yourself.")
+            return path, True
+        if folder in roots and path.suffix == ".py" and path.stem and not path.name.startswith((".", "_")):
+            mode = path.lstat().st_mode
+            if not stat.S_ISREG(mode) and not stat.S_ISLNK(mode):
+                raise ValueError("Only a regular workflow file or symlink can be deleted.")
+            return path, False
+        raise ValueError(_DELETE_SCOPE)
+
+    def _discover_one(self, workflow_id: str) -> tuple[WorkflowSource | None, tuple[_PathState, ...]]:
+        source = self.discover().find(workflow_id)
+        return source, (() if source is None else _path_states(self._shadowing_paths(source)))
+
+    def _shadowing_paths(self, source: WorkflowSource) -> tuple[Path, ...]:
+        """Every place above *source* in ``PRECEDENCE`` where the same id could appear (a folder and its entry)."""
+        roots = {
+            SOURCE_KIND_GLOBAL: global_workflows_dir(self.config_dir),
+            SOURCE_KIND_PROJECT: project_workflows_dir(self.project_cwd),
+        }
+        paths: list[Path] = []
+        for kind, layout in PRECEDENCE[: precedence(source.source_kind, source.layout)]:
+            entry = workflow_entry_path(roots[kind], source.workflow_id, layout)
+            if layout != LAYOUT_PACKAGE:
+                paths.append(entry)
+            elif not self._is_sdk_folder(entry.parent):
+                paths.extend((entry.parent, entry))
+        return tuple(paths)
+
+    def _is_sdk_folder(self, folder: Path) -> bool:
+        """Whether *folder* is where previews write the SDK, which discovery never takes for a workflow."""
+        return folder.name.casefold() == RESERVED_GLOBAL_NAME and is_global_workflows_dir(
+            folder.parent, self.config_dir
+        )
+
+
+def _path_states(paths: Iterable[Path]) -> tuple[_PathState, ...]:
+    """What ``lstat`` says about each path, without following a final link; ``None`` for a missing path."""
+    states: list[_PathState] = []
+    for path in paths:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError, NotADirectoryError:
+            states.append(None)
+        except OSError as exc:
+            states.append((-1, exc.errno or 0))
+        else:
+            states.append((info.st_mode, info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size))
+    return tuple(states)

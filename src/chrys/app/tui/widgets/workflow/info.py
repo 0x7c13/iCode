@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.foundation.events.types import WorkflowRunStarted
     from chrys.orchestration.workflows.preview import WorkflowInspection, WorkflowPreview
+    from chrys.service.workflows.discovery import WorkflowSource
 
 INFO_TAB = msg("tui.workflow.confirm.info_tab", fallback="Info")
 _ENVIRONMENT = msg("tui.workflow.confirm.environment", fallback="Execution Environment")
@@ -55,10 +56,17 @@ _FINGERPRINT_HINT = msg(
 )
 _ENTRY_DIGEST = msg("tui.workflow.confirm.entry_digest", fallback="Source SHA-256")
 _SPEC_DIGEST = msg("tui.workflow.confirm.spec_digest", fallback="Workflow SHA-256")
+_PACKAGE_FILES = msg("tui.workflow.info.package_files", fallback="Files")
 _EXECUTION_CONSENT = msg(
     "tui.workflow.confirm.execution_consent",
     fallback="Trust allows this file and its selected interpreter to run with your permissions, including during preview. "
     "Review Source before continuing. Cancel does not load the workflow.",
+)
+_PACKAGE_EXECUTION_CONSENT = msg(
+    "tui.workflow.confirm.package_execution_consent",
+    fallback="Trust allows this workflow's folder and its selected interpreter to run with your permissions, "
+    "including during preview. Source shows only the entry file: review the folder's other files before continuing. "
+    "Cancel does not load the workflow.",
 )
 _INSPECTION_HINT = msg(
     "tui.workflow.confirm.inspection_hint",
@@ -80,10 +88,12 @@ class WorkflowInfoData:
     python_version: str = ""
     environment_mode: str = ""
     interpreter: str = ""
-    entry_digest: str = ""
+    source_digest: str = ""
     spec_digest: str = ""
     requires_trust: bool = False
     run_id: str = ""
+    package_files: int | None = None
+    """How many files a workflow folder's confirmation covers; ``None`` for a single file."""
 
     @classmethod
     def from_inspection(cls, inspection: WorkflowInspection) -> WorkflowInfoData:
@@ -97,8 +107,9 @@ class WorkflowInfoData:
                 prepared.mode if prepared else "default" if isinstance(inspection.environment, DefaultPlan) else "byo"
             ),
             interpreter=prepared.executable if prepared else inspection.environment.interpreter,
-            entry_digest=inspection.source.entry_sha256,
+            source_digest=inspection.source.source_digest,
             requires_trust=True,
+            package_files=_package_files(inspection.source),
         )
 
     @classmethod
@@ -112,8 +123,9 @@ class WorkflowInfoData:
             python_version=preview.environment.python_version,
             environment_mode=preview.environment.mode,
             interpreter=preview.environment.executable,
-            entry_digest=preview.load.entry_digest,
+            source_digest=preview.source.source_digest,
             spec_digest=preview.spec_digest,
+            package_files=_package_files(preview.source),
         )
 
     @classmethod
@@ -198,7 +210,7 @@ class WorkflowInfo(VerticalGroup):
     def _verification_toggled(self, event: Collapsible.Toggled) -> None:
         self._verification_collapsed = event.collapsible.collapsed
 
-    def _fields(self, fields: Sequence[tuple[MessageDef, str]]) -> Grid:
+    def _fields(self, fields: Sequence[tuple[MessageDef, str]], *, widget_id: str | None = None) -> Grid:
         cells = []
         for label, value in fields:
             cells.extend(
@@ -207,7 +219,7 @@ class WorkflowInfo(VerticalGroup):
                     Static(Text(value), classes="workflow-info-field-value"),
                 )
             )
-        return Grid(*cells, classes="workflow-info-fields")
+        return Grid(*cells, classes="workflow-info-fields", id=widget_id)
 
     def _node_configuration(self, node: dict[str, Any], resolved: dict[str, Any] | None) -> str:
         if node["kind"] == "loop":
@@ -236,15 +248,18 @@ class WorkflowInfo(VerticalGroup):
         if data is None:
             return
         with Horizontal(id="workflow-info-identity"):
-            yield Static(Text(data.title), id="workflow-info-title")
+            yield Static(Text(text.shown(data.title)), id="workflow-info-title")
             source = text.SOURCES.get(data.source_kind)
             yield Static(
                 Text(self._label(source) if source is not None else data.source_kind), id="workflow-info-origin"
             )
-        description = self._label(_EXECUTION_CONSENT) if data.requires_trust else data.manifest.get("description")
+        consent = _EXECUTION_CONSENT if data.package_files is None else _PACKAGE_EXECUTION_CONSENT
+        description = self._label(consent) if data.requires_trust else data.manifest.get("description")
         if description:
             yield Static(Text(description), id="workflow-info-description")
-        yield Static(Text(data.canonical_path), id="workflow-info-path")
+        yield Static(Text(text.shown(data.canonical_path)), id="workflow-info-path")
+        if data.package_files is not None:
+            yield self._fields([(_PACKAGE_FILES, str(data.package_files))], widget_id="workflow-info-package")
         warnings = manifest_warnings(data.manifest)
         if warnings:
             yield Static(Text(self._label(_WARNINGS)), classes="workflow-info-heading")
@@ -277,8 +292,8 @@ class WorkflowInfo(VerticalGroup):
             )
             yield Static(self._node_table(data), id="workflow-info-nodes")
         fingerprints = []
-        if data.entry_digest:
-            fingerprints.append((_ENTRY_DIGEST, data.entry_digest))
+        if data.source_digest:
+            fingerprints.append((_ENTRY_DIGEST, data.source_digest))
         if data.spec_digest:
             fingerprints.append((_SPEC_DIGEST, data.spec_digest))
         if fingerprints:
@@ -289,3 +304,7 @@ class WorkflowInfo(VerticalGroup):
             ):
                 yield Static(Text(self._label(_FINGERPRINT_HINT)), id="workflow-info-fingerprint-hint")
                 yield self._fields(fingerprints)
+
+
+def _package_files(source: WorkflowSource) -> int | None:
+    return source.package.file_count if source.package is not None else None

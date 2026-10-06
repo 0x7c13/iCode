@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
@@ -148,6 +148,21 @@ def write_workflow(project: Path, workflow_id: str, source: bytes) -> Path:
     path = project_workflows_dir(project) / f"{workflow_id}.py"
     atomic_write_owner_only_bytes(path, source)
     return path
+
+
+def write_workflow_package(
+    project: Path, workflow_id: str, source: bytes, files: Mapping[str, bytes] | None = None
+) -> Path:
+    """Write (or rewrite) a project workflow folder ``<id>/<id>.py`` plus *files* (relative paths); returns the entry."""
+    folder = project_workflows_dir(project) / workflow_id
+    for relative, content in (files or {}).items():
+        member = folder / relative
+        member.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_owner_only_bytes(member, content)
+    folder.mkdir(exist_ok=True)
+    entry = folder / f"{workflow_id}.py"
+    atomic_write_owner_only_bytes(entry, source)
+    return entry
 
 
 async def confirm(host: ChrysSessionHost, workflow_id: str) -> WorkflowPreview:

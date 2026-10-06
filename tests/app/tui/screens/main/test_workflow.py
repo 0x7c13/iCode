@@ -352,15 +352,15 @@ async def test_shadowed_sources_warnings_and_preview_errors(tmp_path: Path, monk
         global_dir / "demo-workflow.py", python_workflow("def fn(value):\n    return value\n", "fn")
     )
     from chrys.service.workflows import discovery
-    from chrys.service.workflows.discovery import WorkflowSource
+    from chrys.service.workflows.discovery import SourceLayout, WorkflowSource
 
     atomic_write_owner_only_bytes(global_dir / "unreadable.py", b"unreadable")
     real_read = discovery.read_source
 
-    def read_source(path: Path, source_kind: str) -> WorkflowSource:
+    def read_source(path: Path, source_kind: str, *, layout: SourceLayout) -> WorkflowSource:
         if path.name == "unreadable.py":
             raise PermissionError("unreadable test file")
-        return real_read(path, source_kind)
+        return real_read(path, source_kind, layout=layout)
 
     monkeypatch.setattr(discovery, "read_source", create_autospec(real_read, side_effect=read_source))
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())

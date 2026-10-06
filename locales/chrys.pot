@@ -12899,6 +12899,15 @@ msgstr ""
 msgid "tui.workflow.confirm.nodes"
 msgstr ""
 
+#. English: Trust allows this workflow's folder and its selected interpreter to
+#. run with your permissions, including during preview. Source shows only the
+#. entry file: review the folder's other files before continuing. Cancel does
+#. not load the workflow.
+#. chrys-meta={"fingerprint":"f9140954ea5349724480207689637823659be41d24735d4b49626709e4978283","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/info.py
+msgid "tui.workflow.confirm.package_execution_consent"
+msgstr ""
+
 #. English: Python
 #. chrys-meta={"fingerprint":"309e0a7b5ad584613f1265e78006269869cd8ee1b281f690620f875ff72f1dc1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/info.py
@@ -12951,6 +12960,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"15f3c0c323f1ce13246d769df6634cb5fd053bb08fd5f94eb7a1e35eae62b7c8","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
 msgid "tui.workflow.delete_global"
+msgstr ""
+
+#. English: Only {entry} is deleted. The other files in {folder} are kept.
+#. chrys-meta={"fingerprint":"ff9187c2cea3d253c4e76976dd04ca9daf7dfe2973ea16c9f94e27a8084a7ad5","multiline":false,"placeholders":["entry","folder"]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.delete_package_note"
 msgstr ""
 
 #. English: Project files may be recoverable in Git. Run history stays.
@@ -13006,6 +13021,12 @@ msgid "tui.workflow.elapsed.seconds"
 msgid_plural "tui.workflow.elapsed.seconds#plural"
 msgstr[0] ""
 msgstr[1] ""
+
+#. English: Files
+#. chrys-meta={"fingerprint":"4b7adbbf83c89f58eee633676f53c80b5817f1051bde68a510ee8db1553136bc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/info.py
+msgid "tui.workflow.info.package_files"
+msgstr ""
 
 #. English: Initial text passed to this workflow.
 #. chrys-meta={"fingerprint":"398a30ff9ad3300f19fd956bb5163d49e8a7d1e20ccf9da61aa32f44bcfd42af","multiline":false,"placeholders":[]}

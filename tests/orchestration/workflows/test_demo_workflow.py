@@ -351,3 +351,50 @@ def test_the_documented_command_works_when_copied_from_the_source_view(demo: dic
 
     assert (value.data["interactive"], value.data["depth"]) == (False, "deep")
     assert value.text == "how are errors handled?"
+
+
+def test_the_documented_powershell_command_works(demo: dict[str, Any]) -> None:
+    lines = [line.strip() for line in DEMO_SOURCE.read_text(encoding="utf-8").splitlines()]
+    [command] = [line for line in lines if line.startswith("icode workflow run") and '--input "' in line]
+    assert command in demo["__doc__"]
+    quoted = command.partition('--input "')[2]
+    assert quoted.endswith('"') and "\\" not in quoted
+
+    # Inside PowerShell double quotes, `n is a line break.
+    value = demo["read_request"](WorkflowValue(text=quoted[:-1].replace("`n", "\n")))
+
+    assert (value.data["interactive"], value.data["depth"]) == (False, "deep")
+    assert value.text == "how are errors handled?"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # What PowerShell passes for the bash command: `$'...'` is not its quoting.
+        "$interactive: false\\ndepth: deep\\nhow are errors handled?",
+        "interactive: false\\ndepth: deep",
+        "  Depth: deep\\nerrors",
+    ],
+)
+def test_bash_quoting_that_reached_the_workflow_as_written_is_an_error(demo: dict[str, Any], text: str) -> None:
+    with pytest.raises(ValueError, match=r"bash quoting.*PowerShell") as raised:
+        demo["read_request"](WorkflowValue(text=text))
+
+    # The message carries a command that works in PowerShell.
+    hint = str(raised.value).partition("--input ")[2]
+    value = demo["read_request"](WorkflowValue(text=hint.strip('"').replace("`n", "\n")))
+    assert (value.data["interactive"], value.data["depth"]) == (False, "deep")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "what does \\n mean in a regex?",
+        "interactive: false\nwhat does \\n mean in a regex?",
+        "the depth: of \\n escapes",
+    ],
+)
+def test_a_literal_backslash_n_in_an_ordinary_request_is_text(demo: dict[str, Any], text: str) -> None:
+    value = demo["read_request"](WorkflowValue(text=text))
+
+    assert "\\n" in value.text

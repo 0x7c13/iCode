@@ -19,7 +19,7 @@ from chrys.service.workflows.environment import (
     parse_environment_request,
 )
 from chrys.service.workflows.sdk_artifact import SdkArtifact, materialize_sdk_artifact
-from tests.support.workflow_workers import INTERPRETER_IDS, resolve_interpreter
+from tests.support.workflow_workers import INTERPRETER_IDS, resolve_interpreter, share_worker_bytecode_cache
 
 FAKE_WORKER = Path(__file__).with_name("fake_worker.py")
 
@@ -58,17 +58,38 @@ def workspace(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture(scope="session")
+def session_bytecode_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("worker-pycache")
+
+
+@pytest.fixture
+def bytecode_cache(session_bytecode_cache: Path) -> Path:
+    """The worker's private bytecode cache, warm across tests; ``launch`` creates it."""
+    return session_bytecode_cache
+
+
+@pytest.fixture(autouse=True)
+def _shared_bytecode_cache(monkeypatch: pytest.MonkeyPatch, session_bytecode_cache: Path) -> None:
+    share_worker_bytecode_cache(monkeypatch, session_bytecode_cache)
+
+
 Launcher = Callable[..., "Any"]
 
 
 @pytest.fixture
-async def launch(sdk: SdkArtifact, workspace: Path) -> AsyncIterator[Launcher]:
+async def launch(sdk: SdkArtifact, workspace: Path, bytecode_cache: Path) -> AsyncIterator[Launcher]:
     """Launch clients that are closed when the test ends; ``interpreter=`` picks the environment, other kwargs pass through."""
     clients: list[WorkflowWorkerClient] = []
 
     async def _launch(**kwargs: Any) -> WorkflowWorkerClient:
         environment = await prepared_environment(kwargs.pop("interpreter", sys.executable), sdk)
-        options: dict[str, Any] = {"environment": environment, "sdk": sdk, "workspace": workspace}
+        options: dict[str, Any] = {
+            "environment": environment,
+            "sdk": sdk,
+            "workspace": workspace,
+            "bytecode_cache": bytecode_cache,
+        }
         options.update(kwargs)
         client = await WorkflowWorkerClient.launch(**options)
         clients.append(client)

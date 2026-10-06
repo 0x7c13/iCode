@@ -30,15 +30,47 @@ workflow = wf.build()          # 校验并构建，赋给模块顶层的 workflo
 
 ### 文件发现
 
-工作流 ID 是文件名去掉 `.py` 后的部分，与 `WorkflowBuilder` 的标题无关。同名文件按以下顺序覆盖：
+工作流可以是单个 `.py` 文件，也可以是工作流文件夹：文件夹中有一个与文件夹名完全相同的入口文件，例如 `code-review/code-review.py`。工作流 ID 是文件名去掉 `.py` 后的部分，或工作流文件夹的名称，与 `WorkflowBuilder` 的标题无关。iCode 在以下位置查找工作流：
 
-| 优先级 | 位置 | 来源 |
-| --- | --- | --- |
-| 1 | 当前工作目录的 `.chrys/workflows/` | `project` |
-| 2 | iCode 配置目录下：Windows 为 `%APPDATA%\chrys\workflows\`；Linux、macOS 为 `~/.chrys/workflows/` | `global` |
-| 3 | 随 iCode 提供的内置示例 | `builtin` |
+| 位置 | 来源 |
+| --- | --- |
+| 当前工作目录的 `.chrys/workflows/` | `project` |
+| iCode 配置目录下：Windows 为 `%APPDATA%\chrys\workflows\`；Linux、macOS 为 `~/.chrys/workflows/` | `global` |
+| 随 iCode 提供的内置示例 | `builtin` |
 
-项目工作流只从当前工作目录的 `.chrys/workflows/` 发现，不向父目录查找。各来源目录只发现直接包含的 `.py` 文件，不递归扫描，忽略以 `.` 或 `_` 开头的名称。用户工作流不能是符号链接，需要通过文件所有权检查，源码大小上限为 4 MiB。无法读取的文件会被跳过并报告原因。
+多个工作流 ID 相同时，按以下顺序取第一个能读取的：
+
+| 优先级 | 工作流 |
+| --- | --- |
+| 1 | 项目工作流文件夹 |
+| 2 | 项目 `.py` 文件 |
+| 3 | 全局工作流文件夹 |
+| 4 | 全局 `.py` 文件 |
+| 5 | 内置工作流 |
+
+项目工作流只从当前工作目录的 `.chrys/workflows/` 发现，不向父目录查找。各位置只发现直接包含的 `.py` 文件和工作流文件夹，忽略以 `.` 或 `_` 开头的名称。没有同名入口文件的文件夹（如 `data/`、`venv/`）不是工作流，会被忽略；工作流文件夹里的子文件夹也不是工作流。内置工作流只有单文件。全局位置保留文件夹名 `sdk` 给 iCode 自用。
+
+用户工作流文件不能是符号链接，需要通过文件所有权检查，源码大小上限为 4 MiB。以下情况的工作流文件夹会被跳过：文件夹本身或其中任何项是符号链接或 Windows 目录联接；其中有普通文件和文件夹以外的项（如命名管道）；文件和文件夹总数超过 1000 个、总大小超过 16 MiB，或嵌套超过 16 层。以 `.` 开头的名称（如 `.venv`、`.git`）和 Python 在 `__pycache__` 文件夹中保存的编译副本（如 `helpers.cpython-312.pyc`）不检查，也不计入上限。无法读取的工作流会被跳过并报告原因，改用下一个同 ID 的工作流。
+
+### 工作流文件夹
+
+把工作流放进文件夹，即可拆成多个文件：
+
+```text
+.chrys/workflows/
+  code-review/
+    code-review.py        # 入口文件：与文件夹同名
+    steps.py              # 用 `from steps import ...` 导入
+    prompts/summary.md    # 相对 __file__ 读取
+```
+
+- 文件夹位于 `sys.path` 最前，与单文件所在目录相同：`import steps`、`from steps import check` 以及子文件夹中的模块（`from helpers.git import diff`，有无 `__init__.py` 均可）都能使用。相对导入（如 `from .steps import check`）不可用，因为入口文件不属于包。
+- 其他文件相对 `__file__` 读取，例如 `Path(__file__).parent / "prompts" / "summary.md"`。`open("summary.md")` 这类相对路径相对的是工作区，而不是文件夹。
+- 入口文件和文件夹中的其他文件不要与标准库或已安装的模块同名，例如 `json.py`、`pkgutil.py`。Python 可能加载该模块而不是你的文件，也可能用你的文件顶替该模块；工作流用 `multiprocessing` 启动的进程可能无法启动。
+- 不要在其他文件中按名称导入入口文件：这会把入口文件作为另一个模块再执行一次。
+- iCode 把工作流编译出的 Python 文件存放在配置目录下自己的文件夹中，运行工作流不会在你的文件旁生成 `__pycache__` 文件夹，也不会使用其中已有的你的文件的编译副本。工作流启动的 Python 进程同样如此，除非启动时没有沿用工作流的环境变量，或带有 `-E`、`-I`：这些进程照常使用 `__pycache__` 文件夹，包括确认不检查的编译副本。
+
+把 `review.py` 移到 `review/review.py` 会改变工作流的路径，需要重新确认；为旧文件创建的工作流会话无法再运行它，请新建会话。
 
 ### 信任确认
 
@@ -51,7 +83,9 @@ workflow = wf.build()          # 校验并构建，赋给模块顶层的 workflo
 icode workflow run echo --trust --input "Hello"
 ```
 
-确认会被保存，后续运行可省略 `--trust`。入口文件源码、构建出的工作流定义，或所选解释器的路径、版本、平台及 iCode 提供的工作流 SDK 等环境信息发生变化后，需要重新确认。该检查不覆盖已安装依赖包的变化，也不逐一检查导入的其他 Python 文件。
+确认会被保存，后续运行可省略 `--trust`。工作流源码、构建出的工作流定义，或所选解释器的路径、版本、平台及 iCode 提供的工作流 SDK 等环境信息发生变化后，需要重新确认。单个 `.py` 文件的源码就是该文件，不检查它导入的其他 Python 文件；工作流文件夹的源码是文件夹中除以 `.` 开头的名称和 Python 在 `__pycache__` 文件夹中保存的编译副本以外的所有文件，新增、修改或删除其中任何文件都需要重新确认。该检查不覆盖已安装依赖包的变化。
+
+文件在预览和启动运行时检查，Python 加载时会重新读取。两者之间发生的修改，以及工作流运行中才读取的文件的修改，无法被发现。修改工作流文件夹中的文件后，请重新打开工作流进行预览和确认。
 
 请在确认信任前检查源码。工作流代码可使用当前用户的权限读写文件或启动程序。确认信任后的预览就会执行模块顶层代码，正式运行时还会重新加载，因此顶层的文件写入、网络请求等操作可能在节点启动前发生，并重复执行。应将业务操作放入节点函数，顶层只保留导入、函数定义和工作流构建。
 
@@ -635,9 +669,11 @@ CLI 不支持手动重试。节点失败且无法继续自动重试时，整个�
 # ///
 ```
 
-保留示例中的 `#` 前缀和 `# ///` 标记，iCode 会读取这段注释中的配置。`[tool.chrys]` 是 iCode 专用配置区，`python` 的相对路径以工作流文件所在目录为基准。
+保留示例中的 `#` 前缀和 `# ///` 标记，iCode 会读取这段注释中的配置。`[tool.chrys]` 是 iCode 专用配置区，`python` 的相对路径以工作流文件所在目录为基准。工作流文件夹的基准就是文件夹本身：项目根目录下的 `.venv` 写作 `../../../.venv`，文件夹中的写作 `.venv`。
 
 `python` 也可直接填写 Python 可执行文件的路径，如 `"/opt/homebrew/bin/python3.12"`。iCode 不会通过 `PATH` 查找命令。使用 uv 创建的环境时，指向其 `.venv`。
+
+iCode 启动解释器时会把环境变量 `PYTHONPYCACHEPREFIX` 设为自己存放编译文件的文件夹。用 `-E` 或 `-I` 启动 Python 的包装脚本会忽略该变量，工作流将无法加载。
 
 iCode 不会自动安装依赖，请提前在所选环境中安装工作流所需的第三方包。`chrys.workflows` 由 iCode 在运行时提供，无需另外安装。
 
@@ -742,7 +778,7 @@ icode trajectory export --session <session-id> --format perfetto --out workflow.
 icode workflow list [--json]
 ```
 
-默认以文本模式显示 `ID`、`Source`、`Title`、`Path`，未知标题显示为 `-`。添加 `--json` 后输出一个对象，其 `workflows` 数组每项包含 `id`、`source`、`title`、`path`；未知标题为空字符串。两种输出模式下，跳过文件的警告均写入 stderr。使用 `-h` / `--help` 查看帮助。
+默认以文本模式显示 `ID`、`Source`、`Title`、`Path`，未知标题显示为 `-`；工作流文件夹的 `Path` 是其入口文件。添加 `--json` 后输出一个对象，其 `workflows` 数组每项包含 `id`、`source`、`layout`（单个 `.py` 文件为 `file`，工作流文件夹为 `package`）、`title`、`path`（入口文件）；未知标题为空字符串。两种输出模式下，跳过文件的警告均写入 stderr。使用 `-h` / `--help` 查看帮助。
 
 ### `icode workflow run`
 
@@ -756,14 +792,30 @@ icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeou
 
 | 参数 | 默认值与用途 |
 | --- | --- |
-| `<workflow-id>` | 文件名去掉 `.py` 的 ID，可由 `icode workflow list` 查询 |
-| `--input TEXT` | 默认空字符串，传给起点的 `WorkflowValue.text` |
+| `<workflow-id>` | 文件名去掉 `.py` 的部分，或工作流文件夹的名称，可由 `icode workflow list` 查询 |
+| `--input TEXT` | 默认空字符串，传给起点的 `WorkflowValue.text`（见[多行输入](#多行输入)） |
 | `-s` / `--session` | 加载已有工作流会话，为该会话绑定的工作流发起新运行；不能续跑旧运行。该会话必须是至少已有一次运行的工作流会话；`<workflow-id>` 必须与会话绑定的工作流一致，否则运行会被拒绝，错误代码为 `spec_changed` |
 | `--trust` | 信任当前自定义源码及环境；内置工作流无需此选项 |
 | `--timeout SECONDS` | 默认无总时限；必须为有限正数，覆盖预览、工作流加载和执行；不包含会话恢复、部分初始化及清理时间，超时后仍等待清理完成 |
 | `--json` | 使用 JSON 输出 |
 | `-q` / `--quiet` | 不在 stderr 显示进度；仍显示警告、错误、加载输出和节点外输出，以及最终输出 |
 | `-h` / `--help` | 查看帮助 |
+
+#### 多行输入
+
+`--input` 中换行的写法取决于 shell。bash 和 zsh 中使用 `$'...'` 引号，用 `\n` 表示换行：
+
+```shell
+icode workflow run demo-workflow --input $'interactive: false\ndepth: deep\nhow are errors handled?'
+```
+
+PowerShell 中在双引号内用 `` `n `` 表示换行：
+
+```powershell
+icode workflow run demo-workflow --input "interactive: false`ndepth: deep`nhow are errors handled?"
+```
+
+PowerShell 不认识 `$'...'`，会把文本原样作为一行传入，其中的 `\n` 是两个普通字符。
 
 #### 文本输出
 

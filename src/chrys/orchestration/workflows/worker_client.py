@@ -36,6 +36,7 @@ from typing import Any, cast
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.process import ManagedStdioProcess, spawn_managed_stdio_process
+from chrys.foundation.trajectory.keys import ensure_owner_only_directory
 from chrys.service.workflows import protocol
 from chrys.service.workflows.asks import answers_to_wire, questions_from_wire
 from chrys.service.workflows.environment import PreparedEnvironment
@@ -60,6 +61,7 @@ from chrys.service.workflows.values import canonical_json, source_to_wire, value
 logger = logging.getLogger(__name__)
 
 HOST_PATH = Path(protocol.__file__).resolve().parent / "worker_host.py"
+BYTECODE_CACHE_ENV = "PYTHONPYCACHEPREFIX"
 STDERR_TAIL_BYTES = 64 * 1024
 MAX_IN_FLIGHT_REQUESTS = 64
 _STDIO_LIMIT = LIMITS.max_frame_bytes + 2
@@ -234,10 +236,12 @@ class WorkflowWorkerClient:
         self,
         process: ManagedStdioProcess,
         *,
+        bytecode_cache: Path,
         ask_handler: AskHandler | None,
         emit_handler: EmitHandler | None,
     ) -> None:
         self._process = process
+        self._bytecode_cache = bytecode_cache
         self._ask_handler = ask_handler
         self._emit_handler = emit_handler
         self._loop = asyncio.get_running_loop()
@@ -281,17 +285,31 @@ class WorkflowWorkerClient:
         environment: PreparedEnvironment,
         sdk: SdkArtifact,
         workspace: Path,
+        bytecode_cache: Path,
         env: Mapping[str, str] | None = None,
         ask_handler: AskHandler | None = None,
         emit_handler: EmitHandler | None = None,
         host_path: Path = HOST_PATH,
         hello_timeout: float = LIMITS.hello_timeout,
     ) -> WorkflowWorkerClient:
-        """Spawn the host on the prepared interpreter, inject *sdk*, and wait for a hello that matches both."""
+        """Spawn the host on the prepared interpreter, inject *sdk*, and wait for a hello that matches both.
+
+        The interpreter and every Python process it starts keep compiled
+        bytecode only under the private *bytecode_cache*, never next to a
+        source file, so a cache planted or left beside a workflow can't run in
+        place of the source that was confirmed.
+        """
         if environment.sdk_digest != sdk.digest:
             raise WorkerStartError("The environment was prepared against a different SDK build than the one injected.")
+        try:
+            await asyncio.to_thread(ensure_owner_only_directory, bytecode_cache)
+        except OSError as exc:
+            raise WorkerStartError(
+                f"Cannot prepare the workflow bytecode cache {str(bytecode_cache)!r}: {exc}"
+            ) from exc
         child_env = dict(os.environ)
         child_env.update(env or {})
+        child_env[BYTECODE_CACHE_ENV] = str(bytecode_cache)
         try:
             process = await spawn_managed_stdio_process(
                 environment.executable,
@@ -304,7 +322,7 @@ class WorkflowWorkerClient:
             )
         except OSError as exc:
             raise WorkerStartError(f"Cannot start the workflow worker with {environment.executable!r}: {exc}") from exc
-        client = cls(process, ask_handler=ask_handler, emit_handler=emit_handler)
+        client = cls(process, bytecode_cache=bytecode_cache, ask_handler=ask_handler, emit_handler=emit_handler)
         try:
             await client._handshake(hello_timeout, environment)
         except BaseException:
@@ -397,17 +415,28 @@ class WorkflowWorkerClient:
 
     # ----------------------------------------------------------------- RPC surface
 
-    async def load(self, source: bytes, *, filename: str, workspace: Path) -> LoadResult:
-        """Execute the workflow file from *source* bytes; ``filename`` is its original canonical path."""
+    async def load(
+        self, source: bytes, *, filename: str, workspace: Path, package_dir: str | None = None
+    ) -> LoadResult:
+        """Execute the workflow file from *source* bytes; ``filename`` is its original canonical path.
+
+        *package_dir* names a workflow folder: its modules' cached bytecode is
+        cleared first, so every file in it compiles from its current source.
+        """
         try:
             text = source.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise WorkerRpcError(ErrorCode.LOAD_FAILED, f"workflow file is not UTF-8: {exc}") from exc
+        params: dict[str, Any] = {
+            "source": text,
+            "filename": filename,
+            "workspace": str(workspace),
+            "bytecode_cache": str(self._bytecode_cache),
+        }
+        if package_dir is not None:
+            params["package_dir"] = package_dir
         try:
-            result = await asyncio.wait_for(
-                self._call(Method.LOAD, {"source": text, "filename": filename, "workspace": str(workspace)}, key=None),
-                timeout=LIMITS.load_timeout,
-            )
+            result = await asyncio.wait_for(self._call(Method.LOAD, params, key=None), timeout=LIMITS.load_timeout)
         except TimeoutError:
             await self.close()
             raise WorkerRpcError(

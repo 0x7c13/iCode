@@ -57,6 +57,7 @@ from chrys.orchestration.workflows.preview import (
     load_workflow,
     materialize_runtime_sdk,
     prepare_workflow_environment,
+    worker_bytecode_cache_dir,
 )
 from chrys.orchestration.workflows.runner import WorkerCallbacks, WorkflowRunner, WorkflowRunResult
 from chrys.orchestration.workflows.session import (
@@ -606,7 +607,7 @@ class WorkflowCoordinator:
             # Confirm the bytes before probing it; its fingerprint can only be checked after that probe.
             ledger = await asyncio.to_thread(ConfirmationLedger, ledger_path(config_dir))
             recorded = ledger.recorded(source.canonical_path, source.source_kind)
-            if recorded is None or recorded.entry_digest != source.entry_sha256:
+            if recorded is None or recorded.entry_digest != source.source_digest:
                 raise _not_confirmed(source)
         try:
             sdk = await materialize_runtime_sdk(config_dir)
@@ -628,6 +629,7 @@ class WorkflowCoordinator:
                 environment=environment,
                 sdk=sdk,
                 workspace=project_cwd,
+                bytecode_cache=worker_bytecode_cache_dir(config_dir),
                 ask_handler=callbacks.ask,
                 emit_handler=callbacks.emit,
             )
@@ -676,7 +678,7 @@ class WorkflowCoordinator:
                 canonical_path=source.canonical_path,
                 title=admitted.graph.title,
                 input_excerpt=event.input_text,
-                entry_digest=loaded.load.entry_digest,
+                entry_digest=source.source_digest,
                 manifest_digest=loaded.load.manifest_digest,
                 schema_version=loaded.manifest["schema_version"],
                 spec_digest=loaded.spec_digest,

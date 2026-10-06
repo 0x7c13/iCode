@@ -30,15 +30,47 @@ Syntax errors, exceptions in top-level code, build validation failures, or a mis
 
 ### File discovery
 
-A workflow's ID is its filename without `.py`, independent of the `WorkflowBuilder` title. Files with the same name override each other in this priority order:
+A workflow is either a single `.py` file or a workflow folder: a folder holding an entry file with exactly the folder's name, such as `code-review/code-review.py`. A workflow's ID is its file name without `.py`, or its folder name, independent of the `WorkflowBuilder` title. iCode looks for workflows in these locations:
 
-| Priority | Location | Source |
-| --- | --- | --- |
-| 1 | `.chrys/workflows/` in the current working directory | `project` |
-| 2 | Under the iCode configuration directory: `%APPDATA%\chrys\workflows\` on Windows; `~/.chrys/workflows/` on Linux and macOS | `global` |
-| 3 | Built-in examples shipped with iCode | `builtin` |
+| Location | Source |
+| --- | --- |
+| `.chrys/workflows/` in the current working directory | `project` |
+| Under the iCode configuration directory: `%APPDATA%\chrys\workflows\` on Windows; `~/.chrys/workflows/` on Linux and macOS | `global` |
+| Built-in examples shipped with iCode | `builtin` |
 
-Project workflows are discovered only in `.chrys/workflows/` under the current working directory; parent directories are not searched. Each source directory is scanned only for its immediate `.py` files, without recursion. Names starting with `.` or `_` are ignored. User workflow files cannot be symbolic links, must pass ownership checks, and have a source size limit of 4 MiB. Unreadable files are skipped with a reported reason.
+When several workflows have the same ID, the first one that can be read wins, in this order:
+
+| Priority | Workflow |
+| --- | --- |
+| 1 | Project workflow folder |
+| 2 | Project `.py` file |
+| 3 | Global workflow folder |
+| 4 | Global `.py` file |
+| 5 | Built-in workflow |
+
+Project workflows are discovered only in `.chrys/workflows/` under the current working directory; parent directories are not searched. Each location is scanned only for the `.py` files and workflow folders directly inside it. Names starting with `.` or `_` are ignored. A folder without an entry file of exactly its name, such as `data/` or `venv/`, is not a workflow and is ignored, and so is any folder inside a workflow folder. Built-in workflows are single files only. The global location reserves the folder name `sdk` for iCode's own files.
+
+User workflow files cannot be symbolic links, must pass ownership checks, and have a source size limit of 4 MiB. A workflow folder is skipped when the folder or anything in it is a symbolic link or a Windows directory junction, when it holds something other than regular files and folders (such as a named pipe), or when it holds more than 1000 files and folders, more than 16 MiB in total, or is nested more than 16 levels deep. Names starting with `.` (such as `.venv` and `.git`) and the compiled copies Python keeps in `__pycache__` folders (such as `helpers.cpython-312.pyc`) are not checked and do not count toward these limits. Workflows that cannot be read are skipped with a reported reason, and the next workflow with the same ID is used instead.
+
+### Workflow folders
+
+Split a workflow into several files by putting it in a folder:
+
+```text
+.chrys/workflows/
+  code-review/
+    code-review.py        # Entry file: same name as the folder
+    steps.py              # Imported with `from steps import ...`
+    prompts/summary.md    # Read relative to __file__
+```
+
+- The folder comes first on `sys.path`, as a single file's directory does: `import steps`, `from steps import check`, and modules in subfolders (`from helpers.git import diff`, with or without `__init__.py`) all work. Relative imports such as `from .steps import check` do not, because the entry file is not part of a package.
+- Read other files relative to `__file__`, for example `Path(__file__).parent / "prompts" / "summary.md"`. Relative paths such as `open("summary.md")` are relative to the workspace, not to the folder.
+- Do not name the entry file or another file in the folder after a standard library or installed module, such as `json.py` or `pkgutil.py`. Python may then load the module instead of your file, or your file instead of the module, and processes the workflow starts with `multiprocessing` can fail to start.
+- Do not import the entry file from another file by its name: that runs the entry file again as a separate module.
+- iCode keeps the workflow's compiled Python files in its own folder under the configuration directory, so a workflow run creates no `__pycache__` folders next to your files and does not use the compiled copies of your files found in them. This also holds for Python processes the workflow starts, unless it starts them without its environment variables or with `-E` or `-I`: those use `__pycache__` folders as usual, including compiled copies that confirmation does not check.
+
+Moving `review.py` to `review/review.py` changes the workflow's path, so it must be confirmed again, and workflow sessions created for the old file cannot run it; start a new session.
 
 ### Trust confirmation
 
@@ -51,7 +83,9 @@ Loading a custom workflow for the first time requires trust confirmation:
 icode workflow run echo --trust --input "Hello"
 ```
 
-The confirmation is saved, so later runs can omit `--trust`. Confirmation is required again if the entry file's source, the built workflow definition, or environment information changes, including the selected interpreter's path, version, platform, or the workflow SDK supplied by iCode. This check does not cover changes to installed dependencies or inspect every imported Python file.
+The confirmation is saved, so later runs can omit `--trust`. Confirmation is required again if the workflow's source, the built workflow definition, or environment information changes, including the selected interpreter's path, version, platform, or the workflow SDK supplied by iCode. For a single `.py` file, the source is that file; other Python files it imports are not checked. For a workflow folder, the source is every file in the folder except names starting with `.` and the compiled copies Python keeps in `__pycache__` folders, so adding, changing, or removing any of them requires confirming again. The check does not cover changes to installed dependencies.
+
+Files are checked when the workflow is previewed and when a run starts, and Python reads them again as it loads them. A change made in between, or to a file the workflow reads only while it runs, is not caught. After changing files in a workflow folder, reopen the workflow to preview and confirm it.
 
 Review the source before confirming trust. Workflow code can read and write files or start programs with your user permissions. Previewing a trusted workflow executes its top-level code, and running it loads the module again. Top-level operations such as file writes or network requests can therefore occur before any node starts and can occur more than once. Put task operations inside node functions, leaving only imports, function definitions, and workflow construction at the top level.
 
@@ -635,9 +669,11 @@ This example uses an existing `.venv` in the project root, with the workflow fil
 # ///
 ```
 
-Keep the `#` prefixes and `# ///` markers: iCode reads the configuration from these comments. `[tool.chrys]` is the iCode-specific configuration section. Relative `python` paths are resolved against the directory containing the workflow file.
+Keep the `#` prefixes and `# ///` markers: iCode reads the configuration from these comments. `[tool.chrys]` is the iCode-specific configuration section. Relative `python` paths are resolved against the directory containing the workflow file. For a workflow folder, that is the folder itself: a `.venv` in the project root is `../../../.venv`, and one inside the folder is `.venv`.
 
 `python` can also point directly to a Python executable, such as `"/opt/homebrew/bin/python3.12"`. iCode does not search `PATH` for commands. For an environment created with uv, point to its `.venv`.
+
+iCode starts the interpreter with the `PYTHONPYCACHEPREFIX` environment variable set to its own folder for compiled files. A wrapper script that runs Python with `-E` or `-I` ignores it, and the workflow then fails to load.
 
 iCode does not install dependencies automatically. Install the workflow's third-party packages in the selected environment beforehand. iCode supplies `chrys.workflows` at runtime, so it needs no separate installation.
 
@@ -742,7 +778,7 @@ List workflows according to the [file discovery](#file-discovery) rules without 
 icode workflow list [--json]
 ```
 
-Text mode shows `ID`, `Source`, `Title`, and `Path`, using `-` for an unknown title. With `--json`, the output is an object with a `workflows` array; each entry contains `id`, `source`, `title`, and `path`, with an empty string for an unknown title. In either mode, warnings about skipped files go to stderr. Use `-h` / `--help` for help.
+Text mode shows `ID`, `Source`, `Title`, and `Path`, using `-` for an unknown title; for a workflow folder, `Path` is its entry file. With `--json`, the output is an object with a `workflows` array; each entry contains `id`, `source`, `layout` (`file` for a single `.py` file, `package` for a workflow folder), `title`, and `path` (the entry file), with an empty string for an unknown title. In either mode, warnings about skipped files go to stderr. Use `-h` / `--help` for help.
 
 ### `icode workflow run`
 
@@ -756,14 +792,30 @@ icode workflow run <workflow-id> [--input TEXT] [-s SESSION] [--trust] [--timeou
 
 | Argument | Default and purpose |
 | --- | --- |
-| `<workflow-id>` | Filename without `.py`; find IDs with `icode workflow list` |
-| `--input TEXT` | Defaults to an empty string, passed to the start node as `WorkflowValue.text` |
+| `<workflow-id>` | File name without `.py`, or the folder name of a workflow folder; find IDs with `icode workflow list` |
+| `--input TEXT` | Defaults to an empty string, passed to the start node as `WorkflowValue.text` (see [multi-line input](#multi-line-input)) |
 | `-s` / `--session` | Load an existing workflow session and start a new run of its bound workflow; does not resume an old run. The session must be a workflow session with at least one run. `<workflow-id>` must match the session's workflow; otherwise the run is rejected with `spec_changed` |
 | `--trust` | Trust the current custom source and environment; unnecessary for built-in workflows |
 | `--timeout SECONDS` | No overall limit by default; must be a finite positive number. Covers preview, workflow loading, and execution, but excludes session restoration, some initialization, and cleanup. After a timeout, the command still waits for cleanup to finish |
 | `--json` | Use JSON output |
 | `-q` / `--quiet` | Do not show progress on stderr; warnings, errors, load output, output outside nodes, and final outputs are still shown |
 | `-h` / `--help` | Show help |
+
+#### Multi-line input
+
+How to write line breaks in `--input` depends on the shell. In bash and zsh, use `$'...'` quoting with `\n`:
+
+```shell
+icode workflow run demo-workflow --input $'interactive: false\ndepth: deep\nhow are errors handled?'
+```
+
+In PowerShell, write each line break as `` `n `` inside double quotes:
+
+```powershell
+icode workflow run demo-workflow --input "interactive: false`ndepth: deep`nhow are errors handled?"
+```
+
+PowerShell does not understand `$'...'`: it passes the text on as one line with a literal `\n`.
 
 #### Text output
 

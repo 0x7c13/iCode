@@ -33,6 +33,7 @@ import contextvars
 import inspect
 import io
 import json
+import linecache
 import math
 import os
 import platform
@@ -42,6 +43,7 @@ import threading
 import time
 import traceback
 import types
+import unicodedata
 from collections import deque
 from collections.abc import Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -758,6 +760,13 @@ class Host:
         source, filename, workspace = params.get("source"), params.get("filename"), params.get("workspace")
         if not isinstance(source, str) or not isinstance(filename, str) or not isinstance(workspace, str):
             raise _Invalid("load needs source, filename and workspace strings.")
+        bytecode_cache, package_dir = params.get("bytecode_cache"), params.get("package_dir")
+        if not isinstance(bytecode_cache, str) or not isinstance(package_dir, (str, type(None))):
+            raise _Invalid("load needs a bytecode_cache string and an optional package_dir string.")
+        problem = _bytecode_cache_problem(bytecode_cache, package_dir)
+        if problem is not None:
+            self.send(_error(request_id, ERROR_LOAD_FAILED, problem, {"stdout": self.load_stdout.snapshot()}))
+            return None
         context = contextvars.copy_context()
         context.run(_CURRENT_ATTEMPT.set, _LOAD_PHASE)
         try:
@@ -766,15 +775,10 @@ class Host:
             raise _Invalid("workspace is not usable: " + str(exc)) from exc
         sys.path.insert(0, os.path.dirname(filename))
         os.environ[ENTRY_ENV] = filename
-        module = types.ModuleType(MODULE_NAME)
-        module.__file__ = filename
-        sys.modules[MODULE_NAME] = module
+        module = _entry_module(filename)
 
         def run_module() -> None:
-            # A BOM belongs to the file bytes (and the entry digest) but not to the program.
-            # dont_inherit: the file gets its own future flags, not this module's (PEP 563 annotations).
-            code = compile(source.removeprefix("\ufeff"), filename, "exec", dont_inherit=True)
-            exec(code, module.__dict__)  # noqa: S102 - running the user's workflow file is this process's purpose
+            _exec_entry(source, filename, module)
 
         try:
             await self.loop.run_in_executor(self.pool, context.run, run_module)
@@ -1327,23 +1331,107 @@ def main(argv: List[str]) -> int:
     return 0
 
 
+def _entry_module(filename: str) -> types.ModuleType:
+    """The module the entry runs in, registered under ``MODULE_NAME`` so its functions pickle by reference."""
+    module = types.ModuleType(MODULE_NAME)
+    module.__file__ = filename
+    sys.modules[MODULE_NAME] = module
+    return module
+
+
+def _exec_entry(source: str, filename: str, module: types.ModuleType) -> None:
+    """Run the entry's text as the program: the host and its multiprocessing children share this one rule."""
+    # A BOM belongs to the file bytes (and the entry digest) but not to the program.
+    program = source.removeprefix("\ufeff")
+    # Tracebacks quote the text that ran, not whatever the file holds by then; no mtime keeps checkcache off it.
+    # Lines split as Python reads a file: str.splitlines() would also break at a U+2028 inside a string.
+    lines = io.StringIO(program, newline=None).readlines()
+    linecache.cache[filename] = (len(program), None, lines, filename)
+    # dont_inherit: the file gets its own future flags, not this module's (PEP 563 annotations).
+    code = compile(program, filename, "exec", dont_inherit=True)
+    exec(code, module.__dict__)  # noqa: S102 - running the user's workflow file is this process's purpose
+
+
+def _fold(name: str) -> str:
+    """One spelling per file name on a case-insensitive or normalizing file system."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _bytecode_cache_problem(bytecode_cache: str, package_dir: Optional[str]) -> Optional[str]:
+    """Why loading must not go ahead with this cache, after clearing what *package_dir* left in it.
+
+    The main process starts this interpreter with ``PYTHONPYCACHEPREFIX`` so
+    no bytecode cached next to a workflow's source (which nobody confirmed)
+    can run instead of the source. That cache is still keyed by whole-second
+    mtimes and sizes, so a folder's own entries are cleared on every load and
+    its modules compile from the source that was confirmed.
+    """
+    prefix = sys.pycache_prefix
+    if prefix is None or os.path.normcase(os.path.abspath(prefix)) != os.path.normcase(os.path.abspath(bytecode_cache)):
+        return (
+            "the workflow interpreter ignores PYTHONPYCACHEPREFIX (is it started with -E or -I?), so bytecode "
+            "cached next to the workflow source could run instead of the source."
+        )
+    if package_dir is None:
+        return None
+    try:
+        _clear_cached_bytecode(package_dir)
+    except OSError as exc:
+        return "could not clear the cached bytecode of the workflow folder: " + _clean(str(exc))
+    return None
+
+
+def _clear_cached_bytecode(package_dir: str) -> None:
+    """Delete every cached variant (any optimization level, any interpreter tag) of the folder's source files.
+
+    Hidden entries are skipped, as the confirmation skips them; a
+    ``__pycache__`` folder is searched like any other, since it can hold
+    sources. A name matches by its stem whatever its case or normalization,
+    and deleting a cache too many only costs one compilation.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    suffixes = tuple(_fold(suffix) for suffix in importlib.machinery.SOURCE_SUFFIXES)
+    stems: Dict[str, Set[str]] = {}
+    for current, folders, files in os.walk(package_dir):
+        folders[:] = [name for name in folders if not name.startswith(".")]
+        for name in files:
+            folded = _fold(name)
+            suffix = next((suffix for suffix in suffixes if folded.endswith(suffix)), None)
+            if name.startswith(".") or suffix is None:
+                continue
+            try:
+                cached = importlib.util.cache_from_source(os.path.join(current, name))
+            except NotImplementedError:  # no cache tag: this interpreter never caches bytecode
+                return
+            stems.setdefault(os.path.dirname(cached), set()).add(folded[: len(folded) - len(suffix)] + ".")
+    for mirror, prefixes in stems.items():
+        try:
+            with os.scandir(mirror) as listing:
+                entries = list(listing)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for entry in entries:
+            folded = _fold(entry.name)
+            if folded.endswith(".pyc") and folded.startswith(tuple(prefixes)) and entry.is_file(follow_symlinks=False):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(entry.path)
+
+
 def _import_entry_in_child() -> None:
     """Re-import the workflow module in a multiprocessing child of the host.
 
     A spawned or forkserver child re-imports the parent's main module, which here is this file, not the
-    user's; functions pickled by reference from the workflow file need its module importable by name.
+    user's; functions pickled by reference from the workflow file need its module importable by name. The
+    entry runs from its UTF-8 text exactly as the host ran it, whatever coding declaration it carries.
     """
     entry = os.environ.get(ENTRY_ENV)
     if not entry:
         return
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(MODULE_NAME, entry)
-    if spec is None or spec.loader is None:
-        return
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[MODULE_NAME] = module
-    spec.loader.exec_module(module)
+    with open(entry, "rb") as handle:
+        source = handle.read().decode("utf-8")
+    _exec_entry(source, entry, _entry_module(entry))
 
 
 if __name__ == "__main__":

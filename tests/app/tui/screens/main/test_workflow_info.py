@@ -251,12 +251,12 @@ async def test_new_preview_cannot_replace_selected_runs_info_or_poison_its_cache
             main._workflow.refresh()
             assert panel.info_data == old_info
         assert panel.info_data is not None
-        assert panel.info_data.entry_digest == original.load.entry_digest
+        assert panel.info_data.source_digest == original.source.source_digest
         assert panel.info_data.spec_digest == original.spec_digest != panel.preview.spec_digest
         assert panel.info_data.title == "Original R1"
         assert panel.info_data.manifest == original.manifest
         # Showing this preview as a fresh draft adopts all of its Info together.
         panel.show_preview(panel.preview)
         assert panel.info_data.run_id == "" and panel.info_data.title == "Changed preview"
-        assert panel.info_data.entry_digest == panel.preview.load.entry_digest
+        assert panel.info_data.source_digest == panel.preview.source.source_digest
         assert panel.info_data.spec_digest == panel.preview.spec_digest

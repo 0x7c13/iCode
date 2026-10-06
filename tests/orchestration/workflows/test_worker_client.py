@@ -290,6 +290,22 @@ async def test_load_failure_reports_traceback_and_module_output(launch: Launcher
     assert failure.value.data["stdout"] == {"text": "loading\n", "truncated": False}
 
 
+@pytest.mark.parametrize(
+    "first_line",
+    [b"VALUE = 1\n", 'VALUE = "a\u2028b"\r\n'.encode()],
+    ids=["plain", "line-separator-in-a-string"],
+)
+async def test_a_load_traceback_quotes_the_line_that_ran(launch: Launcher, workspace: Path, first_line: bytes) -> None:
+    entry = workspace / "wf.py"
+    entry.write_text("# what the file holds by now\n# is not what ran\n", encoding="utf-8")
+    client = await launch()
+
+    with pytest.raises(WorkerRpcError) as failure:
+        await client.load(first_line + b'raise RuntimeError("boom")\n', filename=str(entry), workspace=workspace)
+
+    assert 'raise RuntimeError("boom")' in failure.value.data["traceback"]
+
+
 async def test_oversized_validation_diagnostics_fail_the_load_not_the_worker(launch: Launcher, workspace: Path) -> None:
     source = (
         b"from chrys.workflows import WorkflowBuilder\n"
@@ -321,7 +337,7 @@ async def test_stale_chrys_on_pythonpath_does_not_capture_the_sdk(
 
 
 async def test_namespace_portion_artifact_loses_to_a_regular_package(
-    sdk: SdkArtifact, tmp_path: Path, workspace: Path
+    sdk: SdkArtifact, tmp_path: Path, workspace: Path, bytecode_cache: Path
 ) -> None:
     stale = tmp_path / "stale" / "chrys"
     (stale / "workflows").mkdir(parents=True)
@@ -332,11 +348,17 @@ async def test_namespace_portion_artifact_loses_to_a_regular_package(
 
     with pytest.raises(WorkerStartError, match="SDK injection failed"):
         await WorkflowWorkerClient.launch(
-            environment=environment, sdk=sdk, workspace=workspace, env={"PYTHONPATH": str(tmp_path / "stale")}
+            environment=environment,
+            sdk=sdk,
+            workspace=workspace,
+            bytecode_cache=bytecode_cache,
+            env={"PYTHONPATH": str(tmp_path / "stale")},
         )
 
 
-async def test_cancelled_launch_reaps_the_worker_it_spawned(sdk: SdkArtifact, workspace: Path, tmp_path: Path) -> None:
+async def test_cancelled_launch_reaps_the_worker_it_spawned(
+    sdk: SdkArtifact, workspace: Path, bytecode_cache: Path, tmp_path: Path
+) -> None:
     """A host that never says hello is still ours to kill when the launch is cancelled."""
     host = tmp_path / "sleepy_host.py"
     pid_file = tmp_path / "pid"
@@ -345,7 +367,9 @@ async def test_cancelled_launch_reaps_the_worker_it_spawned(sdk: SdkArtifact, wo
     )
     environment = await prepared_environment(sys.executable, sdk)
     launching = asyncio.create_task(
-        WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace, host_path=host)
+        WorkflowWorkerClient.launch(
+            environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache, host_path=host
+        )
     )
     await wait_for(
         lambda: launching.done() or bool(pid_file.exists() and pid_file.read_text(encoding="utf-8")),
@@ -362,37 +386,51 @@ async def test_cancelled_launch_reaps_the_worker_it_spawned(sdk: SdkArtifact, wo
     await wait_for(lambda: not host_process.is_running(), description="cancelled launch reaped its host")
 
 
-async def test_launch_rejects_an_interpreter_that_vanished_after_preparation(sdk: SdkArtifact, workspace: Path) -> None:
+async def test_launch_rejects_an_interpreter_that_vanished_after_preparation(
+    sdk: SdkArtifact, workspace: Path, bytecode_cache: Path
+) -> None:
     prepared = await prepared_environment(sys.executable, sdk)
     environment = dataclasses.replace(prepared, executable=str(workspace / "no-such-python"))
     with pytest.raises(WorkerStartError, match="Cannot start"):
-        await WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace)
+        await WorkflowWorkerClient.launch(
+            environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache
+        )
 
 
-async def test_launch_refuses_an_environment_prepared_for_another_sdk_build(sdk: SdkArtifact, workspace: Path) -> None:
+async def test_launch_refuses_an_environment_prepared_for_another_sdk_build(
+    sdk: SdkArtifact, workspace: Path, bytecode_cache: Path
+) -> None:
     prepared = await prepared_environment(sys.executable, sdk)
     environment = dataclasses.replace(prepared, sdk_digest="0" * 64)
     with pytest.raises(WorkerStartError, match="different SDK build"):
-        await WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace)
+        await WorkflowWorkerClient.launch(
+            environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache
+        )
 
 
-async def test_hello_facts_must_match_the_prepared_environment(sdk: SdkArtifact, workspace: Path) -> None:
+async def test_hello_facts_must_match_the_prepared_environment(
+    sdk: SdkArtifact, workspace: Path, bytecode_cache: Path
+) -> None:
     """The environment was probed before launch; a worker that reports other facts is not the one prepared."""
     prepared = await prepared_environment(sys.executable, sdk)
     environment = dataclasses.replace(prepared, python_version="0.0.0")
     with pytest.raises(WorkerStartError, match="prepared as"):
-        await WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace)
+        await WorkflowWorkerClient.launch(
+            environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache
+        )
 
 
 async def test_a_byo_venv_runs_the_workflow_in_its_own_interpreter(
-    sdk: SdkArtifact, tmp_path: Path, workspace: Path
+    sdk: SdkArtifact, tmp_path: Path, workspace: Path, bytecode_cache: Path
 ) -> None:
     """Declaration to result: the venv's interpreter, with no chrys installed, runs a node through the injected SDK."""
     venv = create_venv(tmp_path / ".venv")
     request = parse_environment_request(b"# /// script\n# [tool.chrys]\n# python = '.venv'\n# ///\n")
     plan = plan_environment(request, entry_path=tmp_path / "wf.py")
     environment = await WorkflowEnvironmentManager(sdk_digest=sdk.digest).prepare(plan)
-    client = await WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace)
+    client = await WorkflowWorkerClient.launch(
+        environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache
+    )
     try:
         assert environment.mode == "byo"
         await client.load(PREFIX_WORKFLOW, filename=str(workspace / "wf.py"), workspace=workspace)

@@ -24,7 +24,7 @@ from chrys.app.parsing import SanitizingArgumentParser
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
 from chrys.foundation.events.types import WorkflowRunAccepted
-from chrys.foundation.i18n.formatting import sanitize_terminal_block
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar, sanitize_terminal_block
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
@@ -68,8 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
         "list",
         help="List the workflows found for the current directory",
         description="List the workflows found for the current directory: builtin templates, the user's global "
-        "directory, and the project's .chrys/workflows directory (a project file shadows a global one, which "
-        "shadows a builtin).",
+        "directory, and the project's .chrys/workflows directory. A workflow is a .py file, or a folder holding a "
+        ".py file of the same name; a project workflow shadows a global one, which shadows a builtin.",
         add_help=False,
     )
     _add_help(list_parser)
@@ -77,13 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = commands.add_parser(
         "run",
         help="Run one workflow until it finishes and print its outputs",
-        description="Run one workflow until it finishes and print its outputs. A user workflow file must have "
-        "been confirmed before; --trust confirms the file as it is now.",
+        description="Run one workflow until it finishes and print its outputs. A user workflow must have been "
+        "confirmed before; --trust confirms it as it is now.",
         add_help=False,
     )
     _add_help(run_parser)
     run_parser.add_argument(
-        "workflow_id", help=f"Workflow id (the file name without .py), as listed by '{APP_COMMAND} workflow list'"
+        "workflow_id",
+        help=f"Workflow id (the file name without .py, or the folder name), as listed by '{APP_COMMAND} workflow list'",
     )
     run_parser.add_argument(
         "--input", metavar="TEXT", default="", help="Input text handed to the workflow's start node (default: empty)"
@@ -92,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--trust",
         action="store_true",
-        help="Confirm the workflow file as it is now (source, topology and environment) instead of requiring "
+        help="Confirm the workflow as it is now (its files, topology and environment) instead of requiring "
         "an earlier confirmation; builtin templates need no confirmation",
     )
     run_parser.add_argument(
@@ -125,6 +126,7 @@ def _add_help(parser: argparse.ArgumentParser) -> None:
 class _WorkflowRow:
     workflow_id: str
     source_kind: str
+    layout: str
     path: str
     title: str
 
@@ -134,7 +136,11 @@ def _rows(catalog: WorkflowCatalog, discovery: Discovery) -> list[_WorkflowRow]:
     ledger = catalog.ledger()
     return [
         _WorkflowRow(
-            source.workflow_id, source.source_kind, source.canonical_path, catalog.title(source, ledger=ledger) or ""
+            source.workflow_id,
+            source.source_kind,
+            source.layout,
+            source.canonical_path,
+            catalog.title(source, ledger=ledger) or "",
         )
         for source in discovery.sources
     ]
@@ -152,7 +158,13 @@ def _list_command(args: argparse.Namespace) -> int:
         headless.write_json(
             {
                 "workflows": [
-                    {"id": row.workflow_id, "source": row.source_kind, "title": row.title, "path": row.path}
+                    {
+                        "id": row.workflow_id,
+                        "source": row.source_kind,
+                        "layout": row.layout,
+                        "title": row.title,
+                        "path": row.path,
+                    }
                     for row in rows
                 ]
             }
@@ -174,12 +186,17 @@ def _print_workflows(rows: list[_WorkflowRow]) -> None:
     table.add_column("Path", overflow="fold")
     for row in rows:
         table.add_row(
-            Text(row.workflow_id),
+            _cell(row.workflow_id),
             Text(row.source_kind),
-            Text(row.title or "-"),
-            Text(surrogate_safe_text(row.path)),
+            _cell(row.title or "-"),
+            _cell(row.path),
         )
     console.print(table)
+
+
+def _cell(value: str) -> Text:
+    """A name, title or path from the user's files, without controls or lone surrogates."""
+    return Text(sanitize_legacy_scalar(surrogate_safe_text(value)))
 
 
 def _workflow_progress(args: argparse.Namespace, runtime: PreparedRuntime) -> WorkflowProgress | None:

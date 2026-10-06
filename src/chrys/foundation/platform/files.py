@@ -904,8 +904,23 @@ def secure_unlink_owner_verified(path: Path) -> bool:
     leftover debris is re-verified by every consumer while a wrong deletion
     is unrecoverable.
     """
+    return _owner_verified_unlink(path, unlink=True)
+
+
+def can_unlink_owner_verified(path: Path) -> bool:
+    """Whether :func:`secure_unlink_owner_verified` would delete *path*: the same gates, deleting nothing.
+
+    Also what the deletion needs that can be told beforehand: a writable,
+    searchable folder (POSIX) and no read-only attribute (Windows). For
+    refusing before asking a user to confirm; the deletion still reports
+    what this can't foresee (immutable flags, ACLs, a change in between).
+    """
+    return _owner_verified_unlink(path, unlink=False)
+
+
+def _owner_verified_unlink(path: Path, *, unlink: bool) -> bool:
     if _is_windows():
-        return _windows_secure_unlink_owner_verified(path)
+        return _windows_secure_unlink_owner_verified(path, unlink=unlink)
     try:
         directory_fd, filename = _open_posix_parent(path)
     except SecureFileError, OSError:
@@ -917,6 +932,8 @@ def secure_unlink_owner_verified(path: Path) -> bool:
             return False
         if not stat.S_ISREG(entry.st_mode) or entry.st_uid != _posix_effective_uid():
             return False
+        if not unlink:
+            return os.access(".", os.W_OK | os.X_OK, dir_fd=directory_fd, effective_ids=True)
         try:
             os.unlink(filename, dir_fd=directory_fd)
         except OSError:
@@ -926,7 +943,7 @@ def secure_unlink_owner_verified(path: Path) -> bool:
         os.close(directory_fd)
 
 
-def _windows_secure_unlink_owner_verified(path: Path) -> bool:
+def _windows_secure_unlink_owner_verified(path: Path, *, unlink: bool) -> bool:
     try:
         _validate_link_free_parent(path)
         fd = _windows_secure_open(
@@ -940,6 +957,12 @@ def _windows_secure_unlink_owner_verified(path: Path) -> bool:
         )
     except SecureFileError, OSError:
         return False
+    if not unlink:
+        try:
+            # Marking a read-only file for deletion is refused.
+            return not _windows_stat_file_attributes(os.fstat(fd)) & stat.FILE_ATTRIBUTE_READONLY
+        finally:
+            os.close(fd)
     api = _windows_file_api()
 
     info = _FileDispositionInfo(True)

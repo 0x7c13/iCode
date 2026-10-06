@@ -13055,6 +13055,15 @@ msgstr "节点"
 msgid "tui.workflow.confirm.nodes"
 msgstr "节点 · {total}"
 
+#. English: Trust allows this workflow's folder and its selected interpreter to
+#. run with your permissions, including during preview. Source shows only the
+#. entry file: review the folder's other files before continuing. Cancel does
+#. not load the workflow.
+#. chrys-meta={"fingerprint":"f9140954ea5349724480207689637823659be41d24735d4b49626709e4978283","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/info.py
+msgid "tui.workflow.confirm.package_execution_consent"
+msgstr "信任后，此工作流文件夹及其指定的解释器将以你的权限运行，包括生成预览时。源代码页只显示入口文件，请先检查文件夹中的其他文件；取消不会加载工作流。"
+
 #. English: Python
 #. chrys-meta={"fingerprint":"309e0a7b5ad584613f1265e78006269869cd8ee1b281f690620f875ff72f1dc1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/info.py
@@ -13109,6 +13118,12 @@ msgstr "请先停止此工作流，再删除其源文件。"
 msgid "tui.workflow.delete_global"
 msgstr "全局文件删除后无法恢复。运行历史将保留。"
 
+#. English: Only {entry} is deleted. The other files in {folder} are kept.
+#. chrys-meta={"fingerprint":"ff9187c2cea3d253c4e76976dd04ca9daf7dfe2973ea16c9f94e27a8084a7ad5","multiline":false,"placeholders":["entry","folder"]}
+#: src/chrys/app/tui/widgets/workflow/text.py
+msgid "tui.workflow.delete_package_note"
+msgstr "只删除 {entry}，{folder} 中的其他文件会保留。"
+
 #. English: Project files may be recoverable in Git. Run history stays.
 #. chrys-meta={"fingerprint":"34bcccf8b90d9c3564b6566599191daa57ef5dfef79679a0e7a05127d1291e7f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/workflow/text.py
@@ -13158,6 +13173,12 @@ msgstr[0] "{count} 分钟"
 msgid "tui.workflow.elapsed.seconds"
 msgid_plural "tui.workflow.elapsed.seconds#plural"
 msgstr[0] "{count} 秒"
+
+#. English: Files
+#. chrys-meta={"fingerprint":"4b7adbbf83c89f58eee633676f53c80b5817f1051bde68a510ee8db1553136bc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/workflow/info.py
+msgid "tui.workflow.info.package_files"
+msgstr "文件数"
 
 #. English: Initial text passed to this workflow.
 #. chrys-meta={"fingerprint":"398a30ff9ad3300f19fd956bb5163d49e8a7d1e20ccf9da61aa32f44bcfd42af","multiline":false,"placeholders":[]}

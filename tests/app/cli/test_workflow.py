@@ -75,6 +75,7 @@ from tests.orchestration.workflows._hosting import (
     patch_runtime,
     run,
     write_workflow,
+    write_workflow_package,
 )
 from tests.support.streams import FailingTextStream
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -215,10 +216,58 @@ def test_list_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixtur
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
         "workflows": [
-            {"id": "demo-workflow", "source": "builtin", "title": TITLE, "path": "/lib/builtins/demo-workflow.py"}
+            {
+                "id": "demo-workflow",
+                "source": "builtin",
+                "layout": "file",
+                "title": TITLE,
+                "path": "/lib/builtins/demo-workflow.py",
+            }
         ]
     }
     assert captured.err == ""
+
+
+def test_list_shows_a_workflow_folder_by_its_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = make_project(tmp_path)
+    monkeypatch.chdir(project)
+    entry = write_workflow_package(project, "packaged", CHAIN, {"helpers.py": b"VALUE = 1\n"})
+    write_workflow(project, "single", CHAIN)
+
+    assert workflow_cli.main(["list", "--json"]) == 0
+
+    captured = capsys.readouterr()
+    rows = {row["id"]: row for row in json.loads(captured.out)["workflows"]}
+    assert rows["packaged"] == {
+        "id": "packaged",
+        "source": "project",
+        "layout": "package",
+        "title": "",
+        "path": str(entry.resolve()),
+    }
+    assert (rows["single"]["layout"], rows["demo-workflow"]["layout"]) == ("file", "file")
+    assert captured.err == ""
+
+
+def test_list_shows_names_without_terminal_controls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("COLUMNS", "200")
+    _patch_discovery(
+        monkeypatch,
+        Discovery(
+            sources=(_source("a\x1b[2Jb", SOURCE_KIND_PROJECT, "/proj/.chrys/workflows/a\x1b[2Jb\udcff.py"),),
+            skipped=(),
+        ),
+    )
+
+    assert workflow_cli.main(["list"]) == 0
+
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\udcff" not in out
+    assert out.count("[2Jb") == 2
 
 
 def test_list_without_workflows(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
