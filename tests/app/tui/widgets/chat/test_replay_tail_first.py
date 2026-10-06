@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable
 from contextlib import ExitStack
+from functools import partial
 
 import pytest
 from textual import events
@@ -491,6 +493,111 @@ async def test_a_toc_jump_into_a_batch_not_laid_out_yet_lands_once_it_is(
         assert cp.scroll_y < cp.max_scroll_y
 
 
+@pytest.mark.parametrize("when", ["registered", "ended"])
+@pytest.mark.parametrize(
+    ("move", "start"),
+    [("held_jump", "bottom"), ("jump", "bottom"), ("scroll", "bottom"), ("jump", "top"), ("scroll", "top")],
+)
+async def test_a_view_moved_before_the_last_batch_lays_out_stays_on_its_turn(
+    monkeypatch: pytest.MonkeyPatch, move: str, start: str, when: str
+) -> None:
+    """The view moves to a turn while the last prepended batch is a child without geometry.
+
+    ``held_jump``: a jump held for the first prepended batch lands, a slow
+    frame having run that batch's refresh callback this late. ``jump``: a TOC
+    click on a turn of that batch, which has its geometry. ``scroll``: the
+    user scrolls that turn to the top. The view moves from the ``bottom`` it
+    follows, or from the ``top``, where it shows a warning mounted before the
+    replay, which no batch moves. ``registered``: right after the last batch
+    registers; ``ended``: once the prepend has handed it back and ended. The
+    last batch then lays out above the turn, and the view moves with it.
+    """
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        if start == "top":
+            await cp.add_error("Working directory no longer exists: /gone", action_label=None)
+        warning = next((child for child in cp.children if isinstance(child, ErrorMessage)), None)
+        queued = _hold_refresh_callbacks(cp, monkeypatch)
+        layout_hold = ExitStack()
+        turns: list[UserMessage] = []
+        last_batch: list[Widget] = []
+        real_mount = cp.mount
+        real_mount_batch = cp.mount_replay_batch
+
+        def run_refresh_callbacks() -> None:
+            callbacks = list(queued)
+            queued.clear()
+            for callback, args in callbacks:
+                callback(*args)
+
+        def move_view() -> None:
+            if start == "bottom":
+                # Following the bottom until now, so the view tracks no child yet.
+                assert not cp.is_anchor_released()
+            else:
+                assert cp.is_anchor_released()
+                assert cp.scroll_y == 0
+            if move == "held_jump":
+                # The first batch's callback; the last batch's, once queued, waits for its layout.
+                callback, args = queued.pop(0)
+                callback(*args)
+            elif move == "jump":
+                assert turns[0].id is not None
+                cp.scroll_to_turn(turns[0].id)
+            else:
+                _simulate_chat_panel_user_scroll_y(cp, turns[0].virtual_region.y)
+
+        def mount(*widgets: Widget, before: Widget | None = None, after: Widget | None = None) -> AwaitMount:
+            mounting = real_mount(*widgets, before=before, after=after)
+            if before is not None and not turns:
+                turns.append(next(widget for widget in widgets if isinstance(widget, UserMessage)))
+                if move == "held_jump" and turns[0].id is not None:
+                    cp.scroll_to_turn(turns[0].id)
+            elif before is not None and when == "registered":
+                move_view()
+            return mounting
+
+        async def mount_replay_batch(entries: list[Widget], *, before: Widget | None) -> None:
+            if before is None or cp.pending_transcript_widgets():
+                await real_mount_batch(entries, before=before)
+                return
+            last_batch.extend(entries)
+            await wait_for(lambda: bool(turns[0].region), description="the first prepended batch laid out")
+            if move != "held_jump":
+                run_refresh_callbacks()
+            if start == "top":
+                _simulate_chat_panel_user_scroll_y(cp, 0)
+                await wait_for(
+                    lambda: (tracked := cp._scroll_controller._view_hold_child) is not None and tracked[0] is warning,
+                    description="the view tracking the warning",
+                )
+            layout_hold.enter_context(cp.app.batch_update())
+            await real_mount_batch(entries, before=before)
+            if when == "registered":
+                layout_hold.close()
+
+        monkeypatch.setattr(cp, "mount", mount)
+        monkeypatch.setattr(cp, "mount_replay_batch", mount_replay_batch)
+        with layout_hold:
+            await cp.replay_history(_turns())
+            await _wait_complete(cp)
+            if when == "ended":
+                move_view()
+        await wait_for(
+            lambda: all(entry.region for entry in last_batch if isinstance(entry, UserMessage)),
+            pilot=pilot,
+            description="the last prepended batch laid out",
+        )
+        assert cp._scroll_controller.view_hold_active
+        run_refresh_callbacks()
+        await _settle(cp, pilot)
+
+        assert cp.scroll_y <= turns[0].virtual_region.y <= cp.scroll_y + 1
+        assert cp.scroll_y < cp.max_scroll_y
+        # Nothing lands above the view any more.
+        assert not cp._scroll_controller.view_hold_active
+
+
 @pytest.mark.parametrize("gesture", ["wheel", "page_up_key"])
 async def test_user_scroll_drops_a_toc_jump_still_waiting_for_its_turn(
     monkeypatch: pytest.MonkeyPatch, gesture: str
@@ -523,6 +630,64 @@ async def test_user_scroll_drops_a_toc_jump_still_waiting_for_its_turn(
         target = next(child for child in cp.children if isinstance(child, UserMessage) and child.id == oldest_turn)
         assert not target.has_class("-highlighted")
         assert reading.virtual_region.y - cp.scroll_y == offset
+
+
+@pytest.mark.parametrize("refreshes", [0, 1])
+async def test_a_toc_jump_right_after_a_restore_is_not_pulled_back_to_the_bottom(
+    monkeypatch: pytest.MonkeyPatch, refreshes: int
+) -> None:
+    """The replay scrolls to the bottom once it has laid out; a jump before then, or in the next frame, stays put.
+
+    Every callback the panel queues for a refresh from the end of the replay
+    waits for the test, as slow frames would; the jump comes after
+    ``refreshes`` rounds of them.
+    """
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        queued: list[Callable[[], object]] = []
+        holding = False
+        real_call_after_refresh = cp.call_after_refresh
+        real_after_replay_history_mounted = cp.after_replay_history_mounted
+
+        def call_after_refresh(callback: Callable[..., object], *args: object, **kwargs: object) -> bool:
+            if not holding:
+                return real_call_after_refresh(callback, *args, **kwargs)
+            queued.append(partial(callback, *args, **kwargs))
+            return True
+
+        def after_replay_history_mounted() -> None:
+            nonlocal holding
+            holding = True
+            real_after_replay_history_mounted()
+
+        async def run_refresh_callbacks() -> None:
+            callbacks = list(queued)
+            queued.clear()
+            for callback in callbacks:
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
+
+        monkeypatch.setattr(cp, "call_after_refresh", call_after_refresh)
+        monkeypatch.setattr(cp, "after_replay_history_mounted", after_replay_history_mounted)
+        # Short enough to mount in the tail batch alone.
+        await cp.replay_history(_turns(8))
+        assert holding
+        assert not cp.replay_in_progress
+        await _settle(cp, pilot)
+        for _ in range(refreshes):
+            await run_refresh_callbacks()
+        target = [child for child in cp.children if isinstance(child, UserMessage)][1]
+        assert target.id is not None
+        cp.scroll_to_turn(target.id)
+        for _ in range(3):
+            await run_refresh_callbacks()
+        assert not queued
+        holding = False
+        await _settle(cp, pilot)
+
+        assert cp.scroll_y <= target.virtual_region.y <= cp.scroll_y + 1
+        assert cp.scroll_y < cp.max_scroll_y
 
 
 @pytest.mark.parametrize("superseded_by", [None, "user_scroll", "newer_jump"])

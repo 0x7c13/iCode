@@ -23,6 +23,9 @@ Invariants while a prepend runs:
   geometry until the refresh after it mounted. A TOC jump to a pending turn,
   or to one in such a batch, waits for that refresh; a newer jump, a user
   scroll, ``stop`` or ``abandon`` before then drops it.
+- A view that leaves the bottom keeps its content while batches land above
+  it, until the last batch has laid out, which can be after the prepend
+  ended.
 - One GC pause spans the whole replay: a young pass between batches frees
   the cycles each batch left behind, and one full collection ends the pause
   when every entry has mounted.
@@ -149,14 +152,15 @@ class ReplayMountController:
             await asyncio.wait((task,))
         # The caller removes the transcript; a batch still waiting for its layout goes with it.
         self._unplaced = []
+        self._end_view_hold_once_laid_out()
 
     def abandon(self) -> None:
         """Cancel the prepend, drop its jumps and release its GC pause at once (panel unmount)."""
         task = self._task
         self._stop_requested = True
         self.forget_jump()
-        self._reset_prepend_state()
         self._unplaced = []
+        self._reset_prepend_state()
         for gc_pause in tuple(self._gc_pauses):
             self._release_gc_pause(gc_pause, collect_first=False)
         if task is not None and not task.done():
@@ -281,6 +285,7 @@ class ReplayMountController:
     def _place(self, batch: list[Widget]) -> None:
         placed = set(batch)
         self._unplaced = [widget for widget in self._unplaced if widget not in placed]
+        self._end_view_hold_once_laid_out()
 
     def _reset_prepend_state(self) -> None:
         self._task = None
@@ -289,7 +294,12 @@ class ReplayMountController:
         # A jump into a batch still waiting for its layout outlives the prepend.
         if not any(widget is self._pending_jump for widget in self._unplaced):
             self._pending_jump = None
-        self._host.end_view_hold()
+        self._end_view_hold_once_laid_out()
+
+    def _end_view_hold_once_laid_out(self) -> None:
+        # The last batch lands above the view when it lays out, after the prepend ended.
+        if self._task is None and not self._unplaced:
+            self._host.end_view_hold()
 
     def _claim_gc_pause(self) -> ChatGcPauseClaim:
         gc_pause = ChatGcPauseClaim()

@@ -70,6 +70,7 @@ class SettingsCoordinatorCallbacks:
     turn_lifecycle_task: Callable[[], asyncio.Task[None] | None]
     turn_in_progress: Callable[[], bool]
     apply_tool_groups_expanded: Callable[[bool], None]
+    apply_approval_defer_while_judging: Callable[[bool], None]
 
 
 def _values_by_key(loaded: LoadedSettings) -> dict[str, Any]:
@@ -220,6 +221,9 @@ class SettingsCoordinator:
             self._callbacks.apply_trajectory_verify_commands(str(value))
         elif key == "ui.chat.tool_groups_expanded":
             self._callbacks.apply_tool_groups_expanded(bool(value))
+        elif key == "ui.approval.defer_while_judging":
+            self._queue.schedule({key: bool(value)})
+            self._callbacks.apply_approval_defer_while_judging(bool(value))
         else:
             msg_text = f"{key}: no live writer registered"
             raise ValueError(msg_text)

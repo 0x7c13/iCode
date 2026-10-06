@@ -89,6 +89,13 @@ _HINT_APPROVAL_DEFAULT_MODE = msg(
         "/approval bypass applies to the current launch only and saves auto."
     ),
 )
+_HINT_APPROVAL_DEFER_WHILE_JUDGING = msg(
+    "tui.settings.hint.approval.defer_while_judging",
+    fallback=(
+        "In auto mode, calls the approval judge approves run without a dialog; the dialog opens only when a call "
+        "is flagged or cannot be evaluated. Turn this off to see each call while it is evaluated and decide first."
+    ),
+)
 _HINT_PROJECT_CONFIG_ENABLED = msg(
     "tui.settings.hint.project.config_enabled",
     fallback="Let <workspace>/.chrys/settings.yaml adjust engineering settings for that workspace.",
@@ -331,7 +338,10 @@ TABS: tuple[SettingsTab, ...] = (
         sections=(
             SettingsSection(
                 _SECTION_APPROVAL,
-                (SettingRowSpec("approval.default_mode", hint=_HINT_APPROVAL_DEFAULT_MODE),),
+                (
+                    SettingRowSpec("approval.default_mode", hint=_HINT_APPROVAL_DEFAULT_MODE),
+                    SettingRowSpec("ui.approval.defer_while_judging", hint=_HINT_APPROVAL_DEFER_WHILE_JUDGING),
+                ),
             ),
             SettingsSection(
                 _SECTION_PROJECT_TRUST,

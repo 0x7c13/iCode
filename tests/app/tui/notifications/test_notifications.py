@@ -123,7 +123,6 @@ class _FakeApprovalDialog:
         self._dismissed = False
         self._user_decision_submitted = False
         self.verdicts: list[object] = []
-        self.after_refresh_calls: list[tuple[object, tuple[object, ...]]] = []
 
     @property
     def is_dismissed(self) -> bool:
@@ -135,9 +134,6 @@ class _FakeApprovalDialog:
 
     def receive_verdict(self, verdict: object) -> None:
         self.verdicts.append(verdict)
-
-    def call_after_refresh(self, fn: object, *args: object) -> None:
-        self.after_refresh_calls.append((fn, args))
 
 
 def test_notification_settings_project_from_settings() -> None:

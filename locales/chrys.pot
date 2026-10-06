@@ -1248,6 +1248,12 @@ msgstr ""
 msgid "settings.trajectory.verify_commands.label"
 msgstr ""
 
+#. English: Show the approval dialog only when Auto-Review flags a call
+#. chrys-meta={"fingerprint":"0801c5f1b2ae717ffb5d98e628c950dbc8b6e292160adcd50c0710ceb0a1a610","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.approval.defer_while_judging.label"
+msgstr ""
+
 #. English: Inline file snapshot limit (chars)
 #. chrys-meta={"fingerprint":"3015009b3de207debb7885f98f17bed11c19f449985ba0b247c4d75dda739e33","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4415,6 +4421,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"684ddc0805965a8a71ad5f930f87cb660568fbf91083714cd7a54f154cb7e800","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/app_header.py
 msgid "tui.chrome.approval_mode.manual"
+msgstr ""
+
+#. English: Reviewing
+#. chrys-meta={"fingerprint":"a8111e2a67f88dad6fafc8fae918d3624594a54a358c5313bd39cb1f598b01a5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/app_header.py
+msgid "tui.chrome.approval_mode.reviewing"
 msgstr ""
 
 #. English: Opacity
@@ -9163,6 +9175,14 @@ msgstr ""
 #. chrys-meta={"fingerprint":"3ef1c3ca6c4970c15e2fd564c9f4d92a04e52329f560cedba67db55c92ba2d87","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.default_mode"
+msgstr ""
+
+#. English: In auto mode, calls the approval judge approves run without a
+#. dialog; the dialog opens only when a call is flagged or cannot be evaluated.
+#. Turn this off to see each call while it is evaluated and decide first.
+#. chrys-meta={"fingerprint":"533cc7559a60a7eeef7199a6f6f54fa72a7000501081bb92e42efef54dbd033c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.defer_while_judging"
 msgstr ""
 
 #. English: Remember what you type so you can bring it back later with Ctrl+R.

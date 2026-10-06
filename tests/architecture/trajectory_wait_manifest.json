@@ -3297,6 +3297,9 @@
       "ApprovalMiddleware._ensure_auto_fulfill_block_subscription": [
         ["awaitable", "await self._approval_arbiter.ensure_subscription()", "unresolved"]
       ],
+      "ApprovalMiddleware._publish_abandoned": [
+        ["wrapper", "await finish_close(retract)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
       "ApprovalMiddleware.close": [
         ["awaitable", "await self._approval_arbiter.close()", "unresolved"]
       ],
@@ -3313,6 +3316,7 @@
         ["wrapper", "await await_approval_with_hooks(future=future, judge_task=judge_task, manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, workspace_cwd=self._workspace_cwd or '', caller_name=self._caller_name, request_id=request_id, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=parsed_args, target_operation_id=approval_trace.request_id if approval_trace is not None else None)", "unresolved", "chrys.service.agent_middleware.control.approval_hooks.await_approval_with_hooks"],
         ["future", "await judge_task", "unresolved"],
         ["awaitable", "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args))", "unresolved"],
+        ["wrapper", "await self._publish_abandoned(request_id, ended_by=exc)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._publish_abandoned"],
         ["wrapper", "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=context.arguments, workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"],
         ["awaitable", "await publisher.publish(InvocationToolCallArgsUpdated(origin=publisher.origin, agent_name=self._caller_name, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=final_args, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"]

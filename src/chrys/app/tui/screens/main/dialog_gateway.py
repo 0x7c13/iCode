@@ -32,6 +32,7 @@ class UiGatewayCallbacks:
     publish_auto_fulfill_blocked: Callable[[ApprovalReviewed], Awaitable[None]]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
+    approval_defer_while_judging: Callable[[], bool]
     set_agent_loading: Callable[[bool], None]
 
 
@@ -56,23 +57,25 @@ class UiGateway:
         event: ApprovalRequest,
         approval_body: object | None,
         on_result: Callable[[tuple[bool, str, dict[str, Any] | None] | None], None],
-    ) -> ApprovalDialogHandle:
-        return self._view.show_approval_dialog(event, approval_body, on_result)
-
-    def deliver_approval_verdict(
-        self,
-        dialog: ApprovalDialogHandle,
-        event: ApprovalReviewed,
         *,
-        after_refresh: bool,
-    ) -> None:
-        self._view.deliver_approval_verdict(dialog, event, after_refresh=after_refresh)
+        verdict: ApprovalReviewed | None,
+    ) -> ApprovalDialogHandle:
+        return self._view.show_approval_dialog(event, approval_body, on_result, verdict=verdict)
+
+    def deliver_approval_verdict(self, dialog: ApprovalDialogHandle, event: ApprovalReviewed) -> None:
+        self._view.deliver_approval_verdict(dialog, event)
 
     def dismiss_approval_dialog(self, dialog: ApprovalDialogHandle) -> None:
         self._view.dismiss_approval_dialog(dialog)
 
     def approval_dialog_tool_name(self, dialog: ApprovalDialogHandle) -> str:
         return self._view.approval_dialog_tool_name(dialog)
+
+    def approval_defer_while_judging(self) -> bool:
+        return self._callbacks.approval_defer_while_judging()
+
+    def set_auto_review_count(self, count: int) -> None:
+        self._view.set_auto_review_count(count)
 
     def notify_approval_required(self) -> None:
         self._view.notify_approval_required()

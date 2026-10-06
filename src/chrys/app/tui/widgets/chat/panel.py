@@ -761,10 +761,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
         precompose_tree(batch)
         try:
+            # An explicit ``before=None`` would skip ``mount``'s default place above the bottom spacer.
             if before is None:
                 await self.mount(*batch)
             else:
-                self._scroll_controller.prepare_insertion_above()
                 await self.mount(*batch, before=before)
             # AwaitMount only covers the roots passed to ``mount``. The
             # precomposed descendants run their own async Mount handlers;

@@ -14,9 +14,9 @@ import chrys.foundation.platform as platform_mod
 from chrys.foundation.config.coercion import CoerceReason, CoerceStatus
 from chrys.foundation.config.env_layers import freeze_process_env
 from chrys.foundation.config.runtime_pointer import set_model_pointer
-from chrys.foundation.config.settings import MAX_TRANSIENT_RETRIES_LIMIT
+from chrys.foundation.config.settings import MAX_TRANSIENT_RETRIES_LIMIT, Settings
 from chrys.foundation.config.settings_store import load_settings, persist
-from chrys.foundation.config.spec import SettingOrigin, Source
+from chrys.foundation.config.spec import Apply, Kind, SettingOrigin, Source, specs_by_field
 from chrys.foundation.config.user_settings import user_settings_path
 
 
@@ -50,6 +50,21 @@ def test_search_ignore_setting_defaults_and_round_trips(config_dir: Path) -> Non
     assert yaml.safe_load(user_settings_path().read_text())["tools"]["search"]["respect_gitignore"] is False
     persist({key: True})
     assert load_settings().settings.search_respect_gitignore is True
+
+
+def test_the_approval_dialog_waits_for_auto_review_by_default_and_round_trips(config_dir: Path) -> None:
+    key = "ui.approval.defer_while_judging"
+    entry = specs_by_field(Settings)["approval_defer_while_judging"]
+    assert (entry.key, entry.apply, entry.kind) == (key, Apply.LIVE, Kind.BOOL)
+    freeze_process_env()
+    assert load_settings(env={}).settings.approval_defer_while_judging is True
+
+    assert persist({key: False}).written == {key: False}
+
+    loaded = load_settings()
+    assert loaded.settings.approval_defer_while_judging is False
+    assert loaded.source_for(key).layer is Source.USER
+    assert yaml.safe_load(user_settings_path().read_text())["ui"]["approval"]["defer_while_judging"] is False
 
 
 def _write_user_env(config_dir: Path, text: str) -> Path:

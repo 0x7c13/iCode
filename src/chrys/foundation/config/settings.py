@@ -666,6 +666,10 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
+_LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
+    "settings.ui.approval.defer_while_judging.label",
+    fallback="Show the approval dialog only when Auto-Review flags a call",
+)
 _LABEL_APP_DEV_MODE = msg("settings.app.dev_mode.label", fallback="Developer mode")
 _LABEL_MUTATIONS_PARALLEL_IMPLICIT_TOOLS = msg(
     "settings.mutations.parallel_implicit_tools.label", fallback="Parallel implicit tools"
@@ -1090,6 +1094,21 @@ class Settings:
             risk=Risk.DANGEROUS,
             # Falling through could land on a persisted ``bypass``.
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+
+    # TUI presentation only: in AUTO mode, keep a call the judge is still
+    # reviewing out of sight and open its dialog only once it is flagged.
+    # The backend sends the same events either way; ACP and headless ignore it.
+    approval_defer_while_judging: bool = field(
+        default=True,
+        metadata=spec(
+            key="ui.approval.defer_while_judging",
+            label=_LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING,
+            coerce=bool_coercer(),
+            apply=Apply.LIVE,
+            group="ui",
+            kind=Kind.BOOL,
         ),
     )
 

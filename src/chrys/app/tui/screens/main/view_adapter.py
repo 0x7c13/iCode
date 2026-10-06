@@ -42,6 +42,7 @@ from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
+from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.app.tui.widgets.chrome.image_paste import clipboard_image_dir_for_session
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import (
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
+    from chrys.service.approval.judge import JudgeVerdict
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.state.store import StateStore
 
@@ -94,6 +96,12 @@ logger = logging.getLogger(__name__)
 def _push_screen_untyped(app: Any, screen: object, callback: object | None = None) -> object:
     """Push adapter-typed screens or callbacks that Textual's push_screen overloads cannot model."""
     return app.push_screen(screen) if callback is None else app.push_screen(screen, callback)
+
+
+def _judge_verdict(event: ApprovalReviewed) -> JudgeVerdict:
+    from chrys.service.approval.judge import JudgeVerdict
+
+    return JudgeVerdict(approved=event.approved, reason=event.reason)
 
 
 class _StatusFlashKwargs(TypedDict, total=False):
@@ -1191,6 +1199,8 @@ class MainScreenViewAdapter:
         event: ApprovalRequest,
         approval_body: object | None,
         on_result: Callable[[tuple[bool, str, dict[str, Any] | None] | None], None],
+        *,
+        verdict: ApprovalReviewed | None,
     ) -> ApprovalDialogHandle:
         from chrys.app.tui.screens.dialogs.approval import ApprovalBody, ApprovalDialog
 
@@ -1203,27 +1213,17 @@ class MainScreenViewAdapter:
             judging=event.judging,
             approval_body=body,
             presentation_kind=event.presentation_kind,
+            verdict=_judge_verdict(verdict) if verdict is not None else None,
         )
         self._screen.app.push_screen(dialog, on_result)
         return dialog
 
-    def deliver_approval_verdict(
-        self,
-        dialog: ApprovalDialogHandle,
-        event: ApprovalReviewed,
-        *,
-        after_refresh: bool,
-    ) -> None:
+    def deliver_approval_verdict(self, dialog: ApprovalDialogHandle, event: ApprovalReviewed) -> None:
         from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
-        from chrys.service.approval.judge import JudgeVerdict
 
-        if not isinstance(dialog, ApprovalDialog):
-            return
-        verdict = JudgeVerdict(approved=event.approved, reason=event.reason)
-        if after_refresh:
-            dialog.call_after_refresh(dialog.receive_verdict, verdict)
-        else:
-            dialog.receive_verdict(verdict)
+        if isinstance(dialog, ApprovalDialog):
+            # The dialog keeps a verdict that beats its mount and shows it then.
+            dialog.receive_verdict(_judge_verdict(event))
 
     def dismiss_approval_dialog(self, dialog: ApprovalDialogHandle) -> None:
         """Close a cancelled approval through its cancellation-only path."""
@@ -1238,6 +1238,9 @@ class MainScreenViewAdapter:
         if isinstance(dialog, ApprovalDialog):
             return dialog.tool_name
         return ""
+
+    def set_auto_review_count(self, count: int) -> None:
+        self._screen.query_one(AppHeader).set_auto_review_count(count)
 
     def notify_approval_required(self) -> None:
         self.notify_event(NotificationEvent.APPROVAL_REQUIRED)
