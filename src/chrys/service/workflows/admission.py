@@ -34,12 +34,16 @@ REJECT_MODEL_UNRESOLVABLE: Final = "model_unresolvable"
 
 
 class AdmissionError(Exception):
-    """The manifest cannot be run against the current registries; ``code`` is the rejection reason."""
+    """The manifest cannot be run against the current registries; ``code`` is the rejection reason.
 
-    def __init__(self, code: str, message: str) -> None:
+    ``node_id`` names the agent node that could not be bound, when one is at fault.
+    """
+
+    def __init__(self, code: str, message: str, *, node_id: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.node_id = node_id
 
 
 def spec_digest(entry_digest: str, manifest_digest: str, schema_version: int) -> str:
@@ -121,6 +125,7 @@ def admit_manifest(
             raise AdmissionError(
                 REJECT_AGENT_PROFILE_MISSING,
                 f"Node {node_id!r} names agent profile {selector!r}, which is not available.",
+                node_id=node_id,
             )
         model_selector = agent.model
         if profile.acp is not None and not model_selector:
@@ -132,6 +137,7 @@ def admit_manifest(
                 raise AdmissionError(
                     REJECT_MODEL_UNRESOLVABLE,
                     f"Node {node_id!r} names model profile {model_selector!r}, which is not available.",
+                    node_id=node_id,
                 )
         else:
             model = resolve_for_agent(model_registry, settings, profile)
@@ -139,6 +145,7 @@ def admit_manifest(
                 raise AdmissionError(
                     REJECT_MODEL_UNRESOLVABLE,
                     f"Node {node_id!r} has no usable model: agent profile {profile.name!r} resolves to no model.",
+                    node_id=node_id,
                 )
         bindings[node_id] = AgentBinding(node_id, profile, model, agent.instructions_suffix)
     return AdmittedManifest(graph, MappingProxyType(bindings))

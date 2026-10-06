@@ -203,6 +203,7 @@ REGULAR_RULES = (
     # many TUI tests only reach it through a shared helper, so they go by directory.
     TestRule("tests/orchestration/workflows", _WORKFLOW_WORKER_HOST),
     TestRule("tests/app/cli/test_workflow.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/app/cli/test_workflow_validate.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/app/tui/screens/main", _WORKFLOW_WORKER_HOST),
     TestRule("tests/app/tui/screens/test_workflow_confirm_dialog.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/app/tui/widgets/test_workflow_transcript_order.py", _WORKFLOW_WORKER_HOST),
@@ -245,6 +246,7 @@ _FULL_TRIGGER_PATHS = frozenset(
 
 _BUILTIN_PROFILE_TEST_TARGETS = (
     "tests/app/acp/test_session_manager_profiles.py",
+    "tests/app/cli/test_workflow_validate.py",
     "tests/app/tui/behaviors/test_chrys_themes.py",
     "tests/app/tui/screens",
     "tests/orchestration/engine/build",

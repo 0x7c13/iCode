@@ -96,6 +96,14 @@ class WorkflowPackage:
     signature: tuple[tuple[str, int, int], ...] = field(default=(), compare=False)
     """``(relpath, st_mtime_ns, st_size)`` of every covered file, to notice a change without reading."""
 
+    def python_files(self, entry_name: str) -> tuple[str, ...]:
+        """The covered ``.py``/``.pyw`` files other than the entry named *entry_name*, as paths."""
+        return tuple(
+            os.path.join(self.directory, *relpath.split("/"))
+            for relpath, _, _ in self.signature
+            if relpath != entry_name and relpath.casefold().endswith((".py", ".pyw"))
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class WorkflowSource:

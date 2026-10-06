@@ -14,6 +14,7 @@ import pytest
 
 from chrys.orchestration.workflows import catalog as catalog_module
 from chrys.orchestration.workflows import coordinator as coordinator_module
+from chrys.orchestration.workflows import validation as validation_module
 
 PY39_ENV = "CHRYS_PY39_INTERPRETER"
 _HOMEBREW_PY39 = "/opt/homebrew/opt/python@3.9/bin/python3.9"
@@ -60,7 +61,7 @@ def create_venv(root: Path) -> Path:
 
 
 def share_worker_bytecode_cache(monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
-    """Point catalog previews and run admission at one bytecode cache instead of each test's own.
+    """Point catalog previews, run admission and validation at one bytecode cache instead of each test's own.
 
     Every test has its own configuration directory, so the private cache would start cold and the
     worker would recompile the standard library on every launch. Workflow files sit under per-test
@@ -72,6 +73,7 @@ def share_worker_bytecode_cache(monkeypatch: pytest.MonkeyPatch, directory: Path
 
     monkeypatch.setattr(catalog_module, "worker_bytecode_cache_dir", shared)
     monkeypatch.setattr(coordinator_module, "worker_bytecode_cache_dir", shared)
+    monkeypatch.setattr(validation_module, "worker_bytecode_cache_dir", shared)
 
 
 def python_workflow(definitions: str, *fns: str, title: str = "t") -> bytes:

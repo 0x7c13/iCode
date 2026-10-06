@@ -28,6 +28,8 @@ The module must define a top-level variable named `workflow` containing the `Wor
 
 Syntax errors, exceptions in top-level code, build validation failures, or a missing valid `workflow` object prevent loading. For structural validation rules, see [`WorkflowBuilder.build()`](#workflowbuilderbuild).
 
+To check a workflow before running it, use [`icode workflow validate`](#icode-workflow-validate): it reports each problem with its file and line.
+
 ### File discovery
 
 A workflow is either a single `.py` file or a workflow folder: a folder holding an entry file with exactly the folder's name, such as `code-review/code-review.py`. A workflow's ID is its file name without `.py`, or its folder name, independent of the `WorkflowBuilder` title. iCode looks for workflows in these locations:
@@ -779,6 +781,114 @@ icode workflow list [--json]
 ```
 
 Text mode shows `ID`, `Source`, `Title`, and `Path`, using `-` for an unknown title; for a workflow folder, `Path` is its entry file. With `--json`, the output is an object with a `workflows` array; each entry contains `id`, `source`, `layout` (`file` for a single `.py` file, `package` for a workflow folder), `title`, and `path` (the entry file), with an empty string for an unknown title. In either mode, warnings about skipped files go to stderr. Use `-h` / `--help` for help.
+
+### `icode workflow validate`
+
+Check a workflow before running it. The command loads the workflow as a run would and reports each problem with its file, line, and column, like a compiler.
+
+```shell
+icode workflow validate <path> [--json]
+```
+
+`<path>` is a workflow `.py` file or a [workflow folder](#workflow-folders), relative to the current directory. It does not have to be in a location iCode searches. For a folder, `code-review`, `code-review/`, and `code-review/code-review.py` all check the folder.
+
+Validation runs the workflow's top-level code, as loading it in the TUI does, but it runs no node and calls no model. It does not ask for or record trust confirmation, so a later `icode workflow run` still needs `--trust` when the workflow is new or has changed.
+
+The checks run in this order and stop at the first one that fails:
+
+| Stage | What it checks |
+| --- | --- |
+| `resolve` | The path names a workflow: a `.py` file or a folder holding an entry file with the folder's exact name, not a link, with a name iCode loads |
+| `read` | Every file can be read, is within the size limits, and the entry file is UTF-8 |
+| `metadata` | The `# /// script` block, if any, is valid (see [Execution environment](#execution-environment)) |
+| `environment` | The Python interpreter the workflow asks for exists and starts |
+| `load` | Every `.py` file of a folder compiles, the top-level code runs, and `build()` succeeds |
+| `graph` | The built graph is valid; warns about suspicious structure |
+| `bindings` | Every agent node's profile and model are available on this computer |
+
+#### Text report
+
+Each problem is shown as `file:line:column: error: message [code]`, followed by the source line with the place marked. `note:` lines show how the code was reached, and a `help:` line suggests a fix. Text the workflow printed while loading follows under `captured output (load):`. The last line is the result:
+
+```text
+./.chrys/workflows/code-review/steps.py:2:10: error: NameError: name 'summarise' is not defined [load_error]
+    2 | PROMPT = summarise("diff")
+      |          ^~~~~~~~~
+  note: imported from ./.chrys/workflows/code-review/code-review.py:3
+captured output (load):
+  | loading steps
+FAIL code-review (package): 1 error
+```
+
+A workflow that passes prints one line, such as `PASS code-review (package) · 1 node · 0 edges`. Warnings are listed above it and do not fail validation. Columns appear only when the workflow's Python is 3.11 or later.
+
+#### JSON report
+
+With `--json`, stdout holds one JSON object. Every field is always present; unknown values are `null`.
+
+| Field | Type and meaning |
+| --- | --- |
+| `version` | Integer: report format version, currently `1` |
+| `status` | String: `pass` or `fail` |
+| `target` | Object: what was checked: `path`, `layout` (`file` or `package`), `workflow_id`, `entry` (the entry file), `package_dir`, `source_digest`, and `files` (number of files) |
+| `stages` | Array of objects: each stage's `name` and `status` (`pass`, `fail`, or `skipped`), in order |
+| `diagnostics` | Array of objects: the problems found, described below |
+| `diagnostics_truncated` | Boolean: some load problems were left out |
+| `sites_truncated` | Boolean: the workflow has too many nodes to report where each was declared, so graph and binding problems may have no line |
+| `workflow` | Object or `null`: once the workflow has loaded, its `title`, `node_count`, `edge_count`, and `outputs` (output node IDs) |
+| `output` | Object: `text` printed while loading, and whether it was `truncated` |
+
+Each item in `diagnostics` contains:
+
+| Field | Type and meaning |
+| --- | --- |
+| `severity` | String: `error` or `warning` |
+| `code` | String: problem code, listed below |
+| `stage` | String: the stage that found it |
+| `message` | String: what is wrong |
+| `file` | String or `null`: absolute path of the file |
+| `line`, `column`, `end_line`, `end_column` | Integer or `null`: position in the file, starting at 1 |
+| `node` | String or `null`: the node ID the problem concerns, or an edge written `source->target` |
+| `source_line` | String or `null`: the text of `line` |
+| `notes` | Array of objects with `message`, `file`, and `line`: how the code was reached, innermost first |
+| `hint` | String or `null`: a suggested fix |
+| `traceback` | String or `null`: the Python traceback of a load failure |
+
+| Code | Stage | Meaning |
+| --- | --- | --- |
+| `path_not_found` | `resolve` | Nothing exists at the path. If a workflow has that ID, the hint gives its path |
+| `path_is_link` | `resolve` | The workflow, or a folder's entry file, is a link |
+| `path_not_workflow` | `resolve` | The path names no single workflow: it is not a `.py` file or a folder, it is a directory that holds workflows or a file inside a workflow folder, the folder's entry file is not a regular file, or it is spelled differently from its folder listing |
+| `name_ignored` | `resolve` | iCode never loads this name, for example one starting with `.` or `_` |
+| `name_reserved` | `resolve` | `sdk` is reserved in the global workflow directory |
+| `entry_missing` | `resolve` | The folder has no entry file with its exact name |
+| `shadowed` (warning) | `resolve` | Another workflow with the same ID is found first, so runs use that one |
+| `source_too_large`, `package_too_large` | `read` | The entry file or the folder is over the size limit |
+| `source_unreadable`, `package_unreadable` | `read` | A file cannot be read |
+| `package_link`, `package_unsupported_file` | `read` | The folder holds a link or a file that is neither a regular file nor a folder |
+| `source_not_utf8` | `read` | The entry file is not UTF-8 |
+| `metadata_invalid` | `metadata` | The `# /// script` block is invalid |
+| `environment_invalid` | `environment` | The Python environment cannot be used |
+| `syntax_error` | `load` | A `.py` file does not compile |
+| `load_error` | `load` | Top-level code raised an exception |
+| `sdk_validation_error` | `load` | `WorkflowBuilder` rejected a declaration or `build()` |
+| `missing_workflow` | `load` | There is no module-level `workflow` built by `build()` |
+| `load_timeout` | `load` | Loading did not finish in time |
+| `worker_failed` | `load` | The process that loads the workflow failed |
+| `manifest_invalid` | `graph` | The built graph is invalid |
+| `loop_exit_all_conditional` (warning) | `graph` | A loop's exit node is reached only through conditional edges, so an iteration can end with no value and fail the run |
+| `agent_profile_missing` | `bindings` | An agent node names a profile that is not available |
+| `model_unresolvable` | `bindings` | An agent node has no model it can use |
+| `internal_error` | any | iCode itself failed during the stage shown |
+
+#### Exit codes
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | PASS, possibly with warnings |
+| `1` | FAIL |
+| `2` | Argument parsing error |
+| `130` | The CLI caught a keyboard interrupt |
 
 ### `icode workflow run`
 

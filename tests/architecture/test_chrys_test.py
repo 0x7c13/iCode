@@ -964,6 +964,7 @@ def test_builtin_profiles_select_service_engine_and_application_consumers() -> N
     path = "src/chrys/service/profiles/agents/builtins/Code.yaml"
     expected = {
         "tests/app/acp/test_session_manager_profiles.py",
+        "tests/app/cli/test_workflow_validate.py",
         "tests/app/tui/behaviors/test_chrys_themes.py",
         "tests/app/tui/screens",
         "tests/orchestration/engine/build",
@@ -1003,7 +1004,9 @@ def test_a_worker_host_or_sdk_change_selects_the_tests_that_start_a_real_worker(
         "tests/orchestration/workflows/test_catalog.py",
         "tests/orchestration/workflows/test_preview_trust.py",
         "tests/orchestration/workflows/test_run_faults.py",
+        "tests/orchestration/workflows/test_worker_diagnostics.py",
         "tests/app/cli/test_workflow.py",
+        "tests/app/cli/test_workflow_validate.py",
         "tests/app/tui/screens/main/test_workflow_chrome.py",
         "tests/app/tui/widgets/test_workflow_transcript_order.py",
         "tests/service/workflows/test_py39_harness.py",

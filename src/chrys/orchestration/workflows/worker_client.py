@@ -28,10 +28,10 @@ import hashlib
 import logging
 import os
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.platform import get_platform
@@ -145,6 +145,95 @@ class LoadResult:
     manifest_digest: str
     manifest: dict[str, Any]
     stdout: CapturedOutput
+    sites: dict[str, tuple[str | None, int | None]] = field(default_factory=dict)
+    """Where each node was declared, as ``(file, line)``; only a ``diagnose`` load reports them."""
+    sites_truncated: bool = False
+    """The sites were left out to keep the response within the frame limit."""
+
+
+LOAD_TIMED_OUT: Final = "timeout"
+"""``WorkerRpcError.data["reason"]`` of a load that did not finish within ``LIMITS.load_timeout``."""
+
+
+@dataclass(frozen=True, slots=True)
+class LoadNote:
+    message: str
+    file: str | None
+    line: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class LoadDiagnostic:
+    """A load failure as the worker placed it; lines and character columns count from 1.
+
+    ``end_column`` is the column just past the faulty range; ``node`` is the
+    node or edge an SDK validation error names.
+    """
+
+    code: str
+    message: str
+    file: str | None
+    line: int | None
+    column: int | None
+    end_line: int | None
+    end_column: int | None
+    node: str | None
+    source_line: str | None
+    notes: tuple[LoadNote, ...]
+    hint: str | None
+
+
+def load_diagnostics(data: Mapping[str, Any]) -> tuple[tuple[LoadDiagnostic, ...], bool]:
+    """The diagnostics of a ``diagnose`` load's ``load_failed`` data, and whether any were left out."""
+    raw = data.get("diagnostics", [])
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise ProtocolError("diagnostics must be a list of objects.")
+    diagnostics = tuple(
+        LoadDiagnostic(
+            code=_string(item.get("code"), "diagnostic code"),
+            message=_string(item.get("message"), "diagnostic message"),
+            file=_optional_string(item.get("file"), "diagnostic file"),
+            line=_optional_count(item.get("line"), "diagnostic line"),
+            column=_optional_count(item.get("column"), "diagnostic column"),
+            end_line=_optional_count(item.get("end_line"), "diagnostic end_line"),
+            end_column=_optional_count(item.get("end_column"), "diagnostic end_column"),
+            node=_optional_string(item.get("node"), "diagnostic node"),
+            source_line=_optional_string(item.get("source_line"), "diagnostic source_line"),
+            notes=_load_notes(item.get("notes", [])),
+            hint=_optional_string(item.get("hint"), "diagnostic hint"),
+        )
+        for item in raw
+    )
+    return diagnostics, _boolean(data.get("diagnostics_truncated", False), "diagnostics_truncated")
+
+
+def _load_notes(raw: Any) -> tuple[LoadNote, ...]:
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise ProtocolError("diagnostic notes must be a list of objects.")
+    return tuple(
+        LoadNote(
+            message=_string(item.get("message"), "note message"),
+            file=_optional_string(item.get("file"), "note file"),
+            line=_optional_count(item.get("line"), "note line"),
+        )
+        for item in raw
+    )
+
+
+def _load_sites(raw: Any) -> dict[str, tuple[str | None, int | None]]:
+    """``{"files": [file, ...], "nodes": {node_id: [file_index, line]}}`` as ``{node_id: (file, line)}``."""
+    if raw is None:
+        return {}
+    files, nodes = (raw.get("files"), raw.get("nodes")) if isinstance(raw, dict) else (None, None)
+    if not isinstance(files, list) or not isinstance(nodes, dict):
+        raise ProtocolError("sites must hold a files list and a nodes object.")
+    paths = [_optional_string(file, "site file") for file in files]
+    sites: dict[str, tuple[str | None, int | None]] = {}
+    for node_id, site in nodes.items():
+        if not (isinstance(site, list) and len(site) == 2 and type(site[0]) is int and 0 <= site[0] < len(paths)):
+            raise ProtocolError("a node site must be [file_index, line].")
+        sites[node_id] = (paths[site[0]], _optional_count(site[1], "site line"))
+    return sites
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +273,17 @@ def _string(value: Any, field: str) -> str:
 def _boolean(value: Any, field: str) -> bool:
     if not isinstance(value, bool):
         raise ProtocolError(f"{field} must be a boolean.")
+    return value
+
+
+def _optional_string(value: Any, field: str) -> str | None:
+    return None if value is None else _string(value, field)
+
+
+def _optional_count(value: Any, field: str) -> int | None:
+    """A 1-based line or column, or ``None``."""
+    if value is not None and (type(value) is not int or value < 1):
+        raise ProtocolError(f"{field} must be a positive integer or null.")
     return value
 
 
@@ -416,12 +516,23 @@ class WorkflowWorkerClient:
     # ----------------------------------------------------------------- RPC surface
 
     async def load(
-        self, source: bytes, *, filename: str, workspace: Path, package_dir: str | None = None
+        self,
+        source: bytes,
+        *,
+        filename: str,
+        workspace: Path,
+        package_dir: str | None = None,
+        diagnose: bool = False,
+        precompile: Sequence[str] = (),
     ) -> LoadResult:
         """Execute the workflow file from *source* bytes; ``filename`` is its original canonical path.
 
         *package_dir* names a workflow folder: its modules' cached bytecode is
         cleared first, so every file in it compiles from its current source.
+        With *diagnose*, the worker first compiles the *precompile* files (the
+        folder's other Python files) without running them, places a failure
+        in ``load_diagnostics(error.data)`` and reports where each node was
+        declared; a load that times out carries ``data["reason"] == LOAD_TIMED_OUT``.
         """
         try:
             text = source.decode("utf-8")
@@ -435,12 +546,17 @@ class WorkflowWorkerClient:
         }
         if package_dir is not None:
             params["package_dir"] = package_dir
+        if diagnose:
+            params["diagnose"] = True
+            params["precompile"] = list(precompile)
         try:
             result = await asyncio.wait_for(self._call(Method.LOAD, params, key=None), timeout=LIMITS.load_timeout)
         except TimeoutError:
             await self.close()
             raise WorkerRpcError(
-                ErrorCode.LOAD_FAILED, f"Workflow load did not finish within {LIMITS.load_timeout:g}s."
+                ErrorCode.LOAD_FAILED,
+                f"Workflow load did not finish within {LIMITS.load_timeout:g}s.",
+                {"reason": LOAD_TIMED_OUT},
             ) from None
         manifest = result.get("manifest")
         if not isinstance(manifest, dict):
@@ -456,6 +572,8 @@ class WorkflowWorkerClient:
             manifest_digest=hashlib.sha256(canonical_json(manifest).encode("utf-8", "surrogatepass")).hexdigest(),
             manifest=manifest,
             stdout=_captured(result.get("stdout")),
+            sites=_load_sites(result.get("sites")),
+            sites_truncated=_boolean(result.get("sites_truncated", False), "sites_truncated"),
         )
 
     async def run_python(

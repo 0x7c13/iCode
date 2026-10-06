@@ -609,6 +609,12 @@ CLI 适合无需人工交互的工作流：不支持 `ctx.ask()` 用户问答，
 icode workflow list
 ```
 
+要检查正在编写的工作流，将其文件或文件夹传给 `icode workflow validate`。它会输出 `PASS`，或列出每个问题所在的文件和行，见 [`icode workflow validate`](../../reference/workflows.md#icode-workflow-validate)：
+
+```shell
+icode workflow validate .chrys/workflows/greeting.py
+```
+
 使用列表中的工作流 ID 运行工作流。将以下命令中的 `WORKFLOW_ID` 替换为实际的 ID：
 
 ```shell

@@ -1,18 +1,21 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Headless ``chrys workflow`` commands: list the workflows a session would find, and run one to its outputs."""
+"""Headless ``chrys workflow`` commands: list the workflows a session would find, check one, and run one."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import math
+import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -40,6 +43,7 @@ from chrys.orchestration.workflows.catalog import WorkflowCatalog, WorkflowNotFo
 from chrys.orchestration.workflows.coordinator import REJECT_NOT_CONFIRMED
 from chrys.orchestration.workflows.preview import WorkflowPreviewError
 from chrys.orchestration.workflows.runner import WorkflowRunResult
+from chrys.orchestration.workflows.validation import Diagnostic, ValidationReport, validate_workflow_path
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.workflows.discovery import (
     SOURCE_KIND_BUILTIN,
@@ -54,10 +58,10 @@ EXIT_INTERRUPTED: Final = 130
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the ``chrys workflow`` parser: ``list`` and ``run`` sub-commands."""
+    """Build the ``chrys workflow`` parser: ``list``, ``validate`` and ``run`` sub-commands."""
     parser = SanitizingArgumentParser(
         prog=f"{APP_COMMAND} workflow",
-        description=f"List {APP_DISPLAY_NAME} workflows and run one headlessly until its outputs are ready.",
+        description=f"List {APP_DISPLAY_NAME} workflows, check one, and run one headlessly until its outputs are ready.",
         add_help=False,
     )
     _add_help(parser)
@@ -74,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_help(list_parser)
     list_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    validate_parser = commands.add_parser(
+        "validate",
+        help="Check a workflow file or folder and report where it goes wrong",
+        description="Check a workflow file (.py) or folder the way a run would load it, and report each problem "
+        "with its file, line and column. This runs the workflow's top-level code, as a preview does, but no node; "
+        "it records no confirmation. Exit code 0 means PASS (warnings allowed), 1 means FAIL.",
+        add_help=False,
+    )
+    _add_help(validate_parser)
+    validate_parser.add_argument("path", help="The workflow file or folder, relative to the current directory")
+    validate_parser.add_argument("--json", action="store_true", help="Emit one JSON report on stdout")
     run_parser = commands.add_parser(
         "run",
         help="Run one workflow until it finishes and print its outputs",
@@ -197,6 +212,176 @@ def _print_workflows(rows: list[_WorkflowRow]) -> None:
 def _cell(value: str) -> Text:
     """A name, title or path from the user's files, without controls or lone surrogates."""
     return Text(sanitize_legacy_scalar(surrogate_safe_text(value)))
+
+
+def _validate_main(args: argparse.Namespace) -> int:
+    """``workflow validate``: once the runtime is prepared, stdout carries a full report whatever happens."""
+    try:
+        runtime = headless.prepare_runtime()
+        headless.write_pending_warnings(runtime, as_json=args.json)
+        workspace = Path.cwd()
+        report = asyncio.run(
+            validate_workflow_path(
+                args.path, config_dir=get_platform().config_dir, workspace=workspace, settings=runtime.settings
+            )
+        )
+    except KeyboardInterrupt:
+        headless.write_error("Interrupted by user.", as_json=args.json, code="interrupted")
+        return EXIT_INTERRUPTED
+    except Exception as exc:
+        headless.write_error(headless.exception_message(exc), as_json=args.json)
+        return 1
+    if args.json:
+        sys.stdout.write(json.dumps(_report_json(report), ensure_ascii=True) + "\n")
+    else:
+        sys.stdout.write("".join(f"{line}\n" for line in _report_lines(report, workspace)))
+    return 0 if report.passed else 1
+
+
+def _report_lines(report: ValidationReport, workspace: Path) -> list[str]:
+    """The human report: compiler-style diagnostics, then one ``PASS``/``FAIL`` line.
+
+    Every value from the files is shown on one line with controls replaced,
+    and only the renderer's own lines start at column 0, so nothing a
+    workflow prints or names can pass for the status line.
+    """
+    lines: list[str] = []
+    for diagnostic in report.diagnostics:
+        lines.extend(_diagnostic_lines(diagnostic, workspace))
+    if report.diagnostics_truncated:
+        lines.append("  note: more diagnostics were found than are shown")
+    if not report.passed and report.output.text:
+        lines.append("captured output (load, truncated):" if report.output.truncated else "captured output (load):")
+        lines.extend(f"  | {_one_line(text)}" for text in report.output.text.splitlines())
+    lines.append(_status_line(report, workspace))
+    return lines
+
+
+def _diagnostic_lines(diagnostic: Diagnostic, workspace: Path) -> list[str]:
+    place = ""
+    if diagnostic.file is not None:
+        place = _shown_path(diagnostic.file, workspace)
+        if diagnostic.line is not None:
+            place += f":{diagnostic.line}"
+            if diagnostic.column is not None:
+                place += f":{diagnostic.column}"
+        place += ": "
+    first, *rest = diagnostic.message.splitlines() or [""]
+    lines = [f"{place}{diagnostic.severity}: {_one_line(first)} [{_one_line(diagnostic.code)}]"]
+    lines.extend(f"    {_one_line(text)}" for text in rest)
+    if diagnostic.line is not None and diagnostic.source_line is not None:
+        gutter = f"{diagnostic.line:>5}"
+        lines.append(f"{gutter} | {_one_line(diagnostic.source_line.replace(chr(9), ' '))}")
+        if diagnostic.column is not None:
+            lines.append(f"{' ' * len(gutter)} | {_caret(diagnostic)}")
+    for note in diagnostic.notes:
+        where = ""
+        if note.file is not None:
+            where = " " + _shown_path(note.file, workspace) + (f":{note.line}" if note.line is not None else "")
+        lines.append(f"  note: {_one_line(note.message)}{where}")
+    if diagnostic.hint is not None:
+        lines.append(f"  help: {_one_line(diagnostic.hint)}")
+    return lines
+
+
+def _caret(diagnostic: Diagnostic) -> str:
+    """``^`` under the column (by display width, a tab counted as one cell), ``~`` along the rest of the range."""
+    text = (diagnostic.source_line or "").replace("\t", " ")
+    column = diagnostic.column or 1
+    start = cell_len(_one_line(text[: column - 1]))
+    width = 1
+    end = diagnostic.end_column
+    if diagnostic.end_line == diagnostic.line and end is not None and end > column:
+        width = max(1, cell_len(_one_line(text[column - 1 : end - 1])))
+    return " " * start + "^" + "~" * (width - 1)
+
+
+def _status_line(report: ValidationReport, workspace: Path) -> str:
+    name = _one_line(report.workflow_id) if report.workflow_id is not None else _shown_path(report.path, workspace)
+    if report.layout is not None:
+        name += f" ({report.layout})"
+    errors = sum(diagnostic.severity == "error" for diagnostic in report.diagnostics)
+    warnings = len(report.diagnostics) - errors
+    if report.passed and report.workflow is not None:
+        parts = [
+            f"PASS {name}",
+            _count(report.workflow.node_count, "node"),
+            _count(report.workflow.edge_count, "edge"),
+        ]
+        if warnings:
+            parts.append(_count(warnings, "warning"))
+        return " · ".join(parts)
+    counts = _count(errors, "error") + (f", {_count(warnings, 'warning')}" if warnings else "")
+    return f"FAIL {name}: {counts}"
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def _shown_path(path: str, workspace: Path) -> str:
+    """``./`` and the path below the current directory, or the absolute path, on one line."""
+    try:
+        relative = Path(path).relative_to(workspace)
+    except ValueError:
+        shown = path
+    else:
+        shown = "." if not relative.parts else f".{os.sep}{relative}"
+    return _one_line(shown)
+
+
+def _one_line(text: str) -> str:
+    """*text* as one display line: lone surrogates made safe, controls and Unicode line breaks replaced."""
+    return sanitize_legacy_scalar(surrogate_safe_text(text)).replace("\u2028", "\ufffd").replace("\u2029", "\ufffd")
+
+
+def _report_json(report: ValidationReport) -> dict[str, Any]:
+    """Version 1 of the ``--json`` report; every key is always present, unknown values are null."""
+    workflow = report.workflow
+    return {
+        "version": 1,
+        "status": "pass" if report.passed else "fail",
+        "target": {
+            "path": report.path,
+            "layout": report.layout,
+            "workflow_id": report.workflow_id,
+            "entry": report.entry,
+            "package_dir": report.package_dir,
+            "source_digest": report.source_digest,
+            "files": report.files,
+        },
+        "stages": [{"name": name, "status": status} for name, status in report.stages],
+        "diagnostics": [
+            {
+                "severity": diagnostic.severity,
+                "code": diagnostic.code,
+                "stage": diagnostic.stage,
+                "message": diagnostic.message,
+                "file": diagnostic.file,
+                "line": diagnostic.line,
+                "column": diagnostic.column,
+                "end_line": diagnostic.end_line,
+                "end_column": diagnostic.end_column,
+                "node": diagnostic.node,
+                "source_line": diagnostic.source_line,
+                "notes": [{"message": note.message, "file": note.file, "line": note.line} for note in diagnostic.notes],
+                "hint": diagnostic.hint,
+                "traceback": diagnostic.traceback,
+            }
+            for diagnostic in report.diagnostics
+        ],
+        "diagnostics_truncated": report.diagnostics_truncated,
+        "sites_truncated": report.sites_truncated,
+        "workflow": None
+        if workflow is None
+        else {
+            "title": workflow.title,
+            "node_count": workflow.node_count,
+            "edge_count": workflow.edge_count,
+            "outputs": list(workflow.outputs),
+        },
+        "output": {"text": report.output.text, "truncated": report.output.truncated},
+    }
 
 
 def _workflow_progress(args: argparse.Namespace, runtime: PreparedRuntime) -> WorkflowProgress | None:
@@ -370,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "list":
         return _list_command(args)
+    if args.command == "validate":
+        return _validate_main(args)
     if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout > 0):
         parser.error("--timeout must be a positive number of seconds")
     try:

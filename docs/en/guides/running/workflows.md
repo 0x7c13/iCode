@@ -609,6 +609,12 @@ Run this command in the project directory to list available workflows:
 icode workflow list
 ```
 
+To check a workflow you are writing, pass its file or folder to `icode workflow validate`. It prints `PASS`, or each problem with its file and line; see [`icode workflow validate`](../../reference/workflows.md#icode-workflow-validate):
+
+```shell
+icode workflow validate .chrys/workflows/greeting.py
+```
+
 Use a workflow ID from the list to run it. Replace `WORKFLOW_ID` below with the actual ID:
 
 ```shell

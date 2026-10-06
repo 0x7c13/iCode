@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  acp         Run an Agent Client Protocol stdio server\n"
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
-            "  workflow    List workflows and run one headlessly\n"
+            "  workflow    List, validate and run workflows headlessly\n"
             f"  install     Install {APP_DISPLAY_NAME} to PATH\n\n"
             f"Default: '{APP_COMMAND}' launches the TUI. Run '{APP_COMMAND} <command> --help' for command options."
         ),
