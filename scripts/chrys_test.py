@@ -1529,9 +1529,11 @@ def _add_trajectory_targets(selection: Selection, changes: tuple[Change, ...]) -
 def _add_runtime_asset_targets(selection: Selection, changes: tuple[Change, ...], *, root: Path) -> None:
     for change in changes:
         path = change.path
-        if path in {".github/workflows/ci.yml", ".github/workflows/cd.yml"} or any(
-            _matches(path, pattern) for pattern in ("scripts/build*.sh", "scripts/build*.ps1")
-        ):
+        if path in {
+            ".github/workflows/ci.yml",
+            ".github/workflows/cd.yml",
+            "scripts/offline_wheel_overrides.txt",
+        } or any(_matches(path, pattern) for pattern in ("scripts/build*.sh", "scripts/build*.ps1")):
             selection.add("tests/app/cli/test_app.py", f"build contract file changed: {path}")
         elif path.endswith(".tcss"):
             selection.add("tests/app/tui", f"Textual stylesheet changed: {path}")

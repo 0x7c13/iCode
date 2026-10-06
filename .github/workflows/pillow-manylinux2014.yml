@@ -22,6 +22,17 @@ name: Pillow manylinux2014 wheels
 # of this repository tagged pillow-<version>-manylinux2014.<build>, for the
 # offline distribution to download by URL and hash. A published tag is never
 # replaced: rebuilding the same version takes the next build number.
+#
+# This repository is synced from GitCode, and the sync deletes tags GitCode
+# lacks: the release then reverts to a draft and its wheels stop downloading.
+# Right after publishing, create the same tag on GitCode at the run's commit
+# (the release notes link the run). Not before: a run refuses a tag that
+# already exists. If the sync deleted the tag first, create it on GitCode, wait
+# until it reaches GitHub, and publish the draft again:
+#   gh release edit <tag> --repo openJiuwen-ai/iCode --tag <tag> --verify-tag \
+#     --draft=false --prerelease --latest=false
+# --verify-tag refuses while GitHub lacks the tag: published without it, the
+# release would get a new tag at main's current commit.
 
 on:
   workflow_dispatch:
@@ -287,6 +298,7 @@ jobs:
           } > notes.md
           # Creating the tag fails when it exists, even without a release (one
           # deleted by hand keeps its tag), so no build ever lands on an old tag.
+          # GitCode needs the same tag too (see the top of this file).
           gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${GITHUB_SHA}" --silent
           gh release create "$tag" "${wheels[@]}" SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" \

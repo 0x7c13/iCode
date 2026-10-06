@@ -1,0 +1,11 @@
+# Wheels the Linux offline distribution installs instead of PyPI's, for locked
+# versions that publish no manylinux_2_17 (glibc 2.17) wheel. build_offline_dist.sh
+# swaps each one's hash in for the requirement's PyPI hashes, so the version here
+# must match uv.lock: bump both together.
+#
+# pillow: built by .github/workflows/pillow-manylinux2014.yml and published as a
+# release whose tag carries the rebuild number.
+#
+# project  version  machine  sha256  url
+pillow 12.3.0 x86_64 c5a90fdf6275562d98066333b4c2c88b6ecfe12309bc51bc33dd4733dcf3e76b https://github.com/openJiuwen-ai/iCode/releases/download/pillow-12.3.0-manylinux2014.1/pillow-12.3.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+pillow 12.3.0 aarch64 a3df9c00f7fdfca287043f510201aae7049c53db2eb06cc32e5dfce26379f2f1 https://github.com/openJiuwen-ai/iCode/releases/download/pillow-12.3.0-manylinux2014.1/pillow-12.3.0-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
