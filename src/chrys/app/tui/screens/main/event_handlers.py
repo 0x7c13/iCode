@@ -201,6 +201,7 @@ class BackendEventCallbacks:
     handle_approval_response: Callable[[str, bool, str, dict[str, object] | None], ApprovalResponseWorker | None]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
+    approval_defer_while_judging: Callable[[], bool]
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
@@ -285,6 +286,7 @@ class BackendEventHandler:
                 publish_auto_fulfill_blocked=self._publish_auto_fulfill_blocked,
                 handle_ask_user_response=callbacks.handle_ask_user_response,
                 question_inline_preferred=callbacks.question_inline_preferred,
+                approval_defer_while_judging=callbacks.approval_defer_while_judging,
                 set_agent_loading=self.set_agent_loading,
             ),
         )
@@ -1508,8 +1510,10 @@ class BackendEventHandler:
 
         The backend decides the mode: BYPASS never publishes this event at
         all, MANUAL publishes with ``judging=False``, AUTO publishes with
-        ``judging=True`` and will later emit an ``ApprovalReviewed`` to
-        update the dialog.  The TUI just displays what it's told.
+        ``judging=True`` and will later emit an ``ApprovalReviewed``. A
+        judging request waits unseen for that verdict while
+        ``ui.approval.defer_while_judging`` is on; otherwise its dialog opens
+        at once and the verdict updates it.
         """
         await self._approval().on_request(event)
 
@@ -1526,17 +1530,18 @@ class BackendEventHandler:
 
         - Approved pre-mount → skip the dialog entirely and continue to the
           next queued request; the backend already ran the tool.
-        - Flagged pre-mount → push the dialog and deliver the verdict after
-          mount so the concern is pre-populated instead of showing a stuck
-          "Evaluating" spinner.
+        - Flagged pre-mount → open the dialog already flagged, the concern
+          shown and the reason focused, never a stuck "Evaluating" spinner.
         """
         self._approval().show_next()
 
     async def on_approval_reviewed(self, event: ApprovalReviewed) -> None:
         """Deliver a judge verdict from the backend to the open dialog.
 
-        Three cases handled:
+        Four cases handled:
 
+        - Request deferred while judging → an approval drops it unseen; a
+          flag queues it to open already flagged.
         - Matching dialog is live and undismissed → deliver verdict
           immediately (approved auto-dismisses; flagged shows the concern).
         - Dialog not yet pushed but request still queued → stash the verdict;

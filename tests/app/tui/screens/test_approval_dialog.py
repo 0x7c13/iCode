@@ -906,6 +906,69 @@ async def test_approval_dialog_auto_reason_disables_approve_until_empty() -> Non
     assert results == [(True, "", None)]
 
 
+_FLAG = JudgeVerdict(approved=False, reason="Deletes files outside the workspace")
+
+
+def _assert_shows_flag(dialog: ApprovalDialog) -> None:
+    judge_area = dialog.query_one("#approval-judge", VerticalGroup)
+    assert judge_area.has_class("judge-flagged")
+    assert str(judge_area.border_title) == "Flagged by Auto-Review"
+    assert dialog.query_one("#approval-judge-loading", ChrysLoadingIndicator).display is False
+    concern = dialog.query_one("#approval-concern", Static)
+    assert concern.display is True
+    assert str(concern.content) == _FLAG.reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivered", ["at_construction", "before_mount"])
+async def test_a_flag_that_beats_the_dialog_opens_it_flagged_with_the_reason_focused(delivered: str) -> None:
+    """It may pop up while the user is typing: a stray ``y`` must land in the reason, not approve."""
+    if delivered == "at_construction":
+        dialog = ApprovalDialog(caller_name="", tool_name="rm", judging=True, verdict=_FLAG)
+    else:
+        dialog = ApprovalDialog(caller_name="", tool_name="rm", judging=True)
+        dialog.receive_verdict(_FLAG)
+    results: list[tuple[bool, str, dict[str, object] | None]] = []
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    app = TestApp()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog, callback=results.append)
+        reason = dialog.query_one("#approval-reason", EnhancedTextArea)
+        await wait_for(lambda: reason.has_focus, pilot=pilot, description="reason input focused")
+        _assert_shows_flag(dialog)
+
+        await pilot.press("y", "n")
+        await pilot.pause()
+
+        assert reason.text == "yn"
+        assert results == []
+
+
+@pytest.mark.asyncio
+async def test_a_flag_for_an_open_dialog_leaves_the_focus_where_it_is() -> None:
+    dialog = ApprovalDialog(caller_name="", tool_name="rm", judging=True)
+
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Static("placeholder")
+
+    app = TestApp()
+    async with app.run_test() as pilot:
+        await app.push_screen(dialog)
+        approve = dialog.query_one("#approval-yes", Button)
+        await wait_for(lambda: approve.has_focus, pilot=pilot, description="approve button focused")
+
+        dialog.receive_verdict(_FLAG)
+        await pilot.pause()
+
+        _assert_shows_flag(dialog)
+        assert approve.has_focus
+
+
 @pytest.mark.asyncio
 async def test_approval_dialog_cancellation_dismisses_with_no_decision() -> None:
     dialog = ApprovalDialog(caller_name="ACP child", tool_name="read_file", judging=True)

@@ -122,19 +122,19 @@ class ApprovalDialogPort(Protocol):
         event: ApprovalRequest,
         approval_body: object | None,
         on_result: Callable[[tuple[bool, str, dict[str, Any] | None] | None], None],
+        *,
+        verdict: ApprovalReviewed | None,
     ) -> ApprovalDialogHandle: ...
 
-    def deliver_approval_verdict(
-        self,
-        dialog: ApprovalDialogHandle,
-        event: ApprovalReviewed,
-        *,
-        after_refresh: bool,
-    ) -> None: ...
+    def deliver_approval_verdict(self, dialog: ApprovalDialogHandle, event: ApprovalReviewed) -> None: ...
 
     def dismiss_approval_dialog(self, dialog: ApprovalDialogHandle) -> None: ...
 
     def approval_dialog_tool_name(self, dialog: ApprovalDialogHandle) -> str: ...
+
+    def approval_defer_while_judging(self) -> bool: ...
+
+    def set_auto_review_count(self, count: int) -> None: ...
 
     def debug(self, key: str, message: str = "") -> None: ...
 
@@ -156,7 +156,13 @@ class ApprovalDialogPort(Protocol):
 
 
 class ApprovalQueueController:
-    """Own the approval dialog queue and AUTO judge race state."""
+    """Own the approval dialog queue and AUTO judge race state.
+
+    With ``approval_defer_while_judging`` on (read once per request), a request
+    the judge is reviewing waits in ``deferred`` instead of the queue: an
+    approval drops it unseen, a flag queues it with its verdict, a cancel
+    drops it. The header counts what waits there.
+    """
 
     def __init__(
         self,
@@ -175,6 +181,7 @@ class ApprovalQueueController:
         self.dismissed_requests: set[str] = set()
         self.reviewed_dismissed_requests: set[str] = set()
         self.cancelled_requests: set[str] = set()
+        self.deferred: dict[str, ApprovalRequest] = {}
 
     async def on_request(self, event: ApprovalRequest) -> None:
         """Queue an approval request and show it when the queue is idle."""
@@ -189,9 +196,19 @@ class ApprovalQueueController:
 
             if approval_body is not None:
                 self.bodies[event.request_id] = approval_body
+            if event.judging and self._port.approval_defer_while_judging():
+                # The producer publishes inline and starts its judge only after
+                # this returns, so the verdict always finds the entry.
+                self.deferred[event.request_id] = event
+                self._sync_review_count()
+                self._port.debug("ApprovalRequest", f"{event.tool_name} (deferred while judging)")
+                return
             self.queue.append(event)
             if not self.dialog_open:
                 self.show_next()
+
+    def _sync_review_count(self) -> None:
+        self._port.set_auto_review_count(len(self.deferred))
 
     def show_next(self) -> None:
         """Show the next queued approval, draining cached AUTO verdicts."""
@@ -244,7 +261,8 @@ class ApprovalQueueController:
                     self._port.run_worker(_drain_marker(), group="approval-cleanup")
                 self.show_next()
 
-            dialog = self._port.show_approval_dialog(event, approval_body, _on_result)
+            # A flagged verdict that arrived first opens the dialog flagged.
+            dialog = self._port.show_approval_dialog(event, approval_body, _on_result, verdict=cached)
             self.open_dialogs[event.request_id] = dialog
             if not event.judging:
                 self._port.notify_approval_required()
@@ -255,7 +273,6 @@ class ApprovalQueueController:
             )
 
             if cached is not None:
-                self._port.deliver_approval_verdict(dialog, cached, after_refresh=True)
                 self._port.debug(
                     "ApprovalJudge",
                     f"{event.tool_name} (flagged pre-mount: {cached.reason[:60]})",
@@ -268,6 +285,11 @@ class ApprovalQueueController:
     async def on_cancelled(self, event: ApprovalCancelled) -> None:
         """Dismiss or dequeue an abandoned request without publishing a response."""
         async with self.request_lock:
+            if self.deferred.pop(event.request_id, None) is not None:
+                self.bodies.pop(event.request_id, None)
+                self._sync_review_count()
+                self._port.debug("ApprovalCancelled", f"{event.request_id} (deferred)")
+                return
             queued_before = len(self.queue)
             self.queue = deque(request for request in self.queue if request.request_id != event.request_id)
             self.bodies.pop(event.request_id, None)
@@ -298,6 +320,22 @@ class ApprovalQueueController:
             _APPROVAL_AUTO_APPROVED_JUDGE.bind() if event.approved else _APPROVAL_FLAGGED.bind(reason=event.reason[:60])
         )
 
+        # Synchronous to the end: on_request's critical section never sees a
+        # half-moved entry.
+        deferred = self.deferred.pop(event.request_id, None)
+        if deferred is not None:
+            self._sync_review_count()
+            if event.approved:
+                # The backend runs the call; the user never needed to see it.
+                self.bodies.pop(event.request_id, None)
+                self._port.debug("ApprovalJudge", f"{deferred.tool_name} ({label}, never shown)")
+                return
+            self.pending_verdicts[event.request_id] = event
+            self.queue.append(deferred)
+            if not self.dialog_open:
+                self.show_next()
+            return
+
         dialog = self.open_dialogs.get(event.request_id)
         user_decision_in_flight = (
             dialog is not None and dialog.user_decision_submitted
@@ -311,7 +349,7 @@ class ApprovalQueueController:
             return
 
         if dialog is not None and not dialog.is_dismissed:
-            self._port.deliver_approval_verdict(dialog, event, after_refresh=False)
+            self._port.deliver_approval_verdict(dialog, event)
             self._port.debug("ApprovalJudge", f"{self._port.approval_dialog_tool_name(dialog)} ({label})")
             if not event.approved:
                 self._port.notify_approval_required()

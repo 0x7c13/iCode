@@ -41,7 +41,8 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 
 - Press **Y** to approve or **N** to decline, or click the corresponding button. You cannot close the dialog with **Esc**; you must explicitly approve or decline.
 - When declining, you can provide a reason. The reason is sent to the agent to help it adjust its next steps. Once a reason is entered, the approve button is disabled.
-- In automatic mode, the dialog initially shows **Evaluating**. If the model judges the call safe, the dialog closes automatically. If the model judges it suspicious, the title changes to **Flagged by Auto-Review** and the dialog shows the reason and waits for a person to decide. You can also approve or decline directly while evaluation is in progress. If the approval judge model is unavailable or evaluation fails, iCode keeps the dialog open for a person to decide instead of approving the tool call automatically.
+- In automatic mode, no dialog opens while the approval judge model evaluates a call; **Reviewing** appears, after a spinning icon, to the left of the approval mode label in the upper-right corner. Calls the model judges safe run without a dialog. If the model judges a call suspicious, the dialog opens with the title **Flagged by Auto-Review**, shows the reason, and waits for a person to decide. The cursor starts in the reason field so that a stray key press does not approve the call: type a reason and decline, or press **Tab** to move to the buttons. If the approval judge model is unavailable, or evaluation fails or times out, the dialog opens for a person to decide instead of approving the tool call automatically.
+- To see each call while it is evaluated, press **F10** to open **Settings** and turn off **Show the approval dialog only when Auto-Review flags a call** on the **Security** tab. The dialog then opens at once and shows **Evaluating**: it closes by itself if the model judges the call safe, and you can approve or decline before evaluation finishes.
 
 ## Understand automatic approval and safety protections
 
@@ -67,7 +68,7 @@ Use the Shell tool to run icode --version
 This command only displays the version and does not modify files, but it is not among the read-only Shell commands approved automatically. Expect the following results:
 
 - In manual mode, the **Approval Required** dialog opens. After approval, the iCode version is displayed.
-- In automatic mode, the approval judge model will usually judge the command safe and approve it automatically. If the model flags it as suspicious, the dialog shows the evaluation reason and waits for a decision.
+- In automatic mode, **Reviewing** appears to the left of the approval mode label while the approval judge model evaluates the command. The model will usually judge it safe, and the iCode version is displayed without an approval dialog. If the model flags it as suspicious, the dialog shows the evaluation reason and waits for a decision.
 - In bypass mode, the command runs and displays the iCode version without an approval dialog.
 
 ## Approval modes in other ways of running iCode

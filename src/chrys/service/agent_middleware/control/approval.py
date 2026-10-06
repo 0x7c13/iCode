@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
 from chrys.foundation.events.types import (
+    ApprovalCancelled,
     ApprovalRequest,
     ApprovalResponse,
     Event,
@@ -29,6 +30,7 @@ from chrys.foundation.tool_kinds import (
 )
 from chrys.foundation.trajectory.context import side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
+from chrys.foundation.util.once_close import finish_close
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
@@ -67,6 +69,11 @@ if TYPE_CHECKING:
     from chrys.service.approval.policy import ApprovalPolicy
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.hooks.manager import HookManager
+
+
+def _unanswered(future: asyncio.Future[ApprovalResponse]) -> bool:
+    """Whether no response settled *future*; an interrupted wait cancels it."""
+    return not future.done() or future.cancelled()
 
 
 def _path_is_at_or_under(path: str, parent: str) -> bool:
@@ -458,6 +465,10 @@ class ApprovalMiddleware(FunctionMiddleware):
 
         judge_task: asyncio.Task[None] | None = None
         approval_trace = None
+        # Set just before the request goes out: from then on a frontend may hold
+        # it (a cancelled publish can stop after some handlers ran), so a wait
+        # that ends without an answer must retract it.
+        published_future: asyncio.Future[ApprovalResponse] | None = None
         try:
             # Subscribe BEFORE publishing (a frontend may answer synchronously)
             # and hold the subscription until the decision is in, whatever
@@ -478,6 +489,7 @@ class ApprovalMiddleware(FunctionMiddleware):
 
                     approval_trace = ApprovalTrace.open(context.metadata)
 
+                    published_future = future
                     await self._bus.publish(
                         ApprovalRequest(
                             request_id=request_id,
@@ -580,11 +592,16 @@ class ApprovalMiddleware(FunctionMiddleware):
                     reason_code="user_reason" if reason else "",
                     arguments_modified=bool(modified_args),
                 )
-        except BaseException:
+        except BaseException as exc:
             # Interrupted (or failed) while the dialog was still open: the
             # request is abandoned, and only this path can say so.
             if approval_trace is not None:
                 approval_trace.interrupted_soon()
+            # A frontend still shows the request (or holds it unseen while the
+            # judge reviews it) until told otherwise. The judge is drained by
+            # now, so this follows any verdict it published.
+            if published_future is not None and _unanswered(published_future):
+                await self._publish_abandoned(request_id, ended_by=exc)
             raise
 
         if approved:
@@ -650,6 +667,22 @@ class ApprovalMiddleware(FunctionMiddleware):
             context.result = "Error: Tool execution was rejected by user."
             if reason:
                 context.result = f"{context.result}\nUser reason: {reason}"
+
+    async def _publish_abandoned(self, request_id: str, *, ended_by: BaseException) -> None:
+        """Retract an unanswered request, even when another cancel lands meanwhile.
+
+        That cancel is absorbed only when a cancel already ended the wait, which
+        the caller re-raises; after a failure it propagates instead, so the
+        failure never swallows an interrupt.
+        """
+        retract = asyncio.create_task(
+            self._bus.publish(ApprovalCancelled(request_id=request_id, session_id=self._session_id))
+        )
+        try:
+            await finish_close(retract)
+        except asyncio.CancelledError:
+            if not isinstance(ended_by, asyncio.CancelledError):
+                raise
 
     async def _ensure_auto_fulfill_block_subscription(self) -> None:
         """Subscribe once to frontend blocks for judge auto-fulfilment."""

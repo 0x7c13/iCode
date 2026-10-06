@@ -689,8 +689,10 @@ class ApprovalRequest(Event):
     judging: bool = False
     """True when an LLM reviewer is concurrently evaluating this request.
 
-    The TUI shows the "Evaluating" spinner on arrival and waits for an
-    ``ApprovalReviewed`` event to update the dialog.
+    An ``ApprovalReviewed`` follows unless the wait ends first. A frontend may
+    hold the request out of sight until then and ask the user only when the
+    verdict flags it (the ACP server always does; the TUI does by default), or
+    show it at once with an "Evaluating" spinner.
     """
 
 

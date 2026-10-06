@@ -399,6 +399,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 handle_approval_response=self._handle_approval_response,
                 handle_ask_user_response=self._handle_ask_user_response,
                 question_inline_preferred=self._question_inline_preferred,
+                approval_defer_while_judging=self._approval_defer_while_judging,
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
@@ -546,6 +547,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         persist_tool_groups_expanded(value)
         cast("ChrysApp", self.app).settings_handle.override(tool_groups_expanded=value)
 
+    def _apply_approval_defer_while_judging(self, value: bool) -> None:
+        """Put the choice in force; requests already waiting keep the choice they arrived under."""
+        cast("ChrysApp", self.app).settings_handle.override(approval_defer_while_judging=value)
+
+    def _approval_defer_while_judging(self) -> bool:
+        return cast("ChrysApp", self.app).settings_handle.settings.approval_defer_while_judging
+
     def _refresh_trajectory_verify_commands(self) -> None:
         """Re-project the word list a reload only installed into the handle.
 
@@ -573,6 +581,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 switch_locale=self._switch_locale_for_panel,
                 apply_trajectory_verify_commands=self._apply_trajectory_verify_commands,
                 apply_tool_groups_expanded=self._apply_tool_groups_expanded,
+                apply_approval_defer_while_judging=self._apply_approval_defer_while_judging,
                 list_themes=lambda: sorted(app.available_themes),
                 save_notifications=self._schedule_notification_settings_save,
                 notification_service=self._notification_service,

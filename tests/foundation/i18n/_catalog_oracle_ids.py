@@ -301,6 +301,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.chrome.approval_mode.badge",
     "tui.chrome.approval_mode.bypass",
     "tui.chrome.approval_mode.manual",
+    "tui.chrome.approval_mode.reviewing",
     "tui.commands.title.disabled",
     "tui.commands.title.invalid",
     "tui.commands.title.man_page",

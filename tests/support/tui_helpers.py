@@ -306,13 +306,20 @@ class ScreenSetters:
         _call_screen_hook(self._screen, "_set_workspace_cwd", value)
 
 
-def make_backend_handler(screen: object, *, locale_controller: LocaleController | None = None) -> BackendEventHandler:
+def make_backend_handler(
+    screen: object,
+    *,
+    locale_controller: LocaleController | None = None,
+    approval_defer_while_judging: Callable[[], bool] = lambda: False,
+) -> BackendEventHandler:
     """Construct a backend event handler around a lightweight screen fake.
 
     The handler shares the fake's ``_state``, ``_services`` and ``_live_diff``
     (see :func:`main_screen_parts`). A setter method the fake also defines
     (``_set_agent_running``, ``_set_restoring_session``, …) runs after the
-    state is updated, as MainScreen's own setter would.
+    state is updated, as MainScreen's own setter would. Approval requests the
+    judge reviews show at once unless *approval_defer_while_judging* says
+    otherwise.
     """
     state, services, live_diff = main_screen_parts(screen)
     setters = ScreenSetters(screen, state, services)
@@ -369,6 +376,7 @@ def make_backend_handler(screen: object, *, locale_controller: LocaleController 
                 screen, "_handle_ask_user_response", request_id, answers
             ),
             question_inline_preferred=lambda: False,
+            approval_defer_while_judging=approval_defer_while_judging,
             post_gc_message=post_gc_message,
             debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
             refresh_model_indicator=lambda: None,

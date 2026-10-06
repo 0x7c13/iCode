@@ -61,6 +61,7 @@ llm:
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 自动审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
+| `ui.approval.defer_while_judging` | 无 | `true` | 布尔值；自动模式下，TUI 是否只在审批裁判模型标记调用或评估失败时才弹出审批对话框。`false` 表示评估期间立即弹出。ACP 服务器和 `icode run` 不受影响 |
 | `project.config_enabled` | 无 | `false` | 布尔值；是否加载各工作目录的项目设置，必须在用户设置中启用 |
 | `project.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的项目 Hooks，必须在用户设置中启用，不影响用户级 Hooks |
 | `project.skills_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.agents/skills` 中的项目 Skills，必须在用户设置中启用；智能体自身的“从工作文件夹加载 Skills”选项也需保持开启 |

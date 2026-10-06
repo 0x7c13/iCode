@@ -92,6 +92,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Default approval mode | Sets the default approval mode for the next iCode launch; it does not affect the current session. Only `manual` and `auto` are offered; to bypass approval in the current session, use `/approval bypass`. For switching the current session's mode and the differences between modes, see [Configure approval modes](./approval.md). | Saved immediately; applies at the next launch |
+| Show the approval dialog only when Auto-Review flags a call | On by default. In automatic mode, no dialog opens while the approval judge model evaluates a call, and calls it judges safe run without one; the dialog opens only for flagged calls or when evaluation fails. When disabled, the dialog opens at once and shows **Evaluating**, so you can decide before evaluation finishes. Requests already waiting keep the behavior they started with. See [Handle approval requests in the TUI](./approval.md#handle-approval-requests-in-the-tui). | Immediately |
 
 #### Project trust
 

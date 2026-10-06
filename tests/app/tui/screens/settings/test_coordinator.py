@@ -115,6 +115,7 @@ class _Harness:
         self.locales: list[str] = []
         self.verify_commands: list[str] = []
         self.tool_groups_expanded: list[bool] = []
+        self.defer_while_judging: list[bool] = []
         self.saved_notifications: list[NotificationSettings] = []
         self.notification_service = _NotificationService()
         self.turn_task: asyncio.Task[None] | None = None
@@ -140,6 +141,7 @@ class _Harness:
                 switch_locale=self.locales.append,
                 apply_trajectory_verify_commands=self.verify_commands.append,
                 apply_tool_groups_expanded=self.tool_groups_expanded.append,
+                apply_approval_defer_while_judging=self.defer_while_judging.append,
                 list_themes=lambda: ["textual-dark", "chrys", "chrys-legacy"],
                 save_notifications=self.saved_notifications.append,
                 notification_service=lambda: self.notification_service,
@@ -204,6 +206,24 @@ async def test_live_keys_route_to_their_writers_and_never_to_the_queue(monkeypat
     # A LIVE key the panel does not render has no writer here either.
     with pytest.raises(ValueError, match="no live writer"):
         h.coordinator.apply_live("ui.editor.keymap", "vim")
+
+
+async def test_the_approval_deferral_choice_applies_at_once_and_saves_without_a_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = _Harness(monkeypatch)
+    await h.install_engine()
+
+    h.coordinator.apply_live("ui.approval.defer_while_judging", False)
+
+    assert h.defer_while_judging == [False]
+    assert h.recorder.calls == []
+
+    await h.close_and_settle()
+
+    assert h.recorder.calls == [({"ui.approval.defer_while_judging": False}, ())]
+    assert h.reloads == 0
+    assert h.coordinator.reload_dirty() is False
 
 
 async def test_written_values_project_until_the_live_settings_catch_up(monkeypatch: pytest.MonkeyPatch) -> None:
