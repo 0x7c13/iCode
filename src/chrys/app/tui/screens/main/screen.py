@@ -107,6 +107,7 @@ from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
 from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
+from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
 from chrys.foundation.config.settings import (
@@ -122,7 +123,7 @@ from chrys.foundation.events.types import (
     ExecutionChanged,
     SessionRestored,
 )
-from chrys.foundation.i18n import DisplaySequence, Localizer, msg
+from chrys.foundation.i18n import DisplaySequence, Localizer, MessageRef, msg
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
@@ -1638,6 +1639,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if not self._workflow.workflow_mode:
             self._config_actions.on_model_tag_clicked(event.mode)
 
+    @on(StatusBar.SelectorBusy)
+    def _on_selector_busy(self, event: StatusBar.SelectorBusy) -> None:
+        """Explain why a selector ignored a click during a run."""
+        if not self._workflow.workflow_mode:
+            self._config_actions.on_selector_busy(event.selector)
+
     @work(thread=False)
     async def _switch_model_profile(self, profile_id: str) -> None:
         """Commit a Chat model suggestion only while its owner remains active."""
@@ -2086,6 +2093,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     @on(AppHeader.ModeClicked)
     def _on_mode_clicked(self) -> None:
         if not self._can_switch_app_mode():
+            # Shell mode is the one block with no run to name; it stays silent.
+            if (notice := self._app_mode_busy_notice()) is not None:
+                self._view_adapter.notify(notice, title=workflow_text.MODE_BUSY_TITLE.bind(), severity="warning")
             return
 
         def selected(workflow: bool | None) -> None:
@@ -2104,14 +2114,20 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _can_switch_app_mode(self) -> bool:
         """Keep one presentation mode from submission through execution cleanup."""
-        return not (
-            self._state.shell.active
-            or self._state.run.agent_loading
+        return not self._state.shell.active and self._app_mode_busy_notice() is None
+
+    def _app_mode_busy_notice(self) -> MessageRef | None:
+        """Name the run that pins the app mode, or None while nothing runs."""
+        if self._workflow.awaiting_engine or self._services.execution().kind == "workflow":
+            return workflow_text.MODE_WORKFLOW_BUSY.bind()
+        if (
+            self._state.run.agent_loading
             or self._state.run.agent_running
             or self._state.submit.active
-            or self._workflow.awaiting_engine
             or self._services.execution_busy()
-        )
+        ):
+            return workflow_text.MODE_AGENT_BUSY.bind()
+        return None
 
     def _set_workflow_mode(self, workflow: bool) -> None:
         if workflow == self._workflow.workflow_mode or not self._can_switch_app_mode():

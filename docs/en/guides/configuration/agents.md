@@ -129,7 +129,7 @@ To make an agent always use a specific model profile:
 3. Select the model profile to bind from the dropdown. To add or edit a model profile, see [Configure models](./models.md).
 4. Click **Save**, then close the configuration window.
 
-If the current main agent is bound to a specific model profile, the model profile name in the status bar is grayed out and cannot be clicked to switch models.
+If the current main agent is bound to a specific model profile, the model profile name in the status bar is grayed out. Clicking it does not switch models; instead, a notice tells you which model the agent is bound to.
 
 To switch models through the status bar again, select **Use active model profile** on the agent's **Basic** tab, click **Save**, then close the configuration window.
 

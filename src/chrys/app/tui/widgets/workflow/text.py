@@ -36,6 +36,12 @@ MODE_CHAT = msg("tui.workflow.mode.chat", fallback="Chat")
 MODE_WORKFLOW = msg("tui.workflow.mode.workflow", fallback="Workflow")
 APP_MODE = msg("tui.workflow.mode.title", fallback="App Mode")
 MODE_BADGE = msg("tui.workflow.mode.badge", fallback=" APP MODE: {mode} ")
+MODE_BUSY_TITLE = msg("tui.workflow.mode.busy_title", fallback="Busy")
+MODE_AGENT_BUSY = msg("tui.workflow.mode.agent_busy", fallback="Cannot switch app mode while the agent is busy")
+MODE_WORKFLOW_BUSY = msg(
+    "tui.workflow.mode.workflow_busy",
+    fallback="Cannot switch app mode while a workflow is running",
+)
 CHAT_DESCRIPTION = msg("tui.workflow.mode.chat_description", fallback="Chat with an agent")
 WORKFLOW_DESCRIPTION = msg("tui.workflow.mode.workflow_description", fallback="Select and run a workflow")
 SESSION_TITLE = msg("tui.workflow.session_title", fallback="{name} · Session: {session_id}")
