@@ -273,11 +273,6 @@ def _resolve(check: _Check, argument: str, workspace: Path, config_dir: Path) ->
     if inner == target:
         message = "this folder holds workflows; pass one of the workflow files or folders in it"
         raise _StageFailed(_error("path_not_workflow", "resolve", message, file=str(target)))
-    if inner is not None:
-        hint = f"pass one of the workflow files or folders in {inner}"
-        raise _StageFailed(
-            _error("path_not_workflow", "resolve", "this folder is not a workflow", file=str(target), hint=hint)
-        )
     folder = _enclosing_workflow_folder(target, config_dir) if stat.S_ISREG(info.st_mode) else None
     if folder is not None:
         message = f"{target.name} is a file of the workflow folder {folder.name}, not a workflow of its own"
@@ -291,6 +286,11 @@ def _resolve(check: _Check, argument: str, workspace: Path, config_dir: Path) ->
     kind = _kind_of(root, config_dir)
     candidate = recognize_candidate(root, entry, kind, reserves_sdk=kind == SOURCE_KIND_GLOBAL)
     if candidate is None:
+        if inner is not None:  # a project, or its .chrys folder; a workflow folder may hold one of its own
+            hint = f"pass one of the workflow files or folders in {inner}"
+            raise _StageFailed(
+                _error("path_not_workflow", "resolve", "this folder is not a workflow", file=str(target), hint=hint)
+            )
         listed = _is_workflow_dir(root, config_dir)
         raise _StageFailed(
             _unrecognized(root / entry.name, folder=stat.S_ISDIR(info.st_mode), kind=kind, listed=listed)

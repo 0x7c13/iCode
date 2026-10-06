@@ -150,6 +150,7 @@ def test_every_spelling_of_a_folder_validates_the_folder(
     folder = project / ".chrys" / "workflows" / "review"
     _plant(folder / "review.py", BUILDER + "from steps import TITLE\n" + TAIL)
     _plant(folder / "steps.py", "TITLE = 't'\n")
+    _plant(folder / ".chrys" / "workflows" / "other.py", CHAIN)  # a project of its own leaves it a workflow
     monkeypatch.chdir(folder.parent)
     code, report = _json(validate, spelling)
     assert (code, report["target"]["layout"], report["target"]["path"]) == (0, "package", str(folder))
