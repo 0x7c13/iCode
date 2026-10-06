@@ -2542,13 +2542,13 @@
     "chrys.orchestration.workflows.catalog": {
       "WorkflowCatalog.preview": [
         ["timeout", "async with asyncio.timeout(timeout)", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(self.discover)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(self._discover_one, workflow_id)", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(self.ledger)", "unresolved"],
         ["awaitable", "await authorize_source()", "unresolved"],
         ["awaitable", "await report('definition')", "unresolved"],
         ["awaitable", "await report('environment')", "unresolved"],
         ["wrapper", "await materialize_runtime_sdk(self.config_dir)", "unresolved", "chrys.orchestration.workflows.preview.materialize_runtime_sdk"],
-        ["wrapper", "await preview_workflow(source, sdk=sdk, workspace=self.project_cwd, on_environment_ready=environment_ready)", "unresolved", "chrys.orchestration.workflows.preview.preview_workflow"],
+        ["wrapper", "await preview_workflow(source, sdk=sdk, workspace=self.project_cwd, bytecode_cache=worker_bytecode_cache_dir(self.config_dir), on_environment_ready=environment_ready)", "unresolved", "chrys.orchestration.workflows.preview.preview_workflow"],
         ["awaitable", "await report('ready', title=preview.title, node_count=len(preview.manifest['nodes']))", "unresolved"]
       ],
       "WorkflowCatalog.preview.authorize_source": [
@@ -2572,7 +2572,7 @@
         ["thread_pool", "await asyncio.to_thread(ConfirmationLedger, ledger_path(config_dir))", "unresolved"],
         ["wrapper", "await materialize_runtime_sdk(config_dir)", "unresolved", "chrys.orchestration.workflows.preview.materialize_runtime_sdk"],
         ["wrapper", "await prepare_workflow_environment(source, sdk=sdk)", "unresolved", "chrys.orchestration.workflows.preview.prepare_workflow_environment"],
-        ["wrapper", "await load_workflow(source, environment=environment, sdk=sdk, workspace=project_cwd, ask_handler=callbacks.ask, emit_handler=callbacks.emit)", "unresolved", "chrys.orchestration.workflows.preview.load_workflow"],
+        ["wrapper", "await load_workflow(source, environment=environment, sdk=sdk, workspace=project_cwd, bytecode_cache=worker_bytecode_cache_dir(config_dir), ask_handler=callbacks.ask, emit_handler=callbacks.emit)", "unresolved", "chrys.orchestration.workflows.preview.load_workflow"],
         ["awaitable", "await owner.prepare(run_id=execution.run_id, identity=identity, title=admitted.graph.title, settings=settings, model_registry=self._model_registry, hooks=self._build_hooks, request_id=event.request_id, has_agents=bool(admitted.resolved_nodes()))", "unresolved"],
         ["wrapper", "await finish_close(asyncio.create_task(owner.save()))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
         ["wrapper", "await finish_close(asyncio.create_task(discard()))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
@@ -2692,8 +2692,8 @@
         ["wrapper", "await finish_close(asyncio.create_task(client.close()))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
       ],
       "load_workflow": [
-        ["wrapper", "await WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace, ask_handler=ask_handler, emit_handler=emit_handler)", "unresolved", "chrys.orchestration.workflows.worker_client.WorkflowWorkerClient.launch"],
-        ["awaitable", "await client.load(source.source, filename=source.canonical_path, workspace=workspace)", "unresolved"],
+        ["wrapper", "await WorkflowWorkerClient.launch(environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache, ask_handler=ask_handler, emit_handler=emit_handler)", "unresolved", "chrys.orchestration.workflows.worker_client.WorkflowWorkerClient.launch"],
+        ["awaitable", "await client.load(source.source, filename=source.canonical_path, workspace=workspace, package_dir=package_dir, diagnose=diagnose, precompile=precompile if diagnose else ())", "unresolved"],
         ["wrapper", "await _close_worker(client)", "unresolved", "chrys.orchestration.workflows.preview._close_worker"],
         ["wrapper", "await _close_worker(client)", "unresolved", "chrys.orchestration.workflows.preview._close_worker"],
         ["wrapper", "await _close_worker(client)", "unresolved", "chrys.orchestration.workflows.preview._close_worker"]
@@ -2707,7 +2707,7 @@
       "preview_workflow": [
         ["wrapper", "await prepare_workflow_environment(source, sdk=sdk)", "unresolved", "chrys.orchestration.workflows.preview.prepare_workflow_environment"],
         ["awaitable", "await on_environment_ready(environment)", "unresolved"],
-        ["wrapper", "await load_workflow(source, environment=environment, sdk=sdk, workspace=workspace)", "unresolved", "chrys.orchestration.workflows.preview.load_workflow"],
+        ["wrapper", "await load_workflow(source, environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache, diagnose=diagnose)", "unresolved", "chrys.orchestration.workflows.preview.load_workflow"],
         ["wrapper", "await _close_worker(loaded.client)", "unresolved", "chrys.orchestration.workflows.preview._close_worker"]
       ]
     },
@@ -2986,6 +2986,21 @@
         ["thread_pool", "await asyncio.to_thread(admit_manifest, manifest, agent_registry=agent_registry, model_registry=model_registry, settings=settings)", "unresolved"]
       ]
     },
+    "chrys.orchestration.workflows.validation": {
+      "_check_bindings": [
+        ["thread_pool", "await asyncio.to_thread(_registries)", "unresolved"]
+      ],
+      "_load": [
+        ["wrapper", "await materialize_runtime_sdk(config_dir)", "unresolved", "chrys.orchestration.workflows.preview.materialize_runtime_sdk"],
+        ["wrapper", "await preview_workflow(source, sdk=sdk, workspace=workspace, bytecode_cache=worker_bytecode_cache_dir(config_dir), on_environment_ready=environment_ready, diagnose=True)", "unresolved", "chrys.orchestration.workflows.preview.preview_workflow"]
+      ],
+      "validate_workflow_path": [
+        ["thread_pool", "await asyncio.to_thread(_resolve, check, path, workspace, config_dir)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(_read, check.candidate)", "unresolved"],
+        ["wrapper", "await _load(check, source, config_dir=config_dir, workspace=workspace)", "unresolved", "chrys.orchestration.workflows.validation._load"],
+        ["wrapper", "await _check_bindings(preview, settings)", "unresolved", "chrys.orchestration.workflows.validation._check_bindings"]
+      ]
+    },
     "chrys.orchestration.workflows.worker_client": {
       "WorkflowWorkerClient._call": [
         ["wrapper", "await self._request(method, params, key=key)", "unresolved", "chrys.orchestration.workflows.worker_client.WorkflowWorkerClient._request"]
@@ -3075,12 +3090,13 @@
         ["wrapper", "await self._evaluate(Method.EVAL_OUTGOING, params, ref, timeout)", "unresolved", "chrys.orchestration.workflows.worker_client.WorkflowWorkerClient._evaluate"]
       ],
       "WorkflowWorkerClient.launch": [
+        ["thread_pool", "await asyncio.to_thread(ensure_owner_only_directory, bytecode_cache)", "unresolved"],
         ["wrapper", "await spawn_managed_stdio_process(environment.executable, str(host_path), str(sdk.path), cwd=str(workspace), env=child_env, limit=_STDIO_LIMIT, parent_env=dict(os.environ))", "unresolved", "chrys.foundation.platform.process.spawn_managed_stdio_process"],
         ["awaitable", "await client._handshake(hello_timeout, environment)", "unresolved"],
         ["awaitable", "await client.close()", "unresolved"]
       ],
       "WorkflowWorkerClient.load": [
-        ["timeout", "await asyncio.wait_for(self._call(Method.LOAD, {'source': text, 'filename': filename, 'workspace': str(workspace)}, key=None), timeout=LIMITS.load_timeout)", "unresolved"],
+        ["timeout", "await asyncio.wait_for(self._call(Method.LOAD, params, key=None), timeout=LIMITS.load_timeout)", "unresolved"],
         ["wrapper", "await self.close()", "unresolved", "chrys.orchestration.workflows.worker_client.WorkflowWorkerClient.close"]
       ],
       "WorkflowWorkerClient.native_output": [
@@ -5086,6 +5102,7 @@
         ["awaitable", "await self._submit(attempt, context.run, compute, pool=self.eval_pool)", "unresolved"]
       ],
       "Host._load": [
+        ["thread_pool", "await self.loop.run_in_executor(self.pool, _precompile, source, precompile, places)", "unresolved"],
         ["thread_pool", "await self.loop.run_in_executor(self.pool, context.run, run_module)", "unresolved"]
       ],
       "Host._native_output": [

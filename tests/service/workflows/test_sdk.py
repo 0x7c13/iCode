@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -427,8 +428,163 @@ def test_build_requires_start_and_an_output_and_full_reachability() -> None:
 
 def test_validation_error_carries_a_location() -> None:
     error = WorkflowValidationError("bad", location="node")
-    assert error.to_dict() == {"message": "bad", "location": "node"}
+    assert error.to_dict() == {"message": "bad", "location": "node", "file": None, "line": None}
     assert str(error) == "bad"
+    sited = WorkflowValidationError("bad", location="node", site=("/w/flow.py", 7))
+    assert sited.to_dict() == {"message": "bad", "location": "node", "file": "/w/flow.py", "line": 7}
+
+
+def _line() -> int:
+    """The line of the caller's call to this function."""
+    frame = inspect.currentframe()
+    assert frame is not None and frame.f_back is not None
+    return frame.f_back.f_lineno
+
+
+def test_nodes_and_edges_remember_the_line_that_declared_them() -> None:
+    wf = WorkflowBuilder("sites")
+    a = wf.python("a", body_fn)
+    a_line = _line() - 1
+    b = wf.agent("b", profile="Code")
+    b_line = _line() - 1
+
+    def body(scope: BuilderScope) -> tuple[NodeHandle, NodeHandle]:
+        node = scope.python("inner", body_fn)
+        lines["inner"] = _line() - 1
+        return node, node
+
+    lines: dict[str, int] = {}
+    loop = wf.loop("L", body=body, until=yes, max_iterations=1)
+    loop_line = _line() - 1
+    wf.start(a)
+    wf.edge(a, b)
+    edge_line = _line() - 1
+    wf.chain(b, loop)
+    chain_line = _line() - 1
+    wf.output(loop)
+    definition = wf.build().definition
+    here = __file__
+    assert definition.nodes["a"].site == (here, a_line)
+    assert definition.nodes["b"].site == (here, b_line)
+    assert definition.nodes["inner"].site == (here, lines["inner"])
+    assert definition.nodes["L"].site == (here, loop_line)
+    assert {edge_id: edge.site for edge_id, edge in definition.edges.items()} == {
+        "a->b": (here, edge_line),
+        "b->L": (here, chain_line),
+    }
+
+
+def test_switch_and_join_edges_remember_their_declaring_line() -> None:
+    wf = WorkflowBuilder("sites")
+    a, b, c, d = (wf.python(name, body_fn) for name in "abcd")
+    wf.start(a)
+    wf.switch(a, [(yes, b)], default=c)
+    switch_line = _line() - 1
+    wf.join([b, c], d)
+    join_line = _line() - 1
+    wf.output(d)
+    definition = wf.build().definition
+    assert {edge_id: edge.site for edge_id, edge in definition.edges.items()} == {
+        "a->b": (__file__, switch_line),
+        "a->c": (__file__, switch_line),
+        "b->join:d": (__file__, join_line),
+        "c->join:d": (__file__, join_line),
+        "join:d->d": (__file__, join_line),
+    }
+    assert definition.nodes["join:d"].site == (__file__, join_line)
+
+
+def test_declaration_sites_stay_out_of_the_manifest_and_of_equality() -> None:
+    source = (
+        "wf = WorkflowBuilder('same')\na = wf.python('a', body_fn)\nb = wf.python('b', body_fn)\n"
+        "wf.start(a)\nwf.edge(a, b)\nwf.output(b)\nworkflow = wf.build()\n"
+    )
+    first, second = ({"WorkflowBuilder": WorkflowBuilder, "body_fn": body_fn} for _ in range(2))
+    exec(compile(source, __file__, "exec"), first)
+    exec(compile("\n\n\n" + source, __file__, "exec"), second)  # the same workflow, declared three lines lower
+    one, other = first["workflow"].definition, second["workflow"].definition
+    assert (one.nodes["a"].site, other.nodes["a"].site) == ((__file__, 2), (__file__, 5))
+    assert (one.edges["a->b"].site, other.edges["a->b"].site) == ((__file__, 5), (__file__, 8))
+    assert canonical_json(first["workflow"].manifest()) == canonical_json(second["workflow"].manifest())
+    assert "site" not in canonical_json(first["workflow"].manifest())
+    assert one.nodes == other.nodes
+    assert one.edges == other.edges
+
+
+def test_code_built_under_a_made_up_name_is_located_at_the_line_that_ran_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    namespace: dict[str, Any] = {"WorkflowBuilder": WorkflowBuilder, "body_fn": body_fn}
+    generated = (
+        "wf = WorkflowBuilder('g')\na = wf.python('a', body_fn)\nwf.start(a)\nwf.output(a)\nworkflow = wf.build()\n"
+    )
+    exec(compile(generated, "<generated>", "exec"), namespace)
+    exec_line = _line() - 1
+    assert namespace["workflow"].definition.nodes["a"].site == (__file__, exec_line)
+    missing = str(Path(__file__).parent / "no-such-workflow.py")
+    exec(compile(generated, missing, "exec"), namespace)
+    exec_line = _line() - 1
+    assert namespace["workflow"].definition.nodes["a"].site == (__file__, exec_line)
+    monkeypatch.setenv("CHRYS_WORKFLOW_ENTRY", missing)
+    exec(compile(generated, missing, "exec"), namespace)
+    assert namespace["workflow"].definition.nodes["a"].site == (missing, 2)
+
+
+def test_a_callable_of_the_wrong_shape_is_located_at_its_node_or_edge() -> None:
+    wf = WorkflowBuilder("shapes")
+    with pytest.raises(WorkflowValidationError, match="must be callable") as body:
+        wf.python("a", 3)
+    a, b, c = (wf.python(name, body_fn) for name in "abc")
+    with pytest.raises(WorkflowValidationError, match="sync function") as predicate:
+        wf.edge(a, b, when=_AsyncCallable())
+    with pytest.raises(WorkflowValidationError, match="positional parameter") as case:
+        wf.switch(a, [(lambda: True, b)], c)
+    with pytest.raises(WorkflowValidationError, match="sync function") as until:
+        wf.loop("L", body=lambda scope: (scope.python("x", body_fn),) * 2, until=_AsyncCallable(), max_iterations=1)
+    assert [error.value.location for error in (body, predicate, case, until)] == ["a", "a->b", "a->b", "L"]
+
+
+def test_build_errors_point_at_the_offending_declaration() -> None:
+    wf = WorkflowBuilder("unreachable")
+    a = wf.python("a", body_fn)
+    wf.python("z", body_fn)
+    wf.python("y", body_fn)
+    y_line = _line() - 1
+    wf.start(a)
+    wf.output(a)
+    with pytest.raises(WorkflowValidationError) as unreachable:
+        wf.build()
+    assert unreachable.value.site == (__file__, y_line)
+    assert unreachable.value.location == "y"
+
+    wf = WorkflowBuilder("cycle")
+    a, b, c = (wf.python(name, body_fn) for name in "abc")
+    wf.start(a)
+    wf.edge(a, b)
+    wf.edge(b, c)
+    wf.edge(c, b)
+    closing_line = _line() - 1
+    wf.output(c)
+    with pytest.raises(WorkflowValidationError, match="Cycle") as cycle:
+        wf.build()
+    assert cycle.value.site == (__file__, closing_line)
+
+    wf = WorkflowBuilder("join")
+    a, b, c, d = (wf.python(name, body_fn) for name in "abcd")
+    wf.start(a)
+    wf.edge(a, b)
+    wf.edge(a, c)
+    wf.edge(a, d)
+    extra_line = _line() - 1
+    wf.join([b, c], d)
+    wf.output(d)
+    with pytest.raises(WorkflowValidationError, match="join target") as join:
+        wf.build()
+    assert join.value.site == (__file__, extra_line)
+
+    wf = WorkflowBuilder("no start")
+    wf.output(wf.python("a", body_fn))
+    with pytest.raises(WorkflowValidationError, match="start") as no_start:
+        wf.build()
+    assert no_start.value.site is None
 
 
 def test_node_context_type_checks_and_delegates() -> None:

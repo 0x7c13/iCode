@@ -8,8 +8,9 @@ A preview probes the interpreter and loads the file on a throwaway worker.
 tests only need its result, so the first preview of a file really runs and the
 later ones reuse its result:
 
-- The key is the exact source (id, kind, canonical path, bytes), the SDK
-  digest and the workspace. A builtin's key leaves out the workspace: builtin
+- The key is the exact source (id, kind, canonical path, bytes and, for a
+  folder, its digest), the SDK digest and the workspace; where the worker
+  caches bytecode doesn't change what a preview finds. A builtin's key leaves out the workspace: builtin
   manifests are pre-generated without one (``tests/support/workflow_builtins.py``).
 - Only default-interpreter previews are kept. A bring-your-own interpreter can
   change on disk under the same path.
@@ -70,15 +71,26 @@ async def reused_preview_workflow(
     *,
     sdk: SdkArtifact,
     workspace: Path,
+    bytecode_cache: Path,
     on_environment_ready: Callable[[PreparedEnvironment], Awaitable[None]] | None = None,
 ) -> WorkflowPreview:
     """``preview_workflow`` that runs once per source, SDK and workspace in this process."""
+
+    async def run_real() -> WorkflowPreview:
+        return await _REAL_PREVIEW(
+            source,
+            sdk=sdk,
+            workspace=workspace,
+            bytecode_cache=bytecode_cache,
+            on_environment_ready=on_environment_ready,
+        )
+
     if any(step is not real for step, real in zip(_pipeline(), _REAL_PIPELINE, strict=True)):
-        return await _REAL_PREVIEW(source, sdk=sdk, workspace=workspace, on_environment_ready=on_environment_ready)
+        return await run_real()
     key = (source, sdk.digest, "" if source.source_kind == SOURCE_KIND_BUILTIN else str(workspace))
     kept = _KEPT.get(key)
     if kept is None:
-        preview = await _REAL_PREVIEW(source, sdk=sdk, workspace=workspace, on_environment_ready=on_environment_ready)
+        preview = await run_real()
         if preview.environment.mode == "default":
             _KEPT[key] = _fresh(preview, source)
         return preview

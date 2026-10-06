@@ -14,7 +14,7 @@ from chrys.app.tui.widgets.workflow import text
 from chrys.app.tui.widgets.workflow.output import WorkflowOutputText
 from chrys.app.tui.widgets.workflow.records import stored_output_value
 from chrys.service.workflows.artifacts import read_node_output, read_run_source
-from chrys.service.workflows.discovery import read_source
+from chrys.service.workflows.discovery import read_entry_bytes
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.store import read_run_header, read_run_output, read_run_spec
 
@@ -125,7 +125,7 @@ class WorkflowContent:
             if not isinstance(environment, dict):
                 raise ValueError("Invalid workflow environment record.")
             fields = {
-                "entry_digest": header.get("entry_digest", ""),
+                "source_digest": header.get("entry_digest", ""),
                 "python_version": environment.get("python_version", ""),
                 "environment_mode": environment.get("mode", ""),
                 "interpreter": environment.get("executable", ""),
@@ -156,7 +156,7 @@ class WorkflowContent:
             if view.preview is None:
                 raise RuntimeError("Reading workflow source requires a run or a preview.")
             source = view.preview.source
-            return read_source(Path(source.canonical_path), source.source_kind).source
+            return read_entry_bytes(Path(source.canonical_path), source.source_kind)
 
         def current() -> bool:
             panel = self._panel

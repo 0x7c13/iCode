@@ -199,6 +199,16 @@ REGULAR_RULES = (
     TestRule("tests/orchestration/workflows/test_worker_semantics.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/orchestration/workflows/test_worker_stdout.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/orchestration/workflows/test_worker_values.py", _WORKFLOW_WORKER_HOST),
+    # Previews, runs and the CLI start a real worker without importing the host;
+    # many TUI tests only reach it through a shared helper, so they go by directory.
+    TestRule("tests/orchestration/workflows", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/app/cli/test_workflow.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/app/cli/test_workflow_validate.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/app/tui/screens/main", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/app/tui/screens/test_workflow_confirm_dialog.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/app/tui/widgets/test_workflow_transcript_order.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/support/test_workflow_previews.py", _WORKFLOW_WORKER_HOST),
+    TestRule("tests/service/workflows/test_py39_harness.py", _WORKFLOW_WORKER_HOST),
     TestRule("tests/service/agent_middleware/test_reminder_lifecycle.py", _REMINDER_PIPELINE),
     TestRule("tests/service/llm/test_client_contracts.py", _LLM_CLIENT_SOURCES),
     TestRule("tests/service/llm/test_persisted_names.py", ("src/chrys/service/llm/**",)),
@@ -236,10 +246,24 @@ _FULL_TRIGGER_PATHS = frozenset(
 
 _BUILTIN_PROFILE_TEST_TARGETS = (
     "tests/app/acp/test_session_manager_profiles.py",
+    "tests/app/cli/test_workflow_validate.py",
     "tests/app/tui/behaviors/test_chrys_themes.py",
     "tests/app/tui/screens",
     "tests/orchestration/engine/build",
     "tests/service/profiles",
+)
+
+# Built-in workflow templates are loaded by path through discovery, never imported.
+_BUILTIN_WORKFLOW_TEST_TARGETS = (
+    "tests/app/cli/test_app.py",
+    "tests/app/cli/test_workflow.py",
+    "tests/app/tui/screens/main",
+    "tests/app/tui/screens/test_workflow_confirm_dialog.py",
+    "tests/app/tui/widgets/markdown/diagram/test_workflow_graph.py",
+    "tests/app/tui/widgets/test_trajectory_workflow.py",
+    "tests/orchestration/workflows",
+    "tests/service/workflows",
+    "tests/support/test_workflow_previews.py",
 )
 
 _TRAJECTORY_SOURCE_PREFIXES = (
@@ -1540,6 +1564,9 @@ def _add_runtime_asset_targets(selection: Selection, changes: tuple[Change, ...]
         elif path.startswith("src/chrys/service/profiles/agents/builtins/") and path.endswith(".yaml"):
             for target in _BUILTIN_PROFILE_TEST_TARGETS:
                 selection.add(target, f"built-in profile changed: {path}")
+        elif path.startswith("src/chrys/service/workflows/builtins/"):
+            for target in _BUILTIN_WORKFLOW_TEST_TARGETS:
+                selection.add(target, f"built-in workflow changed: {path}")
         elif path.startswith("locales/") or path.endswith("/LC_MESSAGES/chrys.mo"):
             selection.add("tests/foundation/i18n", f"i18n artifact changed: {path}")
             selection.add("tests/app/tui/i18n", f"i18n artifact changed: {path}")

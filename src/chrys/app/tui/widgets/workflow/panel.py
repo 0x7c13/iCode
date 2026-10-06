@@ -547,9 +547,9 @@ class WorkflowPanel(Vertical):
             title = text.render(
                 text.SESSION_TITLE.bind(name=title, session_id=session_short_id(session_id)), self.locale_controller
             )
-        self.border_title = Text(title)
+        self.border_title = Text(text.shown(title))
         self.workspace_cwd = cwd
-        self.border_subtitle = Text(cwd)
+        self.border_subtitle = Text(text.shown(cwd))
 
     def _update_header(self, run: ObservedRun | None) -> None:
         if not self.definition.manifest:

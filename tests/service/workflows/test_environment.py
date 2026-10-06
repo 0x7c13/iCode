@@ -20,6 +20,7 @@ from chrys.service.workflows.environment import (
     PreparedEnvironment,
     WorkflowEnvironmentError,
     WorkflowEnvironmentManager,
+    metadata_block_line,
     parse_environment_request,
     plan_environment,
     satisfies_requires_python,
@@ -88,6 +89,26 @@ def test_the_script_block_is_read_lexically() -> None:
 def test_malformed_blocks_are_rejected_not_ignored(source: bytes, message: str) -> None:
     with pytest.raises(WorkflowEnvironmentError, match=message):
         parse_environment_request(source)
+
+
+@pytest.mark.parametrize(
+    ("source", "line", "column"),
+    [
+        (b"x = 1\n# /// script\n# requires-python = \n# ///\n", 3, 21),
+        (b"x = 1\n# /// script\n# [tool.chrys]\n#\n# python = = 1\n# ///\n", 5, 12),
+        (b"x = 1\r\n\r\n# /// script\r\n# requires-python = 3\r\n# ///\r\n", 3, None),
+        (b"# /// script\n# a = 1\n# ///\n\n# /// script\n# b = 2\n# ///\n", 5, None),
+    ],
+)
+def test_a_malformed_block_says_where_in_the_file(source: bytes, line: int, column: int | None) -> None:
+    with pytest.raises(WorkflowEnvironmentError) as caught:
+        parse_environment_request(source)
+    assert (caught.value.line, caught.value.column) == (line, column)
+
+
+def test_the_block_line_is_found_without_parsing_the_block() -> None:
+    assert metadata_block_line(b"x = 1\r\n# /// script\r\n# not toml = = \r\n# ///\r\n") == 2
+    assert metadata_block_line(b"# /// other\n# x = 1\n# ///\n") is None
 
 
 # --------------------------------------------------------------------------- plan

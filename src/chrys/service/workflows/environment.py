@@ -41,7 +41,15 @@ DEPENDENCIES_NEED_BYO = (
 
 
 class WorkflowEnvironmentError(RuntimeError):
-    """The workflow cannot be given an environment; the message is user-facing and the run never starts."""
+    """The workflow cannot be given an environment; the message is user-facing and the run never starts.
+
+    ``line`` and ``column`` (1-based, characters) place a fault in the file's ``script`` metadata block.
+    """
+
+    def __init__(self, message: str, *, line: int | None = None, column: int | None = None) -> None:
+        super().__init__(message)
+        self.line = line
+        self.column = column
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,32 +97,55 @@ class PreparedEnvironment:
 
 def parse_environment_request(source: bytes) -> EnvironmentRequest:
     """Read the ``script`` metadata block; no block is an empty request, a malformed one an error."""
-    # Read as text mode would, with universal newlines: a CRLF file would otherwise hide its block from the regex.
-    text = source.decode("utf-8", errors="replace").removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    text = _metadata_text(source)
     blocks = [match for match in _METADATA_BLOCK.finditer(text) if match.group("type") == "script"]
     if not blocks:
         return EnvironmentRequest(None, (), None)
     if len(blocks) > 1:
-        raise WorkflowEnvironmentError("The workflow file declares more than one `script` metadata block.")
-    content = "".join(
-        line[2:] if line.startswith("# ") else line[1:] for line in blocks[0].group("content").splitlines(keepends=True)
-    )
+        raise WorkflowEnvironmentError(
+            "The workflow file declares more than one `script` metadata block.", line=_line_of(text, blocks[1])
+        )
+    block_line = _line_of(text, blocks[0])
+    lines = blocks[0].group("content").splitlines(keepends=True)
+    content = "".join(line[2:] if line.startswith("# ") else line[1:] for line in lines)
     try:
         metadata = tomllib.loads(content)
     except tomllib.TOMLDecodeError as exc:
-        raise WorkflowEnvironmentError(f"The workflow file's `script` metadata is not valid TOML: {exc}") from exc
-    requires_python = _optional_string(metadata.get("requires-python"), "requires-python")
+        # The block's content starts on the line after `# /// script`; each line lost its "# " (or "#") prefix.
+        inside = 0 < exc.lineno <= len(lines)
+        raise WorkflowEnvironmentError(
+            f"The workflow file's `script` metadata is not valid TOML: {exc.msg}",
+            line=block_line + exc.lineno if inside else block_line,
+            column=exc.colno + (2 if lines[exc.lineno - 1].startswith("# ") else 1) if inside else None,
+        ) from exc
+    requires_python = _optional_string(metadata.get("requires-python"), "requires-python", block_line)
     dependencies = metadata.get("dependencies", [])
     if not isinstance(dependencies, list) or not all(isinstance(item, str) for item in dependencies):
-        raise WorkflowEnvironmentError("The workflow file's `dependencies` must be a list of strings.")
+        raise WorkflowEnvironmentError("The workflow file's `dependencies` must be a list of strings.", line=block_line)
     tool = metadata.get("tool", {})
     if not isinstance(tool, dict):
-        raise WorkflowEnvironmentError("The workflow file's `[tool]` must be a table.")
+        raise WorkflowEnvironmentError("The workflow file's `[tool]` must be a table.", line=block_line)
     chrys_tool = tool.get("chrys", {})
     if not isinstance(chrys_tool, dict):
-        raise WorkflowEnvironmentError("The workflow file's `[tool.chrys]` must be a table.")
-    python = _optional_string(chrys_tool.get("python"), "[tool.chrys] python")
+        raise WorkflowEnvironmentError("The workflow file's `[tool.chrys]` must be a table.", line=block_line)
+    python = _optional_string(chrys_tool.get("python"), "[tool.chrys] python", block_line)
     return EnvironmentRequest(requires_python, tuple(dependencies), python)
+
+
+def metadata_block_line(source: bytes) -> int | None:
+    """The line of the file's first ``# /// script`` block, if it has one."""
+    text = _metadata_text(source)
+    block = next((match for match in _METADATA_BLOCK.finditer(text) if match.group("type") == "script"), None)
+    return _line_of(text, block) if block is not None else None
+
+
+def _metadata_text(source: bytes) -> str:
+    # Read as text mode would, with universal newlines: a CRLF file would otherwise hide its block from the regex.
+    return source.decode("utf-8", errors="replace").removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _line_of(text: str, block: re.Match[str]) -> int:
+    return text.count("\n", 0, block.start()) + 1
 
 
 def plan_environment(
@@ -220,10 +251,10 @@ def _anchored(candidate: str) -> str:
     return os.path.join(os.path.realpath(os.path.dirname(candidate) or "."), os.path.basename(candidate))
 
 
-def _optional_string(value: Any, name: str) -> str | None:
+def _optional_string(value: Any, name: str, line: int) -> str | None:
     if value is None or isinstance(value, str):
         return value
-    raise WorkflowEnvironmentError(f"The workflow file's `{name}` must be a string.")
+    raise WorkflowEnvironmentError(f"The workflow file's `{name}` must be a string.", line=line)
 
 
 def _release_prefix(version: tuple[int, ...], width: int) -> tuple[int, ...]:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import errno
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,3 +26,12 @@ def symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = Fal
                 raise
             pytest.skip(f"Symbolic link capability unavailable: {error}")
         raise
+
+
+def junction_or_skip(link: Path, target: Path) -> None:
+    """A Windows directory junction at *link*; other platforms have none, so the test is skipped there."""
+    if sys.platform != "win32":
+        pytest.skip("Directory junctions exist only on Windows")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))

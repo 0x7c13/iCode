@@ -21,10 +21,11 @@ from chrys.foundation.config.settings import Settings
 from chrys.orchestration.workflows.catalog import WorkflowCatalog
 from chrys.orchestration.workflows.preview import WorkflowInspection
 from chrys.service.workflows.discovery import BUILTIN_DIR, read_source
-from tests.orchestration.workflows._hosting import make_project, write_workflow
+from tests.orchestration.workflows._hosting import make_project, write_workflow, write_workflow_package
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
+from tests.support.workflow_workers import python_workflow
 
 
 @pytest.mark.parametrize(
@@ -121,7 +122,7 @@ async def test_both_source_views_neutralize_terminal_controls_but_preserve_white
     source = 'if True:\r\n\tvalue = "\x1b[24Dmasked\x07\x9b"\r\n# trailing\r'.encode()
     compile(source, "display-only.py", "exec")  # Control characters can occur in valid Python source.
     write_workflow(project, "display", source)
-    inspection = WorkflowInspection.read(read_source(project / ".chrys/workflows/display.py", "project"))
+    inspection = WorkflowInspection.read(read_source(project / ".chrys/workflows/display.py", "project", layout="file"))
     app = make_chrys_app(tmp_path / "sessions")
     async with app.run_test(size=(100, 32)) as pilot:
         dialog = WorkflowConfirmDialog(inspection)
@@ -142,3 +143,33 @@ async def test_both_source_views_neutralize_terminal_controls_but_preserve_white
         assert inspection.source.source == source
         assert inspection.source.entry_sha256 == sha256(source).hexdigest()
         await pilot.press("escape")
+
+
+@pytest.mark.parametrize(
+    ("layout", "note"),
+    [
+        ("file", "Trust allows this file and its selected interpreter"),
+        ("package", "Trust allows this workflow's folder and its selected interpreter"),
+    ],
+)
+async def test_the_trust_note_says_what_a_confirmation_covers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, note: str
+) -> None:
+    project = make_project(tmp_path)
+    monkeypatch.chdir(project)
+    body = python_workflow("def fn(value):\n    return value\n", "fn")
+    if layout == "package":
+        entry = write_workflow_package(project, "kit", body, {"helpers.py": b"VALUE = 1\n"})
+    else:
+        entry = write_workflow(project, "kit", body)
+    inspection = WorkflowInspection.read(read_source(entry, "project", layout=layout))
+    app = make_chrys_app(tmp_path / "sessions")
+    async with app.run_test(size=(100, 32)) as pilot:
+        dialog = WorkflowConfirmDialog(inspection)
+        await app.push_screen(dialog)
+        await wait_for(lambda: bool(dialog.query("#workflow-info-description")), pilot=pilot)
+
+        shown = str(dialog.query_one("#workflow-info-description", Static).content)
+
+        assert shown.startswith(note)
+        assert ("Source shows only the entry file" in shown) is (layout == "package")
