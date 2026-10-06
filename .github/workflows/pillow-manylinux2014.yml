@@ -29,7 +29,10 @@ name: Pillow manylinux2014 wheels
 # (the release notes link the run). Not before: a run refuses a tag that
 # already exists. If the sync deleted the tag first, create it on GitCode, wait
 # until it reaches GitHub, and publish the draft again:
-#   gh release edit <tag> --repo openJiuwen-ai/iCode --draft=false --prerelease --latest=false
+#   gh release edit <tag> --repo openJiuwen-ai/iCode --tag <tag> --verify-tag \
+#     --draft=false --prerelease --latest=false
+# --verify-tag refuses while GitHub lacks the tag: published without it, the
+# release would get a new tag at main's current commit.
 
 on:
   workflow_dispatch:
