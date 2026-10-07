@@ -402,6 +402,31 @@ def test_tool_result_message_never_carries_a_name() -> None:
     assert "name" not in prepared
 
 
+@pytest.mark.parametrize(
+    ("uri", "media_type"),
+    [
+        ("data:video/mp4;base64,AAAA", "video/mp4"),
+        ("data:audio/ogg;base64,AAAA", "audio/ogg"),
+        ("https://example.com/speech.wav", "audio/wav"),
+        ("https://example.com/report.pdf", "application/pdf"),
+    ],
+    ids=["video", "unknown-audio-format", "audio-link", "application-link"],
+)
+def test_media_without_a_wire_part_goes_out_as_placeholder_text(
+    uri: str, media_type: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    message = Message(role="user", contents=[Content.from_uri(uri=uri, media_type=media_type)])
+    with caplog.at_level("DEBUG", logger="chrys.service.llm.chat_completions.history"):
+        (prepared,) = encode_message(message, variant=OPENAI)
+    assert prepared == {
+        "role": "user",
+        "content": f"[{media_type} content omitted: the Chat Completions API does not accept it.]",
+    }
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Chat Completions has no content part for {media_type}; a placeholder text goes out instead."
+    ]
+
+
 def test_reasoning_coalescer_aggregate_sanitizes_name_and_keeps_reasoning() -> None:
     # The reasoning-bearing encoder builds its own aggregate message; the
     # sanitize must touch only ``name``, never the reasoning keys.

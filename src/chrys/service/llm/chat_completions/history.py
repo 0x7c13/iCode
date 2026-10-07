@@ -51,6 +51,9 @@ _FORBIDDEN_NAME_CHARS = re.compile(r"[\s<|\\/>]+")
 
 _AUDIO_FORMATS = ("wav", "mp3")
 
+# What the model reads in place of media this wire has no part for.
+_UNSUPPORTED_MEDIA_TEXT = "[{media_type} content omitted: the Chat Completions API does not accept it.]"
+
 
 def sanitize_author_name(name: str | None) -> str | None:
     """The author name as a valid ``name`` field; ``None`` when nothing valid is left.
@@ -394,9 +397,9 @@ def _media_part(content: Content) -> dict[str, Any]:
     if content.has_top_level_media_type("audio"):
         media_type = content.media_type or ""
         audio_format = next((name for name in _AUDIO_FORMATS if name in media_type), None)
-        if audio_format is not None and content.uri is not None:
-            # Only the base64 payload of a data URI.
-            data = content.uri.split(",", 1)[-1] if content.uri.startswith("data:") else content.uri
+        if audio_format is not None and content.uri is not None and content.uri.startswith("data:"):
+            # Only the base64 payload; ``input_audio`` takes no link.
+            data = content.uri.split(",", 1)[-1]
             return {"type": "input_audio", "input_audio": {"data": data, "format": audio_format}}
     elif (
         content.has_top_level_media_type("application") and content.uri is not None and content.uri.startswith("data:")
@@ -406,7 +409,10 @@ def _media_part(content: Content) -> dict[str, Any]:
         if filename := content.additional_properties.get("filename"):
             file["filename"] = filename
         return {"type": "file", "file": file}
-    return content.to_dict(exclude_none=True)
+    media_type = content.media_type or "Media"
+    # Debug only: history is encoded again for every request.
+    logger.debug("Chat Completions has no content part for %s; a placeholder text goes out instead.", media_type)
+    return {"type": "text", "text": _UNSUPPORTED_MEDIA_TEXT.format(media_type=media_type)}
 
 
 def _unmarked_summary(content: Content) -> dict[str, Any]:
