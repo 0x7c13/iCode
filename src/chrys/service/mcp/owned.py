@@ -162,6 +162,20 @@ def _mcp_config_candidate_names(*, local_name: str, normalized_name: str, remote
     return tuple(names)
 
 
+def _mcp_config_names_for(function: FunctionTool) -> tuple[str, ...]:
+    """Return the ``allowed_tools``/``always_load`` names that select *function*; none without MCP name stamps."""
+    additional = function.additional_properties or {}
+    normalized_name = additional.get(_MCP_NORMALIZED_NAME_KEY)
+    remote_name = additional.get(_MCP_REMOTE_NAME_KEY)
+    if not isinstance(normalized_name, str) or not isinstance(remote_name, str):
+        return ()
+    return _mcp_config_candidate_names(
+        local_name=function.name,
+        normalized_name=normalized_name,
+        remote_name=remote_name,
+    )
+
+
 def _inject_otel_into_mcp_meta(
     meta: dict[str, Any] | None = None,
     *,
@@ -342,21 +356,7 @@ class MCPTool:
         if self.allowed_tools is None:
             return self._functions
         allowed_names = set(self.allowed_tools)
-        filtered: list[FunctionTool] = []
-        for func in self._functions:
-            additional = func.additional_properties or {}
-            normalized_name = additional.get(_MCP_NORMALIZED_NAME_KEY)
-            remote_name = additional.get(_MCP_REMOTE_NAME_KEY)
-            if not isinstance(normalized_name, str) or not isinstance(remote_name, str):
-                continue
-            candidate_names = _mcp_config_candidate_names(
-                local_name=func.name,
-                normalized_name=normalized_name,
-                remote_name=remote_name,
-            )
-            if any(name in allowed_names for name in candidate_names):
-                filtered.append(func)
-        return filtered
+        return [func for func in self._functions if not allowed_names.isdisjoint(_mcp_config_names_for(func))]
 
     async def _safe_close_exit_stack(self) -> BaseException | None:
         try:

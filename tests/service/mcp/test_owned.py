@@ -25,6 +25,7 @@ from chrys.kernel.types import ChatResponseUpdate
 from chrys.service.mcp._http_transport import _HTTPMCPTool
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.errors import (
+    MCPToolNameAmbiguityError,
     MCPToolNameCollisionError,
     MCPToolNameValidationError,
 )
@@ -489,6 +490,60 @@ async def test_owned_catalog_filters_allowlist_before_collision_validation(remot
     assert [
         (function.name, function.additional_properties[_MCP_REMOTE_NAME_KEY]) for function in owned_tool.functions
     ] == [("a-b", "a/b")]
+
+
+async def _prefixed_catalog_where_one_local_name_is_another_remote_name(
+    allowed_tools: list[str] | None,
+) -> list[Any]:
+    owned_tool = MCPTool(name="s", tool_name_prefix="gh", allowed_tools=allowed_tools)
+    await _load_fake_remote_tools(owned_tool, _mcp_remote_tool("gh_search"), _mcp_remote_tool("search"))
+    return owned_tool.functions
+
+
+@pytest.mark.parametrize("connection_path", ["test", "agent"])
+async def test_allowed_tools_name_selecting_two_tools_fails_test_and_agent_connection(connection_path: str) -> None:
+    # ``gh_search`` is one tool's original name and the other's prefixed name.
+    functions = await _prefixed_catalog_where_one_local_name_is_another_remote_name(["gh_search"])
+    assert [(function.name, function.additional_properties[_MCP_REMOTE_NAME_KEY]) for function in functions] == [
+        ("gh_gh_search", "gh_search"),
+        ("gh_search", "search"),
+    ]
+
+    adapter = MCPAdapter()
+    config = MCPServerConfig(
+        name="s", transport="stdio", command="python", tool_name_prefix="gh", allowed_tools=["gh_search"]
+    )
+    fake = _FakeConnectionTool(functions=functions)
+    with (
+        patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
+        pytest.raises(
+            MCPToolNameAmbiguityError, match=r"invalid tool configuration.*'gh_search' matches gh_gh_search, gh_search"
+        ),
+    ):
+        if connection_path == "test":
+            await adapter.test_connection(config)
+        else:
+            await adapter.connect(config)
+
+    await adapter.disconnect_all()
+
+
+async def test_allowed_tools_names_selecting_one_tool_each_connect() -> None:
+    functions = await _prefixed_catalog_where_one_local_name_is_another_remote_name(["search", "gh_gh_search"])
+
+    adapter = MCPAdapter()
+    config = MCPServerConfig(
+        name="s",
+        transport="stdio",
+        command="python",
+        tool_name_prefix="gh",
+        allowed_tools=["search", "gh_gh_search"],
+    )
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=_FakeConnectionTool(functions=functions)):
+        tools = await adapter.connect(config)
+
+    assert sorted(tool.name for tool in tools) == ["gh_gh_search", "gh_search"]
+    await adapter.disconnect_all()
 
 
 async def test_owned_catalog_tool_and_prompt_collision_fails_connection() -> None:

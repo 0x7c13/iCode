@@ -179,7 +179,7 @@ Both `env` and `headers` are key-value mappings: enter the variable or header na
 | `bypass_proxy` | Boolean | `false` | HTTP | Whether to bypass HTTP/HTTPS proxies configured through environment variables and connect directly to the server. |
 | `terminate_on_close` | Boolean or `null` | `null` | HTTP | Whether to request termination of the remote session when closing the connection. `null` uses the default of `true`. |
 
-Use the server's original tool names in `allowed_tools` and `always_load`. `tool_name_prefix` changes the name the agent uses to call a tool; `approval.overrides` uses that same name. See [MCP tool names](./tool-kinds-and-names.md#mcp-tool-names) for naming rules.
+Use the server's original tool names in `allowed_tools` and `always_load`. `tool_name_prefix` changes the name the agent uses to call a tool; `approval.overrides` uses that same name. See [MCP tool names](./tool-kinds-and-names.md#mcp-tool-names) for naming rules. If a name you list could mean two tools — for example, with prefix `gh`, a server tool `search` becomes `gh_search`, the original name of another tool — the agent fails to load and the error names that entry; choose a different `tool_name_prefix`.
 
 When loading on demand is enabled, iCode also adds control tools for listing, loading, and unloading MCP tools. Their naming rules are described in [MCP tool names](./tool-kinds-and-names.md#mcp-tool-names). In this case, `tool_name_prefix` cannot exceed 49 characters.
 

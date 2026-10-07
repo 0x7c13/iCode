@@ -31,6 +31,7 @@ from chrys.service.mcp._progressive import (
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.cache import MCPConnectionCache, clone_mcp_function_tool, mcp_config_cache_key
 from chrys.service.mcp.errors import (
+    MCPToolNameAmbiguityError,
     MCPToolNameCollisionError,
     MCPToolNameValidationError,
 )
@@ -101,6 +102,19 @@ def test_programmatic_progressive_config_rejects_invalid_runtime_types() -> None
     invalid_always.always_load = "remote"  # type: ignore[assignment]
     with pytest.raises(ValueError, match=r"always_load.*list of strings"):
         _create_mcp_tool(invalid_always)
+
+
+async def test_always_load_name_selecting_two_tools_fails_connection() -> None:
+    # Remote ``search`` is called ``gh_search``, the original name of the other tool.
+    catalog = (_function("gh_gh_search", remote_name="gh_search"), _function("gh_search", remote_name="search"))
+
+    with pytest.raises(MCPToolNameAmbiguityError, match=r"'gh_search' matches gh_gh_search, gh_search"):
+        await _connected(*catalog, config=_config(tool_name_prefix="gh", always_load=["gh_search"]))
+
+    adapter, _fake, tools = await _connected(*catalog, config=_config(tool_name_prefix="gh", always_load=["search"]))
+    assert "gh_search" in {tool.name for tool in tools}
+    assert "gh_gh_search" not in {tool.name for tool in tools}
+    await adapter.disconnect_all()
 
 
 async def test_connect_all_fails_closed_for_programmatic_invalid_prefix() -> None:

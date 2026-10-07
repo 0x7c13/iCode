@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 
 from chrys.foundation.errors import clean_error_message
 from chrys.service.mcp._stdio_transport import (
@@ -105,6 +105,30 @@ class MCPToolNameCollisionError(MCPToolConfigurationError):
         self.conflict_with = conflict_with
         names = ", ".join(self.conflicting_names)
         cause = ValueError(f"permitted tool name collision with {conflict_with}: {names}. {guidance}")
+        super().__init__(
+            server_name,
+            transport,
+            cause,
+            failure_summary="has invalid tool configuration",
+        )
+
+
+class MCPToolNameAmbiguityError(MCPToolConfigurationError):
+    """Raised when an ``allowed_tools``/``always_load`` name selects more than one tool."""
+
+    def __init__(
+        self,
+        server_name: str,
+        transport: str,
+        *,
+        matches_by_name: Mapping[str, Collection[str]],
+    ) -> None:
+        self.matches_by_name = {name: tuple(sorted(set(tools))) for name, tools in sorted(matches_by_name.items())}
+        details = "; ".join(f"'{name}' matches {', '.join(tools)}" for name, tools in self.matches_by_name.items())
+        cause = ValueError(
+            f"configured tool name selects more than one tool: {details}. Configure a Tool Name Prefix under which "
+            "no prefixed tool name equals another tool's original name."
+        )
         super().__init__(
             server_name,
             transport,
