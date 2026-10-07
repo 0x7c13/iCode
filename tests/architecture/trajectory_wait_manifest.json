@@ -395,7 +395,7 @@
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
-        ["awaitable", "await self._trajectory.cycle_started(self._max_iterations, tools_offered=bool(self._options.get('tools')))", "unresolved"],
+        ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"]
       ],
@@ -418,7 +418,7 @@
         ["awaitable", "await logical_stream.get_final_response()", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
-        ["awaitable", "await self._trajectory.cycle_started(self._max_iterations, tools_offered=bool(self._options.get('tools')))", "unresolved"],
+        ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["async_iteration", "async for update in final_logical_stream", "unresolved"],
         ["awaitable", "await final_logical_stream.get_final_response()", "unresolved"],
         ["wrapper", "await self._finish_cycle(final_response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
