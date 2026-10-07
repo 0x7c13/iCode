@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import json
 import logging
 import re
@@ -79,9 +78,6 @@ _MCP_FRAMEWORK_DENYLIST: frozenset[str] = frozenset(
         "_meta",
     }
 )
-_mcp_call_headers: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("_mcp_call_headers")
-MCP_DEFAULT_TIMEOUT = 30
-MCP_DEFAULT_SSE_READ_TIMEOUT = 60 * 5
 # ``ErrorData.data`` of the JSON-RPC errors the HTTP transport makes up when its
 # own request fails. Their message is local httpx detail — the configured URL,
 # which can carry credentials, included — not an answer from the server.
@@ -182,13 +178,6 @@ def _inject_otel_into_mcp_meta(
         if overwrite or key not in meta:
             meta[key] = value
     return meta
-
-
-def _url_origin(url: Any) -> tuple[str, str, int | None]:
-    port = url.port
-    if port is None:
-        port = 443 if url.scheme == "https" else 80 if url.scheme == "http" else None
-    return (url.scheme, url.host or "", port)
 
 
 def _server_error(message: str, subject: str, *, inner_exception: Exception | None = None) -> ModelVisibleToolError:
@@ -1271,7 +1260,6 @@ class MCPStreamableHTTPTool(MCPTool):
         terminate_on_close: bool | None = None,
         additional_properties: dict[str, Any] | None = None,
         http_client: AsyncClient | None = None,
-        header_provider: Callable[[dict[str, Any]], dict[str, str]] | None = None,
         additional_tool_argument_names: Sequence[str] | Mapping[str, str | Sequence[str]] | None = None,
         **_kwargs: Any,
     ) -> None:
@@ -1284,10 +1272,6 @@ class MCPStreamableHTTPTool(MCPTool):
                 hooks. If the client follows cross-origin redirects, those
                 credentials can be sent to another origin. The caller is responsible
                 for scoping them to the configured URL's origin.
-            header_provider: Optional trusted callback receiving the model's tool
-                arguments plus only explicitly allowed runtime extras. Trusted MCP
-                request ``_meta`` is included when present; model-supplied ``_meta``
-                and unapproved Chrys runtime kwargs are excluded.
         """
         super().__init__(
             name=name,
@@ -1306,8 +1290,6 @@ class MCPStreamableHTTPTool(MCPTool):
         self.url = url
         self.terminate_on_close = terminate_on_close
         self._httpx_client: AsyncClient | None = http_client
-        self._header_provider = header_provider
-        self._inject_headers_hook: Callable[[Any], Awaitable[None]] | None = None
 
     def _mcp_base_span_attributes(self) -> dict[str, Any]:
         attrs = super()._mcp_base_span_attributes()
@@ -1325,47 +1307,11 @@ class MCPStreamableHTTPTool(MCPTool):
         return attrs
 
     def get_mcp_client(self) -> _AsyncGeneratorContextManager[Any, None]:
-        from httpx import URL, AsyncClient, Request, Timeout
-
-        http_client = self._httpx_client
-        if self._header_provider is not None:
-            target_origin = _url_origin(URL(self.url))
-            if http_client is None:
-                http_client = AsyncClient(
-                    follow_redirects=True,
-                    timeout=Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
-                )
-                self._httpx_client = http_client
-
-            if self._inject_headers_hook is None:
-
-                async def _inject_headers(request: Request) -> None:
-                    headers = _mcp_call_headers.get({})
-                    if _url_origin(request.url) != target_origin:
-                        for key in headers:
-                            request.headers.pop(key, None)
-                        return
-                    for key, value in headers.items():
-                        request.headers[key] = value
-
-                self._inject_headers_hook = _inject_headers
-                http_client.event_hooks["request"].append(self._inject_headers_hook)
-
         return streamable_http_client(
             url=self.url,
-            http_client=http_client,
+            http_client=self._httpx_client,
             terminate_on_close=self.terminate_on_close if self.terminate_on_close is not None else True,
         )
-
-    async def call_tool(self, tool_name: str, **kwargs: Any) -> str | list[Content]:
-        if self._header_provider is not None:
-            headers = self._header_provider(kwargs)
-            token = _mcp_call_headers.set(headers)
-            try:
-                return await super().call_tool(tool_name, **kwargs)
-            finally:
-                _mcp_call_headers.reset(token)
-        return await super().call_tool(tool_name, **kwargs)
 
 
 def streamable_http_client(*args: Any, **kwargs: Any) -> _AsyncGeneratorContextManager[Any, None]:

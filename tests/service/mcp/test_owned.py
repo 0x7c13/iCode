@@ -32,7 +32,6 @@ from chrys.service.mcp.owned import (
     _MCP_FRAMEWORK_DENYLIST,
     _MCP_NORMALIZED_NAME_KEY,
     _MCP_REMOTE_NAME_KEY,
-    MCPStreamableHTTPTool,
     MCPTool,
 )
 from chrys.service.profiles.agents.schema import MCPServerConfig
@@ -393,51 +392,6 @@ async def test_mcp_declared_collision_reaches_client_session_without_model_meta(
     assert call.name == "remote"
     assert call.arguments == {"session": "sr-design"}
     assert call.meta is None or "forged" not in call.meta
-
-
-async def test_mcp_header_provider_sees_model_arguments_and_explicit_runtime_extras_only() -> None:
-    provider_inputs: list[dict[str, Any]] = []
-
-    def provide_headers(arguments: dict[str, Any]) -> dict[str, str]:
-        provider_inputs.append(dict(arguments))
-        return {}
-
-    session = _ScriptedClientSession(
-        tools=[
-            _mcp_remote_tool(
-                "remote",
-                input_schema={
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                },
-            )
-        ],
-        call_tool=_ok_result(),
-    )
-    tool = MCPStreamableHTTPTool(
-        name="m",
-        url="https://mcp.example/mcp",
-        session=_as_client_session(session),
-        header_provider=provide_headers,
-        additional_tool_argument_names={"remote": ["tenant_id"]},
-    )
-    await tool.load_tools()
-    func = tool._functions[0]
-    context = FunctionInvocationContext(
-        function=func,
-        arguments={"value": "model-value", "_meta": {"forged": "bad"}},
-        kwargs={"tenant_id": "trusted-tenant", "session": object(), "internal": object()},
-    )
-
-    await func.invoke(
-        arguments={"value": "model-value", "_meta": {"forged": "bad"}},
-        context=context,
-        skip_parsing=True,
-    )
-
-    assert provider_inputs == [{"tenant_id": "trusted-tenant", "value": "model-value"}]
-    (call,) = session.tool_calls
-    assert call.arguments == {"tenant_id": "trusted-tenant", "value": "model-value"}
 
 
 def test_mcp_request_meta_precedence_is_tool_meta_over_otel_over_caller(monkeypatch: pytest.MonkeyPatch) -> None:

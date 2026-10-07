@@ -135,10 +135,8 @@ def _create_mcp_tool(config: MCPServerConfig) -> MCPTool:
         return _SafeStdioTool(**kwargs)
 
     # transport == "http" (validated above).  Static headers are attached by
-    # ``_HTTPMCPTool``'s same-origin request hook rather than wired through the
-    # owned MCPTool's ``header_provider`` — header_provider only fires during
-    # ``call_tool``, which leaves ``initialize`` / ``list_tools``
-    # unauthenticated.
+    # ``_HTTPMCPTool``'s same-origin request hook, so they reach every request,
+    # ``initialize`` and ``list_tools`` included.
     headers = _HTTP_HEADERS_OVERRIDE.get()
     if headers is None:
         headers = (

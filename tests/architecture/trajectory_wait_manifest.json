@@ -4284,10 +4284,6 @@
       ]
     },
     "chrys.service.mcp.owned": {
-      "MCPStreamableHTTPTool.call_tool": [
-        ["awaitable", "await super().call_tool(tool_name, **kwargs)", "unresolved"],
-        ["awaitable", "await super().call_tool(tool_name, **kwargs)", "unresolved"]
-      ],
       "MCPTool.__aenter__": [
         ["wrapper", "await self.connect()", "unresolved", "chrys.service.mcp.owned.MCPTool.connect"],
         ["wrapper", "await self.close()", "unresolved", "chrys.service.mcp.owned.MCPTool.close"]
