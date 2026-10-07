@@ -19,6 +19,7 @@ from unittest.mock import Mock
 import pytest
 
 from chrys.foundation.platform import files
+from tests.support.windows_replace import briefly_locked_rename
 
 
 def test_is_utf8_encodable_rejects_only_surrogate_bearing_text() -> None:
@@ -34,6 +35,56 @@ def test_atomic_write_text_creates_parent_and_leaves_no_success_temp(tmp_path) -
 
     assert target.read_text(encoding="utf-8") == payload
     assert list(target.parent.glob(f"{target.name}.*.tmp")) == []
+
+
+def test_atomic_write_text_retries_a_briefly_locked_target_on_windows(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "session.json"
+    target.write_text("before", encoding="utf-8")
+    rename = briefly_locked_rename(monkeypatch, failures=2)
+
+    files.atomic_write_text(target, "after")
+
+    assert target.read_text(encoding="utf-8") == "after"
+    assert len(rename.attempts) == 3
+    assert rename.sleeps == [0.01, 0.02]
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_replace_with_retry_gives_up_after_six_tries_on_windows(tmp_path, monkeypatch) -> None:
+    source, target = tmp_path / "new", tmp_path / "old"
+    source.write_text("new", encoding="utf-8")
+    rename = briefly_locked_rename(monkeypatch, failures=6)
+
+    with pytest.raises(PermissionError):
+        files.replace_with_retry(source, target)
+
+    assert len(rename.attempts) == 6
+    assert rename.sleeps == [0.01, 0.02, 0.04, 0.08, 0.16]
+
+
+def test_replace_with_retry_tries_once_off_windows(tmp_path, monkeypatch) -> None:
+    source, target = tmp_path / "new", tmp_path / "old"
+    source.write_text("new", encoding="utf-8")
+    rename = briefly_locked_rename(monkeypatch, failures=1, windows=False)
+
+    with pytest.raises(PermissionError):
+        files.replace_with_retry(source, target)
+
+    assert len(rename.attempts) == 1
+    assert rename.sleeps == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the owner-only Windows writer needs the Windows security APIs")
+def test_atomic_write_owner_only_bytes_retries_a_briefly_locked_target(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "audit.json"
+    files.atomic_write_owner_only_bytes(target, b"before")
+    rename = briefly_locked_rename(monkeypatch, failures=2)
+
+    files.atomic_write_owner_only_bytes(target, b"after")
+
+    assert target.read_bytes() == b"after"
+    assert len(rename.attempts) == 3
+    assert rename.sleeps == [0.01, 0.02]
 
 
 def test_atomic_write_owner_only_bytes_can_refuse_to_create_a_missing_parent(tmp_path) -> None:

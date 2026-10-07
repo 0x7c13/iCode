@@ -16,12 +16,11 @@ import secrets
 import stat
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.files import replace_with_retry, surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
 from chrys.foundation.text.images import ImageProcessingError, load_image_file
 from chrys.foundation.text.lines import normalize_line_endings, split_lines
@@ -42,8 +41,6 @@ if TYPE_CHECKING:
 
 _DEFAULT_MAX_TOKENS = 5000
 _MAX_LINE_DISPLAY_CHARS = 2048
-_WINDOWS_REPLACE_MAX_ATTEMPTS = 6
-_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.01
 _NEW_FILE_MODE = 0o644
 _NEW_EXECUTABLE_FILE_MODE = 0o755
 _ATOMIC_TEMP_CREATE_ATTEMPTS = 100
@@ -155,14 +152,7 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
                     raise RuntimeError("A POSIX atomic write requires a target file mode.")
                 os.fchmod(f.fileno(), target_mode)
             os.fsync(f.fileno())
-        for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
-            try:
-                os.replace(tmp_path, path)
-                break
-            except PermissionError:
-                if not platform.is_windows or attempt == _WINDOWS_REPLACE_MAX_ATTEMPTS - 1:
-                    raise
-                time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * 2**attempt)
+        replace_with_retry(tmp_path, path)
     except BaseException:
         # Clean up the temp file on any failure
         if fd is not None:

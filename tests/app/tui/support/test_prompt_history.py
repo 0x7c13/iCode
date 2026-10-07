@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from chrys.app.tui.support import prompt_history
+from tests.support.windows_replace import briefly_locked_rename
 
 
 @pytest.fixture
@@ -234,6 +235,17 @@ def test_compaction_after_overflow(history_dir: Path) -> None:
 
     assert prompt_history.load_history(max_entries=10) == ["item-2", "item-3", "item-4", "item-5", "item-6"]
     assert len((history_dir / "prompt_history.jsonl").read_text(encoding="utf-8").splitlines()) == 5
+
+
+def test_compaction_retries_a_briefly_locked_history_file(history_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for i in range(6):
+        prompt_history.append_history(f"item-{i}", max_entries=5)
+    rename = briefly_locked_rename(monkeypatch, failures=2)
+
+    prompt_history.append_history("item-6", max_entries=5)
+
+    assert len(rename.attempts) == 3
+    assert prompt_history.load_history(max_entries=10) == ["item-2", "item-3", "item-4", "item-5", "item-6"]
 
 
 def test_default_history_limit_is_1000_and_compacts_after_overflow_buffer(history_dir: Path) -> None:
