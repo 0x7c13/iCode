@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import logging
 from collections import Counter, defaultdict, deque
@@ -1022,6 +1023,19 @@ class _PlanBarrier:
     released: bool = False
 
 
+_hosted_run_generations = itertools.count(1)
+
+
+def next_hosted_run_generation() -> int:
+    """Return a hosted pass generation that no other pass in this process has used.
+
+    Presentation ids embed it, and frontends key tool cards by those ids. A
+    counter per bindings object restarts on every engine rebuild and would
+    hand a new card the id of an earlier one.
+    """
+    return next(_hosted_run_generations)
+
+
 @dataclass
 class HostedPresentationBridge:
     """Stateful streaming/blocking bridge that emits presentation operations."""
@@ -1743,5 +1757,6 @@ __all__ = [
     "hosted_context_summary",
     "hosted_replay_status",
     "is_legacy_server_executed_informational_call",
+    "next_hosted_run_generation",
     "normalize_hosted_replay_content",
 ]

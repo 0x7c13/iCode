@@ -400,6 +400,19 @@ async def test_output_item_added_and_done_publish_one_start_through_hook_and_bri
 
 
 @pytest.mark.asyncio
+async def test_hosted_card_ids_stay_unique_across_rebuilt_bindings() -> None:
+    # An engine rebuild (model or agent switch) builds new TurnBindings; frontends key cards by call_id.
+    call_ids: list[str] = []
+    for _ in range(2):
+        executor, _agent, events = await _executor_fixture(_responses_events(after="Done."))
+        await continuation_pass(executor, [Message("user", ["search"])])
+        (start,) = [event for event in events if isinstance(event, InvocationToolCallStart)]
+        call_ids.append(start.call_id)
+
+    assert call_ids[0] != call_ids[1]
+
+
+@pytest.mark.asyncio
 async def test_response_completed_usage_does_not_publish_final_text_as_provisional() -> None:
     raw_events = [
         *_responses_events(before="Checking sources.", after="Final answer."),
