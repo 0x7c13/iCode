@@ -37,8 +37,11 @@ This document is the design for that feature. For the YAML format see
 - A `--no-project-hooks` CLI flag or a trust-tier system. These are
   deliberately deferred. The one switch that exists is the
   `project.hooks_enabled` setting (Settings → Security → Project trust,
-  default on; a project file cannot set it): off means the project file
-  is not opened at all and only global hooks load.
+  default off; a project file cannot set it): off means the project file
+  is not opened at all and only global hooks load. When a project file
+  exists while the setting is off, the settings load reports it as a
+  `project_hooks_dormant` warning (startup, reload and workspace change),
+  which the TUI shows as a notice.
 - Nested project sources. One project file per session.
 
 ---
@@ -190,24 +193,14 @@ isolated durable outbox behavior in the future, that is a follow-up.
 
 ## Security and trust
 
-Project-level hooks inherit Chrys's existing trust model: a hook is an
-arbitrary subprocess and is executed without an in-process approval
-gate. The same trust model already applies to:
-
-- The global `<config_dir>/hooks/hooks.yaml`.
-- Skills loaded from `<cwd>/.agents/skills/` (opt-in per profile, but
-  when enabled, no approval prompt).
-- `AGENTS.md` auto-loaded as a memory file.
-
-If a user `git clone`s a repository and runs Chrys inside it, the
-project's hooks fire. This is by design — the alternative is a trust
-tier system the codebase does not yet have, and matches how every
-similar tool (pre-commit, opencode plugins, Claude Code hooks, Aider
-config) handles per-repo configuration.
-
-The hooks guide (`authoring.md`) and the top-level `AGENTS.md` call this
-out explicitly: cloning a repo and running an agent inside it is a trust
-decision, not just a code-review decision.
+A hook is an arbitrary subprocess, executed without tool approval or a
+sandbox. The global `<config_dir>/hooks/hooks.yaml` is the user's own
+file; a project file comes with whatever repository was cloned. So
+project hooks load only after the user turns on `project.hooks_enabled`
+in their own settings — the same gate `project.config_enabled` puts on
+project settings and `project.skills_enabled` on
+`<cwd>/.agents/skills/`. Turning it on is a trust decision about the
+repositories the user opens, not just a code-review decision.
 
 A future `--no-project-hooks` flag on `chrys run` / `chrys acp` is a
 useful escape hatch for CI and untrusted-workspace scenarios but is
@@ -328,7 +321,7 @@ hook firing sites.
    for CI and untrusted-repo scenarios; deferred from v1; trivial to
    add later as a flag on the engine start path.
 3. **Per-source enable/disable**: covered by the `project.hooks_enabled`
-   setting (see Non-goals); a finer `disabled_sources` list in the
+   setting (default off; see Non-goals); a finer `disabled_sources` list in the
    global file is not planned.
 4. **Project file in a sessionless invocation**: `chrys run "hi"`
    constructs a session and a workspace, so it picks up the project

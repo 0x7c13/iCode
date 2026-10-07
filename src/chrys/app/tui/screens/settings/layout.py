@@ -89,6 +89,13 @@ _HINT_APPROVAL_DEFAULT_MODE = msg(
         "/approval bypass applies to the current launch only and saves auto."
     ),
 )
+_HINT_APPROVAL_DEFER_WHILE_JUDGING = msg(
+    "tui.settings.hint.approval.defer_while_judging",
+    fallback=(
+        "In auto mode, calls the approval judge approves run without a dialog; the dialog opens only when a call "
+        "is flagged or cannot be evaluated. Turn this off to see each call while it is evaluated and decide first."
+    ),
+)
 _HINT_PROJECT_CONFIG_ENABLED = msg(
     "tui.settings.hint.project.config_enabled",
     fallback="Let <workspace>/.chrys/settings.yaml adjust engineering settings for that workspace.",
@@ -96,6 +103,10 @@ _HINT_PROJECT_CONFIG_ENABLED = msg(
 _HINT_PROJECT_HOOKS_ENABLED = msg(
     "tui.settings.hint.project.hooks_enabled",
     fallback="Run the hooks defined in <workspace>/.chrys/hooks alongside your global hooks.",
+)
+_HINT_PROJECT_SKILLS_ENABLED = msg(
+    "tui.settings.hint.project.skills_enabled",
+    fallback="Load the skills in <workspace>/.agents/skills alongside your own.",
 )
 HINT_PROJECT_CONFIG_DORMANT = msg(
     "tui.settings.hint.project.config_dormant",
@@ -327,13 +338,17 @@ TABS: tuple[SettingsTab, ...] = (
         sections=(
             SettingsSection(
                 _SECTION_APPROVAL,
-                (SettingRowSpec("approval.default_mode", hint=_HINT_APPROVAL_DEFAULT_MODE),),
+                (
+                    SettingRowSpec("approval.default_mode", hint=_HINT_APPROVAL_DEFAULT_MODE),
+                    SettingRowSpec("ui.approval.defer_while_judging", hint=_HINT_APPROVAL_DEFER_WHILE_JUDGING),
+                ),
             ),
             SettingsSection(
                 _SECTION_PROJECT_TRUST,
                 (
                     SettingRowSpec(PROJECT_CONFIG_KEY, hint=_HINT_PROJECT_CONFIG_ENABLED),
                     SettingRowSpec("project.hooks_enabled", hint=_HINT_PROJECT_HOOKS_ENABLED),
+                    SettingRowSpec("project.skills_enabled", hint=_HINT_PROJECT_SKILLS_ENABLED),
                 ),
             ),
             SettingsSection(

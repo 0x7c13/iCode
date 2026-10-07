@@ -16,14 +16,14 @@ import secrets
 import stat
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.files import replace_with_retry, surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
 from chrys.foundation.text.images import ImageProcessingError, load_image_file
+from chrys.foundation.text.lines import normalize_line_endings, split_lines
 from chrys.kernel import Content
 from chrys.service.tools.file_approval import FileWriteTarget, approved_write_path, file_write_target
 from chrys.service.tools.kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, tool
@@ -42,8 +42,6 @@ if TYPE_CHECKING:
 
 _DEFAULT_MAX_TOKENS = 5000
 _MAX_LINE_DISPLAY_CHARS = 2048
-_WINDOWS_REPLACE_MAX_ATTEMPTS = 6
-_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.01
 _NEW_FILE_MODE = 0o644
 _NEW_EXECUTABLE_FILE_MODE = 0o755
 _ATOMIC_TEMP_CREATE_ATTEMPTS = 100
@@ -156,14 +154,7 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
                     raise RuntimeError("A POSIX atomic write requires a target file mode.")
                 os.fchmod(f.fileno(), target_mode)
             os.fsync(f.fileno())
-        for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
-            try:
-                os.replace(tmp_path, path)
-                break
-            except PermissionError:
-                if not platform.is_windows or attempt == _WINDOWS_REPLACE_MAX_ATTEMPTS - 1:
-                    raise
-                time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * 2**attempt)
+        replace_with_retry(tmp_path, path)
     except BaseException:
         # Clean up the temp file on any failure
         if fd is not None:
@@ -226,11 +217,6 @@ def _default_eol_for_new_file(path: str) -> str:
     return os.linesep
 
 
-def _normalize_tool_line_endings(text: str) -> str:
-    """Normalize LLM-supplied text to the internal LF-only representation."""
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
 def _decode_write_preview_before(raw: bytes) -> tuple[str, str]:
     """Return display-safe existing content for overwrite approval previews."""
     from chrys.foundation.text.encoding import EncodingDetector
@@ -250,7 +236,7 @@ def _decode_write_preview_before(raw: bytes) -> tuple[str, str]:
         before_text = raw.decode(encoding, errors=decode_errors)
     except LookupError, UnicodeDecodeError:
         return "", "content-only; existing file could not be decoded"
-    return _replace_surrogate_escapes(_normalize_tool_line_endings(before_text)), ""
+    return _replace_surrogate_escapes(normalize_line_endings(before_text)), ""
 
 
 def plan_write_file(
@@ -305,7 +291,7 @@ def plan_write_file(
         else:
             eol = _default_eol_for_new_file(resolved)
 
-        write_content = _normalize_tool_line_endings(content)
+        write_content = normalize_line_endings(content)
         if eol != "\n":
             write_content = write_content.replace("\n", eol)
         return WriteFilePlan(
@@ -376,7 +362,7 @@ def _read_file_impl(
         with open(resolved, encoding=encoding, errors="replace") as f:
             content = f.read()
 
-        lines = content.splitlines()
+        lines = split_lines(content)
         total_lines = len(lines)
         total_chars = len(content)
 
@@ -573,7 +559,12 @@ def _view_image_impl(
 def view_image(
     path: Annotated[str, "Absolute or relative path to the image file to inspect."],
 ) -> list[Content]:
-    """Read an image file and return it as model-visible image content."""
+    """Read an image file and return it as model-visible image content.
+
+    Images the user attached to a message are already visible to you, at the
+    same size this tool returns; call it for one only when it is not in the
+    conversation.
+    """
     return _view_image_impl(path)
 
 
@@ -626,10 +617,8 @@ def _write_file_impl(
                 os.makedirs(parent, exist_ok=True)
 
             _atomic_write(plan.resolved_path, plan.write_content)
-        return (
-            f"Written {len(content)} chars ({len(content.splitlines())} lines) "
-            f"to {surrogate_safe_text(plan.resolved_path)}."
-        )
+        line_count = len(split_lines(normalize_line_endings(content)))
+        return f"Written {len(content)} chars ({line_count} lines) to {surrogate_safe_text(plan.resolved_path)}."
     except Exception as e:
         return tool_error("write_failed", f"failed to write file — {e}", details={"path": path})
 
@@ -663,11 +652,13 @@ def write_file(
 
 
 _CONTEXT_LINES = 2
+# A side of the snippet longer than this shows only its first and last halves.
+_MAX_SNIPPET_SIDE_LINES = 30
 
 
 def _format_diff_context(content: str, match_start: int, old_string: str, new_string: str) -> str:
     """Return a before/after snippet with line numbers and surrounding context."""
-    lines = content.splitlines()
+    lines = split_lines(content)
 
     # Find which lines the old_string spans by counting newlines before the match
     prefix = content[:match_start]
@@ -678,17 +669,31 @@ def _format_diff_context(content: str, match_start: int, old_string: str, new_st
     ctx_end = min(len(lines), old_end_line + 1 + _CONTEXT_LINES)
 
     # "Before" — lines from original content
-    before = "\n".join(f"  {ctx_start + i + 1}|{lines[ctx_start + i]}" for i in range(ctx_end - ctx_start))
+    before = _snippet_side(lines, ctx_start, ctx_end)
 
     # "After" — apply replacement and show the same region
     after_content = content[:match_start] + new_string + content[match_start + len(old_string) :]
-    after_lines = after_content.splitlines()
+    after_lines = split_lines(after_content)
     new_end_line = old_start_line + new_string.count("\n")
     after_ctx_end = min(len(after_lines), new_end_line + 1 + _CONTEXT_LINES)
 
-    after = "\n".join(f"  {ctx_start + i + 1}|{after_lines[ctx_start + i]}" for i in range(after_ctx_end - ctx_start))
+    after = _snippet_side(after_lines, ctx_start, after_ctx_end)
 
     return f"Before:\n{before}\nAfter:\n{after}"
+
+
+def _snippet_side(lines: list[str], start: int, end: int) -> str:
+    """Number ``lines[start:end]``, eliding the middle of a side too long to read at a glance."""
+    numbered = [f"  {index + 1}|{lines[index]}" for index in range(start, end)]
+    # The marker takes a line's place, so hiding a single line would save nothing.
+    if len(numbered) <= _MAX_SNIPPET_SIDE_LINES + 1:
+        return "\n".join(numbered)
+    keep = _MAX_SNIPPET_SIDE_LINES // 2
+    first_omitted = start + keep + 1
+    last_omitted = end - keep
+    omitted = last_omitted - first_omitted + 1
+    marker = f"  [... {omitted} lines omitted ({first_omitted}-{last_omitted}) ...]"
+    return "\n".join([*numbered[:keep], marker, *numbered[-keep:]])
 
 
 def _replace_surrogate_escapes(text: str) -> str:
@@ -721,6 +726,20 @@ def plan_edit_file(
             message=tool_error(
                 "session_artifact_handle_is_read_only",
                 "session document handles are read-only; use a regular filesystem path for edit_file.",
+                details={"path": path},
+            ),
+        )
+
+    # An empty old_string "matches" between every two characters: it can
+    # neither name one place nor create a file.
+    if not old_string:
+        return FileToolPreviewError(
+            kind="empty_old_string",
+            message=tool_error(
+                "empty_old_string",
+                "old_string is empty. To create a file or replace a file's whole content, use write_file "
+                "(overwrite=true for an existing file). To insert text, put an existing neighbouring line "
+                "in old_string and repeat it in new_string.",
                 details={"path": path},
             ),
         )
@@ -766,10 +785,10 @@ def plan_edit_file(
             raw = f.read()
         original_eol = _detect_line_ending(raw, resolved)
         decode_errors = "replace" if encoding.startswith(("utf-16", "utf-32")) else "surrogateescape"
-        content = _normalize_tool_line_endings(raw.decode(encoding, errors=decode_errors))
+        content = normalize_line_endings(raw.decode(encoding, errors=decode_errors))
 
-        normalized_old = _normalize_tool_line_endings(old_string)
-        normalized_new = _normalize_tool_line_endings(new_string)
+        normalized_old = normalize_line_endings(old_string)
+        normalized_new = normalize_line_endings(new_string)
 
         if normalized_old == normalized_new:
             return FileToolPreviewError(
@@ -964,7 +983,12 @@ class FilesystemTools:
         self,
         path: Annotated[str, "Absolute or relative path to the image file to inspect."],
     ) -> list[Content]:
-        """Read an image file and return it as model-visible image content."""
+        """Read an image file and return it as model-visible image content.
+
+        Images the user attached to a message are already visible to you, at the
+        same size this tool returns; call it for one only when it is not in the
+        conversation.
+        """
         return _view_image_impl(path, base_cwd=self._runtime.cwd, session_dir=self._session_dir)
 
     @tool(kind=KIND_FILESYSTEM_WRITE)

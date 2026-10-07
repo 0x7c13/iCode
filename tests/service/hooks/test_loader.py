@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from chrys.service.hooks.loader import (
     merge_hooks_files,
     parse_hooks_dict,
 )
-from chrys.service.hooks.schema import HookConfig, HookRun, HookSettings, HooksFile, MergedHooksFile
+from chrys.service.hooks.schema import HookConfig, HookRun, HookSettings, HooksFile, MergedHooksFile, SkippedHook
 
 
 def test_empty_file_returns_defaults() -> None:
@@ -184,6 +185,133 @@ def test_unknown_event_rejected() -> None:
             {
                 "version": 1,
                 "hooks": [{"id": "h", "event": "not_a_real_event", "run": {"type": "command", "argv": ["/bin/true"]}}],
+            }
+        )
+
+
+_GUARDS_WITH_A_BAD_REGEX = """\
+version: 1
+hooks:
+  - id: audit
+    event: after_tool_call
+    run: {type: command, argv: [/bin/true]}
+  - id: guard
+    event: before_tool_call
+    match:
+      args:
+        command:
+          regex: 'rm\\s+(-rf'
+    run: {type: command, argv: [/bin/true]}
+    execution: {mode: blocking}
+  - id: guard-sudo
+    event: before_tool_call
+    match:
+      args:
+        command:
+          regex: '^sudo\\b'
+    run: {type: command, argv: [/bin/true]}
+    execution: {mode: blocking}
+"""
+
+
+def _regex_error(pattern: str) -> str:
+    with pytest.raises(re.error) as caught:
+        re.compile(pattern)
+    return str(caught.value)
+
+
+def test_invalid_match_regex_skips_only_that_hook(tmp_path: Path) -> None:
+    src = tmp_path / "hooks.yaml"
+    src.write_text(_GUARDS_WITH_A_BAD_REGEX, encoding="utf-8")
+
+    file = load_hooks_file(src)
+
+    assert [hook.id for hook in file.hooks] == ["audit", "guard-sudo"]
+    assert file.skipped_hooks == [
+        SkippedHook(
+            id="guard",
+            reason=f"match.args.command.regex is not a valid regular expression: {_regex_error(r'rm\s+(-rf')}",
+        )
+    ]
+    assert file.source == str(src)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "error_type"),
+    [
+        pytest.param("a{4294967296}", OverflowError, id="repeat-count-overflow"),
+        pytest.param("(" * 5000 + ")" * 5000, RecursionError, id="nesting-too-deep"),
+    ],
+)
+def test_regex_the_parser_rejects_outside_re_error_skips_only_that_hook(
+    pattern: str, error_type: type[Exception]
+) -> None:
+    with pytest.raises(error_type) as caught:
+        re.compile(pattern)
+
+    file = parse_hooks_dict(
+        {
+            "version": 1,
+            "hooks": [
+                {
+                    "id": "guard",
+                    "event": "before_tool_call",
+                    "match": {"args": {"command": {"regex": pattern}}},
+                    "run": {"type": "command", "argv": ["/bin/true"]},
+                },
+                {
+                    "id": "guard-sudo",
+                    "event": "before_tool_call",
+                    "match": {"args": {"command": {"regex": "^sudo "}}},
+                    "run": {"type": "command", "argv": ["/bin/true"]},
+                },
+            ],
+        }
+    )
+
+    assert [hook.id for hook in file.hooks] == ["guard-sudo"]
+    assert file.skipped_hooks == [
+        SkippedHook(
+            id="guard",
+            reason=f"match.args.command.regex is not a valid regular expression: {caught.value}",
+        )
+    ]
+
+
+def test_disabled_hook_with_an_invalid_regex_loads_unreported() -> None:
+    file = parse_hooks_dict(
+        {
+            "version": 1,
+            "hooks": [
+                {
+                    "id": "guard",
+                    "event": "before_tool_call",
+                    "enabled": False,
+                    "match": {"args": {"command": {"regex": "rm\\s+(-rf"}}},
+                    "run": {"type": "command", "argv": ["/bin/true"]},
+                }
+            ],
+        }
+    )
+
+    assert [(hook.id, hook.enabled) for hook in file.hooks] == [("guard", False)]
+    assert file.skipped_hooks == []
+
+
+def test_invalid_regex_does_not_hide_other_errors_in_the_hook() -> None:
+    with pytest.raises(HooksConfigError, match=r"^hooks\[0\]: 'enabled' must be a boolean"):
+        parse_hooks_dict(
+            {
+                "version": 1,
+                "hooks": [
+                    {
+                        "id": "guard",
+                        "event": "before_tool_call",
+                        "enabled": "yes",
+                        "match": {"args": {"command": {"regex": "rm\\s+(-rf"}}},
+                        "run": {"type": "command", "argv": ["/bin/true"]},
+                    }
+                ],
             }
         )
 
@@ -490,11 +618,17 @@ def test_merge_global_only() -> None:
     assert merged.sources == ["/cfg/hooks.yaml"]
 
 
-def test_merge_same_source_file_uses_global_once(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    source = tmp_path / ".chrys" / "hooks" / "hooks.yaml"
+@pytest.mark.parametrize("project_spelling", ["home", "HOME"])
+def test_merge_same_source_file_uses_global_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, project_spelling: str
+) -> None:
+    source = tmp_path / "home" / ".chrys" / "hooks" / "hooks.yaml"
     source.parent.mkdir(parents=True)
     source.write_text("version: 1\nhooks: []\n", encoding="utf-8")
-    project = HooksFile(hooks=[_hook(id_="same")], source=str(source))
+    project_source = tmp_path / project_spelling / ".chrys" / "hooks" / "hooks.yaml"
+    if not project_source.exists():
+        pytest.skip("Case-sensitive filesystem: the other spelling is another file")
+    project = HooksFile(hooks=[_hook(id_="same")], source=str(project_source))
     global_ = HooksFile(hooks=[_hook(id_="same")], source=str(source))
 
     with caplog.at_level("WARNING", logger="chrys.service.hooks.loader"):

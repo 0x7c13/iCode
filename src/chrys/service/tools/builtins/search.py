@@ -24,7 +24,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Annotated, Any, cast
@@ -33,6 +33,7 @@ from pathspec import GitIgnoreSpec
 
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.output_capture import BoundedCapture, drain_process_pipes
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.platform.process import decode_subprocess_output, managed_subprocess
 from chrys.foundation.vendor import find_rg
@@ -50,6 +51,18 @@ _MAX_ERROR_DIAGNOSTIC_CHARS = 512
 _WINDOWS_COMMAND_LIMIT = 32_767  # UTF-16 code units, including the terminating NUL.
 _WINDOWS_COMMAND_HEADROOM = 512  # Allow PATH shims to expand the executable path when forwarding argv.
 _POSIX_COMMAND_LIMIT = 128 * 1024  # Leave room for the inherited environment and OS overhead.
+_MAX_LISTING_BYTES = 64 * 1024 * 1024
+"""File names one ``rg --files`` listing may print before the search is refused as too broad."""
+_MAX_RECORD_BYTES = 1024 * 1024
+"""The longest ``rg --json`` record parsed whole.
+
+Each record carries its whole source line, and a match record lists every match
+on it, so one minified line can print megabytes. A longer record keeps only
+``_RECORD_HEAD_BYTES``, enough to name its file.
+"""
+_RECORD_HEAD_BYTES = 64 * 1024
+_MAX_STDERR_BYTES = 64 * 1024
+_MAX_OVERSIZED_LINES_SHOWN = 10
 
 
 @dataclass(slots=True)
@@ -77,7 +90,10 @@ class GrepParseResult:
 
     entries: list[GrepEntry] = field(default_factory=list)
     match_count: int = 0
+    """Matches counted toward the limit, those too long to show included."""
     long_lines: list[LongLine] = field(default_factory=list)
+    oversized: set[tuple[str, int]] = field(default_factory=set)
+    """Matching lines, by file and line number, whose record was longer than ``_MAX_RECORD_BYTES``."""
 
 
 @dataclass(slots=True)
@@ -218,9 +234,79 @@ def _is_ascii_only(text: str) -> bool:
         return False
 
 
-async def _run_rg(args: list[str], *, timeout: int = _TIMEOUT, cwd: str | None = None) -> tuple[str, str, int]:
-    """Run ``rg`` asynchronously and return ``(stdout, stderr, returncode)``."""
+class _ListingTooLarge(Exception):
+    """An ``rg --files`` listing printed more than ``_MAX_LISTING_BYTES``."""
+
+
+class _RgStopped(Exception):
+    """Leaves ``managed_subprocess`` once rg's output is no longer needed.
+
+    Leaving it by an exception kills rg's whole tree; leaving it normally does so
+    only while the process it started runs, and a launcher rg runs under may
+    already have exited.
+    """
+
+
+class _RgStdout:
+    """rg's stdout: kept whole up to ``_MAX_LISTING_BYTES``, or handed to *consume* as it arrives."""
+
+    def __init__(self, consume: Callable[[bytes], bool] | None) -> None:
+        self._consume = consume
+        self.data = bytearray()
+        self.stopped = asyncio.Event()
+        """Set once no more output is needed."""
+        self.too_large = False
+
+    def feed(self, chunk: bytes) -> None:
+        if self.stopped.is_set():
+            return
+        if self._consume is not None:
+            if not self._consume(chunk):
+                self.stopped.set()
+        elif len(self.data) + len(chunk) > _MAX_LISTING_BYTES:
+            self.too_large = True
+            self.stopped.set()
+        else:
+            self.data += chunk
+
+
+async def _drain_until_stopped(proc: asyncio.subprocess.Process, stdout: _RgStdout, stderr: BoundedCapture) -> None:
+    """Read rg's output until it exits, or until *stdout* needs no more of it.
+
+    A stopped rg is left running for ``managed_subprocess`` to kill with its whole
+    tree, which on Windows must happen while a launcher rg runs under lives.
+    """
+    drain = asyncio.ensure_future(drain_process_pipes(proc, stdout, stderr))
+    stopped = asyncio.ensure_future(stdout.stopped.wait())
+    try:
+        await asyncio.wait((drain, stopped), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        drain.cancel()
+        stopped.cancel()
+        await asyncio.gather(drain, stopped, return_exceptions=True)
+    error = None if drain.cancelled() else drain.exception()
+    if error is not None:
+        raise error
+
+
+async def _run_rg(
+    args: list[str],
+    *,
+    timeout: int = _TIMEOUT,
+    cwd: str | None = None,
+    consume: Callable[[bytes], bool] | None = None,
+) -> tuple[str, str, int]:
+    """Run ``rg`` asynchronously and return ``(stdout, stderr, returncode)``.
+
+    With *consume*, stdout goes to it as rg prints it and comes back empty;
+    once *consume* returns False, rg is stopped, and its exit code then says
+    nothing about the search. Without, stdout comes back whole, and a listing
+    longer than ``_MAX_LISTING_BYTES`` stops rg and raises ``_ListingTooLarge``.
+    """
     rg = _find_rg()
+    stdout = _RgStdout(consume)
+    stderr = BoundedCapture(_MAX_STDERR_BYTES)
+    returncode = 0
     try:
         async with managed_subprocess(
             rg,
@@ -230,17 +316,25 @@ async def _run_rg(args: list[str], *, timeout: int = _TIMEOUT, cwd: str | None =
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         ) as proc:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return (
-                os.fsdecode(stdout) if "--null" in args else decode_subprocess_output(stdout),
-                decode_subprocess_output(stderr),
-                proc.returncode or 0,
-            )
+            await asyncio.wait_for(_drain_until_stopped(proc, stdout, stderr), timeout=timeout)
+            if stdout.stopped.is_set():
+                raise _RgStopped
+            returncode = proc.returncode or 0
+    except _RgStopped:
+        pass
     except (FileNotFoundError, NotADirectoryError) as exc:
         # Process creation can fail because cwd disappeared, even while rg exists.
         if cwd is not None and not os.path.isdir(cwd):
             raise NotADirectoryError(f"search directory unavailable — {cwd}") from exc
         raise
+    if stdout.too_large:
+        raise _ListingTooLarge
+    output = bytes(stdout.data)
+    return (
+        os.fsdecode(output) if "--null" in args else decode_subprocess_output(output),
+        stderr.snapshot().text(),
+        returncode,
+    )
 
 
 def _ignore_args(respect_gitignore: bool) -> list[str]:
@@ -507,18 +601,26 @@ async def _search_files(root: str, pattern: str | None, respect_gitignore: bool)
     patterns = (pattern,) if explicit_name else ((None,) if pattern is None or pattern == "*" else (None, pattern))
     for index, filename_pattern in enumerate(patterns):
         filters = [] if filename_pattern is None else ["--glob", filename_pattern]
-        stdout, stderr, code = await _run_rg(
-            [
-                "--files",
-                "--null",
-                *(["--hidden"] if hidden else []),
-                *filters,
-                *_ignore_args(respect_gitignore),
-                "--",
-                target,
-            ],
-            cwd=cwd,
-        )
+        try:
+            stdout, stderr, code = await _run_rg(
+                [
+                    "--files",
+                    "--null",
+                    *(["--hidden"] if hidden else []),
+                    *filters,
+                    *_ignore_args(respect_gitignore),
+                    "--",
+                    target,
+                ],
+                cwd=cwd,
+            )
+        except _ListingTooLarge:
+            # Searching only part of the listing would hide matches without saying so.
+            return tool_error(
+                "search_too_broad",
+                f"too many files under {root} to list (over {_MAX_LISTING_BYTES // (1024 * 1024)} MiB of names)"
+                " — search a narrower path",
+            )
         if code not in (0, 1):
             errors = _SearchErrors()
             errors.add(stderr, code)
@@ -573,70 +675,195 @@ def _file_batches(files: list[str], *, command: list[str]) -> Iterator[list[str]
 # ---------------------------------------------------------------------------
 
 
-def _grep_json_entries(stdout: str, *, skip_binary: bool) -> Iterator[dict[str, Any]]:
-    """Withhold discovered-file results until rg reports their binary status."""
-    # Retain raw lines, not a parsed object tree for every match in a large file.
-    pending: dict[tuple[str | None, str | None], list[str]] = {}
-    for line in stdout.splitlines():
+_CUT_RECORD_HEAD = re.compile(rb'\{"type":"(match|context)","data":\{"path":')
+"""How rg starts a match or context record: its file comes first, before the line."""
+_CUT_RECORD_LINE = re.compile(rb',"line_number":(\d+)[,}]')
+"""How rg gives a record's line number, after the line: a JSON string holds no unescaped quote."""
+_CUT_RECORD_LINE_WINDOW = 64
+"""Bytes kept from one chunk to the next, so a line number split between them is still found."""
+
+
+def _whole_record(record: bytes | bytearray) -> tuple[str, dict[str, Any]]:
+    entry = json.loads(record)
+    return entry.get("type", ""), entry.get("data", {})
+
+
+def _cut_record(head: bytes | bytearray) -> tuple[str, dict[str, Any]]:
+    """Read the type and file of a record from the head kept of it."""
+    match = _CUT_RECORD_HEAD.match(head)
+    if match is None:
+        raise ValueError("not a match or context record")
+    path, _ = json.JSONDecoder().raw_decode(head[match.end() :].decode("utf-8", errors="replace"))
+    return match.group(1).decode("ascii"), {"path": path}
+
+
+@dataclass(frozen=True, slots=True)
+class _OversizedMatch:
+    """A match whose record was too long to keep: its file and line number, without the line."""
+
+    rel_path: str
+    line_num: int
+
+
+type _GrepItem = tuple[GrepEntry, LongLine | None] | _OversizedMatch
+"""A parsed line and its long-line note, or a match too long to keep."""
+
+
+class _GrepStream:
+    """Parse ``rg --json`` output as it arrives, keeping only what the result can show.
+
+    Output stops being needed once one match more than *max_results* has
+    arrived; its caller stops rg there. Matches in *seen_matches* (found by an
+    earlier pass) are kept without being counted. A match too long to keep is
+    named in ``oversized`` by its file and line, and counts like any other.
+    With *skip_binary*, a file's entries wait
+    for its ``end`` record, which says whether rg found binary content, and
+    only as many wait as could still fill the result.
+    """
+
+    def __init__(
+        self,
+        root: str,
+        max_results: int,
+        *,
+        seen_matches: set[tuple[str, int]] | None = None,
+        skip_binary: bool = False,
+    ) -> None:
+        self.result = GrepParseResult()
+        self.full = False
+        self.saw_output = False
+        self._root = root
+        self._max_results = max_results
+        self._seen_matches = seen_matches
+        self._skip_binary = skip_binary
+        self._record = bytearray()
+        self._record_cut = False
+        self._cut_tail = bytearray()
+        self._cut_line: int | None = None
+        self._pending: dict[tuple[str | None, str | None], list[_GrepItem]] = {}
+        self._pending_matches: dict[tuple[str | None, str | None], int] = {}
+
+    def feed(self, chunk: bytes) -> bool:
+        """Take the next chunk of output; False once the result needs no more."""
+        self.saw_output = self.saw_output or bool(chunk)
+        start = 0
+        while not self.full:
+            end = chunk.find(b"\n", start)
+            piece = chunk[start : len(chunk) if end < 0 else end]
+            if not self._record_cut:
+                self._record += piece
+                if len(self._record) > _MAX_RECORD_BYTES:
+                    self._find_cut_line(self._record)
+                    del self._record[_RECORD_HEAD_BYTES:]
+                    self._record_cut = True
+            elif self._cut_line is None:
+                self._find_cut_line(piece)
+            if end < 0:
+                break
+            self._take(self._record, cut=self._record_cut)
+            self._record.clear()
+            self._record_cut = False
+            self._cut_tail.clear()
+            self._cut_line = None
+            start = end + 1
+        return not self.full
+
+    def _find_cut_line(self, data: bytes | bytearray) -> None:
+        self._cut_tail += data
+        found = _CUT_RECORD_LINE.search(self._cut_tail)
+        if found is not None:
+            self._cut_line = int(found.group(1))
+        del self._cut_tail[:-_CUT_RECORD_LINE_WINDOW]
+
+    def _take(self, record: bytearray, *, cut: bool) -> None:
         try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        entry_type = entry.get("type")
-        if entry_type not in ("match", "context", "end"):
-            continue
-        if not skip_binary:
-            if entry_type != "end":
-                yield entry
-            continue
-        data = entry.get("data", {})
-        path = data.get("path", {})
-        key = (path.get("text"), path.get("bytes"))
-        if entry_type == "end":
-            entries = pending.pop(key, [])
-            if data.get("binary_offset") is None:
-                for pending_line in entries:
-                    yield json.loads(pending_line)
-        else:
-            pending.setdefault(key, []).append(line)
-
-
-def _parse_grep_jsonl(
-    stdout: str,
-    root: str,
-    max_results: int,
-    *,
-    seen_matches: set[tuple[str, int]] | None = None,
-    skip_binary: bool = False,
-) -> GrepParseResult:
-    """Parse ``rg --json`` output into structured results."""
-    result = GrepParseResult()
-
-    for entry in _grep_json_entries(stdout, skip_binary=skip_binary):
-        entry_type = entry["type"]
-        data = entry.get("data", {})
+            entry_type, data = _cut_record(record) if cut else _whole_record(record)
+        except ValueError:
+            return
         path_data = data.get("path", {})
+        key = (path_data.get("text"), path_data.get("bytes"))
+        if entry_type == "end":
+            items = self._pending.pop(key, [])
+            self._pending_matches.pop(key, None)
+            if data.get("binary_offset") is None:
+                for item in items:
+                    self._keep(item)
+                    if self.full:
+                        return
+            return
+        if entry_type not in ("match", "context"):
+            return
+        waiting = self._pending_matches.get(key, 0)
+        if self._skip_binary and waiting > self._max_results - self.result.match_count:
+            return  # Enough of this file waits to fill the result; a dense file sends many more.
+        rel_path = self._rel_path(path_data)
+        if cut:
+            # The line itself was not kept: a match is named by its file and line, its context dropped.
+            if entry_type != "match" or self._cut_line is None:
+                return
+            item: _GrepItem = _OversizedMatch(rel_path, self._cut_line)
+        else:
+            item = self._entry(entry_type, data, rel_path)
+        if not self._skip_binary:
+            self._keep(item)
+            return
+        if self._counts(item):
+            self._pending_matches[key] = waiting + 1
+        self._pending.setdefault(key, []).append(item)
+
+    def _rel_path(self, path_data: dict[str, Any]) -> str:
         file_path = (
             os.fsdecode(base64.b64decode(path_data["bytes"])) if "bytes" in path_data else path_data.get("text", "")
         )
         if file_path and not os.path.isabs(file_path):
-            file_path = os.path.join(root, file_path)
+            file_path = os.path.join(self._root, file_path)
+        return _to_posix(os.path.relpath(file_path, self._root)) if file_path else ""
+
+    def _entry(self, entry_type: str, data: dict[str, Any], rel_path: str) -> tuple[GrepEntry, LongLine | None]:
         line_num = data.get("line_number", 0)
         line_text = data.get("lines", {}).get("text", "").rstrip("\r\n")
-        rel_path = _to_posix(os.path.relpath(file_path, root)) if file_path else ""
-
+        long_line = None
         if len(line_text) > _MAX_LINE_DISPLAY_CHARS:
-            result.long_lines.append(LongLine(rel_path, line_num, len(line_text)))
+            long_line = LongLine(rel_path, line_num, len(line_text))
             line_text = line_text[:_MAX_LINE_DISPLAY_CHARS] + "... [truncated]"
+        return GrepEntry(rel_path, line_num, ">" if entry_type == "match" else " ", line_text), long_line
 
-        if entry_type == "match" and (seen_matches is None or (rel_path, line_num) not in seen_matches):
-            result.match_count += 1
-            if result.match_count > max_results:
-                break
+    def _counts(self, item: _GrepItem) -> bool:
+        if isinstance(item, _OversizedMatch):
+            key = (item.rel_path, item.line_num)
+        elif item[0].marker == ">":
+            key = (item[0].rel_path, item[0].line_num)
+        else:
+            return False
+        return self._seen_matches is None or key not in self._seen_matches
 
-        result.entries.append(GrepEntry(rel_path, line_num, ">" if entry_type == "match" else " ", line_text))
+    def _keep(self, item: _GrepItem) -> None:
+        counts = self._counts(item)
+        if counts:
+            self.result.match_count += 1
+            if self.result.match_count > self._max_results:
+                self.full = True
+                return
+        if isinstance(item, _OversizedMatch):
+            if counts:  # Otherwise an earlier pass showed or named it.
+                self.result.oversized.add((item.rel_path, item.line_num))
+            return
+        entry, long_line = item
+        self.result.entries.append(entry)
+        if long_line is not None:
+            self.result.long_lines.append(long_line)
 
-    return result
+
+def _oversized_note(lines: set[tuple[str, int]]) -> str:
+    if not lines:
+        return ""
+    ordered = sorted(lines)
+    shown = ", ".join(f"{rel_path}:{line_num}" for rel_path, line_num in ordered[:_MAX_OVERSIZED_LINES_SHOWN])
+    more = len(ordered) - _MAX_OVERSIZED_LINES_SHOWN
+    if more > 0:
+        shown += f" and {more} more line(s)"
+    limit = _MAX_RECORD_BYTES // (1024 * 1024)
+    return f"\n\n[Matching lines too long to show (over {limit} MiB of search output each): {shown}]"
 
 
 def _format_matches(entries: list[GrepEntry]) -> list[str]:
@@ -695,7 +922,10 @@ async def _grep_impl(
     all_entries: dict[tuple[str, int], GrepEntry] = {}
     all_long_lines: list[LongLine] = []
     seen_long: set[tuple[str, int]] = set()
+    oversized: set[tuple[str, int]] = set()
     total_matches = 0
+    # Matches too long to show count toward the limit too, so a full search can show fewer.
+    limited = False
     errors = _SearchErrors()
 
     try:
@@ -741,10 +971,20 @@ async def _grep_impl(
             for batch in _file_batches(files, command=command):
                 utf8_searched = False
                 for encoding, args in tuple(encoding_args.items()):
-                    stdout, stderr, returncode = await _run_rg([*args, *batch], cwd=search_cwd)
-                    if returncode not in (0, 1):
+                    parser = _GrepStream(
+                        root,
+                        max_results - total_matches - len(oversized),
+                        seen_matches={key for key, entry in all_entries.items() if entry.marker == ">"} | oversized,
+                        # Enumerated paths are explicit to rg, which enables binary searching.
+                        # Filter before counting matches; user-supplied files retain rg's defaults.
+                        skip_binary=globbed_directory,
+                    )
+                    _, stderr, returncode = await _run_rg([*args, *batch], cwd=search_cwd, consume=parser.feed)
+                    # A full result already says it is limited. The rg stopped for it was killed: its exit code
+                    # is the kill's, and its stderr names only the files it reached before then.
+                    if not parser.full and returncode not in (0, 1):
                         errors.add(stderr, returncode)
-                        if returncode == 2 and not stdout:
+                        if returncode == 2 and not parser.saw_output:
                             # File-read errors still emit a JSON summary. No stdout
                             # means rg failed before searching; repeating cannot help.
                             # UTF-8 runs first. Its completed search validates the
@@ -759,18 +999,9 @@ async def _grep_impl(
                     if encoding == "utf-8":
                         utf8_searched = True
 
-                    # Binary filtering can inspect every record of a dense file
-                    # before yielding its first match. Keep that work off the loop.
-                    parsed = await asyncio.to_thread(
-                        _parse_grep_jsonl,
-                        stdout,
-                        root,
-                        max_results - total_matches,
-                        seen_matches={key for key, entry in all_entries.items() if entry.marker == ">"},
-                        # Enumerated paths are explicit to rg, which enables binary searching.
-                        # Filter before counting matches; user-supplied files retain rg's defaults.
-                        skip_binary=globbed_directory,
-                    )
+                    parsed = parser.result
+                    limited = limited or parser.full
+                    oversized |= parsed.oversized
                     for entry in parsed.entries:
                         key = (entry.rel_path, entry.line_num)
                         previous = all_entries.get(key)
@@ -778,14 +1009,15 @@ async def _grep_impl(
                             all_entries[key] = entry
                             if entry.marker == ">":
                                 total_matches += 1
+                                oversized.discard(key)  # Too long to show under another encoding only.
                     for ll in parsed.long_lines:
                         key = (ll.rel_path, ll.line_num)
                         if key not in seen_long:
                             seen_long.add(key)
                             all_long_lines.append(ll)
-                    if total_matches >= max_results:
+                    if limited or total_matches + len(oversized) >= max_results:
                         break
-                if fatal_error or not encoding_args or total_matches >= max_results:
+                if fatal_error or not encoding_args or limited or total_matches + len(oversized) >= max_results:
                     break
     except NotADirectoryError as exc:
         return tool_error("path_not_found", str(exc), details={"path": path, "resolved_path": root})
@@ -797,7 +1029,7 @@ async def _grep_impl(
     except Exception as e:
         return tool_error("search_failed", f"search failed — {e}", details={"path": path, "pattern": pattern})
 
-    if not all_entries:
+    if not total_matches and not oversized:
         if errors.exit_code is not None:
             record_process_result(errors.exit_code)
             return tool_error("search_process_failed", errors.summary(), details={"path": path, "pattern": pattern})
@@ -805,17 +1037,18 @@ async def _grep_impl(
 
     # Sort by (file, line_number) for consistent display
     matches = _format_matches(sorted(all_entries.values(), key=lambda e: (e.rel_path, e.line_num)))
-
-    if not matches:
-        return surrogate_safe_text(f"No matches found for /{pattern}/ in {root}")
-
-    header = f"Found {total_matches} match(es) in {root}"
-    if total_matches >= max_results:
+    header = (
+        f"Found {total_matches} match(es) in {root}"
+        if total_matches
+        else f"Found matches for /{pattern}/ in {root}, but every matching line is too long to show"
+    )
+    if limited or total_matches + len(oversized) >= max_results:
         header += f" (limited to {max_results})"
-    result = header + "\n\n" + "\n\n".join(matches)
+    result = "\n\n".join([header, *matches])
     if all_long_lines:
         details = ", ".join(f"{ll.rel_path}:{ll.line_num} ({ll.actual_length} chars)" for ll in all_long_lines)
         result += f"\n\n[Long lines truncated to {_MAX_LINE_DISPLAY_CHARS} chars: {details}]"
+    result += _oversized_note(oversized)
     if errors.exit_code is not None:
         record_process_result(errors.exit_code)
         result += "\n\n" + tool_error(

@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Chrys-owned MCP client tool engine.
 
@@ -11,9 +13,7 @@ and SEP-2663 long-running task driving are intentionally out of scope.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
-import contextvars
 import json
 import logging
 import re
@@ -22,22 +22,23 @@ from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from functools import partial
-from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Self, cast
 
 from opentelemetry import propagate
 from opentelemetry import trace as otel_trace
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.text.model_json import model_json
 from chrys.foundation.tool_call_context import set_tool_context
 from chrys.foundation.trajectory.context import current_tool_operation_id
 from chrys.foundation.trajectory.event_types import WaitCategory
-from chrys.kernel import ChatOptions, Content, Message, normalize_tools
+from chrys.kernel import Content, normalize_tools
 from chrys.kernel._tool_expansion import _set_tool_expander
 from chrys.kernel.exceptions import ModelVisibleToolError, ToolException, ToolExecutionException
 from chrys.kernel.instrumentation import OtelAttr, create_mcp_client_span, set_mcp_span_error
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.tools import FunctionTool
+from chrys.service.mcp.content import INVALID_AUDIO_TEXT, INVALID_IMAGE_TEXT, INVALID_RESOURCE_TEXT, decode_media_base64
 from chrys.service.mcp.result_limits import (
     _MCP_PROMPT_TOOL_KEY,
     DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS,
@@ -52,7 +53,6 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
     from mcp import types
     from mcp.client.session import ClientSession
-    from mcp.shared.context import RequestContext
     from mcp.shared.session import RequestResponder
 
     from chrys.kernel.types import ToolTypes
@@ -79,12 +79,6 @@ _MCP_FRAMEWORK_DENYLIST: frozenset[str] = frozenset(
         "_meta",
     }
 )
-_mcp_call_headers: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("_mcp_call_headers")
-MCP_DEFAULT_TIMEOUT = 30
-MCP_DEFAULT_SSE_READ_TIMEOUT = 60 * 5
-_DEFAULT_SAMPLING_MAX_TOKENS = 4096
-_DEFAULT_SAMPLING_MAX_REQUESTS = 25
-SamplingApprovalCallback = Callable[[Any], bool | Awaitable[bool]]
 # ``ErrorData.data`` of the JSON-RPC errors the HTTP transport makes up when its
 # own request fails. Their message is local httpx detail — the configured URL,
 # which can carry credentials, included — not an answer from the server.
@@ -169,6 +163,20 @@ def _mcp_config_candidate_names(*, local_name: str, normalized_name: str, remote
     return tuple(names)
 
 
+def _mcp_config_names_for(function: FunctionTool) -> tuple[str, ...]:
+    """Return the ``allowed_tools``/``always_load`` names that select *function*; none without MCP name stamps."""
+    additional = function.additional_properties or {}
+    normalized_name = additional.get(_MCP_NORMALIZED_NAME_KEY)
+    remote_name = additional.get(_MCP_REMOTE_NAME_KEY)
+    if not isinstance(normalized_name, str) or not isinstance(remote_name, str):
+        return ()
+    return _mcp_config_candidate_names(
+        local_name=function.name,
+        normalized_name=normalized_name,
+        remote_name=remote_name,
+    )
+
+
 def _inject_otel_into_mcp_meta(
     meta: dict[str, Any] | None = None,
     *,
@@ -185,13 +193,6 @@ def _inject_otel_into_mcp_meta(
         if overwrite or key not in meta:
             meta[key] = value
     return meta
-
-
-def _url_origin(url: Any) -> tuple[str, str, int | None]:
-    port = url.port
-    if port is None:
-        port = 443 if url.scheme == "https" else 80 if url.scheme == "http" else None
-    return (url.scheme, url.host or "", port)
 
 
 def _server_error(message: str, subject: str, *, inner_exception: Exception | None = None) -> ModelVisibleToolError:
@@ -255,6 +256,35 @@ def _describe_with_cleanup(ex: BaseException, cleanup_error: BaseException | Non
     return _describe_error(ex)
 
 
+def _media_content(item: types.ImageContent | types.AudioContent) -> Content:
+    """An image or audio item as data; a placeholder text when its data is not non-empty base64."""
+    if data := decode_media_base64(item.data):
+        return Content.from_data(data=data, media_type=item.mimeType)
+    return Content.from_text(INVALID_IMAGE_TEXT if item.type == "image" else INVALID_AUDIO_TEXT)
+
+
+def _blob_content(resource: types.BlobResourceContents) -> Content:
+    """A blob resource as data, empty allowed; a placeholder text when its blob is not base64."""
+    if (data := decode_media_base64(resource.blob)) is None:
+        return Content.from_text(INVALID_RESOURCE_TEXT)
+    return Content.from_data(data=data, media_type=resource.mimeType or "application/octet-stream")
+
+
+def _resource_link_text(item: types.ResourceLink) -> Content:
+    """A link as text the model reads, never as the linked item itself.
+
+    Model APIs would fetch a linked item on every request, and one they can't
+    reach (a local file, a localhost or expired URL) would fail every later
+    request of the session.
+    """
+    lines = [f"Resource link: {item.name}", f"URI: {item.uri}"]
+    if item.mimeType:
+        lines.append(f"MIME type: {item.mimeType}")
+    if item.description:
+        lines.append(f"Description: {item.description}")
+    return Content.from_text("\n".join(lines))
+
+
 class MCPTool:
     """Base class for Chrys-owned MCP stdio and streamable-HTTP tools."""
 
@@ -270,10 +300,6 @@ class MCPTool:
         parse_prompt_results: Callable[[types.GetPromptResult], str] | None = None,
         session: ClientSession | None = None,
         request_timeout: int | None = None,
-        client: Any | None = None,
-        sampling_approval_callback: SamplingApprovalCallback | None = None,
-        sampling_max_tokens: int | None = _DEFAULT_SAMPLING_MAX_TOKENS,
-        sampling_max_requests: int | None = _DEFAULT_SAMPLING_MAX_REQUESTS,
         additional_properties: dict[str, Any] | None = None,
         additional_tool_argument_names: Sequence[str] | Mapping[str, str | Sequence[str]] | None = None,
     ) -> None:
@@ -294,11 +320,6 @@ class MCPTool:
         self._lifecycle_owner_task: asyncio.Task[None] | None = None
         self.session = session
         self.request_timeout = request_timeout
-        self.client = client
-        self.sampling_approval_callback = sampling_approval_callback
-        self.sampling_max_tokens = sampling_max_tokens
-        self.sampling_max_requests = sampling_max_requests
-        self._sampling_request_count = 0
         self._functions: list[FunctionTool] = []
         # Reloads must skip an already wrapped remote declaration without
         # collapsing *different* remote names that normalize to the same local
@@ -336,21 +357,7 @@ class MCPTool:
         if self.allowed_tools is None:
             return self._functions
         allowed_names = set(self.allowed_tools)
-        filtered: list[FunctionTool] = []
-        for func in self._functions:
-            additional = func.additional_properties or {}
-            normalized_name = additional.get(_MCP_NORMALIZED_NAME_KEY)
-            remote_name = additional.get(_MCP_REMOTE_NAME_KEY)
-            if not isinstance(normalized_name, str) or not isinstance(remote_name, str):
-                continue
-            candidate_names = _mcp_config_candidate_names(
-                local_name=func.name,
-                normalized_name=normalized_name,
-                remote_name=remote_name,
-            )
-            if any(name in allowed_names for name in candidate_names):
-                filtered.append(func)
-        return filtered
+        return [func for func in self._functions if not allowed_names.isdisjoint(_mcp_config_names_for(func))]
 
     async def _safe_close_exit_stack(self) -> BaseException | None:
         try:
@@ -383,7 +390,6 @@ class MCPTool:
         self._supports_prompts = True
         self._supports_logging = None
         self._ping_available = True
-        self._sampling_request_count = 0
 
     def _set_server_capabilities(self, capabilities: types.ServerCapabilities | None) -> None:
         self._server_capabilities = capabilities
@@ -553,16 +559,12 @@ class MCPTool:
                 raise ToolException(message, inner_exception=ex if isinstance(ex, Exception) else None) from ex
 
             try:
-                from mcp import types
                 from mcp.client.session import ClientSession
             except ModuleNotFoundError as ex:
                 await self._safe_close_exit_stack()
                 raise ToolException("MCP support requires `mcp`. Please install `mcp`.", inner_exception=ex) from ex
 
             try:
-                sampling_capabilities = None
-                if self.client is not None:
-                    sampling_capabilities = types.SamplingCapability(tools=types.SamplingToolsCapability())
                 session = await self._exit_stack.enter_async_context(
                     ClientSession(
                         read_stream=transport[0],
@@ -570,8 +572,6 @@ class MCPTool:
                         read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None,
                         message_handler=self.message_handler,
                         logging_callback=self.logging_callback,
-                        sampling_callback=self.sampling_callback,
-                        sampling_capabilities=sampling_capabilities,
                     )
                 )
             except (Exception, asyncio.CancelledError) as ex:
@@ -725,113 +725,6 @@ class MCPTool:
         task = asyncio.create_task(_safe_reload(), name=reload_name)
         self._pending_reload_tasks.add(task)
         task.add_done_callback(self._pending_reload_tasks.discard)
-
-    async def _sampling_request_approved(self, params: types.CreateMessageRequestParams) -> bool:
-        """Run the configured sampling approval gate."""
-        callback = self.sampling_approval_callback
-        if callback is None:
-            logger.warning(
-                "Denying MCP sampling request from %r: no sampling approval callback is configured.",
-                self.name,
-            )
-            return False
-        try:
-            outcome = callback(params)
-            if isawaitable(outcome):
-                outcome = await outcome
-        except Exception:
-            logger.warning("Denying MCP sampling request from %r: approval callback failed.", self.name, exc_info=True)
-            return False
-        approved = bool(outcome)
-        if not approved:
-            logger.warning("MCP sampling request from %r was denied by the approval callback.", self.name)
-        return approved
-
-    def _capped_sampling_max_tokens(self, requested: int) -> int:
-        """Clamp server-requested sampling tokens when a cap is configured."""
-        cap = self.sampling_max_tokens
-        if cap is not None and requested > cap:
-            logger.warning("Capping MCP sampling maxTokens for %r from %d to %d.", self.name, requested, cap)
-            return cap
-        return requested
-
-    async def sampling_callback(
-        self,
-        context: RequestContext[ClientSession, Any],
-        params: types.CreateMessageRequestParams,
-    ) -> types.CreateMessageResult | types.ErrorData:
-        from mcp import types
-
-        if not self.client:
-            return types.ErrorData(
-                code=types.INTERNAL_ERROR, message="No chat client available. Please set a chat client."
-            )
-
-        logger.warning(
-            "MCP server %r sent a sampling/createMessage request (%d message(s), maxTokens=%s).",
-            self.name,
-            len(params.messages),
-            params.maxTokens,
-        )
-
-        if self.sampling_max_requests is not None:
-            if self._sampling_request_count >= self.sampling_max_requests:
-                logger.warning(
-                    "Denying MCP sampling request from %r: per-session limit of %d reached.",
-                    self.name,
-                    self.sampling_max_requests,
-                )
-                return types.ErrorData(
-                    code=types.INVALID_REQUEST,
-                    message="Sampling rate limit exceeded for this MCP session.",
-                )
-            self._sampling_request_count += 1
-
-        if not await self._sampling_request_approved(params):
-            if self.sampling_approval_callback is None:
-                message = (
-                    "Sampling request denied. MCP sampling is disabled by default for untrusted servers; "
-                    "provide a sampling_approval_callback that approves the request to enable it."
-                )
-            else:
-                message = "Sampling request denied by the sampling_approval_callback."
-            return types.ErrorData(code=types.INVALID_REQUEST, message=message)
-
-        messages = [self._parse_message_from_mcp(msg) for msg in params.messages]
-        options: ChatOptions = {}
-        if params.systemPrompt is not None:
-            options["instructions"] = params.systemPrompt
-        if params.tools is not None:
-            options["tools"] = [
-                FunctionTool(name=tool.name, description=tool.description or "", input_model=tool.inputSchema)
-                for tool in params.tools
-            ]
-        if params.toolChoice is not None and params.toolChoice.mode is not None:
-            options["tool_choice"] = params.toolChoice.mode
-        if params.temperature is not None:
-            options["temperature"] = params.temperature
-        options["max_tokens"] = self._capped_sampling_max_tokens(params.maxTokens)
-        if params.stopSequences is not None:
-            options["stop"] = params.stopSequences
-
-        try:
-            response = await self.client.get_response(messages, options=options or None)
-        except Exception as ex:
-            logger.debug("Sampling callback error: %s", ex, exc_info=True)
-            return types.ErrorData(code=types.INTERNAL_ERROR, message=f"Failed to get chat message content: {ex}")
-        if not response or not response.messages:
-            return types.ErrorData(code=types.INTERNAL_ERROR, message="Failed to get chat message content.")
-        mcp_contents = self._prepare_message_for_mcp(response.messages[0])
-        mcp_content = next(
-            (content for content in mcp_contents if isinstance(content, (types.TextContent, types.ImageContent))),
-            None,
-        )
-        if not mcp_content:
-            return types.ErrorData(
-                code=types.INTERNAL_ERROR,
-                message="Failed to get right content types from the response.",
-            )
-        return types.CreateMessageResult(role="assistant", content=mcp_content, model=response.model or "unknown")
 
     async def load_prompts(self) -> None:
         async with self._function_load_lock:
@@ -1064,12 +957,7 @@ class MCPTool:
             return ""
         if len(parts) == 1:
             return parts[0]
-        return json.dumps(parts, default=str)
-
-    def _parse_message_from_mcp(self, mcp_type: types.PromptMessage | types.SamplingMessage) -> Message:
-        return Message(
-            role=mcp_type.role, contents=self._parse_content_from_mcp(mcp_type.content), raw_representation=mcp_type
-        )
+        return model_json(parts, default=str)
 
     def _parse_tool_result_from_mcp(self, mcp_type: types.CallToolResult) -> list[Content]:
         from mcp import types
@@ -1080,127 +968,20 @@ class MCPTool:
                 case types.TextContent():
                     result.append(Content.from_text(item.text))
                 case types.ImageContent() | types.AudioContent():
-                    result.append(Content.from_data(data=base64.b64decode(item.data), media_type=item.mimeType))
+                    result.append(_media_content(item))
                 case types.ResourceLink():
-                    result.append(Content.from_uri(uri=str(item.uri), media_type=item.mimeType))
+                    result.append(_resource_link_text(item))
                 case types.EmbeddedResource():
                     match item.resource:
                         case types.TextResourceContents():
                             result.append(Content.from_text(item.resource.text))
                         case types.BlobResourceContents():
-                            blob = item.resource.blob
-                            mime = item.resource.mimeType or "application/octet-stream"
-                            if not blob.startswith("data:"):
-                                blob = f"data:{mime};base64,{blob}"
-                            result.append(Content.from_uri(uri=blob, media_type=mime))
+                            result.append(_blob_content(item.resource))
                 case _:
                     result.append(Content.from_text(str(item)))
         if not result:
             result.append(Content.from_text("null"))
         return result
-
-    def _parse_content_from_mcp(self, mcp_type: Any) -> list[Content]:
-        from mcp import types
-
-        mcp_content_types: Sequence[Any] = (
-            cast(Sequence[Any], mcp_type) if isinstance(mcp_type, Sequence) else [mcp_type]
-        )
-        output: list[Content] = []
-        for item in mcp_content_types:
-            match item:
-                case types.TextContent():
-                    output.append(Content.from_text(text=item.text, raw_representation=item))
-                case types.ImageContent() | types.AudioContent():
-                    data_bytes = base64.b64decode(item.data) if isinstance(item.data, str) else item.data
-                    output.append(Content.from_data(data=data_bytes, media_type=item.mimeType, raw_representation=item))
-                case types.ResourceLink():
-                    output.append(
-                        Content.from_uri(
-                            uri=str(item.uri), media_type=item.mimeType or "application/json", raw_representation=item
-                        )
-                    )
-                case types.ToolUseContent():
-                    output.append(
-                        Content.from_function_call(
-                            call_id=item.id, name=item.name, arguments=item.input, raw_representation=item
-                        )
-                    )
-                case types.ToolResultContent():
-                    output.append(
-                        Content.from_function_result(
-                            call_id=item.toolUseId,
-                            result=self._parse_content_from_mcp(item.content)
-                            if item.content
-                            else item.structuredContent,
-                            # Non-empty: readers take an empty record as no failure.
-                            exception="The MCP tool result is marked isError." if item.isError else None,
-                            raw_representation=item,
-                        )
-                    )
-                case types.EmbeddedResource():
-                    match item.resource:
-                        case types.TextResourceContents():
-                            output.append(
-                                Content.from_text(
-                                    text=item.resource.text,
-                                    raw_representation=item,
-                                    additional_properties=item.annotations.model_dump() if item.annotations else None,
-                                )
-                            )
-                        case types.BlobResourceContents():
-                            output.append(
-                                Content.from_uri(
-                                    uri=item.resource.blob,
-                                    media_type=item.resource.mimeType,
-                                    raw_representation=item,
-                                    additional_properties=item.annotations.model_dump() if item.annotations else None,
-                                )
-                            )
-                case _:
-                    pass
-        return output
-
-    def _prepare_content_for_mcp(self, content: Content) -> Any | None:
-        from mcp import types
-
-        if content.type == "text":
-            # The kernel Content discriminator guarantees text payloads carry text.
-            return types.TextContent(type="text", text=cast(str, content.text))
-        if content.type == "data":
-            # The kernel Content discriminator guarantees data payloads carry a URI payload.
-            payload = cast(str, content.uri)
-            if content.media_type and content.media_type.startswith("image/"):
-                return types.ImageContent(type="image", data=payload, mimeType=content.media_type)
-            if content.media_type and content.media_type.startswith("audio/"):
-                return types.AudioContent(type="audio", data=payload, mimeType=content.media_type)
-            if content.media_type and content.media_type.startswith("application/"):
-                return types.EmbeddedResource(
-                    type="resource",
-                    resource=types.BlobResourceContents(
-                        blob=payload,
-                        mimeType=content.media_type,
-                        uri=content.additional_properties.get("uri", "af://binary")
-                        if content.additional_properties
-                        else "af://binary",
-                    ),
-                )
-            return None
-        if content.type == "uri":
-            resource_name = (
-                content.additional_properties.get("name", "Unknown") if content.additional_properties else "Unknown"
-            )
-            return types.ResourceLink(
-                type="resource_link", uri=content.uri, mimeType=content.media_type, name=resource_name
-            )
-        return None
-
-    def _prepare_message_for_mcp(self, content: Message) -> list[Any]:
-        messages: list[Any] = []
-        for item in content.contents:
-            mcp_content = self._prepare_content_for_mcp(item)
-            if mcp_content:
-                messages.append(mcp_content)
-        return messages
 
     def _resolved_extra_args(self, tool_name: str) -> set[str]:
         return self._global_extra_arg_names | self._tool_extra_arg_names.get(tool_name, set())
@@ -1418,10 +1199,6 @@ class MCPStdioTool(MCPTool):
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
         encoding: str | None = None,
-        client: Any | None = None,
-        sampling_approval_callback: SamplingApprovalCallback | None = None,
-        sampling_max_tokens: int | None = _DEFAULT_SAMPLING_MAX_TOKENS,
-        sampling_max_requests: int | None = _DEFAULT_SAMPLING_MAX_REQUESTS,
         additional_properties: dict[str, Any] | None = None,
         additional_tool_argument_names: Sequence[str] | Mapping[str, str | Sequence[str]] | None = None,
         **kwargs: Any,
@@ -1433,10 +1210,6 @@ class MCPStdioTool(MCPTool):
             tool_name_prefix=tool_name_prefix,
             additional_properties=additional_properties,
             session=session,
-            client=client,
-            sampling_approval_callback=sampling_approval_callback,
-            sampling_max_tokens=sampling_max_tokens,
-            sampling_max_requests=sampling_max_requests,
             load_tools=load_tools,
             parse_tool_results=parse_tool_results,
             load_prompts=load_prompts,
@@ -1486,13 +1259,8 @@ class MCPStreamableHTTPTool(MCPTool):
         description: str | None = None,
         allowed_tools: Collection[str] | None = None,
         terminate_on_close: bool | None = None,
-        client: Any | None = None,
-        sampling_approval_callback: SamplingApprovalCallback | None = None,
-        sampling_max_tokens: int | None = _DEFAULT_SAMPLING_MAX_TOKENS,
-        sampling_max_requests: int | None = _DEFAULT_SAMPLING_MAX_REQUESTS,
         additional_properties: dict[str, Any] | None = None,
         http_client: AsyncClient | None = None,
-        header_provider: Callable[[dict[str, Any]], dict[str, str]] | None = None,
         additional_tool_argument_names: Sequence[str] | Mapping[str, str | Sequence[str]] | None = None,
         **_kwargs: Any,
     ) -> None:
@@ -1505,10 +1273,6 @@ class MCPStreamableHTTPTool(MCPTool):
                 hooks. If the client follows cross-origin redirects, those
                 credentials can be sent to another origin. The caller is responsible
                 for scoping them to the configured URL's origin.
-            header_provider: Optional trusted callback receiving the model's tool
-                arguments plus only explicitly allowed runtime extras. Trusted MCP
-                request ``_meta`` is included when present; model-supplied ``_meta``
-                and unapproved Chrys runtime kwargs are excluded.
         """
         super().__init__(
             name=name,
@@ -1517,10 +1281,6 @@ class MCPStreamableHTTPTool(MCPTool):
             tool_name_prefix=tool_name_prefix,
             additional_properties=additional_properties,
             session=session,
-            client=client,
-            sampling_approval_callback=sampling_approval_callback,
-            sampling_max_tokens=sampling_max_tokens,
-            sampling_max_requests=sampling_max_requests,
             load_tools=load_tools,
             parse_tool_results=parse_tool_results,
             load_prompts=load_prompts,
@@ -1531,8 +1291,6 @@ class MCPStreamableHTTPTool(MCPTool):
         self.url = url
         self.terminate_on_close = terminate_on_close
         self._httpx_client: AsyncClient | None = http_client
-        self._header_provider = header_provider
-        self._inject_headers_hook: Callable[[Any], Awaitable[None]] | None = None
 
     def _mcp_base_span_attributes(self) -> dict[str, Any]:
         attrs = super()._mcp_base_span_attributes()
@@ -1550,47 +1308,11 @@ class MCPStreamableHTTPTool(MCPTool):
         return attrs
 
     def get_mcp_client(self) -> _AsyncGeneratorContextManager[Any, None]:
-        from httpx import URL, AsyncClient, Request, Timeout
-
-        http_client = self._httpx_client
-        if self._header_provider is not None:
-            target_origin = _url_origin(URL(self.url))
-            if http_client is None:
-                http_client = AsyncClient(
-                    follow_redirects=True,
-                    timeout=Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
-                )
-                self._httpx_client = http_client
-
-            if self._inject_headers_hook is None:
-
-                async def _inject_headers(request: Request) -> None:
-                    headers = _mcp_call_headers.get({})
-                    if _url_origin(request.url) != target_origin:
-                        for key in headers:
-                            request.headers.pop(key, None)
-                        return
-                    for key, value in headers.items():
-                        request.headers[key] = value
-
-                self._inject_headers_hook = _inject_headers
-                http_client.event_hooks["request"].append(self._inject_headers_hook)
-
         return streamable_http_client(
             url=self.url,
-            http_client=http_client,
+            http_client=self._httpx_client,
             terminate_on_close=self.terminate_on_close if self.terminate_on_close is not None else True,
         )
-
-    async def call_tool(self, tool_name: str, **kwargs: Any) -> str | list[Content]:
-        if self._header_provider is not None:
-            headers = self._header_provider(kwargs)
-            token = _mcp_call_headers.set(headers)
-            try:
-                return await super().call_tool(tool_name, **kwargs)
-            finally:
-                _mcp_call_headers.reset(token)
-        return await super().call_tool(tool_name, **kwargs)
 
 
 def streamable_http_client(*args: Any, **kwargs: Any) -> _AsyncGeneratorContextManager[Any, None]:

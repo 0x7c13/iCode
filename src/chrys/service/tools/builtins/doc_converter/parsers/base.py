@@ -7,6 +7,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from chrys.foundation.text.images import IMAGE_DECODE_FORMATS
+
+# Documents also embed scanned pages as TIFF and JPEG 2000, the formats pypdf
+# hands such PDF images over in. Windows metafiles (EMF/WMF), which Pillow
+# rasterizes through GDI on Windows only, are deliberately not decoded.
+DOCUMENT_IMAGE_DECODE_FORMATS: tuple[str, ...] = (*IMAGE_DECODE_FORMATS, "TIFF", "JPEG2000")
+
 
 @dataclass(frozen=True, slots=True)
 class VisualOccurrence:

@@ -82,7 +82,7 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
         assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == ROW_COUNT == 31
+        assert len(rows) == ROW_COUNT == 33
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 
@@ -758,16 +758,16 @@ async def test_a_pane_keeps_its_content_width_when_the_scrollbar_appears() -> No
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 60)) as pilot:
-        dialog = await _open(pilot, ports, initial_tab="security")
+        dialog = await _open(pilot, ports, initial_tab="models")
         await pilot.pause()
-        pane = dialog.query_one(f"#{pane_id('security')}")
+        pane = dialog.query_one(f"#{pane_id('models')}")
         scroll = pane.query_one(VerticalScroll)
-        row = _rows(dialog)["approval.default_mode"]
+        row = _rows(dialog)["agent.default_profile"]
         assert scroll.styles.scrollbar_gutter == "stable"
         await wait_for(
             lambda: row.size.width > 0 and not scroll.show_vertical_scrollbar,
             pilot=pilot,
-            description="the security tab to settle without a scrollbar",
+            description="the models tab to settle without a scrollbar",
         )
         width_without_scrollbar = row.size.width
 
@@ -775,7 +775,7 @@ async def test_a_pane_keeps_its_content_width_when_the_scrollbar_appears() -> No
         await wait_for(
             lambda: scroll.show_vertical_scrollbar,
             pilot=pilot,
-            description="the security tab to overflow and show its scrollbar",
+            description="the models tab to overflow and show its scrollbar",
         )
 
         assert row.size.width == width_without_scrollbar

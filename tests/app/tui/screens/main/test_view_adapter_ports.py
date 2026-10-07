@@ -13,12 +13,13 @@ from textual.widgets import Static
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
 from chrys.app.tui.screens.main import ports
+from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import MessageRef
-from tests.support.tui_helpers import WidgetApp
+from tests.support.tui_helpers import WidgetApp, fake_session_title
 
 
 def _protocol_member_names(protocol: type[Protocol]) -> set[str]:
@@ -96,9 +97,6 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
         display = True
 
     class _Screen:
-        _shell_mode = True
-        _agent_running = True
-
         def __init__(self, status_bar: StatusBar) -> None:
             self.status_bar = status_bar
             self.retry_panel = _RetryPanel()
@@ -106,12 +104,10 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
             self.sidebar = _Sidebar()
             self.footer = _Footer()
             self.terminal_title_result = ""
-
-        def _mark_terminal_title_completed(self) -> None:
-            self.terminal_title_result = "✓"
-
-        def _mark_terminal_title_failed(self) -> None:
-            self.terminal_title_result = "✗"
+            self._session_title = fake_session_title(
+                mark_terminal_title_completed=lambda: setattr(self, "terminal_title_result", "✓"),
+                mark_terminal_title_failed=lambda: setattr(self, "terminal_title_result", "✗"),
+            )
 
         def query_one(self, widget_type: type):
             if widget_type is StatusBar:
@@ -129,7 +125,9 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
     async with WidgetApp(lambda: StatusBar(locale_controller=controller)).run_test() as pilot:
         status_bar = pilot.app.query_one(StatusBar)
         screen = _Screen(status_bar)
-        adapter = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+        state = MainScreenState()
+        state.shell.active = True
+        adapter = MainScreenViewAdapter(screen, state=state)  # type: ignore[arg-type]
 
         adapter.flash_interrupted()
         assert status_bar._flash is not None
@@ -163,10 +161,23 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
             "终端模式 — 连按两次 Esc 或输入 exit 退出"
         )
 
-        screen._shell_mode = False
+        state.shell.active = False
         status_bar.set_profile("Code Agent")
         status_bar.flash("Interactive terminal")
         adapter.set_alternate_screen_active(False)
         assert status_bar.visible is True
         assert status_bar._flash is None
         assert status_bar.query_one("#profile-tag", Static).render().plain == "Code Agent"
+
+
+def test_approval_dialog_tool_name_is_the_raw_name_or_empty() -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
+    from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
+
+    adapter = MainScreenViewAdapter(SimpleNamespace(), state=MainScreenState())  # type: ignore[arg-type]
+    acp_name = "acp: `fs/write_text_file`"
+
+    assert adapter.approval_dialog_tool_name(ApprovalDialog(caller_name="", tool_name=acp_name)) == acp_name
+    assert adapter.approval_dialog_tool_name(SimpleNamespace(tool_name="shell")) == ""  # type: ignore[arg-type]

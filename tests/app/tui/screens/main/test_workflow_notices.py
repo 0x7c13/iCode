@@ -159,8 +159,8 @@ async def test_source_read_error_does_not_reopen_notice_on_resume(
         main = app._main_screen
         assert main is not None
         await open_workflow(main, pilot, "demo-workflow")
-        read = create_autospec(workflow_content.read_source, side_effect=OSError("source [unavailable]"))
-        monkeypatch.setattr(workflow_content, "read_source", read)
+        read = create_autospec(workflow_content.read_entry_bytes, side_effect=OSError("source [unavailable]"))
+        monkeypatch.setattr(workflow_content, "read_entry_bytes", read)
         tabs = main._workflow_panel.query_one(TabbedContent)
         await click_when_settled(pilot, tabs.get_tab("workflow-code-tab"))
         await dismiss_workflow_notice(main, pilot, "source [unavailable]")

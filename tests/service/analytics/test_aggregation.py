@@ -17,7 +17,7 @@ from chrys.service.analytics import (
     WallBucket,
     analyze_trajectory,
 )
-from chrys.service.analytics.aggregation import _sum_metrics
+from chrys.service.analytics._metric_ops import _sum_metrics
 from tests.service.analytics._events import NS, EventLog, caused_by, operation_index
 
 

@@ -46,10 +46,11 @@ from chrys.service.mcp.cache import MCPConnectionCache, MCPConnectionLease, clon
 from chrys.service.mcp.errors import (
     MCPConnectionError,
     MCPToolConfigurationError,
+    MCPToolNameAmbiguityError,
     MCPToolNameCollisionError,
     MCPToolNameValidationError,
 )
-from chrys.service.mcp.owned import _MCP_REMOTE_NAME_KEY
+from chrys.service.mcp.owned import _MCP_REMOTE_NAME_KEY, _mcp_config_names_for
 from chrys.service.mcp.result_limits import (
     DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS as DEFAULT_MCP_TOOL_RESULT_MAX_TOKENS,
 )
@@ -170,6 +171,24 @@ def _flatten_server_capabilities(capabilities: Any) -> tuple[str, ...]:
             if isinstance(value, dict) and depth < _MAX_CAPABILITY_DEPTH:
                 queue.append((path, value, depth + 1))
     return tuple(sorted(flattened))
+
+
+def _mcp_remote_name(tool: FunctionTool) -> str:
+    remote_name = (tool.additional_properties or {}).get(_MCP_REMOTE_NAME_KEY)
+    return remote_name if isinstance(remote_name, str) else tool.name
+
+
+def _sole_config_name(tool: FunctionTool, catalog: list[FunctionTool]) -> str | None:
+    """Return the first ``allowed_tools``/``always_load`` name that selects *tool* and no other catalog tool."""
+    others = [other for other in catalog if other is not tool]
+    return next(
+        (
+            name
+            for name in _mcp_config_names_for(tool)
+            if all(name not in _mcp_config_names_for(other) for other in others)
+        ),
+        None,
+    )
 
 
 class MCPAdapter:
@@ -364,6 +383,18 @@ class MCPAdapter:
                     "or disable 'Expose server prompts' when the duplicate is a prompt."
                 ),
             )
+
+        # One configured name can be one tool's original name and another's
+        # prefixed name; both would pass the allowlist. Every tool a name
+        # selects survives that filter, so the permitted catalog shows it.
+        configured_names = dict.fromkeys([*(config.allowed_tools or ()), *config.always_load])
+        matches_by_name = {
+            name: [(_mcp_remote_name(tool), _sole_config_name(tool, catalog)) for tool in matches]
+            for name in configured_names
+            if len(matches := [tool for tool in catalog if name in _mcp_config_names_for(tool)]) > 1
+        }
+        if matches_by_name:
+            raise MCPToolNameAmbiguityError(config.name, config.transport, matches_by_name=matches_by_name)
 
         catalog_name_set = set(catalog_names)
         if control_collisions := catalog_name_set & control_names:

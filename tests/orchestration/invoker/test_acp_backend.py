@@ -20,6 +20,7 @@ from chrys.service.acp_client import AcpAgentClient
 from chrys.service.approval.policy import ApprovalMode
 from tests.orchestration.sub_agents._acp_fakes import make_broker
 from tests.service.acp_client.helpers import make_spec
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 async def test_direct_backend_has_no_caller_binding_and_owns_monotonic_transport(tmp_path: Path) -> None:
@@ -86,7 +87,13 @@ async def test_direct_backend_close_drains_active_managed_transport(
     request = RunRequest([Message("user", ["work"])], RunIntent.FRESH, origin)
     running = asyncio.create_task(backend.run(request))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        # The window spawns and initializes the stub agent: a cold process start.
+        await wait_for(
+            lambda: entered.is_set() or running.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="prompt sent to the ACP stub",
+        )
+        assert entered.is_set(), running.result()
         await asyncio.wait_for(asyncio.gather(backend.aclose(), backend.aclose()), 10)
         outcome = await running
         assert isinstance(outcome, Aborted)
@@ -141,7 +148,13 @@ async def test_direct_backend_close_does_not_join_caller_cleanup(
     running = asyncio.create_task(caller())
     closing = None
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        # The window spawns and initializes the stub agent: a cold process start.
+        await wait_for(
+            lambda: entered.is_set() or running.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="prompt sent to the ACP stub",
+        )
+        assert entered.is_set(), running.result()
         closing = asyncio.create_task(backend.aclose())
         # Joining the caller here would deadlock its finally against this close.
         # pytest-timeout also bounds regressions that cannot drain cancellation.

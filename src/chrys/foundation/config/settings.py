@@ -667,6 +667,10 @@ _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Edito
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
 _LABEL_APPROVAL_REUSE = msg("settings.approval.reuse_enabled.label", fallback="Remember explicit user approvals")
+_LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
+    "settings.ui.approval.defer_while_judging.label",
+    fallback="Show the approval dialog only when Auto-Review flags a call",
+)
 _LABEL_APP_DEV_MODE = msg("settings.app.dev_mode.label", fallback="Developer mode")
 _LABEL_MUTATIONS_PARALLEL_IMPLICIT_TOOLS = msg(
     "settings.mutations.parallel_implicit_tools.label", fallback="Parallel implicit tools"
@@ -705,6 +709,7 @@ _LABEL_MUTATIONS_TRACE_MODE = msg("settings.mutations.trace.mode.label", fallbac
 _LABEL_MUTATIONS_TRACE_FSATRACE_PATH = msg("settings.mutations.trace.fsatrace_path.label", fallback="fsatrace path")
 _LABEL_PROJECT_CONFIG_ENABLED = msg("settings.project.config_enabled.label", fallback="Load project settings")
 _LABEL_PROJECT_HOOKS_ENABLED = msg("settings.project.hooks_enabled.label", fallback="Load project hooks")
+_LABEL_PROJECT_SKILLS_ENABLED = msg("settings.project.skills_enabled.label", fallback="Load project skills")
 _LABEL_NOTIFICATIONS_ENABLED = msg("settings.notifications.enabled.label", fallback="Enable notifications")
 _LABEL_NOTIFICATIONS_DELIVERY_DESKTOP = msg("settings.notifications.delivery.desktop.label", fallback="Desktop popup")
 _LABEL_NOTIFICATIONS_DELIVERY_SOUND = msg("settings.notifications.delivery.sound.label", fallback="Sound")
@@ -1102,6 +1107,21 @@ class Settings:
             coerce=bool_coercer(),
             apply=Apply.RELOAD,
             group="approval",
+            kind=Kind.BOOL,
+        ),
+    )
+
+    # TUI presentation only: in AUTO mode, keep a call the judge is still
+    # reviewing out of sight and open its dialog only once it is flagged.
+    # The backend sends the same events either way; ACP and headless ignore it.
+    approval_defer_while_judging: bool = field(
+        default=True,
+        metadata=spec(
+            key="ui.approval.defer_while_judging",
+            label=_LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING,
+            coerce=bool_coercer(),
+            apply=Apply.LIVE,
+            group="ui",
             kind=Kind.BOOL,
         ),
     )
@@ -1523,11 +1543,11 @@ class Settings:
         ),
     )
 
-    # Whether ``<root>/.chrys/hooks/hooks.{yaml,yml,json}`` is loaded.  On
-    # by default: project hooks are the workspace's own automation and each
-    # hook still runs under the usual approval and outbox rules.
+    # Whether ``<root>/.chrys/hooks/hooks.{yaml,yml,json}`` is loaded.  Off
+    # by default: a hook is a command that runs on its own, outside tool
+    # approval, so a cloned repository must not get to run one unasked.
     project_hooks_enabled: bool = field(
-        default=True,
+        default=False,
         metadata=spec(
             key="project.hooks_enabled",
             label=_LABEL_PROJECT_HOOKS_ENABLED,
@@ -1536,6 +1556,25 @@ class Settings:
             group="project",
             kind=Kind.BOOL,
             # A project must not be able to switch its own hooks back on.
+            project_merge=ProjectMerge.DENY,
+            risk=Risk.CAUTION,
+        ),
+    )
+
+    # Whether ``<root>/.agents/skills`` is loaded.  Off by default for the
+    # same reason: a skill's instructions and scripts come from whoever
+    # wrote the repository.  The agent profile's own working-folder switch
+    # still applies on top of this one.
+    project_skills_enabled: bool = field(
+        default=False,
+        metadata=spec(
+            key="project.skills_enabled",
+            label=_LABEL_PROJECT_SKILLS_ENABLED,
+            coerce=bool_coercer(),
+            apply=Apply.RELOAD,
+            group="project",
+            kind=Kind.BOOL,
+            # A project must not be able to switch its own skills back on.
             project_merge=ProjectMerge.DENY,
             risk=Risk.CAUTION,
         ),

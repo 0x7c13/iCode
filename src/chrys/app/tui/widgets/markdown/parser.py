@@ -23,9 +23,11 @@ from textual.content import Content, Span
 from textual.highlight import guess_language, highlight
 from textual.style import Style
 
-from chrys.app.tui.widgets.markdown.blocks import BULLETS, MarkdownBlock
+from chrys.app.tui.widgets.markdown.blocks import BULLETS, MarkdownBlock, MarkdownGutter
 from chrys.app.tui.widgets.markdown.diagram.model import DiagnosticSeverity
 from chrys.app.tui.widgets.markdown.links import terminal_link_target
+from chrys.app.tui.widgets.markdown.math import CompiledMath, compile_math
+from chrys.app.tui.widgets.markdown.math.markdown import disable_math, enable_math
 from chrys.app.tui.widgets.syntax_theme import NoErrorHighlightTheme
 
 if TYPE_CHECKING:
@@ -386,6 +388,7 @@ def _create_markdown_parser() -> MarkdownIt:
     along with the text an HTML block holds. Only ``<br>`` breaks the line.
     """
     parser = MarkdownIt("gfm-like", {"html": False})
+    enable_math(parser)
     parser.inline.ruler.before("html_inline", _HTML_LINE_BREAK_RULE, _html_line_break)
     parser.core.ruler.after("linkify", "chrys_ipv6_links", _restore_ipv6_link_targets)
     if parser.linkify is not None:
@@ -418,17 +421,20 @@ def create_user_text_markdown_parser() -> MarkdownIt:
     """
     parser = create_line_break_markdown_parser()
     parser.inline.ruler.disable(_HTML_LINE_BREAK_RULE)
+    disable_math(parser)
     return parser
 
 
 def _token_to_content(
-    token: Token, get_style: Callable[[str], Style] | None = None, *, open_links: bool = True
+    token: Token,
+    *,
+    open_links: bool = True,
+    math_compiler: Callable[[str], CompiledMath] = compile_math,
 ) -> Content:
     """Convert an inline token to Textual Content.
 
     Args:
         token: A markdown token.
-        get_style: Optional callable to resolve component class styles.
         open_links: Emit terminal hyperlinks for allowed external destinations.
 
     Returns:
@@ -476,6 +482,11 @@ def _token_to_content(
             add_style(".code_inline")
             add_content(child.content)
             close_tag()
+        elif child_type == "math_inline":
+            formula = math_compiler(child.content)
+            add_content(formula.linear if formula.rows else child.meta["math_source"])
+        elif child_type == "math_literal":
+            add_content(child.content)
         elif child_type == "em_open":
             add_style(".em")
         elif child_type == "strong_open":
@@ -567,12 +578,35 @@ def _get_list_indent(stack: list[dict]) -> int:
     return 0
 
 
+def _apply_containers(block: MarkdownBlock, stack: list[dict]) -> None:
+    """Preserve container order for every block, including non-paragraph items."""
+    gutter: list[MarkdownGutter] = []
+    indent = 0
+    for parent in stack:
+        if parent["type"] == "blockquote":
+            gutter.append(MarkdownGutter(parent["container_id"], "quote", 2))
+        elif parent["type"] == "list_item":
+            prefix = "" if parent["first_block_done"] else parent["prefix"]
+            parent["first_block_done"] = True
+            gutter.append(MarkdownGutter(parent["container_id"], "list", parent["indent"] - indent, prefix))
+            indent = parent["indent"]
+    if not gutter:
+        return
+    block.gutter = tuple(gutter)
+    block.indent = indent
+    block.bq_depth = sum(part.kind == "quote" for part in gutter)
+    block.border_left = "▌ " * block.bq_depth
+    block.prefix = next((part.prefix for part in reversed(gutter) if part.prefix), "")
+
+
 def _parse_tokens(
     tokens: Iterable[Token],
     unhandled_token: Callable[[Token], MarkdownBlock | None] | None = None,
     compile_diagram: Callable[[str], CompiledDiagram] | None = None,
     *,
     open_links: bool = True,
+    math_enabled: bool = True,
+    math_compiler: Callable[[str], CompiledMath] = compile_math,
 ) -> list[MarkdownBlock]:
     """Parse markdown-it tokens into a flat list of MarkdownBlock objects.
 
@@ -589,7 +623,11 @@ def _parse_tokens(
     stack: list[dict] = []
     list_stack: list[dict] = []
 
-    for token in tokens:
+    def append_block(block: MarkdownBlock) -> None:
+        _apply_containers(block, stack)
+        blocks.append(block)
+
+    for token_index, token in enumerate(tokens):
         token_type = token.type
         source_range = (token.map[0], token.map[1]) if token.map is not None else (0, 0)
 
@@ -610,7 +648,7 @@ def _parse_tokens(
             block_id = f"heading-{slug_for_tcss_id(slug_text)}"
 
             top_margin = 2 if ctx["level"] <= 2 else 1
-            blocks.append(
+            append_block(
                 MarkdownBlock(
                     block_type="heading",
                     content=content,
@@ -630,98 +668,34 @@ def _parse_tokens(
         elif token_type == "paragraph_close":
             ctx = stack.pop()
             content = ctx.get("content", Content(""))
-            indent = 0
-            prefix = ""
-            style_name = "virtualized-markdown--paragraph"
-            border_left = ""
-            in_list = False
-            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
-            if bq_depth > 0:
-                border_left = "\u258c " * bq_depth
-                style_name = "virtualized-markdown--block-quote"
-                for parent in reversed(stack):
-                    if parent["type"] == "list_item":
-                        indent = parent.get("indent", 0)
-                        in_list = True
-                        if not parent.get("first_para_done"):
-                            prefix = parent.get("prefix", "")
-                            parent["first_para_done"] = True
-                        break
-            else:
-                for parent in reversed(stack):
-                    if parent["type"] == "list_item":
-                        indent = parent.get("indent", 0)
-                        in_list = True
-                        if not parent.get("first_para_done"):
-                            prefix = parent.get("prefix", "")
-                            parent["first_para_done"] = True
-                        break
-
-            in_blockquote = bq_depth > 0
-            blocks.append(
+            append_block(
                 MarkdownBlock(
                     block_type="paragraph",
                     content=content,
                     source_range=ctx["source_range"],
-                    style_name=style_name,
-                    bottom_margin=0 if (in_list or in_blockquote) else 1,
-                    indent=indent,
-                    prefix=prefix,
-                    border_left=border_left,
-                    bq_depth=bq_depth,
+                    style_name="virtualized-markdown--paragraph",
+                    top_margin=0 if token.hidden else 1,
+                    bottom_margin=0 if token.hidden else 1,
                 )
             )
 
         elif token_type == "blockquote_open":
-            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
-            if bq_depth == 0 and blocks and blocks[-1].bottom_margin < 1:
+            if blocks and blocks[-1].bottom_margin < 1:
                 blocks[-1].bottom_margin = 1
-            if bq_depth > 0:
-                parent_bq = None
-                for s in reversed(stack):
-                    if s["type"] == "blockquote":
-                        parent_bq = s
-                        break
-                if parent_bq and len(blocks) > parent_bq.get("block_count_at_open", 0):
-                    list_indent = _get_list_indent(stack)
-                    blocks.append(
-                        MarkdownBlock(
-                            block_type="blockquote_spacer",
-                            content=Content(" "),
-                            source_range=source_range,
-                            style_name="virtualized-markdown--block-quote",
-                            border_left="\u258c " * bq_depth,
-                            bq_depth=bq_depth,
-                            indent=list_indent,
-                            bottom_margin=0,
-                        )
-                    )
             stack.append(
                 {
                     "type": "blockquote",
+                    "container_id": token_index,
                     "source_range": source_range,
                     "block_count_at_open": len(blocks),
                 }
             )
 
         elif token_type == "blockquote_close":
+            if len(blocks) == stack[-1]["block_count_at_open"]:
+                append_block(MarkdownBlock("paragraph", Content(" "), bottom_margin=0))
             stack.pop()
-            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
-            if bq_depth > 0:
-                list_indent = _get_list_indent(stack)
-                blocks.append(
-                    MarkdownBlock(
-                        block_type="blockquote_spacer",
-                        content=Content(" "),
-                        source_range=source_range,
-                        style_name="virtualized-markdown--block-quote",
-                        border_left="\u258c " * bq_depth,
-                        bq_depth=bq_depth,
-                        indent=list_indent,
-                        bottom_margin=0,
-                    )
-                )
-            elif blocks:
+            if blocks:
                 blocks[-1].bottom_margin = 1
 
         elif token_type == "bullet_list_open":
@@ -766,8 +740,6 @@ def _parse_tokens(
             list_ctx["item_count"] += 1
 
             depth = list_ctx["depth"]
-            indent = 4 + depth * 2
-
             if list_ctx["type"] == "bullet_list":
                 bullet_idx = depth % len(BULLETS)
                 prefix = BULLETS[bullet_idx]
@@ -775,21 +747,25 @@ def _parse_tokens(
                 number = list_ctx["start"] + list_ctx["item_count"] - 1
                 prefix = f"{number}. "
 
+            indent = _get_list_indent(stack) + max(4 if depth == 0 else 2, cell_len(prefix))
             stack.append(
                 {
                     "type": "list_item",
+                    "container_id": token_index,
                     "indent": indent,
                     "prefix": prefix,
-                    "first_para_done": False,
+                    "first_block_done": False,
                     "source_range": source_range,
                 }
             )
 
         elif token_type == "list_item_close":
+            if not stack[-1]["first_block_done"]:
+                append_block(MarkdownBlock("paragraph", Content(" "), bottom_margin=0))
             stack.pop()
 
         elif token_type == "hr":
-            blocks.append(
+            append_block(
                 MarkdownBlock(
                     block_type="hr",
                     content=Content(""),
@@ -850,17 +826,42 @@ def _parse_tokens(
             ctx = stack.pop()
             headers = ctx.get("headers", [])
             rows = ctx.get("rows", [])
-            blocks.extend(_build_table_blocks(headers, rows, ctx["source_range"]))
+            for block in _build_table_blocks(headers, rows, ctx["source_range"]):
+                append_block(block)
 
         elif token_type == "inline":
             if stack:
-                content = _token_to_content(token, open_links=open_links)
+                content = _token_to_content(token, open_links=open_links, math_compiler=math_compiler)
                 stack[-1]["content"] = content
 
-        elif token_type in ("fence", "code_block"):
+        elif token_type in ("fence", "code_block", "math_block"):
             code = token.content.rstrip()
             language = token.info or ""
             normalized_language = language.split(maxsplit=1)[0].casefold() if language.strip() else ""
+
+            if math_enabled and (
+                token_type == "math_block"
+                or (
+                    token_type == "fence"
+                    and normalized_language == "math"
+                    and token.meta.get(_FENCE_CLOSED_META, False)
+                )
+            ):
+                formula = math_compiler(token.content.strip())
+                source = token.meta.get("math_source", token.content.rstrip("\n"))
+                append_block(
+                    MarkdownBlock(
+                        block_type="math",
+                        content=Content.from_text(source, markup=False),
+                        source_range=source_range,
+                        math=formula,
+                        style_name="virtualized-markdown--fence",
+                        top_margin=1,
+                        padding_left=2,
+                        padding_right=2,
+                    )
+                )
+                continue
 
             if token_type == "fence" and normalized_language == "mermaid" and token.meta.get(_FENCE_CLOSED_META, False):
                 if compile_diagram is None:
@@ -871,15 +872,7 @@ def _parse_tokens(
                 diagram = compile_diagram(diagram_source)
 
                 if not any(diagnostic.severity is DiagnosticSeverity.ERROR for diagnostic in diagram.diagnostics):
-                    indent = 0
-                    bq_depth = sum(1 for parent in stack if parent["type"] == "blockquote")
-                    border_left = "\u258c " * bq_depth if bq_depth > 0 else ""
-                    for parent in reversed(stack):
-                        if parent["type"] == "list_item":
-                            indent = parent.get("indent", 0)
-                            break
-
-                    blocks.append(
+                    append_block(
                         MarkdownBlock(
                             block_type="diagram",
                             content=Content.from_text("", markup=False),
@@ -888,13 +881,10 @@ def _parse_tokens(
                             top_margin=1,
                             bottom_margin=1,
                             code_language="mermaid",
-                            indent=indent,
                             padding_top=1,
                             padding_bottom=1,
                             padding_left=1,
                             padding_right=1,
-                            border_left=border_left,
-                            bq_depth=bq_depth,
                             diagram=diagram,
                         )
                     )
@@ -902,16 +892,7 @@ def _parse_tokens(
 
             highlighted = highlight(code, language=language or _guess_code_language(code), theme=NoErrorHighlightTheme)
 
-            indent = 0
-            prefix = ""
-            bq_depth = sum(1 for p in stack if p["type"] == "blockquote")
-            border_left = "\u258c " * bq_depth if bq_depth > 0 else ""
-            for parent in reversed(stack):
-                if parent["type"] == "list_item":
-                    indent = parent.get("indent", 0)
-                    break
-
-            blocks.append(
+            append_block(
                 MarkdownBlock(
                     block_type="fence",
                     content=highlighted,
@@ -920,21 +901,17 @@ def _parse_tokens(
                     top_margin=1,
                     bottom_margin=1,
                     code_language=language,
-                    indent=indent,
-                    prefix=prefix,
                     padding_top=1,
                     padding_bottom=1,
                     padding_left=2,
                     padding_right=1,
-                    border_left=border_left,
-                    bq_depth=bq_depth,
                 )
             )
 
         elif unhandled_token is not None:
             external = unhandled_token(token)
             if external is not None:
-                blocks.append(external)
+                append_block(external)
 
     return blocks
 

@@ -120,10 +120,10 @@ that cwd rebuilds the hook manager; profile/model switches that keep the
 same cwd reuse the current manager.
 
 Trust model: a project hooks file ships with the repo and runs
-arbitrary subprocesses without an in-process approval prompt. The
-same trust model applies to global hooks, `<cwd>/.agents/skills/`,
-and `AGENTS.md` auto-load. Cloning a repo and running Chrys inside
-it is a trust decision.
+arbitrary subprocesses without tool approval. It loads only while the
+user's own `project.hooks_enabled` setting is on (default off; a
+project file cannot set it). Otherwise the file is never opened, and
+the settings load reports it as a `project_hooks_dormant` warning.
 
 ---
 
@@ -201,8 +201,8 @@ Notes:
   comparison, so `args.timeout.equals: "30"` will match an integer
   argument `30`.
 - Setting both `profile` and `profiles` is allowed; both must match.
-- Invalid regex patterns log a one-time warning and stop the hook firing
-  for the rest of the session.
+- An enabled hook whose regex does not compile is left out at load time
+  (`HooksFile.skipped_hooks`); the rest of the file still loads.
 
 ---
 
@@ -372,6 +372,8 @@ If global loading fails, the engine publishes a
 hooks disabled. If project loading fails, it publishes
 `Warning(code="project_hooks_config_invalid")` and continues with
 project hooks disabled. A valid source in the other layer is still used.
+Each hook left out for an invalid regex gets its own
+`Warning(code="hook_skipped")` naming the hook id and file.
 
 ---
 

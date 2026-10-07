@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from chrys.foundation.models.session_surface import SessionSurface
-from chrys.foundation.platform.files import _fsync_dir as _common_fsync_dir
 from chrys.foundation.platform.files import (
     atomic_write_owner_only_bytes,
     atomic_write_owner_only_text,
+    fsync_directory,
     read_owner_verified_bounded,
 )
 from chrys.foundation.text.mentions import format_file_mention, iter_mention_tokens
@@ -133,7 +133,7 @@ class SessionForkMixin:
                         # Index before the rename commits the fork.
                         self._record_mru(new_session_id, fork_updated_at)
                         os.replace(tmp_dir, dest_dir)
-                        _common_fsync_dir(self._dir)
+                        fsync_directory(self._dir)
                         tmp_dir = None
                         return new_session_id
                     finally:

@@ -24,6 +24,10 @@ HOW TO RUN IT
         interactive: false      never ask; the tour is labelled "not reviewed by a human"
         depth: quick | deep     skip the depth question (unattended runs default to quick)
 
+    `$'...'` is bash and zsh quoting. In PowerShell, write each line break as `n inside double quotes:
+
+        icode workflow run demo-workflow --input "interactive: false`ndepth: deep`nhow are errors handled?"
+
     These lines are a convention of this file (see `read_request`), not a workflow feature. The file
     deliberately does not catch the failure of `ctx.ask` to fall back on a default answer: that would
     turn every real fault into "carry on as if the user had agreed".
@@ -314,9 +318,20 @@ def read_request(value: WorkflowValue) -> WorkflowValue:
     option lines described in the module docstring from the free text, and from here on the options
     travel as structured state on `data` while `text` stays readable prose.
     """
+    lines = value.text.splitlines()
+    if len(lines) == 1 and "\\n" in lines[0]:
+        # The bash command pasted into PowerShell arrives as one line with literal `\n`s, after the `$` of
+        # `$'...'`. Read as written, its options would be ignored without a word.
+        first_key = lines[0].partition(":")[0].strip().lstrip("$").strip().lower()
+        if first_key in ("interactive", "depth"):
+            raise ValueError(
+                "The input is one line with a literal \\n in it: $'...' is bash quoting, and PowerShell passes "
+                "it on as written. In PowerShell, write each line break as `n inside double quotes: --input "
+                '"interactive: false`ndepth: deep`nhow are errors handled?"'
+            )
     options: dict[str, str] = {}
     focus_lines: list[str] = []
-    for line in value.text.splitlines():
+    for line in lines:
         key, separator, raw = line.partition(":")
         name = key.strip().lower()
         if separator and name in ("interactive", "depth"):

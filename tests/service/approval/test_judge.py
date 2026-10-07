@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -188,7 +188,7 @@ def _make_judge(client: _FakeClient) -> ApprovalJudge:
 async def test_approval_judge_passes_session_id_to_client() -> None:
     judge = ApprovalJudge(default_profile(), session_id="sess-judge", parent_session_id="parent-judge")
 
-    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
+    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
         await judge._get_client()
 
     create_client.assert_called_once()
@@ -296,6 +296,22 @@ async def test_evaluate_includes_all_current_turn_user_messages() -> None:
     user_prompt = client.calls[0][1].text
     assert "Current-turn user prompts:\n1. 这个代码仓是做什么的?\n2. 当前代码仓有多少行代码?" in user_prompt
     assert "Latest user prompt:\n当前代码仓有多少行代码?" in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_evaluate_shows_non_ascii_tool_arguments_as_written() -> None:
+    client = _FakeClient(['{"approved": true, "reason": "只读"}'])
+    judge = _make_judge(client)
+
+    await judge.evaluate(
+        user_message="统计报告行数",
+        tool_name="zsh",
+        tool_kind="shell",
+        args={"command": "wc -l 报告.txt"},
+        workspace_roots=["/ws"],
+    )
+
+    assert '"command": "wc -l 报告.txt"' in client.calls[0][1].text
 
 
 @pytest.mark.asyncio

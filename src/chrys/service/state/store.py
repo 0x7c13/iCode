@@ -56,7 +56,7 @@ from chrys.service.state._session_files import session_dir_has_artifacts as sess
 from chrys.service.state._session_files import session_write_lock_path as session_write_lock_path
 from chrys.service.state._session_meta import ChatSessionMeta as ChatSessionMeta
 from chrys.service.state._session_meta import SessionMeta as SessionMeta
-from chrys.service.state._session_meta import SessionMetaMixin, resolve_session_kind
+from chrys.service.state._session_meta import SessionMetaMixin, copy_session_meta, resolve_session_kind
 from chrys.service.state._session_meta import WorkflowSessionMeta as WorkflowSessionMeta
 from chrys.service.state._session_meta import _earliest_history_created_at as _earliest_history_created_at
 from chrys.service.state._session_meta import _extract_title as _extract_title
@@ -393,6 +393,14 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         self._migrate_if_needed(session_id)
         path = self._session_file(session_id)
         return path if path.exists() else None
+
+    def resolve_session_file(self, session_id: str) -> Path | None:
+        """The session's ``session.json`` path; None when it has none.
+
+        A session still in the legacy flat layout is migrated first, so this
+        may write to disk and raise the I/O and lock errors migration raises.
+        """
+        return self._resolve_session_file(session_id)
 
     @staticmethod
     def _read_json_file(path: Path) -> dict[str, Any] | None:
@@ -1488,7 +1496,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             with self._meta_cache_lock:
                 cached = self._meta_cache.get(short_id)
             if cached is not None and cached.signature == signature:
-                return cached.meta, cached
+                return copy_session_meta(cached.meta), cached
         lock_held = recovery_present and self._active_lock_is_held(short_id)
         # A sidecar that appears after the probe is a live writer's checkpoint: never read it.
         prefer_recovery = recovery_present and not lock_held
@@ -1511,7 +1519,7 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             # A malformed envelope's meta would be dropped on every load: keep it in memory only.
             if is_recordable(entry):
                 self._catalog_pending.add(short_id)
-        return meta, entry
+        return copy_session_meta(meta), entry
 
     def _with_workflow_status(self, meta: SessionMeta) -> SessionMeta:
         if meta.kind != "workflow" or not _is_run_name(meta.latest_run_id):
@@ -1696,12 +1704,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             with self._meta_cache_lock:
                 cached = self._legacy_meta_cache.get(path.name)
             if signature is not None and cached is not None and cached[0] == signature:
-                return cached[1]
+                return copy_session_meta(cached[1])
             raw = json.loads(path.read_text(encoding="utf-8"))
             meta = self._session_meta_from_envelope(raw, size_bytes=path.stat().st_size)
             if signature is not None and file_signature(path) == signature:
                 with self._meta_cache_lock:
                     self._legacy_meta_cache[path.name] = (signature, meta)
+                return copy_session_meta(meta)
             return meta
         except json.JSONDecodeError, KeyError, ValueError, TypeError, OSError:
             return None

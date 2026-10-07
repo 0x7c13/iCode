@@ -9,6 +9,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
 
+from chrys.app.tui.widgets.editor.coordinates import location_to_offset, offset_to_location
 from chrys.app.tui.widgets.editor.types import (
     COMMON_EDITOR_INTENTS,
     MESSAGE_EDITOR_CHARACTER_LIMIT_STATUS,
@@ -176,23 +177,6 @@ def _lines(text: str) -> list[str]:
     return text.split("\n")
 
 
-def _location_to_offset(text: str, location: EditorLocation) -> int:
-    lines = _lines(text)
-    row = min(max(location[0], 0), len(lines) - 1)
-    column = min(max(location[1], 0), len(lines[row]))
-    return sum(len(line) + 1 for line in lines[:row]) + column
-
-
-def _offset_to_location(text: str, offset: int) -> EditorLocation:
-    lines = _lines(text)
-    remaining = min(max(offset, 0), len(text))
-    for row, line in enumerate(lines[:-1]):
-        if remaining <= len(line):
-            return row, remaining
-        remaining -= len(line) + 1
-    return len(lines) - 1, min(remaining, len(lines[-1]))
-
-
 def _normal_location(text: str, location: EditorLocation) -> EditorLocation:
     lines = _lines(text)
     row = min(max(location[0], 0), len(lines) - 1)
@@ -264,12 +248,12 @@ def _word_end(text: str, offset: int, count: int) -> int:
 
 
 def _advance_location(text: str, location: EditorLocation, amount: int = 1) -> EditorLocation:
-    return _offset_to_location(text, _location_to_offset(text, location) + amount)
+    return offset_to_location(text, location_to_offset(text, location) + amount)
 
 
 def _range_from_offsets(text: str, start: int, end: int) -> EditorTextRange:
     low, high = sorted((start, end))
-    return EditorTextRange(_offset_to_location(text, low), _offset_to_location(text, high))
+    return EditorTextRange(offset_to_location(text, low), offset_to_location(text, high))
 
 
 class VimKeymap:
@@ -674,8 +658,8 @@ class VimKeymap:
             else:
                 host.set_editor_selection(source_range.end, source_range.start)
             return
-        anchor_offset = _location_to_offset(host.editor_text, anchor)
-        active_offset = _location_to_offset(host.editor_text, active)
+        anchor_offset = location_to_offset(host.editor_text, anchor)
+        active_offset = location_to_offset(host.editor_text, active)
         if anchor_offset <= active_offset:
             host.set_editor_selection(anchor, _advance_location(host.editor_text, active))
         else:
@@ -688,8 +672,8 @@ class VimKeymap:
         if self._state is VimState.VISUAL_LINE:
             start_row, end_row = sorted((anchor[0], active[0]))
             return self._line_edit_range(text, start_row, end_row - start_row + 1)
-        start = min(_location_to_offset(text, anchor), _location_to_offset(text, active))
-        end = min(max(_location_to_offset(text, anchor), _location_to_offset(text, active)) + 1, len(text))
+        start = min(location_to_offset(text, anchor), location_to_offset(text, active))
+        end = min(max(location_to_offset(text, anchor), location_to_offset(text, active)) + 1, len(text))
         return _range_from_offsets(text, start, end)
 
     def _enter_insert(self, command: str, host: EditorCommandHost) -> None:
@@ -760,14 +744,14 @@ class VimKeymap:
             target_line = lines[target_row]
             return _MotionTarget((target_row, max(len(target_line) - 1, 0)), inclusive=bool(target_line))
         if motion is VimMotion.WORD_NEXT:
-            offset = _next_word_start(text, _location_to_offset(text, (row, column)), count)
-            return _MotionTarget(_offset_to_location(text, offset))
+            offset = _next_word_start(text, location_to_offset(text, (row, column)), count)
+            return _MotionTarget(offset_to_location(text, offset))
         if motion is VimMotion.WORD_PREVIOUS:
-            offset = _previous_word_start(text, _location_to_offset(text, (row, column)), count)
-            return _MotionTarget(_offset_to_location(text, offset))
+            offset = _previous_word_start(text, location_to_offset(text, (row, column)), count)
+            return _MotionTarget(offset_to_location(text, offset))
         if motion is VimMotion.WORD_END:
-            offset = _word_end(text, _location_to_offset(text, (row, column)), count)
-            return _MotionTarget(_offset_to_location(text, offset), inclusive=True)
+            offset = _word_end(text, location_to_offset(text, (row, column)), count)
+            return _MotionTarget(offset_to_location(text, offset), inclusive=True)
         if motion is VimMotion.DOCUMENT_START:
             return _MotionTarget((0, 0), linewise=True)
         return _MotionTarget((len(lines) - 1, max(len(lines[-1]) - 1, 0)), inclusive=True, linewise=True)
@@ -805,10 +789,10 @@ class VimKeymap:
             self._apply_operator(operator, EditorTextRange((row, start), current), linewise=False, host=host)
             return
         if operator is VimOperator.CHANGE and motion is VimMotion.WORD_NEXT and count == 1:
-            current_offset = _location_to_offset(text, current)
+            current_offset = location_to_offset(text, current)
             if current_offset < len(text) and not text[current_offset].isspace():
                 target = self._resolve_motion_target(VimMotion.WORD_END, 1, current, text)
-                end_offset = min(_location_to_offset(text, target.location) + 1, len(text))
+                end_offset = min(location_to_offset(text, target.location) + 1, len(text))
                 self._apply_operator(
                     operator,
                     _range_from_offsets(text, current_offset, end_offset),
@@ -831,8 +815,8 @@ class VimKeymap:
             if operator is not VimOperator.YANK:
                 self._position_after_line_operator(start_row, host)
             return
-        start_offset = _location_to_offset(text, current)
-        end_offset = _location_to_offset(text, target.location)
+        start_offset = location_to_offset(text, current)
+        end_offset = location_to_offset(text, target.location)
         if target.inclusive:
             if end_offset >= start_offset:
                 end_offset = min(end_offset + 1, len(text))
@@ -1002,9 +986,9 @@ class VimKeymap:
             host.move_editor_cursor((min(target_row, len(_lines(host.editor_text)) - 1), 0))
             return ""
         location = row, min(column + 1, len(_lines(text)[row])) if after else column
-        insertion_offset = _location_to_offset(text, location)
+        insertion_offset = location_to_offset(text, location)
         host.replace_editor_range(EditorTextRange(location, location), payload)
-        target = _offset_to_location(host.editor_text, insertion_offset + len(payload) - 1)
+        target = offset_to_location(host.editor_text, insertion_offset + len(payload) - 1)
         host.move_editor_cursor(_normal_location(host.editor_text, target))
         return ""
 
@@ -1017,7 +1001,7 @@ class VimKeymap:
         host: EditorCommandHost,
     ) -> EditorTextRange | None:
         text = host.editor_text
-        cursor_offset = _location_to_offset(text, _normal_location(text, host.editor_cursor_location))
+        cursor_offset = location_to_offset(text, _normal_location(text, host.editor_cursor_location))
         if text_object in {VimTextObject.WORD, VimTextObject.WORD_BIG}:
             return self._word_object(
                 text,

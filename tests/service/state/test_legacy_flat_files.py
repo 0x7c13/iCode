@@ -32,6 +32,17 @@ def _write_legacy_flat_session(tmp_path: Path, session_id: str) -> Path:
     return path
 
 
+def test_resolve_session_file_migrates_a_flat_session_and_says_when_there_is_none(tmp_path: Path) -> None:
+    store = JsonFileStateStore(tmp_path)
+    legacy = _write_legacy_flat_session(tmp_path, "flat")
+    write_legacy_envelope(tmp_path / "folder" / "session.json", "folder")
+
+    assert store.resolve_session_file("flat") == tmp_path / "flat" / "session.json"
+    assert not legacy.exists()
+    assert store.resolve_session_file("folder") == tmp_path / "folder" / "session.json"
+    assert store.resolve_session_file("missing") is None
+
+
 async def test_legacy_flat_files_with_duplicate_ids_list_once(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
     write_legacy_envelope(tmp_path / "aaa.json", "dupe")

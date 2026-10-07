@@ -27,6 +27,7 @@ from chrys.foundation.text.mentions import format_file_mention
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.run.attachments import parse_image_mentions
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.images import image_bytes
 from tests.support.tui_helpers import png_bytes
 from tests.support.waiting import wait_for
 
@@ -50,7 +51,7 @@ class _MainScreenPasteApp(App):
 
 def _write_image(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"abc")
+    path.write_bytes(png_bytes((200, 40, 40)))
     return path
 
 
@@ -284,6 +285,27 @@ def test_macos_clipboard_reader_tries_non_png_clipboard_formats(
     directory = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
 
     path = save_clipboard_image_to_file(directory)
+
+    assert calls == ["PNGf", "TIFF"]
+    assert path is not None
+    assert path.suffix == ".png"
+
+
+def test_macos_clipboard_reader_decodes_only_the_clipboard_image_formats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = {"PNGf": image_bytes("PCX"), "TIFF": image_bytes("TIFF")}
+    calls: list[str] = []
+
+    def read_clipboard_class(class_code: str) -> bytes | None:
+        calls.append(class_code)
+        return payloads.get(class_code)
+
+    monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=True, is_windows=False))
+    monkeypatch.setattr(image_paste, "_read_macos_clipboard_class", read_clipboard_class)
+
+    path = save_clipboard_image_to_file(tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR)
 
     assert calls == ["PNGf", "TIFF"]
     assert path is not None
@@ -706,7 +728,7 @@ async def test_main_screen_paste_fallback_skips_shell_mode(tmp_path: Path) -> No
 
     async with app.run_test() as pilot:
         input_bar = app.main_screen.query_one(InputBar)
-        app.main_screen._shell_mode = True
+        app.main_screen._state.shell.active = True
         await pilot.pause()
 
         event = Paste(str(image))

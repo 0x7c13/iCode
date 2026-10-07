@@ -29,6 +29,7 @@ from chrys.service.workflows.protocol import (
     ref_to_wire,
 )
 from chrys.service.workflows.scheduler import AttemptRef
+from chrys.service.workflows.sdk import _builder as sdk_builder
 
 HOST_PATH = Path(protocol.__file__).with_name("worker_host.py")
 REF = AttemptRef(run_id="r", node_id="n", activation_id="n@iter#1", attempt=2)
@@ -207,6 +208,7 @@ def test_host_mirrors_the_protocol_constants(host: ModuleType) -> None:
     assert host_errors == set(ErrorCode)
     assert asdict(LIMITS) == host.LIMITS
     assert tuple(host.SDK_EXPORTS) == tuple(sdk.__all__)
+    assert host.ENTRY_ENV == sdk_builder._ENTRY_ENV  # the SDK reads it to place declarations in the entry
 
 
 @pytest.mark.parametrize(

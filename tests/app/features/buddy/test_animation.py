@@ -8,7 +8,7 @@ import pytest
 
 from chrys.app.features.buddy.animation import FRAME_COUNT, IDLE_FRAME_COUNT, get_idle_frame, get_pet_frame
 from chrys.app.features.buddy.model import Species
-from chrys.app.features.buddy.pixel_sprites import DEFAULT_PIXEL_FRAMES
+from chrys.app.features.buddy.pixel_sprites import species_sprite
 
 # Long enough for the slowest species to stretch many times and for blinks to have fallen everywhere.
 _TICKS = 2_000
@@ -23,7 +23,7 @@ def test_every_species_starts_at_rest_and_uses_all_of_its_idle_poses_and_no_othe
     idle = _idle(species)
 
     assert idle[0] == (0, False)
-    assert len(DEFAULT_PIXEL_FRAMES[species]) == IDLE_FRAME_COUNT
+    assert len(species_sprite(species).frames) == IDLE_FRAME_COUNT
     assert {pose for pose, _ in idle} == set(range(IDLE_FRAME_COUNT))
 
 

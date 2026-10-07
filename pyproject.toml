@@ -6,8 +6,8 @@ requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = [
-    "anthropic==0.107.1",
-    "openai==2.44.0",
+    "anthropic==0.125.0",
+    "openai==2.54.0",
     # Range, not a pin: the otel packages ship as one release train (api/sdk/
     # exporter on 1.x, instrumentation on the matching 0.NNbM line) and are
     # bumped together. uv.lock holds the resolved version.
@@ -16,15 +16,15 @@ dependencies = [
     "pyyaml==6.0.3",
     "charset-normalizer==3.5.1",
     "mcp==1.28.1",
-    # Ceiling: pillow 12.3.0 dropped manylinux2014 (glibc 2.17) wheels; the
-    # offline binaries advertise a glibc 2.17 floor, enforced at build time by
-    # scripts/build_offline_dist.sh. Raise only together with that floor.
-    "pillow==12.2.0",
+    # PyPI's Linux wheels need glibc 2.27 from 12.3.0 on, above the offline
+    # binaries' 2.17 floor, so those bundle a 2.17 build of this version
+    # (scripts/offline_wheel_overrides.txt). Bump the pin and that file together.
+    "pillow==12.3.0",
     # Pinned to nudge pip past older pyjwt[crypto] candidates during PyApp
     # first-run install (mcp pulls pyjwt[crypto]>=2.10.1; pip's resolver can
     # thrash on the [crypto] extra inside PyApp's isolated env). Floor only —
     # let mcp's range float so future mcp upgrades don't conflict.
-    "pyjwt[crypto]>=2.13.0,<3",
+    "pyjwt[crypto]>=2.15.1,<3",
     "pathspec==1.1.1",
     "agent-client-protocol==0.10.1",
     "setproctitle==1.3.7",

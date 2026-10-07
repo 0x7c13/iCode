@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 from uuid import uuid4
 
-from chrys.foundation.errors import clean_error_message, is_retryable, may_be_context_overflow
+from chrys.foundation.errors import ProviderResponseError, clean_error_message, is_retryable, may_be_context_overflow
 from chrys.foundation.models.turns import is_continuation_message
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, RetryAttemptInfo
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
@@ -60,14 +60,22 @@ from chrys.kernel import (
     LastWordsToolCallError,
     Message,
     TokenizerProtocol,
+    raise_if_context_window_filled,
     report_wire_progress,
 )
 from chrys.service.agent_middleware.system_reminder import escape_system_reminder_tags
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
+from chrys.service.profiles.models.options import (
+    AUTO_INTERLEAVED_THINKING_OPTION,
+    PROMPT_CACHE_KEY_OPTION,
+    STREAM_REQUIRES_FINISH_REASON_OPTION,
+    THINKING_BLOCK_BINDING_OPTION,
+)
 from chrys.service.trajectory.compaction import current_compaction_operation_id
 from chrys.service.trajectory.retries import RetryBackoffTrace
 
+from .groups import _render_tool_result_value
 from .scoped import DEGRADED_SCOPED_PREAMBLE, ScopedGroup, prepare_scoped_slice
 
 if TYPE_CHECKING:
@@ -108,6 +116,15 @@ _FALLBACK_ALLOWED_OPTION_KEYS = frozenset(
         "thinking",
         "top_k",
         "top_p",
+        # The model's streams always end with a finish reason: a note cut off
+        # without one fails here as on every other call.
+        STREAM_REQUIRES_FINISH_REASON_OPTION,
+        # A key the profile sets is the note's key too; one it turns off with
+        # a null rides in extra_body (see _generate_once).
+        PROMPT_CACHE_KEY_OPTION,
+        # The note's thinking binds and interleaves as the profile says.
+        THINKING_BLOCK_BINDING_OPTION,
+        AUTO_INTERLEAVED_THINKING_OPTION,
     }
 )
 
@@ -1604,19 +1621,30 @@ class LastWordsGenerator:
         client = await self._get_client()
         profile_options = self._profile_chat_options()
         options = {key: value for key, value in profile_options.items() if key in _FALLBACK_ALLOWED_OPTION_KEYS}
+        extra_body = profile_options.get("extra_body")
+        if isinstance(extra_body, Mapping) and PROMPT_CACHE_KEY_OPTION in extra_body:
+            # Of extra_body, only the prompt cache key, or its null, applies to the note.
+            options["extra_body"] = {PROMPT_CACHE_KEY_OPTION: extra_body[PROMPT_CACHE_KEY_OPTION]}
         options["max_tokens"] = max_tokens
         report_wire_progress()
-        with side_call_scope(ActorRole.COMPACTION):
-            response = await get_final_response(
-                client,
-                messages,
-                stream=self._profile.stream,
-                options=options,
-                timeout=self._profile.http_read_timeout,
-            )
+        try:
+            with side_call_scope(ActorRole.COMPACTION):
+                response = await get_final_response(
+                    client,
+                    messages,
+                    stream=self._profile.stream,
+                    options=options,
+                    timeout=self._profile.http_read_timeout,
+                )
+        except ProviderResponseError as err:
+            # A response the adapter failed consumed provider tokens too.
+            if err.usage_details:
+                self._report_side_call_usage(err.usage_details)
+            raise
         usage_details = response.usage_details
         if usage_details:
             self._report_side_call_usage(usage_details)
+        raise_if_context_window_filled(response)
         return _normalize_note_response(response.raw_text)
 
     def _write_log(
@@ -1899,24 +1927,9 @@ def _result_payload_text(content: Content) -> str:
         value = content.output
     else:
         value = content.outputs
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = [_render_payload_value(item) for item in value]
-        return "\n".join(part for part in parts if part)
-    return _render_payload_value(value)
-
-
-def _render_payload_value(value: object) -> str:
-    if isinstance(value, Content):
-        if value.type == "text":
-            return value.text or ""
-        if value.type == "shell_command_output":
-            return "\n".join(part for part in (value.stdout, value.stderr) if part)
-        return json.dumps(value.to_dict(), ensure_ascii=False, default=str)
-    if isinstance(value, Mapping | list):
-        return json.dumps(value, ensure_ascii=False, default=str)
-    return "" if value is None else str(value)
+    # The compaction renderer: an image or other binary payload becomes a short
+    # placeholder, never its base64 data.
+    return _render_tool_result_value(value)
 
 
 def _user_authored_text(message: Message) -> str:

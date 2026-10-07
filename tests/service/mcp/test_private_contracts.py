@@ -10,8 +10,7 @@ literal defaults) or is an owned method whose shape adapter mixins rely on.
 These tests pin the **existence and shape** of every such symbol so a dependency
 upgrade that moves, renames, or reshapes one fails *here* — loudly, in one
 obvious place — instead of silently disabling a workaround (stdout banner
-tolerance, ping-storm suppression, structured-content fallback, dynamic header
-injection) at runtime.
+tolerance, ping-storm suppression, structured-content fallback) at runtime.
 
 The SDK ``StreamableHTTPTransport._handle_post_request`` hook that
 ``_chrys_streamable_http_client`` overrides is pinned here as well; the
@@ -22,7 +21,6 @@ exercised in ``test_http_transport.py``.
 from __future__ import annotations
 
 import ast
-import contextvars
 import inspect
 from pathlib import Path
 
@@ -160,7 +158,7 @@ def test_httpx_utils_default_constants_contract() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# chrys.service.mcp.owned — owned base methods + module privates
+# chrys.service.mcp.owned — owned base methods
 # --------------------------------------------------------------------------- #
 
 
@@ -185,25 +183,6 @@ def test_owned_mcptool_public_surface_contract() -> None:
 
     assert isinstance(MCPTool.functions, property)
     assert inspect.iscoroutinefunction(MCPTool.call_tool)
-
-
-def test_owned_mcp_module_privates_contract() -> None:
-    """``_HTTPMCPTool.get_mcp_client`` relies on these owned helpers."""
-    from httpx import URL
-
-    from chrys.service.mcp import owned
-
-    assert isinstance(owned._mcp_call_headers, contextvars.ContextVar)
-    assert owned.MCP_DEFAULT_TIMEOUT == 30
-    assert owned.MCP_DEFAULT_SSE_READ_TIMEOUT == 300
-
-    origin = getattr(owned, "_url_origin", None)
-    assert origin is not None
-    assert isinstance(origin(URL("http://h.example/a")), tuple)
-    # Same host/scheme/port share an origin; a scheme change does not — this is
-    # the invariant the per-call header-injection security relies on.
-    assert origin(URL("http://h.example/a")) == origin(URL("http://h.example/b"))
-    assert origin(URL("http://h.example/a")) != origin(URL("https://h.example/a"))
 
 
 # --------------------------------------------------------------------------- #

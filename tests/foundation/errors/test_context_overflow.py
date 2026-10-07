@@ -9,10 +9,17 @@ from typing import NoReturn
 import httpx
 import pytest
 
-from chrys.foundation.errors import ErrorKind, classify_error, is_context_overflow, may_be_context_overflow
+from chrys.foundation.errors import (
+    ErrorKind,
+    classify_error,
+    context_overflow_limit,
+    is_context_overflow,
+    is_thinking_binding_rejection,
+    may_be_context_overflow,
+)
 from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
 from chrys.service.agent_middleware.validators import OUTPUT_TRUNCATED_REASON
-from tests.support.provider_errors import openai_status, raised_while_handling
+from tests.support.provider_errors import anthropic_thinking_binding_rejection, openai_status, raised_while_handling
 
 # Provider phrasings, after pi-mono's overflow patterns.
 _OVERFLOW_MESSAGES = [
@@ -68,6 +75,29 @@ _SERVER_ERRORS = [
     (500, "request_too_large", "This model's maximum context length is 128000 tokens.", False),
     (429, None, "This model's maximum context length is 128000 tokens.", False),
     (413, None, "This model's maximum context length is 128000 tokens.", False),
+]
+
+
+# (message, the window limit it names): the limit, never the request's size.
+_NAMED_LIMITS = [
+    ("prompt is too long: 213462 tokens > 200000 maximum", 200000),
+    (
+        (
+            "This model's maximum context length is 131072 tokens. However, you requested 131074 tokens "
+            "(99074 in the messages, 32000 in the completion)."
+        ),
+        131072,
+    ),
+    ("The input token count (1196265) exceeds the maximum number of tokens allowed (1048575).", 1048575),
+    ("This model's maximum prompt length is 131072 but the request contains 537812 tokens.", 131072),
+    ("request (5000 tokens) exceeds the available context size (4096 tokens), try increasing it", 4096),
+    ("the number of tokens to keep from the initial prompt is greater than the context length (n_ctx: 4096)", 4096),
+    ("Your request exceeded model token limit: 262144 (requested: 291351)", 262144),
+    ("This model's maximum context length is 128,000 tokens.", 128000),
+    ("This model's maximum context length is 128k tokens.", None),
+    ("This model's maximum context length is 0 tokens.", None),
+    ("Your input exceeds the context window of this model.", None),
+    ("maximum context length is 128000 tokens; maximum context length is 64000 tokens", None),
 ]
 
 
@@ -149,3 +179,26 @@ def test_chrys_validation_verdict_mentioning_the_context_window_is_not_overflow(
     assert "context window" in str(exc)
     assert is_context_overflow(exc) is False
     assert classify_error(exc).kind is ErrorKind.INVALID_RESPONSE
+
+
+@pytest.mark.parametrize(("message", "limit"), _NAMED_LIMITS)
+async def test_an_overflow_names_the_servers_window_limit(message: str, limit: int | None) -> None:
+    exc = await openai_status(400, _error_body(message))
+
+    assert is_context_overflow(exc) is True
+    assert context_overflow_limit(exc) == limit
+
+
+async def test_only_an_overflow_names_a_limit() -> None:
+    server_error = await openai_status(500, _error_body("This model's maximum context length is 128000 tokens."))
+
+    assert context_overflow_limit(server_error) is None
+    assert context_overflow_limit(RuntimeError("400: This model's maximum context length is 128000 tokens.")) == 128000
+
+
+async def test_a_thinking_binding_refusal_naming_the_context_window_is_both() -> None:
+    """The text alone makes it an overflow; the loop checks the binding refusal before acting on that."""
+    exc = await anthropic_thinking_binding_rejection(names_the_window=True)
+
+    assert is_context_overflow(exc) is True
+    assert is_thinking_binding_rejection(exc) is True

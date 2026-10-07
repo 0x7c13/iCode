@@ -16,6 +16,8 @@ from chrys.foundation.platform import safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
 
 if TYPE_CHECKING:
+    import asyncio
+
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import Error
@@ -48,6 +50,18 @@ class MainScreenServices:
     def execution_busy(self) -> bool:
         return self.engine_provider().execution_busy() if self.engine_provider is not None else False
 
+    def session_generation(self) -> int:
+        """The engine's session generation; 0 without an engine."""
+        return self.engine_provider().session_generation if self.engine_provider is not None else 0
+
+    def turn_lifecycle_task(self) -> asyncio.Task[None] | None:
+        """The live turn's lifecycle task (run, save, after-turn hooks), if any."""
+        return self.engine_provider().turn_lifecycle_task if self.engine_provider is not None else None
+
+    def was_turn_lifecycle_saved(self, task: asyncio.Task[None]) -> bool:
+        """Whether *task*'s turn completed its final session save successfully; False without an engine."""
+        return self.engine_provider().was_turn_lifecycle_saved(task) if self.engine_provider is not None else False
+
 
 @dataclass
 class RunState:
@@ -69,6 +83,10 @@ class RuntimeState:
     details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
     details_confirmed: bool = False
     approval_mode: ApprovalMode = ApprovalMode.MANUAL
+    # Set when a Save inside the agent config modal renames the active profile.
+    # The engine switch waits for the modal to close (``on_agent_config_result``):
+    # switching sooner would tear down the live agent while the modal's panels
+    # still reference the old profile object.
     pending_active_switch: str | None = None
 
 
@@ -110,8 +128,6 @@ class ShellModeState:
 
     active: bool = False
     fullscreen_terminal: bool = False
-    sidebar_was_visible: bool = False
-    status_snapshot: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -148,7 +164,11 @@ class SubmitCoordinator:
         self.is_retry = is_retry
 
     def block(self) -> None:
-        """Record that synchronous backend validation rejected the submit."""
+        """Record that synchronous backend validation rejected the submit.
+
+        ``EventBus.publish`` awaits its handlers in order, so a rejecting
+        handler has run by the time the submit's publish returns.
+        """
         self.blocked = True
 
     def clear(self) -> None:

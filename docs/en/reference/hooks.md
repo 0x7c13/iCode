@@ -39,7 +39,7 @@ Either location can use `hooks.yml` or `hooks.json` instead. If a directory cont
 
 ## Loading configuration files
 
-Project hooks are enabled by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn off **Load project hooks** in the **Project trust** section of **Security**.
+Project hooks are not loaded by default, because they come with the repository you open. To load them, press **F10** in the terminal user interface (TUI) to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Security** (`project.hooks_enabled`). When the working directory has project hooks that are not loaded, iCode shows a notice. Global hooks are always loaded.
 
 Editing a hook configuration file on disk does not take effect immediately. After editing, switch sessions or restart iCode to reload the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
 
@@ -231,7 +231,7 @@ Matching follows these rules:
 - Missing arguments and `null` values do not match. `path: {}` only checks that `path` exists and is not `null`, without comparing its value.
 - Condition values must be strings. In YAML, quote numbers and booleans: an unquoted value such as `equals: 10` or `equals: true` is a configuration error that disables every hook in the file.
 - Non-string arguments are converted with Python's `str()` before comparison, so JSON `true` and `false` become `True` and `False` (match them with `equals: "True"`), and lists and objects use Python's representation.
-- Use YAML single-quoted strings for regular expressions where possible; backslashes must be escaped inside double quotes. If a regular expression is invalid, iCode logs a warning and the condition does not match.
+- Use YAML single-quoted strings for regular expressions where possible; backslashes must be escaped inside double quotes. A hook whose regular expression is invalid is skipped when the session starts and a warning names the hook and its file; the other hooks in the file still run.
 
 ## Run configuration
 
@@ -445,7 +445,7 @@ Scripts locate the current hook's input and result files through environment var
 
 iCode provides both an input file and a result file every time a hook runs. Both files are deleted after the hook finishes; do not save their paths for later use.
 
-Scripts read event information from the input file and write to the [result file](#result-file) when they need to return a decision. Standard output and standard error are not read as decisions.
+Scripts read event information from the input file and write to the [result file](#result-file) when they need to return a decision. Standard output and standard error are not read as decisions; iCode keeps at most 256 KiB of each, from the beginning and the end. This limit does not apply to the log files of hooks with `detach` enabled.
 
 ### Base fields
 

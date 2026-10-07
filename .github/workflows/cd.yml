@@ -30,7 +30,10 @@ permissions:
 
 env:
   PYAPP_VERSION: "0.29.0"
-  PYAPP_PYTHON_VERSION: "3.14"
+  # The binaries ship the CPython version .python-version pins (the one CI
+  # tests on), built by this python-build-standalone release. Bump the two
+  # together, and with scripts/build.sh and scripts/build.ps1.
+  PYTHON_BUILD_STANDALONE_RELEASE: "20261003"
 
 jobs:
   # ── Run CI checks first ─────────────────────────────────────────────
@@ -51,7 +54,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - name: Fetch ripgrep binaries (all platforms)
         run: ./scripts/fetch_rg.sh --all
@@ -230,9 +233,9 @@ jobs:
       - name: Resolve Python distribution
         shell: bash
         run: |
-          # PyApp's build.rs pins one python-build-standalone URL per platform.
-          # Read it back out so the offline distribution is built on exactly the
-          # interpreter the binary ships.
+          # The CPython .python-version pins (the one CI tests on), from the
+          # python-build-standalone release pinned above, rather than the one
+          # PyApp's build.rs names.
           #
           # Linux always takes the glibc build.  The musl Rust target makes the
           # launcher itself dependency-free, but python-build-standalone's musl
@@ -249,16 +252,17 @@ jobs:
             aarch64-unknown-linux-musl) triple="aarch64-unknown-linux-gnu" ;;
             *)                          triple="${{ matrix.target }}" ;;
           esac
-          url=$(grep -o "https://[^\"]*-${triple}-install_only_stripped[^\"]*" build.rs \
-                | grep "cpython-${PYAPP_PYTHON_VERSION}" | head -1)
-          if [ -z "$url" ]; then
-            echo "::error::no python-build-standalone URL for ${triple} in build.rs"
+          python_version=$(tr -d '[:space:]' < repo/.python-version)
+          if ! [[ "$python_version" =~ ^3\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::.python-version must pin a full CPython version, got '${python_version}'"
             exit 1
           fi
-          url="${url//%2B/+}"
+          echo "PYAPP_PYTHON_VERSION=${python_version%.*}" >> "$GITHUB_ENV"
+          release="$PYTHON_BUILD_STANDALONE_RELEASE"
+          url="https://github.com/astral-sh/python-build-standalone/releases/download/${release}/cpython-${python_version}+${release}-${triple}-install_only_stripped.tar.gz"
           echo "CHRYS_DIST_URL=$url" >> "$GITHUB_ENV"
           echo "Python distribution: $url"
-          if [ "${{ matrix.installer }}" != "offline" ] && [[ "${{ matrix.target }}" == *-musl ]]; then
+          if [ "${{ matrix.installer }}" != "offline" ]; then
             # Offline builds embed the distribution as a file instead, and
             # build.rs panics if a path and a source are both set.
             echo "PYAPP_DISTRIBUTION_SOURCE=$url" >> "$GITHUB_ENV"

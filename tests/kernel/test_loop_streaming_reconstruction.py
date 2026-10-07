@@ -598,7 +598,7 @@ class TestStreamingReconstruction:
 
     @pytest.mark.asyncio
     async def test_degenerate_stream_falls_back_to_from_updates(self) -> None:
-        """No loop exit completed: _finalize keeps the raw-update merge as a fallback."""
+        """No loop exit completed: finalize_stream keeps the raw-update merge as a fallback."""
 
         class _RaisingClient:
             def get_response(self, messages: Any, *, stream: bool = False, options: Any = None, **kwargs: Any) -> Any:

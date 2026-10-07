@@ -39,6 +39,7 @@ from anthropic.types.beta import (
     BetaToolUseBlock,
 )
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationMessage, InvocationRetryAttempt
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -52,8 +53,10 @@ from chrys.kernel import (
     ChatMiddlewareLayer,
     Content,
     FunctionTool,
+    Message,
     ResponseStream,
 )
+from chrys.kernel.middleware import ChatContext
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.attempts import continuation_token_observer_for
 from chrys.orchestration.invoker.origin import BoundEmitter
@@ -66,7 +69,7 @@ from chrys.service.agent_middleware.response_validation import (
     TerminalResponseValidationError,
     ValidationRetryExemption,
 )
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
+from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
 from chrys.service.llm.mock import MockResponse
 from tests.support.pipeline_helpers import create_test_engine
 
@@ -405,8 +408,10 @@ class TestStreamStallPerChunk:
 
                 return _stream()
 
-        anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_DelayedMessages()))
-        client = RawAnthropicClient(model="kimi-k3", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+        anthropic_client = SimpleNamespace(
+            base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_DelayedMessages())
+        )
+        client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
             middleware=[ResponseValidationMiddleware(max_retries=0)],
@@ -466,8 +471,10 @@ class TestStreamStallPerChunk:
 
                 return _stream()
 
-        anthropic_client = SimpleNamespace(beta=SimpleNamespace(messages=_DelayedMessages()))
-        client = RawAnthropicClient(model="kimi-k3", anthropic_client=anthropic_client)  # type: ignore[arg-type]
+        anthropic_client = SimpleNamespace(
+            base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_DelayedMessages())
+        )
+        client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
             middleware=[ResponseValidationMiddleware(max_retries=0)],
@@ -1322,3 +1329,30 @@ class TestWholeRunRetryGate:
         run_kwargs = {"options": {"continuation_token": {"response_id": "pending"}}}
         assert executor._attempts._may_retry_attempt(StreamStall("stalled"), run_kwargs) is True
         assert executor._attempts._may_retry_attempt(StreamStall("stalled"), {"options": {}}) is False
+
+    async def test_hosted_work_on_a_provider_failure_blocks_whole_run_retry(self):
+        # The adapter raised before the response landed: the hosted work it
+        # carried reaches the gate only through the validation middleware.
+        middleware = ResponseValidationMiddleware(backoff_schedule=[0.0])
+        error = ProviderResponseError(
+            "stream_truncated",
+            "the response failed",
+            retryable=True,
+            observed_contents=(
+                Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
+                Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
+            ),
+        )
+        context = ChatContext(client=None, messages=[Message("user", ["go"])], options=None, stream=False)
+
+        async def _call_next() -> None:
+            raise error
+
+        with pytest.raises(ProviderResponseError):
+            await middleware.process(context, _call_next)
+        executor = self._turn_bindings(0)
+        executor._hosted_commits_probe = middleware.hosted_commits_observed
+
+        live = {"options": {"continuation_token": {"response_id": "pending"}}}
+        assert executor._attempts._may_retry_attempt(error) is False
+        assert executor._attempts._may_retry_attempt(error, live) is True

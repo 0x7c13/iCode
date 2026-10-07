@@ -16,7 +16,7 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_FAILED_METADATA_KEY,
 )
 from chrys.kernel import FunctionTool, tool
-from chrys.kernel.loop import (
+from chrys.kernel._tool_execution import (
     _middleware_arguments_equal,
 )
 from chrys.kernel.middleware import (
@@ -948,6 +948,33 @@ class TestNonStreamingLoop:
             # finish_reason="length" alone must not fabricate an error: when the
             # arguments actually parse, the tool runs (no false positive).
             pytest.param(False, [("c1", {"text": "hello"})], "echo", ["ok"], id="valid_args_run_normally"),
+            # Complete JSON that is not an object was not cut off: it is an
+            # argument error naming the object requirement on both paths.
+            pytest.param(
+                False,
+                [("c1", "[1]")],
+                "echo",
+                [("arguments must be a valid JSON object",)],
+                id="non_object_json",
+            ),
+            pytest.param(
+                True,
+                [("c1", "[1]")],
+                "echo",
+                [("arguments must be a valid JSON object",)],
+                id="stream_non_object_json",
+            ),
+            # A parsed non-mapping final block is not a cut-off mapping either.
+            pytest.param(
+                False,
+                [("c1", [1])],
+                "echo",
+                [("arguments must be a valid JSON object",)],
+                id="parsed_non_mapping_final",
+            ),
+            # Undecodable text and whitespace still read as a cutoff.
+            pytest.param(False, [("c1", "oops")], "echo", ["truncated"], id="undecodable_text"),
+            pytest.param(True, [("c1", "   ")], "echo", ["truncated"], id="stream_whitespace"),
         ],
     )
     async def test_length_finish_reason_classifies_truncation(

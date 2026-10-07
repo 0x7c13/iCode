@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from chrys.foundation.retry import StreamStall
 from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY, TOOL_ERROR_MESSAGE_METADATA_KEY
-from chrys.kernel import FunctionTool, tool
+from chrys.kernel import FunctionTool, StallExhaustedAction, tool
 from chrys.kernel.loop import ToolLoopLayer
 from chrys.kernel.middleware import (
     ChatMiddleware,
@@ -53,7 +55,9 @@ class _ScriptedClient:
     """Innermost fake wire client.
 
     Non-stream turns are ``ChatResponse`` objects; stream turns are lists of
-    ``ChatResponseUpdate``. Records every call's messages/options/kwargs.
+    ``ChatResponseUpdate``. An exception as a turn fails the call, and one in
+    a stream turn fails the stream there. Records every call's
+    messages/options/kwargs.
     """
 
     def __init__(self, turns: list[Any], *, result_hook: Callable[[ChatResponse], ChatResponse] | None = None) -> None:
@@ -82,12 +86,16 @@ class _ScriptedClient:
         if not stream:
 
             async def _resolve() -> ChatResponse:
+                if isinstance(turn, BaseException):
+                    raise turn
                 return turn
 
             return _resolve()
 
         async def _gen() -> Any:
-            for update in turn:
+            for update in [turn] if isinstance(turn, BaseException) else turn:
+                if isinstance(update, BaseException):
+                    raise update
                 yield update
 
         rs: ResponseStream[ChatResponseUpdate, ChatResponse] = ResponseStream(
@@ -96,6 +104,57 @@ class _ScriptedClient:
         if self.result_hook is not None:
             rs.with_result_hook(self.result_hook)
         return rs
+
+
+class _OverflowSink:
+    """A compaction strategy reduced to the context-overflow note; it records each note."""
+
+    def __init__(self, *, resend_helps: bool = True) -> None:
+        self.resend_helps = resend_helps
+        self.notes: list[BaseException | None] = []
+
+    async def __call__(self, messages: list[Message], context: Any = None) -> bool:
+        return False
+
+    def note_context_overflow(self, exc: BaseException | None = None) -> bool:
+        self.notes.append(exc)
+        return self.resend_helps
+
+
+@dataclass
+class _WireRetryPolicy:
+    """Local-storage wire retry: retries connection drops and stalls at once, never a provider rejection."""
+
+    max_retries: int = 2
+    stall_timeout_seconds: float | None = None
+    stall_max_retries: int = 0
+    stall_exhausted_action: StallExhaustedAction = StallExhaustedAction.BLOCKING_FALLBACK
+    retries: list[tuple[int, int, int, BaseException]] = field(default_factory=list)
+    """``(attempt, max_attempts, delay_seconds, exc)`` per announced retry."""
+    before_retry_calls: int = 0
+    hosted_in_flight: tuple[str, ...] = ()
+    """Hosted tool calls the provider already ran in the failed attempt."""
+
+    def backoff_seconds(self, _attempt: int) -> int:
+        return 0
+
+    def hosted_commits_in_flight(self) -> tuple[str, ...]:
+        return self.hosted_in_flight
+
+    def is_retryable(self, exc: BaseException) -> bool:
+        return isinstance(exc, ConnectionError | StreamStall)
+
+    def is_interrupted(self) -> bool:
+        return False
+
+    async def sleep(self, seconds: int) -> bool:
+        return False
+
+    async def on_retry(self, message: str, attempt: int, max_attempts: int, delay: int, exc: BaseException) -> None:
+        self.retries.append((attempt, max_attempts, delay, exc))
+
+    def before_retry(self) -> None:
+        self.before_retry_calls += 1
 
 
 def _stack(

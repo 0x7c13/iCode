@@ -221,3 +221,44 @@ def _forced_phase4(messages: list[Message], **strategy_kwargs: Any) -> UnifiedCo
     """
     total = _estimate_tokens(messages)
     return _make_strategy(max_context_tokens=total + 50, trigger_pct=0.90, target_pct=0.01, **strategy_kwargs)
+
+
+def _anthropic_fetched_pdf_exchange(payload: str) -> list[Message]:
+    """An Anthropic web_fetch of a PDF, parsed by the real adapter: the result keeps the base64 ``source`` dict."""
+    from anthropic.types.beta import BetaMessage
+
+    from chrys.service.llm.anthropic_messages.decode import decode_blocks
+
+    response = BetaMessage.model_validate(
+        {
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-test",
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "content": [
+                {
+                    "type": "server_tool_use",
+                    "id": "fetch-1",
+                    "name": "web_fetch",
+                    "input": {"url": "https://example.test/paper.pdf"},
+                },
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "fetch-1",
+                    "content": {
+                        "type": "web_fetch_result",
+                        "url": "https://example.test/paper.pdf",
+                        "content": {
+                            "type": "document",
+                            "source": {"type": "base64", "media_type": "application/pdf", "data": payload},
+                        },
+                    },
+                },
+            ],
+        }
+    )
+    call, result = decode_blocks(response.content)
+    return [Message("assistant", [call]), Message("assistant", [result])]

@@ -5,10 +5,22 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
+from textual.widgets import Static
+
+from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
 from chrys.app.tui.screens.main import screen as screen_module
 from chrys.app.tui.screens.main.settings_coordinator import SettingsCoordinator
+from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.foundation.config.settings_store import PersistResult
+from chrys.foundation.events.bus import EventBus
+from chrys.foundation.events.types import ApprovalRequest
+from tests.support.tui_app_harness import make_chrys_app
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, with_wait_deadline
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Coordinator(SettingsCoordinator):
@@ -138,3 +150,44 @@ def test_the_settings_queue_is_built_once_and_shared_by_notifications() -> None:
 
     assert screen._settings_persistence() is queue
     assert screen.__dict__["_settings_persistence_queue"] is queue
+
+
+def _judged_call(request_id: str) -> ApprovalRequest:
+    return ApprovalRequest(
+        request_id=request_id,
+        call_id=f"call-{request_id}",
+        tool_name="run_command",
+        tool_kind="shell",
+        args={"command": "icode --version"},
+        judging=True,
+    )
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_unticking_the_auto_review_deferral_opens_the_next_judged_call_at_once(tmp_path: Path) -> None:
+    """The screen reads the in-force choice per request, and the panel's live apply moves it."""
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(120, 36)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        reviewing = main.query_one(AppHeader).query_one("#approval-reviewing", Static)
+
+        await bus.publish(_judged_call("hidden"), raise_handler_errors=True)
+        await wait_for(
+            lambda: reviewing.visible and reviewing.render().plain.rstrip().endswith(" Reviewing"),
+            pilot=pilot,
+            description="the judged call counted",
+        )
+        assert app.screen is main
+
+        main._settings_coordinator().apply_live("ui.approval.defer_while_judging", False)
+        await bus.publish(_judged_call("shown"), raise_handler_errors=True)
+
+        await wait_for(
+            lambda: isinstance(app.screen, ApprovalDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the next judged call's dialog",
+        )
+        assert sum(isinstance(screen, ApprovalDialog) for screen in app.screen_stack) == 1
+        assert reviewing.render().plain.rstrip().endswith(" Reviewing")

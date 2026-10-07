@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.text.model_json import model_json
 from chrys.kernel import Message
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 
 if TYPE_CHECKING:
     from chrys.service.profiles.models.schema import ModelProfile
@@ -157,7 +158,7 @@ def _build_user_prompt(
     """Build the user-turn prompt for the judge LLM call."""
     workspace = ", ".join(workspace_roots) if workspace_roots else "(not specified)"
     user_ctx, latest_user_ctx = _format_user_messages(user_message, user_messages)
-    formatted_args = json.dumps(args, indent=2, default=str)
+    formatted_args = model_json(args, default=str, indent=2)
 
     return (
         f"{_current_time_context()}\n\n"

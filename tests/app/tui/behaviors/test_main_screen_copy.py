@@ -16,7 +16,8 @@ from textual.widgets import Static
 from textual.widgets.text_area import Selection as TextAreaSelection
 
 from chrys.app.tui.behaviors import right_click_copy
-from chrys.app.tui.screens.main.screen import MainScreen, _parse_copy_arguments
+from chrys.app.tui.screens.main.copy_actions import parse_copy_arguments
+from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     MessageCopyButton,
@@ -146,7 +147,7 @@ def _click_copy_button(copy_button: MessageCopyButton) -> None:
     ],
 )
 def test_parse_copy_arguments_accepts_supported_forms(arg: str, expected: tuple[str, int | None]) -> None:
-    assert _parse_copy_arguments(arg) == expected
+    assert parse_copy_arguments(arg) == expected
 
 
 @pytest.mark.parametrize(
@@ -164,7 +165,7 @@ def test_parse_copy_arguments_accepts_supported_forms(arg: str, expected: tuple[
     ],
 )
 def test_parse_copy_arguments_rejects_unsupported_forms(arg: str) -> None:
-    assert _parse_copy_arguments(arg) is None
+    assert parse_copy_arguments(arg) is None
 
 
 @pytest.mark.asyncio

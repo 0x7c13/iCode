@@ -24,6 +24,7 @@ from textual.widgets import Static
 
 from chrys.app.tui.screens.main import screen as screen_module
 from chrys.app.tui.screens.main.screen import MainScreen
+from chrys.app.tui.screens.main.state import MainScreenState
 from chrys.app.tui.screens.main.suggestions import SuggestionHandler
 from chrys.app.tui.support import gc_freeze
 from chrys.app.tui.support.gc_freeze import (
@@ -107,11 +108,10 @@ def test_main_screen_own_freeze_gates(
     expected: GcFreezeBlockReason,
 ) -> None:
     participant = _Participant(GcFreezeBlockReason.PARTICIPANT)
-    screen = SimpleNamespace(
-        _agent_loading=loading,
-        _agent_running=running,
-        _gc_freeze_participants=(participant,),
-    )
+    state = MainScreenState()
+    state.run.agent_loading = loading
+    state.run.agent_running = running
+    screen = SimpleNamespace(_state=state, _gc_freeze_participants=(participant,))
     monkeypatch.setattr(screen_module, "scroll_gc_paused", lambda: scrolling)
 
     assert MainScreen.gc_freeze_block_reason(screen) is expected
@@ -122,11 +122,7 @@ def test_main_screen_delegates_gate_and_hooks_in_registration_order(monkeypatch:
     first = _Participant()
     second = _Participant(GcFreezeBlockReason.PARTICIPANT)
     third = _Participant(GcFreezeBlockReason.SHELL_VISIBLE)
-    screen = SimpleNamespace(
-        _agent_loading=False,
-        _agent_running=False,
-        _gc_freeze_participants=(first, second, third),
-    )
+    screen = SimpleNamespace(_state=MainScreenState(), _gc_freeze_participants=(first, second, third))
     monkeypatch.setattr(screen_module, "scroll_gc_paused", lambda: False)
     screen_cache_calls: list[str] = []
     monkeypatch.setattr(

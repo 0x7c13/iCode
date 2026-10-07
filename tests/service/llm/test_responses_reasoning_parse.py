@@ -9,15 +9,14 @@ from types import SimpleNamespace
 import pytest
 
 from chrys.kernel import ChatResponse, Content
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.decode import decode_response
+from chrys.service.llm.openai_responses.history import encode_content
+from chrys.service.llm.openai_responses.stream import StreamState
 
 
-class _FakeAsyncOpenAI:
-    base_url = "https://api.test"
-
-
-def _client() -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=_FakeAsyncOpenAI())
+def _stream() -> StreamState:
+    return StreamState({}, model="gpt-test", variant=OPENAI_RESPONSES)
 
 
 def _reasoning_part(text: str) -> SimpleNamespace:
@@ -64,7 +63,7 @@ def test_non_streaming_reasoning_payload_survives_persistence_round_trip() -> No
         summary=[_reasoning_part("Visible summary")],
     )
 
-    parsed = _client()._parse_response_from_openai(_response_with(item), {})
+    parsed = decode_response(_response_with(item), {}, variant=OPENAI_RESPONSES)
     restored = ChatResponse.from_dict(parsed.to_dict())
     reasoning_contents = restored.messages[0].contents
 
@@ -80,11 +79,7 @@ def test_streaming_reasoning_snapshot_stamps_every_visible_sibling() -> None:
         summary=[_reasoning_part("First summary"), _reasoning_part("Second summary")],
     )
 
-    update = _client()._parse_chunk_from_openai(
-        _event("response.output_item.added", item=item, output_index=0),
-        {},
-        {},
-    )
+    update = _stream().update_for(_event("response.output_item.added", item=item, output_index=0))
 
     assert [content.text for content in update.contents] == [
         "First private part",
@@ -101,11 +96,7 @@ def test_streaming_reasoning_snapshot_emits_content_and_summary_siblings() -> No
         summary=[_reasoning_part("Visible summary")],
     )
 
-    update = _client()._parse_chunk_from_openai(
-        _event("response.output_item.added", item=item, output_index=0),
-        {},
-        {},
-    )
+    update = _stream().update_for(_event("response.output_item.added", item=item, output_index=0))
     response = ChatResponse.from_updates([update])
 
     assert [(content.text, content.additional_properties) for content in response.messages[0].contents] == [
@@ -116,8 +107,7 @@ def test_streaming_reasoning_snapshot_emits_content_and_summary_siblings() -> No
 
 @pytest.mark.parametrize("event_kind", ["delta", "done_fallback", "snapshot"])
 def test_streamed_reasoning_text_paths_mark_private_text(event_kind: str) -> None:
-    client = _client()
-    seen_reasoning_delta_item_ids: set[str] = set()
+    state = _stream()
 
     if event_kind == "delta":
         event = _event(
@@ -142,7 +132,7 @@ def test_streamed_reasoning_text_paths_mark_private_text(event_kind: str) -> Non
             output_index=0,
         )
 
-    update = client._parse_chunk_from_openai(event, {}, {}, seen_reasoning_delta_item_ids)
+    update = state.update_for(event)
 
     assert len(update.contents) == 1
     assert update.contents[0].additional_properties == {"reasoning_text": True}
@@ -151,11 +141,7 @@ def test_streamed_reasoning_text_paths_mark_private_text(event_kind: str) -> Non
 def test_streamed_reasoning_terminal_done_emits_encrypted_payload_marker() -> None:
     item = _reasoning_item(item_id="rs_encrypted", encrypted_content="terminal-payload")
 
-    update = _client()._parse_chunk_from_openai(
-        _event("response.output_item.done", item=item),
-        {},
-        {},
-    )
+    update = _stream().update_for(_event("response.output_item.done", item=item))
 
     assert [(content.id, content.text, content.protected_data) for content in update.contents] == [
         ("rs_encrypted", "", "terminal-payload")
@@ -163,8 +149,7 @@ def test_streamed_reasoning_terminal_done_emits_encrypted_payload_marker() -> No
 
 
 def test_streamed_summary_and_reasoning_text_remain_distinct_after_coalescing() -> None:
-    client = _client()
-    seen_reasoning_delta_item_ids: set[str] = set()
+    state = _stream()
     events = [
         _event(
             "response.reasoning_summary_text.delta",
@@ -185,9 +170,7 @@ def test_streamed_summary_and_reasoning_text_remain_distinct_after_coalescing() 
         ),
     ]
 
-    response = ChatResponse.from_updates(
-        [client._parse_chunk_from_openai(event, {}, {}, seen_reasoning_delta_item_ids) for event in events]
-    )
+    response = ChatResponse.from_updates([state.update_for(event) for event in events])
     reasoning_contents = response.messages[0].contents
 
     assert [(content.text, content.additional_properties) for content in reasoning_contents] == [
@@ -207,7 +190,7 @@ def test_legacy_reasoning_payload_properties_remain_serializable() -> None:
         },
     )
 
-    prepared = _client()._prepare_content_for_openai("assistant", legacy)
+    prepared = encode_content("assistant", legacy, provider="openai")
 
     assert prepared["encrypted_content"] == "legacy-payload"
     assert prepared["content"] == [{"type": "reasoning_text", "text": "Private reasoning"}]
@@ -224,7 +207,7 @@ def test_marker_true_reasoning_serializes_text_as_content_not_summary() -> None:
         },
     )
 
-    prepared = _client()._prepare_content_for_openai("assistant", marked)
+    prepared = encode_content("assistant", marked, provider="openai")
 
     assert prepared["encrypted_content"] == "legacy-payload"
     assert prepared["content"] == [{"type": "reasoning_text", "text": "Private reasoning"}]

@@ -65,7 +65,7 @@ async def test_run_child_uses_hidden_console_kwargs_on_windows(monkeypatch: pyte
         return _Proc()
 
     monkeypatch.setattr(detached_worker.sys, "platform", "win32")
-    monkeypatch.setattr(process_mod, "_windows_hidden_subprocess_kwargs", lambda: {"creationflags": 16})
+    monkeypatch.setattr(process_mod, "windows_hidden_subprocess_kwargs", lambda: {"creationflags": 16})
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
 
     exit_code = await detached_worker._run_child(["cmd.exe", "/c", "echo ok"], cwd=".", env={})

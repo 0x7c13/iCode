@@ -34,8 +34,8 @@
 #                         own interpreter, so the deps are never the limiting
 #                         factor.  CD sets 2.18 on aarch64, where ripgrep has
 #                         no static musl build and its gnu binary needs 2.18.
-#                         pyproject pins pillow<12.3 to keep 2.17 reachable;
-#                         raise floor and pin together, consciously.
+#                         At the 2_17 pin, locked versions PyPI publishes no
+#                         2.17 wheel for come from offline_wheel_overrides.txt.
 #
 # The archive's layout mirrors python-build-standalone's ``install_only``
 # archives — a single top-level ``python/`` directory — so the PyApp build
@@ -184,6 +184,76 @@ if [ "$ONLY_BINARY" = "1" ]; then
             WHEEL_GLIBC="2.17"
         fi
         INSTALL_ARGS+=(--python-platform "$(uname -m)-manylinux_${WHEEL_GLIBC//./_}")
+
+        # Some locked versions publish no manylinux_2_17 wheel (Pillow from
+        # 12.3.0 on).  offline_wheel_overrides.txt names a wheel built for the
+        # floor for each; its hash replaces the requirement's PyPI hashes, so
+        # it is the only artifact the install accepts, and the ELF scan below
+        # still checks what it contains.
+        if [ "$WHEEL_GLIBC" = "2.17" ]; then
+            OVERRIDE_DIR="$WORK_DIR/override-wheels"
+            OVERRIDE_PLAN="$WORK_DIR/override-wheels.tsv"
+            mkdir -p "$OVERRIDE_DIR"
+            "$PY" - "$SCRIPT_DIR/offline_wheel_overrides.txt" "$REQUIREMENTS" \
+                "$(uname -m)" "$PY_VERSION" "$OVERRIDE_PLAN" <<'PYCODE'
+import re
+import sys
+from pathlib import Path
+
+manifest, requirements, machine, py_version, plan = sys.argv[1:]
+abi_tag = "-cp" + py_version.replace(".", "") + "-"
+
+
+def canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+overrides: dict[str, tuple[str, str, str]] = {}
+for raw in Path(manifest).read_text(encoding="utf-8").splitlines():
+    line = raw.split("#", 1)[0].strip()
+    if not line:
+        continue
+    project, version, arch, sha256, url = line.split()
+    if arch == machine:
+        overrides[canonical(project)] = (version, sha256, url)
+
+lines = Path(requirements).read_text(encoding="utf-8").splitlines()
+rewritten: list[str] = []
+rows: list[str] = []
+index = 0
+while index < len(lines):
+    line = lines[index]
+    index += 1
+    match = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", line)
+    if match is None or canonical(match.group(1)) not in overrides:
+        rewritten.append(line)
+        continue
+    version, sha256, url = overrides[canonical(match.group(1))]
+    if match.group(2) != version:
+        sys.exit(
+            f"uv.lock pins {match.group(1)}=={match.group(2)} but "
+            f"offline_wheel_overrides.txt has {version} for {machine}; "
+            "rebuild the wheel and update both together."
+        )
+    filename = url.rsplit("/", 1)[1]
+    if abi_tag not in filename:
+        sys.exit(f"{filename} is not built for CPython {py_version}.")
+    rewritten.append(line.split("\\", 1)[0].rstrip() + " \\")
+    rewritten.append(f"    --hash=sha256:{sha256}")
+    while index < len(lines) and lines[index].lstrip().startswith("--hash="):
+        index += 1
+    rows.append(f"{filename}\t{sha256}\t{url}\n")
+
+Path(requirements).write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+Path(plan).write_text("".join(rows), encoding="utf-8")
+PYCODE
+            while IFS=$'\t' read -r filename sha256 url; do
+                echo "    $filename (built for glibc 2.17)"
+                curl -fsSL --retry 3 -o "$OVERRIDE_DIR/$filename" "$url"
+                echo "$sha256  $OVERRIDE_DIR/$filename" | sha256sum -c --quiet -
+            done < "$OVERRIDE_PLAN"
+            INSTALL_ARGS+=(--find-links "$OVERRIDE_DIR")
+        fi
     fi
     echo "==> Installing dependencies (wheels only)..."
 else

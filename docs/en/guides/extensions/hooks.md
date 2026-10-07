@@ -51,9 +51,9 @@ iCode provides the event's JSON input file through the `CHRYS_HOOK_PAYLOAD_FILE`
 
 ### 3. Load and verify
 
-Switch sessions or restart iCode to apply the configuration on disk.
+Project hooks are not loaded by default. In the terminal user interface (TUI), press **F10** to open **Settings**, then turn on **Load project hooks** in the **Project trust** section of **Security**. If it is already on, switch sessions or restart iCode to apply the configuration on disk.
 
-In the terminal user interface (TUI), enter `/runtime` and open the **Hooks** tab. You should see `record-turn`. Submit a message and wait for the current turn to end, then check `hook-events.log` in the working directory. It should contain a line like this:
+In the TUI, enter `/runtime` and open the **Hooks** tab. You should see `record-turn`. Submit a message and wait for the current turn to end, then check `hook-events.log` in the working directory. It should contain a line like this:
 
 ```text
 turn=1 status=ok
@@ -98,7 +98,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
     )
 ```
 
-The script returns `action: block` and the rejection reason through the result file specified by `CHRYS_HOOK_RESULT`.
+The script returns `action: block` and the rejection reason through the result file specified by `CHRYS_HOOK_RESULT`. What a script prints to standard output or standard error is not read as a decision, and iCode keeps at most 256 KiB of each, from the beginning and the end.
 
 `on_error: block` also rejects the tool call if the script fails to start, times out, or returns a nonzero exit code. Use it for checks that must keep the restriction in place when they fail. This hook blocks only matching `filesystem.write` calls; shell commands are unaffected.
 

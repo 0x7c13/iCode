@@ -7,10 +7,16 @@ from __future__ import annotations
 from collections import deque
 
 import pytest
+from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from chrys.app.tui.widgets.workflow.output import WorkflowOutputText, WorkflowOutputView, WorkflowStatusOutput
+from chrys.app.tui.widgets.workflow.output import (
+    WorkflowOutputText,
+    WorkflowOutputView,
+    WorkflowStatusOutput,
+    status_output,
+)
 from chrys.app.tui.widgets.workflow.projector import ObservedRun
 from chrys.foundation.events import types as events
 from tests.support.waiting import wait_for
@@ -58,3 +64,13 @@ async def test_status_messages_sit_one_row_from_their_neighbors(finished: bool) 
         await wait_for(lambda: status.region.height == rows, pilot=pilot)
         assert status.region.y == iterations.region.bottom + 1
         assert outputs.region.y == status.region.bottom + 1
+
+
+def test_the_run_title_is_shown_without_terminal_controls() -> None:
+    started = events.WorkflowRunStarted(
+        run_id="run", title="Review\x1b[2JInjected", manifest={"nodes": [], "edges": []}
+    )
+
+    shown = status_output(ObservedRun(started), None, warning=Style(), error=Style()).plain
+
+    assert "Review\ufffd[2JInjected" in shown and "\x1b" not in shown

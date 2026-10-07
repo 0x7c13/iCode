@@ -72,6 +72,7 @@ from chrys.service.context.middleware.usage import UsageTrackingMiddleware
 from chrys.service.llm.clients import create_client
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
 from chrys.service.mcp.adapter import MCPAdapter
+from chrys.service.mcp.thinking_warning import warn_if_tool_loading_unbinds_thinking
 from chrys.service.profiles.models.options import effective_chat_options, uses_responses_compact_continuation
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES
 from chrys.service.session.sub_agent_logs import SubAgentLogStats
@@ -279,9 +280,13 @@ async def build_kernel_node(
         )
         conversation.own(mcp_adapter.disconnect_all)
         tools.extend(await mcp_adapter.connect_all(profile.tools.mcp))
+        warn_if_tool_loading_unbinds_thinking(profile, model, chat_options, mcp_adapter.tool_names_by_server)
     web_tools.check_names(tools)
     skills_provider, skill_warnings = await create_skills_provider(
-        profile.skills, runtime=environment, session_dir=res.session_dir
+        profile.skills,
+        runtime=environment,
+        session_dir=res.session_dir,
+        project_skills_enabled=res.settings.project_skills_enabled,
     )
     for warn in skill_warnings:
         await res.bus.publish(Warning(code=warn.code, message=warn.message, session_id=session_id))

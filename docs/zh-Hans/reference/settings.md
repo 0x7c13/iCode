@@ -61,12 +61,14 @@ llm:
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 自动审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
+| `ui.approval.defer_while_judging` | 无 | `true` | 布尔值；自动模式下，TUI 是否只在审批裁判模型标记调用或评估失败时才弹出审批对话框。`false` 表示评估期间立即弹出。ACP 服务器和 `icode run` 不受影响 |
 | `project.config_enabled` | 无 | `false` | 布尔值；是否加载各工作目录的项目设置，必须在用户设置中启用 |
-| `project.hooks_enabled` | 无 | `true` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的项目 Hooks，不影响用户级 Hooks |
+| `project.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的项目 Hooks，必须在用户设置中启用，不影响用户级 Hooks |
+| `project.skills_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.agents/skills` 中的项目 Skills，必须在用户设置中启用；智能体自身的“从工作文件夹加载 Skills”选项也需保持开启 |
 
 手动在 YAML 或环境变量中将默认审批模式设为 `bypass`，下次按此默认值启动时就会跳过审批。在 TUI 中通过 `/approval` 切换到 `bypass` 时，iCode 会将默认模式保存为 `auto`；TUI 设置窗口不提供 `bypass`。
 
-Hooks 是 iCode 在特定事件时运行的外部命令。项目 Hooks 与项目设置分别控制；关闭 `project.config_enabled` 不会关闭项目 Hooks。编写与配置见[配置和编写 Hooks](../guides/extensions/hooks.md)。
+项目设置、项目 Hooks 和项目 Skills 都随你打开的仓库而来，因此默认都不加载，并且分别开启：开启其中一项不会开启其他项。工作目录中有未开启的项时，iCode 会弹出提示，说明需要开启哪个设置。Hooks 是 iCode 在特定事件时运行的外部命令，编写与配置见[配置和编写 Hooks](../guides/extensions/hooks.md)；Skills 见[安装和使用 Skills](../guides/extensions/skills.md)。
 
 ### 会话与文件恢复
 
@@ -90,10 +92,10 @@ Hooks 是 iCode 在特定事件时运行的外部命令。项目 Hooks 与项目
 | `tools.result.ceiling_tokens` | `CHRYS_TOOL_RESULT_CEILING_TOKENS` | `64000` | 整数；单条工具结果交给模型前的最终长度上限，单位 token。`0` 关闭此限制；正数最小 `2000`，负数无效 |
 | `workspace.change_notice.enabled` | `CHRYS_WORKSPACE_CHANGE_NOTICE` | `true` | 布尔值；开始处理新提示词时，向智能体提供自上次提交提示词以来的工作目录文件变更摘要，包含智能体造成的改动和外部改动 |
 | `workspace.change_notice.max_entries` | `CHRYS_WORKSPACE_CHANGE_NOTICE_MAX_ENTRIES` | `50` | 整数；变更摘要的最大条目数，范围 `1`–`100` |
-| `mutations.parallel_implicit_tools` | `CHRYS_PARALLEL_IMPLICIT_TOOLS` | `true` | 布尔值；允许同一会话中的 Shell、技能脚本等可能改动文件的工具并行运行。设为 `false` 更容易判断文件改动来自哪次工具调用 |
+| `mutations.parallel_implicit_tools` | `CHRYS_PARALLEL_IMPLICIT_TOOLS` | `true` | 布尔值；允许同一会话中的 Shell、Skill 脚本等可能改动文件的工具并行运行。设为 `false` 更容易判断文件改动来自哪次工具调用 |
 | `mutations.coordination.enabled` | `CHRYS_MUTATION_COORDINATION` | `true` | 布尔值；协助区分共享工作目录的不同 iCode 会话造成的文件改动 |
 
-工具自身还可能有独立的输出限制，例如 MCP 返回结果和技能资源的限制。将 `tools.result.ceiling_tokens` 设为 `0` 不会关闭这些限制，也不能恢复已被工具截断的内容。
+工具自身还可能有独立的输出限制，例如 MCP 返回结果和 Skill 资源的限制。将 `tools.result.ceiling_tokens` 设为 `0` 不会关闭这些限制，也不能恢复已被工具截断的内容。此外，Shell 命令和 Skill 脚本的每一路输出最多保留 32 MiB，与这些 token 限制无关。
 
 ### 网络工具
 

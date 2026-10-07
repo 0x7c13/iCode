@@ -23,7 +23,9 @@ from .provider import (
     ContinuationVerdictError,
     ProviderResponseError,
     ProviderSignal,
+    in_band_failure_retryable,
     is_2xx,
+    named_context_limit,
     names_context_overflow,
     names_server_error_overflow,
     provider_signal,
@@ -76,6 +78,9 @@ _TIMEOUT_PHASES: dict[str, TimeoutPhase] = {
     "PoolTimeout": "pool",
 }
 _TIMEOUT_MODULES = frozenset({"httpx", "httpcore"})
+
+# What Anthropic says when replayed thinking no longer matches the conversation before it.
+_THINKING_BINDING_PHRASE = "bound to a different conversation"
 
 # Kinds no retry can fix, whatever the transient layers say.
 _NON_RETRYABLE_KINDS = frozenset({ErrorKind.QUOTA_EXHAUSTED, ErrorKind.CONTEXT_OVERFLOW, ErrorKind.PAYLOAD_TOO_LARGE})
@@ -155,7 +160,11 @@ def classify_error(exc: BaseException) -> ErrorClassification:
         retryable = False
     elif signal is not None and signal.explicit_retryable is not None:
         retryable = signal.explicit_retryable
-    elif (network is not None and network.deterministic) or kind in _NON_RETRYABLE_KINDS:
+    elif (
+        (network is not None and network.deterministic)
+        or kind in _NON_RETRYABLE_KINDS
+        or _names_a_final_in_band_failure(signal)
+    ):
         retryable = False
     elif signal is not None and is_2xx(signal.status_code):
         retryable = stream_error_retryable(signal)
@@ -175,6 +184,22 @@ def classify_error(exc: BaseException) -> ErrorClassification:
     )
 
 
+def _names_a_final_in_band_failure(signal: ProviderSignal | None) -> bool:
+    """Whether *signal* is an error a stream reported in-band whose code a retry meets again.
+
+    The OpenAI SDK raises an error event inside a stream as a bare
+    ``APIError`` with no status: its code gets the verdict an adapter gives
+    the same failure (:func:`in_band_failure_retryable`). A veto only: an
+    unknown code keeps the retry it had.
+    """
+    return (
+        signal is not None
+        and signal.status_code is None
+        and signal.code is not None
+        and not in_band_failure_retryable(signal.code)
+    )
+
+
 def is_retryable(e: BaseException) -> bool:
     """Check if an exception is a transient error worth retrying."""
     return classify_error(e).retryable
@@ -186,6 +211,42 @@ def is_context_overflow(exc: BaseException) -> bool:
     ``request_too_large`` / 413 is an oversized payload, not an overflow.
     """
     return classify_error(exc).kind is ErrorKind.CONTEXT_OVERFLOW
+
+
+def is_thinking_binding_rejection(exc: BaseException) -> bool:
+    """Return whether Anthropic refused replayed thinking as bound to a different conversation.
+
+    The service binds each signed thinking block to the request before it and
+    answers a changed one with a 400 ``invalid_request_error`` saying so. All
+    three are read from the one provider signal: a gateway that rewrites the
+    text is missed rather than every invalid request caught. The text may
+    also name the context window, so *exc* can be an overflow as well.
+    """
+    signal = classify_error(exc).signal
+    return (
+        signal is not None
+        and signal.status_code == 400
+        and signal.error_type == "invalid_request_error"
+        and signal.message is not None
+        and _THINKING_BINDING_PHRASE in signal.message
+    )
+
+
+def context_overflow_limit(exc: BaseException) -> int | None:
+    """Return the window limit, in tokens, the provider named when it rejected the request as too long.
+
+    Read only from the text that made *exc* an overflow: the provider
+    signal's own, or without one the explicit nodes' (never ``__context__``).
+    None when *exc* is no overflow or names no single positive limit.
+    """
+    result = classify_error(exc)
+    if result.kind is not ErrorKind.CONTEXT_OVERFLOW:
+        return None
+    if (signal := result.signal) is not None:
+        return named_context_limit((signal.message or "", _clean_exception_text(signal.source)))
+    return named_context_limit(
+        _clean_exception_text(node) for node in iter_explicit_graph(exc) if _type_kind(node) is None
+    )
 
 
 def may_be_context_overflow(exc: BaseException) -> bool:

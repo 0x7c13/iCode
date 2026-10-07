@@ -33,6 +33,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, ModelProfile
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
 
@@ -590,6 +591,55 @@ async def test_input_lock_message_updates_status_selector_guards() -> None:
         assert status_bar.input_locked is False
         assert profile_tag.styles.pointer == "pointer"
         assert model_tag.styles.pointer == "pointer"
+
+
+@pytest.mark.asyncio
+async def test_blocked_selector_clicks_explain_why_with_literal_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _ModelIndicatorApp(_registry(_valid_model()))
+
+    async with app.run_test(size=(120, 24)) as pilot:
+        screen = app.main_screen
+        screen._set_profile_display("Code [Agent]")
+        screen._state.runtime.details = _runtime_details("Bound [Model]", source="agent")
+        screen._state.runtime.details_confirmed = True
+        screen._refresh_model_indicator()
+        screen.query_one(StatusBar).set_profile("Code [Agent]")
+        await pilot.pause()
+        notices: list[tuple[str, str, bool]] = []
+
+        def notify(
+            message: str,
+            *,
+            title: str = "",
+            severity: str = "information",
+            timeout: float | None = None,
+            markup: bool = True,
+        ) -> None:
+            notices.append((message, title, markup))
+
+        monkeypatch.setattr(screen, "notify", notify)
+
+        await click_when_settled(pilot, "#model-tag")
+        await wait_for(lambda: bool(notices), pilot=pilot, description="model lock notice")
+        assert notices == [
+            (
+                (
+                    "Code [Agent] is bound to the model Bound [Model], so the model cannot be switched here. "
+                    "To change it, press F2 and edit the agent's model on its Basic tab."
+                ),
+                "Model Locked",
+                False,
+            )
+        ]
+        assert app.screen is screen
+
+        notices.clear()
+        screen._set_agent_running(True)
+        await pilot.pause()
+        await click_when_settled(pilot, "#profile-tag")
+        await wait_for(lambda: bool(notices), pilot=pilot, description="busy agent selector notice")
+        assert notices == [("Cannot switch agents while the agent is busy", "Busy", False)]
+        assert app.screen is screen
 
 
 @pytest.mark.asyncio

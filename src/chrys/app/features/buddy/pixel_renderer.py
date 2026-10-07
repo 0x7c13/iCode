@@ -12,7 +12,7 @@ from rich.style import Style
 from rich.text import Text
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 _HALF_BLOCK = "\u2580"
 DEFAULT_BG_RGB: tuple[int, int, int] = (15, 18, 24)
@@ -79,7 +79,7 @@ def image_to_half_block_lines(
 
 def matrix_to_image(
     rows: Sequence[str | Sequence[int]],
-    palette: dict[int, tuple[int, int, int, int]],
+    palette: Mapping[int, tuple[int, int, int, int]],
 ) -> Image.Image:
     """Construct a PIL RGBA Image from a 2D palette index matrix and color map.
 

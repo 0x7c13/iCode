@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -32,14 +33,22 @@ async def test_rg_byte_paths_are_escaped_at_the_output_boundary_without_merging_
         )
         records.append({"type": "end", "data": {"path": path_data, "binary_offset": None}})
 
-    async def raw_path_output(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def raw_path_output(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if "--files" in args:
             assert cwd == str(tmp_path)
             return "\0".join([*names, ""]), "", 0
         if cwd is not None:
             # A display-escaped path must never become a filesystem operand.
             assert args[args.index("--") + 1 :] == names
-        return "\n".join(json.dumps(record) for record in records), "", 0
+        assert consume is not None
+        consume("".join(json.dumps(record) + "\n" for record in records).encode())
+        return "", "", 0
 
     monkeypatch.setattr(search, "_run_rg", raw_path_output)
     result = (
@@ -125,11 +134,17 @@ async def test_a_file_named_dash_is_searched_instead_of_stdin(
     original_run = search._run_rg
     content_paths: list[str] = []
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if "--json" in args:
             assert cwd == str(tmp_path)
             content_paths.extend(args[args.index("--") + 1 :])
-        return await original_run(args, timeout=timeout, cwd=cwd)
+        return await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_run_rg", recording_run)
     result = await search.grep("NEEDLE", path=str(tmp_path), glob=glob_pattern, context_lines=0)
@@ -178,13 +193,19 @@ async def test_windows_long_search_roots_preserve_globs_and_avoid_long_cwd(
     monkeypatch.setattr(search, "_PLATFORM", replace(search._PLATFORM, os_name="windows"))
     original_run = search._run_rg
 
-    async def windows_cwd_limit(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def windows_cwd_limit(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if cwd is not None and len(cwd.encode("utf-16-le")) // 2 >= 258:
             raise NotADirectoryError("CreateProcess cannot use a long working directory")
         if "--json" in args:
             assert cwd is None
             assert all(os.path.isabs(name) for name in args[args.index("--") + 1 :])
-        return await original_run(args, timeout=timeout, cwd=cwd)
+        return await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_run_rg", windows_cwd_limit)
     files = await search._search_files(str(root), pattern, True)

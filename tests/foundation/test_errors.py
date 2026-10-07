@@ -111,7 +111,7 @@ def test_clean_error_message_uses_empty_cause_type_over_wrapper_noise() -> None:
         pass
 
     try:
-        raise RuntimeError("service failed to complete the prompt") from ReadTimeout(TimeoutError())
+        raise RuntimeError("Chat Completions request failed") from ReadTimeout(TimeoutError())
     except RuntimeError as exc:
         assert clean_error_message(exc) == "Read timed out (ReadTimeout)"
 
@@ -124,7 +124,7 @@ def test_clean_error_message_uses_empty_context_type_over_wrapper_noise() -> Non
         raise RemoteProtocolError(TimeoutError())
     except RemoteProtocolError:
         try:
-            raise RuntimeError("service failed to complete the prompt")
+            raise RuntimeError("Chat Completions request failed")
         except RuntimeError as exc:
             assert clean_error_message(exc) == "Remote protocol error (RemoteProtocolError)"
 
@@ -136,7 +136,7 @@ def test_clean_error_message_exposes_tls_cause_hidden_by_sdk_connection_error() 
     )
     transport_error = _make_named_chained("ConnectError", str(tls_error), tls_error)
     sdk_error = _make_named_chained("APIConnectionError", "Connection error.", transport_error)
-    wrapped = _make_chained(sdk_error, "service failed to complete the prompt: Connection error.")
+    wrapped = _make_chained(sdk_error, "Chat Completions request failed: Connection error.")
 
     assert clean_error_message(wrapped) == (
         "Connection error: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
@@ -153,7 +153,7 @@ def test_clean_error_message_preserves_generic_sdk_connection_error_without_caus
 def test_clean_error_message_exposes_invalid_url_hidden_by_sdk_connection_error() -> None:
     url_error = type("InvalidURL", (Exception,), {})("Invalid port: 'not-a-port'")
     sdk_error = _make_named_chained("APIConnectionError", "Connection error.", url_error)
-    wrapped = _make_chained(sdk_error, "service failed to complete the prompt: Connection error.")
+    wrapped = _make_chained(sdk_error, "Chat Completions request failed: Connection error.")
 
     assert clean_error_message(wrapped) == "Connection error: Invalid port: 'not-a-port'"
 
@@ -170,7 +170,7 @@ async def test_clean_error_message_shows_the_socket_error_below_all_connection_a
     exc = await openai_network(_refuse_v4)
 
     assert clean_error_message(exc) == f"All connection attempts failed: {_REFUSED_LEAF}"
-    assert clean_error_message(_make_chained(exc, "service failed to complete the prompt: Connection error.")) == (
+    assert clean_error_message(_make_chained(exc, "Chat Completions request failed: Connection error.")) == (
         f"Connection error: {_REFUSED_LEAF}"
     )
 
@@ -284,7 +284,7 @@ async def test_a_proactor_reset_without_its_winerror_keeps_the_system_words() ->
     assert classify_error(exc).kind is ErrorKind.CONNECTION_LOST
     # The stand-in EINVAL names nothing: never "[Errno 22] Invalid argument".
     assert clean_error_message(exc) == f"All connection attempts failed: {_NETNAME_DELETED_WORDS}"
-    assert clean_error_message(_make_chained(exc, "service failed to complete the prompt: Connection error.")) == (
+    assert clean_error_message(_make_chained(exc, "Chat Completions request failed: Connection error.")) == (
         f"Connection error: {_NETNAME_DELETED_WORDS}"
     )
 
@@ -303,7 +303,7 @@ def test_clean_error_message_ignores_stale_context_below_transport_error() -> No
     assert stale_transport_error is not None
     assert isinstance(stale_transport_error.__context__, ValueError)
     sdk_error = _make_named_chained("APIConnectionError", "Connection error.", stale_transport_error)
-    wrapped = _make_chained(sdk_error, "service failed to complete the prompt: Connection error.")
+    wrapped = _make_chained(sdk_error, "Chat Completions request failed: Connection error.")
 
     assert clean_error_message(wrapped) == "Connection error: Connection refused"
 
@@ -335,13 +335,18 @@ def test_clean_error_message_includes_provider_status_body(body: Any, expected_d
 
 def test_clean_error_message_uses_provider_body_from_wrapped_status_error() -> None:
     cause = _make_status_error("Error code: 400", body={"message": "chat template rejected tool call"})
-    wrapped = _make_chained(
-        cause,
-        "<class 'chrys.service.llm.openai_chat_completion.RawOpenAIChatCompletionClient'> service failed to complete the prompt: "
-        "Error code: 400",
-    )
+    wrapped = _make_chained(cause, "Chat Completions request failed: Error code: 400")
 
     assert clean_error_message(wrapped) == "Error code: 400 - chat template rejected tool call"
+
+
+def test_clean_error_message_drops_the_class_prefix_older_wrappers_wrote() -> None:
+    legacy = RuntimeError(
+        "<class 'chrys.service.llm.chat_completions.client.ChatCompletionsClient'> "
+        "service failed to complete the prompt: Connection error."
+    )
+
+    assert clean_error_message(legacy) == "service failed to complete the prompt: Connection error."
 
 
 def test_clean_error_message_uses_response_text_when_status_body_is_empty() -> None:

@@ -164,8 +164,7 @@ class WireRetryPolicyAdapter:
         self.interruptible_sleep = interruptible_sleep
         self.publish_retry = publish_retry
         self.prepare_retry = prepare_retry
-        # The kernel consumes this optional probe separately from WireRetryPolicy.
-        # It describes only the current wire attempt, never the pass total.
+        # Describes only the current wire attempt, never the pass total.
         self.hosted_commits_in_flight = hosted_commits_in_flight
 
     @property
@@ -882,6 +881,7 @@ class AttemptRunner:
             stream: ResponseStream[AgentResponseUpdate, AgentResponse[Any]] = self._agent.run(
                 current_input, stream=True, **run_kwargs
             )
+            completed = False
 
             try:
                 observer = self._stream_observer() if self._stream_observer is not None else None
@@ -946,8 +946,11 @@ class AttemptRunner:
                 # an await on the same underlying stream.
                 last_wait_start = _time.monotonic()
                 if not watchdog:
-                    return await stream.get_final_response()
-                return await _watched(stream.get_final_response())
+                    response = await stream.get_final_response()
+                else:
+                    response = await _watched(stream.get_final_response())
+                completed = True
+                return response
             except TimeoutError:
                 if not watchdog:
                     raise
@@ -959,19 +962,24 @@ class AttemptRunner:
                 # window actually elapsed (with a small margin for scheduling
                 # jitter); otherwise re-raise so ``is_retryable`` classifies
                 # the original exception with its real message.
-                #
-                # Handled inside the task (rather than around the awaited
-                # task) so ``_run_cleanup_hooks`` — which invokes OTel
-                # ContextVar reset hooks — runs in the same asyncio context
-                # as ``.run(stream=True)``.
                 idle = _time.monotonic() - last_wait_start
                 if idle + 0.5 < self._stream_timeout():
                     raise
-                try:
-                    await stream.aclose()
-                except Exception:
-                    logger.debug("Failed to close stalled service ResponseStream", exc_info=True)
                 raise self._stall_error(self._stream_timeout()) from None
+            finally:
+                # A stream left before its final response is closed here, in
+                # this task: its cleanup hooks (the OTel ContextVar resets
+                # among them) must run before the attempt ends, in the context
+                # ``.run(stream=True)`` was called in. A pull that failed ran
+                # them already and one that was cancelled closed the stream; a
+                # cancel between chunks, a failing observer or a stall while
+                # finalizing leaves it open, and garbage collection would close
+                # only the bare generators under it, never its hooks.
+                if not completed:
+                    try:
+                        await stream.aclose()
+                    except Exception:
+                        logger.debug("Failed to close an abandoned attempt stream", exc_info=True)
 
         # Wrap the iteration in a child task so ``interrupt()`` can cancel
         # it.  Without this, the streaming path has no task handle to

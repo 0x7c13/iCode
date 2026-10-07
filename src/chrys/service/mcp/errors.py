@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 
 from chrys.foundation.errors import clean_error_message
 from chrys.service.mcp._stdio_transport import (
@@ -111,6 +111,42 @@ class MCPToolNameCollisionError(MCPToolConfigurationError):
             cause,
             failure_summary="has invalid tool configuration",
         )
+
+
+class MCPToolNameAmbiguityError(MCPToolConfigurationError):
+    """Raised when an ``allowed_tools``/``always_load`` name selects more than one tool."""
+
+    def __init__(
+        self,
+        server_name: str,
+        transport: str,
+        *,
+        matches_by_name: Mapping[str, Collection[tuple[str, str | None]]],
+    ) -> None:
+        """*matches_by_name* maps each ambiguous entry to ``(original name, name selecting only that tool)``
+        pairs, one per tool it matches; the second item is None when no name selects that tool alone.
+        """
+        self.matches_by_name = {name: tuple(sorted(matches)) for name, matches in sorted(matches_by_name.items())}
+        details = "; ".join(
+            f"'{name}' matches " + ", ".join(_describe_ambiguous_match(original, sole) for original, sole in matches)
+            for name, matches in self.matches_by_name.items()
+        )
+        message = f"a configured tool name selects more than one tool: {details}."
+        if any(sole is None for matches in self.matches_by_name.values() for _original, sole in matches):
+            message += " Configure a different Tool Name Prefix to tell apart a tool that no name selects alone."
+        cause = ValueError(message)
+        super().__init__(
+            server_name,
+            transport,
+            cause,
+            failure_summary="has invalid tool configuration",
+        )
+
+
+def _describe_ambiguous_match(original: str, sole: str | None) -> str:
+    if sole is None:
+        return f"the server's '{original}' (no name selects only it)"
+    return f"the server's '{original}' (write '{sole}' to select only it)"
 
 
 class MCPToolNameValidationError(MCPToolConfigurationError):

@@ -298,7 +298,7 @@ class AgentLoader:
         )
 
     async def build_hook_manager(
-        self, *, project_root: str, project_hooks_enabled: bool = True, session_id: str | None = None
+        self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None = None
     ) -> HookManager | None:
         return await SessionHookFactory(self._bus)(
             project_root=project_root,
@@ -792,7 +792,7 @@ class AgentLoader:
         self._current.loaded = completed.loaded
         self._current.manifest = completed.manifest
         self._history.bind(completed.loaded.bindings.backend.history_state)
-        self._workspace_change_tracker.apply_retarget(staged.workspace, completed.workspace_retarget)
+        self._workspace_change_tracker.apply_retarget(completed.workspace_retarget)
         self._permits.advance_build_generation()
         return ReplacedBuild(
             loaded=old_loaded,

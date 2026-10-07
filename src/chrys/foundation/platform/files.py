@@ -13,11 +13,14 @@ import os
 import secrets
 import stat
 import tempfile
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any, BinaryIO, cast
+
+from chrys.foundation.platform.c_api import declare_functions, struct_fields
 
 _OWNER_ONLY_MODE = 0o600
 _ATOMIC_NAME_TOKEN_BYTES = 8
@@ -40,6 +43,46 @@ class _WindowsFileAPI:
 
     advapi32: ctypes.CDLL
     kernel32: ctypes.CDLL
+
+
+class _FileAttributeTagInfo(ctypes.Structure):
+    """``FILE_ATTRIBUTE_TAG_INFO``, read by ``GetFileInformationByHandleEx``."""
+
+    _fields_ = struct_fields((wintypes.DWORD, "file_attributes reparse_tag"))
+
+
+class _FileDispositionInfo(ctypes.Structure):
+    """``FILE_DISPOSITION_INFO``, written by ``SetFileInformationByHandle``."""
+
+    _fields_ = struct_fields((wintypes.BOOLEAN, "delete_file"))
+
+
+class _SecurityAttributes(ctypes.Structure):
+    """``SECURITY_ATTRIBUTES`` carrying the descriptor a new file is created with."""
+
+    _fields_ = struct_fields(
+        (wintypes.DWORD, "length"),
+        (wintypes.LPVOID, "security_descriptor"),
+        (wintypes.BOOL, "inherit_handle"),
+    )
+
+
+class _AclSizeInformation(ctypes.Structure):
+    """``ACL_SIZE_INFORMATION``, read by ``GetAclInformation``."""
+
+    _fields_ = struct_fields((wintypes.DWORD, "ace_count acl_bytes_in_use acl_bytes_free"))
+
+
+class _AceHeader(ctypes.Structure):
+    """``ACE_HEADER``, the common prefix of every ACE."""
+
+    _fields_ = struct_fields((ctypes.c_ubyte, "ace_type ace_flags"), (wintypes.WORD, "ace_size"))
+
+
+class _AccessAllowedAce(ctypes.Structure):
+    """``ACCESS_ALLOWED_ACE``; the trustee SID starts at ``sid_start``."""
+
+    _fields_ = struct_fields((_AceHeader, "header"), (wintypes.DWORD, "mask sid_start"))
 
 
 def _windows_stat_file_attributes(info: os.stat_result) -> int:
@@ -74,7 +117,7 @@ def _is_macos() -> bool:
     return get_platform().is_macos
 
 
-def _fsync_dir(path: Path) -> None:
+def fsync_directory(path: Path) -> None:
     """Best-effort fsync of a directory after an atomic rename."""
     if os.name == "nt":
         return
@@ -84,6 +127,30 @@ def _fsync_dir(path: Path) -> None:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+
+_fsync_dir = fsync_directory
+"""Backward-compatible alias for callers predating the public helper."""
+
+_WINDOWS_REPLACE_MAX_ATTEMPTS = 6
+_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.01
+
+
+def replace_with_retry(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+    """``os.replace`` that tries again briefly on Windows while the target is held open.
+
+    Antivirus scanners, the search indexer and sync clients open files for a
+    moment, and Windows refuses the rename with ``PermissionError`` meanwhile.
+    Up to six tries with about 0.3 s of sleeps in all; elsewhere one try.
+    """
+    for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == _WINDOWS_REPLACE_MAX_ATTEMPTS - 1 or not _is_windows():
+                raise
+            time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * 2**attempt)
 
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
@@ -96,8 +163,8 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-        _fsync_dir(path.parent)
+        replace_with_retry(tmp_path, path)
+        fsync_directory(path.parent)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
@@ -153,7 +220,7 @@ def _atomic_create_bytes(path: Path, payload: bytes) -> None:
             # entry, breaking the no-temp-file-on-success durability above.
             os.link(tmp_path, path)
             tmp_path.unlink()
-        _fsync_dir(path.parent)
+        fsync_directory(path.parent)
     finally:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
@@ -228,16 +295,16 @@ def _validate_link_free_parent(path: Path) -> None:
 def _darwin_acl_api() -> _DarwinAclAPI:
     """Load the small libSystem ACL surface used by owner-only verification."""
     libc = ctypes.CDLL(None, use_errno=True)
-    libc.acl_get_fd.argtypes = [ctypes.c_int]
-    libc.acl_get_fd.restype = ctypes.c_void_p
-    libc.acl_get_entry.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
-    libc.acl_get_entry.restype = ctypes.c_int
-    libc.acl_init.argtypes = [ctypes.c_int]
-    libc.acl_init.restype = ctypes.c_void_p
-    libc.acl_set_fd.argtypes = [ctypes.c_int, ctypes.c_void_p]
-    libc.acl_set_fd.restype = ctypes.c_int
-    libc.acl_free.argtypes = [ctypes.c_void_p]
-    libc.acl_free.restype = ctypes.c_int
+    declare_functions(
+        libc,
+        {
+            "acl_get_fd": (ctypes.c_void_p, [ctypes.c_int]),
+            "acl_get_entry": (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]),
+            "acl_init": (ctypes.c_void_p, [ctypes.c_int]),
+            "acl_set_fd": (ctypes.c_int, [ctypes.c_int, ctypes.c_void_p]),
+            "acl_free": (ctypes.c_int, [ctypes.c_void_p]),
+        },
+    )
     return _DarwinAclAPI(libc=libc)
 
 
@@ -382,100 +449,63 @@ def _windows_file_api() -> _WindowsFileAPI:
     windows_ctypes = cast(Any, ctypes)
     advapi32 = windows_ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = windows_ctypes.WinDLL("kernel32", use_last_error=True)
-
-    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.ULONG),
-    ]
-    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
-    advapi32.GetSecurityInfo.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.LPVOID),
-    ]
-    advapi32.GetSecurityInfo.restype = wintypes.DWORD
-    advapi32.GetTokenInformation.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    advapi32.GetTokenInformation.restype = wintypes.BOOL
-    advapi32.OpenProcessToken.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.HANDLE),
-    ]
-    advapi32.OpenProcessToken.restype = wintypes.BOOL
-    advapi32.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
-    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
-    advapi32.EqualSid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
-    advapi32.EqualSid.restype = wintypes.BOOL
-    advapi32.GetAclInformation.argtypes = [
-        wintypes.LPVOID,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        ctypes.c_int,
-    ]
-    advapi32.GetAclInformation.restype = wintypes.BOOL
-    advapi32.GetAce.argtypes = [
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.LPVOID),
-    ]
-    advapi32.GetAce.restype = wintypes.BOOL
-    advapi32.GetSecurityDescriptorControl.argtypes = [
-        wintypes.LPVOID,
-        ctypes.POINTER(wintypes.WORD),
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
-
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
-    kernel32.LocalFree.restype = wintypes.HLOCAL
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.GetFileInformationByHandleEx.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    ]
-    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
-    kernel32.GetFinalPathNameByHandleW.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-    ]
-    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
-    kernel32.SetFileInformationByHandle.argtypes = [
-        wintypes.HANDLE,
-        ctypes.c_int,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-    ]
-    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
+    out_pointer = ctypes.POINTER(wintypes.LPVOID)
+    declare_functions(
+        advapi32,
+        {
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW": (
+                wintypes.BOOL,
+                [wintypes.LPCWSTR, wintypes.DWORD, out_pointer, ctypes.POINTER(wintypes.ULONG)],
+            ),
+            # The five out-pointers receive the owner, group, DACL, SACL and security descriptor.
+            "GetSecurityInfo": (wintypes.DWORD, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD] + [out_pointer] * 5),
+            "GetTokenInformation": (
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)],
+            ),
+            "OpenProcessToken": (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]),
+            "ConvertSidToStringSidW": (wintypes.BOOL, [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]),
+            "EqualSid": (wintypes.BOOL, [wintypes.LPVOID, wintypes.LPVOID]),
+            "GetAclInformation": (wintypes.BOOL, [wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD, ctypes.c_int]),
+            "GetAce": (wintypes.BOOL, [wintypes.LPVOID, wintypes.DWORD, out_pointer]),
+            "GetSecurityDescriptorControl": (
+                wintypes.BOOL,
+                [wintypes.LPVOID, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)],
+            ),
+        },
+    )
+    declare_functions(
+        kernel32,
+        {
+            "GetCurrentProcess": (wintypes.HANDLE, []),
+            "LocalFree": (wintypes.HLOCAL, [wintypes.HLOCAL]),
+            "CreateFileW": (
+                wintypes.HANDLE,
+                [
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.HANDLE,
+                ],
+            ),
+            "GetFileInformationByHandleEx": (
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD],
+            ),
+            "GetFinalPathNameByHandleW": (
+                wintypes.DWORD,
+                [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD],
+            ),
+            "SetFileInformationByHandle": (
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD],
+            ),
+            "CloseHandle": (wintypes.BOOL, [wintypes.HANDLE]),
+        },
+    )
     return _WindowsFileAPI(advapi32=advapi32, kernel32=kernel32)
 
 
@@ -550,12 +580,6 @@ def _verify_windows_owner_only(fd: int) -> None:
         DACL_SECURITY_INFORMATION = 0x00000004
         handle = wintypes.HANDLE(_windows_osfhandle(fd))
 
-        class _FileAttributeTagInfo(ctypes.Structure):
-            _fields_ = [
-                ("file_attributes", wintypes.DWORD),
-                ("reparse_tag", wintypes.DWORD),
-            ]
-
         file_info = _FileAttributeTagInfo()
         if not api.kernel32.GetFileInformationByHandleEx(
             handle,
@@ -593,27 +617,6 @@ def _verify_windows_owner_only(fd: int) -> None:
             raise _windows_error(api, "Unable to inspect Windows DACL inheritance.")
         if not control.value & 0x1000:
             raise SecureFileError("Secure file Windows DACL is not protected from inheritance.")
-
-        class _AclSizeInformation(ctypes.Structure):
-            _fields_ = [
-                ("ace_count", wintypes.DWORD),
-                ("acl_bytes_in_use", wintypes.DWORD),
-                ("acl_bytes_free", wintypes.DWORD),
-            ]
-
-        class _AceHeader(ctypes.Structure):
-            _fields_ = [
-                ("ace_type", ctypes.c_ubyte),
-                ("ace_flags", ctypes.c_ubyte),
-                ("ace_size", wintypes.WORD),
-            ]
-
-        class _AccessAllowedAce(ctypes.Structure):
-            _fields_ = [
-                ("header", _AceHeader),
-                ("mask", wintypes.DWORD),
-                ("sid_start", wintypes.DWORD),
-            ]
 
         ACL_SIZE_INFORMATION_CLASS = 2
         ACCESS_ALLOWED_ACE_TYPE = 0
@@ -668,12 +671,6 @@ def _verify_windows_owner_identity(fd: int) -> None:
         SE_FILE_OBJECT = 1
         OWNER_SECURITY_INFORMATION = 0x00000001
         handle = wintypes.HANDLE(_windows_osfhandle(fd))
-
-        class _FileAttributeTagInfo(ctypes.Structure):
-            _fields_ = [
-                ("file_attributes", wintypes.DWORD),
-                ("reparse_tag", wintypes.DWORD),
-            ]
 
         file_info = _FileAttributeTagInfo()
         if not api.kernel32.GetFileInformationByHandleEx(
@@ -792,13 +789,6 @@ def _windows_secure_open(
     flags = 0x00000080 | 0x00200000
     security_descriptor = _windows_owner_only_descriptor(api) if create else None
 
-    class _SecurityAttributes(ctypes.Structure):
-        _fields_ = [
-            ("length", wintypes.DWORD),
-            ("security_descriptor", wintypes.LPVOID),
-            ("inherit_handle", wintypes.BOOL),
-        ]
-
     security_attributes = None
     if security_descriptor is not None:
         security_attributes = _SecurityAttributes(
@@ -826,12 +816,6 @@ def _windows_secure_open(
         if legacy_import:
             raise _windows_os_error(create_error, path)
         raise SecureFileError(create_error, "Unable to open owner-only Windows file.")
-
-    class _FileAttributeTagInfo(ctypes.Structure):
-        _fields_ = [
-            ("file_attributes", wintypes.DWORD),
-            ("reparse_tag", wintypes.DWORD),
-        ]
 
     try:
         info = _FileAttributeTagInfo()
@@ -908,9 +892,6 @@ def _windows_secure_unlink(path: Path, identity: os.stat_result | None) -> None:
         return
     api = _windows_file_api()
 
-    class _FileDispositionInfo(ctypes.Structure):
-        _fields_ = [("delete_file", wintypes.BOOLEAN)]
-
     info = _FileDispositionInfo(True)
     FILE_DISPOSITION_INFO_CLASS = 4
     handle = wintypes.HANDLE(_windows_osfhandle(fd))
@@ -944,8 +925,23 @@ def secure_unlink_owner_verified(path: Path) -> bool:
     leftover debris is re-verified by every consumer while a wrong deletion
     is unrecoverable.
     """
+    return _owner_verified_unlink(path, unlink=True)
+
+
+def can_unlink_owner_verified(path: Path) -> bool:
+    """Whether :func:`secure_unlink_owner_verified` would delete *path*: the same gates, deleting nothing.
+
+    Also what the deletion needs that can be told beforehand: a writable,
+    searchable folder (POSIX) and no read-only attribute (Windows). For
+    refusing before asking a user to confirm; the deletion still reports
+    what this can't foresee (immutable flags, ACLs, a change in between).
+    """
+    return _owner_verified_unlink(path, unlink=False)
+
+
+def _owner_verified_unlink(path: Path, *, unlink: bool) -> bool:
     if _is_windows():
-        return _windows_secure_unlink_owner_verified(path)
+        return _windows_secure_unlink_owner_verified(path, unlink=unlink)
     try:
         directory_fd, filename = _open_posix_parent(path)
     except SecureFileError, OSError:
@@ -957,6 +953,8 @@ def secure_unlink_owner_verified(path: Path) -> bool:
             return False
         if not stat.S_ISREG(entry.st_mode) or entry.st_uid != _posix_effective_uid():
             return False
+        if not unlink:
+            return os.access(".", os.W_OK | os.X_OK, dir_fd=directory_fd, effective_ids=True)
         try:
             os.unlink(filename, dir_fd=directory_fd)
         except OSError:
@@ -966,7 +964,7 @@ def secure_unlink_owner_verified(path: Path) -> bool:
         os.close(directory_fd)
 
 
-def _windows_secure_unlink_owner_verified(path: Path) -> bool:
+def _windows_secure_unlink_owner_verified(path: Path, *, unlink: bool) -> bool:
     try:
         _validate_link_free_parent(path)
         fd = _windows_secure_open(
@@ -980,10 +978,13 @@ def _windows_secure_unlink_owner_verified(path: Path) -> bool:
         )
     except SecureFileError, OSError:
         return False
+    if not unlink:
+        try:
+            # Marking a read-only file for deletion is refused.
+            return not _windows_stat_file_attributes(os.fstat(fd)) & stat.FILE_ATTRIBUTE_READONLY
+        finally:
+            os.close(fd)
     api = _windows_file_api()
-
-    class _FileDispositionInfo(ctypes.Structure):
-        _fields_ = [("delete_file", wintypes.BOOLEAN)]
 
     info = _FileDispositionInfo(True)
     FILE_DISPOSITION_INFO_CLASS = 4
@@ -1302,11 +1303,11 @@ def atomic_write_owner_only_bytes(path: Path, payload: bytes, *, create_parents:
             file.write(payload)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(tmp_path, path)
+        replace_with_retry(tmp_path, path)
         published = True
         verify_fd = secure_open_owner_only(path, read=True)
         os.close(verify_fd)
-        _fsync_dir(path.parent)
+        fsync_directory(path.parent)
     except BaseException:
         if fd >= 0:
             os.close(fd)

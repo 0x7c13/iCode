@@ -43,11 +43,14 @@ from chrys.app.tui.support.gc_freeze import detach_lru_cache, renew_lru_cache
 from chrys.app.tui.widgets import normalize_selection_rich_style as _normalize_selection_rich_style
 from chrys.app.tui.widgets.markdown._utils import sanitize_location as _sanitize_location
 from chrys.app.tui.widgets.markdown.anchors import find_heading
-from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock, TableOfContentsType, _BlockLineInfo
+from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock, MarkdownGutter, TableOfContentsType, _BlockLineInfo
 from chrys.app.tui.widgets.markdown.diagram import compile_mermaid
 from chrys.app.tui.widgets.markdown.diagram.messages import DiagramOpenRequested
 from chrys.app.tui.widgets.markdown.diagram.model import CompiledDiagram
 from chrys.app.tui.widgets.markdown.links import external_link_target
+from chrys.app.tui.widgets.markdown.math import CompiledMath, compile_math
+from chrys.app.tui.widgets.markdown.math.markdown import MATH_ENABLED
+from chrys.app.tui.widgets.markdown.math.parser import MAX_SOURCE as MAX_MATH_SOURCE
 from chrys.app.tui.widgets.markdown.parser import (
     _cell_min_width,
     _cell_natural_width,
@@ -450,6 +453,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         """Rendered action widths keyed by virtual line, kept in sync with cached strips."""
         self._diagram_compile_cache: OrderedDict[tuple[str, str], CompiledDiagram] = OrderedDict()
         """Small per-widget cache reused across streaming Markdown reparses."""
+        self._math_compile_cache: OrderedDict[str, CompiledMath] = OrderedDict()
+        self._math_rows: dict[int, tuple[str, ...]] = {}
         self._block_strips: dict[int, list[Strip]] = {}
         """Cached strips for long non-table/fence blocks, keyed by block index.
 
@@ -573,15 +578,17 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
 
     def on_click(self, event: Click) -> None:
         """Open a diagram only when its dedicated action row is clicked."""
-        block_index = self._diagram_action_at(event.get_content_offset_capture(self))
+        block_index = self._diagram_action_at(event.get_content_offset(self))
         if block_index is None:
             return
         self._request_diagram_open(block_index)
         event.prevent_default()
         event.stop()
 
-    def _diagram_action_at(self, offset: Offset) -> int | None:
+    def _diagram_action_at(self, offset: Offset | None) -> int | None:
         """Return the diagram action under a viewport-relative content coordinate."""
+        if offset is None:
+            return None
         virtual_y = round(self.scroll_offset.y) + offset.y
         block_index = self._diagram_action_lines.get(virtual_y)
         if block_index is None:
@@ -606,9 +613,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         return block_index if action_start <= offset.x < action_start + action_width else None
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        pointer = (
-            "pointer" if self._diagram_action_at(event.get_content_offset_capture(self)) is not None else "default"
-        )
+        pointer = "pointer" if self._diagram_action_at(event.get_content_offset(self)) is not None else "default"
         if self.styles.pointer != pointer:
             self.styles.pointer = pointer
 
@@ -691,7 +696,27 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             else _configure_markdown_parser(self._parser_factory())
         )
         tokens = parser.parse(markdown)
-        return _parse_tokens(tokens, compile_diagram=self._compile_mermaid_cached, open_links=self._open_links)
+        return _parse_tokens(
+            tokens,
+            compile_diagram=self._compile_mermaid_cached,
+            open_links=self._open_links,
+            math_enabled=bool(parser.options.get(MATH_ENABLED, False)),
+            math_compiler=self._compile_math_cached,
+        )
+
+    def _compile_math_cached(self, source: str) -> CompiledMath:
+        """Bound both successful and failed compilations across streamed reparses."""
+        if len(source) > MAX_MATH_SOURCE:
+            return CompiledMath(source)
+        cached = self._math_compile_cache.get(source)
+        if cached is not None:
+            self._math_compile_cache.move_to_end(source)
+            return cached
+        result = compile_math(source)
+        self._math_compile_cache[source] = result
+        while len(self._math_compile_cache) > 64:
+            self._math_compile_cache.popitem(last=False)
+        return result
 
     def _compile_mermaid_cached(self, source: str) -> CompiledDiagram:
         """Compile one closed Mermaid fence, reusing stable streamed blocks."""
@@ -725,6 +750,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._fence_line_strips.clear()
         self._fence_source_line_strips.clear()
         self._diagram_layouts.clear()
+        self._math_rows.clear()
         self._diagram_action_lines.clear()
         self._diagram_action_widths.clear()
         self._block_strips.clear()
@@ -760,6 +786,14 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
                 diagram_layout = _DiagramLayout(preview_height=preview_height)
                 self._diagram_layouts[index] = diagram_layout
                 content_height = diagram_layout.total_height
+            elif block.block_type == "math" and block.math is not None:
+                if block.math.rows and block.math.width <= content_width:
+                    self._math_rows[index] = block.math.rows
+                    content_height = len(block.math.rows)
+                else:
+                    # Source fallback uses the same wrapping and clipboard
+                    # mapping as ordinary text, so soft wraps never split TeX.
+                    content_height = block.content.get_height({}, content_width)
             else:
                 content_height = block.content.get_height({}, content_width)
 
@@ -852,11 +886,11 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         block_style = self._get_block_style_cached(info.block_index, block)
 
         if local_line < info.top_margin:
-            return Strip.blank(width, base_style.rich_style)
+            return self._render_margin_line(info.block_index - 1, info.block_index, width)
 
         content_end = info.top_margin + info.content_height
         if local_line >= content_end:
-            return Strip.blank(width, base_style.rich_style)
+            return self._render_margin_line(info.block_index, info.block_index + 1, width)
 
         content_line = local_line - info.top_margin
 
@@ -869,21 +903,15 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
 
         actual_line = content_line - block.padding_top
 
-        if block.block_type == "hr":
-            rule_char = "\u2500"
-            rule_width = max(1, width - 1)
-            return Strip(
-                [Segment(rule_char * rule_width, block_style.rich_style), Segment(" ", base_style.rich_style)],
-                width,
-            )
-
         border_width = len(block.border_left) if block.border_left else 0
         # -1 reserves the right margin char appended at the end of this method
         content_width = width - block.indent - block.padding_left - block.padding_right - border_width - 1
         if content_width <= 0:
             content_width = 1
 
-        if block.block_type == "table" and info.block_index in self._table_layouts:
+        if block.block_type == "hr":
+            strip = Strip([Segment("─" * content_width, block_style.rich_style)], content_width)
+        elif block.block_type == "table" and info.block_index in self._table_layouts:
             cache_key = (info.block_index, actual_line)
             strip = self._table_strips.get(cache_key)
             if strip is None:
@@ -895,6 +923,10 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             if strip is None:
                 strip = self._render_fence_line(block, info.block_index, actual_line, content_width, block_style)
                 self._fence_line_strips[cache_key] = strip
+        elif block.block_type == "math" and info.block_index in self._math_rows:
+            rows = self._math_rows[info.block_index]
+            row = rows[actual_line] if actual_line < len(rows) else ""
+            strip = Strip([Segment(row, block_style.rich_style)], cell_len(row))
         elif block.block_type == "diagram" and block.diagram is not None:
             diagram_layout = self._diagram_layouts.get(info.block_index)
             if diagram_layout is None:
@@ -946,23 +978,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
 
         left_offset = block.indent + block.padding_left + border_width
         if left_offset > 0 or block.prefix:
-            segments: list[Segment] = []
-            indent_style = base_style.rich_style
-            if block.indent > 0:
-                indent_width = block.indent
-                if actual_line == 0 and block.prefix:
-                    prefix_text = block.prefix
-                    prefix_len = len(prefix_text)
-                    bullet_style = self._safe_component_style("virtualized-markdown--bullet")
-                    pad = max(0, indent_width - prefix_len)
-                    segments.append(Segment(" " * pad, indent_style))
-                    segments.append(Segment(prefix_text, bullet_style.rich_style))
-                else:
-                    segments.append(Segment(" " * indent_width, indent_style))
-            if block.bq_depth > 0:
-                segments.extend(self._render_bq_border_segments(block.bq_depth))
-            elif block.border_left:
-                segments.append(Segment(block.border_left, block_style.rich_style))
+            segments = self._render_block_gutter(block, first_line=actual_line == 0)
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             segments.extend(strip._segments)
@@ -1005,11 +1021,12 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
 
     def _get_block_style(self, block: MarkdownBlock) -> Style:
         """Get the visual style for a block."""
-        if block.bq_depth > 0 and block.block_type not in {"diagram", "fence"}:
+        if block.bq_depth > 0 and block.block_type == "paragraph":
             return self._get_bq_depth_style(block.bq_depth)
-        if block.style_name:
-            return self._safe_component_style(block.style_name)
-        return self.visual_style
+        style = self._safe_component_style(block.style_name) if block.style_name else self.visual_style
+        if block.bq_depth > 0 and block.block_type not in {"diagram", "fence", "math"}:
+            style = replace(style, background=self._get_bq_depth_style(block.bq_depth).background)
+        return style
 
     def _get_block_style_cached(self, block_index: int, block: MarkdownBlock) -> Style:
         """Memoized :meth:`_get_block_style` for use in the per-row hot path.
@@ -1039,32 +1056,58 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
 
         return replace(base_style, background=blended)
 
-    def _render_bq_border_segments(self, bq_depth: int) -> list[Segment]:
-        """Render blockquote border segments with per-depth backgrounds."""
+    def _render_gutter(self, gutter: tuple[MarkdownGutter, ...], *, first_line: bool = False) -> list[Segment]:
+        """Paint containers in source order, keeping list markers inside their quotes."""
         bq_border_style = self._safe_component_style("virtualized-markdown--block-quote-border")
         segments: list[Segment] = []
-        for d in range(1, bq_depth + 1):
-            depth_style = self._get_bq_depth_style(d)
-            bar_style = RichStyle(
-                color=bq_border_style.rich_style.color,
-                bgcolor=depth_style.rich_style.bgcolor,
-            )
-            segments.append(Segment("\u258c", bar_style))
-            segments.append(Segment(" ", depth_style.rich_style))
+        depth = 0
+        style = self.visual_style.rich_style
+        for part in gutter:
+            if part.kind == "quote":
+                depth += 1
+                style = self._get_bq_depth_style(depth).rich_style
+                segments.append(Segment("▌", RichStyle(color=bq_border_style.rich_style.color, bgcolor=style.bgcolor)))
+                segments.append(Segment(" ", style))
+            else:
+                prefix = part.prefix if first_line else ""
+                segments.append(Segment(" " * (part.width - cell_len(prefix)), style))
+                if prefix:
+                    bullet_style = self._safe_component_style("virtualized-markdown--bullet").rich_style
+                    segments.append(Segment(prefix, bullet_style + RichStyle(bgcolor=style.bgcolor)))
         return segments
+
+    def _render_block_gutter(self, block: MarkdownBlock, *, first_line: bool = False) -> list[Segment]:
+        if block.gutter:
+            return self._render_gutter(block.gutter, first_line=first_line)
+        # External token handlers may still provide the flat block attributes.
+        prefix = block.prefix if first_line else ""
+        segments = [Segment(" " * max(0, block.indent - cell_len(prefix)), self.visual_style.rich_style)]
+        if prefix:
+            segments.append(Segment(prefix, self._safe_component_style("virtualized-markdown--bullet").rich_style))
+        if block.border_left:
+            segments.append(Segment(block.border_left, self._get_block_style(block).rich_style))
+        return segments
+
+    def _render_margin_line(self, previous: int, following: int, width: int) -> Strip:
+        """Keep only shared container borders across the gap between two blocks."""
+        shared: list[MarkdownGutter] = []
+        if previous >= 0 and following < len(self._blocks):
+            for left, right in zip(self._blocks[previous].gutter, self._blocks[following].gutter, strict=False):
+                if left.container_id != right.container_id:
+                    break
+                shared.append(left)
+        depth = sum(part.kind == "quote" for part in shared)
+        style = self._get_bq_depth_style(depth) if depth else self.visual_style
+        strip = Strip(self._render_gutter(tuple(shared)))
+        strip = strip.adjust_cell_length(max(0, width - 1), style.rich_style)
+        return Strip([*strip._segments, Segment(" ", self.visual_style.rich_style)], width)
 
     def _render_padding_line(self, block: MarkdownBlock, base_style: Style, block_style: Style, width: int) -> Strip:
         """Render a padding line (e.g. top/bottom padding of a code fence)."""
         border_width = len(block.border_left) if block.border_left else 0
         left_offset = block.indent + block.padding_left + border_width
         if left_offset > 0:
-            segments: list[Segment] = []
-            if block.indent > 0:
-                segments.append(Segment(" " * block.indent, base_style.rich_style))
-            if block.bq_depth > 0:
-                segments.extend(self._render_bq_border_segments(block.bq_depth))
-            elif block.border_left:
-                segments.append(Segment(block.border_left, block_style.rich_style))
+            segments = self._render_block_gutter(block)
             if block.padding_left > 0:
                 segments.append(Segment(" " * block.padding_left, block_style.rich_style))
             remaining = width - left_offset
@@ -1233,6 +1276,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             return Strip.blank(content_width, block_style.rich_style)
 
         header_style = self._safe_component_style("virtualized-markdown--table-header")
+        if block.bq_depth:
+            header_style = replace(header_style, background=block_style.background)
         cell_rs = block_style.rich_style
         border_rs = self._table_border_style(block_style)
 
@@ -1828,7 +1873,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             return "\n", 0
 
         block = self._blocks[current_info.block_index]
-        if block.block_type in {"diagram", "hr", "table"}:
+        if block.block_type in {"diagram", "hr", "table"} or current_info.block_index in self._math_rows:
             return "\n", 0
 
         current_content_line = self._actual_content_line_index(block, current_info, line)

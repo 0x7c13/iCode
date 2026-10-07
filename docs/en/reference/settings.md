@@ -61,12 +61,14 @@ The `approval` keys control approval behavior when an agent requests an operatio
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | String; `manual` for manual approval, `auto` for automatic approval, or `bypass` to bypass approval. Setting the default mode does not switch the current session's mode |
+| `ui.approval.defer_while_judging` | None | `true` | Boolean; in automatic mode, whether the TUI opens the approval dialog only when the approval judge model flags a call or evaluation fails. `false` opens it at once while the call is evaluated. The ACP server and `icode run` ignore it |
 | `project.config_enabled` | None | `false` | Boolean; whether to load project settings for each working directory. Must be enabled in user settings |
-| `project.hooks_enabled` | None | `true` | Boolean; whether to load project hooks from `.chrys/hooks` in the working directory. Does not affect user-level hooks |
+| `project.hooks_enabled` | None | `false` | Boolean; whether to load project hooks from `.chrys/hooks` in the working directory. Must be enabled in user settings. Does not affect user-level hooks |
+| `project.skills_enabled` | None | `false` | Boolean; whether to load project skills from `.agents/skills` in the working directory. Must be enabled in user settings. The agent's own “Load skills from working folder” option must also stay on |
 
 If you manually set the default approval mode to `bypass` in YAML or an environment variable, approval is bypassed the next time iCode starts with that default. When you switch to `bypass` with `/approval` in the TUI, iCode saves `auto` as the default mode; the TUI Settings dialog does not offer `bypass`.
 
-Hooks are external commands that iCode runs on specific events. Project hooks and project settings are controlled separately: disabling `project.config_enabled` does not disable project hooks. For authoring and configuration, see [Configure and write hooks](../guides/extensions/hooks.md).
+Project settings, project hooks, and project skills come from the repository you open, so all three are off by default and each is turned on separately: enabling one does not enable the others. When the working directory has any of them that are off, iCode shows a notice naming the setting to turn on. Hooks are external commands that iCode runs on specific events; for authoring and configuration, see [Configure and write hooks](../guides/extensions/hooks.md). For skills, see [Install and use skills](../guides/extensions/skills.md).
 
 ### Sessions and file recovery
 
@@ -93,7 +95,7 @@ Changing the session storage root does not automatically move existing sessions.
 | `mutations.parallel_implicit_tools` | `CHRYS_PARALLEL_IMPLICIT_TOOLS` | `true` | Boolean; allow tools that may modify files, such as shell commands and skill scripts, to run in parallel within the same session. Setting this to `false` makes it easier to identify which tool call caused a file change |
 | `mutations.coordination.enabled` | `CHRYS_MUTATION_COORDINATION` | `true` | Boolean; help distinguish file changes made by different iCode sessions sharing a working directory |
 
-Tools may also have their own output limits, such as limits on MCP results and skill resources. Setting `tools.result.ceiling_tokens` to `0` does not disable those limits or recover content that a tool has already truncated.
+Tools may also have their own output limits, such as limits on MCP results and skill resources. Setting `tools.result.ceiling_tokens` to `0` does not disable those limits or recover content that a tool has already truncated. Separately from these token limits, shell commands and skill scripts keep at most 32 MiB of each output stream.
 
 ### Web tools
 

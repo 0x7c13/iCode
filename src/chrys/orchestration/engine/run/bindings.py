@@ -37,11 +37,12 @@ from chrys.foundation.util.time import parse_created_at
 from chrys.kernel import (
     Agent,
     AgentSession,
+    ConsumedInjectionMessageProbe,
+    LoopRecorderSnapshot,
     StallExhaustedAction,
     WireRetryPolicy,
     resolve_storage_mode_and_handles,
 )
-from chrys.kernel.loop import ConsumedInjectionMessageProbe, LoopRecorderSnapshot
 from chrys.orchestration.engine.run.resume import TurnPassState, TurnResumePolicy
 from chrys.orchestration.invoker.attempts import (
     AgentRunKwargs,
@@ -88,6 +89,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     PresentationAttemptAcceptedOp,
     PresentationAttemptRejectedOp,
     PresentationSinkOperation,
+    next_hosted_run_generation,
 )
 from chrys.service.agent_middleware.events.tool_events import ToolEventRetrySnapshot
 from chrys.service.agent_middleware.response_validation import (
@@ -673,7 +675,7 @@ class TurnBindings:
         self.state.last_error = ""
         self._interrupt.reset()
         self._attempt_trace.reset()
-        self._hosted_run_generation += 1
+        self._hosted_run_generation = next_hosted_run_generation()
         emitter = self._emitter
         self._hosted_bridge = HostedPresentationBridge(
             lambda operation: self._publish_hosted_operation(operation, emitter=emitter),
@@ -714,7 +716,10 @@ class TurnBindings:
         logger.error("Turn error: %s", err_msg)
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected(err_msg)
-        display_message, display_hint = display_fields(e)
+        strategy = self._compaction_strategy
+        display_message, display_hint = display_fields(
+            e, max_context_tokens=strategy.max_context_tokens if strategy is not None else None
+        )
         await self._emitter.publish(
             Error(
                 code="executor_error",
@@ -1024,7 +1029,7 @@ class _MainStreamObserver:
     """The main shell's final-response text projection for one stream attempt.
 
     ``on_update`` accumulates text, discarding intermediate tool-response
-    text that the instrumented client's ``result_hook`` publishes separately.
+    text that the wire client's ``result_hook`` publishes separately.
     Two signals discard the buffer: a non-informational ``function_call``
     in the update, or a change in ``IntermediateTextBuffer.batch_id`` between
     updates. The hook advances the batch at the end of a tool-calling response;

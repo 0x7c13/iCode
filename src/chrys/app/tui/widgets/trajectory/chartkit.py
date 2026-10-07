@@ -189,6 +189,15 @@ def fit_cells(value: str, width: int) -> str:
     return set_cell_size(value, max(0, width))
 
 
+def fit_text_cells(value: Text, width: int) -> Text:
+    """Crop styled text with an ellipsis, or pad it, to exactly *width* terminal cells."""
+    if width <= 0:
+        return Text()
+    fitted = value.copy()
+    fitted.truncate(width, overflow="ellipsis", pad=True)
+    return fitted
+
+
 def bordered_section(
     title: str | Text,
     lines: Iterable[Text],
@@ -222,7 +231,7 @@ def bordered_section(
         Text.assemble(
             Text("│", style=border_style),
             Text(padding),
-            _fit_text_cells(line, interior_width),
+            fit_text_cells(line, interior_width),
             Text(padding),
             Text("│", style=border_style),
         )
@@ -230,12 +239,6 @@ def bordered_section(
     ]
     bottom = Text(f"└{'─' * (usable - 2)}┘", style=border_style)
     return [top, *body, bottom]
-
-
-def _fit_text_cells(value: Text, width: int) -> Text:
-    fitted = value.copy()
-    fitted.truncate(max(0, width), overflow="ellipsis", pad=True)
-    return fitted
 
 
 def _axis_duration(value_ns: int, span_ns: int) -> str:

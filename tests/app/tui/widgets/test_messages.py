@@ -46,6 +46,7 @@ from chrys.app.tui.widgets.chat.tool_call import (
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
 from chrys.kernel import Content
+from tests.support.images import image_bytes
 from tests.support.tui_helpers import (
     ChatPanelApp,
     WidgetApp,
@@ -226,7 +227,7 @@ def test_image_preview_extract_ignores_decompression_bomb(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    def raise_decompression_bomb(_data: object) -> None:
+    def raise_decompression_bomb(_data: object, *, formats: tuple[str, ...]) -> None:
         raise Image.DecompressionBombError("too large")
 
     monkeypatch.setattr(image_preview_module.Image, "open", raise_decompression_bomb)
@@ -234,6 +235,17 @@ def test_image_preview_extract_ignores_decompression_bomb(
     with caplog.at_level("DEBUG", logger=image_preview_module.__name__):
         assert extract_image_previews([Content.from_data(data=b"not decoded", media_type="image/png")]) == []
     assert "Skipping invalid chat image preview" in caplog.text
+
+
+def test_image_preview_decodes_only_whitelisted_formats() -> None:
+    previews = extract_image_previews(
+        [
+            Content.from_data(data=image_bytes("TIFF"), media_type="image/tiff"),
+            Content.from_data(data=image_bytes("BMP"), media_type="image/bmp"),
+        ]
+    )
+
+    assert [preview.media_type for preview in previews] == ["image/bmp"]
 
 
 def test_image_preview_grid_renders_multiple_images_in_one_row_and_resizes() -> None:

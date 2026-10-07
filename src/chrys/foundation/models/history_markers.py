@@ -37,6 +37,15 @@ AWAITING_SUB_AGENTS_MESSAGE = msg(
     plural_fallback="Awaiting {count} sub-agent(s)",
 )
 
+ANTHROPIC_THINKING_STRIPPED_KEY: Final[str] = "_chrys_anthropic_thinking_stripped"
+"""Set to True in a reasoning ``Content``'s ``additional_properties`` once it is left out for good.
+
+Anthropic refused a request replaying it as bound to a different conversation,
+and then accepted that request without any of the thinking it replayed: every
+reasoning content the refused request replayed is marked, refused or not, and
+never sent again.
+"""
+
 
 class HistoryMarkerKind:
     """String constants stored in ``Message.additional_properties``."""

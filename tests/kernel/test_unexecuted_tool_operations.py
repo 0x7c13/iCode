@@ -18,16 +18,19 @@ from typing import Any
 import pytest
 
 from chrys.foundation.tool_call_context import TOOL_CALL_CONTEXT_METADATA_KEY
-from chrys.foundation.trajectory.context import trajectory_scope
+from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG, trajectory_scope
 from chrys.foundation.trajectory.envelope import EventDraft
 from chrys.foundation.trajectory.event_types import EventType, RuntimeFinishReason, ToolOutcome
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import OPERATION_ID_KEY
 from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.writer import EmitResult
+from chrys.kernel import FunctionTool
 from chrys.kernel._content import Content
-from chrys.kernel.loop import _record_unexecuted_tool_operation
+from chrys.kernel._tool_execution import _record_unexecuted_tool_operation
+from chrys.kernel.types import ChatResponse, ChatResponseUpdate, Message
 from chrys.service.trajectory.session import SessionTrajectory, trajectory_events_path
+from tests.kernel._fakes import _final_response, _stack, _text_response, _text_update, _user
 from tests.service.trajectory._fakes import SESSION_ID, CancelAckSink, FakeSink, make_context
 from tests.support.trajectory_invariants import assert_trajectory_accounted
 
@@ -65,6 +68,41 @@ async def test_a_call_with_no_stamped_provenance_omits_the_field() -> None:
         )
 
     assert "tool_context" not in sink.only(EventType.TOOL_OPERATION_STARTED).payload
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_call_whose_arguments_are_not_an_object_closes_as_invalid_arguments(stream: bool) -> None:
+    """The loop refuses a non-object payload before the pipeline, so it closes the operation itself."""
+    sink = FakeSink()
+    ran: list[dict[str, Any]] = []
+
+    async def lenient(**kwargs: Any) -> str:
+        ran.append(kwargs)
+        return "ran"
+
+    tool = FunctionTool(
+        name="lenient", func=lenient, input_model={"type": "object", "properties": {"state": {"type": "string"}}}
+    )
+    call = Content.from_function_call("c1", "lenient", arguments="[1]")
+    if stream:
+        turns: list[Any] = [[ChatResponseUpdate(contents=[call], role="assistant")], [_text_update("done")]]
+    else:
+        turns = [ChatResponse(messages=[Message("assistant", [call])]), _text_response()]
+    layer, _wire = _stack(turns)
+
+    await _final_response(
+        layer,
+        [_user()],
+        stream=stream,
+        options={"tools": [tool]},
+        client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+    )
+
+    assert ran == []
+    started = sink.only(EventType.TOOL_OPERATION_STARTED)
+    finished = sink.only(EventType.TOOL_OPERATION_FINISHED)
+    assert finished.operation_id == started.operation_id
+    assert finished.payload["outcome"] == ToolOutcome.INVALID_ARGUMENTS
 
 
 @pytest.mark.parametrize("queued", [False, True])

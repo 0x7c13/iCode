@@ -38,6 +38,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from chrys.foundation.platform.files import replace_with_retry
+
 logger = logging.getLogger(__name__)
 
 
@@ -272,7 +274,7 @@ def _write_json_atomic_owner_only(path: Path, data: dict[str, Any]) -> None:
         _set_fd_owner_only(fd)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
         _chmod_owner_only(path)
     except BaseException:
         with contextlib.suppress(OSError):

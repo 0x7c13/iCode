@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import replace_with_retry
 from chrys.foundation.util.lock import FileLock
 
 logger = logging.getLogger(__name__)
@@ -290,7 +291,7 @@ def _compact(path: Path, records: list[dict[str, str]]) -> None:
         with tmp_path.open("w", encoding="utf-8") as fp:
             for record in records:
                 fp.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
-        os.replace(tmp_path, path)
+        replace_with_retry(tmp_path, path)
     finally:
         if tmp_path.exists():
             with contextlib.suppress(OSError):

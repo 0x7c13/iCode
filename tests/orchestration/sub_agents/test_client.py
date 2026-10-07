@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -37,7 +39,7 @@ async def test_register_propagates_cancel_received_during_rollback() -> None:
     try:
         with (
             patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent),
-            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock()),
+            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())),
             patch.object(MCPAdapter, "connect_all", new=AsyncMock(return_value=[])),
             patch.object(MCPAdapter, "disconnect_all", new=AsyncMock(side_effect=release.__call__)) as disconnect,
         ):
@@ -79,7 +81,9 @@ async def test_sub_agent_register_passes_child_and_parent_session_ids_to_client(
     try:
         with (
             patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent_mock),
-            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock()) as create_client,
+            patch(
+                "chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())
+            ) as create_client,
         ):
             await tools.register(
                 SubAgentRef(profile="Explore", tool_name="explore"),
@@ -137,7 +141,7 @@ async def test_shared_client_intermediate_callback_uses_current_invocation() -> 
 
     def create_client(*_args: object, **kwargs: object) -> MagicMock:
         callbacks.update(kwargs)
-        return MagicMock()
+        return MagicMock(aclose=AsyncMock())
 
     class _Controller(SubAgentPolicyDouble):
         def __init__(self, *, shell, prompt: str, **_kwargs: object) -> None:
@@ -239,7 +243,7 @@ async def test_sub_agent_run_options_come_from_sub_agent_model_profile(
     try:
         with (
             patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent_mock),
-            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock()),
+            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())),
             patch.object(sub_agent_module, "KernelSubAgentPolicy", _Controller),
         ):
             await tools.register(
@@ -327,7 +331,7 @@ async def test_concurrent_sub_agent_invocations_get_distinct_route_sessions() ->
     try:
         with (
             patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent_mock),
-            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock()),
+            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())),
             patch.object(sub_agent_module, "KernelSubAgentPolicy", _Controller),
         ):
             await tools.register(
@@ -359,3 +363,71 @@ async def test_concurrent_sub_agent_invocations_get_distinct_route_sessions() ->
         ]
     finally:
         await tools.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("parent_model_id", "sub_model_id", "sub_chat_options", "warned"),
+    [
+        ("claude-opus-4-7", "claude-opus-5-5", "", True),
+        ("claude-opus-5-5", "claude-opus-4-7", "", False),
+        ("claude-opus-5-5", "claude-opus-5-5", '{"thinking": {"type": "disabled"}}', False),
+    ],
+    ids=["sub-agent-model-binds", "parent-model-binds", "sub-agent-thinking-disabled"],
+)
+async def test_sub_agent_warns_once_when_its_on_demand_mcp_tools_can_unbind_its_thinking(
+    caplog: pytest.LogCaptureFixture, parent_model_id: str, sub_model_id: str, sub_chat_options: str, warned: bool
+) -> None:
+    """The sub-agent's own model, chat options and connected servers decide the warning."""
+    servers = [
+        MCPServerConfig(name=name, transport="stdio", command="unused", use_progressive_disclosure=True)
+        for name in ("alpha", "down", "beta")
+    ]
+    profile = AgentProfile(
+        name="Explore",
+        instructions="Investigate.",
+        tools=ToolsConfig(builtins=[], mcp=servers),
+        model=ModelConfig(profile_id="sub-model"),
+    )
+    parent_profile = ModelProfile(id="parent-model", name="parent", provider="anthropic", model_id=parent_model_id)
+    model_registry = ModelProfileRegistry()
+    model_registry.register(
+        ModelProfile(
+            id="sub-model", name="sub", provider="anthropic", model_id=sub_model_id, chat_options=sub_chat_options
+        )
+    )
+    agent_mock = MagicMock()
+    agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
+    agent_mock.__aexit__ = AsyncMock()
+
+    async def connect(_adapter: MCPAdapter, config: MCPServerConfig) -> list[Any]:
+        if config.name == "down":
+            raise RuntimeError("server down")
+        return []
+
+    tools = SubAgentTools(session_id="sess-123")
+    try:
+        with (
+            patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent_mock),
+            patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())),
+            patch.object(MCPAdapter, "connect", new=create_autospec(MCPAdapter.connect, side_effect=connect)),
+            caplog.at_level(logging.WARNING, logger="chrys.service.mcp.thinking_warning"),
+        ):
+            await tools.register(
+                SubAgentRef(profile="Explore", tool_name="explore"),
+                profile,
+                SessionEnvironment.capture(session_id="sess-123"),
+                settings=Settings(model_profile="parent-model"),
+                fallback_profile=parent_profile,
+                model_registry=model_registry,
+            )
+    finally:
+        await tools.cleanup()
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "chrys.service.mcp.thinking_warning"]
+    if warned:
+        [message] = messages
+        assert message.startswith(
+            "Agent 'Explore' on model profile 'sub': MCP server(s) 'alpha', 'beta' load tools on demand"
+        )
+    else:
+        assert messages == []

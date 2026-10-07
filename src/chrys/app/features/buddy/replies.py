@@ -67,7 +67,7 @@ async def _ask_model(buddy: Buddy) -> str:
     from chrys.kernel import Message
     from chrys.orchestration.engine.engine import get_current_engine
     from chrys.service.llm.clients import scoped_client
-    from chrys.service.llm.responses import get_final_response
+    from chrys.service.llm.one_shot import get_final_response
     from chrys.service.llm.route_sessions import derive_llm_route_session_id
     from chrys.service.profiles.models.resolver import resolve_active_profile
 

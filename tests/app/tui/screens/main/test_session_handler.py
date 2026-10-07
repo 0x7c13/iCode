@@ -5,15 +5,18 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotRef, file_snapshot_inline_char_limit
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
     SessionFork,
@@ -26,6 +29,7 @@ from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_helpers import (
+    main_screen_state_at,
     make_session_handler,
     status_text,
 )
@@ -42,17 +46,19 @@ def test_do_session_restore_ignores_running_agent() -> None:
     async def publish(event: object) -> None:
         published.append(event)
 
+    restoring: list[bool] = []
+    state = MainScreenState(run=RunState(agent_running=True))
     screen = SimpleNamespace(
-        _agent_running=True,
-        _agent_loading=False,
-        _restoring_session=False,
+        _state=state,
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         _events=SimpleNamespace(begin_session_restore_load=begin_session_restore_load),
-        _bus=SimpleNamespace(publish=publish),
+        _set_restoring_session=restoring.append,
     )
 
     asyncio.run(make_session_handler(screen).do_session_restore("busy"))
 
-    assert screen._restoring_session is False
+    assert state.session.restoring_session is False
+    assert restoring == []
     assert begin_calls == []
     assert published == []
 
@@ -68,17 +74,19 @@ def test_do_session_restore_can_bypass_loading_guard_for_startup_restore() -> No
     async def publish(event: object) -> None:
         published.append(event)
 
+    restoring: list[bool] = []
+    state = MainScreenState(run=RunState(agent_loading=True))
     screen = SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=True,
-        _restoring_session=False,
+        _state=state,
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         _events=SimpleNamespace(begin_session_restore_load=begin_session_restore_load),
-        _bus=SimpleNamespace(publish=publish),
+        _set_restoring_session=restoring.append,
     )
 
     asyncio.run(make_session_handler(screen).do_session_restore("startup-session", allow_while_loading=True))
 
-    assert screen._restoring_session is True
+    assert state.session.restoring_session is True
+    assert restoring == [True]
     assert begin_calls == ["startup-session"]
     assert len(published) == 1
     assert published[0].session_id == "startup-session"
@@ -95,12 +103,9 @@ def test_do_session_restore_disables_saved_model_when_startup_model_is_explicit(
         published.append(event)
 
     screen = SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=True,
-        _restoring_session=False,
-        _apply_saved_model_on_restore=False,
+        _state=MainScreenState(run=RunState(agent_loading=True)),
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish), apply_saved_model_on_restore=False),
         _events=SimpleNamespace(begin_session_restore_load=begin_session_restore_load),
-        _bus=SimpleNamespace(publish=publish),
     )
 
     asyncio.run(make_session_handler(screen).do_session_restore("startup-session", allow_while_loading=True))
@@ -121,21 +126,23 @@ def test_do_session_restore_cleans_up_if_loading_ui_fails() -> None:
     async def publish(event: object) -> None:
         published.append(event)
 
+    restoring: list[bool] = []
+    state = MainScreenState()
     screen = SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=False,
-        _restoring_session=False,
+        _state=state,
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         _events=SimpleNamespace(
             begin_session_restore_load=begin_session_restore_load,
             cancel_agent_load=lambda: cancel_calls.append(None),
         ),
-        _bus=SimpleNamespace(publish=publish),
         _debug=lambda key, msg: debug_calls.append((key, msg)),
+        _set_restoring_session=restoring.append,
     )
 
     asyncio.run(make_session_handler(screen).do_session_restore("broken"))
 
-    assert screen._restoring_session is False
+    assert state.session.restoring_session is False
+    assert restoring == [True, False]
     assert cancel_calls == [None]
     assert published == []
     assert debug_calls == [("SessionRestore", "failed to open loading UI: push failed")]
@@ -148,6 +155,7 @@ def _resume_screen(
     published: list[object],
     lookup_started: asyncio.Event | None = None,
     lookup_release: asyncio.Event | None = None,
+    restoring: list[bool] | None = None,
 ) -> SimpleNamespace:
     async def begin_session_restore_load(session_id: str) -> None:
         calls.append(("lookup_modal" if not session_id else "restore_modal", session_id))
@@ -171,30 +179,31 @@ def _resume_screen(
         published.append(event)
 
     return SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=False,
-        _restoring_session=False,
-        _state_store=_FakeStateStore(),
+        _state=MainScreenState(),
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish), state_store=_FakeStateStore()),
         _events=SimpleNamespace(
             begin_session_restore_load=begin_session_restore_load,
             cancel_agent_load=lambda: calls.append(("cancel", None)),
         ),
-        _bus=SimpleNamespace(publish=publish),
         _debug=lambda key, msg: calls.append(("debug", (key, msg))),
         notify=lambda message, **kwargs: calls.append(("notify", (message, kwargs.get("severity")))),
+        _set_restoring_session=(restoring if restoring is not None else []).append,
     )
 
 
 def test_resume_last_session_opens_modal_before_lookup_and_restores_latest() -> None:
     calls: list[tuple[str, object]] = []
     published: list[object] = []
-    screen = _resume_screen(latest="latest-session", calls=calls, published=published)
+    restoring: list[bool] = []
+    screen = _resume_screen(latest="latest-session", calls=calls, published=published, restoring=restoring)
 
     asyncio.run(make_session_handler(screen).resume_last_session())
 
     assert [name for name, _ in calls] == ["lookup_modal", "load_latest", "restore_modal"]
     assert ("restore_modal", "latest-session") in calls
-    assert screen._restoring_session is True
+    assert screen._state.session.restoring_session is True
+    # Once for the lookup modal, once more for the restore itself.
+    assert restoring == [True, True]
     assert len(published) == 1
     assert published[0].session_id == "latest-session"
 
@@ -230,27 +239,33 @@ def test_resume_last_session_modal_is_open_while_lookup_blocks() -> None:
 def test_resume_last_session_without_sessions_closes_modal_and_notifies() -> None:
     calls: list[tuple[str, object]] = []
     published: list[object] = []
-    screen = _resume_screen(latest=None, calls=calls, published=published)
+    restoring: list[bool] = []
+    screen = _resume_screen(latest=None, calls=calls, published=published, restoring=restoring)
 
     asyncio.run(make_session_handler(screen).resume_last_session())
 
     assert [name for name, _ in calls] == ["lookup_modal", "load_latest", "cancel", "notify"]
     assert calls[-1][1][1] == "warning"
-    assert screen._restoring_session is False
+    assert screen._state.session.restoring_session is False
+    assert restoring == [True, False]
     assert published == []
 
 
 def test_resume_last_session_lookup_failure_cleans_up() -> None:
     calls: list[tuple[str, object]] = []
     published: list[object] = []
-    screen = _resume_screen(latest=RuntimeError("index exploded"), calls=calls, published=published)
+    restoring: list[bool] = []
+    screen = _resume_screen(
+        latest=RuntimeError("index exploded"), calls=calls, published=published, restoring=restoring
+    )
 
     asyncio.run(make_session_handler(screen).resume_last_session())
 
     assert ("cancel", None) in calls
     assert ("debug", ("SessionRestore", "failed to look up latest session: index exploded")) in calls
-    assert screen._restoring_session is False
-    assert screen._agent_loading is False
+    assert screen._state.session.restoring_session is False
+    assert restoring == [True, False]
+    assert screen._state.run.agent_loading is False
     assert published == []
 
 
@@ -258,7 +273,7 @@ def test_resume_last_session_ignores_running_or_loading_agent() -> None:
     calls: list[tuple[str, object]] = []
     published: list[object] = []
     screen = _resume_screen(latest="ignored", calls=calls, published=published)
-    screen._agent_running = True
+    screen._state.run.agent_running = True
 
     asyncio.run(make_session_handler(screen).resume_last_session())
 
@@ -274,10 +289,7 @@ def test_fork_current_session_rejects_empty_session() -> None:
         published.append(event)
 
     screen = SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=False,
-        _has_messages=False,
-        _bus=SimpleNamespace(publish=publish),
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         notify=lambda message, **_kwargs: notifications.append(message),
     )
 
@@ -300,7 +312,7 @@ def test_fork_current_session_publishes_session_fork_and_opens_loading_modal(mon
     monkeypatch.setattr(launcher, "can_access_local_desktop", lambda _env=None: True)
 
     async def publish(event: object) -> None:
-        assert screen._agent_loading is True
+        assert state.run.agent_loading is True
         published.append(event)
 
     def query_one(cls: type) -> object:
@@ -312,19 +324,14 @@ def test_fork_current_session_publishes_session_fork_and_opens_loading_modal(mon
         pushed.append(dialog)
         callbacks.append(callback)
 
-    def set_agent_loading(value: bool) -> None:
-        screen._agent_loading = value
-        loading.append(value)
-
+    state = MainScreenState(run=RunState(has_messages=True))
     screen = SimpleNamespace(
-        _agent_running=False,
-        _agent_loading=False,
-        _has_messages=True,
-        _bus=SimpleNamespace(publish=publish),
+        _state=state,
+        _services=MainScreenServices(bus=SimpleNamespace(publish=publish)),
         app=SimpleNamespace(push_screen=push_screen),
         query_one=query_one,
         notify=lambda *_args, **_kwargs: None,
-        _set_agent_loading=set_agent_loading,
+        _set_agent_loading=loading.append,
         _debug=lambda *_args: None,
     )
 
@@ -397,18 +404,24 @@ def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch
         def set_agent_loading(value: bool) -> None:
             loading.append(value)
 
+        started_workers: list[Coroutine[object, object, None]] = []
         screen = SimpleNamespace(
             app=SimpleNamespace(push_screen=push_screen),
             query_one=query_one,
-            _do_session_restore=restores.append,
+            _started_workers=started_workers,
             notify=lambda message, *, title, severity="information", **_kwargs: notifications.append(
                 (title, severity, message)
             ),
             _set_agent_loading=set_agent_loading,
-            _workspace_cwd=lambda: "/workspace",
+            _state=main_screen_state_at("/workspace"),
             _debug=lambda key, value: debug_calls.append((key, value)),
         )
         handler = make_session_handler(screen)
+
+        async def record_restore(session_id: str) -> None:
+            restores.append(session_id)
+
+        handler.do_session_restore = record_restore  # type: ignore[method-assign]
 
         asyncio.run(handler._open_session_fork_dialog("current-session"))
         assert pushes[0]._state == "loading"
@@ -424,6 +437,8 @@ def test_on_session_forked_routes_dialog_results(monkeypatch: pytest.MonkeyPatch
         assert pushes[0]._state == "success"
         assert loading == [True, False]
         callbacks[0](result)
+        for worker in started_workers:
+            asyncio.run(worker)
         assert debug_calls == [("SessionForked", session_short_id(new_session_id))]
         return flashes, restores, notifications, loading
 
@@ -482,12 +497,11 @@ def test_on_session_forked_new_window_launcher_failure_warns(monkeypatch: pytest
     screen = SimpleNamespace(
         app=SimpleNamespace(push_screen=push_screen),
         query_one=query_one,
-        _do_session_restore=lambda _session_id: None,
         notify=lambda message, *, title, severity="information", **_kwargs: notifications.append(
             (title, severity, message)
         ),
         _set_agent_loading=loading.append,
-        _workspace_cwd=lambda: "/workspace",
+        _state=main_screen_state_at("/workspace"),
         _debug=lambda *_args: None,
     )
     handler = make_session_handler(screen, locale_controller=LocaleController(Settings(locale="zh-Hans")))
@@ -601,7 +615,7 @@ def test_load_file_edit_snapshots_uses_loaded_state_not_primary_session_file(tmp
             "contents": [{"type": "function_call", "name": "edit_file", "call_id": "fw-call"}],
         }
     ]
-    screen = SimpleNamespace(_state_store=store)
+    screen = SimpleNamespace(_services=MainScreenServices(bus=EventBus(), state_store=store))
 
     snapshots = make_session_handler(screen).load_file_edit_snapshots("sid", messages, recovered_state)
 
@@ -626,7 +640,7 @@ def test_load_file_edit_snapshots_skips_marker_carried_file_calls(tmp_path: Path
             "contents": [{"type": "function_call", "name": "edit_file", "call_id": "fw-call"}],
         },
     ]
-    screen = SimpleNamespace(_state_store=store)
+    screen = SimpleNamespace(_services=MainScreenServices(bus=EventBus(), state_store=store))
 
     snapshots = make_session_handler(screen).load_file_edit_snapshots("sid", messages, recovered_state)
 
@@ -644,7 +658,7 @@ def test_load_file_edit_snapshots_externalizes_large_snapshot(tmp_path: Path) ->
             "contents": [{"type": "function_call", "name": "edit_file", "call_id": "fw-call"}],
         }
     ]
-    screen = SimpleNamespace(_state_store=store)
+    screen = SimpleNamespace(_services=MainScreenServices(bus=EventBus(), state_store=store))
 
     snapshots = make_session_handler(screen).load_file_edit_snapshots("sid", messages, recovered_state)
 
@@ -669,7 +683,7 @@ def test_load_file_edit_snapshots_truthy_unhashable_id_discards_all_buckets(tmp_
             ],
         }
     ]
-    screen = SimpleNamespace(_state_store=store)
+    screen = SimpleNamespace(_services=MainScreenServices(bus=EventBus(), state_store=store))
 
     snapshots = make_session_handler(screen).load_file_edit_snapshots("sid", messages, recovered_state)
 
@@ -691,7 +705,7 @@ def test_load_file_edit_snapshots_falsy_unhashable_id_skipped_buckets_kept(tmp_p
             ],
         }
     ]
-    screen = SimpleNamespace(_state_store=store)
+    screen = SimpleNamespace(_services=MainScreenServices(bus=EventBus(), state_store=store))
 
     snapshots = make_session_handler(screen).load_file_edit_snapshots("sid", messages, recovered_state)
 

@@ -25,10 +25,9 @@ from chrys.kernel.sessions import ContextProvider
 from chrys.kernel.tools import FunctionTool, declared_tool_name, normalize_tools
 from chrys.service.mcp.cache import clone_mcp_function_tool
 from chrys.service.mcp.owned import (
-    _MCP_NORMALIZED_NAME_KEY,
     _MCP_REMOTE_NAME_KEY,
     _build_prefixed_mcp_name,
-    _mcp_config_candidate_names,
+    _mcp_config_names_for,
 )
 from chrys.service.mcp.validation import MAX_MCP_EXPOSED_TOOL_NAME_LENGTH, MCP_PROGRESSIVE_CONTROL_TOOL_NAMES
 
@@ -158,19 +157,7 @@ class _ProgressiveMCPExposure:
     @staticmethod
     def _matches_configured_name(function: FunctionTool, names: set[str]) -> bool:
         """Match config names with the MCP raw/lossless-local safety rules."""
-        if not names:
-            return False
-        additional = function.additional_properties or {}
-        normalized_name = additional.get(_MCP_NORMALIZED_NAME_KEY)
-        remote_name = additional.get(_MCP_REMOTE_NAME_KEY)
-        if not isinstance(normalized_name, str) or not isinstance(remote_name, str):
-            return False
-        candidates = _mcp_config_candidate_names(
-            local_name=function.name,
-            normalized_name=normalized_name,
-            remote_name=remote_name,
-        )
-        return any(name in names for name in candidates)
+        return not names.isdisjoint(_mcp_config_names_for(function))
 
     def _resolve(self, requested_name: str) -> FunctionTool:
         """Resolve one listed, allowed remote tool without unsafe alias matching."""

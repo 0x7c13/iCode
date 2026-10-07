@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import json
 from copy import copy
 from typing import Any
 
+from chrys.foundation.text.model_json import model_json
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.text.tool_output import truncate_content_texts, truncate_output
 from chrys.foundation.tool_result_metadata import record_payload_truncation, tool_payload_observation
@@ -46,7 +46,7 @@ def _original_text(result: Any) -> str:
 
 def _canonical_result_text(result: Any) -> str:
     try:
-        return json.dumps(result, default=str)
+        return model_json(result, default=str)
     except TypeError, ValueError:
         return str(result)
 

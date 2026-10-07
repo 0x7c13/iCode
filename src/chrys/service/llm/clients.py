@@ -15,21 +15,22 @@ Four provider types are supported:
   OpenAI wire clients.
 - ``deepseek-openai`` — DeepSeek via its OpenAI-compatible Chat Completions
   or Responses endpoint; reuses the OpenAI HTTP transport and routes through
-  a dialect-specific client from ``chrys.service.llm.deepseek``. Named
+  the DeepSeek variant of the Chat Completions or Responses client. Named
   ``deepseek-openai`` (not
   ``deepseek``) to make it explicit that this routes through the
   OpenAI contract; a future native DeepSeek transport could be added
   alongside it under a different id.
 - ``glm-openai`` — GLM (Zhipu AI / z.ai) via its OpenAI-compatible Chat
-  Completions endpoint; routes through ``GLMChatCompletionClient`` so
+  Completions endpoint; routes through ``GlmChatCompletionsClient`` so
   ``reasoning_content`` is replayed on every multi-turn request per
-  z.ai's preserved-thinking contract — see ``chrys.service.llm.glm``.
+  z.ai's preserved-thinking contract — see ``chrys.service.llm.chat_completions``.
 
-All four providers share the same chrys touch surfaces (intermediate-
-text instrumentation, gateway-error guard, ``function_invocation``
-config, default headers) so the engine, executor, approval judge,
-last-words, recall and sub-agents behave identically regardless of
-provider.
+All four providers share the same chrys touch surfaces (request
+reporting and intermediate text, ``function_invocation`` config, default
+headers) so the engine, executor, approval judge, last-words, recall and
+sub-agents behave identically regardless of provider.  What differs per
+provider id as plain data (credential and endpoint fallbacks, SDK family,
+API styles) lives in ``chrys.service.llm.providers``.
 """
 
 from __future__ import annotations
@@ -40,9 +41,8 @@ import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.errors import is_deterministic_connection_error
 from chrys.foundation.util.chrys_headers import (
     MODEL_ID_HEADER,
     PARENT_SESSION_ID_HEADER,
@@ -59,53 +59,19 @@ from chrys.foundation.util.header_charset import (
 )
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
 from chrys.foundation.util.once_close import OnceClose
+from chrys.service.llm.providers import PROVIDERS, ProviderSpec
 from chrys.service.profiles.models.options import parse_http_headers
-from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, API_STYLE_RESPONSES, ModelProfile
-
-_log = logging.getLogger(__name__)
-
-OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
-ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-
-# Provider → env var consulted when the profile carries no API key.  The
-# OpenAI-flavored branches pass these to ``_create_openai_async_client``;
-# the Anthropic SDK reads its entry internally when the kwarg is absent.
-# Wire-charset validation resolves the same fallback so the key that is
-# checked is the key that will be sent.
-_PROVIDER_API_KEY_ENVS: dict[str, str] = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "deepseek-openai": "DEEPSEEK_API_KEY",
-    "glm-openai": "ZAI_API_KEY",
-}
-
-if TYPE_CHECKING:
-
-    class _ConnectionRetryBase(Protocol):
-        async def _sleep_for_retry(self, **kwargs: Any) -> None: ...
-
-else:
-    _ConnectionRetryBase = object
-
-
-class _DeterministicConnectionRetryGuard(_ConnectionRetryBase):
-    """Stop provider retries when the active request error cannot self-heal.
-
-    The pinned OpenAI and Anthropic SDKs call their async
-    ``_sleep_for_retry`` hook from the ``except`` block that caught the
-    request exception. Python preserves that handled exception across the
-    awaited call, so :func:`sys.exception` exposes its transport cause chain.
-    """
-
-    async def _sleep_for_retry(self, **kwargs: Any) -> None:
-        active_exception = sys.exception()
-        if active_exception is not None and is_deterministic_connection_error(active_exception):
-            raise active_exception
-        await super()._sleep_for_retry(**kwargs)
-
+from chrys.service.profiles.models.schema import ModelProfile
 
 if TYPE_CHECKING:
     import httpx
+    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
+
+    from chrys.kernel import ToolLoopLayer
+    from chrys.service.llm.wire_client import WireClient
+
+_log = logging.getLogger(__name__)
 
 
 def _build_user_agent(sdk_user_agent: str | None = None) -> str:
@@ -124,15 +90,16 @@ def _build_user_agent(sdk_user_agent: str | None = None) -> str:
 
 def _provider_sdk_user_agent(provider: str) -> str | None:
     """Return the provider SDK user-agent token Chrys would otherwise replace."""
-    if provider in {"openai", "deepseek-openai", "glm-openai"}:
-        import openai
-
-        return f"AsyncOpenAI/Python {openai.__version__}"
-    if provider == "anthropic":
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return None
+    if spec.sdk == "anthropic":
         import anthropic
 
         return f"AsyncAnthropic/Python {anthropic.__version__}"
-    return None
+    import openai
+
+    return f"AsyncOpenAI/Python {openai.__version__}"
 
 
 def _build_default_headers(
@@ -148,8 +115,8 @@ def _build_default_headers(
     ``X-Session-ID``, ``Chrys-Session-Id``, optional parent-session headers,
     and ``Chrys-Model-Id``) merged with the profile's ``http_headers`` (parsed
     from JSON). Profile headers take precedence on key conflicts except for
-    Chrys-managed request metadata. Instrumented chat clients overwrite the
-    model header per request with the final provider ``model`` value.
+    Chrys-managed request metadata. The wire clients overwrite the model
+    header per request with the final provider ``model`` value.
     """
     from chrys import __version__
 
@@ -186,8 +153,8 @@ def _validate_wire_charset(profile: ModelProfile, *, api_key: str, headers: dict
     secret content.
     """
     problems: list[str] = []
-    api_key_env = _PROVIDER_API_KEY_ENVS.get(profile.provider)
-    effective_key = api_key or (os.environ.get(api_key_env, "") if api_key_env else "")
+    spec = PROVIDERS.get(profile.provider)
+    effective_key = api_key or (os.environ.get(spec.api_key_env, "") if spec is not None else "")
     key_error = api_key_charset_error(effective_key)
     if key_error:
         problems.append(key_error)
@@ -250,23 +217,12 @@ async def _empty_openai_api_key_provider() -> str:
 def effective_model_base_url(profile: ModelProfile) -> str:
     """Return the base URL the provider client will use for display/provenance."""
     provider = profile.provider.lower()
-    if provider == "anthropic":
-        return profile.base_url or os.environ.get("ANTHROPIC_BASE_URL", "") or ANTHROPIC_DEFAULT_BASE_URL
-    if provider == "openai":
-        return profile.base_url or os.environ.get("OPENAI_BASE_URL", "") or OPENAI_DEFAULT_BASE_URL
-    if provider == "deepseek-openai":
-        from chrys.service.llm.deepseek import DEEPSEEK_DEFAULT_BASE_URL
-
-        return profile.base_url or os.environ.get("DEEPSEEK_BASE_URL", "") or DEEPSEEK_DEFAULT_BASE_URL
-    if provider == "glm-openai":
-        from chrys.service.llm.glm import GLM_DEFAULT_BASE_URL
-
-        return profile.base_url or os.environ.get("ZAI_BASE_URL", "") or GLM_DEFAULT_BASE_URL
     if provider == "mock":
         return profile.base_url
-    raise ValueError(
-        f"Unknown provider: {provider!r}. Use 'anthropic', 'openai', 'deepseek-openai', 'glm-openai', or 'mock'."
-    )
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        raise _unknown_provider(provider)
+    return profile.base_url or os.environ.get(spec.base_url_env, "") or spec.default_base_url
 
 
 def _build_profile_http_client(
@@ -275,6 +231,7 @@ def _build_profile_http_client(
     *,
     raw_http_log_path: Path | None = None,
     session_id: str | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
     """Build the profile's ``httpx.AsyncClient``; Chrys, not the SDK, owns every pool.
 
@@ -287,8 +244,12 @@ def _build_profile_http_client(
 
     Route hooks come first on both lists, so every request carries its route
     snapshot before any other hook (the raw HTTP log) runs or fails.
+
+    *transport* replaces the network transport and nothing else; production
+    callers never pass it, the client contract tests answer through it.
     """
-    if profile.provider == "anthropic":
+    spec = PROVIDERS.get(profile.provider)
+    if spec is not None and spec.sdk == "anthropic":
         from anthropic import DefaultAsyncHttpxClient as HTTPClient
     else:
         from openai import DefaultAsyncHttpxClient as HTTPClient
@@ -315,10 +276,12 @@ def _build_profile_http_client(
         for event in ("request", "response"):
             event_hooks[event] = [*event_hooks[event], *raw_hooks.get(event, ())]
     kwargs["event_hooks"] = event_hooks
+    if transport is not None:
+        kwargs["transport"] = transport
     return HTTPClient(**kwargs)
 
 
-def _create_anthropic_async_client(
+def _build_anthropic_sdk_client(
     *,
     api_key: str,
     base_url: str,
@@ -326,7 +289,7 @@ def _create_anthropic_async_client(
     max_retries: int,
     default_headers: dict[str, str] | None,
     http_client: Any | None = None,
-) -> Any:
+) -> AsyncAnthropic:
     """Create a pre-configured ``AsyncAnthropic`` client.
 
     ``api_key`` and ``base_url`` are passed explicitly when set so the
@@ -334,10 +297,7 @@ def _create_anthropic_async_client(
     ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_BASE_URL`` only when the kwargs
     are absent).
     """
-    from anthropic import AsyncAnthropic
-
-    class _ChrysAsyncAnthropic(_DeterministicConnectionRetryGuard, AsyncAnthropic):
-        pass
+    from chrys.service.llm.sdk_anthropic import RetryGuardedAsyncAnthropic
 
     kwargs: dict[str, Any] = {
         "timeout": timeout,
@@ -350,10 +310,10 @@ def _create_anthropic_async_client(
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["base_url"] = base_url
-    return _ChrysAsyncAnthropic(**kwargs)
+    return RetryGuardedAsyncAnthropic(**kwargs)
 
 
-def _create_openai_async_client(
+def _build_openai_sdk_client(
     *,
     api_key: str,
     base_url: str,
@@ -364,20 +324,16 @@ def _create_openai_async_client(
     api_key_env: str = "OPENAI_API_KEY",
     base_url_env: str = "OPENAI_BASE_URL",
     default_base_url: str = "",
-) -> Any:
+) -> AsyncOpenAI:
     """Create a pre-configured ``AsyncOpenAI`` client.
 
     ``api_key`` and ``base_url`` come from the profile when set;
     otherwise they fall back to ``api_key_env`` / ``base_url_env`` from
     the environment, finally to ``default_base_url`` for the base URL.
-    The DeepSeek branch overrides the env keys and default base URL so
-    the OpenAI SDK still reads from ``OPENAI_API_KEY`` only when the
-    profile is OpenAI-flavored.
+    OpenAI-compatible providers pass their own env names and default
+    base URL, so the SDK reads ``OPENAI_API_KEY`` only for OpenAI itself.
     """
-    from openai import AsyncOpenAI
-
-    class _ChrysAsyncOpenAI(_DeterministicConnectionRetryGuard, AsyncOpenAI):
-        pass
+    from chrys.service.llm.sdk_openai import RetryGuardedAsyncOpenAI
 
     # Newer OpenAI SDKs require the client to receive an api_key argument
     # unless the provider env var is present.  When neither exists, pass an
@@ -399,7 +355,7 @@ def _create_openai_async_client(
         kwargs["http_client"] = http_client
     if effective_base:
         kwargs["base_url"] = effective_base
-    return _ChrysAsyncOpenAI(**kwargs)
+    return RetryGuardedAsyncOpenAI(**kwargs)
 
 
 async def create_client(
@@ -436,8 +392,8 @@ async def create_client(
         parent_session_id: Optional parent session ID for sub-agent LLM
             requests. Sent as ``X-Parent-Session-ID`` and
             ``Chrys-Parent-Session-Id``.
-        use_route_session_context: Whether instrumented clients should prefer
-            per-invocation route-session ContextVars over their default
+        use_route_session_context: Whether the wire client should prefer
+            per-invocation route-session ContextVars over its default
             session ids. Intended for shared sub-agent clients.
         session_dir: Optional active session directory. Used by raw HTTP
             logging so tests and custom stores can keep logs beside the
@@ -460,7 +416,8 @@ async def create_client(
         from chrys.service.llm.mock import MockChatClient
 
         return MockChatClient(**stack_kwargs)
-    if provider not in _PROVIDER_API_KEY_ENVS:
+    spec = PROVIDERS.get(provider)
+    if spec is None:
         raise _unknown_provider(provider)
 
     api_key = _resolve_profile_api_key(profile)
@@ -500,6 +457,7 @@ async def create_client(
     try:
         return _build_client_stack(
             profile,
+            spec,
             api_key=api_key,
             headers=headers,
             timeout=timeout,
@@ -522,15 +480,15 @@ def _unknown_provider(provider: str) -> ValueError:
 
 def _build_client_stack(
     profile: ModelProfile,
+    spec: ProviderSpec,
     *,
     api_key: str,
     headers: dict[str, str],
     timeout: Any,
     http_client: httpx.AsyncClient,
     stack_kwargs: dict[str, Any],
-) -> Any:
+) -> ToolLoopLayer:
     """Build the provider SDK client over *http_client* and wrap it in the Chrys stack."""
-    provider = profile.provider
     sdk_kwargs: dict[str, Any] = {
         "api_key": api_key,
         "base_url": profile.base_url,
@@ -539,82 +497,110 @@ def _build_client_stack(
         "default_headers": headers,
         "http_client": http_client,
     }
-
-    if provider == "anthropic":
-        anthropic_client = _create_anthropic_async_client(**sdk_kwargs)
-        _validate_sdk_wire_charset(profile, anthropic_client)
-        from chrys.service.llm.instrumented import create_instrumented_anthropic_client
-
-        return create_instrumented_anthropic_client(anthropic_client=anthropic_client, **stack_kwargs)
-
-    if provider == "openai":
-        openai_client = _create_openai_async_client(**sdk_kwargs)
-        _validate_sdk_wire_charset(profile, openai_client)
-        if profile.api_style == API_STYLE_RESPONSES:
-            from chrys.service.llm.instrumented import create_instrumented_openai_responses_client
-
-            return create_instrumented_openai_responses_client(client=openai_client, **stack_kwargs)
-
-        if profile.api_style != API_STYLE_CHAT_COMPLETIONS:
-            raise ValueError(f"Unknown OpenAI api_style: {profile.api_style!r}. Use 'chat_completions' or 'responses'.")
-
-        # Always route through the instrumented subclass so the gateway-error
-        # guard (`_ensure_openai_response_has_choices`) covers every OpenAI
-        # Chat Completions call — judges, last-words, recall/compression,
-        # sub-agents — not only the main agent path that requests
-        # intermediate-text callbacks.
-        from chrys.service.llm.instrumented import create_instrumented_openai_client
-
-        return create_instrumented_openai_client(client=openai_client, chat_client_cls=None, **stack_kwargs)
-
-    if provider == "deepseek-openai":
-        from chrys.service.llm.deepseek import (
-            DEEPSEEK_DEFAULT_BASE_URL,
-            DeepSeekChatCompletionClient,
-            DeepSeekResponsesClient,
-        )
-
-        deepseek_client = _create_openai_async_client(
+    sdk_client: AsyncAnthropic | AsyncOpenAI
+    if spec.sdk == "anthropic":
+        sdk_client = _build_anthropic_sdk_client(**sdk_kwargs)
+    else:
+        sdk_client = _build_openai_sdk_client(
             **sdk_kwargs,
-            api_key_env=_PROVIDER_API_KEY_ENVS["deepseek-openai"],
-            base_url_env="DEEPSEEK_BASE_URL",
-            default_base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            api_key_env=spec.api_key_env,
+            base_url_env=spec.base_url_env,
+            default_base_url="" if spec.native_sdk else spec.default_base_url,
         )
-        _validate_sdk_wire_charset(profile, deepseek_client)
-        if profile.api_style == API_STYLE_RESPONSES:
-            from chrys.service.llm.instrumented import create_instrumented_openai_responses_client
+    _validate_sdk_wire_charset(profile, sdk_client)
+    client_cls = _wire_client_class(profile.provider, _api_style(profile, spec))
+    return _assemble_stack(client_cls, sdk_client, **stack_kwargs)
 
-            return create_instrumented_openai_responses_client(
-                client=deepseek_client, chat_client_cls=DeepSeekResponsesClient, **stack_kwargs
-            )
-        if profile.api_style != API_STYLE_CHAT_COMPLETIONS:
-            raise ValueError(
-                f"Unknown DeepSeek api_style: {profile.api_style!r}. Use 'chat_completions' or 'responses'."
-            )
 
-        from chrys.service.llm.instrumented import create_instrumented_openai_client
-
-        return create_instrumented_openai_client(
-            client=deepseek_client, chat_client_cls=DeepSeekChatCompletionClient, **stack_kwargs
+def _api_style(profile: ModelProfile, spec: ProviderSpec) -> str | None:
+    """The profile's API style, or None for a provider that speaks only one."""
+    if spec.api_styles is None:
+        return None
+    if profile.api_style not in spec.api_styles:
+        raise ValueError(
+            f"Unknown {spec.label} api_style: {profile.api_style!r}. Use 'chat_completions' or 'responses'."
         )
+    return profile.api_style
 
-    if provider == "glm-openai":
-        from chrys.service.llm.glm import GLM_DEFAULT_BASE_URL, GLMChatCompletionClient
-        from chrys.service.llm.instrumented import create_instrumented_openai_client
 
-        glm_client = _create_openai_async_client(
-            **sdk_kwargs,
-            api_key_env=_PROVIDER_API_KEY_ENVS["glm-openai"],
-            base_url_env="ZAI_BASE_URL",
-            default_base_url=GLM_DEFAULT_BASE_URL,
-        )
-        _validate_sdk_wire_charset(profile, glm_client)
-        return create_instrumented_openai_client(
-            client=glm_client, chat_client_cls=GLMChatCompletionClient, **stack_kwargs
-        )
+def _wire_client_class(provider: str, api_style: str | None) -> type[WireClient]:
+    """The wire client class for one provider and API style, imported on demand."""
+    match provider, api_style:
+        case "anthropic", None:
+            from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
 
-    # A provider with an API-key entry but no branch here: never build another provider's stack for it.
-    raise _unknown_provider(provider)
+            return AnthropicMessagesClient
+        case "openai", "chat_completions":
+            from chrys.service.llm.chat_completions import ChatCompletionsClient
+
+            return ChatCompletionsClient
+        case "openai", "responses":
+            from chrys.service.llm.openai_responses import ResponsesApiClient
+
+            return ResponsesApiClient
+        case "deepseek-openai", "chat_completions":
+            from chrys.service.llm.chat_completions import DeepSeekChatCompletionsClient
+
+            return DeepSeekChatCompletionsClient
+        case "deepseek-openai", "responses":
+            from chrys.service.llm.openai_responses import DeepSeekResponsesApiClient
+
+            return DeepSeekResponsesApiClient
+        case "glm-openai", None:
+            from chrys.service.llm.chat_completions import GlmChatCompletionsClient
+
+            return GlmChatCompletionsClient
+        case _:
+            # A provider with a table entry but no wire client: never build
+            # another provider's client for it.
+            raise _unknown_provider(provider)
+
+
+def _assemble_stack(
+    client_cls: type[WireClient],
+    sdk_client: AsyncAnthropic | AsyncOpenAI,
+    *,
+    model_id: str,
+    session_id: str | None,
+    parent_session_id: str | None,
+    use_route_session_context: bool,
+    on_intermediate_text_async: Callable[[str], Awaitable[None]] | None,
+    on_intermediate_text_sync: Callable[[str], None] | None,
+    max_iterations: int,
+    max_consecutive_errors: int,
+    tool_result_ceiling_tokens: int | None,
+) -> ToolLoopLayer:
+    """Wrap the wire client over *sdk_client* in the chrys loop + chat-middleware stack.
+
+    Every call path — the main agent, judges, last-words, recall and
+    compression, sub-agents — gets the same request headers, reporting and
+    telemetry, whether or not it asks for intermediate text.
+    """
+    from chrys.kernel import ChatMiddlewareLayer, ToolLoopLayer
+    from chrys.service.llm.observer import WireCallObserver
+    from chrys.service.llm.wire_client import RequestHeaders
+
+    # Any, not SupportsChatInner: the telemetry layer's get_response names the
+    # keywords the middleware layer passes instead of taking **kwargs.
+    wire_client: Any = client_cls.from_sdk_client(
+        sdk_client,
+        model=model_id,
+        observer=WireCallObserver(
+            on_intermediate_text_async=on_intermediate_text_async,
+            on_intermediate_text_sync=on_intermediate_text_sync,
+        ),
+        request_headers=RequestHeaders(
+            session_id=session_id,
+            parent_session_id=parent_session_id,
+            use_route_session_context=use_route_session_context,
+        ),
+    )
+    return ToolLoopLayer(
+        ChatMiddlewareLayer(wire_client),
+        max_iterations=max_iterations,
+        max_consecutive_errors=max_consecutive_errors,
+        tool_result_ceiling_tokens=tool_result_ceiling_tokens,
+    )
 
 
 @asynccontextmanager

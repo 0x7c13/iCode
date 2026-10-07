@@ -1,4 +1,7 @@
+# Copyright (c) 2024 Anthropic, PBC
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from the Model Context Protocol Python SDK and Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Streamable HTTP MCP transport."""
 
@@ -6,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from types import TracebackType
@@ -14,16 +18,18 @@ from typing import Any
 from chrys.foundation.errors import clean_error_message
 from chrys.foundation.util.httpx_helpers import BYPASS_PROXY_MOUNTS
 from chrys.service.mcp._tool_mixins import _NoPrePagePingMixin, _StructuredContentFallbackMixin
-from chrys.service.mcp.owned import (
-    LOCAL_HTTP_FAILURE_ERROR_DATA,
-    MCPStreamableHTTPTool,
-    _mcp_call_headers,
-    _url_origin,
-)
+from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool
 
 logger = logging.getLogger(__name__)
 
 _HTTP_HEADERS_OVERRIDE: ContextVar[dict[str, str] | None] = ContextVar("mcp_http_headers_override", default=None)
+
+
+def _url_origin(url: Any) -> tuple[str, str, int | None]:
+    port = url.port
+    if port is None:
+        port = 443 if url.scheme == "https" else 80 if url.scheme == "http" else None
+    return (url.scheme, url.host or "", port)
 
 
 @asynccontextmanager
@@ -197,8 +203,7 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
     * ``headers`` — static per-server headers (typically auth tokens)
       attached by a same-origin request hook, so they reach **every**
       request including ``initialize`` and ``list_tools`` without leaking
-      across cross-origin redirects. Bypasses MCPStreamableHTTPTool's
-      ``header_provider``, which only fires inside ``call_tool()``.
+      across cross-origin redirects.
 
     When any knob is non-default we pre-build the ``httpx.AsyncClient``
     and hand it to the parent via ``self._httpx_client``.
@@ -219,6 +224,7 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
         self._bypass_proxy: bool = bypass_proxy
         self._static_headers: dict[str, str] = dict(headers) if headers else {}
         self._owned_httpx_client: Any = None
+        self._inject_headers_hook: Callable[[Any], Awaitable[None]] | None = None
         super().__init__(*args, **kwargs)
 
     async def __aenter__(self) -> Any:
@@ -234,28 +240,12 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
 
     def get_mcp_client(self) -> Any:
         """Build Streamable HTTP transport with request-failure wakeups."""
-        # Preserve the owned parent dynamic-header behavior while swapping
-        # only the MCP streamable HTTP transport for _chrys_streamable_http_client.
-        # _url_origin guards against replaying per-server and per-call secrets
-        # across a cross-origin redirect.
-        from httpx import AsyncClient, Timeout
-
-        from chrys.service.mcp.owned import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
-
         http_client = self._httpx_client
-        needs_header_hook = bool(self._static_headers) or self._header_provider is not None
-        if http_client is None:
-            if self._needs_prebuild():
-                http_client = self._build_httpx_client()
-                self._owned_httpx_client = http_client
-            elif needs_header_hook:
-                http_client = AsyncClient(
-                    follow_redirects=True,
-                    timeout=Timeout(MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
-                )
+        if http_client is None and self._needs_prebuild():
+            http_client = self._build_httpx_client()
+            self._owned_httpx_client = http_client
             self._httpx_client = http_client
-
-        if http_client is not None and needs_header_hook:
+        if http_client is not None and self._static_headers:
             self._ensure_header_hook(http_client)
 
         return _chrys_streamable_http_client(
@@ -274,18 +264,13 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
         target_origin = _url_origin(URL(self.url))
 
         async def _inject_headers(request: Any) -> None:
-            dynamic_headers = _mcp_call_headers.get({})
+            # httpx carries request headers over to a redirect target: a
+            # cross-origin hop must not receive the per-server secrets.
             if _url_origin(request.url) != target_origin:
                 for key in self._static_headers:
                     request.headers.pop(key, None)
-                for key in dynamic_headers:
-                    request.headers.pop(key, None)
                 return
             for key, value in self._static_headers.items():
-                request.headers[key] = value
-            if self._header_provider is None:
-                return
-            for key, value in dynamic_headers.items():
                 request.headers[key] = value
 
         self._inject_headers_hook = _inject_headers

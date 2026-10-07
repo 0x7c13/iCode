@@ -7,8 +7,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import reprlib
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from functools import partial
+from types import FunctionType, MethodType
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import on, work
@@ -36,10 +39,7 @@ from chrys.app.tui.screens.main.config_actions import (
     RuntimeConfigCallbacks,
     RuntimeConfigController,
 )
-from chrys.app.tui.screens.main.config_actions import (
-    _canonical_active_model_profile_id as _canonical_active_model_profile_id,
-)
-from chrys.app.tui.screens.main.copy_actions import CopyActionController, parse_copy_arguments
+from chrys.app.tui.screens.main.copy_actions import CopyActionController
 from chrys.app.tui.screens.main.diff_controller import DiffController, LiveDiffOwner, LiveDiffTracker
 from chrys.app.tui.screens.main.event_handlers import BackendEventCallbacks, BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
@@ -52,6 +52,7 @@ from chrys.app.tui.screens.main.ports import StatusMessage
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
 from chrys.app.tui.screens.main.session_handlers import SessionCallbacks, SessionHandler
+from chrys.app.tui.screens.main.session_title import SessionTitleController
 from chrys.app.tui.screens.main.settings_coordinator import (
     SETTINGS_TITLE,
     SettingsCoordinator,
@@ -70,6 +71,7 @@ from chrys.app.tui.screens.main.tool_action_bridge import ToolActionBridge
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.screens.main.workflow_controller import WorkflowController
 from chrys.app.tui.screens.main.workspace_actions import WorkspaceCallbacks, WorkspaceController
+from chrys.app.tui.screens.main.workspace_branch import WorkspaceBranchController
 from chrys.app.tui.screens.settings import GENERAL_TAB_ID
 from chrys.app.tui.screens.settings.dialog import THEME_PREVIEW_HINT
 from chrys.app.tui.screens.themes import ThemeEditorPanel
@@ -82,17 +84,7 @@ from chrys.app.tui.support.gc_freeze import (
     raise_gc_freeze_hook_errors,
 )
 from chrys.app.tui.terminal.panel import ShellPanel
-from chrys.app.tui.terminal.title import (
-    set_app_terminal_title_for_cwd,
-    set_app_terminal_title_for_session_title,
-    set_app_terminal_title_for_user_message,
-)
 from chrys.app.tui.terminal.widget import Terminal
-from chrys.app.tui.util.git_branch import (
-    GIT_BRANCH_POLL_INTERVAL_SECONDS,
-    GitBranchMonitor,
-    GitBranchSnapshot,
-)
 from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
@@ -115,6 +107,7 @@ from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
 from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
+from chrys.app.tui.widgets.workflow import text as workflow_text
 from chrys.app.tui.widgets.workflow.graph import WorkflowGraph
 from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
 from chrys.foundation.config.settings import (
@@ -125,15 +118,12 @@ from chrys.foundation.config.settings import (
     persist_tool_groups_expanded,
 )
 from chrys.foundation.events.types import (
-    AgentRuntimeDetails,
     ApprovalModeUpdated,
     Error,
     ExecutionChanged,
-    InvocationMessage,
-    RollbackResult,
     SessionRestored,
 )
-from chrys.foundation.i18n import DisplaySequence, Localizer, msg
+from chrys.foundation.i18n import DisplaySequence, Localizer, MessageRef, msg
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
@@ -195,16 +185,27 @@ _MODEL_UNCONFIGURED_MESSAGE = msg(
 )
 _MODEL_UNCONFIGURED_SETUP = msg("tui.model_guard.button.setup", fallback="Set up model")
 
-_TERMINAL_TITLE_ACTIVITY_INTERVAL_SECONDS = 0.65
-_TERMINAL_TITLE_RUNNING_FRAMES = ("◇", "◈", "◆", "◈")
 TEXTUAL_BACKGROUND_REFRESH_FORK_VERSION = "8.2.7"
 """The Textual release whose private ``Screen._compositor_refresh`` ``MainScreen`` mirrors."""
-type _TerminalTitleSource = Literal["cwd", "session", "user_message"]
 
 
-def _parse_copy_arguments(arg: str) -> tuple[str, int | None] | None:
-    """Return ``(target, count)`` for /copy, or ``None`` for invalid arguments."""
-    return parse_copy_arguments(arg)
+# Work arguments can be whole prompts; worker descriptions show them abbreviated.
+_WORK_ARGUMENT_REPR = reprlib.Repr(maxstring=60, maxother=60)
+
+
+def _describe_work(work: Callable[[], Awaitable[object]]) -> tuple[str, str]:
+    """Name and describe a worker after its work, as ``@work`` did: ``method(args)``."""
+    target: Callable[..., object] = work
+    args: tuple[object, ...] = ()
+    keywords: dict[str, object] = {}
+    if isinstance(work, partial):
+        target, args, keywords = work.func, work.args, work.keywords
+    name = target.__name__ if isinstance(target, FunctionType | MethodType) else type(target).__name__
+    arguments = [
+        *(_WORK_ARGUMENT_REPR.repr(arg) for arg in args),
+        *(f"{key}={_WORK_ARGUMENT_REPR.repr(value)}" for key, value in keywords.items()),
+    ]
+    return name, f"{name}({', '.join(arguments)})"
 
 
 class MainScreen(RightClickScreenCopyMixin, Screen):
@@ -284,99 +285,56 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             workspace_mru_max_entries=workspace_mru_max_entries,
         )
         self._state = MainScreenState()
-        self._bus = event_bus
-        self._state_store = state_store
-        self._agent_registry = agent_registry
-        self._model_registry = model_registry
-        self._active_model_profile_id = active_model_profile_id
         self._editor_mode = EditorMode.parse(editor_keymap)
         self._trajectory_verify_commands = trajectory_verify_commands
         self._on_editor_keymap_changed = on_editor_keymap_changed
         self._tool_groups_expanded = tool_groups_expanded or (lambda: True)
         self._localization = localization
         self._locale_controller = locale_controller
-        self._agent_running = False
-        self._agent_loading = False
-        self._terminal_title_activity_frame = 0
-        self._terminal_title_activity_timer: Timer | None = None
-        self._terminal_title_result = ""
-        self._terminal_title_source: _TerminalTitleSource = "cwd"
-        self._terminal_title_content = ""
-        self._profile = ""
-        self._main_usage_source_id = ""
-        # Set by ``_on_agent_config_saved`` when the agent config modal
-        # renames the active profile.  The actual engine switch is
-        # deferred to modal close (``_on_agent_config_result``) to avoid
-        # tearing down the live agent while the modal's panels still
-        # reference the old profile object.
-        self._pending_active_switch: str | None = None
-        self._has_messages = False
-        self._restoring_session = False
-        self._creating_new_session = False
-        self._last_usage_tokens = 0
-        self._last_total_session_tokens = 0
-        self._runtime_details = AgentRuntimeDetails()
-        self._state.runtime.details = self._runtime_details
-        self._workspace_git_branch = ""
-        # Session title overlay state.  ``custom`` is user-set and pins the
-        # display everywhere; ``generated`` is the latest post-turn LLM
-        # summary; ``fallback`` mirrors the persisted first-user-message
-        # title so the border has something before a summary lands.
-        self._session_custom_title = ""
-        self._session_generated_title = ""
-        self._session_fallback_title = ""
-        self._shell_mode = False
-        self._fullscreen_terminal = False
-        self._sb_saved: dict = {}
         self._gc_freeze_participants: tuple[GcFreezeParticipant, ...] = ()
-        self._interrupt_confirm_active = False
         self.theme_editor: ThemeEditorPanel | None = None
         self._theme_editor_opening = False
         self._shell_requested_after_editor = False
         # Seeded with the engine's launch mode: the startup ApprovalModeUpdated
         # sync then confirms what the header already shows, instead of
         # flipping a placeholder and toasting a change nobody made.
-        self._approval_mode = approval_mode
         self._state.runtime.approval_mode = approval_mode
-        # Relies on EventBus.publish awaiting handlers sequentially so
-        # synchronous backend rejections can mark submits as blocked.
-        self._submit_state = self._state.submit
         self._settings_persistence_queue = self._new_settings_persistence()
-        self._quit_after_flush_task: asyncio.Task[None] | None = None
-        self._git_branch_monitor = GitBranchMonitor(self._on_git_branch_file_changed)
-        self._git_branch_refresh_timer: Timer | None = None
-        self._git_branch_poll_timer: Timer | None = None
-        self._git_branch_task: asyncio.Task[None] | None = None
-        self._git_branch_pending_operation: tuple[str, str] | None = None
-        self._git_branch_retry_cwd_on_display_sync: str | None = None
-        self._git_branch_closed = False
         super().__init__()
         self.set_reactive(MainScreen.header_approval_mode, approval_mode)
         self._reactive_state_initialized = True
-        # Track profile switch system message so we can de-duplicate consecutive
-        # switches (A→B, B→C becomes A→C) and clear it when the pattern breaks.
-        # Each fresh switch gets a unique key (_profile_switch_seq) so that
-        # committed (messages exchanged) switch messages stay in the chat.
-        self._profile_switch_from: str | None = None
-        self._profile_switch_to: str | None = None
-        self._profile_switch_seq: int = 0
-        # Same chain-tracking for /chdir workspace changes.
-        self._chdir_original_cwd: str | None = None
-        self._chdir_current_cwd: str = safe_getcwd()
-        self._state.workspace.current_cwd = self._chdir_current_cwd
-        self._state.workspace_marker.current_cwd = self._chdir_current_cwd
 
-        # Live mutation tracking for /diff during agent runs.  The legacy
-        # mappings stay as aliases for focused tests and transitional code.
+        # Live mutation tracking for /diff during agent runs.
         self._live_diff = LiveDiffTracker()
-        self._live_call_paths = self._live_diff.call_paths
-        self._live_file_mutations = self._live_diff.file_mutations
 
         # Handler instances
         self._view_adapter = MainScreenViewAdapter(
             self,
-            state_store=self._state_store,
+            state=self._state,
+            state_store=self._services.state_store,
             locale_controller=self._locale_controller,
+        )
+        self._session_title = SessionTitleController(
+            run=self._state.run,
+            app=lambda: self.app,
+            workspace_cwd=self._workspace_cwd,
+            show_display_title=self._show_session_title,
+            set_interval=self.set_interval,
+            current_session_id=lambda: self.chat_session_id,
+            push_screen=self._view_adapter.push_screen,
+            start_custom_title_save=lambda title, session_id: self._start_worker(
+                partial(self._sessions.apply_custom_session_title, title, session_id)
+            ),
+            locale_controller=self._locale_controller,
+        )
+        self._workspace_branch = WorkspaceBranchController(
+            workspace=self._state.workspace,
+            workspace_cwd=self._workspace_cwd,
+            displayed_cwd=lambda: self.chat_workspace_cwd or self._workspace_cwd(),
+            show_branch=self._show_workspace_branch,
+            set_timer=self.set_timer,
+            set_interval=self.set_interval,
+            call_from_thread=lambda callback: self.app.call_from_thread(callback),  # noqa: PLW0108 — app bound later
         )
         self._runtime_info = RegistryRuntimeInfoProvider(self._services)
         self._config_actions = RuntimeConfigController(
@@ -384,12 +342,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             services=self._services,
             view=self._view_adapter,
             callbacks=RuntimeConfigCallbacks(
-                set_approval_mode=self._set_approval_mode,
-                start_agent_profile_switch=self._switch_agent_profile,
-                start_model_config_result=self._on_model_config_result,
+                start_worker=self._start_worker,
                 set_profile_display=self._set_profile_display,
                 update_subtitle=self._update_subtitle,
-                start_agent_config_result=self._on_agent_config_result,
                 debug=self._debug,
                 notification_service=self._notification_service,
                 settings_coordinator=self._settings_coordinator,
@@ -402,7 +357,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             services=self._services,
             view=self._view_adapter,
             callbacks=WorkspaceCallbacks(
-                start_apply_chdir=self._apply_chdir,
+                start_worker=self._start_worker,
                 debug=self._debug,
                 allow_change=lambda: self._workflow.browser.request_workspace_change(),  # noqa: PLW0108 — constructed later
                 selected_cwd=lambda: self._workflow.project_cwd if self._workflow.workflow_mode else "",
@@ -414,7 +369,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._diff_controller = self._new_diff_controller()
         self._rollback_controller = self._new_rollback_controller()
         self._navigation = self._new_navigation_controller()
-        self._tool_actions = ToolActionBridge(publisher=self._bus, debug=self._debug)
+        self._tool_actions = ToolActionBridge(publisher=self._services.bus, debug=self._debug)
         self._events = BackendEventHandler(
             state=self._state,
             services=self._services,
@@ -426,16 +381,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 set_agent_loading=self._set_agent_loading,
                 set_has_messages=self._set_has_messages,
                 set_profile_display=self._set_profile_display,
-                set_runtime_details=self._set_runtime_details,
                 set_active_model_profile_id=self._set_active_model_profile_id,
-                set_main_usage_source_id=self._set_main_usage_source_id,
-                set_last_usage_tokens=self._set_last_usage_tokens,
-                set_last_total_session_tokens=self._set_last_total_session_tokens,
                 set_creating_new_session=self._set_creating_new_session,
                 set_restoring_session=self._set_restoring_session,
                 set_workspace_cwd=self._set_workspace_cwd,
-                set_workspace_original_cwd=self._set_workspace_original_cwd,
-                refresh_git_branch=self._schedule_git_branch_refresh,
+                refresh_git_branch=self._workspace_branch.schedule_refresh,
                 update_subtitle=self._update_subtitle,
                 update_toc=self._update_toc,
                 on_session_fork_error=lambda event, message, severity: self._sessions.on_session_fork_error(
@@ -447,10 +397,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                     event,
                     message=message,
                 ),
-                block_pending_user_submit=self._block_pending_user_submit,
                 handle_approval_response=self._handle_approval_response,
                 handle_ask_user_response=self._handle_ask_user_response,
                 question_inline_preferred=self._question_inline_preferred,
+                approval_defer_while_judging=self._approval_defer_while_judging,
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
@@ -474,11 +424,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 set_profile_display=self._set_profile_display,
                 set_active_model_profile_id=self._set_active_model_profile_id,
                 set_workspace_cwd=self._set_workspace_cwd,
-                set_workspace_original_cwd=self._set_workspace_original_cwd,
                 update_subtitle=self._update_subtitle,
                 update_toc=self._update_toc,
                 clear_suggestion_file_cache=self._clear_suggestion_file_cache,
-                start_session_restore=self._do_session_restore,
+                start_worker=self._start_worker,
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
@@ -496,9 +445,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             command_actions=self._slash_actions,
             callbacks=SuggestionCallbacks(
                 notify_warning=self._warn_slash_command,
-                show_file_suggestions=self._show_file_suggestions,
+                start_worker=self._start_worker,
                 submit_user_text=self._submit_user_text,
-                start_agent_profile_switch=self._switch_agent_profile,
+                start_agent_profile_switch=self._config_actions.start_agent_profile_switch,
                 start_model_profile_switch=self._switch_model_profile,
             ),
             buddy_view=self._view_adapter,
@@ -508,9 +457,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             state=self._state,
             shell_view=self._view_adapter,
             focus_view=self._view_adapter,
-            set_shell_mode=self._set_shell_mode_flag,
             set_shell_mode_state=self._set_shell_mode_state,
-            set_fullscreen_terminal=self._set_fullscreen_terminal_flag,
+            panel_focus_changed=self._sync_sidebar_tab_strip_focus,
             dismiss_suggestions=self._suggestions.dismiss_suggestions,
             debug=self._debug,
         )
@@ -518,7 +466,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             state=self._state,
             services=self._services,
             view=self._view_adapter,
-            start_worker=lambda awaitable: self.run_worker(awaitable, thread=False),
+            start_worker=self._start_worker,
             handle_agent_message=self._events.on_agent_message,
             handle_error=self._events.on_error,
             set_agent_running=self._set_agent_running,
@@ -530,7 +478,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             debug=self._debug,
         )
         self._subscriptions = MainScreenSubscriptions(
-            bus=self._bus,
+            bus=self._services.bus,
             events=self._events,
             sessions=self._sessions,
             rollback_result_handler=self._rollback_controller.on_result,
@@ -551,55 +499,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._trajectory_binding_available = True
         self._execution_binding_busy = False
         self.chat_workspace_cwd = self._workspace_cwd()
-
-    def _begin_pending_submit(self, text: str) -> None:
-        self._state.submit.begin(text)
-
-    def _clear_pending_submit(self) -> None:
-        self._state.submit.clear()
-
-    @property
-    def _pending_user_submit_active(self) -> bool:
-        return self._state.submit.active
-
-    @_pending_user_submit_active.setter
-    def _pending_user_submit_active(self, value: bool) -> None:
-        self._state.submit.active = value
-
-    @property
-    def _pending_user_submit_text(self) -> str:
-        return self._state.submit.text
-
-    @_pending_user_submit_text.setter
-    def _pending_user_submit_text(self, value: str) -> None:
-        self._state.submit.text = value
-
-    @property
-    def _pending_user_submit_blocked(self) -> bool:
-        return self._state.submit.blocked
-
-    @_pending_user_submit_blocked.setter
-    def _pending_user_submit_blocked(self, value: bool) -> None:
-        if value:
-            self._state.submit.block()
-        else:
-            self._state.submit.blocked = False
-
-    @property
-    def _pending_user_message_render_active(self) -> bool:
-        return self._state.render_gate.active
-
-    @_pending_user_message_render_active.setter
-    def _pending_user_message_render_active(self, value: bool) -> None:
-        self._state.render_gate.active = value
-
-    @property
-    def _deferred_agent_messages(self) -> list[InvocationMessage | Error]:
-        return self._state.render_gate._deferred
-
-    @_deferred_agent_messages.setter
-    def _deferred_agent_messages(self, value: list[InvocationMessage | Error]) -> None:
-        self._state.render_gate._deferred = value
 
     def _new_settings_persistence(self) -> SettingsPersistenceQueue:
         return SettingsPersistenceQueue(
@@ -649,6 +548,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         persist_tool_groups_expanded(value)
         cast("ChrysApp", self.app).settings_handle.override(tool_groups_expanded=value)
 
+    def _apply_approval_defer_while_judging(self, value: bool) -> None:
+        """Put the choice in force; requests already waiting keep the choice they arrived under."""
+        cast("ChrysApp", self.app).settings_handle.override(approval_defer_while_judging=value)
+
+    def _approval_defer_while_judging(self) -> bool:
+        return cast("ChrysApp", self.app).settings_handle.settings.approval_defer_while_judging
+
     def _refresh_trajectory_verify_commands(self) -> None:
         """Re-project the word list a reload only installed into the handle.
 
@@ -665,10 +571,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _new_settings_coordinator(self) -> SettingsCoordinator:
         app = cast("ChrysApp", self.app)
 
-        def _turn_lifecycle_task() -> asyncio.Task[None] | None:
-            engine_provider = self._services.engine_provider
-            return engine_provider().turn_lifecycle_task if engine_provider is not None else None
-
         return SettingsCoordinator(
             services=self._services,
             settings_handle=app.settings_handle,
@@ -680,10 +582,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 switch_locale=self._switch_locale_for_panel,
                 apply_trajectory_verify_commands=self._apply_trajectory_verify_commands,
                 apply_tool_groups_expanded=self._apply_tool_groups_expanded,
+                apply_approval_defer_while_judging=self._apply_approval_defer_while_judging,
                 list_themes=lambda: sorted(app.available_themes),
                 save_notifications=self._schedule_notification_settings_save,
                 notification_service=self._notification_service,
-                turn_lifecycle_task=_turn_lifecycle_task,
+                turn_lifecycle_task=self._services.turn_lifecycle_task,
                 turn_in_progress=lambda: self._state.run.agent_running or self._services.execution_busy(),
             ),
         )
@@ -720,22 +623,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if coordinator is not None:
             coordinator.on_write_failed()
 
-    @property
-    def _engine(self) -> AgentEngine:
-        """Return the backend engine through the :class:`ChrysApp` accessor.
-
-        ``MainScreen`` is only ever pushed by :class:`ChrysApp`, so the
-        cast is sound and ``AttributeError`` here would indicate a real
-        setup bug (the property should be surfaced rather than
-        silently swallowed).  Tests that stub ``MainScreen`` under a
-        bare ``App`` reach for ``action_show_rollback`` etc. directly
-        and never hit this accessor.
-        """
-        return cast("ChrysApp", self.app).engine
-
     def _workspace_cwd(self) -> str:
         """Return the TUI-tracked workspace cwd."""
-        return self._chdir_current_cwd or safe_getcwd()
+        return self._state.workspace_marker.current_cwd or safe_getcwd()
 
     def _notification_service(self) -> NotificationService:
         return cast("ChrysApp", self.app).notification_service
@@ -744,186 +634,35 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         cast("ChrysApp", self.app).refresh_notification_settings()
 
     def _set_active_model_profile_id(self, profile_id: str) -> None:
-        self._active_model_profile_id = profile_id
         self._services.active_model_profile_id = profile_id
 
     def _set_profile_display(self, profile: str) -> None:
-        self._profile = profile
         self._state.runtime.profile = profile
         self.chat_profile_name = profile
 
-    def _set_runtime_details(self, details: AgentRuntimeDetails) -> None:
-        self._runtime_details = details
-        self._state.runtime.details = details
-
-    def _set_main_usage_source_id(self, source_id: str) -> None:
-        self._main_usage_source_id = source_id
-        self._state.runtime.main_usage_source_id = source_id
-
-    def _set_last_usage_tokens(self, tokens: int) -> None:
-        self._last_usage_tokens = tokens
-        self._state.usage.last_usage_tokens = tokens
-
-    def _set_last_total_session_tokens(self, tokens: int) -> None:
-        self._last_total_session_tokens = tokens
-        self._state.usage.last_total_session_tokens = tokens
+    def _show_session_title(self, title: str) -> None:
+        # ``chat_session_title`` is data-bound to the ChatPanel border.
+        self.chat_session_title = title
 
     def _set_workspace_cwd(self, cwd: str) -> None:
-        self._chdir_current_cwd = cwd
         self._state.workspace.current_cwd = cwd
         self._state.workspace_marker.current_cwd = cwd
-        self._queue_git_branch_configure(cwd)
+        self._workspace_branch.configure(cwd)
 
-    def _apply_git_branch_snapshot(self, snapshot: GitBranchSnapshot) -> None:
-        self._set_workspace_git_branch(snapshot.branch)
-
-    def _displayed_workspace_cwd(self) -> str:
-        return self.chat_workspace_cwd or self._workspace_cwd()
-
-    def _set_workspace_git_branch(self, branch: str) -> None:
-        if branch == self._workspace_git_branch:
-            return
-        self._workspace_git_branch = branch
-        self._state.workspace.current_git_branch = branch
+    def _show_workspace_branch(self, branch: str) -> None:
         self.chat_workspace_branch = branch
         with contextlib.suppress(Exception):
             self.query_one(ChatPanel).set_workspace_branch(branch)
 
-    def _on_git_branch_file_changed(self) -> None:
-        with contextlib.suppress(Exception):
-            self.app.call_from_thread(self._schedule_git_branch_refresh)
-
-    def _schedule_git_branch_refresh(self) -> None:
-        if not self._git_branch_monitor.active or self._git_branch_closed:
-            return
-        if self._git_branch_refresh_timer is not None:
-            self._git_branch_refresh_timer.stop()
-        self._git_branch_refresh_timer = self.set_timer(0.1, self._refresh_git_branch)
-
-    def _refresh_git_branch(self) -> None:
-        self._git_branch_refresh_timer = None
-        if not self._git_branch_monitor.active or self._git_branch_closed:
-            return
-        self._queue_git_branch_refresh()
-
-    def _poll_git_branch(self) -> None:
-        if not self._git_branch_monitor.active or self._git_branch_closed:
-            return
-        self._queue_git_branch_refresh()
-
-    def _queue_git_branch_start(self, cwd: str) -> None:
-        self._queue_git_branch_operation("start", cwd)
-
-    def _queue_git_branch_configure(self, cwd: str) -> None:
-        self._queue_git_branch_operation("configure", cwd)
-
-    def _queue_git_branch_refresh(self) -> None:
-        self._queue_git_branch_operation("refresh", "")
-
-    def _queue_git_branch_operation(self, operation: str, cwd: str) -> None:
-        if self._git_branch_closed:
-            return
-        if operation in {"start", "configure"}:
-            self._git_branch_retry_cwd_on_display_sync = None
-        if self._git_branch_pending_operation is not None:
-            pending_operation, pending_cwd = self._git_branch_pending_operation
-            if operation == "refresh" and pending_operation in {"start", "configure"}:
-                return
-            if operation == "configure" and pending_operation == "start":
-                if pending_cwd == cwd:
-                    return
-                operation = "start"
-        self._git_branch_pending_operation = (operation, cwd)
-        task = self._git_branch_task
-        if task is not None and not task.done():
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.debug("no running loop for git branch refresh task", exc_info=True)
-            return
-        self._git_branch_task = loop.create_task(self._drain_git_branch_operations())
-
-    async def _drain_git_branch_operations(self) -> None:
-        try:
-            while self._git_branch_pending_operation is not None and not self._git_branch_closed:
-                operation, cwd = self._git_branch_pending_operation
-                self._git_branch_pending_operation = None
-                snapshot = await self._run_git_branch_operation(operation, cwd)
-                if snapshot is None or self._git_branch_closed:
-                    continue
-                if snapshot.cwd != self._workspace_cwd():
-                    continue
-                if snapshot.cwd != self._displayed_workspace_cwd():
-                    self._git_branch_retry_cwd_on_display_sync = snapshot.cwd
-                    continue
-                self._git_branch_retry_cwd_on_display_sync = None
-                with contextlib.suppress(Exception):
-                    self._apply_git_branch_snapshot(snapshot)
-                    self._sync_git_branch_poll_timer()
-        finally:
-            if self._git_branch_task is asyncio.current_task():
-                self._git_branch_task = None
-
-    async def _run_git_branch_operation(self, operation: str, cwd: str) -> GitBranchSnapshot | None:
-        try:
-            if operation == "start":
-                return await asyncio.to_thread(self._git_branch_monitor.start, cwd)
-            if operation == "configure":
-                return await asyncio.to_thread(self._git_branch_monitor.configure, cwd)
-            return await asyncio.to_thread(self._git_branch_monitor.refresh)
-        except Exception:
-            logger.debug("git branch monitor operation failed: %s", operation, exc_info=True)
-            return None
-
-    async def _stop_git_branch_monitor(self) -> None:
-        self._git_branch_closed = True
-        self._git_branch_pending_operation = None
-        task = self._git_branch_task
-        if task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-            self._git_branch_task = None
-        await asyncio.to_thread(self._git_branch_monitor.stop)
-
-    def _sync_git_branch_poll_timer(self) -> None:
-        if not self._git_branch_monitor.active or self._git_branch_closed:
-            return
-        if self._git_branch_monitor.watching:
-            self._stop_git_branch_poll_timer()
-            return
-        if self._git_branch_poll_timer is None:
-            self._git_branch_poll_timer = self.set_interval(GIT_BRANCH_POLL_INTERVAL_SECONDS, self._poll_git_branch)
-
-    def _stop_git_branch_poll_timer(self) -> None:
-        if self._git_branch_poll_timer is not None:
-            self._git_branch_poll_timer.stop()
-            self._git_branch_poll_timer = None
-
-    def _stop_git_branch_refresh_timer(self) -> None:
-        if self._git_branch_refresh_timer is not None:
-            self._git_branch_refresh_timer.stop()
-            self._git_branch_refresh_timer = None
-
-    def _set_workspace_original_cwd(self, cwd: str | None) -> None:
-        self._chdir_original_cwd = cwd
-        self._state.workspace_marker.original_cwd = cwd
-
     def _set_creating_new_session(self, creating: bool) -> None:
-        self._creating_new_session = creating
         self._state.session.creating_new_session = creating
         if creating:
-            self._clear_terminal_title_result()
+            self._session_title.clear_terminal_title_result()
 
     def _set_restoring_session(self, restoring: bool) -> None:
-        self._restoring_session = restoring
         self._state.session.restoring_session = restoring
         if restoring:
-            self._clear_terminal_title_result()
-
-    def _block_pending_user_submit(self) -> None:
-        self._state.submit.block()
-        self._pending_user_submit_blocked = True
+            self._session_title.clear_terminal_title_result()
 
     def _clear_suggestion_file_cache(self) -> None:
         self._suggestions.file_cache = None
@@ -1002,15 +741,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             browse_session_list=self.action_sessions,
             workflow_selection=self.action_workflow,
             open_guide=self._navigation.open_guide,
-            edit_session_title=self._open_session_title_editor,
-            apply_session_title=self._apply_session_title_from_command,
-            change_directory=self._chdir,
+            edit_session_title=self._session_title.open_editor,
+            apply_session_title=self._session_title.apply_custom_title,
+            change_directory=self._workspace_actions.start_chdir,
             copy_conversation=self._copy_agent_responses,
             fold_tools=self._toggle_fold,
             open_diff=self.action_show_diff,
             open_rollback=self.action_show_rollback,
             get_approval_mode=lambda: self._state.runtime.approval_mode.value,
-            change_approval_mode=self._set_approval_mode,
+            change_approval_mode=self._config_actions.start_approval_mode_change,
             configure_model=self._open_model_config,
             configure_agent=self._open_agent_config,
             configure_agent_tab=self._open_agent_config_tab,
@@ -1024,18 +763,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
 
     def _new_diff_controller(self) -> DiffController:
-        def _session_generation() -> int:
-            engine_provider = self._services.engine_provider
-            return engine_provider().session_generation if engine_provider is not None else 0
-
-        def _turn_lifecycle_task() -> asyncio.Task[None] | None:
-            engine_provider = self._services.engine_provider
-            return engine_provider().turn_lifecycle_task if engine_provider is not None else None
-
-        def _turn_lifecycle_saved(task: asyncio.Task[None]) -> bool:
-            engine_provider = self._services.engine_provider
-            return engine_provider().was_turn_lifecycle_saved(task) if engine_provider is not None else False
-
         return DiffController(
             services=self._services,
             live_diff=self._live_diff,
@@ -1043,22 +770,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             workspace_cwd=self._workspace_cwd,
             is_agent_running=lambda: self._state.run.agent_running,
             run_generation=lambda: self._state.run.generation,
-            session_generation=_session_generation,
-            turn_lifecycle_task=_turn_lifecycle_task,
-            turn_lifecycle_saved=_turn_lifecycle_saved,
+            session_generation=self._services.session_generation,
+            turn_lifecycle_task=self._services.turn_lifecycle_task,
+            turn_lifecycle_saved=self._services.was_turn_lifecycle_saved,
         )
 
     def _new_rollback_controller(self) -> RollbackController:
-        def _session_generation() -> int:
-            engine_provider = self._services.engine_provider
-            return engine_provider().session_generation if engine_provider is not None else 0
-
-        def _turn_lifecycle_task() -> asyncio.Task[None] | None:
-            engine_provider = self._services.engine_provider
-            return engine_provider().turn_lifecycle_task if engine_provider is not None else None
-
         def _reset_welcome_workspace_marker(cwd: str) -> None:
-            self._chdir_original_cwd = None
             self._state.workspace_marker.original_cwd = None
             self._set_workspace_cwd(cwd)
 
@@ -1070,8 +788,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy()
             ),
             current_session_id=self._view_adapter.current_chat_session_id,
-            session_generation=_session_generation,
-            turn_lifecycle_task=_turn_lifecycle_task,
+            session_generation=self._services.session_generation,
+            turn_lifecycle_task=self._services.turn_lifecycle_task,
             profile_name=lambda: self._state.runtime.profile,
             reset_welcome_workspace_marker=_reset_welcome_workspace_marker,
             set_has_messages=self._set_has_messages,
@@ -1081,13 +799,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
 
     def _set_interrupt_confirm_active(self, active: bool) -> None:
-        self._interrupt_confirm_active = active
         self._state.overlays.interrupt_confirm_active = active
 
     def _new_navigation_controller(self) -> MainNavigationController:
-        def _start_worker(awaitable: Awaitable[Any]) -> object:
-            return self.run_worker(awaitable, thread=False)
-
         async def _flush_notifications() -> None:
             await self._flush_settings_save()
 
@@ -1124,16 +838,24 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             delete_current_and_new=_delete_current_and_new,
             restore_session=_restore_session,
             flush_notifications=_flush_notifications,
-            start_worker=_start_worker,
+            start_worker=self._start_worker,
             debug=self._debug,
             locale_controller=self._locale_controller,
         )
 
-    def _new_tool_action_bridge(self) -> ToolActionBridge:
-        return ToolActionBridge(
-            publisher=self._services.bus,
-            debug=self._debug,
-        )
+    def _start_worker(self, work: Callable[[], Awaitable[object]]) -> object:
+        """Run *work* in a worker on this screen's event loop.
+
+        As with ``@work``, the worker is named after its work, and the
+        coroutine is made only when the worker starts, so a worker cancelled
+        before it runs leaves nothing unawaited.
+        """
+
+        async def run() -> object:
+            return await work()
+
+        name, description = _describe_work(work)
+        return self.run_worker(run, name=name, description=description, thread=False)
 
     def set_startup_agent_loading(self, active: bool) -> None:
         """Startup-facing facade for setting agent loading state."""
@@ -1141,13 +863,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def is_startup_agent_loading(self) -> bool:
         """Return whether startup still considers the agent loading."""
-        return self._agent_loading
+        return self._state.run.agent_loading
 
     def gc_freeze_block_reason(self) -> GcFreezeBlockReason | None:
         """Return the first active MainScreen or participant hard gate."""
-        if self._agent_loading:
+        if self._state.run.agent_loading:
             return GcFreezeBlockReason.AGENT_LOADING
-        if self._agent_running:
+        if self._state.run.agent_running:
             return GcFreezeBlockReason.AGENT_RUNNING
         if scroll_gc_paused():
             return GcFreezeBlockReason.SCROLL_GC_PAUSED
@@ -1194,11 +916,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             if event.session_id == session_id:
                 restored = True
 
-        await self._bus.subscribe(SessionRestored, observe_restored)
+        await self._services.bus.subscribe(SessionRestored, observe_restored)
         try:
             await self._sessions.do_session_restore(session_id, allow_while_loading=True)
         finally:
-            await self._bus.unsubscribe(SessionRestored, observe_restored)
+            await self._services.bus.unsubscribe(SessionRestored, observe_restored)
         return restored
 
     def cancel_startup_session_restore(self) -> None:
@@ -1232,16 +954,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
         return check_main_action(
             action,
-            fullscreen_terminal=self._fullscreen_terminal,
-            shell_mode=self._shell_mode,
+            fullscreen_terminal=self._state.shell.fullscreen_terminal,
+            shell_mode=self._state.shell.active,
             chat_foreground=self._chat_foreground(),
             suggestions_active=suggestions_active,
-            agent_running=self._agent_running or self._services.execution_busy(),
+            agent_running=self._state.run.agent_running or self._services.execution_busy(),
         )
-
-    def _chat_scroll_bindings_enabled(self) -> bool:
-        """Return whether page keys should scroll the transcript."""
-        return self._chat_foreground() and not self._suggestions_active_for_bindings()
 
     def _dashboard_visible(self) -> bool:
         return self.query_one(TrajectoryDashboard).foreground
@@ -1305,9 +1023,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     async def _load_sub_agent_transcript(self, log_file: str) -> PersistedSubAgentTranscript | None:
         """Load a transcript relative to the currently displayed session."""
         session_id = self.chat_session_id
-        if self._state_store is None or not session_id:
+        if self._services.state_store is None or not session_id:
             return None
-        return await load_persisted_sub_agent_transcript(self._state_store.session_dir(session_id), log_file)
+        return await load_persisted_sub_agent_transcript(self._services.state_store.session_dir(session_id), log_file)
 
     def sync_footer_bindings(self) -> None:
         """Refresh visible Footer content only when its signature changed."""
@@ -1359,26 +1077,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._apply_agent_loading_state(loading)
 
     def watch_has_messages_state(self, has_messages: bool) -> None:
-        self._has_messages = has_messages
         self._state.run.has_messages = has_messages
 
     def watch_header_approval_mode(self, mode: ApprovalMode) -> None:
-        self._approval_mode = mode
         self._state.runtime.approval_mode = mode
 
     def watch_chat_workspace_cwd(self, old_cwd: str, cwd: str) -> None:
-        if old_cwd != cwd:
-            self._set_workspace_git_branch("")
-            # Retry only after a branch snapshot was dropped because the displayed
-            # cwd lagged the real workspace cwd. Normal cwd updates should not force
-            # a second git read when the first configure can still apply.
-            if (
-                cwd
-                and cwd == self._workspace_cwd()
-                and cwd == self._git_branch_retry_cwd_on_display_sync
-                and not self._git_branch_closed
-            ):
-                self._queue_git_branch_configure(cwd)
+        self._workspace_branch.displayed_cwd_changed(old_cwd, cwd)
 
     def watch_shell_mode_state(self, active: bool) -> None:
         self._shell_mode_controller.apply(active)
@@ -1529,8 +1234,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             self._locale_controller.register_surface(self)
         self._refresh_model_indicator()
         self._update_subtitle()
-        self._git_branch_closed = False
-        self._queue_git_branch_start(self._workspace_cwd())
+        self._workspace_branch.start(self._workspace_cwd())
 
     async def on_unmount(self) -> None:
         """Flush pending UI-owned settings before the screen is torn down."""
@@ -1542,10 +1246,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         try:
             await self._subscriptions.unsubscribe_all()
         finally:
-            self._stop_terminal_title_activity_timer()
-            self._stop_git_branch_refresh_timer()
-            self._stop_git_branch_poll_timer()
-            await self._stop_git_branch_monitor()
+            self._session_title.stop_activity()
+            await self._workspace_branch.close()
             try:
                 await self._suggestions.buddy_command.shutdown()
             finally:
@@ -1559,14 +1261,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Redirect focus back to the input bar when it lands on a display-only panel."""
         if self._workflow.workflow_mode:
             return
-        self._sync_shell_state_from_legacy_flags()
         self._shell_mode_controller.on_descendant_focus(event.widget)
 
     def on_paste(self, event: Paste) -> None:
         """Route image path drops/pastes into the chat input when it is not focused."""
         if self._workflow.workflow_mode:
             return
-        self._sync_shell_state_from_legacy_flags()
         self._shell_mode_controller.on_paste(event)
 
     # ------------------------------------------------------------------ #
@@ -1584,12 +1284,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
         # Dispatch slash commands
         if is_slash_command_candidate(text):
-            if self._agent_loading:
+            if self._state.run.agent_loading:
                 return
             if self._suggestions.dispatch_slash_command(text):
                 return
 
-        if self._agent_loading:
+        if self._state.run.agent_loading:
             return
         self._submit_user_text(text)
 
@@ -1741,22 +1441,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             if self.theme_editor is None:
                 self.shell_mode_state = True
 
-    def _apply_shell_mode_state(self, active: bool) -> None:
-        """Toggle between chat panel and shell panel."""
-        self._shell_mode_controller.apply(active)
-
-    def _set_shell_mode_flag(self, active: bool) -> None:
-        self._shell_mode = active
-        self._state.shell.active = active
-        self._sync_sidebar_tab_strip_focus()
-
     def _set_shell_mode_state(self, active: bool) -> None:
         self.shell_mode_state = active
-
-    def _set_fullscreen_terminal_flag(self, active: bool) -> None:
-        self._fullscreen_terminal = active
-        self._state.shell.fullscreen_terminal = active
-        self._sync_sidebar_tab_strip_focus()
 
     def _sync_sidebar_tab_strip_focus(self) -> None:
         """Make the sidebar tab strip focusable exactly where sidebar focus is not handed back.
@@ -1766,24 +1452,14 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         Focus itself moves only with the view switch that follows each mode change
         (``exit_shell_mode`` returns it to a visible input).
         """
-        self._sync_shell_state_from_legacy_flags()
         self.query_one(SidebarPanel).set_tab_strip_focusable(
             self._workflow.workflow_mode or self._shell_mode_controller.keeps_panel_focus()
         )
-
-    def _sync_shell_state_from_legacy_flags(self) -> None:
-        self._state.shell.active = self._shell_mode
-        self._state.shell.fullscreen_terminal = self._fullscreen_terminal
 
     @on(Terminal.EscapeExited)
     def _on_terminal_escape_exited(self, _event: Terminal.EscapeExited) -> None:
         """User double-tapped Escape in terminal — exit shell mode."""
         self._shell_mode_controller.exit_on_escape()
-
-    @work(thread=False)
-    async def _send_shell_interrupt(self) -> None:
-        """Send Ctrl+C to the shell PTY."""
-        await self._shell_mode_controller.send_interrupt()
 
     @on(ShellPanel.CommandExecuted)
     def _on_shell_command_executed(self, event: ShellPanel.CommandExecuted) -> None:
@@ -1824,7 +1500,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def action_prompt_history(self) -> None:
         """Open the cross-session prompt-history suggestion list."""
-        if self._fullscreen_terminal or self._shell_mode or not self._chat_foreground():
+        if self._state.shell.fullscreen_terminal or self._state.shell.active or not self._chat_foreground():
             return
         input_bar = self.query_one(InputBar)
         if input_bar.locked:
@@ -1836,10 +1512,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     @work(thread=False)
     async def _show_prompt_history(self, revision: int) -> None:
         await self._suggestions.show_prompt_history_async(revision=revision)
-
-    @work(thread=False)
-    async def _show_file_suggestions(self) -> None:
-        await self._suggestions.show_file_suggestions_async()
 
     @on(InputBar.TextChanged)
     def _on_text_changed_for_suggestions(self, event: InputBar.TextChanged) -> None:
@@ -1902,7 +1574,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """
         event.stop()
         input_bar = self.query_one(InputBar)
-        if self._agent_loading or not input_bar.retry_mode:
+        if self._state.run.agent_loading or not input_bar.retry_mode:
             return
         if self._model_unconfigured():
             self._show_model_unconfigured_dialog()
@@ -1920,7 +1592,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     @on(InputBar.NewSessionRequested)
     def _on_new_session_requested(self, _event: InputBar.NewSessionRequested) -> None:
         """New button clicked — start a fresh session."""
-        if self._agent_running or self._agent_loading or self._services.execution_busy():
+        if self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy():
             return
         self._create_new_session()
 
@@ -1931,14 +1603,14 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     @work(thread=False)
     async def _create_new_session(self) -> None:
-        if self._agent_loading:
+        if self._state.run.agent_loading:
             return
-        self._set_terminal_title_for_cwd()
+        self._session_title.set_terminal_title_for_cwd()
         await self._sessions.create_new_session()
 
     @work(thread=False)
     async def _resume_last_session(self) -> None:
-        if self._agent_loading:
+        if self._state.run.agent_loading:
             return
         await self._sessions.resume_last_session()
 
@@ -1946,172 +1618,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     async def _fork_current_session(self) -> None:
         await self._sessions.fork_current_session()
 
-    @work(thread=False)
-    async def _send_user_message(self, text: str) -> None:
-        await self._input_flow.send_user_message(text)
-
-    @work(thread=False)
-    async def _queue_injection(self, text: str) -> None:
-        """Queue a user message for mid-run injection (no chat display yet)."""
-        await self._input_flow.queue_injection(text)
-
-    async def _flush_deferred_agent_messages(self) -> None:
-        """Render agent messages that arrived while the user bubble was mounting."""
-        await self._input_flow.flush_deferred_agent_messages()
-
     def _clear_workspace_marker_for_user_message(self) -> None:
-        self._chdir_original_cwd = None
         self._state.workspace_marker.original_cwd = None
 
     def _commit_profile_switch_marker(self) -> None:
         # Once messages are exchanged, the switch indicator becomes permanent.
         # The next switch will use a new unique key, so the old widget stays
         # untouched in the chat.
-        if self._profile_switch_from is not None:
-            self._profile_switch_from = None
-            self._profile_switch_to = None
         if self._state.profile_marker.from_profile is not None:
             self._state.profile_marker.from_profile = None
             self._state.profile_marker.to_profile = None
 
-    def _set_terminal_title_for_cwd(self, cwd: str | None = None) -> None:
-        display = self._session_display_title
-        if display:
-            # A session title pins the terminal tab; cwd changes (workspace
-            # updates, restores) must not unpin it.  The tab falls back to
-            # the cwd once the title state clears.
-            self._terminal_title_source = "session"
-            self._terminal_title_content = display
-        else:
-            self._terminal_title_source = "cwd"
-            self._terminal_title_content = self._workspace_cwd() if cwd is None else cwd
-        self._render_terminal_title()
-
-    def _set_terminal_title_for_user_message(self, text: str) -> None:
-        self._terminal_title_result = ""
-        if not self._session_fallback_title and text.strip():
-            # Mirror the persisted first-user-message title so the border
-            # shows a title before the first auto-summary lands.
-            self._session_fallback_title = " ".join(text.split())
-            self._refresh_session_title_display()
-        if self._session_custom_title:
-            # A custom title pins the terminal tab; prompt previews must
-            # not replace it.
-            self._terminal_title_source = "session"
-            self._terminal_title_content = self._session_custom_title
-        else:
-            self._terminal_title_source = "user_message"
-            self._terminal_title_content = text
-        self._render_terminal_title()
-
     # ------------------------------------------------------------------ #
-    # Session title state
-    # ------------------------------------------------------------------ #
-
-    @property
-    def _session_display_title(self) -> str:
-        """User-facing session title: custom wins, then generated, then fallback."""
-        return self._session_custom_title or self._session_generated_title or self._session_fallback_title
-
-    def _set_session_title_state(
-        self,
-        *,
-        custom: str | None = None,
-        generated: str | None = None,
-        fallback: str | None = None,
-    ) -> None:
-        """Update title overlay state (``None`` leaves a field unchanged) and refresh."""
-        if custom is not None:
-            self._session_custom_title = custom
-        if generated is not None:
-            self._session_generated_title = generated
-        if fallback is not None:
-            self._session_fallback_title = fallback
-        self._refresh_session_title_display()
-
-    def _reset_session_title_state(self) -> None:
-        """Clear all title overlay state (new/blank session)."""
-        self._terminal_title_result = ""
-        self._session_custom_title = ""
-        self._session_generated_title = ""
-        self._session_fallback_title = ""
-        self._refresh_session_title_display()
-
-    def _refresh_session_title_display(self) -> None:
-        """Push the display title to the chat border and the terminal tab."""
-        display = self._session_display_title
-        # ``chat_session_title`` is data-bound to the ChatPanel border.
-        self.chat_session_title = display
-        self._set_terminal_title_for_cwd()
-
-    @property
-    def _terminal_title_indicator(self) -> str:
-        if self._agent_running:
-            return _TERMINAL_TITLE_RUNNING_FRAMES[self._terminal_title_activity_frame]
-        return self._terminal_title_result
-
-    def _terminal_title_with_activity(self, title: str) -> str:
-        indicator = self._terminal_title_indicator
-        if not indicator:
-            return title
-        return f"{indicator} {title}" if title else indicator
-
-    def _render_terminal_title(self) -> None:
-        source = self._terminal_title_source
-        content = self._terminal_title_content
-        if source == "cwd":
-            set_app_terminal_title_for_cwd(
-                self.app,
-                content or self._workspace_cwd(),
-                indicator=self._terminal_title_indicator,
-            )
-        elif source == "session":
-            set_app_terminal_title_for_session_title(self.app, self._terminal_title_with_activity(content))
-        else:
-            set_app_terminal_title_for_user_message(self.app, self._terminal_title_with_activity(content))
-
-    def _sync_terminal_title_activity(self) -> None:
-        if self._agent_running:
-            if self._terminal_title_activity_timer is None:
-                self._terminal_title_activity_timer = self.set_interval(
-                    _TERMINAL_TITLE_ACTIVITY_INTERVAL_SECONDS,
-                    self._advance_terminal_title_activity,
-                )
-        else:
-            self._stop_terminal_title_activity_timer()
-        self._render_terminal_title()
-
-    def _advance_terminal_title_activity(self) -> None:
-        if not self._agent_running or self._terminal_title_activity_timer is None:
-            return
-        self._terminal_title_activity_frame = (self._terminal_title_activity_frame + 1) % len(
-            _TERMINAL_TITLE_RUNNING_FRAMES
-        )
-        self._render_terminal_title()
-
-    def _stop_terminal_title_activity_timer(self) -> None:
-        if self._terminal_title_activity_timer is not None:
-            self._terminal_title_activity_timer.stop()
-            self._terminal_title_activity_timer = None
-
-    def _mark_terminal_title_completed(self) -> None:
-        self._terminal_title_result = "✓"
-        if not self._agent_running:
-            self._render_terminal_title()
-
-    def _mark_terminal_title_failed(self) -> None:
-        self._terminal_title_result = "✗"
-        if not self._agent_running:
-            self._render_terminal_title()
-
-    def _clear_terminal_title_result(self) -> None:
-        if not self._terminal_title_result:
-            return
-        self._terminal_title_result = ""
-        self._render_terminal_title()
-
-    # ------------------------------------------------------------------ #
-    # Agent profile switching (#)
+    # Header and status-bar tags, model switching ($)
     # ------------------------------------------------------------------ #
 
     @on(AppHeader.ApprovalBadgeClicked)
@@ -2130,10 +1649,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if not self._workflow.workflow_mode:
             self._config_actions.on_model_tag_clicked(event.mode)
 
-    @work(thread=False)
-    async def _switch_agent_profile(self, profile_name: str) -> None:
-        """Publish an AgentProfileSwitch event to the backend."""
-        await self._config_actions.switch_agent_profile(profile_name)
+    @on(StatusBar.SelectorBusy)
+    def _on_selector_busy(self, event: StatusBar.SelectorBusy) -> None:
+        """Explain why a selector ignored a click during a run."""
+        if not self._workflow.workflow_mode:
+            self._config_actions.on_selector_busy(event.selector)
 
     @work(thread=False)
     async def _switch_model_profile(self, profile_id: str) -> None:
@@ -2170,18 +1690,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Open the model configuration modal."""
         self._config_actions.open_model_config()
 
-    @work(thread=False)
-    async def _on_model_config_result(self, result: str) -> None:
-        """Handle model config modal result — reload settings if applied."""
-        await self._config_actions.on_model_config_result(result)
-
     # ------------------------------------------------------------------ #
     # Agent config (/agents with optional tab subcommands)
     # ------------------------------------------------------------------ #
-
-    def _resolve_profile_name(self) -> str:
-        """Resolve current display name to canonical profile name."""
-        return self._config_actions.resolve_profile_name()
 
     def action_agents_config(self) -> None:
         """Open the agent configuration modal (F2)."""
@@ -2220,51 +1731,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Open the agent configuration modal at a specific tab."""
         self._config_actions.open_agent_config_tab(tab)
 
-    def _on_agent_config_saved(self, new_display: str | None, new_registry_name: str | None) -> None:
-        """Handle a mid-modal Save from ``AgentsConfigScreen``."""
-        self._config_actions.on_agent_config_saved(new_display, new_registry_name)
-
-    @work(thread=False)
-    async def _on_agent_config_result(self, result: str) -> None:
-        """Handle agent config modal result — reload and optionally switch."""
-        await self._config_actions.on_agent_config_result(result)
-
     @on(ChatPanel.TitleClicked)
     def _on_chat_panel_title_clicked(self, _event: ChatPanel.TitleClicked) -> None:
         """Open the session title editor when the user clicks the border title."""
-        self._open_session_title_editor()
-
-    def _open_session_title_editor(self) -> None:
-        """Push the custom-title dialog for the current session (border click or /rename)."""
-        session_id = self.chat_session_id
-        if not session_id:
-            return
-        from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog
-
-        dialog = SessionTitleDialog(
-            custom_title=self._session_custom_title,
-            auto_title=self._session_generated_title or self._session_fallback_title,
-            locale_controller=self._locale_controller,
-        )
-
-        def on_result(result: str | None) -> None:
-            # Pin the edit to the session the dialog was opened for — the
-            # UI may have restored another session while it was open.
-            if result is not None:
-                self._apply_custom_session_title(result, session_id)
-
-        self.app.push_screen(dialog, on_result)
-
-    def _apply_session_title_from_command(self, custom_title: str) -> None:
-        """Apply a non-empty ``/rename <title>`` argument without the dialog."""
-        session_id = self.chat_session_id
-        if not session_id:
-            return
-        self._apply_custom_session_title(custom_title, session_id)
-
-    @work(thread=False)
-    async def _apply_custom_session_title(self, custom_title: str, session_id: str) -> None:
-        await self._sessions.apply_custom_session_title(custom_title, session_id)
+        self._session_title.open_editor()
 
     @on(WorkflowPanel.WorkingDirClicked)
     @on(ChatPanel.WorkingDirClicked)
@@ -2273,20 +1743,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     ) -> None:
         """Open the file dialog when the user clicks the working directory subtitle."""
         self._workspace_actions.open_working_dir_picker()
-
-    @work(thread=False)
-    async def _chdir(self, arg: str) -> None:
-        """Handle /chdir slash command — change the working directory."""
-        await self._workspace_actions.chdir(arg)
-
-    def _on_chdir_dialog_result(self, result: str | None) -> None:
-        """Callback for the file dialog — apply the selected directory."""
-        self._workspace_actions.on_chdir_dialog_result(result)
-
-    @work(thread=False)
-    async def _apply_chdir(self, resolved: str) -> None:
-        """Publish a WorkspaceChange for the selected directory."""
-        await self._workspace_actions.apply_chdir(resolved)
 
     def _copy_agent_responses(self, arg: str) -> None:
         """Handle /copy slash command — copy agent, user, or full-conversation turns.
@@ -2301,17 +1757,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         copy to the remote host's clipboard (or fail outright).
         """
         self._copy_actions.copy_agent_responses(arg)
-
-    @work(thread=False)
-    async def _set_approval_mode(self, arg: str) -> None:
-        """Handle /approval slash command — publish ``SetApprovalMode``.
-
-        The backend is the source of truth: it updates the middleware and
-        echoes ``ApprovalModeUpdated`` so the TUI badge refreshes from the
-        authoritative state (see ``on_approval_mode_updated``). The engine
-        carries the mode for the whole launch, in either app mode.
-        """
-        await self._config_actions.set_approval_mode(arg)
 
     def _toggle_fold(self) -> None:
         """Handle /fold slash command — collapse or expand all tool groups."""
@@ -2328,26 +1773,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
           under a blocking loading modal. Use the picker for conversation-only
           rollback.
         """
-        self._open_rollback_modal(arg=arg)
-
-    def _open_rollback_modal(self, arg: str = "") -> None:
-        """Route a rollback command to either the picker or direct progress modal."""
         self._rollback_controller.show_rollback(arg)
-
-    async def _on_rollback_result(self, event: RollbackResult) -> None:
-        """Surface the rollback outcome and refresh the chat panel.
-
-        For ``target_turn >= 1`` the engine fires ``SessionRestored``
-        which the session handler already uses to clear + replay the
-        chat (and refresh the sidebar TOC via ``_update_toc``), then the
-        rollback controller restores any rolled-back prompt text into
-        the input bar.  For the welcome case (``target_turn == 0``) no
-        such event fires, so we clear the chat panel directly, rebuild
-        the TOC from the now-empty ``toc_items``, and zero the
-        Context-tab usage counters so the sidebar doesn't keep showing
-        pre-rollback tokens / sparkline / compressed blocks.
-        """
-        await self._rollback_controller.on_result(event)
 
     def action_show_diff(self) -> None:
         """Open the full-screen diff viewer showing file changes per turn."""
@@ -2370,18 +1796,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _apply_agent_running_state(self, running: bool) -> None:
         was_running = self._state.run.agent_running
-        self._agent_running = running
         self._state.run.agent_running = running
         if running:
             if not was_running:
-                self._terminal_title_result = ""
-                self._terminal_title_activity_frame = 0
+                self._session_title.run_started()
                 self._state.run.generation += 1
-                engine_provider = self._services.engine_provider
                 self._live_diff.reset_for_run_start(
                     LiveDiffOwner(
                         session_id=self._view_adapter.current_chat_session_id(),
-                        session_generation=(engine_provider().session_generation if engine_provider is not None else 0),
+                        session_generation=self._services.session_generation(),
                         run_generation=self._state.run.generation,
                     )
                 )
@@ -2398,9 +1821,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             input_bar.unlock_and_keep()
         self.refresh_bindings()
         # Auto-dismiss interrupt confirmation when agent stops
-        if not running and self._interrupt_confirm_active:
-            self._dismiss_interrupt_confirm()
-        self._sync_terminal_title_activity()
+        if not running and self._state.overlays.interrupt_confirm_active:
+            self._navigation.dismiss_interrupt_confirm()
+        self._session_title.sync_activity()
 
     def _set_agent_loading(self, loading: bool) -> None:
         if MainScreen._reactive_state_ready(self):
@@ -2409,17 +1832,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             MainScreen._apply_agent_loading_state(self, loading)
 
     def _apply_agent_loading_state(self, loading: bool) -> None:
-        self._agent_loading = loading
         self._state.run.agent_loading = loading
         input_bar = self.query_one(InputBar)
-        if not loading and input_bar.locked and not self._agent_running:
+        if not loading and input_bar.locked and not self._state.run.agent_running:
             input_bar.unlock_and_keep()
 
     def _set_has_messages(self, has: bool) -> None:
         if MainScreen._reactive_state_ready(self):
             self.has_messages_state = has
         else:
-            self._has_messages = has
             self._state.run.has_messages = has
 
     def action_show_log_viewer(self) -> None:
@@ -2471,16 +1892,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         await self._input_flow.publish_interrupt()
 
-    @work(thread=False)
-    async def _do_retry(self, text: str = "") -> None:
-        """Retry the last failed/interrupted run from current state.
-
-        When *text* is non-empty it is rendered immediately in the chat
-        panel (so the user sees their note) and forwarded to the engine
-        via ``UserRetry(text=...)`` as the mid-turn continuation prompt.
-        """
-        await self._input_flow.retry(text)
-
     # -- Per-sub-agent retry/abort bridging ---------------------------
     #
     # The :class:`SubAgentToolCall` renderer posts widget-level Textual
@@ -2513,34 +1924,19 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_quit(self) -> None:
         self._navigation.quit()
 
-    async def _quit_after_notification_flush(self) -> None:
-        await self._navigation._quit_after_notification_flush()
-
     def action_sessions(self) -> None:
         """Open the sessions modal (Ctrl+N)."""
         self._navigation.sessions()
 
-    def _handle_session_selected(self, session_id: str | None) -> None:
-        """Callback from SessionsScreen — load the selected session."""
-        self._navigation.handle_session_selected(session_id)
-
     def _clear_current_session(self) -> None:
         """/clear — confirm, then delete the current session and start fresh."""
         self._navigation.clear_session()
-
-    @work(thread=False)
-    async def _delete_current_and_new(self, session_id: str) -> None:
-        await self._delete_session_and_new(session_id)
 
     async def _delete_session_and_new(self, session_id: str) -> None:
         if not self._workflow.workflow_mode:
             await self._sessions.delete_current_and_new(session_id)
             return
         await self._workflow.session_view.delete_current_session(session_id)
-
-    @work(thread=False)
-    async def _do_session_restore(self, session_id: str) -> None:
-        await self._sessions.do_session_restore(session_id)
 
     def action_toggle_sidebar(self) -> None:
         self._navigation.toggle_sidebar()
@@ -2653,24 +2049,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         self._navigation.escape()
 
-    def _confirm_interrupt(self) -> None:
-        """Show confirmation dialog before interrupting the agent."""
-        self._navigation.confirm_interrupt()
-
-    def _on_interrupt_confirmed(self, confirmed: bool) -> None:
-        self._navigation.on_interrupt_confirmed(confirmed)
-
-    def _dismiss_interrupt_confirm(self) -> None:
-        """Auto-dismiss the interrupt confirmation when the agent stops on its own."""
-        self._navigation.dismiss_interrupt_confirm()
-
-    def _confirm_exit(self) -> None:
-        """Show confirmation dialog before exiting."""
-        self._navigation.confirm_exit()
-
-    def _on_exit_confirmed(self, confirmed: bool) -> None:
-        self._navigation.on_exit_confirmed(confirmed)
-
     # ------------------------------------------------------------------ #
     # Approval response
     # ------------------------------------------------------------------ #
@@ -2726,6 +2104,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     @on(AppHeader.ModeClicked)
     def _on_mode_clicked(self) -> None:
         if not self._can_switch_app_mode():
+            # Shell mode is the one block with no run to name; it stays silent.
+            if (notice := self._app_mode_busy_notice()) is not None:
+                self._view_adapter.notify(notice, title=workflow_text.MODE_BUSY_TITLE.bind(), severity="warning")
             return
 
         def selected(workflow: bool | None) -> None:
@@ -2744,14 +2125,20 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def _can_switch_app_mode(self) -> bool:
         """Keep one presentation mode from submission through execution cleanup."""
-        return not (
-            self._shell_mode
-            or self._agent_loading
-            or self._agent_running
+        return not self._state.shell.active and self._app_mode_busy_notice() is None
+
+    def _app_mode_busy_notice(self) -> MessageRef | None:
+        """Name the run that pins the app mode, or None while nothing runs."""
+        if self._workflow.awaiting_engine or self._services.execution().kind == "workflow":
+            return workflow_text.MODE_WORKFLOW_BUSY.bind()
+        if (
+            self._state.run.agent_loading
+            or self._state.run.agent_running
             or self._state.submit.active
-            or self._workflow.awaiting_engine
             or self._services.execution_busy()
-        )
+        ):
+            return workflow_text.MODE_AGENT_BUSY.bind()
+        return None
 
     def _set_workflow_mode(self, workflow: bool) -> None:
         if workflow == self._workflow.workflow_mode or not self._can_switch_app_mode():

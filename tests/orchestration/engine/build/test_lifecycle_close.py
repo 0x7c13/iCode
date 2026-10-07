@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -33,7 +34,7 @@ from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.turn_context import TurnContextHolder
 from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.compaction.spill import SpillQuota
-from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
+from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker, WorkspaceRetarget
 from chrys.service.profiles.agents.schema import AgentProfile, ApprovalConfig
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
@@ -340,12 +341,20 @@ async def test_agent_rebuild_retargets_workspace_after_install_before_awaited_cl
     engine.session.workspace = Workspace.from_cwd(str(tmp_path))
     order: list[str] = []
 
+    resolved: list[WorkspaceRetarget] = []
+
     class _Tracker(WorkspaceChangeTracker):
         def take_pending_notice(self) -> None:
             return None
 
-        def apply_retarget(self, workspace, retarget) -> None:
-            assert workspace is engine.session.workspace
+        def resolve_retarget(self, workspace: Workspace | None, *, resolve_scope: bool = True) -> WorkspaceRetarget:
+            resolved.append(super().resolve_retarget(workspace, resolve_scope=resolve_scope))
+            return resolved[-1]
+
+        def apply_retarget(self, retarget: WorkspaceRetarget) -> None:
+            # The build resolved it for the session's workspace; install never resolves again.
+            assert resolved == [retarget] and retarget is resolved[0]
+            assert retarget.new_cwd == os.path.normpath(str(tmp_path))
             assert engine.current.loaded.bindings is not old_executor
             order.append("retarget")
 

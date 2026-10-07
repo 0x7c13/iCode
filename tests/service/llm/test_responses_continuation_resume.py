@@ -14,7 +14,7 @@ from openai import BadRequestError
 from chrys.kernel import Content, Message
 from chrys.kernel.exceptions import ChatClientException
 from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.openai_responses import ResponsesApiClient
 
 
 def _response(*, response_id: str, status: str, output: list[object] | None = None) -> SimpleNamespace:
@@ -35,7 +35,7 @@ def _raw(response: object) -> SimpleNamespace:
     return SimpleNamespace(parse=lambda: response, headers={})
 
 
-def _client(*, retrieve: object, create: object | None = None) -> tuple[RawOpenAIChatClient, AsyncMock, AsyncMock]:
+def _client(*, retrieve: object, create: object | None = None) -> tuple[ResponsesApiClient, AsyncMock, AsyncMock]:
     retrieve_mock = AsyncMock(side_effect=retrieve if isinstance(retrieve, BaseException) else None)
     if not isinstance(retrieve, BaseException):
         retrieve_mock.return_value = retrieve
@@ -46,7 +46,7 @@ def _client(*, retrieve: object, create: object | None = None) -> tuple[RawOpenA
     async_client = SimpleNamespace(
         base_url="https://api.test", responses=SimpleNamespace(with_raw_response=with_raw_response)
     )
-    return RawOpenAIChatClient(model="gpt-test", async_client=async_client), retrieve_mock, create_mock
+    return ResponsesApiClient(model="gpt-test", sdk_client=async_client), retrieve_mock, create_mock
 
 
 @pytest.mark.asyncio
@@ -65,7 +65,7 @@ async def test_background_continuation_retrieves_and_preserves_pending_token() -
 
 
 @pytest.mark.asyncio
-async def test_completed_continuation_posts_tool_result_on_next_iteration_issue_5394() -> None:
+async def test_completed_continuation_posts_tool_result_on_next_iteration() -> None:
     tool_call = SimpleNamespace(
         type="function_call",
         call_id="call-1",

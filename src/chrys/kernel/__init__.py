@@ -14,6 +14,7 @@ so importing service code here would create a cycle.
 
 from chrys.foundation.observability.gate import TELEMETRY_GATE, configure_telemetry
 
+from ._loop_recorder import LoopRecorder, LoopRecorderSnapshot
 from .agent import Agent
 from .client import (
     CONVERSATION_HANDLE_KEYS,
@@ -27,6 +28,7 @@ from .client import (
     wire_progress_scope,
 )
 from .compaction import (
+    CONTEXT_WINDOW_FILLED_KEY,
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
@@ -41,6 +43,7 @@ from .compaction import (
     CompactionCallContext,
     CompactionProjectionAtomicityError,
     CompactionStrategy,
+    ContextOverflowSink,
     GroupKind,
     LastWordsCompleter,
     LastWordsToolCallError,
@@ -56,6 +59,7 @@ from .compaction import (
     internal_side_call_scope,
     messages_contain_tool_calls,
     project_included_messages,
+    raise_if_context_window_filled,
     set_excluded,
 )
 from .images import is_image_content, is_image_media_type
@@ -63,7 +67,7 @@ from .instrumentation import (
     AgentTelemetryLayer,
     ChatTelemetryLayer,
 )
-from .loop import LoopRecorder, StallExhaustedAction, ToolLoopLayer, WireRetryPolicy
+from .loop import ConsumedInjectionMessageProbe, StallExhaustedAction, ToolLoopLayer, WireRetryPolicy
 from .middleware import (
     ChatContext,
     ChatMiddleware,
@@ -133,6 +137,7 @@ from .types import (
 )
 
 __all__ = [
+    "CONTEXT_WINDOW_FILLED_KEY",
     "CONVERSATION_HANDLE_KEYS",
     "EXCLUDED_KEY",
     "EXCLUDE_REASON_KEY",
@@ -174,8 +179,10 @@ __all__ = [
     "CompactionCallContext",
     "CompactionProjectionAtomicityError",
     "CompactionStrategy",
+    "ConsumedInjectionMessageProbe",
     "Content",
     "ContentError",
+    "ContextOverflowSink",
     "ContextProvider",
     "ContinuationToken",
     "FinishReason",
@@ -191,6 +198,7 @@ __all__ = [
     "LastWordsCompleter",
     "LastWordsToolCallError",
     "LoopRecorder",
+    "LoopRecorderSnapshot",
     "Message",
     "MiddlewareSplit",
     "MiddlewareTermination",
@@ -235,6 +243,7 @@ __all__ = [
     "normalize_tools",
     "prepend_instructions_to_messages",
     "project_included_messages",
+    "raise_if_context_window_filled",
     "report_wire_progress",
     "resolve_storage_mode_and_handles",
     "set_excluded",

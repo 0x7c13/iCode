@@ -21,9 +21,10 @@ import pytest
 from chrys.service.mcp._http_transport import (
     _chrys_streamable_http_client,
     _HTTPMCPTool,
+    _url_origin,
 )
 from chrys.service.mcp.adapter import MCPAdapter
-from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool, _mcp_call_headers
+from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool
 from chrys.service.profiles.agents.schema import MCPServerConfig
 from tests.service.mcp._helpers import block_import
 
@@ -227,14 +228,14 @@ async def test_streamable_http_client_falls_back_when_session_message_moves() ->
 
 
 # ---------------------------------------------------------------------------
-# owned MCPStreamableHTTPTool — dynamic-header redirect hook
+# _HTTPMCPTool — same-origin header scope
 # ---------------------------------------------------------------------------
 
 
-def _redirecting_mock_client() -> tuple[Any, list[tuple[str, dict[str, str]]]]:
-    """An httpx client whose transport 302-redirects ``origin.test`` to ``foreign.test``.
+def _redirecting_transport() -> tuple[Any, list[tuple[str, dict[str, str]]]]:
+    """An httpx transport that 302-redirects ``origin.test`` to ``foreign.test``.
 
-    Returns the client and the ``(url, headers)`` pairs it saw, in order.
+    Returns the transport and the ``(url, headers)`` pairs it saw, in order.
     """
     import httpx
 
@@ -246,32 +247,58 @@ def _redirecting_mock_client() -> tuple[Any, list[tuple[str, dict[str, str]]]]:
             return httpx.Response(302, headers={"Location": "https://foreign.test/mcp"})
         return httpx.Response(200)
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
-    return client, seen
+    return httpx.MockTransport(handler), seen
 
 
-async def test_owned_streamable_http_dynamic_headers_are_stripped_from_actual_cross_origin_redirect() -> None:
-    """The base owned HTTP MCP hook must strip inherited dynamic headers on redirects."""
-    client, seen = _redirecting_mock_client()
-    tool = MCPStreamableHTTPTool(
-        name="h",
-        url="https://origin.test/mcp",
-        header_provider=lambda _args: {"unused": "provider"},
-        http_client=client,
-    )
+def _redirecting_mock_client() -> tuple[Any, list[tuple[str, dict[str, str]]]]:
+    """A redirect-following httpx client on :func:`_redirecting_transport`."""
+    import httpx
 
-    with patch("chrys.service.mcp.owned.streamable_http_client", return_value=object()):
+    transport, seen = _redirecting_transport()
+    return httpx.AsyncClient(transport=transport, follow_redirects=True), seen
+
+
+def test_url_origin_compares_scheme_host_and_effective_port() -> None:
+    """Static headers ride only requests whose origin matches the configured URL."""
+    from httpx import URL
+
+    assert _url_origin(URL("http://h.example/a")) == _url_origin(URL("http://h.example:80/b"))
+    assert _url_origin(URL("https://h.example/a")) == _url_origin(URL("https://h.example:443/b"))
+    assert _url_origin(URL("http://h.example/a")) != _url_origin(URL("https://h.example/a"))
+    assert _url_origin(URL("http://h.example/a")) != _url_origin(URL("http://h.example:8080/a"))
+    assert _url_origin(URL("http://h.example/a")) != _url_origin(URL("http://other.example/a"))
+
+
+async def test_built_client_strips_static_headers_from_cross_origin_redirect() -> None:
+    """The client ``_build_httpx_client`` makes follows redirects; its header hook keeps secrets same-origin."""
+    import httpx
+
+    transport, seen = _redirecting_transport()
+    real_client = httpx.AsyncClient
+
+    def _client_on_mock_transport(*, follow_redirects: bool, timeout: httpx.Timeout, verify: bool) -> httpx.AsyncClient:
+        return real_client(transport=transport, follow_redirects=follow_redirects, timeout=timeout, verify=verify)
+
+    tool = _HTTPMCPTool(name="h", url="https://origin.test/mcp", headers={"Authorization": "Bearer s", "X-Key": "k"})
+    with (
+        patch("httpx.AsyncClient", side_effect=_client_on_mock_transport),
+        patch("chrys.service.mcp._http_transport._chrys_streamable_http_client", return_value=object()),
+    ):
         tool.get_mcp_client()
 
-    token = _mcp_call_headers.set({"X-Dynamic-Secret": "dynamic"})
+    client = tool._owned_httpx_client
+    assert client is not None
     try:
-        await client.get("https://origin.test/mcp")
+        response = await client.get("https://origin.test/mcp")
     finally:
-        _mcp_call_headers.reset(token)
-        await client.aclose()
+        await tool._close_owned_httpx_client()
 
-    assert seen[0][1]["x-dynamic-secret"] == "dynamic"
-    assert "x-dynamic-secret" not in seen[1][1]
+    assert response.status_code == 200
+    assert [url for url, _headers in seen] == ["https://origin.test/mcp", "https://foreign.test/mcp"]
+    assert seen[0][1]["authorization"] == "Bearer s"
+    assert seen[0][1]["x-key"] == "k"
+    assert "authorization" not in seen[1][1]
+    assert "x-key" not in seen[1][1]
 
 
 # ---------------------------------------------------------------------------
@@ -558,18 +585,14 @@ class TestHTTPMCPToolTransport:
         assert tool._owned_httpx_client is None
         assert tool._httpx_client is None
 
-    async def test_get_mcp_client_attaches_dynamic_header_hook_once(self) -> None:
-        """Dynamic header providers need the parent request hook on our custom client."""
+    async def test_get_mcp_client_attaches_header_hook_once(self) -> None:
+        """Repeated transport builds reuse the owned client and its one header hook."""
         from httpx import Request
 
         sentinel = object()
         client = MagicMock()
         client.event_hooks = {"request": []}
-        tool = _HTTPMCPTool(
-            name="h",
-            url="http://localhost:8080/mcp",
-            header_provider=lambda _args: {"unused": "provider"},
-        )
+        tool = _HTTPMCPTool(name="h", url="http://localhost:8080/mcp", headers={"Authorization": "Bearer static"})
 
         with (
             patch(self.HTTPX_CTOR, return_value=client) as ctor,
@@ -592,45 +615,23 @@ class TestHTTPMCPToolTransport:
             request_timeout=None,
         )
 
-        token = _mcp_call_headers.set({"Authorization": "Bearer dyn", "X-Trace": "abc"})
-        try:
-            request = Request("POST", "http://localhost:8080/mcp")
-            await client.event_hooks["request"][0](request)
-        finally:
-            _mcp_call_headers.reset(token)
+        request = Request("POST", "http://localhost:8080/mcp")
+        await client.event_hooks["request"][0](request)
 
-        assert request.headers["Authorization"] == "Bearer dyn"
-        assert request.headers["X-Trace"] == "abc"
+        assert request.headers["Authorization"] == "Bearer static"
 
-    @pytest.mark.parametrize(
-        ("tool_kwargs", "dynamic_headers", "expected"),
-        [
-            pytest.param(
-                {"headers": {"Authorization": "Bearer static", "X-Server": "srv"}},
-                None,
-                {"Authorization": "Bearer static", "X-Server": "srv"},
-                id="static",
-            ),
-            pytest.param(
-                {"header_provider": lambda _args: {"unused": "provider"}},
-                {"Authorization": "Bearer dyn", "X-Trace": "abc"},
-                {"Authorization": "Bearer dyn", "X-Trace": "abc"},
-                id="dynamic",
-            ),
-        ],
-    )
-    async def test_get_mcp_client_headers_are_same_origin_only(
-        self,
-        tool_kwargs: dict[str, Any],
-        dynamic_headers: dict[str, str] | None,
-        expected: dict[str, str],
-    ) -> None:
-        """Static per-server and dynamic MCP call headers must not leak onto cross-origin redirects."""
+    async def test_get_mcp_client_headers_are_same_origin_only(self) -> None:
+        """Static per-server headers must not leak onto cross-origin requests."""
         from httpx import Request
 
         client = MagicMock()
         client.event_hooks = {"request": []}
-        tool = _HTTPMCPTool(name="h", url="http://localhost:8080/mcp", http_client=client, **tool_kwargs)
+        tool = _HTTPMCPTool(
+            name="h",
+            url="http://localhost:8080/mcp",
+            http_client=client,
+            headers={"Authorization": "Bearer static", "X-Server": "srv"},
+        )
 
         with (
             patch(self.HTTPX_CTOR) as ctor,
@@ -641,90 +642,39 @@ class TestHTTPMCPToolTransport:
         ctor.assert_not_called()
         assert len(client.event_hooks["request"]) == 1
 
-        token = _mcp_call_headers.set(dynamic_headers) if dynamic_headers is not None else None
-        try:
-            same_origin = Request("POST", "http://localhost:8080/mcp")
-            cross_origin = Request("POST", "http://localhost:9090/mcp")
-            await client.event_hooks["request"][0](same_origin)
-            await client.event_hooks["request"][0](cross_origin)
-        finally:
-            if token is not None:
-                _mcp_call_headers.reset(token)
+        same_origin = Request("POST", "http://localhost:8080/mcp")
+        cross_origin = Request("POST", "http://localhost:9090/mcp")
+        await client.event_hooks["request"][0](same_origin)
+        await client.event_hooks["request"][0](cross_origin)
 
-        for name, value in expected.items():
-            assert same_origin.headers[name] == value
-            assert name not in cross_origin.headers
+        assert same_origin.headers["Authorization"] == "Bearer static"
+        assert same_origin.headers["X-Server"] == "srv"
+        assert "Authorization" not in cross_origin.headers
+        assert "X-Server" not in cross_origin.headers
 
-    @pytest.mark.parametrize(
-        ("tool_kwargs", "dynamic_headers", "expected"),
-        [
-            pytest.param(
-                {"headers": {"X-Secret": "static", "X-Server": "srv"}},
-                None,
-                {"x-secret": "static", "x-server": "srv"},
-                id="static",
-            ),
-            pytest.param(
-                {"header_provider": lambda _args: {"unused": "provider"}},
-                {"X-Dynamic-Secret": "dynamic"},
-                {"x-dynamic-secret": "dynamic"},
-                id="dynamic",
-            ),
-        ],
-    )
-    async def test_headers_are_stripped_from_actual_cross_origin_redirect(
-        self,
-        tool_kwargs: dict[str, Any],
-        dynamic_headers: dict[str, str] | None,
-        expected: dict[str, str],
-    ) -> None:
-        """httpx may inherit custom request headers across redirects; strip configured and dynamic keys."""
+    async def test_headers_are_stripped_from_actual_cross_origin_redirect(self) -> None:
+        """httpx may carry custom request headers across redirects; the hook strips the configured keys."""
         client, seen = _redirecting_mock_client()
-        tool = _HTTPMCPTool(name="h", url="https://origin.test/mcp", http_client=client, **tool_kwargs)
+        tool = _HTTPMCPTool(
+            name="h",
+            url="https://origin.test/mcp",
+            http_client=client,
+            headers={"X-Secret": "static", "X-Server": "srv"},
+        )
         tool._ensure_header_hook(client)
 
-        token = _mcp_call_headers.set(dynamic_headers) if dynamic_headers is not None else None
         try:
             await client.get("https://origin.test/mcp")
         finally:
-            if token is not None:
-                _mcp_call_headers.reset(token)
             await client.aclose()
 
-        for name, value in expected.items():
-            assert seen[0][1][name] == value
-            assert name not in seen[1][1]
+        assert seen[0][1]["x-secret"] == "static"
+        assert seen[0][1]["x-server"] == "srv"
+        assert "x-secret" not in seen[1][1]
+        assert "x-server" not in seen[1][1]
 
-    async def test_get_mcp_client_dynamic_headers_override_static_headers(self) -> None:
-        """Per-call dynamic headers should retain the old override behavior."""
-        from httpx import Request
-
-        client = MagicMock()
-        client.event_hooks = {"request": []}
-        tool = _HTTPMCPTool(
-            name="h",
-            url="http://localhost:8080/mcp",
-            headers={"Authorization": "Bearer static", "X-Server": "srv"},
-            header_provider=lambda _args: {"unused": "provider"},
-            http_client=client,
-        )
-
-        with patch("chrys.service.mcp._http_transport._chrys_streamable_http_client", return_value=object()):
-            tool.get_mcp_client()
-
-        token = _mcp_call_headers.set({"Authorization": "Bearer dynamic", "X-Trace": "abc"})
-        try:
-            request = Request("POST", "http://localhost:8080/mcp")
-            await client.event_hooks["request"][0](request)
-        finally:
-            _mcp_call_headers.reset(token)
-
-        assert request.headers["Authorization"] == "Bearer dynamic"
-        assert request.headers["X-Server"] == "srv"
-        assert request.headers["X-Trace"] == "abc"
-
-    def test_get_mcp_client_uses_custom_transport_without_header_provider(self) -> None:
-        """No header provider: pass the current client through without creating a new one."""
+    def test_get_mcp_client_uses_custom_transport_without_headers(self) -> None:
+        """No static headers: pass the current client through without creating a new one or adding a hook."""
         existing = MagicMock()
         sentinel = object()
         tool = _HTTPMCPTool(
@@ -744,6 +694,7 @@ class TestHTTPMCPToolTransport:
 
         assert result is sentinel
         ctor.assert_not_called()
+        assert tool._inject_headers_hook is None
         stream_client.assert_called_once_with(
             url="http://localhost:8080/mcp",
             http_client=existing,

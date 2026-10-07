@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Chrys skills context provider.
 
@@ -17,6 +19,7 @@ Owns the full skills surface on top of the chrys skill model
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
@@ -27,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from chrys.foundation.events.types import RuntimeSkillDetails
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_cross_platform_path
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.foundation.text.tool_output import truncate_output
@@ -38,6 +42,7 @@ from chrys.service.skills.constants import (
     DEFAULT_SCRIPT_RESULT_MAX_TOKENS,
     RUN_SKILL_SCRIPT_TOOL_NAME,
 )
+from chrys.service.skills.loader import is_contained_skill_path
 from chrys.service.skills.model import Skill, SkillResource, SkillScript
 from chrys.service.tools.result_metadata import tool_error
 
@@ -105,18 +110,23 @@ class StagedSkillRefresh:
 
     def skill_details(self) -> list[RuntimeSkillDetails]:
         """Return staged runtime skill metadata."""
-        return [
-            RuntimeSkillDetails(
-                name=skill.name,
-                description=skill.description or "",
-                source=_catalog_skill_dir(skill) or "Inline profile skills",
-            )
-            for skill in self.skills
-        ]
+        return _runtime_skill_details(self.skills)
 
     def render_catalog_reminder(self) -> str:
         """Return the staged runtime skill catalog for a system reminder."""
         return _render_catalog_block(self.skills)
+
+
+def _runtime_skill_details(skills: Sequence[Skill]) -> list[RuntimeSkillDetails]:
+    """Describe *skills* for display and slash-reference reminders, which may reach the model."""
+    return [
+        RuntimeSkillDetails(
+            name=skill.name,
+            description=surrogate_safe_text(skill.description or ""),
+            source=surrogate_safe_text(_catalog_skill_dir(skill) or "Inline profile skills"),
+        )
+        for skill in skills
+    ]
 
 
 def _create_static_instructions(
@@ -168,9 +178,9 @@ def _skill_revision(skill: Skill) -> str:
     digest = hashlib.sha256()
 
     def add(value: object) -> None:
-        # Surrogateescape keeps revision hashing total for unusual Unicode
-        # content loaded from disk without making catalog rendering fail.
-        digest.update(str(value).encode("utf-8", "surrogateescape"))
+        # Surrogatepass encodes every lone surrogate, a YAML "\ud800" escape
+        # as well as an undecodable path byte, so hashing never fails.
+        digest.update(str(value).encode("utf-8", "surrogatepass"))
         digest.update(b"\0")
 
     add(skill.name)
@@ -222,7 +232,7 @@ def _render_catalog_block(skills: Sequence[Skill]) -> str:
         lines.append("  </skill>")
     lines.append("</available_skills>")
 
-    return "\n".join(lines)
+    return surrogate_safe_text("\n".join(lines))
 
 
 def _skill_revision_element(skill: Skill, *, indent: str = "") -> str:
@@ -263,6 +273,21 @@ def _file_skill_metadata(skill: Skill, skill_dir: str) -> str:
     script_lines = [_script_element(script) for script in sorted(skill.scripts, key=lambda s: s.name)]
     lines.append(_metadata_block("scripts", script_lines))
     return "\n".join(lines)
+
+
+def _find_named[T: (SkillResource, SkillScript)](items: Sequence[T], requested: str) -> T | None:
+    """Find the item named *requested*, ignoring case.
+
+    The model sees an undecodable byte in a name as ``\\udcXX`` text, so a name
+    it sends back may match only that shown form. That match counts when no
+    name matches as given and exactly one shows that way.
+    """
+    wanted = requested.lower()
+    found = next((item for item in items if item.name.lower() == wanted), None)
+    if found is not None:
+        return found
+    shown = [item for item in items if surrogate_safe_text(item.name).lower() == wanted]
+    return shown[0] if len(shown) == 1 else None
 
 
 def _suggest_script_name(query: str, scripts: Sequence[SkillScript]) -> str | None:
@@ -400,14 +425,7 @@ class ChrysSkillsProvider(ContextProvider):
 
     def skill_details(self) -> list[RuntimeSkillDetails]:
         """Return loaded skill metadata for runtime UI surfaces."""
-        return [
-            RuntimeSkillDetails(
-                name=skill.name,
-                description=skill.description or "",
-                source=_catalog_skill_dir(skill) or "Inline profile skills",
-            )
-            for skill in self._skills
-        ]
+        return _runtime_skill_details(self._skills)
 
     async def refresh_context(self) -> list[SkillProviderWarning]:
         """Refresh discovered skills and return newly accumulated warnings.
@@ -486,7 +504,7 @@ class ChrysSkillsProvider(ContextProvider):
             metadata.append(_file_skill_metadata(skill, skill_dir))
 
         suffix = "\n".join(metadata)
-        return f"{skill.content.rstrip()}\n\n{suffix}"
+        return surrogate_safe_text(f"{skill.content.rstrip()}\n\n{suffix}")
 
     async def _read_skill_resource(
         self,
@@ -506,12 +524,22 @@ class ChrysSkillsProvider(ContextProvider):
         if skill is None:
             return tool_error("skill_not_found", f"Skill '{skill_name}' not found.", details={"skill_name": skill_name})
 
-        resource_lower = resource_name.lower()
-        resource = next((r for r in skill.resources if r.name.lower() == resource_lower), None)
+        resource = _find_named(skill.resources, resource_name)
         if resource is None:
             return tool_error(
                 "resource_not_found",
                 f"Resource '{resource_name}' not found in skill '{skill_name}'.",
+                details={"skill_name": skill_name, "resource_name": resource_name},
+            )
+
+        if (
+            resource.full_path
+            and skill.path
+            and not await asyncio.to_thread(is_contained_skill_path, resource.full_path, skill.path)
+        ):
+            return tool_error(
+                "resource_path_outside_skill",
+                f"Resource '{resource_name}' resolves outside skill '{skill_name}'.",
                 details={"skill_name": skill_name, "resource_name": resource_name},
             )
 
@@ -525,13 +553,15 @@ class ChrysSkillsProvider(ContextProvider):
                 details={"skill_name": skill_name, "resource_name": resource_name},
             )
 
+        # Escaped before it is measured: each lone surrogate grows to six characters.
+        text = surrogate_safe_text(text)
         requested = DEFAULT_RESOURCE_MAX_TOKENS if max_tokens is None else max_tokens
         budget = max(100, requested)
         if _tokenizer.count_tokens(text) <= budget:
             return text
         suffix = ""
         if resource.full_path:
-            path = Path(resource.full_path)
+            path = surrogate_safe_text(str(Path(resource.full_path)))
             suffix = (
                 f"[Full resource available at: {path}\n"
                 f"{text.count(chr(10)) + 1} lines, ~{_tokenizer.count_tokens(text)} tokens. "
@@ -569,7 +599,7 @@ class ChrysSkillsProvider(ContextProvider):
         if isinstance(requested, str) and requested.strip():
             name = requested
             if skill is not None:
-                match = next((r for r in skill.resources if r.name.lower() == requested.lower()), None)
+                match = _find_named(skill.resources, requested)
                 if match is not None:
                     name = match.name
             context["resource_name"] = name
@@ -581,7 +611,7 @@ class ChrysSkillsProvider(ContextProvider):
         if isinstance(requested, str) and requested.strip():
             name = requested
             if skill is not None:
-                match = next((s for s in skill.scripts if s.name.lower() == requested.lower()), None)
+                match = _find_named(skill.scripts, requested)
                 if match is not None:
                     name = match.name
             context["script_name"] = name
@@ -604,6 +634,7 @@ class ChrysSkillsProvider(ContextProvider):
                         "skill_name": {"type": "string", "description": "The name of the skill to load."},
                     },
                     "required": ["skill_name"],
+                    "additionalProperties": False,
                 },
             ),
         ]
@@ -612,7 +643,6 @@ class ChrysSkillsProvider(ContextProvider):
             skill_name: str,
             resource_name: str,
             max_tokens: int | None = DEFAULT_RESOURCE_MAX_TOKENS,
-            **kwargs: Any,
         ) -> Any:
             return await self._read_skill_resource(self._skills, skill_name, resource_name, max_tokens)
 
@@ -641,6 +671,7 @@ class ChrysSkillsProvider(ContextProvider):
                         },
                     },
                     "required": ["skill_name", "resource_name"],
+                    "additionalProperties": False,
                 },
             )
         )
@@ -652,7 +683,6 @@ class ChrysSkillsProvider(ContextProvider):
             arguments: list[str] | None = None,
             cwd: str | None = None,
             max_tokens: int | None = DEFAULT_SCRIPT_RESULT_MAX_TOKENS,
-            **kwargs: Any,
         ) -> Any:
             return await self._run_skill_script_chrys(
                 self._skills,
@@ -668,8 +698,9 @@ class ChrysSkillsProvider(ContextProvider):
             FunctionTool(
                 name=RUN_SKILL_SCRIPT_TOOL_NAME,
                 description=(
-                    "Runs a script associated with a skill. Large output is truncated to max_tokens and, when "
-                    "possible, the complete cleaned result is saved under the current session directory."
+                    "Runs a script associated with a skill. Large output is truncated to max_tokens; very large "
+                    "output keeps only its beginning and end, and the middle cannot be recovered. When possible, "
+                    "the kept output is saved under the current session directory."
                 ),
                 func=_run_script,
                 input_model={
@@ -725,6 +756,7 @@ class ChrysSkillsProvider(ContextProvider):
                         },
                     },
                     "required": ["skill_name", "script_name"],
+                    "additionalProperties": False,
                 },
             )
         )
@@ -768,7 +800,7 @@ class ChrysSkillsProvider(ContextProvider):
             return tool_error("skill_not_found", f"Skill '{skill_name}' not found.", details={"skill_name": skill_name})
 
         scripts = skill.scripts
-        script = next((s for s in scripts if s.name.lower() == script_name.lower()), None)
+        script = _find_named(scripts, script_name)
         if not script:
             suggestion = _suggest_script_name(script_name, scripts)
             if suggestion:

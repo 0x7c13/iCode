@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import inspect
 import math
+import os
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -36,16 +38,43 @@ DEFAULT_PYTHON_TIMEOUT = 300.0
 
 WARNING_LOOP_EXIT_ALL_CONDITIONAL = "loop_exit_all_conditional"
 
+_ENTRY_ENV = "CHRYS_WORKFLOW_ENTRY"  # set by the worker host to the entry's file name before the entry runs
+_SDK_DIR = os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
+
 
 class WorkflowValidationError(ValueError):
-    """A workflow file violates the structural contract; ``location`` names the offender."""
+    """A workflow file violates the structural contract; ``location`` names the offender.
 
-    def __init__(self, message: str, *, location: Optional[str] = None) -> None:
+    ``site`` is the ``(file, line)`` where the offending node or edge was declared, when ``build()`` finds the
+    fault and the declaration was in a file; an error raised while declaring is located by its traceback.
+    """
+
+    def __init__(self, message: str, *, location: Optional[str] = None, site: Optional[tuple[str, int]] = None) -> None:
         super().__init__(message)
         self.location = location
+        self.site = site
 
     def to_dict(self) -> dict[str, Any]:
-        return {"message": str(self), "location": self.location}
+        file, line = self.site if self.site is not None else (None, None)
+        return {"message": str(self), "location": self.location, "file": file, "line": line}
+
+
+def _declaration_site() -> Optional[tuple[str, int]]:
+    """The ``(file, line)`` of the innermost caller outside the SDK whose code comes from a file.
+
+    A file is the entry as the host names it or an existing absolute path; code that a workflow builds with
+    ``compile``/``exec`` under a made-up name is passed over for the line that ran it.
+    """
+    entry = os.environ.get(_ENTRY_ENV)
+    frame = sys._getframe(1)
+    while frame is not None:
+        name = frame.f_code.co_filename
+        if os.path.normcase(os.path.dirname(os.path.abspath(name))) != _SDK_DIR and (
+            name == entry or (os.path.isabs(name) and os.path.isfile(name))
+        ):
+            return name, frame.f_lineno
+        frame = frame.f_back
+    return None
 
 
 @dataclass(frozen=True)
@@ -99,6 +128,7 @@ class NodeDefinition:
     model: Optional[str] = None
     instructions_suffix: Optional[str] = None
     loop: Optional[LoopDefinition] = None
+    site: Optional[tuple[str, int]] = field(default=None, compare=False, repr=False)  # where it was declared
 
 
 @dataclass(frozen=True)
@@ -110,6 +140,7 @@ class EdgeDefinition:
     switch_group: Optional[str] = None
     switch_position: Optional[int] = None
     switch_default: bool = False
+    site: Optional[tuple[str, int]] = field(default=None, compare=False, repr=False)  # where it was declared
 
     @property
     def conditional(self) -> bool:
@@ -227,41 +258,41 @@ def _callable_name(fn: Any) -> str:
     return type(fn).__name__
 
 
-def _callable_shape(fn: Any, *, what: str, allowed_arities: tuple[int, ...]) -> tuple[int, bool]:
-    """Return ``(positional_arity, is_async)`` or raise on an illegal shape."""
+def _callable_shape(fn: Any, *, what: str, location: str, allowed_arities: tuple[int, ...]) -> tuple[int, bool]:
+    """Return ``(positional_arity, is_async)`` or raise on an illegal shape, located at the node or edge *location*."""
     if not callable(fn):
-        raise WorkflowValidationError(f"{what} must be callable, got {type(fn).__name__}.", location=what)
+        raise WorkflowValidationError(f"{what} must be callable, got {type(fn).__name__}.", location=location)
     try:
         signature = inspect.signature(fn)
     except (TypeError, ValueError) as exc:
-        raise WorkflowValidationError(f"{what} has no inspectable signature.", location=what) from exc
+        raise WorkflowValidationError(f"{what} has no inspectable signature.", location=location) from exc
     positional = 0
     for parameter in signature.parameters.values():
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
-            raise WorkflowValidationError(f"{what} must not take *args or **kwargs.", location=what)
+            raise WorkflowValidationError(f"{what} must not take *args or **kwargs.", location=location)
         if parameter.kind == parameter.KEYWORD_ONLY:
             if parameter.default is parameter.empty:
-                raise WorkflowValidationError(f"{what} must not require keyword-only parameters.", location=what)
+                raise WorkflowValidationError(f"{what} must not require keyword-only parameters.", location=location)
             continue
         if parameter.default is not parameter.empty:
             raise WorkflowValidationError(
-                f"{what} must declare exactly its positional parameters without defaults.", location=what
+                f"{what} must declare exactly its positional parameters without defaults.", location=location
             )
         positional += 1
     if positional not in allowed_arities:
         allowed = " or ".join(str(n) for n in allowed_arities)
         raise WorkflowValidationError(
-            f"{what} must take {allowed} positional parameter(s), it takes {positional}.", location=what
+            f"{what} must take {allowed} positional parameter(s), it takes {positional}.", location=location
         )
     # An object with an ``async def __call__`` is as async as a coroutine function.
     is_async = inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(type(fn).__call__)
     return positional, is_async
 
 
-def _require_sync(fn: Any, *, what: str, allowed_arities: tuple[int, ...]) -> int:
-    arity, is_async = _callable_shape(fn, what=what, allowed_arities=allowed_arities)
+def _require_sync(fn: Any, *, what: str, location: str, allowed_arities: tuple[int, ...]) -> int:
+    arity, is_async = _callable_shape(fn, what=what, location=location, allowed_arities=allowed_arities)
     if is_async:
-        raise WorkflowValidationError(f"{what} must be a sync function.", location=what)
+        raise WorkflowValidationError(f"{what} must be a sync function.", location=location)
     return arity
 
 
@@ -345,6 +376,7 @@ class BuilderScope:
                 profile=profile,
                 model=model,
                 instructions_suffix=instructions_suffix,
+                site=_declaration_site(),
             )
         )
 
@@ -364,7 +396,10 @@ class BuilderScope:
         """
         _check_name(name)
         arity, is_async = _callable_shape(
-            fn, what=f"python node {name!r} body (value: WorkflowValue[, ctx: NodeContext])", allowed_arities=(1, 2)
+            fn,
+            what=f"python node {name!r} body (value: WorkflowValue[, ctx: NodeContext])",
+            location=name,
+            allowed_arities=(1, 2),
         )
         return self._state.add_node(
             NodeDefinition(
@@ -376,6 +411,7 @@ class BuilderScope:
                 fn=fn,
                 fn_arity=arity,
                 fn_is_async=is_async,
+                site=_declaration_site(),
             )
         )
 
@@ -384,8 +420,17 @@ class BuilderScope:
     def edge(self, src: NodeHandle, dst: NodeHandle, *, when: Optional[Callable[[WorkflowValue], bool]] = None) -> None:
         src_id, dst_id = self._endpoints(src, dst)
         if when is not None:
-            _require_sync(when, what=f"edge predicate {src_id!r} -> {dst_id!r}", allowed_arities=(1,))
-        self._state.add_edge(EdgeDefinition(edge_id=_edge_id(src_id, dst_id), src=src_id, dst=dst_id, predicate=when))
+            _require_sync(
+                when,
+                what=f"edge predicate {src_id!r} -> {dst_id!r}",
+                location=_edge_id(src_id, dst_id),
+                allowed_arities=(1,),
+            )
+        self._state.add_edge(
+            EdgeDefinition(
+                edge_id=_edge_id(src_id, dst_id), src=src_id, dst=dst_id, predicate=when, site=_declaration_site()
+            )
+        )
 
     def switch(
         self,
@@ -404,7 +449,12 @@ class BuilderScope:
                 raise WorkflowValidationError("switch cases must be (predicate, node) pairs.", location=src_id)
             predicate, target = case
             _, dst_id = self._endpoints(src, target)
-            _require_sync(predicate, what=f"switch case {position} of {src_id!r}", allowed_arities=(1,))
+            _require_sync(
+                predicate,
+                what=f"switch case {position} of {src_id!r}",
+                location=_edge_id(src_id, dst_id),
+                allowed_arities=(1,),
+            )
             self._state.add_edge(
                 EdgeDefinition(
                     edge_id=_edge_id(src_id, dst_id),
@@ -413,6 +463,7 @@ class BuilderScope:
                     predicate=predicate,
                     switch_group=src_id,
                     switch_position=position,
+                    site=_declaration_site(),
                 )
             )
         _, default_id = self._endpoints(src, default)
@@ -423,6 +474,7 @@ class BuilderScope:
                 dst=default_id,
                 switch_group=src_id,
                 switch_default=True,
+                site=_declaration_site(),
             )
         )
 
@@ -442,7 +494,7 @@ class BuilderScope:
         if not sources:
             raise WorkflowValidationError(f"join into {dst_id!r} needs at least one source.", location=dst_id)
         if combine is not None:
-            _require_sync(combine, what=f"join combine into {dst_id!r}", allowed_arities=(1,))
+            _require_sync(combine, what=f"join combine into {dst_id!r}", location=dst_id, allowed_arities=(1,))
         join_id = f"join:{dst_id}"
         join_handle = self._state.add_node(
             NodeDefinition(
@@ -453,6 +505,7 @@ class BuilderScope:
                 timeout=None,
                 fn=combine,
                 fn_arity=1 if combine is not None else 0,
+                site=_declaration_site(),
             )
         )
         for source in sources:
@@ -512,6 +565,7 @@ class WorkflowBuilder(BuilderScope):
         on_exhausted: str = ON_EXHAUSTED_CONTINUE,
     ) -> NodeHandle:
         _check_name(name)
+        site = _declaration_site()
         state = self._state
         if state.building_loop is not None:
             raise WorkflowValidationError(
@@ -522,7 +576,7 @@ class WorkflowBuilder(BuilderScope):
             raise WorkflowValidationError("loop max_iterations must be an int >= 1.", location=name)
         if on_exhausted not in (ON_EXHAUSTED_CONTINUE, ON_EXHAUSTED_FAIL):
             raise WorkflowValidationError("loop on_exhausted must be 'continue' or 'fail'.", location=name)
-        _require_sync(until, what=f"loop {name!r} until", allowed_arities=(1,))
+        _require_sync(until, what=f"loop {name!r} until", location=name, allowed_arities=(1,))
         if not callable(body):
             raise WorkflowValidationError("loop body must be callable.", location=name)
         if name in state.nodes:
@@ -555,6 +609,7 @@ class WorkflowBuilder(BuilderScope):
                 retry=Retry(max_attempts=1),
                 timeout=None,
                 loop=loop,
+                site=site,
             )
         )
 
@@ -636,16 +691,19 @@ def _validate(d: WorkflowDefinition) -> list[dict[str, Any]]:
         if node.kind != KIND_JOIN:
             continue
         (dst_id,) = [e.dst for e in d.out_edges(node.node_id)]
-        others = [e.src for e in d.in_edges(dst_id) if e.src != node.node_id]
-        if others:
+        extra = [e for e in d.in_edges(dst_id) if e.src != node.node_id]
+        if extra:
+            others = [e.src for e in extra]
             raise WorkflowValidationError(
-                f"join target {dst_id!r} must not have other direct in-edges (from {others!r}).", location=dst_id
+                f"join target {dst_id!r} must not have other direct in-edges (from {others!r}).",
+                location=dst_id,
+                site=extra[0].site,
             )
     scopes: dict[Optional[str], list[str]] = {None: []}
     for node_id in d.node_order:
         scopes.setdefault(d.nodes[node_id].parent_loop, []).append(node_id)
     for scope_id, members in scopes.items():
-        _check_acyclic(d, members, scope_id)
+        _check_acyclic(d, members)
         if scope_id is None:
             root = d.start
         else:
@@ -656,8 +714,11 @@ def _validate(d: WorkflowDefinition) -> list[dict[str, Any]]:
         unreachable = _unreachable(d, members, root)
         if unreachable:
             where = "start" if scope_id is None else f"loop {scope_id!r} entry"
+            first = min(unreachable)
             raise WorkflowValidationError(
-                f"Nodes {sorted(unreachable)!r} are not reachable from {where}.", location=min(unreachable)
+                f"Nodes {sorted(unreachable)!r} are not reachable from {where}.",
+                location=first,
+                site=d.nodes[first].site,
             )
     for node in d.nodes.values():
         if node.loop is None:
@@ -675,7 +736,7 @@ def _validate(d: WorkflowDefinition) -> list[dict[str, Any]]:
     return warnings
 
 
-def _check_acyclic(d: WorkflowDefinition, members: list[str], scope_id: Optional[str]) -> None:
+def _check_acyclic(d: WorkflowDefinition, members: list[str]) -> None:
     """Iterative three-colour DFS: a long chain must not depend on the recursion limit."""
     member_set = set(members)
     color: dict[str, int] = {}
@@ -697,7 +758,9 @@ def _check_acyclic(d: WorkflowDefinition, members: list[str], scope_id: Optional
             if state == 1:
                 cycle = [*trail[trail.index(edge.dst) :], edge.dst]
                 raise WorkflowValidationError(
-                    f"Cycle detected: {' -> '.join(cycle)}. Use wf.loop() for repetition.", location=edge.dst
+                    f"Cycle detected: {' -> '.join(cycle)}. Use wf.loop() for repetition.",
+                    location=edge.dst,
+                    site=edge.site,
                 )
             if state == 0:
                 color[edge.dst] = 1

@@ -21,7 +21,8 @@ from chrys.service.analytics import (
     WallBucket,
     analyze_trajectory,
 )
-from chrys.service.analytics.aggregation import _overview, _validation_metrics
+from chrys.service.analytics._actions import _validation_metrics
+from chrys.service.analytics.aggregation import _overview
 from tests.service.analytics._events import EventLog
 
 _NS = 1_000_000_000

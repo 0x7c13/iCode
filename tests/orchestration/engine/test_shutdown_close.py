@@ -793,7 +793,7 @@ async def test_new_session_reuses_mcp_cache_and_final_shutdown_closes_it(tmp_pat
     with (
         patch.object(runtime_factory_module, "Agent", return_value=agent_mock),
         patch.object(runtime_factory_module, "ContextManager", return_value=fake_ctx),
-        patch.object(agent_builder_module, "create_client", return_value=MagicMock()),
+        patch.object(agent_builder_module, "create_client", return_value=MagicMock(aclose=AsyncMock())),
         patch.object(
             agent_builder_module,
             "resolve_selection_for_agent",
@@ -802,9 +802,9 @@ async def test_new_session_reuses_mcp_cache_and_final_shutdown_closes_it(tmp_pat
         patch.object(agent_builder_module, "effective_chat_options", return_value={}),
         patch.object(agent_builder_module, "LoopRecorder", return_value=MagicMock()),
         patch.object(runtime_factory_module, "SystemReminderMiddleware", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "LastWordsGenerator", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "LastWordsGenerator", return_value=MagicMock(aclose=AsyncMock())),
         patch.object(agent_builder_module, "TurnBindings", return_value=executor_mock),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(agent_builder_module, "ApprovalPolicy", return_value=MagicMock()),
         patch("chrys.service.tools.registry.ToolRegistry", return_value=fake_tool_registry),

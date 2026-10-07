@@ -7,18 +7,16 @@ from __future__ import annotations
 import errno
 import logging
 import os
-import shutil
 import stat
-import subprocess
 from dataclasses import dataclass
 from pathlib import PurePath
 
 from chrys.service.mutations.git_state import (
     GIT_TIMEOUT_SECONDS,
     GitDeltaEntry,
+    _run_git_nul_stream,
     canonical_git_pathspecs,
     git_path_exists,
-    git_subprocess_env,
     read_git_blob,
     read_git_entry_meta,
     read_git_head_delta,
@@ -335,6 +333,8 @@ class GitDiffCalibrator:
         for args in commands:
             if not self._run_git_namelist(args, files):
                 failed = True
+            if len(files) > MAX_DIRTY_FILES:
+                break  # Callers give up past the limit; the rest would only be read and dropped.
         return files, failed
 
     def _pathspec_args(self) -> list[str]:
@@ -359,33 +359,19 @@ class GitDiffCalibrator:
         return canonical_git_pathspecs(specs)
 
     def _run_git_namelist(self, args: list[str], out: set[str]) -> bool:
-        from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+        """Add the paths *args* lists to *out*, stopping Git once *out* holds more than ``MAX_DIRTY_FILES``."""
 
-        executable = shutil.which("git")
-        if executable is None:
-            return False
+        def _consume(field: bytes) -> bool:
+            if field:
+                out.add(os.path.normpath(os.path.join(self._root, os.fsdecode(field))))
+            return len(out) <= MAX_DIRTY_FILES
+
         try:
-            result = subprocess.run(  # noqa: S603
-                [executable, *args],
-                # Non-interactive probe: the process stdin (the ACP protocol
-                # pipe under ACP) must not reach the child.
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                cwd=self._root,
-                env=git_subprocess_env(),
-                timeout=_GIT_TIMEOUT,
-                check=False,
-                **_windows_hidden_subprocess_kwargs(),
-            )
-        except subprocess.TimeoutExpired, OSError:
+            stream = _run_git_nul_stream(self._root, args, timeout=_GIT_TIMEOUT, consume=_consume)
+        except OSError:
             logger.debug("GitDiffCalibrator: git command failed: %s", args, exc_info=True)
             return False
-        if result.returncode != 0:
-            return False
-        for path in result.stdout.split(b"\0"):
-            if path:
-                out.add(os.path.normpath(os.path.join(self._root, os.fsdecode(path))))
-        return True
+        return stream.stopped or (stream.returncode == 0 and not stream.malformed)
 
     @staticmethod
     def _stat(path: str) -> _FileStat | None:

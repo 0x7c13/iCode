@@ -14,6 +14,7 @@ import pytest
 import chrys.orchestration.sub_agents.tools as sub_agent_module
 import chrys.orchestration.workflows.agent_node as agent_node_module
 import chrys.orchestration.workflows.agent_node_build as agent_node_build_module
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
     InvocationAborted,
     InvocationPaused,
@@ -173,6 +174,43 @@ async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeyp
     assert "Remember: the build is green." in options["instructions"]
     assert "<name>review</name>" in (messages[-1].text or "")
     assert {"load_skill", "read_skill_resource", "run_skill_script"} <= {tool.name for tool in options["tools"]}
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["on", "off"])
+async def test_project_skills_reach_every_agent_only_when_the_user_turns_them_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    main_client = MockChatClient(responses=[_delegate("inspect the tree"), MockResponse(text="chat done")])
+    child_client = MockChatClient(responses=[MockResponse(text="child done")])
+    node_client = MockChatClient(responses=[MockResponse(text="node done")])
+    patch_runtime(monkeypatch, [main_client, node_client])
+    _hand_out_child_client(monkeypatch, child_client)
+    project = make_project(tmp_path)
+    skill_dir = project / ".agents" / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: review\ndescription: Reviews a change.\n---\n", encoding="utf-8")
+    profiles = [_delegating_profile(), _child_profile()]
+    for profile in profiles:
+        profile.skills = SkillsConfig(auto_load_user_agents_skills=False)
+    write_workflow(project, "skilled", _WORKFLOW)
+    host = make_host(
+        tmp_path,
+        project=project,
+        profiles=profiles,
+        settings=Settings(model_profile="mock-profile", project_skills_enabled=enabled),
+    )
+    try:
+        await host.run_until_final("Go")
+        await confirm(host, "skilled")
+        result, _events = await run(host, "skilled", input_text="Go")
+    finally:
+        await host.shutdown()
+
+    assert result.outcome.value == "completed"
+    # The chat agent, its sub-agent and the workflow node each list the project's skill only when it is on.
+    for client in (main_client, child_client, node_client):
+        (messages, _options) = client.call_history[0]
+        assert ("<name>review</name>" in (messages[-1].text or "")) is enabled
 
 
 async def test_a_failed_node_child_ends_without_a_pause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

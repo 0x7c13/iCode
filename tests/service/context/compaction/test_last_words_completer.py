@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import math
+from typing import ClassVar
 
 import pytest
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.kernel import Content, LastWordsToolCallError, Message
 from chrys.service.context.compaction import last_words as last_words_mod
@@ -16,12 +18,14 @@ from chrys.service.context.compaction.last_words import (
     _FORMAT_CONTRACT,
     _SLICE_SAFETY_MARGIN_TOKENS,
     _SUPPLEMENT_LABEL,
+    LastWordsGenerationError,
     LastWordsGenerator,
 )
 from chrys.service.context.compaction.scoped import ScopedGroup
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.service.context.compaction._last_words_helpers import (
     CharacterTokenizer,
+    FailingFallbackClient,
     FakeCompleter,
     FallbackClient,
     generate,
@@ -113,6 +117,7 @@ async def test_fallback_path_reports_side_call_usage(tmp_path):
     class _UsageResponse:
         raw_text = note
         usage_details = usage
+        additional_properties: ClassVar[dict[str, object]] = {}
 
     class _UsageClient:
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -128,6 +133,26 @@ async def test_fallback_path_reports_side_call_usage(tmp_path):
     )
 
     assert out == note
+    assert reported == [usage]
+
+
+async def test_fallback_path_reports_the_usage_of_a_response_the_adapter_failed(tmp_path):
+    """A response the adapter fails (here a refusal that asks for calls)
+    consumed provider tokens too."""
+    reported: list = []
+    gen = make_generator(tmp_path, report_usage=reported.append)
+    usage = {"input_token_count": 7, "output_token_count": 3, "total_token_count": 10}
+    error = ProviderResponseError("content_filter", "Refused.", retryable=False, usage_details=usage)
+    gen._client = FailingFallbackClient(error)  # type: ignore[assignment]
+
+    with pytest.raises(LastWordsGenerationError):
+        await generate(
+            gen,
+            user_request="do X",
+            previous_last_words=None,
+            dropped_messages=[],
+        )
+
     assert reported == [usage]
 
 

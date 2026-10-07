@@ -36,9 +36,12 @@ from chrys.orchestration.engine.run.attachments import (
     retry_image_unsupported_display,
     vision_unsupported_display,
 )
+from tests.support.images import image_bytes
+
+_PNG = image_bytes()
 
 
-def _write(path: Path, data: bytes = b"image-bytes") -> Path:
+def _write(path: Path, data: bytes = _PNG) -> Path:
     path.write_bytes(data)
     return path
 
@@ -110,12 +113,12 @@ def test_parse_image_mentions_single_png(tmp_path: Path) -> None:
     assert attachment.path == image
     assert attachment.mention == "@shot.png"
     assert attachment.media_type == "image/png"
-    assert attachment.data == b"image-bytes"
+    assert attachment.data == _PNG
 
 
 def test_parse_image_mentions_multiple_and_non_image_ignored(tmp_path: Path) -> None:
-    first = _write(tmp_path / "a.PNG", b"a")
-    second = _write(tmp_path / "b.webp", b"b")
+    first = _write(tmp_path / "a.PNG")
+    second = _write(tmp_path / "b.webp", image_bytes("WEBP"))
     _write(tmp_path / "README.md", b"text")
 
     result = parse_image_mentions(f"compare @{first.name} @README.md @{second.name}", cwd=tmp_path)
@@ -126,7 +129,7 @@ def test_parse_image_mentions_multiple_and_non_image_ignored(tmp_path: Path) -> 
 
 
 def test_parse_image_mentions_quoted_path_with_spaces(tmp_path: Path) -> None:
-    image = _write(tmp_path / "screen shot.jpg")
+    image = _write(tmp_path / "screen shot.jpg", image_bytes("JPEG"))
 
     result = parse_image_mentions('describe @"screen shot.jpg"', cwd=tmp_path)
 
@@ -248,6 +251,52 @@ def test_parse_image_mentions_oversize_supported_image_is_compressed(
     assert attachment.data.startswith(b"\xff\xd8")
 
 
+def test_parse_image_mentions_converts_an_unsupported_format_behind_a_supported_name(tmp_path: Path) -> None:
+    """Model APIs don't read a renamed BMP: it goes out converted, like an oversized image."""
+    image = _write(tmp_path / "shot.png", image_bytes("BMP"))
+
+    result = parse_image_mentions("look at @shot.png", cwd=tmp_path)
+
+    assert result.errors == []
+    (attachment,) = result.attachments
+    assert attachment.path == image
+    assert attachment.media_type == "image/jpeg"
+    assert attachment.size == len(attachment.data)
+    assert attachment.data.startswith(b"\xff\xd8\xff")
+
+
+def test_parse_image_mentions_refuses_a_format_pillow_may_not_decode(tmp_path: Path) -> None:
+    """A TIFF behind an image name never reaches Pillow's TIFF decoder."""
+    _write(tmp_path / "shot.png", image_bytes("TIFF"))
+
+    result = parse_image_mentions("look at @shot.png", cwd=tmp_path)
+
+    assert result.attachments == []
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("@shot.png: This file could not be read as a supported image.")
+
+
+def test_parse_image_mentions_types_an_image_by_its_bytes(tmp_path: Path) -> None:
+    jpeg = image_bytes("JPEG")
+    _write(tmp_path / "shot.png", jpeg)
+
+    result = parse_image_mentions("look at @shot.png", cwd=tmp_path)
+
+    assert result.errors == []
+    (attachment,) = result.attachments
+    assert (attachment.media_type, attachment.data) == ("image/jpeg", jpeg)
+
+
+def test_parse_image_mentions_unreadable_image_is_error(tmp_path: Path) -> None:
+    _write(tmp_path / "shot.png", b"not an image")
+
+    result = parse_image_mentions("look at @shot.png", cwd=tmp_path)
+
+    assert result.attachments == []
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("@shot.png: This file could not be read as a supported image.")
+
+
 def test_parse_image_mentions_source_over_compression_limit_is_error(tmp_path: Path) -> None:
     _write_sparse(tmp_path / "too-large.png", MAX_IMAGE_SOURCE_BYTES + 1)
 
@@ -322,7 +371,7 @@ def test_parse_image_mentions_pillow_decompression_bomb_is_error(
 
     from PIL import Image as PILImage
 
-    def raise_decompression_bomb(_data: object) -> object:
+    def raise_decompression_bomb(_data: object, *, formats: tuple[str, ...]) -> object:
         raise PILImage.DecompressionBombError("too many pixels")
 
     monkeypatch.setattr(PILImage, "open", raise_decompression_bomb)
@@ -343,7 +392,7 @@ def test_parse_image_mentions_pillow_decompression_warning_is_error(
 
     from PIL import Image as PILImage
 
-    def raise_decompression_warning(_data: object) -> object:
+    def raise_decompression_warning(_data: object, *, formats: tuple[str, ...]) -> object:
         raise PILImage.DecompressionBombWarning("too many pixels")
 
     monkeypatch.setattr(PILImage, "open", raise_decompression_warning)
@@ -390,7 +439,7 @@ def test_build_user_contents_text_only_round_trips() -> None:
 
 
 def test_build_user_contents_appends_image_content_after_text(tmp_path: Path) -> None:
-    _write(tmp_path / "shot.png", b"abc")
+    _write(tmp_path / "shot.png")
     parsed = parse_image_mentions("@shot.png", cwd=tmp_path)
 
     contents = build_user_contents("look at @shot.png", parsed.attachments)

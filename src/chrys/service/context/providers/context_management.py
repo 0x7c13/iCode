@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.errors import is_context_overflow
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_CONTEXT, set_tool_kind
 from chrys.foundation.trajectory.context import side_call_scope
@@ -35,7 +36,7 @@ from chrys.kernel import (
 )
 from chrys.service.context.compaction.groups import _tool_call_name, _tool_result_text
 from chrys.service.context.providers.history import CompressibleHistoryProvider
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 from chrys.service.tools.result_metadata import tool_error
 
 if TYPE_CHECKING:
@@ -47,6 +48,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _HISTORY_SOURCE_ID = CompressibleHistoryProvider.DEFAULT_SOURCE_ID
+
+# The exception itself goes only to the log: its text can carry local
+# paths, URLs or credentials.
+_RECALL_OVERFLOW_TEXT = (
+    "recall failed — the compressed block is too large for this model's context window. "
+    "Use its summary from list_compressed_contexts instead."
+)
+_RECALL_FAILED_TEXT = "recall failed — the model request for this block did not complete."
 
 _INSTRUCTIONS = """\
 ## System reminders
@@ -393,7 +402,7 @@ class ContextManagementProvider(ContextProvider):
             logger.warning("recall_context failed: %s", e, exc_info=True)
             return tool_error(
                 "context_recall_failed",
-                f"recall failed — {e}",
+                _RECALL_OVERFLOW_TEXT if is_context_overflow(e) else _RECALL_FAILED_TEXT,
                 details={"compressed_context_id": compressed_context_id},
             )
 

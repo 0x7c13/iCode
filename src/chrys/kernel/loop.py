@@ -1,24 +1,20 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
-"""Model/tool loop over a chat middleware layer and instrumented wire client.
+"""Model/tool loop over a chat middleware layer and a provider wire client.
 
 ``ToolLoopLayer`` owns per-run middleware pipelines, dispatch, result assembly,
-continuation state and interrupt-recovery recording. Approval middleware
-controls tool admission; ``MiddlewareTermination`` stops execution.
-A tool that raises answers the model with a fixed ``Error: Function failed.``
-unless it raised ``ModelVisibleToolError``, whose message the model reads;
-argument-validation errors include safe schema guidance without echoing the
-full argument payload. Every failed result also records the exception tree in
-its ``exception`` field, which never goes on the wire.
+continuation state and interrupt-recovery recording. Each ``get_response``
+builds one ``_LoopRun`` (the blocking and streaming drivers) over a
+``_WireCaller`` (logical model calls and their wire retry lanes) and a
+``_LoopTrajectory`` (cycle, exchange and retry events, and the landed tool
+operations not yet dispatched). Tool calls execute in ``_tool_execution``;
+the interrupt-recovery journal is ``_loop_recorder``.
 
-The loop owns invocation logs and per-tool spans. Raw arguments and results
-are logged only when ``TELEMETRY_GATE.sensitive_data`` is set; spans require
-``TELEMETRY_GATE.enabled``. Direct ``FunctionTool.invoke`` calls remain silent.
-
-Tool containers become fresh run-local lists and are normalized again before
-each batch, since direct callers and progressive exposure can add tools after
-agent preparation. Inner stream result hooks run once; final assembly must
-not replay them.
+Tool containers become fresh run-local lists, since direct callers and
+progressive exposure can add tools after agent preparation. Inner stream
+result hooks run once; final assembly must not replay them.
 
 Kernel dependencies stay within this package, allowed third-party packages
 and foundation. Intra-package imports are relative.
@@ -27,44 +23,24 @@ and foundation. Intra-package imports are relative.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import datetime
-import decimal
 import functools
-import hashlib
 import inspect
-import json
 import logging
-from collections import Counter
 from collections.abc import Mapping, Sequence
-from copy import copy, deepcopy
+from copy import copy
 from dataclasses import dataclass
 from enum import Enum
-from time import monotonic_ns, perf_counter, time_ns
-from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
+from time import monotonic_ns
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from pydantic import BaseModel, ValidationError
-
-from chrys.foundation.errors import clean_error_message, invalidates_continuation_token
-from chrys.foundation.observability.gate import TELEMETRY_GATE
-from chrys.foundation.recovery import RecoveryPersistOutcome
+from chrys.foundation.errors import (
+    clean_error_message,
+    invalidates_continuation_token,
+    is_context_overflow,
+    is_thinking_binding_rejection,
+)
 from chrys.foundation.retry import StreamStall
-from chrys.foundation.tool_call_context import (
-    TOOL_CALL_CONTEXT_METADATA_KEY,
-    get_tool_context,
-    merge_tool_call_context_property,
-)
-from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY, execution_stamp_from_metadata
-from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY, read_tool_invocation_order
-from chrys.foundation.tool_kinds import TOOL_CALL_KIND_METADATA_KEY, get_tool_kind
-from chrys.foundation.tool_result_metadata import (
-    TOOL_ERROR_KIND_METADATA_KEY,
-    TOOL_ERROR_MESSAGE_METADATA_KEY,
-    TOOL_FAILED_METADATA_KEY,
-    TOOL_INTERRUPTED_METADATA_KEY,
-    TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY,
-    TOOL_RESULT_METADATA_KEY,
-)
+from chrys.foundation.tool_invocation_order import TOOL_INVOCATION_ORDER_KEY
 from chrys.foundation.trajectory.context import (
     TRAJECTORY_CONTEXT_KWARG,
     TRAJECTORY_EXCHANGE_KWARG,
@@ -87,30 +63,14 @@ from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import (
     ANALYTICS_ITEM_ID_KEY,
     OPERATION_ID_KEY,
-    TOOL_RESULT_CARRIER_ITEM_ID_METADATA_KEY,
-    TOOL_RESULT_ITEM_ID_METADATA_KEY,
-    read_analytics_item_id,
-    read_operation_id,
-)
-from chrys.foundation.trajectory.tools import tool_operation_finished_draft, tool_operation_started_draft
-from chrys.foundation.trajectory.writer import EmitResult
-from chrys.foundation.trajectory_timing import (
-    TRAJECTORY_TIMING_KEY,
-    build_instant_trajectory_timing,
-    trajectory_timing_from_metadata,
-)
-from chrys.foundation.util.sub_agent_context import (
-    SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY,
-    sub_agent_parent_result_metadata,
 )
 
 from ._content import Content, add_usage_details, normalize_stream_usage
-from ._result_ceiling import apply_result_ceiling
-from ._tool_arg_errors import (
-    _accepts_arbitrary_argument_names,
-    _argument_validation_message,
-    _rejects_unexpected_arguments,
-    _unexpected_argument_names,
+from ._loop_recorder import LoopRecorder, _message_snapshot
+from ._tool_execution import (
+    _execute_function_calls,
+    _is_actionable_function_call,
+    _record_unexecuted_tool_operation,
 )
 from ._types import (
     ChatResponse,
@@ -119,32 +79,22 @@ from ._types import (
     ResponseStream,
 )
 from .client import _wire_message_view, resolve_storage_mode_and_handles, start_with_wire_progress
-from .exceptions import ChrysException, tool_error_result_text
+from .compaction import ContextOverflowSink
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
-from .instrumentation import (
-    FUNCTION_SPAN_EXCLUDED_KWARGS,
-    OtelAttr,
-    capture_exception,
-    get_function_duration_histogram,
-    get_function_span,
-    get_function_span_attributes,
-)
-from .middleware import FunctionMiddlewarePipeline, MiddlewareTermination, _as_middleware_list, split_middleware
+from .middleware import FunctionMiddlewarePipeline, _as_middleware_list, split_middleware
 from .sessions import AgentSession, is_local_history_conversation_id
 from .tools import (
-    FunctionTool,
-    SyncToolCancelledAfterCompletion,
-    _is_skip_parsing_sentinel,
-    _validate_arguments_against_schema,
     normalize_tools,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterable, Awaitable, Callable, Container, Coroutine
+    from collections.abc import AsyncIterable, Awaitable, Callable
+
+    from chrys.foundation.trajectory.envelope import EventDraft
 
     from ._content import UsageDetails
-    from .middleware import ChatMiddleware, ChatMiddlewareLayer, FunctionInvocationContext, FunctionMiddleware
+    from .middleware import ChatMiddleware, ChatMiddlewareLayer, FunctionMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +122,10 @@ class WireRetryPolicy(Protocol):
     stall_timeout_seconds: float | None
     stall_max_retries: int
     stall_exhausted_action: StallExhaustedAction
+    # Probe for the hosted tool calls a replay must not re-run (side-effectful
+    # or of unknown safety) that the current wire attempt already ran
+    # server-side; None when the caller has no such probe.
+    hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None
 
     def backoff_seconds(self, attempt: int) -> int: ...
 
@@ -216,25 +170,11 @@ class ConsumedInjectionMessageProbe:
             self.commit_consumed_injections()
 
 
-# --------------------------------------------------------------------------- #
-# LoopRecorder — loop-message recording for interrupt recovery
-# --------------------------------------------------------------------------- #
-
-
-def _contains_identity(messages: list[Message], target: Message) -> bool:
-    return any(message is target for message in messages)
-
-
-def _is_actionable_function_call(content: Content) -> bool:
-    """Return whether a function call must be executed by the local tool loop."""
-    return content.type == "function_call" and not content.informational_only
-
-
-def _has_function_call(message: Message) -> bool:
-    return any(_is_actionable_function_call(content) for content in message.contents)
-
-
 _MAX_ITERATIONS_FALLBACK_TEXT = "Maximum iterations reached before a final answer could be produced."
+_CONSECUTIVE_ERRORS_FALLBACK_TEXT = (
+    "Tool calls kept failing, so they were stopped before a final answer could be produced."
+)
+_MAX_FUNCTION_CALLS_FALLBACK_TEXT = "Maximum function calls reached before a final answer could be produced."
 
 _USER_VISIBLE_CONTENT_TYPES = frozenset({"data", "uri", "error", "hosted_file", "hosted_vector_store"})
 
@@ -333,8 +273,8 @@ def _response_has_visible_content(response: ChatResponse) -> bool:
     return False
 
 
-def _ensure_exhaustion_fallback_response(response: ChatResponse) -> bool:
-    """Synthesize fallback text when the final response has nothing visible.
+def _ensure_exhaustion_fallback_response(response: ChatResponse, fallback_text: str) -> bool:
+    """Synthesize *fallback_text* when the final response has nothing visible.
 
     Runs unconditionally after the tail strip (and, in streaming, after echo
     shell cleanup): a blank or reasoning-only final response would otherwise
@@ -343,7 +283,7 @@ def _ensure_exhaustion_fallback_response(response: ChatResponse) -> bool:
     """
     if _response_has_visible_content(response):
         return False
-    fallback_content = Content.from_text(_MAX_ITERATIONS_FALLBACK_TEXT)
+    fallback_content = Content.from_text(fallback_text)
     if response.messages and not response.messages[-1].contents:
         response.messages[-1].role = "assistant"
         response.messages[-1].contents = [fallback_content]
@@ -375,564 +315,6 @@ def _invalidate_service_continuation_state(
     response._chrys_service_state_invalidated = True
     if session is not None and session.service_session_id is not None:
         session.service_session_id = None
-
-
-@dataclass(slots=True)
-class _PendingExchangeSlot:
-    ordinal: int
-    function_call: Content
-    call_id: str | None
-    result: Content | None = None
-    fill_kind: str = ""
-
-
-@dataclass(slots=True)
-class _PendingExchange:
-    response_messages: tuple[Message, ...]
-    slots: tuple[_PendingExchangeSlot, ...]
-    result_carrier_item_id: str
-    projection_messages: tuple[Message, ...] | None = None
-
-    @property
-    def answered_count(self) -> int:
-        return sum(slot.result is not None for slot in self.slots)
-
-
-@dataclass(frozen=True, slots=True)
-class _SealedExchange:
-    messages: tuple[Message, ...]
-    answered_count: int
-
-
-class _ResultCommit:
-    """Synchronous, invocation-bound writer for one pending exchange slot."""
-
-    def __init__(self, recorder: LoopRecorder, exchange: _PendingExchange, slot: _PendingExchangeSlot) -> None:
-        self._recorder = recorder
-        self._exchange = exchange
-        self._slot = slot
-
-    @property
-    def has_raw_result(self) -> bool:
-        return self._slot.fill_kind == "raw"
-
-    def commit_raw(self, result: Content) -> None:
-        self._recorder._fill_slot(self._exchange, self._slot, result, fill_kind="raw")
-
-    def commit_final(self, result: Content) -> None:
-        self._recorder._fill_slot(self._exchange, self._slot, result, fill_kind="final", upgrade_raw=True)
-
-    def commit_interrupted(
-        self,
-        function_call: Content,
-        invocation_context: FunctionInvocationContext | None,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> None:
-        self._recorder._interrupt_slot(
-            self._exchange,
-            self._slot,
-            function_call,
-            invocation_context,
-            metadata,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class LoopRecorderSnapshot:
-    """Retry snapshot of non-journal :class:`LoopRecorder` capture state."""
-
-    initial_count: int | None
-    captured: tuple[Message, ...] | None
-    service_loop_messages: tuple[Message, ...]
-    last_checkpoint_key: tuple[int, str] | None
-
-
-class LoopRecorder:
-    """Records tool-loop messages for interrupt recovery.
-
-    Successor to the chat-middleware-based loop-capture middleware: the loop
-    feeds it directly (:meth:`record_pre_call` before each wire call,
-    :meth:`record_response` after each parsed response) instead of observing
-    the per-call middleware pipeline. The consumer surface
-    (:attr:`loop_messages`, :meth:`reset`, :attr:`on_checkpoint`) and the
-    capture semantics are unchanged.
-
-    On early termination (e.g. hard-cancel ``CancelledError``) only the last
-    iteration's messages appear in the run result — previous iterations live
-    only in the loop's growing ``prepped_messages`` list. The pre-call
-    snapshot preserves them so the engine can merge completed iterations into
-    session state.
-
-    ``message_hasher`` turns the newest captured message into a stable payload
-    string for checkpoint suppression (chrys injects a ``serialize_message``
-    JSON wrapper; the kernel cannot import chrys). Defaults to ``repr``.
-
-    **Reset contract**: :meth:`reset` must be called before each fresh run.
-
-    **Delivery**: per-run via ``client_kwargs["loop_recorder"]`` — parallel
-    sub-agent invocations share one client stack, so the recorder must never
-    be attached to the layer itself.
-    """
-
-    def __init__(
-        self,
-        *,
-        capture_service_loop_messages: bool = False,
-        on_checkpoint: Callable[[], Coroutine[Any, Any, None]] | None = None,
-        on_pre_wire_barrier: Callable[[], Awaitable[RecoveryPersistOutcome]] | None = None,
-        on_result_checkpoint: Callable[[], Coroutine[Any, Any, None]] | None = None,
-        message_hasher: Callable[[Message], str] | None = None,
-    ) -> None:
-        self._capture_service_loop_messages = capture_service_loop_messages
-        self._on_result_checkpoint = on_result_checkpoint if on_result_checkpoint is not None else on_checkpoint
-        self._on_pre_wire_barrier = on_pre_wire_barrier
-        self._message_hasher: Callable[[Message], str] = message_hasher if message_hasher is not None else repr
-        self._initial_count: int | None = None
-        self._captured: list[Message] | None = None
-        self._service_loop_messages: list[Message] = []
-        self._last_checkpoint_key: tuple[int, str] | None = None
-        self._sealed_exchanges: list[_SealedExchange] = []
-        self._pending_exchange: _PendingExchange | None = None
-        self._landed_response: tuple[Message, ...] | None = None
-        self._committed_count = 0
-        self._barrier_degraded = False
-        self._barrier_unconfigured = False
-        self._barrier_warned = False
-
-    def reset(self) -> None:
-        """Clear captured state for a new run."""
-        self._initial_count = None
-        self._captured = None
-        self._service_loop_messages = []
-        self._last_checkpoint_key = None
-        self._sealed_exchanges = []
-        self._pending_exchange = None
-        self._landed_response = None
-        self._committed_count = 0
-        self._barrier_degraded = False
-        self._barrier_warned = False
-
-    def snapshot(self) -> LoopRecorderSnapshot:
-        """Capture recorder state for an outer provider retry."""
-        return LoopRecorderSnapshot(
-            initial_count=self._initial_count,
-            captured=None if self._captured is None else tuple(self._captured),
-            service_loop_messages=tuple(self._service_loop_messages),
-            last_checkpoint_key=self._last_checkpoint_key,
-        )
-
-    def restore(self, snapshot: LoopRecorderSnapshot) -> None:
-        """Restore capture state while preserving every answered journal slot."""
-        self._initial_count = snapshot.initial_count
-        self._captured = None if snapshot.captured is None else list(snapshot.captured)
-        self._service_loop_messages = list(snapshot.service_loop_messages)
-        self._last_checkpoint_key = snapshot.last_checkpoint_key
-        # The retried attempt sends its request again.
-        self._landed_response = None
-        pending = self._pending_exchange
-        if pending is not None and not any(slot.fill_kind in ("raw", "final") for slot in pending.slots):
-            self._pending_exchange = None
-
-    @property
-    def on_checkpoint(self) -> Callable[[], Coroutine[Any, Any, None]] | None:
-        """Compatibility alias for the best-effort checkpoint callback."""
-        return self._on_result_checkpoint
-
-    @on_checkpoint.setter
-    def on_checkpoint(self, callback: Callable[[], Coroutine[Any, Any, None]] | None) -> None:
-        self._on_result_checkpoint = callback
-
-    @property
-    def on_pre_wire_barrier(self) -> Callable[[], Awaitable[RecoveryPersistOutcome]] | None:
-        """Strict recovery barrier invoked before a post-commit provider call."""
-        return self._on_pre_wire_barrier
-
-    @on_pre_wire_barrier.setter
-    def on_pre_wire_barrier(
-        self,
-        callback: Callable[[], Awaitable[RecoveryPersistOutcome]] | None,
-    ) -> None:
-        self._on_pre_wire_barrier = callback
-        self._barrier_unconfigured = False
-
-    @property
-    def on_result_checkpoint(self) -> Callable[[], Coroutine[Any, Any, None]] | None:
-        """Best-effort checkpoint callback kicked after slot fills and snapshots."""
-        return self._on_result_checkpoint
-
-    @on_result_checkpoint.setter
-    def on_result_checkpoint(self, callback: Callable[[], Coroutine[Any, Any, None]] | None) -> None:
-        self._on_result_checkpoint = callback
-
-    @property
-    def committed_count(self) -> int:
-        """Number of answered ordinal slots in the current outer pass."""
-        return self._committed_count
-
-    @property
-    def initial_count(self) -> int | None:
-        """Message count of the first wire call, or ``None`` before any call."""
-        return self._initial_count
-
-    @property
-    def captured_count(self) -> int | None:
-        """Size of the newest pre-call snapshot, or ``None`` before any call."""
-        return None if self._captured is None else len(self._captured)
-
-    @property
-    def landed_response(self) -> tuple[Message, ...] | None:
-        """The newest request's response messages as the loop landed them; ``None`` while it is in flight.
-
-        Their Content objects are the ones history keeps, so they tell that request's own exchange apart
-        from earlier ones reusing its call ids.
-        """
-        return self._landed_response
-
-    @property
-    def loop_messages(self) -> list[Message] | None:
-        """Messages from completed tool loop iterations, or ``None``.
-
-        Returns the assistant + tool messages that the tool loop accumulated
-        from **previous** iterations.  Returns ``None`` if no multi-iteration
-        loop occurred (single iteration or no tool calls).
-        """
-        captured_delta: list[Message] = []
-        if self._captured is not None and self._initial_count is not None and len(self._captured) > self._initial_count:
-            captured_delta = self._captured[self._initial_count :]
-
-        base_messages = self._service_loop_messages or captured_delta
-        journal: list[tuple[set[int], tuple[Message, ...]]] = [
-            (
-                {id(content) for message in exchange.messages for content in message.contents},
-                exchange.messages,
-            )
-            for exchange in self._sealed_exchanges
-        ]
-        if self._pending_exchange is not None and self._pending_exchange.answered_count:
-            pending_projection = tuple(self._project_pending_exchange(self._pending_exchange))
-            pending_owned = {
-                id(content) for message in self._pending_exchange.response_messages for content in message.contents
-            }
-            pending_owned.update(id(slot.result) for slot in self._pending_exchange.slots if slot.result is not None)
-            journal.append((pending_owned, pending_projection))
-
-        candidates: list[Message] = []
-        inserted: set[int] = set()
-        all_owned = set().union(*(owned for owned, _projection in journal)) if journal else set()
-        for message in base_messages:
-            message_ids = {id(content) for content in message.contents}
-            for index, (owned, projection) in enumerate(journal):
-                if index not in inserted and message_ids.intersection(owned):
-                    candidates.extend(projection)
-                    inserted.add(index)
-            remaining = [content for content in message.contents if id(content) not in all_owned]
-            if remaining:
-                candidates.append(
-                    message if len(remaining) == len(message.contents) else _message_snapshot(message, remaining)
-                )
-        for index, (_owned, projection) in enumerate(journal):
-            if index not in inserted:
-                candidates.extend(projection)
-        deduped = self._dedupe_projected_messages(candidates)
-        return deduped or None
-
-    async def record_pre_call(self, messages: list[Message]) -> None:
-        """Snapshot the prepped message list before a wire call."""
-        self._landed_response = None
-        if self._initial_count is None:
-            self._initial_count = len(messages)
-        prev_len = len(self._captured) if self._captured else 0
-        # Copy to avoid aliasing mutations of the loop's growing list.
-        self._captured = list(messages)
-        # Responses store=true service-side continuations replace the growing
-        # local prepped list with compact assistant/tool payloads. Preserve
-        # those too so pause-time recovery can replay locally after dropping
-        # the service id. The mode is configured by chrys from the model
-        # profile/options; ``ChatResponse.conversation_id`` alone is provider
-        # metadata and is not a reliable discriminator.
-        if self._capture_service_loop_messages and self._service_loop_messages:
-            for msg in messages:
-                if not _contains_identity(self._service_loop_messages, msg) and msg.role in ("assistant", "tool"):
-                    self._service_loop_messages.append(msg)
-        logger.debug(
-            "LoopRecorder: initial=%d prev=%d now=%d delta=%d",
-            self._initial_count,
-            prev_len,
-            len(self._captured),
-            len(self._captured) - self._initial_count,
-        )
-        barrier_persisted = await self._run_pre_wire_barrier()
-        if self._on_result_checkpoint is None:
-            return
-        # A persisted barrier already made this pre-call state durable; the
-        # best-effort checkpoint would only build and write it again. Suppression
-        # still runs first: it records this prefix as checkpointed, so a retry of
-        # the same request stays suppressed after a later barrier failure.
-        if self._should_suppress_checkpoint() or barrier_persisted:
-            return
-        await self._on_result_checkpoint()
-
-    def record_response(self, response: ChatResponse) -> None:
-        """Record assistant function-call messages from a parsed response.
-
-        The loop owns the parsed ``ChatResponse`` for both stream modes, so the
-        stream ``result_hook`` side channel of the middleware era is gone.
-        """
-        self._landed_response = tuple(response.messages)
-        if not self._capture_service_loop_messages:
-            return
-        for msg in response.messages:
-            if not _contains_identity(self._service_loop_messages, msg) and _has_function_call(msg):
-                self._service_loop_messages.append(msg)
-
-    def stage_exchange(
-        self,
-        response_messages: Sequence[Message],
-        function_calls: Sequence[Content],
-        *,
-        result_carrier_item_id: str,
-    ) -> tuple[_ResultCommit, ...]:
-        """Reserve ordinal slots for one landed call batch."""
-        slots: list[_PendingExchangeSlot] = []
-        for function_call in function_calls:
-            ordinal = read_tool_invocation_order(function_call.additional_properties)
-            if ordinal is None:
-                raise ValueError("Landed function call is missing its invocation ordinal.")
-            slots.append(
-                _PendingExchangeSlot(
-                    ordinal=ordinal,
-                    function_call=function_call,
-                    call_id=function_call.call_id,
-                )
-            )
-        exchange = _PendingExchange(
-            response_messages=tuple(response_messages),
-            slots=tuple(slots),
-            result_carrier_item_id=result_carrier_item_id,
-        )
-        self._pending_exchange = exchange
-        return tuple(_ResultCommit(self, exchange, slot) for slot in exchange.slots)
-
-    def seal_exchange(self, result_message: Message) -> None:
-        """Replace provisional results with their canonical carrier message."""
-        exchange = self._pending_exchange
-        if exchange is None:
-            return
-        result_identities = {id(content) for content in result_message.contents}
-        if any(slot.result is not None and id(slot.result) not in result_identities for slot in exchange.slots):
-            return
-        self._sealed_exchanges.append(
-            _SealedExchange(
-                messages=(*exchange.response_messages, result_message),
-                answered_count=exchange.answered_count,
-            )
-        )
-        self._pending_exchange = None
-
-    def _fill_slot(
-        self,
-        exchange: _PendingExchange,
-        slot: _PendingExchangeSlot,
-        result: Content,
-        *,
-        fill_kind: str,
-        upgrade_raw: bool = False,
-    ) -> None:
-        if exchange is not self._pending_exchange:
-            return
-        if slot.result is None:
-            slot.result = result
-            slot.fill_kind = fill_kind
-            exchange.projection_messages = None
-            # Interrupted fills mark cancellation before the side-effect
-            # boundary was observed: they persist through finalization but are
-            # not commits, so a zero-commit retry whose own stream teardown
-            # cancelled in-flight tools may still re-dispatch them.
-            if fill_kind != "interrupted":
-                self._committed_count += 1
-            self._kick_result_checkpoint()
-            return
-        if upgrade_raw and slot.fill_kind == "raw":
-            slot.result = result
-            slot.fill_kind = fill_kind
-            exchange.projection_messages = None
-            self._kick_result_checkpoint()
-
-    def _interrupt_slot(
-        self,
-        exchange: _PendingExchange,
-        slot: _PendingExchangeSlot,
-        function_call: Content,
-        invocation_context: FunctionInvocationContext | None,
-        metadata: Mapping[str, Any] | None,
-    ) -> None:
-        result_metadata = dict(metadata or {})
-        result_metadata[TOOL_INTERRUPTED_METADATA_KEY] = True
-        if slot.fill_kind == "interrupted" and slot.result is not None:
-            # Terminal audit persistence can finish after the early
-            # interruption fill, including after the exchange was sealed.
-            # The slot retains the canonical result object, so merge the late
-            # replay references in place and checkpoint the upgraded history.
-            existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
-            existing_metadata = dict(existing) if isinstance(existing, Mapping) else {}
-            slot.result.additional_properties[TOOL_RESULT_METADATA_KEY] = {
-                **existing_metadata,
-                **result_metadata,
-            }
-            if invocation_context is not None:
-                timing = _tool_trajectory_timing(function_call, invocation_context)
-                slot.result.additional_properties[TRAJECTORY_TIMING_KEY] = timing
-            self._kick_result_checkpoint()
-            return
-        if exchange is not self._pending_exchange:
-            return
-        if slot.fill_kind == "raw" and slot.result is not None:
-            result_metadata[TOOL_POST_PROCESSING_INTERRUPTED_METADATA_KEY] = True
-            existing = slot.result.additional_properties.get(TOOL_RESULT_METADATA_KEY)
-            if isinstance(existing, Mapping):
-                result_metadata = {**existing, **result_metadata}
-            slot.result.additional_properties[TOOL_RESULT_METADATA_KEY] = result_metadata
-            timing = _tool_trajectory_timing(function_call, invocation_context)
-            slot.result.additional_properties[TRAJECTORY_TIMING_KEY] = timing
-            self._kick_result_checkpoint()
-            return
-        if slot.result is not None:
-            # Final results are immutable; raw and interrupted fills took
-            # their dedicated merge paths above.
-            return
-        result_metadata[TOOL_FAILED_METADATA_KEY] = True
-        additional = _result_additional_properties(function_call, invocation_context)
-        additional[TOOL_RESULT_METADATA_KEY] = result_metadata
-        result = Content.from_function_result(
-            call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=(
-                "Error: Tool execution was interrupted. The operation may have completed; "
-                "inspect current state before retrying."
-            ),
-            additional_properties=additional,
-        )
-        self._fill_slot(exchange, slot, result, fill_kind="interrupted")
-
-    async def _run_pre_wire_barrier(self) -> bool:
-        """Strictly persist committed tool work; True only when the barrier reports it persisted."""
-        if self._committed_count == 0 or self._barrier_degraded or self._barrier_unconfigured:
-            return False
-        callback = self._on_pre_wire_barrier
-        if callback is None:
-            self._barrier_unconfigured = True
-            return False
-        for _attempt in range(2):
-            try:
-                outcome = await callback()
-            except Exception:
-                outcome = RecoveryPersistOutcome.FAILED
-            if outcome is RecoveryPersistOutcome.PERSISTED:
-                return True
-            if outcome is RecoveryPersistOutcome.UNCONFIGURED:
-                self._barrier_unconfigured = True
-                return False
-        self._barrier_degraded = True
-        if not self._barrier_warned:
-            self._barrier_warned = True
-            logger.error(
-                "Recovery sidecar persistence failed twice after committed tool work; "
-                "continuing with the in-memory journal."
-            )
-        return False
-
-    def _kick_result_checkpoint(self) -> None:
-        callback = self._on_result_checkpoint
-        if callback is None:
-            return
-        task = asyncio.get_running_loop().create_task(callback())
-        task.add_done_callback(self._observe_checkpoint_task)
-
-    @staticmethod
-    def _observe_checkpoint_task(task: asyncio.Task[None]) -> None:
-        if task.cancelled():
-            return
-        try:
-            exception = task.exception()
-        except Exception:
-            logger.debug("LoopRecorder result checkpoint failed", exc_info=True)
-            return
-        if exception is not None:
-            logger.debug(
-                "LoopRecorder result checkpoint failed",
-                exc_info=(type(exception), exception, exception.__traceback__),
-            )
-
-    @staticmethod
-    def _project_pending_exchange(exchange: _PendingExchange) -> list[Message]:
-        if exchange.projection_messages is not None:
-            return list(exchange.projection_messages)
-        answered_calls = {id(slot.function_call) for slot in exchange.slots if slot.result is not None}
-        staged_calls = {id(slot.function_call) for slot in exchange.slots}
-        projected: list[Message] = []
-        for message in exchange.response_messages:
-            message_staged_calls = [content for content in message.contents if id(content) in staged_calls]
-            if not message_staged_calls:
-                projected.append(message)
-                continue
-            answered_in_message = [content for content in message_staged_calls if id(content) in answered_calls]
-            informational = any(
-                content.type == "function_call" and content.informational_only for content in message.contents
-            )
-            if not answered_in_message and not informational:
-                continue
-            contents = [
-                content
-                for content in message.contents
-                if id(content) not in staged_calls or id(content) in answered_calls
-            ]
-            projected.append(_message_snapshot(message, contents))
-        results = [slot.result for slot in exchange.slots if slot.result is not None]
-        if results:
-            carrier = Message(role="tool", contents=results)
-            carrier.additional_properties[ANALYTICS_ITEM_ID_KEY] = exchange.result_carrier_item_id
-            projected.append(carrier)
-        exchange.projection_messages = tuple(projected)
-        return projected
-
-    @staticmethod
-    def _dedupe_projected_messages(messages: Sequence[Message]) -> list[Message]:
-        seen_contents: set[int] = set()
-        projected: list[Message] = []
-        for message in messages:
-            contents = [content for content in message.contents if id(content) not in seen_contents]
-            if not contents:
-                continue
-            seen_contents.update(id(content) for content in contents)
-            projected.append(
-                message if len(contents) == len(message.contents) else _message_snapshot(message, contents)
-            )
-        return projected
-
-    def _checkpoint_messages(self) -> list[Message]:
-        """Return the effective message prefix used for checkpoint suppression."""
-        if self._capture_service_loop_messages and self._service_loop_messages:
-            return self._service_loop_messages
-        return self._captured or []
-
-    def _should_suppress_checkpoint(self) -> bool:
-        """Return True when the captured prefix has not changed since the last checkpoint."""
-        messages = self._checkpoint_messages()
-        key = (len(messages), self._hash_last_message(messages))
-        if key == self._last_checkpoint_key:
-            return True
-        self._last_checkpoint_key = key
-        return False
-
-    def _hash_last_message(self, messages: list[Message]) -> str:
-        if not messages:
-            return ""
-        try:
-            payload = self._message_hasher(messages[-1])
-        except Exception:
-            payload = repr(messages[-1])
-        # Hashing is identity-bearing: surrogatepass keeps the operation total
-        # without aliasing a lone surrogate to the literal escape that spells it.
-        return hashlib.sha256(payload.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -968,25 +350,6 @@ def _extract_function_calls(response: ChatResponse) -> list[Content]:
                 seen_call_ids.add(item.call_id)
             function_calls.append(item)
     return function_calls
-
-
-def _message_snapshot(message: Message, contents: list[Content]) -> Message:
-    """Loop-owned shallow copy of a message wrapper holding *contents*.
-
-    The wrapper and its two containers (``contents`` list,
-    ``additional_properties`` dict) are copied; the Content objects are NOT —
-    their identity is the echo memo's currency and must stay shared. Landing
-    retains these snapshots instead of client-minted wrappers
-    (``_land_response_contents``); the request direction of wrapper aliasing
-    is covered by ``_wire_message_view``.
-    """
-    snapshot = copy(message)
-    snapshot.contents = contents
-    snapshot.additional_properties = dict(message.additional_properties)
-    # Echo-strip provenance is assembly-local. A mixed echo+fresh message is
-    # retained, but its snapshot must not carry the marker into later calls.
-    snapshot._chrys_echo_content_stripped = False
-    return snapshot
 
 
 _HOSTED_CALL_CONTENT_TYPES = frozenset(TOOL_CALL_CONTENT_TYPES - {"function_call"})
@@ -1070,7 +433,7 @@ def _land_response_contents(
     client-held alias must keep its view), and a stateful client that later
     mutates a message object it returned — appending a fresh call between
     iterations — cannot rewrite the history this run already landed.
-    The request direction is covered too: ``_wire_call`` sends EVERY
+    The request direction is covered too: ``_WireCaller._call`` sends EVERY
     outgoing message — caller history included — as a per-call view
     (``_wire_message_view``), so mutating an INPUT message can corrupt
     neither landed history nor the caller's session-state objects; message
@@ -1324,1008 +687,6 @@ def _clear_internal_conversation_id(response: ChatResponse) -> ChatResponse:
     return response
 
 
-# --------------------------------------------------------------------------- #
-# Tool execution
-# --------------------------------------------------------------------------- #
-
-
-def _describe_arguments(arguments: Mapping[str, Any] | BaseModel, schema_names: Container[str]) -> str:
-    """Render tool arguments for the DEBUG log line.
-
-    Raw argument text is gated on ``TELEMETRY_GATE.sensitive_data``. With the
-    gate off, only names listed in the tool schema's ``properties`` are
-    disclosed: the model controls the actual keys (schemas rarely pin
-    ``additionalProperties: false``, so unexpected keys survive validation)
-    and could smuggle sensitive text through a key name — such keys are
-    reported as an ``+N unrecognized`` count only.
-    """
-    if _is_argument_mapping(arguments):
-        argument_mapping: Mapping[str, Any] = arguments
-    else:
-        # The middleware contract admits ``BaseModel`` rewrites of
-        # ``context.arguments``; pydantic models iterate as (key, value)
-        # pairs, so ``dict()`` recovers the mapping form. ``tool.invoke``
-        # normalizes the same way internally — a describe-only crash here
-        # would otherwise be converted into a tool error result.
-        argument_mapping = dict(arguments)
-    if TELEMETRY_GATE.sensitive_data:
-        return str(dict(argument_mapping))
-    if not argument_mapping:
-        return "0 key(s)"
-    known = [key for key in argument_mapping if key in schema_names]
-    parts = (
-        known
-        if len(known) == len(argument_mapping)
-        else [*known, f"+{len(argument_mapping) - len(known)} unrecognized"]
-    )
-    return f"{len(argument_mapping)} key(s) ({', '.join(parts)})"
-
-
-def _is_argument_mapping(value: Mapping[str, Any] | BaseModel) -> TypeGuard[Mapping[str, Any]]:
-    """Narrow middleware arguments after the runtime mapping check."""
-    return isinstance(value, Mapping)
-
-
-def _describe_result(result: Any, *, skip_parsing: bool) -> str:
-    """Render a tool result for DEBUG logging under the sensitive-data gate.
-
-    Skip-parsing tools return arbitrary values, including non-Content lists:
-    render those with ``str`` when sensitive data is enabled, otherwise use
-    the type name. Parsed results are ``list[Content]`` and can be summarized
-    by item type or, when permitted, joined as text.
-    """
-    if skip_parsing or not isinstance(result, list):
-        return str(result) if TELEMETRY_GATE.sensitive_data else type(result).__name__
-    if TELEMETRY_GATE.sensitive_data:
-        text = "\n".join(item.text or "" for item in result if item.type == "text")
-        return text or str(result)
-    if not result:
-        return "None"
-    return f"{len(result)} item(s) ({', '.join(item.type for item in result)})"
-
-
-_FUNCTION_DURATION_HISTOGRAM: Any = None
-
-
-def _function_duration_histogram() -> Any:
-    """Cache the function-duration histogram on its first gated use.
-
-    Lazy construction lets provider setup finish before obtaining the meter.
-    """
-    global _FUNCTION_DURATION_HISTOGRAM
-    if _FUNCTION_DURATION_HISTOGRAM is None:
-        _FUNCTION_DURATION_HISTOGRAM = get_function_duration_histogram()
-    return _FUNCTION_DURATION_HISTOGRAM
-
-
-async def _invoke_with_function_span(
-    tool: FunctionTool,
-    context: Any,
-    call_id: str | None,
-    *,
-    arguments: BaseModel | Mapping[str, Any],
-    arguments_in_callable_keyspace: bool = False,
-    tool_result_ceiling_tokens: int | None = None,
-) -> Any:
-    """Run ``tool.invoke`` inside an ``execute_tool {name}`` span.
-
-    Capture arguments and results only under ``TELEMETRY_GATE.sensitive_enabled``;
-    record exceptions and duration on failure as well as success. The caller
-    owns logging. Skip-parsing results use ``str(result)``; parsed Content
-    lists contribute their text, selected by the same ``SKIP_PARSING`` sentinel
-    that ``invoke`` uses.
-
-    Captured arguments are the middleware-final values. Validation happens
-    inside ``invoke``, so the span does not capture its normalized argument dict.
-    """
-    attributes = get_function_span_attributes(tool, tool_call_id=call_id)
-    # The middleware contract admits ``BaseModel`` rewrites of
-    # ``context.arguments`` (same shape ``_describe_arguments`` / ``invoke``
-    # handle); normalize it to a dict before filtering so sensitive capture
-    # doesn't silently record ``"None"`` for a model-shaped argument set.
-    if isinstance(arguments, BaseModel):
-        argument_items: dict[str, Any] = arguments.model_dump(exclude_none=True)
-    elif isinstance(arguments, Mapping):
-        argument_items = dict(arguments)
-    else:
-        argument_items = {}
-    serializable_kwargs = {k: v for k, v in argument_items.items() if k not in FUNCTION_SPAN_EXCLUDED_KWARGS}
-    if TELEMETRY_GATE.sensitive_enabled:
-        attributes[OtelAttr.TOOL_ARGUMENTS] = (
-            json.dumps(serializable_kwargs, default=str, ensure_ascii=False) if serializable_kwargs else "None"
-        )
-    with get_function_span(attributes=attributes) as span:
-        attributes[OtelAttr.MEASUREMENT_FUNCTION_TAG_NAME] = tool.name
-        start_time_stamp = perf_counter()
-        end_time_stamp: float | None = None
-        try:
-            result = await tool.invoke(
-                arguments=arguments,
-                context=context,
-                tool_call_id=call_id,
-                _arguments_in_callable_keyspace=arguments_in_callable_keyspace,
-            )
-            result = apply_result_ceiling(result, tool_result_ceiling_tokens)
-            end_time_stamp = perf_counter()
-        except Exception as exception:
-            end_time_stamp = perf_counter()
-            attributes[OtelAttr.ERROR_TYPE] = type(exception).__name__
-            capture_exception(span=span, exception=exception, timestamp=time_ns())
-            raise
-        else:
-            if TELEMETRY_GATE.sensitive_enabled:
-                if _is_skip_parsing_sentinel(tool.result_parser):
-                    result_str = str(result)
-                else:
-                    result_str = "\n".join(c.text or "" for c in result if c.type == "text") or str(result)
-                span.set_attribute(OtelAttr.TOOL_RESULT, result_str)
-            return result
-        finally:
-            duration = (end_time_stamp or perf_counter()) - start_time_stamp
-            span.set_attribute(OtelAttr.MEASUREMENT_FUNCTION_INVOCATION_DURATION, duration)
-            _function_duration_histogram().record(duration, attributes=attributes)
-
-
-def _arguments_unparseable(arguments: Any) -> bool:
-    """True when raw tool-call arguments are an empty or invalid JSON string.
-
-    This is the fingerprint of a truncated / incomplete argument payload — the
-    model was cut off before or during JSON emission, so ``Content.parse_arguments``
-    either returns ``{}`` for an empty string or falls back to wrapping the raw
-    blob under ``{"raw": ...}``. It deliberately does NOT flag arguments that
-    parsed cleanly (a dict, or a pre-parsed mapping) but failed schema validation
-    — those are real argument errors, not a token-limit cutoff.
-    """
-    if not isinstance(arguments, str):
-        return False
-    if not arguments:
-        return True
-    try:
-        json.loads(arguments)
-    except json.JSONDecodeError:
-        return True
-    return False
-
-
-def _middleware_arguments_equal(left: Any, right: Any) -> bool:
-    """Type-strict structural equality for the trusted middleware snapshot."""
-    if type(left) is not type(right):
-        return False
-    if type(left) is dict:
-        if len(left) != len(right):
-            return False
-        unmatched = list(right.items())
-        for left_key, left_value in left.items():
-            for index, (right_key, right_value) in enumerate(unmatched):
-                if _middleware_arguments_equal(left_key, right_key):
-                    if not _middleware_arguments_equal(left_value, right_value):
-                        return False
-                    unmatched.pop(index)
-                    break
-            else:
-                return False
-        return True
-    if type(left) in {list, tuple}:
-        return len(left) == len(right) and all(
-            _middleware_arguments_equal(left_item, right_item)
-            for left_item, right_item in zip(left, right, strict=True)
-        )
-    if type(left) in {set, frozenset}:
-        if len(left) != len(right):
-            return False
-        unmatched = list(right)
-        for left_item in left:
-            for index, right_item in enumerate(unmatched):
-                if _middleware_arguments_equal(left_item, right_item):
-                    unmatched.pop(index)
-                    break
-            else:
-                return False
-        return True
-    if type(left) in {float, complex, decimal.Decimal}:
-        return bool(left == right and repr(left) == repr(right))
-    if type(left) in {datetime.datetime, datetime.time}:
-        return bool(
-            left == right
-            and left.utcoffset() == right.utcoffset()
-            and left.tzname() == right.tzname()
-            and left.fold == right.fold
-        )
-    return bool(left == right)
-
-
-def _arguments_look_like_truncated_mapping(arguments: Any, schema: Mapping[str, Any]) -> bool:
-    """True for parsed Anthropic tool args that look cut off, not just invalid."""
-    if not isinstance(arguments, Mapping):
-        return False
-    if not arguments:
-        return True
-
-    required = schema.get("required")
-    properties = schema.get("properties")
-    if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
-        return False
-    if not isinstance(properties, Mapping):
-        return False
-
-    argument_keys = {key for key in arguments if isinstance(key, str)}
-    if len(argument_keys) != len(arguments):
-        return False
-    if not argument_keys.issubset(properties.keys()):
-        return False
-    return any(isinstance(key, str) and key not in arguments for key in required)
-
-
-def _stamp_call_provenance(function_call: Content, tool: FunctionTool) -> None:
-    """Stamp tool kind + static context onto the call content, first-write-wins.
-
-    Runs right after tool lookup, BEFORE argument validation, so calls that
-    fail pre-pipeline validation — which return without entering the
-    middleware pipeline — still persist their provenance. Static context
-    only: the per-call builder needs validated args and belongs to the
-    record pipeline.
-    """
-    props = function_call.additional_properties
-    kind = get_tool_kind(tool)
-    if kind and TOOL_CALL_KIND_METADATA_KEY not in props:
-        props[TOOL_CALL_KIND_METADATA_KEY] = kind
-    static = get_tool_context(tool)
-    if static and TOOL_CALL_CONTEXT_METADATA_KEY not in props:
-        # Already sanitized at set_tool_context() — single sanitization
-        # authority; the stamp only copies, never re-sanitizes.
-        props[TOOL_CALL_CONTEXT_METADATA_KEY] = dict(static)
-
-
-# The failure record is saved with the session and exported to telemetry: a long
-# cause chain, a large exception group or a message that embeds a response body
-# must not bloat either. Each message is clipped before the record is joined, the
-# exception cap also bounds the record's recursion, and the total cap is the backstop.
-_FAILURE_RECORD_MAX_EXCEPTIONS = 16
-_FAILURE_RECORD_MAX_MESSAGE_CHARS = 1000
-_FAILURE_RECORD_MAX_CHARS = 4000
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else f"{text[: limit - 1]}…"
-
-
-def _exception_message(exc: BaseException) -> str:
-    """Return *exc*'s own message, clipped for the failure record.
-
-    ``str()`` of a ChrysException built with an ``inner_exception`` is the repr
-    of its args tuple, and a KeyError's is quoted; both hold the message itself
-    as their first argument. A ``__str__`` that raises must not stop the call
-    from becoming a failed result, so it records what a traceback would.
-    """
-    if isinstance(exc, ChrysException | KeyError) and exc.args and isinstance(exc.args[0], str):
-        message = exc.args[0]
-    else:
-        try:
-            message = str(exc)
-        except Exception:
-            message = "<exception str() failed>"
-    return _clip(message.strip(), _FAILURE_RECORD_MAX_MESSAGE_CHARS)
-
-
-def _exception_causes(exc: BaseException) -> list[BaseException]:
-    """Return what *exc* was explicitly raised from and, when it differs, the ``inner_exception`` a ChrysException wraps."""
-    causes = [] if exc.__cause__ is None else [exc.__cause__]
-    if isinstance(exc, ChrysException) and len(exc.args) > 1:
-        inner = exc.args[1]
-        if isinstance(inner, BaseException) and inner is not exc.__cause__:
-            causes.append(inner)
-    return causes
-
-
-def _failure_record_text(exc: BaseException) -> str:
-    """Return the ``exception`` a failed result records: ``Type: message`` for *exc* and everything it came from.
-
-    The record is a tree, ``Type: message [member; …] (caused by cause; …)``:
-    an exception group lists its members in brackets (its ``str()`` only
-    counts them), and the causes are ``raise … from`` plus a ChrysException's
-    ``inner_exception`` when that is a different exception. It follows only
-    these explicit links, never the implicit ``__context__`` of whatever was
-    being handled when the tool raised — unlike ``foundation.errors``' linear
-    chain walk, which reads that context to classify retryable errors.
-
-    The record is for people reading a saved session, never for the model. It
-    is never empty: readers take a non-empty record to mean the call failed.
-    """
-    seen: set[int] = set()
-
-    def describe(current: BaseException) -> str:
-        seen.add(id(current))
-        if isinstance(current, BaseExceptionGroup):
-            message = _clip(current.message.strip(), _FAILURE_RECORD_MAX_MESSAGE_CHARS)
-            members = describe_each(current.exceptions)
-        else:
-            message = _exception_message(current)
-            members = ""
-        text = f"{type(current).__name__}: {message}" if message else type(current).__name__
-        if members:
-            text = f"{text} [{members}]"
-        causes = describe_each(_exception_causes(current))
-        return f"{text} (caused by {causes})" if causes else text
-
-    def describe_each(exceptions: Sequence[BaseException]) -> str:
-        parts: list[str] = []
-        for member in exceptions:
-            if id(member) in seen:
-                continue
-            if len(seen) >= _FAILURE_RECORD_MAX_EXCEPTIONS:
-                parts.append("…")
-                break
-            parts.append(describe(member))
-        return "; ".join(parts)
-
-    return _clip(describe(exc), _FAILURE_RECORD_MAX_CHARS)
-
-
-def _result_additional_properties(
-    function_call: Content,
-    invocation_context: FunctionInvocationContext | None = None,
-) -> dict[str, Any]:
-    """Return call properties for a function result, minus call provenance.
-
-    Every result-construction path propagates the call's properties; this
-    filters call-only provenance (kind, context, invocation ordinal) and any
-    stale call-side execution stamp or result metadata. Without the provenance
-    filter, the nested context dict would also be shared by reference between
-    call and result (the Content constructor's copy is shallow). A fresh stamp
-    and fresh result metadata come only from this invocation's context — this
-    fold is the single attachment point for ``_chrys_tool_result_metadata``,
-    at result construction, when the result's identity is unambiguous.
-    """
-    result = {
-        key: value
-        for key, value in function_call.additional_properties.items()
-        if key
-        not in (
-            TOOL_CALL_KIND_METADATA_KEY,
-            TOOL_CALL_CONTEXT_METADATA_KEY,
-            TOOL_INVOCATION_ORDER_KEY,
-            EXECUTION_STAMP_KEY,
-            TOOL_RESULT_METADATA_KEY,
-            TRAJECTORY_TIMING_KEY,
-            ANALYTICS_ITEM_ID_KEY,
-        )
-    }
-    timing = _tool_trajectory_timing(function_call, invocation_context)
-    result[TRAJECTORY_TIMING_KEY] = timing
-    # The result is its own item (the call's operation id is inherited above
-    # so call and result share one tool operation). A pre-minted id on the
-    # invocation context keeps the raw-commit checkpoint and the terminal
-    # result naming the same item.
-    result[ANALYTICS_ITEM_ID_KEY] = _result_item_id(invocation_context)
-    if invocation_context is not None:
-        stamp = execution_stamp_from_metadata(invocation_context.metadata)
-        if stamp is not None:
-            result[EXECUTION_STAMP_KEY] = stamp
-        carried = invocation_context.metadata.get(TOOL_RESULT_METADATA_KEY)
-        if isinstance(carried, Mapping) and carried:
-            result[TOOL_RESULT_METADATA_KEY] = dict(carried)
-    return result
-
-
-def _result_item_id(invocation_context: FunctionInvocationContext | None) -> str:
-    if invocation_context is not None:
-        pre_minted = invocation_context.metadata.get(TOOL_RESULT_ITEM_ID_METADATA_KEY)
-        if isinstance(pre_minted, str) and pre_minted:
-            return pre_minted
-    return new_analytics_id()
-
-
-def _stamped_tool_context(props: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """The static provenance segment stamped on a call, when there is one.
-
-    A call that never enters the pipeline has no builder output — only what
-    landing copied off the tool — so an MCP call still names its server.
-    """
-    context = props.get(TOOL_CALL_CONTEXT_METADATA_KEY)
-    return context if isinstance(context, Mapping) and context else None
-
-
-async def _record_unexecuted_tool_operation(
-    function_call: Content,
-    *,
-    outcome: str,
-    result_carrier_item_id: str | None = None,
-    result: Content | None = None,
-    queued: bool = False,
-) -> None:
-    """Emit the ``tool.operation`` pair for a call that never entered the pipeline.
-
-    Unknown-tool and invalid-argument calls still own a tool operation id
-    (stamped by response dispatch collection) and a result item, so the
-    trajectory closes them with their terminal outcome instead of leaving
-    dangling operations. A filtered call owns the operation but never gets a
-    result, and the pair closes without naming one.
-    """
-    context = current_trajectory()
-    if context is None:
-        return
-    operation_id = read_operation_id(function_call.additional_properties)
-    if operation_id is None:
-        return
-    props = function_call.additional_properties
-    kind = props.get(TOOL_CALL_KIND_METADATA_KEY)
-    try:
-        started = tool_operation_started_draft(
-            context,
-            operation_id=operation_id,
-            tool_name=function_call.name or "",
-            tool_kind=kind if isinstance(kind, str) else "",
-            invocation_order=read_tool_invocation_order(props),
-            batch_index=None,
-            arguments=function_call.arguments,
-            call_item_id=read_analytics_item_id(props),
-            tool_context=_stamped_tool_context(props),
-        )
-        finished = tool_operation_finished_draft(
-            context,
-            operation_id=operation_id,
-            outcome=outcome,
-            duration_ms=0,
-            result_item_id=read_analytics_item_id(result.additional_properties) if result is not None else None,
-            result_carrier_item_id=result_carrier_item_id if result is not None else None,
-            error_kind=outcome,
-        )
-    except Exception:
-        logger.debug("Trajectory tool operation emit failed", exc_info=True)
-        return
-    if queued:
-        # The caller is unwinding from a cancellation: waiting for the write
-        # acknowledgement here would hold a Stop for as long as the writer
-        # takes to answer. Both lines take their sequence now and are
-        # acknowledged in the background — and a start the sink refuses
-        # outright still leaves nothing to close.
-        try:
-            if context.sink.emit_soon(started) is None:
-                context.sink.emit_soon(finished)
-        except Exception:
-            logger.debug("Trajectory tool operation emit failed", exc_info=True)
-        return
-    try:
-        opened = await context.sink.emit(started)
-    except Exception:
-        logger.debug("Trajectory tool operation emit failed", exc_info=True)
-        return
-    except BaseException:
-        # Cancelled while the opening line was in flight: the write is
-        # committed regardless, so the terminal has to follow it. Only this
-        # wait needs the rescue — the one below can first be cancelled once
-        # its own line is committed too.
-        with contextlib.suppress(Exception):
-            context.sink.emit_soon(finished)
-        raise
-    if opened is not EmitResult.WRITTEN:
-        # An unknown tool's name is whatever the model asked for, and one past
-        # the line budget makes the whole opening event unwritable: its slot
-        # becomes a gap. A terminal behind that gap closes an operation the
-        # log never opened, which is not a shape readers handle; an operation
-        # that opens and never closes is one they already do.
-        return
-    try:
-        await context.sink.emit(finished)
-    except Exception:
-        logger.debug("Trajectory tool operation emit failed", exc_info=True)
-
-
-def _tool_trajectory_timing(
-    function_call: Content,
-    invocation_context: FunctionInvocationContext | None,
-) -> dict[str, Any]:
-    """Resolve one tool span and mirror it onto its persisted call content."""
-    timing = trajectory_timing_from_metadata(invocation_context.metadata) if invocation_context is not None else None
-    if timing is None:
-        timing = trajectory_timing_from_metadata(function_call.additional_properties)
-    if timing is None:
-        timing = build_instant_trajectory_timing()
-    function_call.additional_properties[TRAJECTORY_TIMING_KEY] = dict(timing)
-    return timing
-
-
-async def _invoke_function_call(
-    function_call: Content,
-    *,
-    result_commit: _ResultCommit | None,
-    tool_map: dict[str, FunctionTool],
-    custom_args: dict[str, Any],
-    invocation_session: AgentSession | None,
-    pipeline: FunctionMiddlewarePipeline,
-    live_tools: list[Any] | None,
-    response_truncated: bool = False,
-    function_call_may_be_truncated: bool = False,
-    same_tool_calls_in_batch: int = 1,
-    tool_result_ceiling_tokens: int | None = None,
-    result_carrier_item_id: str,
-) -> Content:
-    """Invoke one model-requested function call through the middleware pipeline.
-
-    A raised exception answers the model with ``tool_error_result_text``: a
-    fixed line, or a ``ModelVisibleToolError``'s own message. Argument-validation
-    failures include safe schema guidance so the model can repair its next call.
-    Each failed result records ``_failure_record_text`` as its ``exception``.
-    """
-    from .middleware import FunctionInvocationContext
-
-    tool = tool_map.get(function_call.name)  # type: ignore[arg-type]
-    if tool is None:
-        message = f'Requested function "{function_call.name}" not found.'
-        exc = KeyError(f'Function "{function_call.name}" not found.')
-        additional = _result_additional_properties(function_call)
-        additional.update(
-            {
-                TOOL_FAILED_METADATA_KEY: True,
-                TOOL_ERROR_KIND_METADATA_KEY: "tool_not_found",
-                TOOL_ERROR_MESSAGE_METADATA_KEY: message,
-            }
-        )
-        result = Content.from_function_result(
-            call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=f"Error: {message}",
-            exception=_failure_record_text(exc),
-            additional_properties=additional,
-        )
-        await _record_unexecuted_tool_operation(
-            function_call,
-            outcome=ToolOutcome.UNKNOWN_TOOL,
-            result_carrier_item_id=result_carrier_item_id,
-            result=result,
-        )
-        return result
-
-    _stamp_call_provenance(function_call, tool)
-
-    parsed_args: dict[str, Any] = dict(function_call.parse_arguments() or {})
-
-    # Filter out internal kwargs before passing to tools; conversation_id is an
-    # internal tracking id that must not be forwarded.
-    runtime_kwargs: dict[str, Any] = {
-        key: value
-        for key, value in custom_args.items()
-        if key not in {"_function_middleware_pipeline", "middleware", "conversation_id"}
-    }
-    if invocation_session is not None:
-        runtime_kwargs["session"] = invocation_session
-
-    # Pre-pipeline validation: bad arguments return an error
-    # result without entering the middleware pipeline (no approval dialog for
-    # a call that could never run).
-    argument_schema = tool.parameters()
-    typed_model_dump = not tool._schema_supplied and tool.input_model is not None
-    validation_input_model = tool.input_model if typed_model_dump else None
-    reject_unexpected = _rejects_unexpected_arguments(
-        argument_schema, typed_model_dump=typed_model_dump
-    ) and not _accepts_arbitrary_argument_names(validation_input_model)
-    try:
-        unexpected_arguments = _unexpected_argument_names(
-            parsed_args,
-            argument_schema,
-            reject_unexpected=reject_unexpected,
-            input_model=validation_input_model,
-        )
-        if unexpected_arguments:
-            raise TypeError(f"Unexpected argument(s) for '{tool.name}'.")
-        if typed_model_dump:
-            try:
-                validation_args = deepcopy(parsed_args)
-            except Exception:
-                validation_args = parsed_args
-            validated = tool.input_model.model_validate(validation_args)
-            transformed_args = tool._dump_arguments(validated)
-            _validate_arguments_against_schema(
-                arguments=transformed_args,
-                schema=tool._serialization_schema,
-                tool_name=tool.name,
-                tuples_as_arrays=True,
-                values_prevalidated=True,
-            )
-            pipeline_args = transformed_args
-        else:
-            _validate_arguments_against_schema(arguments=parsed_args, schema=argument_schema, tool_name=tool.name)
-            pipeline_args = parsed_args
-    except (TypeError, ValidationError) as exc:
-        # ``response_truncated`` (finish_reason == "length") is a response-wide
-        # signal, so it alone doesn't prove THIS call's arguments were cut off —
-        # a fully-parsed but schema-invalid call, or one bad call among several,
-        # can ride along in a truncated response. Only report truncation when
-        # this call's own argument payload is actually incomplete/unparseable
-        # (raw JSON string), or when the final content block is a parsed mapping
-        # that looks incomplete (Anthropic blocking path). Otherwise it's a real
-        # argument error the model should fix by correcting the arguments, not by
-        # raising max_tokens.
-        arguments_unparseable = _arguments_unparseable(function_call.arguments)
-        arguments_cut_off = arguments_unparseable or (
-            function_call_may_be_truncated
-            and _arguments_look_like_truncated_mapping(function_call.arguments, argument_schema)
-        )
-        if response_truncated and arguments_cut_off:
-            message = (
-                "The tool call was cut off at the model's output token limit "
-                "(max_tokens) before its arguments were complete, so they could not "
-                "be parsed. Raise max_tokens for this model, or split the work into "
-                "smaller calls (e.g. write the file in parts)."
-            )
-            error_kind = "argument_truncated"
-        else:
-            message = _argument_validation_message(
-                tool_name=tool.name,
-                arguments=parsed_args,
-                arguments_unparseable=arguments_unparseable,
-                schema=argument_schema,
-                exception=exc,
-                reject_unexpected=reject_unexpected,
-                input_model=validation_input_model,
-            )
-            error_kind = "argument_parsing"
-        additional = _result_additional_properties(function_call)
-        additional.update(
-            {
-                TOOL_FAILED_METADATA_KEY: True,
-                TOOL_ERROR_KIND_METADATA_KEY: error_kind,
-                TOOL_ERROR_MESSAGE_METADATA_KEY: message,
-            }
-        )
-        result = Content.from_function_result(
-            call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=f"Error: {message}",
-            exception=_failure_record_text(exc),
-            additional_properties=additional,
-        )
-        await _record_unexecuted_tool_operation(
-            function_call,
-            outcome=ToolOutcome.INVALID_ARGUMENTS,
-            result_carrier_item_id=result_carrier_item_id,
-            result=result,
-        )
-        return result
-
-    args = dict(pipeline_args)
-    try:
-        pipeline_args_snapshot = deepcopy(args)
-    except Exception:
-        pipeline_args_snapshot = None
-
-    call_id = function_call.call_id
-    if call_id is None:
-        # Landing stamped this call an operation id and the batch already
-        # counted it as dispatched, so the terminal is owed here — the same
-        # debt the unknown-tool and invalid-argument exits above settle.
-        await _record_unexecuted_tool_operation(function_call, outcome=ToolOutcome.FILTERED)
-        raise KeyError(f'Function "{function_call.name}" is missing call_id.')
-
-    context = FunctionInvocationContext(
-        function=tool,
-        arguments=args,
-        session=invocation_session,
-        kwargs=runtime_kwargs.copy(),
-        tools=live_tools,
-    )
-    context.same_tool_calls_in_batch = same_tool_calls_in_batch
-    # Always pass call_id to middleware.
-    context.metadata["call_id"] = call_id
-    # Seed the kernel-stamped invocation ordinal for middleware readers
-    # (approval, event persistence). The call content is the single source;
-    # the middleware never renumbers a seeded context.
-    ordinal = read_tool_invocation_order(function_call.additional_properties)
-    if ordinal is not None:
-        context.metadata[TOOL_INVOCATION_ORDER_KEY] = ordinal
-    # Trajectory identities for middleware readers: the call's tool operation
-    # id (landing stamped it on the content) and the item id every result
-    # construction path below will give this call's result.
-    operation_id = read_operation_id(function_call.additional_properties)
-    if operation_id is not None:
-        context.metadata[OPERATION_ID_KEY] = operation_id
-    # The call's own item id travels the same way, so a call that runs names
-    # its request item exactly like one that never reaches the pipeline.
-    call_item_id = read_analytics_item_id(function_call.additional_properties)
-    if call_item_id is not None:
-        context.metadata[ANALYTICS_ITEM_ID_KEY] = call_item_id
-    context.metadata[TOOL_RESULT_ITEM_ID_METADATA_KEY] = new_analytics_id()
-    context.metadata[TOOL_RESULT_CARRIER_ITEM_ID_METADATA_KEY] = result_carrier_item_id
-    if result_commit is not None:
-
-        def _commit_sub_agent_interruption(metadata: Mapping[str, Any]) -> None:
-            result_commit.commit_interrupted(function_call, context, metadata)
-
-        context.metadata[SUB_AGENT_RESULT_COMMIT_CALLBACK_KEY] = _commit_sub_agent_interruption
-
-    async def final_function_handler(context_obj: Any) -> Any:
-        # Middleware sees normalized callable-keyspace values. An untouched
-        # context goes back through invoke in the original validation keyspace;
-        # a trusted mapping rewrite bypasses validation-keyspace conversion.
-        logger.info("Function name: %s", tool.name)
-        if logger.isEnabledFor(logging.DEBUG):
-            schema_names = tool.parameters().get("properties") or {}
-            logger.debug("Function arguments: %s", _describe_arguments(context_obj.arguments, schema_names))
-        # No failure log line here: the outer except below already reports
-        # failures (tool name + exception + "returning an error result") — a
-        # second line would be duplication (invoke itself is chrys-owned and
-        # telemetry/logging-free; the span records the exception).
-        start = perf_counter()
-        try:
-            arguments_unchanged = (
-                pipeline_args_snapshot is not None
-                and context_obj.arguments is args
-                and _middleware_arguments_equal(context_obj.arguments, pipeline_args_snapshot)
-            )
-        except Exception:
-            arguments_unchanged = False
-        invocation_arguments = parsed_args if arguments_unchanged else context_obj.arguments
-        arguments_in_callable_keyspace = (
-            typed_model_dump and not arguments_unchanged and isinstance(invocation_arguments, Mapping)
-        )
-
-        def _commit_raw_result(value: Any) -> None:
-            if result_commit is None:
-                return
-            # This callback runs before FunctionMiddleware ``finally`` blocks
-            # publish their measured span. The instant timing makes the raw
-            # crash checkpoint complete; terminal construction overwrites it
-            # from ``context.metadata`` after middleware unwinds.
-            additional = _result_additional_properties(function_call, context)
-            parent_metadata = sub_agent_parent_result_metadata.get()
-            if parent_metadata is not None:
-                carried: dict[str, Any] = {}
-                if parent_metadata.sub_agent_invocation_id:
-                    carried["sub_agent_invocation_id"] = parent_metadata.sub_agent_invocation_id
-                if parent_metadata.sub_agent_log_file:
-                    carried["sub_agent_log_file"] = parent_metadata.sub_agent_log_file
-                if parent_metadata.sub_agent_audit_complete:
-                    carried["sub_agent_audit_complete"] = True
-                if carried:
-                    additional[TOOL_RESULT_METADATA_KEY] = carried
-            result_commit.commit_raw(
-                Content.from_function_result(
-                    call_id=call_id,
-                    result=value,
-                    additional_properties=additional,
-                )
-            )
-
-        try:
-            if TELEMETRY_GATE.enabled:
-                result = await _invoke_with_function_span(
-                    tool,
-                    context_obj,
-                    call_id,
-                    arguments=invocation_arguments,
-                    arguments_in_callable_keyspace=arguments_in_callable_keyspace,
-                    tool_result_ceiling_tokens=tool_result_ceiling_tokens,
-                )
-            else:
-                result = await tool.invoke(
-                    arguments=invocation_arguments,
-                    context=context_obj,
-                    tool_call_id=call_id,
-                    _arguments_in_callable_keyspace=arguments_in_callable_keyspace,
-                )
-                result = apply_result_ceiling(result, tool_result_ceiling_tokens)
-        except SyncToolCancelledAfterCompletion as exc:
-            # The worker finished before cancellation landed: journal the
-            # completed value as this slot's raw result so the interrupt
-            # handler preserves it instead of recording a fabricated
-            # interruption for work that actually ran.
-            exc.completed_result = apply_result_ceiling(exc.completed_result, tool_result_ceiling_tokens)
-            _commit_raw_result(exc.completed_result)
-            raise
-        _commit_raw_result(result)
-        logger.info("Function %s succeeded in %.3fs.", tool.name, perf_counter() - start)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "Function result: %s",
-                _describe_result(result, skip_parsing=_is_skip_parsing_sentinel(tool.result_parser)),
-            )
-        return result
-
-    try:
-        function_result = await pipeline.execute(
-            context=context,
-            final_handler=final_function_handler,
-        )
-        return Content.from_function_result(
-            call_id=call_id,
-            result=function_result,
-            additional_properties=_result_additional_properties(function_call, context),
-        )
-    except asyncio.CancelledError:
-        # Function middleware ``finally`` blocks have completed at this
-        # boundary, so their measured timing and result metadata are now on
-        # the invocation context. Commit with that context before the outer
-        # batch-level cancellation fallback loses it.
-        if result_commit is not None:
-            result_commit.commit_interrupted(function_call, context)
-        raise
-    except MiddlewareTermination as term_exc:
-        # Re-raise to signal loop termination, capturing any middleware-set
-        # result first.
-        if context.result is not None:
-            term_exc.result = Content.from_function_result(
-                call_id=call_id,
-                result=context.result,
-                additional_properties=_result_additional_properties(function_call, context),
-            )
-        elif isinstance(term_exc.result, Content):
-            # Middleware may cache and reuse a prebuilt result across concurrent
-            # calls or later runs.  Own a wrapper per invocation before binding
-            # call-scoped identity and metadata; its payload may contain
-            # external objects that are deliberately unsafe to deep-copy.
-            owned_result = copy(term_exc.result)
-            owned_result.call_id = call_id
-            prebuilt_properties = term_exc.result.additional_properties
-            # This call's properties go on top of whatever the prebuilt result
-            # carried, the same fold every other result path uses: a result
-            # cached across calls arrives wearing another invocation's identity,
-            # and the tool operation and pre-minted item id have to be this
-            # one's or the trajectory's terminal names an item nothing saved.
-            properties = {**prebuilt_properties, **_result_additional_properties(function_call, context)}
-            owned = prebuilt_properties.get(TOOL_RESULT_METADATA_KEY)
-            if isinstance(owned, Mapping) and owned:
-                # A middleware that built its own result Content owns whatever
-                # metadata it chose to attach — fold first-write-wins only.
-                properties[TOOL_RESULT_METADATA_KEY] = dict(owned)
-            owned_result.additional_properties = properties
-            term_exc.result = owned_result
-        else:
-            term_exc.result = Content.from_function_result(
-                call_id=call_id,
-                result=term_exc.result,
-                additional_properties=_result_additional_properties(function_call, context),
-            )
-        raise
-    except Exception as exc:
-        logger.warning(
-            "Function '%s' raised an exception; returning an error result to the model. Exception: %r",
-            tool.name,
-            exc,
-        )
-        return Content.from_function_result(
-            call_id=function_call.call_id,  # type: ignore[arg-type]
-            result=tool_error_result_text(exc),
-            # Never None: it marks the result failed for the consecutive-error
-            # count and the providers' error flag, whatever the model reads.
-            exception=_failure_record_text(exc),
-            additional_properties=_result_additional_properties(function_call, context),
-        )
-    finally:
-        # Backfill per-call provenance subkeys (builder context resolved from
-        # the final middleware args) onto the persisted call content. Runs on
-        # every pipeline exit; on cancellation the middleware wrote no
-        # carriage, so there is nothing to merge.
-        carried_context = context.metadata.get(TOOL_CALL_CONTEXT_METADATA_KEY)
-        if isinstance(carried_context, Mapping):
-            merge_tool_call_context_property(function_call.additional_properties, carried_context)
-
-
-async def _execute_function_calls(
-    *,
-    function_calls: Sequence[Content],
-    result_commits: Sequence[_ResultCommit] | None,
-    tool_options: dict[str, Any],
-    custom_args: dict[str, Any],
-    invocation_session: AgentSession | None,
-    pipeline: FunctionMiddlewarePipeline,
-    result_carrier_item_id: str,
-    response_truncated: bool = False,
-    truncated_final_function_call_ids: set[int] | None = None,
-    tool_result_ceiling_tokens: int | None = None,
-    dispatch_observer: Callable[[Sequence[Content]], None] | None = None,
-) -> tuple[list[Content], bool, bool]:
-    """Execute a batch concurrently and collect results, termination and error flags."""
-    raw_tools = tool_options.get("tools")
-    if not raw_tools:
-        return [], False, False
-
-    # Normalize per batch: direct callers and progressive exposure can add
-    # tools after agent preparation. Every executed tool must use FunctionTool.invoke.
-    tools = normalize_tools(raw_tools)
-    tool_options["tools"] = tools
-    if not tools:
-        return [], False, False
-    # Rebuild from the live list so progressive exposure takes effect next batch.
-    # Tool admission has already enforced unique names.
-    tool_map: dict[str, FunctionTool] = {t.name: t for t in tools if isinstance(t, FunctionTool)}
-    live_tools: list[Any] | None = tools
-
-    # Per-name call counts for this batch: middleware with singleton semantics
-    # (e.g. whole-list-replacement tools) reads the stamped count to reject
-    # same-batch duplicates deterministically instead of racing the gather.
-    same_name_counts = Counter(fc.name for fc in function_calls)
-
-    commits: Sequence[_ResultCommit | None]
-    if result_commits is None:
-        commits = (None,) * len(function_calls)
-    else:
-        if len(result_commits) != len(function_calls):
-            raise ValueError("Tool-result commit bindings do not match the extracted call batch.")
-        commits = result_commits
-
-    async def invoke_with_termination_handling(
-        function_call: Content,
-        result_commit: _ResultCommit | None,
-    ) -> tuple[Content, bool]:
-        """Catch MiddlewareTermination, returning ``(result, should_terminate)``."""
-        # The handover is per call and happens on this task's own first step,
-        # not once for the batch: a task cancelled before it ever runs never
-        # executes a line of this body, so its operation has to stay in the
-        # loop's ledger for the reconciliation pass to close.
-        if dispatch_observer is not None:
-            dispatch_observer((function_call,))
-        try:
-            result = await _invoke_function_call(
-                function_call,
-                result_commit=result_commit,
-                tool_map=tool_map,
-                custom_args=custom_args,
-                invocation_session=invocation_session,
-                pipeline=pipeline,
-                live_tools=live_tools,
-                response_truncated=response_truncated,
-                function_call_may_be_truncated=(
-                    response_truncated
-                    and truncated_final_function_call_ids is not None
-                    and id(function_call) in truncated_final_function_call_ids
-                ),
-                same_tool_calls_in_batch=same_name_counts[function_call.name],
-                tool_result_ceiling_tokens=tool_result_ceiling_tokens,
-                result_carrier_item_id=result_carrier_item_id,
-            )
-            result = apply_result_ceiling(result, tool_result_ceiling_tokens)
-            if result_commit is not None:
-                result_commit.commit_final(result)
-            return (result, False)
-        except MiddlewareTermination as exc:
-            # exc.result may already be a Content (set by _invoke_function_call)
-            # or a raw value.
-            if isinstance(exc.result, Content):
-                bounded_result = apply_result_ceiling(exc.result, tool_result_ceiling_tokens)
-                if result_commit is not None:
-                    result_commit.commit_final(bounded_result)
-                return (bounded_result, True)
-            result_content = Content.from_function_result(
-                call_id=function_call.call_id,  # type: ignore[arg-type]
-                result=exc.result,
-                additional_properties=_result_additional_properties(function_call),
-            )
-            result_content = apply_result_ceiling(result_content, tool_result_ceiling_tokens)
-            if result_commit is not None:
-                result_commit.commit_final(result_content)
-            return (result_content, True)
-        except asyncio.CancelledError:
-            if result_commit is not None:
-                result_commit.commit_interrupted(function_call, None)
-            raise
-
-    tasks = [
-        asyncio.create_task(invoke_with_termination_handling(function_call, result_commit))
-        for function_call, result_commit in zip(function_calls, commits, strict=True)
-    ]
-    try:
-        settled = await asyncio.gather(*tasks, return_exceptions=True)
-    except asyncio.CancelledError:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        settling = asyncio.gather(*tasks, return_exceptions=True)
-        while not settling.done():
-            try:
-                await asyncio.shield(settling)
-            except asyncio.CancelledError:
-                continue
-        raise
-
-    for outcome in settled:
-        if isinstance(outcome, BaseException):
-            raise outcome
-    execution_results = [outcome for outcome in settled if not isinstance(outcome, BaseException)]
-
-    contents: list[Content] = [result[0] for result in execution_results]
-    should_terminate = any(result[1] for result in execution_results)
-    had_errors = any(fcr.exception is not None for fcr in contents if fcr.type == "function_result")
-    return contents, should_terminate, had_errors
-
-
 def _handle_function_call_results(
     *,
     response: ChatResponse,
@@ -2375,6 +736,1392 @@ def _handle_function_call_results(
         recorder.seal_exchange(result_message)
     fcc_messages.extend(response.messages)
     return ("stop" if reached_error_limit else "continue", errors_in_a_row)
+
+
+# --------------------------------------------------------------------------- #
+# Run building blocks
+# --------------------------------------------------------------------------- #
+
+# The first tracked continuation token is always applied: nothing equals it.
+_UNTRACKED = object()
+
+
+def _wire_request_observer(
+    echo_registry: WeakIdentityRegistry,
+    caller_observer: Callable[[Sequence[Message]], None] | None,
+) -> Callable[[Sequence[Message]], None]:
+    internal_observer = functools.partial(
+        _record_wire_request_content_identities,
+        echo_registry=echo_registry,
+    )
+    if caller_observer is None:
+        return internal_observer
+
+    def observe(messages: Sequence[Message]) -> None:
+        # Echo tracking remains the loop's invariant even if a caller
+        # observer raises; callers then see the exact same provider
+        # views immediately after the internal identity recorder.
+        internal_observer(messages)
+        caller_observer(messages)
+
+    return observe
+
+
+async def _watchdog_await(awaitable: Awaitable[Any], timeout: float | None, label: str) -> Any:
+    # Idle timing: a pull whose first byte waits on compaction (and
+    # its LAST_WORDS side call) stays alive while that work reports
+    # progress, and stalls after *timeout* without any.
+    if timeout is None:
+        return await awaitable
+    event_loop = asyncio.get_running_loop()
+    last_progress = event_loop.time()
+
+    def _on_progress() -> None:
+        nonlocal last_progress
+        last_progress = event_loop.time()
+
+    task = start_with_wire_progress(awaitable, _on_progress)
+    try:
+        while not task.done():
+            idle_budget = last_progress + timeout - event_loop.time()
+            if idle_budget <= 0:
+                break
+            await asyncio.wait((task,), timeout=idle_budget)
+    except asyncio.CancelledError:
+        # The pull task may still be running INSIDE the stream's
+        # generator; closing that stream before the task settles
+        # would raise "asynchronous generator is already running".
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    if task.done():
+        return task.result()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    raise StreamStall(f"{label} produced no progress for {timeout:g}s")
+
+
+class _LoopTrajectory:
+    """Trajectory bookkeeping for one loop run.
+
+    One ``model.cycle`` per loop acquisition, one ``model.exchange`` per wire
+    attempt, ``retry.*`` around every wire retry; all of them are no-ops
+    without a bound context. The exchange trace rides to the wire client in
+    ``client_kwargs`` — the loop cannot bind it ambiently because the provider
+    stream is lazy and resolves outside this call's context.
+
+    State, by lifetime:
+
+    - cycle, from ``cycle_started`` to ``cycle_finished`` or ``abort``: the
+      cycle context, its start time, exchange count and last exchange id;
+    - wire attempt, from ``begin_exchange`` to ``close_exchange``: the open
+      exchange trace;
+    - retry, from ``retry_scheduled`` to the next ``begin_exchange``: the id
+      minted for the next exchange;
+    - landing, from one ``cycle_finished`` to the next: the exchange context
+      the landed tool operations and hosted calls hang under;
+    - landing to dispatch: the tool operations minted for landed calls. This
+      ledger runs with or without a bound context; each entry settles under
+      the context it landed in.
+
+    ``retry_policy`` is read only to classify a failed exchange as retryable.
+    """
+
+    def __init__(self, root: TrajectoryContext | None, *, retry_policy: WireRetryPolicy | None) -> None:
+        self._root = root
+        self._retry_policy = retry_policy
+        self._cycle: TrajectoryContext | None = None
+        self._cycle_started_ns = 0
+        self._cycle_exchange_count = 0
+        self._active_exchange: ExchangeTrace | None = None
+        self._pending_exchange_id: str | None = None
+        self._last_exchange_id: str | None = None
+        self._landed_exchange: TrajectoryContext | None = None
+        self._undispatched_tool_operations: dict[int, tuple[Content, TrajectoryContext | None]] = {}
+
+    @property
+    def last_exchange_id(self) -> str | None:
+        return self._last_exchange_id
+
+    async def _emit(self, draft: EventDraft) -> None:
+        if self._root is None:
+            return
+        try:
+            await self._root.sink.emit(draft)
+        except Exception:
+            logger.debug("Trajectory emit failed", exc_info=True)
+
+    async def cycle_started(self, cycle_index: int, *, tools_offered: bool) -> None:
+        root = self._root
+        if root is None:
+            return
+        cycle_id = new_analytics_id()
+        cycle = root.with_cycle(cycle_id)
+        self._cycle = cycle
+        self._cycle_started_ns = monotonic_ns()
+        self._cycle_exchange_count = 0
+        self._last_exchange_id = None
+        await self._emit(
+            cycle.draft(
+                TrajectoryEventType.MODEL_CYCLE_STARTED,
+                operation_id=cycle_id,
+                parent_operation_id=root.run_operation_id,
+                payload={"cycle_index": cycle_index, "tools_offered": tools_offered},
+            )
+        )
+
+    def _cycle_finished_draft(self, *, outcome: str, function_call_count: int = 0) -> EventDraft | None:
+        cycle = self._cycle
+        if cycle is None or cycle.cycle_operation_id is None:
+            return None
+        self._landed_exchange = cycle.with_exchange(self._last_exchange_id)
+        return cycle.draft(
+            TrajectoryEventType.MODEL_CYCLE_FINISHED,
+            operation_id=cycle.cycle_operation_id,
+            parent_operation_id=cycle.run_operation_id,
+            payload={
+                "outcome": outcome,
+                "exchange_count": self._cycle_exchange_count,
+                "function_call_count": function_call_count,
+                # Monotonic at both ends: a wall clock that steps mid-cycle
+                # would otherwise stretch or flatten the span it measures.
+                "duration_ms": max(0, (monotonic_ns() - self._cycle_started_ns) // 1_000_000),
+                "final_exchange_operation_id": self._last_exchange_id,
+            },
+            measurements={"/payload/duration_ms": measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)},
+        )
+
+    async def cycle_finished(self, response: ChatResponse, function_calls: Sequence[Content]) -> None:
+        """Close the cycle *response* landed in and hand its calls to the operation ledger."""
+        draft = self._cycle_finished_draft(outcome=ExchangeOutcome.SUCCESS, function_call_count=len(function_calls))
+        self._register_landed_tool_operations(response, function_calls)
+        if draft is None:
+            return
+        await self._hosted_calls(response)
+        # Given up only here: an interrupt during the hosted-call records
+        # above still leaves the cycle for the abort path to close.
+        self._cycle = None
+        await self._emit(draft)
+
+    async def _hosted_calls(self, response: ChatResponse) -> None:
+        # Hosted calls never become tool operations (the provider ran
+        # them); one fact per call keeps the exchange's fan-out visible
+        # without an unbounded array on the exchange event.
+        exchange = self._landed_exchange
+        if exchange is None or exchange.exchange_operation_id is None:
+            return
+        for ordinal, hosted_kind in enumerate(_hosted_call_kinds(response)):
+            await self._emit(
+                exchange.draft(
+                    TrajectoryEventType.HOSTED_CALL_OBSERVED,
+                    operation_id=new_analytics_id(),
+                    parent_operation_id=exchange.exchange_operation_id,
+                    payload={
+                        "parent_exchange_operation_id": exchange.exchange_operation_id,
+                        "hosted_kind": hosted_kind,
+                        "ordinal": ordinal,
+                    },
+                )
+            )
+
+    def abort(self, outcome: str) -> None:
+        # Synchronous close for exits that cannot await (cancellation,
+        # generator close): the open exchange and cycle are queued in
+        # order without waiting for the ack.
+        self.close_exchange(outcome)
+        draft = self._cycle_finished_draft(outcome=outcome)
+        self._cycle = None
+        if draft is not None and self._root is not None:
+            try:
+                self._root.sink.emit_soon(draft)
+            except Exception:
+                logger.debug("Trajectory cycle close failed", exc_info=True)
+
+    def exchange_scope(self) -> trajectory_scope:
+        # Ambient context for the tool batch a landed response spawns:
+        # tool middleware hangs its operations under the producing
+        # exchange. Without a loop-owned context the ambient one (if any)
+        # is simply re-bound.
+        if self._landed_exchange is None:
+            return trajectory_scope(current_trajectory())
+        return trajectory_scope(self._landed_exchange)
+
+    def begin_exchange(self, client_kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Open the exchange for the next wire attempt; returns the kwargs that carry it."""
+        self._active_exchange = None
+        cycle = self._cycle
+        if cycle is None:
+            return client_kwargs
+        exchange_id = self._pending_exchange_id or new_analytics_id()
+        self._pending_exchange_id = None
+        self._last_exchange_id = exchange_id
+        self._cycle_exchange_count += 1
+        self._active_exchange = ExchangeTrace(cycle.with_exchange(exchange_id))
+        return {**client_kwargs, TRAJECTORY_EXCHANGE_KWARG: self._active_exchange}
+
+    def stall_observed(self) -> None:
+        if self._active_exchange is not None:
+            self._active_exchange.stall_observed()
+
+    def close_exchange(self, outcome: str, *, exc: BaseException | None = None) -> None:
+        # Idempotent: a wire client that already reported its own terminal
+        # marker wins; this closes the abandoned/failed remainder.
+        trace = self._active_exchange
+        if trace is None:
+            return
+        self._active_exchange = None
+        # A middleware beneath the loop may have re-issued the request in
+        # place (validation retry): the handle then names the final
+        # exchange and every re-issue was one more acquisition.
+        self._last_exchange_id = trace.operation_id
+        self._cycle_exchange_count += trace.generation
+        payload: dict[str, Any] = {}
+        if exc is not None:
+            payload["error_code"] = type(exc).__name__
+            policy = self._retry_policy
+            payload["retryable"] = bool(policy is not None and policy.is_retryable(exc))
+        try:
+            trace.finished(outcome=outcome, payload=payload)
+        except Exception:
+            logger.debug("Trajectory exchange close failed", exc_info=True)
+
+    async def retry_scheduled(
+        self,
+        *,
+        reason_code: str,
+        retry_mode: str,
+        delay_seconds: int,
+        fallback_to_blocking: bool,
+        committed_work_present: bool,
+    ) -> None:
+        cycle = self._cycle
+        if cycle is None:
+            return
+        previous = self._last_exchange_id
+        next_id = new_analytics_id()
+        self._pending_exchange_id = next_id
+        await self._emit(
+            cycle.draft(
+                TrajectoryEventType.RETRY_SCHEDULED,
+                operation_id=next_id,
+                parent_operation_id=cycle.cycle_operation_id,
+                payload={
+                    "reason_code": reason_code,
+                    "delay_ms": max(0, int(delay_seconds * 1000)),
+                    "retry_mode": retry_mode,
+                    "previous_operation_id": previous,
+                    "committed_work_present": committed_work_present,
+                    "fallback_to_blocking": fallback_to_blocking,
+                },
+            )
+        )
+
+    async def retry_started(self, *, retry_mode: str) -> None:
+        cycle = self._cycle
+        next_id = self._pending_exchange_id
+        if cycle is None or next_id is None:
+            return
+        await self._emit(
+            cycle.draft(
+                TrajectoryEventType.RETRY_STARTED,
+                operation_id=next_id,
+                parent_operation_id=cycle.cycle_operation_id,
+                payload={
+                    "retry_mode": retry_mode,
+                    "next_operation_id": next_id,
+                    "previous_operation_id": self._last_exchange_id,
+                },
+            )
+        )
+
+    def _register_landed_tool_operations(
+        self,
+        response: ChatResponse,
+        function_calls: Sequence[Content],
+    ) -> None:
+        """Mint and remember every operation until the one dispatch point takes it."""
+        _stamp_function_call_operations(response, function_calls)
+        operation_context = self._landed_exchange or current_trajectory()
+        for function_call in function_calls:
+            self._undispatched_tool_operations[id(function_call)] = (function_call, operation_context)
+
+    def mark_tool_operations_dispatched(self, function_calls: Sequence[Content]) -> None:
+        for function_call in function_calls:
+            self._undispatched_tool_operations.pop(id(function_call), None)
+
+    async def settle_undispatched_tool_operations(self, *, queued: bool = False) -> None:
+        """Close every operation minted but never handed to the execution batch.
+
+        This is the single reconciliation point for no-tools responses,
+        exhaustion tails, future early returns, and failures between
+        landing and dispatch. Every entry keeps the exchange context it
+        landed under rather than consulting the loop's later current one.
+        """
+        pending = list(self._undispatched_tool_operations.values())
+        self._undispatched_tool_operations.clear()
+        first_failure: BaseException | None = None
+        for function_call, operation_context in pending:
+            try:
+                with trajectory_scope(operation_context):
+                    await _record_unexecuted_tool_operation(
+                        function_call,
+                        outcome=ToolOutcome.FILTERED,
+                        queued=queued,
+                    )
+            except BaseException as exc:
+                # The helper settles the current pair before propagating a
+                # cancelled ack. Continue so one cancellation cannot strand
+                # the rest of a parallel batch, then preserve the caller's
+                # original control-flow signal.
+                if first_failure is None:
+                    first_failure = exc
+        if first_failure is not None:
+            raise first_failure
+
+
+class _WireCaller:
+    """The loop's logical model calls and their wire retry lanes.
+
+    A logical call is one ``blocking_response`` or ``streaming_response``:
+    every request it sends until a response lands — continuation polls,
+    transient and stall retries, the stall fallback to a blocking request
+    and one context-overflow resend. Retries need a wire policy, which a
+    service-side run never gets.
+
+    State, by lifetime: the continuation token last mirrored to the retry
+    owner lives for the run; the overflow-resend flag for one logical call
+    (the stall fallback inherits it); the transient and stall counters for
+    one ``blocking_response`` call or the streaming attempts of one
+    ``streaming_response``, so the stall fallback's blocking request starts
+    a fresh transient budget; the provider stream and its usage chunks for
+    one request. Of the run's options, only ``continuation_token`` is
+    written here.
+    """
+
+    def __init__(
+        self,
+        inner: ChatMiddlewareLayer,
+        *,
+        options: dict[str, Any],
+        client_kwargs: dict[str, Any],
+        chat_middleware: list[ChatMiddleware],
+        compaction_strategy: Any,
+        tokenizer: Any,
+        policy: WireRetryPolicy | None,
+        recorder: LoopRecorder | None,
+        injection_probe: ConsumedInjectionMessageProbe | None,
+        continuation_token_observer: Callable[[Any], None] | None,
+        trajectory: _LoopTrajectory,
+    ) -> None:
+        self._inner = inner
+        self._options = options
+        self._client_kwargs = client_kwargs
+        self._chat_middleware = chat_middleware
+        self._compaction_strategy = compaction_strategy
+        self._tokenizer = tokenizer
+        self._policy = policy
+        self._recorder = recorder
+        self._injection_probe = injection_probe
+        self._continuation_token_observer = continuation_token_observer
+        self._trajectory = trajectory
+        # Sentinel start: the logical call may begin with a retry-owned token
+        # already in its options (whole-run retry resuming a background
+        # response), so the first tracked value — including a terminal
+        # ``None`` — must always be applied, never swallowed by dedupe.
+        self._last_tracked_continuation_token: Any = _UNTRACKED
+
+    def cancel_outcome(self) -> str:
+        policy = self._policy
+        return (
+            ExchangeOutcome.INTERRUPTED if policy is not None and policy.is_interrupted() else ExchangeOutcome.CANCELLED
+        )
+
+    def _track_continuation_token(self, token: Any) -> None:
+        # Mirror the live token into the retry owner's request state: a
+        # transient poll failure must resume THIS response on the next
+        # attempt (outer whole-run retry included), never re-issue the
+        # original create request. Providers re-announce the id on every
+        # progress event, so identical repeats are dropped.
+        if token == self._last_tracked_continuation_token:
+            return
+        self._last_tracked_continuation_token = token
+        if token is None:
+            self._options.pop("continuation_token", None)
+        else:
+            self._options["continuation_token"] = token
+        if self._continuation_token_observer is not None:
+            self._continuation_token_observer(token)
+
+    async def _call(
+        self,
+        prepped: list[Message],
+        *,
+        as_stream: bool,
+        stream_update_filter: Callable[[ChatResponseUpdate], ChatResponseUpdate] | None = None,
+        request_message_observer: Callable[[Sequence[Message]], None],
+    ) -> Any:
+        # The recorder keeps the loop's canonical objects (its identity
+        # dedup depends on re-recorded history being the SAME objects).
+        if self._recorder is not None:
+            await self._recorder.record_pre_call(prepped)
+        # EVERY outgoing message is a per-call view — caller history
+        # included — so a client mutating a received message in place can
+        # corrupt neither the loop's transcript nor the caller's
+        # session-state objects. Message-metadata write-through survives:
+        # views share the wrapper's additional_properties dict, which is
+        # how compaction exclusion flags reach stored history.
+        wire_view = [_wire_message_view(m) for m in prepped]
+        return self._inner.get_response(
+            wire_view,
+            stream=as_stream,
+            stream_update_filter=stream_update_filter,
+            request_message_observer=request_message_observer,
+            options=self._options,
+            middleware=self._chat_middleware,
+            compaction_strategy=self._compaction_strategy,
+            tokenizer=self._tokenizer,
+            client_kwargs=self._trajectory.begin_exchange(self._client_kwargs),
+        )
+
+    async def _schedule_retry(
+        self,
+        policy: WireRetryPolicy,
+        exc: BaseException,
+        *,
+        message: str,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: int | None = None,
+        fallback_to_blocking: bool = False,
+        retry_mode: str | None = None,
+    ) -> None:
+        if self._options.get("continuation_token") is None:
+            # A retry that resumes an already-created response via its
+            # continuation token must NOT replay consumed injections: the
+            # create that consumed them succeeded (the provider holds
+            # them), and a poll never consumes a replay — the batch would
+            # sit stranded until commit destroys it.
+            policy.before_retry()
+        delay = policy.backoff_seconds(attempt - 1) if delay_seconds is None else delay_seconds
+        stalled = isinstance(exc, StreamStall)
+        if retry_mode is None:
+            retry_mode = RetryMode.STALL_FALLBACK if fallback_to_blocking else RetryMode.WIRE
+        recorder = self._recorder
+        await self._trajectory.retry_scheduled(
+            reason_code=RetryReason.STREAM_STALL if stalled else RetryReason.TRANSIENT_ERROR,
+            retry_mode=retry_mode,
+            delay_seconds=delay,
+            fallback_to_blocking=fallback_to_blocking,
+            committed_work_present=recorder is not None and recorder.committed_count > 0,
+        )
+        await policy.on_retry(message, attempt, max_attempts, delay, exc)
+        if policy.is_interrupted() or await policy.sleep(delay):
+            raise asyncio.CancelledError
+        await self._trajectory.retry_started(retry_mode=retry_mode)
+
+    async def _pause_between_continuation_polls(self) -> None:
+        # Task cancellation is the interrupt channel for both service and
+        # local runs; the policy flag check covers soft interrupts that
+        # only set state.
+        policy = self._policy
+        if policy is not None and policy.is_interrupted():
+            raise asyncio.CancelledError
+        if CONTINUATION_POLL_INTERVAL_SECONDS > 0:
+            await asyncio.sleep(CONTINUATION_POLL_INTERVAL_SECONDS)
+
+    def _hosted_commits_vetoing_replay(self, policy: WireRetryPolicy) -> tuple[str, ...]:
+        # Without a live continuation token a retry re-creates the request
+        # and re-runs the hosted tool calls the failed attempt already
+        # executed server-side; with one it merely resumes the same
+        # response, which is safe.
+        hosted_probe = policy.hosted_commits_in_flight
+        hosted_commits = tuple(hosted_probe()) if hosted_probe is not None else ()
+        if hosted_commits and self._options.get("continuation_token") is None:
+            return hosted_commits
+        return ()
+
+    def _note_context_overflow(self, exc: BaseException) -> bool:
+        # The provider measured the real input and found the window full:
+        # the strategy compacts before the next request instead of letting
+        # it resend the rejected input. Runs before any retry decision, so
+        # service-side runs (no wire policy) are noted too. Returns whether
+        # compacting and resending can help. Thinking the service refused
+        # as bound to another conversation is no full window, even when the
+        # refusal names it: the client resends without that thinking, or
+        # the profile asked for the refusal.
+        strategy = self._compaction_strategy
+        if (
+            not isinstance(strategy, ContextOverflowSink)
+            or not is_context_overflow(exc)
+            or is_thinking_binding_rejection(exc)
+        ):
+            return False
+        return strategy.note_context_overflow(exc)
+
+    def _resends_after_overflow(self, policy: WireRetryPolicy, *, noted: bool, recovered: bool) -> bool:
+        # One in-place resend per logical call, outside the transient and
+        # stall budgets. Service-side runs have no wire policy and only
+        # keep the note; a live continuation token would poll the rejected
+        # response, and hosted work an attempt already ran must not rerun.
+        return (
+            noted
+            and not recovered
+            and self._options.get("continuation_token") is None
+            and not self._hosted_commits_vetoing_replay(policy)
+        )
+
+    async def _schedule_overflow_resend(self, policy: WireRetryPolicy, exc: BaseException) -> None:
+        # The strategy holds the note, so the resend's client preparation
+        # compacts before the request goes out.
+        await self._schedule_retry(
+            policy,
+            exc,
+            message=clean_error_message(exc),
+            attempt=1,
+            max_attempts=1,
+            delay_seconds=0,
+            retry_mode=RetryMode.CONTEXT_OVERFLOW,
+        )
+
+    async def blocking_response(
+        self,
+        prepped: list[Message],
+        *,
+        request_message_observer: Callable[[Sequence[Message]], None],
+        overflow_recovered: bool = False,
+    ) -> ChatResponse:
+        retry_attempt = 0
+        while True:
+            policy = self._policy
+            if policy is not None and policy.is_interrupted():
+                raise asyncio.CancelledError
+            try:
+                while True:
+                    response = await _resolve_response(
+                        await self._call(
+                            prepped,
+                            as_stream=False,
+                            request_message_observer=request_message_observer,
+                        )
+                    )
+                    self._trajectory.close_exchange(ExchangeOutcome.SUCCESS)
+                    if response.continuation_token is None:
+                        self._track_continuation_token(None)
+                        if self._injection_probe is not None:
+                            self._injection_probe.commit()
+                        return response
+                    self._track_continuation_token(response.continuation_token)
+                    await self._pause_between_continuation_polls()
+            except asyncio.CancelledError:
+                self._trajectory.close_exchange(self.cancel_outcome())
+                raise
+            except Exception as exc:
+                self._trajectory.close_exchange(ExchangeOutcome.ERROR, exc=exc)
+                if invalidates_continuation_token(exc):
+                    # The failure judged a terminal response: a retry must
+                    # issue a fresh request, never re-poll the completed
+                    # (immutable) one.
+                    self._track_continuation_token(None)
+                noted = self._note_context_overflow(exc)
+                if policy is not None and self._resends_after_overflow(
+                    policy, noted=noted, recovered=overflow_recovered
+                ):
+                    overflow_recovered = True
+                    await self._schedule_overflow_resend(policy, exc)
+                    continue
+                if policy is None or not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
+                    raise
+                hosted_commits = self._hosted_commits_vetoing_replay(policy)
+                if hosted_commits:
+                    logger.warning(
+                        "Not retrying wire call: provider-hosted tool call(s) already "
+                        "executed in the failed attempt (%s)",
+                        ", ".join(str(label) for label in hosted_commits),
+                    )
+                    raise
+                retry_attempt += 1
+                await self._schedule_retry(
+                    policy,
+                    exc,
+                    message=clean_error_message(exc),
+                    attempt=retry_attempt,
+                    max_attempts=policy.max_retries,
+                )
+
+    def streaming_response(
+        self,
+        prepped: list[Message],
+        *,
+        stream_update_filter: Callable[[ChatResponseUpdate], ChatResponseUpdate],
+        request_message_observer: Callable[[Sequence[Message]], None],
+    ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
+        final_response: ChatResponse | None = None
+        # The provider stream of the attempt being read; None once it was
+        # read to its end.
+        inner_stream: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
+        logical_stream: ResponseStream[ChatResponseUpdate, ChatResponse]
+
+        async def _updates() -> AsyncIterable[ChatResponseUpdate]:
+            nonlocal final_response, inner_stream
+            retry_attempt = 0
+            stall_retry_attempt = 0
+            overflow_recovered = False
+            while True:
+                policy = self._policy
+                if policy is not None and policy.is_interrupted():
+                    raise asyncio.CancelledError
+                inner_stream = None
+                try:
+                    while True:
+                        raw_stream = await self._call(
+                            prepped,
+                            as_stream=True,
+                            stream_update_filter=stream_update_filter,
+                            request_message_observer=request_message_observer,
+                        )
+                        if not isinstance(raw_stream, ResponseStream):
+                            raise TypeError("Streaming wire call did not return a ResponseStream.")
+                        inner_stream = raw_stream
+                        inner_stream.with_update_filter(stream_update_filter)
+                        stream_usage_chunks: list[Mapping[str, Any]] = []
+                        iterator = inner_stream.__aiter__()
+                        while True:
+                            try:
+                                update = await _watchdog_await(
+                                    iterator.__anext__(),
+                                    policy.stall_timeout_seconds if policy is not None else None,
+                                    "Streaming response",
+                                )
+                            except StopAsyncIteration:
+                                break
+                            if update.continuation_token is not None:
+                                # Providers announce the background
+                                # response id mid-stream; mirror it
+                                # immediately so a disconnect before
+                                # finalization retries by retrieval, not
+                                # by a duplicate create.
+                                self._track_continuation_token(update.continuation_token)
+                            stream_usage_chunks.extend(_stream_usage_chunks(update))
+                            yield update
+                        response = await _watchdog_await(
+                            inner_stream.get_final_response(),
+                            policy.stall_timeout_seconds if policy is not None else None,
+                            "Streaming response finalization",
+                        )
+                        inner_stream = None
+                        self._trajectory.close_exchange(ExchangeOutcome.SUCCESS)
+                        response.latest_usage_details = normalize_stream_usage(stream_usage_chunks)
+                        if response.latest_usage_details is None:
+                            response.latest_usage_details = response.usage_details
+                        if response.continuation_token is None:
+                            self._track_continuation_token(None)
+                            final_response = response
+                            if self._injection_probe is not None:
+                                self._injection_probe.commit()
+                            return
+                        self._track_continuation_token(response.continuation_token)
+                        await self._pause_between_continuation_polls()
+                except asyncio.CancelledError:
+                    self._trajectory.close_exchange(self.cancel_outcome())
+                    if inner_stream is not None:
+                        await inner_stream.aclose()
+                    raise
+                except Exception as exc:
+                    if isinstance(exc, StreamStall):
+                        self._trajectory.stall_observed()
+                        self._trajectory.close_exchange(ExchangeOutcome.STALLED, exc=exc)
+                    else:
+                        self._trajectory.close_exchange(ExchangeOutcome.ERROR, exc=exc)
+                    if inner_stream is not None:
+                        try:
+                            await inner_stream.aclose()
+                        except Exception:
+                            logger.debug("Failed to close abandoned provider stream", exc_info=True)
+                    if invalidates_continuation_token(exc):
+                        # The failure judged a terminal response: a retry
+                        # must issue a fresh request, never re-poll the
+                        # completed (immutable) one.
+                        self._track_continuation_token(None)
+                    noted = self._note_context_overflow(exc)
+                    if policy is None:
+                        raise
+                    hosted_commits = self._hosted_commits_vetoing_replay(policy)
+                    if hosted_commits:
+                        logger.warning(
+                            "Not replaying wire call: provider-hosted tool call(s) already "
+                            "executed in the aborted stream (%s)",
+                            ", ".join(str(label) for label in hosted_commits),
+                        )
+                        raise
+                    if self._resends_after_overflow(policy, noted=noted, recovered=overflow_recovered):
+                        overflow_recovered = True
+                        await self._schedule_overflow_resend(policy, exc)
+                        logical_stream._updates.clear()
+                        yield ChatResponseUpdate.retry_boundary()
+                        continue
+                    if isinstance(exc, StreamStall):
+                        if stall_retry_attempt >= policy.stall_max_retries:
+                            if policy.stall_exhausted_action is StallExhaustedAction.RAISE:
+                                raise
+                            await self._schedule_retry(
+                                policy,
+                                exc,
+                                message="Stream stalled; retrying with a blocking response",
+                                attempt=stall_retry_attempt + 1,
+                                max_attempts=policy.stall_max_retries + 1,
+                                delay_seconds=0,
+                                fallback_to_blocking=True,
+                            )
+                            logical_stream._updates.clear()
+                            yield ChatResponseUpdate.retry_boundary()
+                            final_response = await self.blocking_response(
+                                prepped,
+                                request_message_observer=request_message_observer,
+                                overflow_recovered=overflow_recovered,
+                            )
+                            return
+                        stall_retry_attempt += 1
+                        await self._schedule_retry(
+                            policy,
+                            exc,
+                            message="Stream stalled",
+                            attempt=stall_retry_attempt,
+                            max_attempts=policy.stall_max_retries,
+                        )
+                        logical_stream._updates.clear()
+                        yield ChatResponseUpdate.retry_boundary()
+                        continue
+                    if not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
+                        raise
+                    retry_attempt += 1
+                    await self._schedule_retry(
+                        policy,
+                        exc,
+                        message=clean_error_message(exc),
+                        attempt=retry_attempt,
+                        max_attempts=policy.max_retries,
+                    )
+                    logical_stream._updates.clear()
+                    yield ChatResponseUpdate.retry_boundary()
+
+        def _finalizer(_updates: Sequence[ChatResponseUpdate]) -> ChatResponse:
+            if final_response is None:
+                raise RuntimeError("Logical streaming call ended without a final response.")
+            return final_response
+
+        async def _close_abandoned_attempt() -> None:
+            # A close of this logical call mid-response closes the provider
+            # stream it was reading, as ``_LoopRun.close_abandoned_read`` does
+            # one level up; one already closed or read to its end is a no-op.
+            if inner_stream is not None:
+                try:
+                    await inner_stream.aclose()
+                except Exception:
+                    logger.debug("Failed to close abandoned provider stream", exc_info=True)
+
+        logical_stream = ResponseStream(_updates(), finalizer=_finalizer).with_cleanup_hook(_close_abandoned_attempt)
+        return logical_stream
+
+
+class _LoopRun:
+    """One ``ToolLoopLayer.get_response`` run: the two loop drivers and the steps they share.
+
+    ``run_blocking`` and ``stream`` (assembled by ``finalize_stream``) drive
+    the same iterations: send the prepped messages, land the response, close
+    its cycle, run the landed calls as one batch and queue the next request —
+    until no local call is left, or the iteration budget runs out and a final
+    request without tools ends the run. They differ in how usage is counted
+    and how a terminating batch ends the run; the streaming driver also
+    yields between steps and withholds service-side handles ahead of the
+    yields a consumer may stop at. Every step the two drive identically is a
+    method here.
+
+    The run's transcript state — echo registry, prepped and accumulated loop
+    messages, tool ordinal, error and call counters, aggregated usage — lives
+    for the run; the caller's history is read when a driver starts. Only the
+    streaming driver writes ``_latest_usage``, ``_final_messages`` and
+    ``_service_state_invalidated``, which ``finalize_stream`` reads, and
+    ``_reading``, which ``close_abandoned_read`` reads and clears.
+
+    Writes outside the run: ``tool_choice`` in the run's options, and
+    ``tools`` through each tool batch (normalized per batch, so the next
+    request offers the live list); the recorder's journal (landed responses,
+    staged exchanges and their sealed results); the injection probe's drain;
+    continuation state in the client kwargs, options and session through
+    ``_update_continuation_state`` and ``_invalidate_service_continuation_state``;
+    and the streaming driver's two session pre-clears. ``_WireCaller`` writes
+    the options' ``continuation_token``.
+    """
+
+    def __init__(
+        self,
+        messages: Sequence[Message],
+        *,
+        options: dict[str, Any],
+        client_kwargs: dict[str, Any],
+        service_side: bool,
+        session: AgentSession | None,
+        recorder: LoopRecorder | None,
+        injection_probe: ConsumedInjectionMessageProbe | None,
+        pipeline: FunctionMiddlewarePipeline,
+        additional_function_arguments: dict[str, Any],
+        request_message_observer: Callable[[Sequence[Message]], None] | None,
+        max_iterations: int,
+        max_consecutive_errors: int,
+        max_function_calls: int | None,
+        tool_result_ceiling_tokens: int | None,
+        trajectory: _LoopTrajectory,
+        wire: _WireCaller,
+    ) -> None:
+        self._messages = messages
+        self._options = options
+        self._client_kwargs = client_kwargs
+        self._service_side = service_side
+        self._session = session
+        self._recorder = recorder
+        self._injection_probe = injection_probe
+        self._pipeline = pipeline
+        self._additional_function_arguments = additional_function_arguments
+        self._max_iterations = max_iterations
+        self._max_consecutive_errors = max_consecutive_errors
+        self._max_function_calls = max_function_calls
+        self._tool_result_ceiling_tokens = tool_result_ceiling_tokens
+        self._trajectory = trajectory
+        self._wire = wire
+        self._response_format = options.get("response_format")
+        # Per-run identity registry of every content the conversation
+        # holds — seeded from caller history so a client echoing a
+        # historical object cannot re-execute a past side-effecting
+        # call; _land_response_contents removes reappearances as
+        # echoes. ignore_usage: echo filtering never strips usage.
+        self._echo_registry = WeakIdentityRegistry(ignore_usage=True)
+        self._wire_request_observer = _wire_request_observer(self._echo_registry, request_message_observer)
+        self._prepped_messages: list[Message] = []
+        self._fcc_messages: list[Message] = []
+        self._next_tool_ordinal = 0
+        self._errors_in_a_row = 0
+        self._total_function_calls = 0
+        self._aggregated_usage: UsageDetails | None = None
+        self._latest_usage: UsageDetails | None = None
+        # Authoritative streamed transcript, recorded by each loop exit: the final response
+        # reuses these already-assembled Message objects instead of re-merging
+        # raw updates, so kernel-stamped call provenance survives streaming.
+        # ``None`` means no loop exit completed — finalize_stream keeps the
+        # ``from_updates`` merge as a defensive fallback.
+        self._final_messages: list[Message] | None = None
+        # Set by the streaming exits that withhold a service-stored response's
+        # handles (termination, exhaustion strip): finalize_stream rebuilds
+        # the response from raw updates, which still carry those continuation
+        # ids, so it withholds them again.
+        self._service_state_invalidated = False
+        # The logical call the streaming driver is reading; None once it was
+        # read to its end.
+        self._reading: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
+
+    # -- steps both drivers share ------------------------------------------
+
+    def _start(self) -> None:
+        for message in self._messages:
+            for content in message.contents:
+                self._echo_registry.register(content)
+        self._prepped_messages = list(self._messages)
+
+    def _land(self, response: ChatResponse) -> None:
+        self._next_tool_ordinal = _land_response_contents(
+            response,
+            self._next_tool_ordinal,
+            self._echo_registry,
+            exchange_operation_id=self._trajectory.last_exchange_id,
+        )
+
+    def _take_consumed_injections(self) -> list[Message]:
+        return self._injection_probe.take_consumed_messages() if self._injection_probe else []
+
+    def _record_response_state(self, response: ChatResponse) -> None:
+        _update_continuation_state(
+            self._client_kwargs,
+            response,
+            session=self._session,
+            options=self._options,
+        )
+        if self._recorder is not None:
+            self._recorder.record_response(response)
+
+    def _queue_consumed_injections(self, response: ChatResponse, consumed_injection_messages: list[Message]) -> None:
+        if response.conversation_id is not None:
+            self._prepped_messages = []
+        else:
+            self._prepped_messages.extend(consumed_injection_messages)
+
+    async def _finish_cycle(self, response: ChatResponse) -> list[Content]:
+        function_calls = _extract_function_calls(response)
+        await self._trajectory.cycle_finished(response, function_calls)
+        return function_calls
+
+    async def _run_tool_batch(
+        self, response: ChatResponse, function_calls: list[Content]
+    ) -> tuple[list[Content], bool, str]:
+        """Run the landed calls as one batch and fold their results into the loop messages.
+
+        Returns the results, whether middleware terminated the loop, and
+        ``"stop"`` when the error streak asks for a final turn without tools.
+        """
+        result_carrier_item_id = new_analytics_id()
+        result_commits = (
+            self._recorder.stage_exchange(
+                response.messages,
+                function_calls,
+                result_carrier_item_id=result_carrier_item_id,
+            )
+            if self._recorder is not None
+            else None
+        )
+        response_truncated = response.finish_reason == "length"
+        with self._trajectory.exchange_scope():
+            results, should_terminate, had_errors = await _execute_function_calls(
+                function_calls=function_calls,
+                result_commits=result_commits,
+                tool_options=self._options,
+                custom_args=self._additional_function_arguments,
+                invocation_session=self._session,
+                pipeline=self._pipeline,
+                result_carrier_item_id=result_carrier_item_id,
+                response_truncated=response_truncated,
+                truncated_final_function_call_ids=(
+                    _truncated_final_function_call_ids(response, function_calls) if response_truncated else None
+                ),
+                tool_result_ceiling_tokens=self._tool_result_ceiling_tokens,
+                dispatch_observer=self._trajectory.mark_tool_operations_dispatched,
+            )
+        action, self._errors_in_a_row = _handle_function_call_results(
+            response=response,
+            function_call_results=results,
+            fcc_messages=self._fcc_messages,
+            echo_registry=self._echo_registry,
+            errors_in_a_row=self._errors_in_a_row,
+            had_errors=had_errors,
+            max_errors=self._max_consecutive_errors,
+            result_carrier_item_id=result_carrier_item_id,
+            recorder=self._recorder,
+        )
+        self._total_function_calls += sum(1 for r in results if r.type == "function_result")
+        return results, should_terminate, action
+
+    def _tool_limit_fallback_text(self, action: str) -> str | None:
+        """Return the final turn's fallback text when the batch just run hit a tool limit, else None.
+
+        A hit limit ends the loop like iteration exhaustion: the collected
+        results go out once more in the final turn without tools, whose calls
+        are stripped, never run — a provider ignoring ``tool_choice="none"``
+        cannot get another batch executed.
+        """
+        if action == "stop":
+            return _CONSECUTIVE_ERRORS_FALLBACK_TEXT
+        if self._max_function_calls is not None and self._total_function_calls >= self._max_function_calls:
+            # Best-effort limit, checked after each parallel batch.
+            logger.info(
+                "Maximum function calls reached (%d/%d). Stopping further function calls for this request.",
+                self._total_function_calls,
+                self._max_function_calls,
+            )
+            return _MAX_FUNCTION_CALLS_FALLBACK_TEXT
+        return None
+
+    def _reset_required_tool_choice(self) -> None:
+        # 'required' tool_choice resets after one iteration.
+        if self._options.get("tool_choice") == "required" or (
+            isinstance(self._options.get("tool_choice"), dict)
+            and self._options.get("tool_choice", {}).get("mode") == "required"
+        ):
+            self._options["tool_choice"] = None
+
+    def _queue_batch(self, response: ChatResponse) -> None:
+        if response.conversation_id is not None:
+            # Conversation APIs already hold the function-call message;
+            # send only the new result message.
+            self._prepped_messages.clear()
+            if response.messages:
+                self._prepped_messages.append(response.messages[-1])
+        else:
+            self._prepped_messages.extend(response.messages)
+
+    def _log_iterations_exhausted(self, response: ChatResponse | None) -> None:
+        if response is not None:
+            logger.info(
+                "Maximum iterations reached (%d). Requesting final response without tools.",
+                self._max_iterations,
+            )
+
+    # -- blocking driver ----------------------------------------------------
+
+    async def run_blocking(self) -> ChatResponse:
+        interrupted = False
+        try:
+            return await self._blocking_iterations()
+        except asyncio.CancelledError:
+            # Nothing below may wait on the writer once the consumer
+            # is gone: the settlement queues its lines instead.
+            interrupted = True
+            self._trajectory.abort(self._wire.cancel_outcome())
+            raise
+        except Exception:
+            self._trajectory.abort(ExchangeOutcome.ERROR)
+            raise
+        finally:
+            await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)
+
+    async def _blocking_iterations(self) -> ChatResponse:
+        self._start()
+        response: ChatResponse | None = None
+        tail_cycle_index = self._max_iterations
+        fallback_text = _MAX_ITERATIONS_FALLBACK_TEXT
+
+        for cycle_index in range(self._max_iterations):
+            await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get("tools")))
+            response = await self._wire.blocking_response(
+                self._prepped_messages,
+                request_message_observer=self._wire_request_observer,
+            )
+            self._land(response)
+            consumed_injection_messages = self._take_consumed_injections()
+            response.latest_usage_details = response.usage_details
+            self._aggregated_usage = add_usage_details(self._aggregated_usage, response.usage_details)
+            self._record_response_state(response)
+            self._queue_consumed_injections(response, consumed_injection_messages)
+
+            function_calls = await self._finish_cycle(response)
+            if not (function_calls and self._options.get("tools")):
+                _prepend_fcc_messages(response, self._fcc_messages)
+                response.usage_details = self._aggregated_usage
+                return _clear_internal_conversation_id(response)
+
+            _results, should_terminate, action = await self._run_tool_batch(response, function_calls)
+            if should_terminate:
+                # Middleware termination: return the current response
+                # (tool results already appended) without an fcc
+                # prepend. Streaming termination instead returns the
+                # accumulated transcript because earlier updates were delivered.
+                if self._service_side:
+                    # No further request ever posts this batch's
+                    # results, so the service transcript behind the
+                    # mirrored handle keeps its calls unanswered.
+                    # Record and withhold the handles like the
+                    # exhaustion strip does; the marker lets the
+                    # agent post-hook install the local fallback.
+                    _invalidate_service_continuation_state(response, self._session)
+                response.usage_details = self._aggregated_usage
+                return _clear_internal_conversation_id(response)
+            self._queue_batch(response)
+            limit_text = self._tool_limit_fallback_text(action)
+            if limit_text is not None:
+                tail_cycle_index, fallback_text = cycle_index + 1, limit_text
+                break
+            self._reset_required_tool_choice()
+        else:
+            self._log_iterations_exhausted(response)
+
+        # Loop exhausted or a tool limit hit: final model call with
+        # tool_choice="none" so the model produces plain text instead of
+        # orphaned function calls.
+        self._options["tool_choice"] = "none"
+        await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get("tools")))
+        response = await self._wire.blocking_response(
+            self._prepped_messages,
+            request_message_observer=self._wire_request_observer,
+        )
+        self._land(response)
+        # Counted before the strip below: a provider that ignored
+        # ``tool_choice="none"`` did ask for calls, and a tail that
+        # reported none would read as a compliant one.
+        await self._finish_cycle(response)
+        stripped = _strip_unexecutable_calls_from_response(response)
+        _ensure_exhaustion_fallback_response(response, fallback_text)
+        # Gate on the resolved storage mode, not response metadata: under
+        # conversation storage the service holds the stripped calls even
+        # when the parsed response failed to carry the handle, and a
+        # client-side-storage response's metadata must survive untouched.
+        if stripped and self._service_side:
+            _invalidate_service_continuation_state(response, self._session)
+        self._take_consumed_injections()
+        response.latest_usage_details = response.usage_details
+        self._aggregated_usage = add_usage_details(self._aggregated_usage, response.usage_details)
+        self._record_response_state(response)
+        response.usage_details = self._aggregated_usage
+        _prepend_fcc_messages(response, self._fcc_messages)
+        return _clear_internal_conversation_id(response)
+
+    # -- streaming driver ---------------------------------------------------
+
+    def _count_streamed_usage(self, response: ChatResponse) -> None:
+        latest_usage = response.latest_usage_details
+        if latest_usage is None:
+            latest_usage = response.usage_details
+        response.latest_usage_details = latest_usage
+        self._latest_usage = latest_usage
+        if latest_usage is not None:
+            self._aggregated_usage = add_usage_details(self._aggregated_usage, latest_usage)
+
+    async def stream(self) -> AsyncIterable[ChatResponseUpdate]:
+        # One generator end to end: every exit but the normal return closes
+        # the trajectory bookkeeping it opened. A consumer abandoning the
+        # stream lands here as GeneratorExit, an interrupt as CancelledError.
+        # Delegating the body to an inner generator would lose the
+        # GeneratorExit: closing this generator does not close one it is
+        # iterating, so the inner body would see it only at garbage collection.
+        # For the same reason the logical call it is reading is closed apart,
+        # by ``close_abandoned_read``.
+        interrupted = False
+        try:
+            self._start()
+            response: ChatResponse | None = None
+            tail_cycle_index = self._max_iterations
+            fallback_text = _MAX_ITERATIONS_FALLBACK_TEXT
+
+            for cycle_index in range(self._max_iterations):
+                await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get("tools")))
+                # Echoed conversation-held objects must never reach update
+                # assembly (merges would launder their identity past the
+                # memo). Delivered on the REQUEST path so the middleware
+                # pipeline attaches it to the stream its final handler
+                # resolves — beneath every middleware, which is the only
+                # placement that crosses semantic stream proxies (response
+                # validation drains the inner stream and replays it) and
+                # re-attaches on every validation retry. The provider
+                # finalizer, every result hook, and the yielded updates all
+                # observe one echo-free sequence, so nothing is re-assembled
+                # behind a hook's back.
+                echo_filter = functools.partial(
+                    _strip_echoed_update,
+                    echo_registry=self._echo_registry,
+                )
+                logical_stream = self._wire.streaming_response(
+                    self._prepped_messages,
+                    stream_update_filter=echo_filter,
+                    request_message_observer=self._wire_request_observer,
+                )
+                self._reading = logical_stream
+                async for update in logical_stream:
+                    yield update
+                self._reading = None
+                # Triggers the inner stream's finalizer and result hooks (the
+                # wire client's intermediate-text hook runs before tool
+                # extraction below — "hook before tool detection" ordering).
+                response = await logical_stream.get_final_response()
+                _remove_echo_emptied_message_shells(response)
+                self._land(response)
+                _record_stream_fragment_identities(logical_stream, self._echo_registry)
+                self._count_streamed_usage(response)
+                consumed_injection_messages = self._take_consumed_injections()
+                self._record_response_state(response)
+                self._queue_consumed_injections(response, consumed_injection_messages)
+
+                # Continue only for unresolved local function calls.
+                function_calls = await self._finish_cycle(response)
+                if not (function_calls and self._options.get("tools")):
+                    self._final_messages = [*self._fcc_messages, *response.messages]
+                    return
+
+                results, should_terminate, action = await self._run_tool_batch(response, function_calls)
+                limit_text = None if should_terminate else self._tool_limit_fallback_text(action)
+                if should_terminate and self._service_side:
+                    # No further request ever posts this batch's results, so
+                    # the service transcript behind the mirrored handle keeps
+                    # its calls unanswered. Record and withhold the handles
+                    # like the exhaustion strip does — ahead of the
+                    # last-iteration clear below, which would drop the
+                    # session's copy unrecorded — and raise the run flag
+                    # so ``finalize_stream`` stamps the verdict on the
+                    # assembled response for the agent post-hook.
+                    self._service_state_invalidated = True
+                    _invalidate_service_continuation_state(response, self._session)
+                elif (
+                    (limit_text is not None or cycle_index + 1 == self._max_iterations)
+                    and self._service_side
+                    and self._session is not None
+                ):
+                    # Last batch (iterations exhausted or a tool limit hit):
+                    # the yield below is the final suspension point before
+                    # the exhaustion tail, and these results are not posted
+                    # to the service until the tail request lands.
+                    # A consumer closing at that yield must not inherit the
+                    # mirrored handle — the service transcript behind it still
+                    # holds this batch's unanswered calls. The finalized tail
+                    # restores the fresh handle via
+                    # ``_update_continuation_state``.
+                    self._session.service_session_id = None
+                # Synthesized tool-result update so from_updates can rebuild the
+                # full transcript.
+                yield ChatResponseUpdate(contents=results, role="tool")
+                if should_terminate:
+                    # This batch (calls + results) was already folded into
+                    # _fcc_messages by _handle_function_call_results, so the
+                    # assembly is the accumulated transcript with no tail.
+                    # Deliberate asymmetry with the non-streaming termination
+                    # return (only the terminating response, no prepend):
+                    # each path keeps its existing transcript shape.
+                    self._final_messages = list(self._fcc_messages)
+                    return
+                self._queue_batch(response)
+                if limit_text is not None:
+                    tail_cycle_index, fallback_text = cycle_index + 1, limit_text
+                    break
+                self._reset_required_tool_choice()
+            else:
+                self._log_iterations_exhausted(response)
+
+            # Loop exhausted or a tool limit hit: final non-tool streaming turn.
+            self._options["tool_choice"] = "none"
+            if self._service_side and self._session is not None:
+                # The tail request consumes the mirrored handle: the moment it
+                # lands, the service transcript behind that handle holds this
+                # run's still-unanswered calls, so a consumer abandoning the
+                # tail must not inherit it (the tail updates below are marked
+                # against eager re-mirroring for the same reason). Successful
+                # finalization restores the fresh handle via
+                # ``_update_continuation_state`` — or withholds it when the
+                # strip invalidates the service state.
+                self._session.service_session_id = None
+            echo_filter = functools.partial(
+                _strip_echoed_update,
+                echo_registry=self._echo_registry,
+            )
+            await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get("tools")))
+            final_logical_stream = self._wire.streaming_response(
+                self._prepped_messages,
+                stream_update_filter=echo_filter,
+                request_message_observer=self._wire_request_observer,
+            )
+            tail_stripped_call = False
+            self._reading = final_logical_stream
+            async for update in final_logical_stream:
+                kept = _strip_unexecutable_calls_from_update(update, suppress_finish_reason=tail_stripped_call)
+                if kept is not update:
+                    # A call was stripped: from here on no provider
+                    # finish_reason may cross the stream — providers commonly
+                    # emit the call delta and the finish-reason chunk
+                    # separately, and a first-terminal consumer would stop at
+                    # that later chunk before the corrective final update
+                    # re-emits the corrected reason.
+                    tail_stripped_call = True
+                if kept is not None:
+                    # Ephemeral marker (never serialized): eager continuation
+                    # mirrors must skip tail updates. The run is ending, so a
+                    # mid-stream mirror has no disconnect-recovery value left,
+                    # and a consumer abandoning the stream mid-tail would
+                    # otherwise keep the session pointed at a service
+                    # transcript whose stripped calls will never be answered;
+                    # the tail's own verdict (post-hook restore or
+                    # invalidation) is the sole writer once the stream ends.
+                    kept.__dict__["_chrys_exhaustion_tail_update"] = True
+                    yield kept
+            self._reading = None
+            final_response = await final_logical_stream.get_final_response()
+            _remove_echo_emptied_message_shells(final_response)
+            self._land(final_response)
+            await self._finish_cycle(final_response)
+            _record_stream_fragment_identities(final_logical_stream, self._echo_registry)
+            stripped = _strip_unexecutable_calls_from_response(final_response)
+            fallback_added = _ensure_exhaustion_fallback_response(final_response, fallback_text)
+            # Invalidate BEFORE the fallback yield: a yield suspends the
+            # generator, and a consumer that stops right after the fallback
+            # would otherwise leave the session pointing at the stale service
+            # transcript (the eager transform already wrote it mid-stream).
+            # Gate on the resolved storage mode, not response metadata: under
+            # conversation storage the service holds the stripped calls even
+            # when the parsed response failed to carry the handle, and a
+            # client-side-storage response's metadata must survive untouched.
+            if stripped and self._service_side:
+                self._service_state_invalidated = True
+                _invalidate_service_continuation_state(final_response, self._session)
+            if fallback_added:
+                # Streamed consumers saw no visible content either (the yield
+                # loop strips the same calls); surface the fallback text there
+                # too, not only on the assembled response. The stripped tail
+                # updates carry no terminal reason (the update strip clears
+                # it), so this update supplies the stream's sole terminal
+                # "stop" — the fallback ends the run, there is no tool work
+                # left to route.
+                yield ChatResponseUpdate(
+                    role="assistant",
+                    contents=[Content.from_text(fallback_text)],
+                    finish_reason="stop",
+                )
+            elif stripped and final_response.finish_reason:
+                # No fallback (the final kept visible text), but the strip
+                # suppressed every provider reason after the first stripped
+                # call and normalized the wire's "tool_calls" to "stop":
+                # streamed consumers need the corrected signal — whatever
+                # reason the assembled response settled on, "stop" or a
+                # non-stop reason like "length" — and it must arrive only
+                # after every stripped update.
+                yield ChatResponseUpdate(role="assistant", contents=[], finish_reason=final_response.finish_reason)
+            self._count_streamed_usage(final_response)
+            self._take_consumed_injections()
+            self._record_response_state(final_response)
+            self._final_messages = [*self._fcc_messages, *final_response.messages]
+        except asyncio.CancelledError:
+            # Nothing below may wait on the writer once the consumer is
+            # gone: the settlement queues its lines instead.
+            interrupted = True
+            self._trajectory.abort(self._wire.cancel_outcome())
+            raise
+        except GeneratorExit:
+            interrupted = True
+            self._trajectory.abort(ExchangeOutcome.ABANDONED)
+            raise
+        except Exception:
+            self._trajectory.abort(ExchangeOutcome.ERROR)
+            raise
+        finally:
+            await self._trajectory.settle_undispatched_tool_operations(queued=interrupted)
+
+    async def close_abandoned_read(self) -> None:
+        """Cleanup hook of the run's stream: close the logical call it was reading.
+
+        A logical call is left unread when the consumer closes the run's
+        stream mid-response, or when the run fails between two pulls of it.
+        On every other exit it was read to its end, or it ended by itself
+        (error, cancellation) and closing it again has no effect. Closing it
+        closes the provider stream under it, so that stream's own cleanup
+        hooks (usage, telemetry) run before the close or the failure reaches
+        the consumer. The hook runs after ``stream`` exited and aborted its
+        trajectory, never from a ``GeneratorExit`` handler: finalization
+        closes each abandoned generator in a task of its own, and a handler
+        closing another generator would collide with that generator's own
+        close.
+        """
+        reading, self._reading = self._reading, None
+        if reading is not None:
+            try:
+                await reading.aclose()
+            except Exception:
+                logger.debug("Failed to close an abandoned logical stream", exc_info=True)
+
+    def finalize_stream(self, updates: Sequence[ChatResponseUpdate]) -> ChatResponse:
+        # Inner result hooks already ran via get_final_response; do not run them again.
+        response = ChatResponse.from_updates(updates, output_format_type=self._response_format)
+        if self._final_messages is not None:
+            # The loop is the sole reconstruction authority: keep
+            # ``from_updates`` for response-level fields, but reuse the
+            # loop's assembled Message objects. Re-merging raw fragments
+            # here would rebuild multi-fragment function calls as new
+            # Content objects, dropping the kernel-stamped invocation
+            # ordinal, tool kind/context, and folded result metadata —
+            # and could glue a boundary-shaped delta onto the synthesized
+            # tool message. Structured-output ``.value`` parses lazily
+            # from these swapped messages; their text is identical.
+            response.messages = list(self._final_messages)
+        response.usage_details = self._aggregated_usage
+        response.latest_usage_details = self._latest_usage
+        if self._service_state_invalidated:
+            # ``from_updates`` restored the handles from raw updates; the
+            # run withheld them (exhaustion strip or middleware termination)
+            # because the service-side transcript holds calls it never sees
+            # answered.
+            response.conversation_id = None
+            response.response_id = None
+            response._chrys_service_state_invalidated = True
+        return response
 
 
 # --------------------------------------------------------------------------- #
@@ -2434,7 +2181,7 @@ class ToolLoopLayer:
         *,
         stream: bool = False,
         options: Mapping[str, Any] | None = None,
-        middleware: Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
+        middleware: ChatMiddleware | FunctionMiddleware | Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
         compaction_strategy: Any = None,
         tokenizer: Any = None,
         function_invocation_kwargs: Mapping[str, Any] | None = None,
@@ -2445,6 +2192,8 @@ class ToolLoopLayer:
 
         ``stream=False`` returns an un-awaited coroutine; ``stream=True`` returns
         a ``ResponseStream`` synchronously. Execution begins when the result is driven.
+        The run's settings are resolved here; the caller's messages are read
+        when the run starts.
         """
         # Merge the middleware kwarg with the
         # client_kwargs channel, split chat vs function, pop per-run state.
@@ -2453,7 +2202,7 @@ class ToolLoopLayer:
             existing = effective_client_kwargs.get("middleware")
             effective_client_kwargs["middleware"] = [
                 *_as_middleware_list(existing),
-                *middleware,
+                *_as_middleware_list(middleware),
             ]
         runtime_split = split_middleware(effective_client_kwargs.pop("middleware", None))
         pipeline = FunctionMiddlewarePipeline(*self.function_middleware, *runtime_split.function)
@@ -2474,30 +2223,6 @@ class ToolLoopLayer:
         )
         raw_trajectory = effective_client_kwargs.pop(TRAJECTORY_CONTEXT_KWARG, None)
         trajectory: TrajectoryContext | None = raw_trajectory if isinstance(raw_trajectory, TrajectoryContext) else None
-
-        # Sentinel start: the logical call may begin with a retry-owned token
-        # already in its options (whole-run retry resuming a background
-        # response), so the first tracked value — including a terminal
-        # ``None`` — must always be applied, never swallowed by dedupe.
-        untracked = object()
-        last_tracked_continuation_token: Any = untracked
-
-        def _track_continuation_token(token: Any) -> None:
-            # Mirror the live token into the retry owner's request state: a
-            # transient poll failure must resume THIS response on the next
-            # attempt (outer whole-run retry included), never re-issue the
-            # original create request. Providers re-announce the id on every
-            # progress event, so identical repeats are dropped.
-            nonlocal last_tracked_continuation_token
-            if token == last_tracked_continuation_token:
-                return
-            last_tracked_continuation_token = token
-            if token is None:
-                mutable_options.pop("continuation_token", None)
-            else:
-                mutable_options["continuation_token"] = token
-            if continuation_token_observer is not None:
-                continuation_token_observer(token)
 
         filtered_kwargs = effective_client_kwargs
 
@@ -2533,1192 +2258,42 @@ class ToolLoopLayer:
             if raw_wire_retry_policy is not None and not storage.service_side
             else None
         )
-        max_errors = self.max_consecutive_errors
 
-        def _wire_request_observer(echo_registry: WeakIdentityRegistry) -> Callable[[Sequence[Message]], None]:
-            internal_observer = functools.partial(
-                _record_wire_request_content_identities,
-                echo_registry=echo_registry,
-            )
-            if request_message_observer is None:
-                return internal_observer
-
-            def observe(messages: Sequence[Message]) -> None:
-                # Echo tracking remains the loop's invariant even if a caller
-                # observer raises; callers then see the exact same provider
-                # views immediately after the internal identity recorder.
-                internal_observer(messages)
-                request_message_observer(messages)
-
-            return observe
-
-        # Trajectory bookkeeping (all no-ops without a bound context): one
-        # ``model.cycle`` per loop acquisition, one ``model.exchange`` per
-        # wire attempt, ``retry.*`` around every wire retry. The exchange
-        # trace rides to the wire client in ``client_kwargs`` — the loop
-        # cannot bind it ambiently because the provider stream is lazy and
-        # resolves outside this call's context.
-        cycle_trajectory: TrajectoryContext | None = None
-        cycle_started_ns = 0
-        cycle_exchange_count = 0
-        active_exchange: ExchangeTrace | None = None
-        pending_exchange_id: str | None = None
-        last_exchange_id: str | None = None
-        landed_exchange_trajectory: TrajectoryContext | None = None
-        undispatched_tool_operations: dict[int, tuple[Content, TrajectoryContext | None]] = {}
-
-        def _register_landed_tool_operations(
-            response: ChatResponse,
-            function_calls: Sequence[Content],
-        ) -> None:
-            """Mint and remember every operation until the one dispatch point takes it."""
-            _stamp_function_call_operations(response, function_calls)
-            operation_context = landed_exchange_trajectory or current_trajectory()
-            for function_call in function_calls:
-                undispatched_tool_operations[id(function_call)] = (function_call, operation_context)
-
-        def _mark_tool_operations_dispatched(function_calls: Sequence[Content]) -> None:
-            for function_call in function_calls:
-                undispatched_tool_operations.pop(id(function_call), None)
-
-        async def _settle_undispatched_tool_operations(*, queued: bool = False) -> None:
-            """Close every operation minted but never handed to the execution batch.
-
-            This is the single reconciliation point for no-tools responses,
-            exhaustion tails, future early returns, and failures between
-            landing and dispatch. Every entry keeps the exchange context it
-            landed under rather than consulting the loop's later current one.
-            """
-            pending = list(undispatched_tool_operations.values())
-            undispatched_tool_operations.clear()
-            first_failure: BaseException | None = None
-            for function_call, operation_context in pending:
-                try:
-                    with trajectory_scope(operation_context):
-                        await _record_unexecuted_tool_operation(
-                            function_call,
-                            outcome=ToolOutcome.FILTERED,
-                            queued=queued,
-                        )
-                except BaseException as exc:
-                    # The helper settles the current pair before propagating a
-                    # cancelled ack. Continue so one cancellation cannot strand
-                    # the rest of a parallel batch, then preserve the caller's
-                    # original control-flow signal.
-                    if first_failure is None:
-                        first_failure = exc
-            if first_failure is not None:
-                raise first_failure
-
-        async def _trajectory_emit(draft: Any) -> None:
-            if trajectory is None:
-                return
-            try:
-                await trajectory.sink.emit(draft)
-            except Exception:
-                logger.debug("Trajectory emit failed", exc_info=True)
-
-        async def _trajectory_cycle_started(cycle_index: int) -> None:
-            nonlocal cycle_trajectory, cycle_started_ns, cycle_exchange_count, last_exchange_id
-            if trajectory is None:
-                return
-            cycle_id = new_analytics_id()
-            cycle_trajectory = trajectory.with_cycle(cycle_id)
-            cycle_started_ns = monotonic_ns()
-            cycle_exchange_count = 0
-            last_exchange_id = None
-            await _trajectory_emit(
-                cycle_trajectory.draft(
-                    TrajectoryEventType.MODEL_CYCLE_STARTED,
-                    operation_id=cycle_id,
-                    parent_operation_id=trajectory.run_operation_id,
-                    payload={"cycle_index": cycle_index, "tools_offered": bool(mutable_options.get("tools"))},
-                )
-            )
-
-        def _trajectory_cycle_finished_draft(*, outcome: str, function_call_count: int = 0) -> Any:
-            nonlocal landed_exchange_trajectory
-            cycle = cycle_trajectory
-            if cycle is None or cycle.cycle_operation_id is None:
-                return None
-            landed_exchange_trajectory = cycle.with_exchange(last_exchange_id)
-            return cycle.draft(
-                TrajectoryEventType.MODEL_CYCLE_FINISHED,
-                operation_id=cycle.cycle_operation_id,
-                parent_operation_id=cycle.run_operation_id,
-                payload={
-                    "outcome": outcome,
-                    "exchange_count": cycle_exchange_count,
-                    "function_call_count": function_call_count,
-                    # Monotonic at both ends: a wall clock that steps mid-cycle
-                    # would otherwise stretch or flatten the span it measures.
-                    "duration_ms": max(0, (monotonic_ns() - cycle_started_ns) // 1_000_000),
-                    "final_exchange_operation_id": last_exchange_id,
-                },
-                measurements={"/payload/duration_ms": measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)},
-            )
-
-        async def _trajectory_cycle_finished(
-            *,
-            outcome: str,
-            function_call_count: int = 0,
-            response: ChatResponse | None = None,
-            function_calls: Sequence[Content] = (),
-        ) -> None:
-            nonlocal cycle_trajectory
-            draft = _trajectory_cycle_finished_draft(outcome=outcome, function_call_count=function_call_count)
-            if response is not None:
-                _register_landed_tool_operations(response, function_calls)
-            if draft is None:
-                return
-            if response is not None:
-                await _trajectory_hosted_calls(response)
-            # Given up only here: an interrupt during the hosted-call records
-            # above still leaves the cycle for the abort path to close.
-            cycle_trajectory = None
-            await _trajectory_emit(draft)
-
-        async def _trajectory_hosted_calls(response: ChatResponse) -> None:
-            # Hosted calls never become tool operations (the provider ran
-            # them); one fact per call keeps the exchange's fan-out visible
-            # without an unbounded array on the exchange event.
-            exchange = landed_exchange_trajectory
-            if exchange is None or exchange.exchange_operation_id is None:
-                return
-            for ordinal, hosted_kind in enumerate(_hosted_call_kinds(response)):
-                await _trajectory_emit(
-                    exchange.draft(
-                        TrajectoryEventType.HOSTED_CALL_OBSERVED,
-                        operation_id=new_analytics_id(),
-                        parent_operation_id=exchange.exchange_operation_id,
-                        payload={
-                            "parent_exchange_operation_id": exchange.exchange_operation_id,
-                            "hosted_kind": hosted_kind,
-                            "ordinal": ordinal,
-                        },
-                    )
-                )
-
-        def _trajectory_abort(outcome: str) -> None:
-            # Synchronous close for exits that cannot await (cancellation,
-            # generator close): the open exchange and cycle are queued in
-            # order without waiting for the ack.
-            nonlocal cycle_trajectory
-            _trajectory_close_exchange(outcome)
-            draft = _trajectory_cycle_finished_draft(outcome=outcome)
-            cycle_trajectory = None
-            if draft is not None and trajectory is not None:
-                try:
-                    trajectory.sink.emit_soon(draft)
-                except Exception:
-                    logger.debug("Trajectory cycle close failed", exc_info=True)
-
-        def _trajectory_exchange_scope() -> trajectory_scope:
-            # Ambient context for the tool batch a landed response spawns:
-            # tool middleware hangs its operations under the producing
-            # exchange. Without a loop-owned context the ambient one (if any)
-            # is simply re-bound.
-            if landed_exchange_trajectory is None:
-                return trajectory_scope(current_trajectory())
-            return trajectory_scope(landed_exchange_trajectory)
-
-        def _trajectory_begin_exchange() -> dict[str, Any]:
-            nonlocal active_exchange, pending_exchange_id, last_exchange_id, cycle_exchange_count
-            active_exchange = None
-            if cycle_trajectory is None:
-                return filtered_kwargs
-            exchange_id = pending_exchange_id or new_analytics_id()
-            pending_exchange_id = None
-            last_exchange_id = exchange_id
-            cycle_exchange_count += 1
-            active_exchange = ExchangeTrace(cycle_trajectory.with_exchange(exchange_id))
-            return {**filtered_kwargs, TRAJECTORY_EXCHANGE_KWARG: active_exchange}
-
-        def _trajectory_close_exchange(outcome: str, *, exc: BaseException | None = None) -> None:
-            # Idempotent: a wire client that already reported its own terminal
-            # marker wins; this closes the abandoned/failed remainder.
-            nonlocal active_exchange, last_exchange_id, cycle_exchange_count
-            trace = active_exchange
-            if trace is None:
-                return
-            active_exchange = None
-            # A middleware beneath the loop may have re-issued the request in
-            # place (validation retry): the handle then names the final
-            # exchange and every re-issue was one more acquisition.
-            last_exchange_id = trace.operation_id
-            cycle_exchange_count += trace.generation
-            payload: dict[str, Any] = {}
-            if exc is not None:
-                payload["error_code"] = type(exc).__name__
-                policy = wire_retry_policy
-                payload["retryable"] = bool(policy is not None and policy.is_retryable(exc))
-            try:
-                trace.finished(outcome=outcome, payload=payload)
-            except Exception:
-                logger.debug("Trajectory exchange close failed", exc_info=True)
-
-        async def _trajectory_retry(
-            *, reason_code: str, retry_mode: str, delay_seconds: int, fallback_to_blocking: bool
-        ) -> None:
-            nonlocal pending_exchange_id
-            if cycle_trajectory is None:
-                return
-            previous = last_exchange_id
-            next_id = new_analytics_id()
-            pending_exchange_id = next_id
-            await _trajectory_emit(
-                cycle_trajectory.draft(
-                    TrajectoryEventType.RETRY_SCHEDULED,
-                    operation_id=next_id,
-                    parent_operation_id=cycle_trajectory.cycle_operation_id,
-                    payload={
-                        "reason_code": reason_code,
-                        "delay_ms": max(0, int(delay_seconds * 1000)),
-                        "retry_mode": retry_mode,
-                        "previous_operation_id": previous,
-                        "committed_work_present": bool(recorder is not None and recorder.committed_count > 0),
-                        "fallback_to_blocking": fallback_to_blocking,
-                    },
-                )
-            )
-
-        async def _trajectory_retry_started(*, retry_mode: str) -> None:
-            if cycle_trajectory is None or pending_exchange_id is None:
-                return
-            await _trajectory_emit(
-                cycle_trajectory.draft(
-                    TrajectoryEventType.RETRY_STARTED,
-                    operation_id=pending_exchange_id,
-                    parent_operation_id=cycle_trajectory.cycle_operation_id,
-                    payload={
-                        "retry_mode": retry_mode,
-                        "next_operation_id": pending_exchange_id,
-                        "previous_operation_id": last_exchange_id,
-                    },
-                )
-            )
-
-        def _cancel_outcome() -> str:
-            policy = wire_retry_policy
-            return (
-                ExchangeOutcome.INTERRUPTED
-                if policy is not None and policy.is_interrupted()
-                else ExchangeOutcome.CANCELLED
-            )
-
-        async def _wire_call(
-            prepped: list[Message],
-            *,
-            as_stream: bool,
-            stream_update_filter: Callable[[ChatResponseUpdate], ChatResponseUpdate] | None = None,
-            request_message_observer: Callable[[Sequence[Message]], None],
-        ) -> Any:
-            # The recorder keeps the loop's canonical objects (its identity
-            # dedup depends on re-recorded history being the SAME objects).
-            if recorder is not None:
-                await recorder.record_pre_call(prepped)
-            # EVERY outgoing message is a per-call view — caller history
-            # included — so a client mutating a received message in place can
-            # corrupt neither the loop's transcript nor the caller's
-            # session-state objects. Message-metadata write-through survives:
-            # views share the wrapper's additional_properties dict, which is
-            # how compaction exclusion flags reach stored history.
-            wire_view = [_wire_message_view(m) for m in prepped]
-            return self.inner.get_response(
-                wire_view,
-                stream=as_stream,
-                stream_update_filter=stream_update_filter,
-                request_message_observer=request_message_observer,
-                options=mutable_options,
-                middleware=per_call_chat,
-                compaction_strategy=compaction_strategy,
-                tokenizer=tokenizer,
-                client_kwargs=_trajectory_begin_exchange(),
-            )
-
-        async def _schedule_wire_retry(
-            policy: WireRetryPolicy,
-            exc: BaseException,
-            *,
-            message: str,
-            attempt: int,
-            max_attempts: int,
-            delay_seconds: int | None = None,
-            fallback_to_blocking: bool = False,
-        ) -> None:
-            if mutable_options.get("continuation_token") is None:
-                # A retry that resumes an already-created response via its
-                # continuation token must NOT replay consumed injections: the
-                # create that consumed them succeeded (the provider holds
-                # them), and a poll never consumes a replay — the batch would
-                # sit stranded until commit destroys it.
-                policy.before_retry()
-            delay = policy.backoff_seconds(attempt - 1) if delay_seconds is None else delay_seconds
-            stalled = isinstance(exc, StreamStall)
-            retry_mode = RetryMode.STALL_FALLBACK if fallback_to_blocking else RetryMode.WIRE
-            await _trajectory_retry(
-                reason_code=RetryReason.STREAM_STALL if stalled else RetryReason.TRANSIENT_ERROR,
-                retry_mode=retry_mode,
-                delay_seconds=delay,
-                fallback_to_blocking=fallback_to_blocking,
-            )
-            await policy.on_retry(message, attempt, max_attempts, delay, exc)
-            if policy.is_interrupted() or await policy.sleep(delay):
-                raise asyncio.CancelledError
-            await _trajectory_retry_started(retry_mode=retry_mode)
-
-        async def _pause_between_continuation_polls() -> None:
-            # Task cancellation is the interrupt channel for both service and
-            # local runs; the policy flag check covers soft interrupts that
-            # only set state.
-            policy = wire_retry_policy
-            if policy is not None and policy.is_interrupted():
-                raise asyncio.CancelledError
-            if CONTINUATION_POLL_INTERVAL_SECONDS > 0:
-                await asyncio.sleep(CONTINUATION_POLL_INTERVAL_SECONDS)
-
-        def _hosted_commits_vetoing_replay(policy: Any) -> tuple[str, ...]:
-            # Upward-safe seam: a policy may expose the hosted tool calls the
-            # failed attempt already executed server-side (hosted MCP / hosted
-            # shell). Without a live continuation token a retry re-creates the
-            # request and re-runs those side effects; with one it merely
-            # resumes the same response, which is safe.
-            hosted_probe = getattr(policy, "hosted_commits_in_flight", None)
-            hosted_commits = tuple(hosted_probe()) if callable(hosted_probe) else ()
-            if hosted_commits and mutable_options.get("continuation_token") is None:
-                return hosted_commits
-            return ()
-
-        async def _blocking_response_with_retry(
-            prepped: list[Message],
-            *,
-            request_message_observer: Callable[[Sequence[Message]], None],
-        ) -> ChatResponse:
-            retry_attempt = 0
-            while True:
-                policy = wire_retry_policy
-                if policy is not None and policy.is_interrupted():
-                    raise asyncio.CancelledError
-                try:
-                    while True:
-                        response = await _resolve_response(
-                            await _wire_call(
-                                prepped,
-                                as_stream=False,
-                                request_message_observer=request_message_observer,
-                            )
-                        )
-                        _trajectory_close_exchange(ExchangeOutcome.SUCCESS)
-                        if response.continuation_token is None:
-                            _track_continuation_token(None)
-                            if injection_probe is not None:
-                                injection_probe.commit()
-                            return response
-                        _track_continuation_token(response.continuation_token)
-                        await _pause_between_continuation_polls()
-                except asyncio.CancelledError:
-                    _trajectory_close_exchange(_cancel_outcome())
-                    raise
-                except Exception as exc:
-                    _trajectory_close_exchange(ExchangeOutcome.ERROR, exc=exc)
-                    if invalidates_continuation_token(exc):
-                        # The failure judged a terminal response: a retry must
-                        # issue a fresh request, never re-poll the completed
-                        # (immutable) one.
-                        _track_continuation_token(None)
-                    if policy is None or not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
-                        raise
-                    hosted_commits = _hosted_commits_vetoing_replay(policy)
-                    if hosted_commits:
-                        logger.warning(
-                            "Not retrying wire call: provider-hosted tool call(s) already "
-                            "executed in the failed attempt (%s)",
-                            ", ".join(str(label) for label in hosted_commits),
-                        )
-                        raise
-                    retry_attempt += 1
-                    await _schedule_wire_retry(
-                        policy,
-                        exc,
-                        message=clean_error_message(exc),
-                        attempt=retry_attempt,
-                        max_attempts=policy.max_retries,
-                    )
-
-        async def _watchdog_await(awaitable: Awaitable[Any], timeout: float | None, label: str) -> Any:
-            # Idle timing: a pull whose first byte waits on compaction (and
-            # its LAST_WORDS side call) stays alive while that work reports
-            # progress, and stalls after *timeout* without any.
-            if timeout is None:
-                return await awaitable
-            event_loop = asyncio.get_running_loop()
-            last_progress = event_loop.time()
-
-            def _on_progress() -> None:
-                nonlocal last_progress
-                last_progress = event_loop.time()
-
-            task = start_with_wire_progress(awaitable, _on_progress)
-            try:
-                while not task.done():
-                    idle_budget = last_progress + timeout - event_loop.time()
-                    if idle_budget <= 0:
-                        break
-                    await asyncio.wait((task,), timeout=idle_budget)
-            except asyncio.CancelledError:
-                # The pull task may still be running INSIDE the stream's
-                # generator; closing that stream before the task settles
-                # would raise "asynchronous generator is already running".
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-                raise
-            if task.done():
-                return task.result()
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            raise StreamStall(f"{label} produced no progress for {timeout:g}s")
-
-        def _streaming_response_with_retry(
-            prepped: list[Message],
-            *,
-            stream_update_filter: Callable[[ChatResponseUpdate], ChatResponseUpdate],
-            request_message_observer: Callable[[Sequence[Message]], None],
-        ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
-            final_response: ChatResponse | None = None
-            logical_stream: ResponseStream[ChatResponseUpdate, ChatResponse]
-
-            async def _updates() -> AsyncIterable[ChatResponseUpdate]:
-                nonlocal final_response
-                retry_attempt = 0
-                stall_retry_attempt = 0
-                while True:
-                    policy = wire_retry_policy
-                    if policy is not None and policy.is_interrupted():
-                        raise asyncio.CancelledError
-                    inner_stream: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
-                    try:
-                        while True:
-                            raw_stream = await _wire_call(
-                                prepped,
-                                as_stream=True,
-                                stream_update_filter=stream_update_filter,
-                                request_message_observer=request_message_observer,
-                            )
-                            if not isinstance(raw_stream, ResponseStream):
-                                raise TypeError("Streaming wire call did not return a ResponseStream.")
-                            inner_stream = raw_stream
-                            inner_stream.with_update_filter(stream_update_filter)
-                            stream_usage_chunks: list[Mapping[str, Any]] = []
-                            iterator = inner_stream.__aiter__()
-                            while True:
-                                try:
-                                    update = await _watchdog_await(
-                                        iterator.__anext__(),
-                                        policy.stall_timeout_seconds if policy is not None else None,
-                                        "Streaming response",
-                                    )
-                                except StopAsyncIteration:
-                                    break
-                                if update.continuation_token is not None:
-                                    # Providers announce the background
-                                    # response id mid-stream; mirror it
-                                    # immediately so a disconnect before
-                                    # finalization retries by retrieval, not
-                                    # by a duplicate create.
-                                    _track_continuation_token(update.continuation_token)
-                                stream_usage_chunks.extend(_stream_usage_chunks(update))
-                                yield update
-                            response = await _watchdog_await(
-                                inner_stream.get_final_response(),
-                                policy.stall_timeout_seconds if policy is not None else None,
-                                "Streaming response finalization",
-                            )
-                            inner_stream = None
-                            _trajectory_close_exchange(ExchangeOutcome.SUCCESS)
-                            response.latest_usage_details = normalize_stream_usage(stream_usage_chunks)
-                            if response.latest_usage_details is None:
-                                response.latest_usage_details = response.usage_details
-                            if response.continuation_token is None:
-                                _track_continuation_token(None)
-                                final_response = response
-                                if injection_probe is not None:
-                                    injection_probe.commit()
-                                return
-                            _track_continuation_token(response.continuation_token)
-                            await _pause_between_continuation_polls()
-                    except asyncio.CancelledError:
-                        _trajectory_close_exchange(_cancel_outcome())
-                        if inner_stream is not None:
-                            await inner_stream.aclose()
-                        raise
-                    except Exception as exc:
-                        if isinstance(exc, StreamStall):
-                            if active_exchange is not None:
-                                active_exchange.stall_observed()
-                            _trajectory_close_exchange(ExchangeOutcome.STALLED, exc=exc)
-                        else:
-                            _trajectory_close_exchange(ExchangeOutcome.ERROR, exc=exc)
-                        if inner_stream is not None:
-                            try:
-                                await inner_stream.aclose()
-                            except Exception:
-                                logger.debug("Failed to close abandoned provider stream", exc_info=True)
-                        if invalidates_continuation_token(exc):
-                            # The failure judged a terminal response: a retry
-                            # must issue a fresh request, never re-poll the
-                            # completed (immutable) one.
-                            _track_continuation_token(None)
-                        if policy is None:
-                            raise
-                        hosted_commits = _hosted_commits_vetoing_replay(policy)
-                        if hosted_commits:
-                            logger.warning(
-                                "Not replaying wire call: provider-hosted tool call(s) already "
-                                "executed in the aborted stream (%s)",
-                                ", ".join(str(label) for label in hosted_commits),
-                            )
-                            raise
-                        if isinstance(exc, StreamStall):
-                            if stall_retry_attempt >= policy.stall_max_retries:
-                                if policy.stall_exhausted_action is StallExhaustedAction.RAISE:
-                                    raise
-                                await _schedule_wire_retry(
-                                    policy,
-                                    exc,
-                                    message="Stream stalled; retrying with a blocking response",
-                                    attempt=stall_retry_attempt + 1,
-                                    max_attempts=policy.stall_max_retries + 1,
-                                    delay_seconds=0,
-                                    fallback_to_blocking=True,
-                                )
-                                logical_stream._updates.clear()
-                                yield ChatResponseUpdate.retry_boundary()
-                                final_response = await _blocking_response_with_retry(
-                                    prepped,
-                                    request_message_observer=request_message_observer,
-                                )
-                                return
-                            stall_retry_attempt += 1
-                            await _schedule_wire_retry(
-                                policy,
-                                exc,
-                                message="Stream stalled",
-                                attempt=stall_retry_attempt,
-                                max_attempts=policy.stall_max_retries,
-                            )
-                            logical_stream._updates.clear()
-                            yield ChatResponseUpdate.retry_boundary()
-                            continue
-                        if not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
-                            raise
-                        retry_attempt += 1
-                        await _schedule_wire_retry(
-                            policy,
-                            exc,
-                            message=clean_error_message(exc),
-                            attempt=retry_attempt,
-                            max_attempts=policy.max_retries,
-                        )
-                        logical_stream._updates.clear()
-                        yield ChatResponseUpdate.retry_boundary()
-
-            def _finalizer(_updates: Sequence[ChatResponseUpdate]) -> ChatResponse:
-                if final_response is None:
-                    raise RuntimeError("Logical streaming call ended without a final response.")
-                return final_response
-
-            logical_stream = ResponseStream(_updates(), finalizer=_finalizer)
-            return logical_stream
-
-        async def execute_batch(
-            function_calls: list[Content],
-            *,
-            result_carrier_item_id: str,
-            result_commits: Sequence[_ResultCommit] | None = None,
-            response_truncated: bool = False,
-            truncated_final_function_call_ids: set[int] | None = None,
-        ) -> tuple[list[Content], bool, bool]:
-            return await _execute_function_calls(
-                function_calls=function_calls,
-                result_commits=result_commits,
-                tool_options=mutable_options,
-                custom_args=additional_function_arguments,
-                invocation_session=invocation_session,
-                pipeline=pipeline,
-                result_carrier_item_id=result_carrier_item_id,
-                response_truncated=response_truncated,
-                truncated_final_function_call_ids=truncated_final_function_call_ids,
-                tool_result_ceiling_tokens=self.tool_result_ceiling_tokens,
-                dispatch_observer=_mark_tool_operations_dispatched,
-            )
-
+        run_trajectory = _LoopTrajectory(trajectory, retry_policy=wire_retry_policy)
+        wire = _WireCaller(
+            self.inner,
+            options=mutable_options,
+            client_kwargs=filtered_kwargs,
+            chat_middleware=per_call_chat,
+            compaction_strategy=compaction_strategy,
+            tokenizer=tokenizer,
+            policy=wire_retry_policy,
+            recorder=recorder,
+            injection_probe=injection_probe,
+            continuation_token_observer=continuation_token_observer,
+            trajectory=run_trajectory,
+        )
+        run = _LoopRun(
+            messages,
+            options=mutable_options,
+            client_kwargs=filtered_kwargs,
+            service_side=storage.service_side,
+            session=invocation_session,
+            recorder=recorder,
+            injection_probe=injection_probe,
+            pipeline=pipeline,
+            additional_function_arguments=additional_function_arguments,
+            request_message_observer=request_message_observer,
+            max_iterations=self.max_iterations,
+            max_consecutive_errors=self.max_consecutive_errors,
+            max_function_calls=self.max_function_calls,
+            tool_result_ceiling_tokens=self.tool_result_ceiling_tokens,
+            trajectory=run_trajectory,
+            wire=wire,
+        )
         if not stream:
-
-            async def _get_response() -> ChatResponse:
-                # Non-streaming model/tool iterations.
-                errors_in_a_row = 0
-                total_function_calls = 0
-                next_tool_ordinal = 0
-                # Per-run identity registry of every content the conversation
-                # holds — seeded from caller history so a client echoing a
-                # historical object cannot re-execute a past side-effecting
-                # call; _land_response_contents removes reappearances as
-                # echoes. ignore_usage: echo filtering never strips usage.
-                echo_registry = WeakIdentityRegistry(ignore_usage=True)
-                for m in messages:
-                    for c in m.contents:
-                        echo_registry.register(c)
-                wire_request_observer = _wire_request_observer(echo_registry)
-                prepped_messages = list(messages)
-                fcc_messages: list[Message] = []
-                response: ChatResponse | None = None
-                aggregated_usage: UsageDetails | None = None
-
-                for _attempt_idx in range(self.max_iterations):
-                    await _trajectory_cycle_started(_attempt_idx)
-                    response = await _blocking_response_with_retry(
-                        prepped_messages,
-                        request_message_observer=wire_request_observer,
-                    )
-                    next_tool_ordinal = _land_response_contents(
-                        response, next_tool_ordinal, echo_registry, exchange_operation_id=last_exchange_id
-                    )
-                    consumed_injection_messages = injection_probe.take_consumed_messages() if injection_probe else []
-                    response.latest_usage_details = response.usage_details
-                    aggregated_usage = add_usage_details(aggregated_usage, response.usage_details)
-                    _update_continuation_state(
-                        filtered_kwargs,
-                        response,
-                        session=invocation_session,
-                        options=mutable_options,
-                    )
-                    if recorder is not None:
-                        recorder.record_response(response)
-
-                    if response.conversation_id is not None:
-                        prepped_messages = []
-                    else:
-                        prepped_messages.extend(consumed_injection_messages)
-
-                    function_calls = _extract_function_calls(response)
-                    await _trajectory_cycle_finished(
-                        outcome=ExchangeOutcome.SUCCESS,
-                        function_call_count=len(function_calls),
-                        response=response,
-                        function_calls=function_calls,
-                    )
-                    if not (function_calls and mutable_options.get("tools")):
-                        _prepend_fcc_messages(response, fcc_messages)
-                        response.usage_details = aggregated_usage
-                        return _clear_internal_conversation_id(response)
-
-                    result_carrier_item_id = new_analytics_id()
-                    result_commits = (
-                        recorder.stage_exchange(
-                            response.messages,
-                            function_calls,
-                            result_carrier_item_id=result_carrier_item_id,
-                        )
-                        if recorder is not None
-                        else None
-                    )
-                    response_truncated = response.finish_reason == "length"
-                    with _trajectory_exchange_scope():
-                        results, should_terminate, had_errors = await execute_batch(
-                            function_calls,
-                            result_carrier_item_id=result_carrier_item_id,
-                            result_commits=result_commits,
-                            response_truncated=response_truncated,
-                            truncated_final_function_call_ids=(
-                                _truncated_final_function_call_ids(response, function_calls)
-                                if response_truncated
-                                else None
-                            ),
-                        )
-                    action, errors_in_a_row = _handle_function_call_results(
-                        response=response,
-                        function_call_results=results,
-                        fcc_messages=fcc_messages,
-                        echo_registry=echo_registry,
-                        errors_in_a_row=errors_in_a_row,
-                        had_errors=had_errors,
-                        max_errors=max_errors,
-                        result_carrier_item_id=result_carrier_item_id,
-                        recorder=recorder,
-                    )
-                    total_function_calls += sum(1 for r in results if r.type == "function_result")
-                    if should_terminate:
-                        # Middleware termination: return the current response
-                        # (tool results already appended) without an fcc
-                        # prepend. Streaming termination instead returns the
-                        # accumulated transcript because earlier updates were delivered.
-                        if storage.service_side:
-                            # No further request ever posts this batch's
-                            # results, so the service transcript behind the
-                            # mirrored handle keeps its calls unanswered.
-                            # Record and withhold the handles like the
-                            # exhaustion strip does; the marker lets the
-                            # agent post-hook install the local fallback.
-                            _invalidate_service_continuation_state(response, invocation_session)
-                        response.usage_details = aggregated_usage
-                        return _clear_internal_conversation_id(response)
-                    if action == "stop":
-                        # Error threshold reached: force a final non-tool turn so
-                        # function results are submitted before exit.
-                        mutable_options["tool_choice"] = "none"
-                    elif self.max_function_calls is not None and total_function_calls >= self.max_function_calls:
-                        # Best-effort limit, checked after each parallel batch.
-                        logger.info(
-                            "Maximum function calls reached (%d/%d). Stopping further function calls for this request.",
-                            total_function_calls,
-                            self.max_function_calls,
-                        )
-                        mutable_options["tool_choice"] = "none"
-
-                    # 'required' tool_choice resets after one iteration.
-                    if mutable_options.get("tool_choice") == "required" or (
-                        isinstance(mutable_options.get("tool_choice"), dict)
-                        and mutable_options.get("tool_choice", {}).get("mode") == "required"
-                    ):
-                        mutable_options["tool_choice"] = None
-
-                    if response.conversation_id is not None:
-                        # Conversation APIs already hold the function-call message;
-                        # send only the new result message.
-                        prepped_messages.clear()
-                        if response.messages:
-                            prepped_messages.append(response.messages[-1])
-                    else:
-                        prepped_messages.extend(response.messages)
-
-                # Loop exhausted: final model call with tool_choice="none" so the
-                # model produces plain text instead of orphaned function calls.
-                if response is not None:
-                    logger.info(
-                        "Maximum iterations reached (%d). Requesting final response without tools.",
-                        self.max_iterations,
-                    )
-                mutable_options["tool_choice"] = "none"
-                await _trajectory_cycle_started(self.max_iterations)
-                response = await _blocking_response_with_retry(
-                    prepped_messages,
-                    request_message_observer=wire_request_observer,
-                )
-                next_tool_ordinal = _land_response_contents(
-                    response, next_tool_ordinal, echo_registry, exchange_operation_id=last_exchange_id
-                )
-                # Counted before the strip below: a provider that ignored
-                # ``tool_choice="none"`` did ask for calls, and a tail that
-                # reported none would read as a compliant one.
-                tail_calls = _extract_function_calls(response)
-                await _trajectory_cycle_finished(
-                    outcome=ExchangeOutcome.SUCCESS,
-                    function_call_count=len(tail_calls),
-                    response=response,
-                    function_calls=tail_calls,
-                )
-                stripped = _strip_unexecutable_calls_from_response(response)
-                _ensure_exhaustion_fallback_response(response)
-                # Gate on the resolved storage mode, not response metadata: under
-                # conversation storage the service holds the stripped calls even
-                # when the parsed response failed to carry the handle, and a
-                # client-side-storage response's metadata must survive untouched.
-                if stripped and storage.service_side:
-                    _invalidate_service_continuation_state(response, invocation_session)
-                if injection_probe is not None:
-                    injection_probe.take_consumed_messages()
-                response.latest_usage_details = response.usage_details
-                aggregated_usage = add_usage_details(aggregated_usage, response.usage_details)
-                _update_continuation_state(
-                    filtered_kwargs,
-                    response,
-                    session=invocation_session,
-                    options=mutable_options,
-                )
-                if recorder is not None:
-                    recorder.record_response(response)
-                response.usage_details = aggregated_usage
-                _prepend_fcc_messages(response, fcc_messages)
-                return _clear_internal_conversation_id(response)
-
-            async def _guarded_get_response() -> ChatResponse:
-                interrupted = False
-                try:
-                    return await _get_response()
-                except asyncio.CancelledError:
-                    # Nothing below may wait on the writer once the consumer
-                    # is gone: the settlement queues its lines instead.
-                    interrupted = True
-                    _trajectory_abort(_cancel_outcome())
-                    raise
-                except Exception:
-                    _trajectory_abort(ExchangeOutcome.ERROR)
-                    raise
-                finally:
-                    await _settle_undispatched_tool_operations(queued=interrupted)
-
-            return _guarded_get_response()
-
-        response_format = mutable_options.get("response_format")
-        aggregated_usage: UsageDetails | None = None
-        latest_usage: UsageDetails | None = None
-        # Authoritative streamed transcript, recorded by each loop exit: the final response
-        # reuses these already-assembled Message objects instead of re-merging
-        # raw updates, so kernel-stamped call provenance survives streaming.
-        # ``None`` means no loop exit completed — _finalize keeps the
-        # ``from_updates`` merge as a defensive fallback.
-        final_messages: list[Message] | None = None
-        # Set by the exhaustion tail when its strip fired on a service-stored
-        # response: _finalize rebuilds the response from raw updates, which
-        # still carry the continuation ids the tail withheld.
-        service_state_invalidated = False
-
-        async def _stream() -> AsyncIterable[ChatResponseUpdate]:
-            # Every exit but the normal return closes the trajectory bookkeeping
-            # this generator opened: a consumer abandoning the stream lands here
-            # as GeneratorExit, an interrupt as CancelledError.
-            interrupted = False
-            try:
-                # Streaming model/tool iterations.
-                nonlocal aggregated_usage, latest_usage, final_messages, service_state_invalidated
-                errors_in_a_row = 0
-                total_function_calls = 0
-                next_tool_ordinal = 0
-                # Per-run identity registry of every content the conversation
-                # holds — seeded from caller history so a client echoing a
-                # historical object cannot re-execute a past side-effecting
-                # call; _land_response_contents removes reappearances as
-                # echoes. ignore_usage: echo filtering never strips usage.
-                echo_registry = WeakIdentityRegistry(ignore_usage=True)
-                for m in messages:
-                    for c in m.contents:
-                        echo_registry.register(c)
-                wire_request_observer = _wire_request_observer(echo_registry)
-                prepped_messages = list(messages)
-                fcc_messages: list[Message] = []
-                response: ChatResponse | None = None
-
-                for _attempt_idx in range(self.max_iterations):
-                    await _trajectory_cycle_started(_attempt_idx)
-                    # Echoed conversation-held objects must never reach update
-                    # assembly (merges would launder their identity past the
-                    # memo). Delivered on the REQUEST path so the middleware
-                    # pipeline attaches it to the stream its final handler
-                    # resolves — beneath every middleware, which is the only
-                    # placement that crosses semantic stream proxies (response
-                    # validation drains the inner stream and replays it) and
-                    # re-attaches on every validation retry. The provider
-                    # finalizer, every result hook, and the yielded updates all
-                    # observe one echo-free sequence, so nothing is re-assembled
-                    # behind a hook's back.
-                    echo_filter = functools.partial(
-                        _strip_echoed_update,
-                        echo_registry=echo_registry,
-                    )
-                    logical_stream = _streaming_response_with_retry(
-                        prepped_messages,
-                        stream_update_filter=echo_filter,
-                        request_message_observer=wire_request_observer,
-                    )
-                    async for update in logical_stream:
-                        yield update
-                    # Triggers the inner stream's finalizer and result hooks (the
-                    # instrumented intermediate-text hook runs before tool
-                    # extraction below — "hook before tool detection" ordering).
-                    response = await logical_stream.get_final_response()
-                    _remove_echo_emptied_message_shells(response)
-                    next_tool_ordinal = _land_response_contents(
-                        response, next_tool_ordinal, echo_registry, exchange_operation_id=last_exchange_id
-                    )
-                    _record_stream_fragment_identities(logical_stream, echo_registry)
-                    latest_usage = response.latest_usage_details
-                    if latest_usage is None:
-                        latest_usage = response.usage_details
-                    response.latest_usage_details = latest_usage
-                    if latest_usage is not None:
-                        aggregated_usage = add_usage_details(aggregated_usage, latest_usage)
-                    consumed_injection_messages = injection_probe.take_consumed_messages() if injection_probe else []
-                    _update_continuation_state(
-                        filtered_kwargs,
-                        response,
-                        session=invocation_session,
-                        options=mutable_options,
-                    )
-                    if recorder is not None:
-                        recorder.record_response(response)
-
-                    if response.conversation_id is not None:
-                        prepped_messages = []
-                    else:
-                        prepped_messages.extend(consumed_injection_messages)
-
-                    # Continue only for unresolved local function calls.
-                    function_calls = _extract_function_calls(response)
-                    await _trajectory_cycle_finished(
-                        outcome=ExchangeOutcome.SUCCESS,
-                        function_call_count=len(function_calls),
-                        response=response,
-                        function_calls=function_calls,
-                    )
-                    if not function_calls:
-                        final_messages = [*fcc_messages, *response.messages]
-                        return
-
-                    if not (function_calls and mutable_options.get("tools")):
-                        final_messages = [*fcc_messages, *response.messages]
-                        return
-
-                    result_carrier_item_id = new_analytics_id()
-                    result_commits = (
-                        recorder.stage_exchange(
-                            response.messages,
-                            function_calls,
-                            result_carrier_item_id=result_carrier_item_id,
-                        )
-                        if recorder is not None
-                        else None
-                    )
-                    response_truncated = response.finish_reason == "length"
-                    with _trajectory_exchange_scope():
-                        results, should_terminate, had_errors = await execute_batch(
-                            function_calls,
-                            result_carrier_item_id=result_carrier_item_id,
-                            result_commits=result_commits,
-                            response_truncated=response_truncated,
-                            truncated_final_function_call_ids=(
-                                _truncated_final_function_call_ids(response, function_calls)
-                                if response_truncated
-                                else None
-                            ),
-                        )
-                    action, errors_in_a_row = _handle_function_call_results(
-                        response=response,
-                        function_call_results=results,
-                        fcc_messages=fcc_messages,
-                        echo_registry=echo_registry,
-                        errors_in_a_row=errors_in_a_row,
-                        had_errors=had_errors,
-                        max_errors=max_errors,
-                        result_carrier_item_id=result_carrier_item_id,
-                        recorder=recorder,
-                    )
-                    total_function_calls += sum(1 for r in results if r.type == "function_result")
-                    if should_terminate and storage.service_side:
-                        # No further request ever posts this batch's results, so
-                        # the service transcript behind the mirrored handle keeps
-                        # its calls unanswered. Record and withhold the handles
-                        # like the exhaustion strip does — ahead of the
-                        # last-iteration clear below, which would drop the
-                        # session's copy unrecorded — and raise the closure flag
-                        # so ``_finalize`` stamps the verdict on the assembled
-                        # response for the agent post-hook.
-                        service_state_invalidated = True
-                        _invalidate_service_continuation_state(response, invocation_session)
-                    elif (
-                        _attempt_idx + 1 == self.max_iterations
-                        and storage.service_side
-                        and invocation_session is not None
-                    ):
-                        # Last iteration: the yield below is the final suspension
-                        # point before the exhaustion tail, and these results are
-                        # not posted to the service until the tail request lands.
-                        # A consumer closing at that yield must not inherit the
-                        # mirrored handle — the service transcript behind it still
-                        # holds this batch's unanswered calls. The finalized tail
-                        # restores the fresh handle via
-                        # ``_update_continuation_state``.
-                        invocation_session.service_session_id = None
-                    # Synthesized tool-result update so from_updates can rebuild the
-                    # full transcript.
-                    yield ChatResponseUpdate(contents=results, role="tool")
-                    if should_terminate:
-                        # This batch (calls + results) was already folded into
-                        # fcc_messages by _handle_function_call_results, so the
-                        # assembly is the accumulated transcript with no tail.
-                        # Deliberate asymmetry with the non-streaming termination
-                        # return (only the terminating response, no prepend):
-                        # each path keeps its existing transcript shape.
-                        final_messages = list(fcc_messages)
-                        return
-                    if action == "stop":
-                        mutable_options["tool_choice"] = "none"
-                    elif self.max_function_calls is not None and total_function_calls >= self.max_function_calls:
-                        logger.info(
-                            "Maximum function calls reached (%d/%d). Stopping further function calls for this request.",
-                            total_function_calls,
-                            self.max_function_calls,
-                        )
-                        mutable_options["tool_choice"] = "none"
-
-                    if mutable_options.get("tool_choice") == "required" or (
-                        isinstance(mutable_options.get("tool_choice"), dict)
-                        and mutable_options.get("tool_choice", {}).get("mode") == "required"
-                    ):
-                        mutable_options["tool_choice"] = None
-
-                    if response.conversation_id is not None:
-                        prepped_messages.clear()
-                        if response.messages:
-                            prepped_messages.append(response.messages[-1])
-                    else:
-                        prepped_messages.extend(response.messages)
-
-                # Loop exhausted: final non-tool streaming turn.
-                if response is not None:
-                    logger.info(
-                        "Maximum iterations reached (%d). Requesting final response without tools.",
-                        self.max_iterations,
-                    )
-                mutable_options["tool_choice"] = "none"
-                if storage.service_side and invocation_session is not None:
-                    # The tail request consumes the mirrored handle: the moment it
-                    # lands, the service transcript behind that handle holds this
-                    # run's still-unanswered calls, so a consumer abandoning the
-                    # tail must not inherit it (the tail updates below are marked
-                    # against eager re-mirroring for the same reason). Successful
-                    # finalization restores the fresh handle via
-                    # ``_update_continuation_state`` — or withholds it when the
-                    # strip invalidates the service state.
-                    invocation_session.service_session_id = None
-                echo_filter = functools.partial(
-                    _strip_echoed_update,
-                    echo_registry=echo_registry,
-                )
-                await _trajectory_cycle_started(self.max_iterations)
-                final_logical_stream = _streaming_response_with_retry(
-                    prepped_messages,
-                    stream_update_filter=echo_filter,
-                    request_message_observer=wire_request_observer,
-                )
-                tail_stripped_call = False
-                async for update in final_logical_stream:
-                    kept = _strip_unexecutable_calls_from_update(update, suppress_finish_reason=tail_stripped_call)
-                    if kept is not update:
-                        # A call was stripped: from here on no provider
-                        # finish_reason may cross the stream — providers commonly
-                        # emit the call delta and the finish-reason chunk
-                        # separately, and a first-terminal consumer would stop at
-                        # that later chunk before the corrective final update
-                        # re-emits the corrected reason.
-                        tail_stripped_call = True
-                    if kept is not None:
-                        # Ephemeral marker (never serialized): eager continuation
-                        # mirrors must skip tail updates. The run is ending, so a
-                        # mid-stream mirror has no disconnect-recovery value left,
-                        # and a consumer abandoning the stream mid-tail would
-                        # otherwise keep the session pointed at a service
-                        # transcript whose stripped calls will never be answered;
-                        # the tail's own verdict (post-hook restore or
-                        # invalidation) is the sole writer once the stream ends.
-                        kept.__dict__["_chrys_exhaustion_tail_update"] = True
-                        yield kept
-                final_response = await final_logical_stream.get_final_response()
-                _remove_echo_emptied_message_shells(final_response)
-                next_tool_ordinal = _land_response_contents(
-                    final_response, next_tool_ordinal, echo_registry, exchange_operation_id=last_exchange_id
-                )
-                tail_calls = _extract_function_calls(final_response)
-                await _trajectory_cycle_finished(
-                    outcome=ExchangeOutcome.SUCCESS,
-                    function_call_count=len(tail_calls),
-                    response=final_response,
-                    function_calls=tail_calls,
-                )
-                _record_stream_fragment_identities(final_logical_stream, echo_registry)
-                stripped = _strip_unexecutable_calls_from_response(final_response)
-                fallback_added = _ensure_exhaustion_fallback_response(final_response)
-                # Invalidate BEFORE the fallback yield: a yield suspends the
-                # generator, and a consumer that stops right after the fallback
-                # would otherwise leave the session pointing at the stale service
-                # transcript (the eager transform already wrote it mid-stream).
-                # Gate on the resolved storage mode, not response metadata: under
-                # conversation storage the service holds the stripped calls even
-                # when the parsed response failed to carry the handle, and a
-                # client-side-storage response's metadata must survive untouched.
-                if stripped and storage.service_side:
-                    service_state_invalidated = True
-                    _invalidate_service_continuation_state(final_response, invocation_session)
-                if fallback_added:
-                    # Streamed consumers saw no visible content either (the yield
-                    # loop strips the same calls); surface the fallback text there
-                    # too, not only on the assembled response. The stripped tail
-                    # updates carry no terminal reason (the update strip clears
-                    # it), so this update supplies the stream's sole terminal
-                    # "stop" — the fallback ends the run, there is no tool work
-                    # left to route.
-                    yield ChatResponseUpdate(
-                        role="assistant",
-                        contents=[Content.from_text(_MAX_ITERATIONS_FALLBACK_TEXT)],
-                        finish_reason="stop",
-                    )
-                elif stripped and final_response.finish_reason:
-                    # No fallback (the final kept visible text), but the strip
-                    # suppressed every provider reason after the first stripped
-                    # call and normalized the wire's "tool_calls" to "stop":
-                    # streamed consumers need the corrected signal — whatever
-                    # reason the assembled response settled on, "stop" or a
-                    # non-stop reason like "length" — and it must arrive only
-                    # after every stripped update.
-                    yield ChatResponseUpdate(role="assistant", contents=[], finish_reason=final_response.finish_reason)
-                latest_usage = final_response.latest_usage_details
-                if latest_usage is None:
-                    latest_usage = final_response.usage_details
-                final_response.latest_usage_details = latest_usage
-                if latest_usage is not None:
-                    aggregated_usage = add_usage_details(aggregated_usage, latest_usage)
-                if injection_probe is not None:
-                    injection_probe.take_consumed_messages()
-                _update_continuation_state(
-                    filtered_kwargs,
-                    final_response,
-                    session=invocation_session,
-                    options=mutable_options,
-                )
-                if recorder is not None:
-                    recorder.record_response(final_response)
-                final_messages = [*fcc_messages, *final_response.messages]
-            except asyncio.CancelledError:
-                # Nothing below may wait on the writer once the consumer is
-                # gone: the settlement queues its lines instead.
-                interrupted = True
-                _trajectory_abort(_cancel_outcome())
-                raise
-            except GeneratorExit:
-                interrupted = True
-                _trajectory_abort(ExchangeOutcome.ABANDONED)
-                raise
-            except Exception:
-                _trajectory_abort(ExchangeOutcome.ERROR)
-                raise
-            finally:
-                await _settle_undispatched_tool_operations(queued=interrupted)
-
-        def _finalize(updates: Sequence[ChatResponseUpdate]) -> ChatResponse:
-            # Inner result hooks already ran via get_final_response; do not run them again.
-            response = ChatResponse.from_updates(updates, output_format_type=response_format)
-            if final_messages is not None:
-                # The loop is the sole reconstruction authority: keep
-                # ``from_updates`` for response-level fields, but reuse the
-                # loop's assembled Message objects. Re-merging raw fragments
-                # here would rebuild multi-fragment function calls as new
-                # Content objects, dropping the kernel-stamped invocation
-                # ordinal, tool kind/context, and folded result metadata —
-                # and could glue a boundary-shaped delta onto the synthesized
-                # tool message. Structured-output ``.value`` parses lazily
-                # from these swapped messages; their text is identical.
-                response.messages = list(final_messages)
-            response.usage_details = aggregated_usage
-            response.latest_usage_details = latest_usage
-            if service_state_invalidated:
-                # ``from_updates`` restored the handles from raw updates; the
-                # tail withheld them because the service-side transcript still
-                # holds the stripped calls unanswered.
-                response.conversation_id = None
-                response.response_id = None
-                response._chrys_service_state_invalidated = True
-            return response
-
-        return ResponseStream(_stream(), finalizer=_finalize)
+            return run.run_blocking()
+        return ResponseStream(run.stream(), finalizer=run.finalize_stream).with_cleanup_hook(run.close_abandoned_read)
 
 
 async def _resolve_response(value: Any) -> ChatResponse:

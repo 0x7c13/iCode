@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import ctypes
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,10 +53,22 @@ async def test_fatal_errors_keep_the_cause_and_stop_after_one_content_process(
     original_run = search._run_rg
     failures: list[str] = []
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
-        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd)
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
+        printed = bytearray()
+
+        def tee(chunk: bytes) -> bool:
+            printed.extend(chunk)
+            return consume is None or consume(chunk)
+
+        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd, consume=tee if consume else None)
         if "--json" in args:
-            assert code == 2 and stdout == ""
+            assert code == 2 and not printed
             failures.append(stderr)
         return stdout, stderr, code
 
@@ -94,11 +106,18 @@ async def test_rejected_encoding_is_attempted_once_while_other_encodings_finish(
     encodings = ["utf-8", "gbk"]
     encodings.insert(rejected_index, rejected_encoding)
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if "--json" in args:
             content_encodings.append(args[args.index("-E") + 1])
-        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd)
-        if legacy_message and code == 2 and not stdout:
+        stdout, stderr, code = await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
+        if legacy_message and "--json" in args and args[args.index("-E") + 1] == rejected_encoding:
+            assert code == 2
             stderr = "unsupported character encoding: chrys-invalid-encoding"
         return stdout, stderr, code
 
@@ -131,10 +150,16 @@ async def test_thai_system_codepage_maps_to_a_supported_encoding_and_finds_thai_
     original_run = search._run_rg
     content_encodings: list[str] = []
 
-    async def recording_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def recording_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if "--json" in args:
             content_encodings.append(args[args.index("-E") + 1])
-        return await original_run(args, timeout=timeout, cwd=cwd)
+        return await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_run_rg", recording_run)
     metadata: dict[str, object] = {}
@@ -158,13 +183,19 @@ async def test_utf8_fatal_error_in_a_later_batch_stops_all_remaining_passes(
     original_run = search._run_rg
     content_calls: list[tuple[str, str]] = []
 
-    async def failing_run(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def failing_run(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         if "--json" in args:
             encoding = args[args.index("-E") + 1]
             content_calls.append((args[-1], encoding))
             if args[-1] == "b.py":
                 return "", "fatal search startup failure", 2
-        return await original_run(args, timeout=timeout, cwd=cwd)
+        return await original_run(args, timeout=timeout, cwd=cwd, consume=consume)
 
     monkeypatch.setattr(search, "_get_encodings", lambda: ["utf-8", "gbk"])
     monkeypatch.setattr(search, "_file_batches", _single_file_batches)

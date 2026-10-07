@@ -2,19 +2,26 @@
 
 """Tests for high-precision half-block pixel rendering and pixel sprite engine."""
 
+from importlib import resources
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from PIL import Image
 from rich.console import Console
 from rich.text import Text
 
+from chrys.app.features.buddy import pixel_sprites
 from chrys.app.features.buddy.model import Species
 from chrys.app.features.buddy.pixel_renderer import image_to_half_block_lines, matrix_to_image
 from chrys.app.features.buddy.pixel_sprites import (
     PIXEL_HEIGHT,
     PIXEL_WIDTH,
-    SPECIES_PALETTES,
+    _parse_sprite,
     build_pixel_frame,
     render_pixel_sprite,
+    species_sprite,
 )
 
 
@@ -92,25 +99,79 @@ def test_external_png_loading_override(tmp_path, monkeypatch, size):
     assert frame_img.getpixel((0, 0)) == (255, 0, 0, 255)
 
 
-def test_all_species_have_pixel_palettes():
-    """Every Species enum has an entry in SPECIES_PALETTES."""
-    for species in Species:
-        assert species in SPECIES_PALETTES, f"Missing SPECIES_PALETTES entry for {species}"
+def test_sprite_files_match_the_species_list():
+    """Exactly one packaged sprite file per species: none missing, none orphaned."""
+    sprites = resources.files("chrys.app.features.buddy") / "sprites"
+    names = {entry.name for entry in sprites.iterdir() if entry.name.endswith(".toml")}
+
+    assert names == {f"{species.value}.toml" for species in Species}
 
 
 def test_all_species_have_unique_pixel_frames():
-    """Every Species enum has an explicit entry in DEFAULT_PIXEL_FRAMES with 3 frames of 20x16."""
-    from chrys.app.features.buddy.pixel_sprites import DEFAULT_PIXEL_FRAMES
-
+    """Every species loads at least 3 distinct 20x16 frames and a palette with its shadow and pupil roles."""
     for species in Species:
-        assert species in DEFAULT_PIXEL_FRAMES, f"Missing DEFAULT_PIXEL_FRAMES for {species}"
-        frames = DEFAULT_PIXEL_FRAMES[species]
+        sprite = species_sprite(species)
+        assert {3, 4} <= sprite.palette.keys(), species
+        frames = sprite.frames
         assert len(frames) >= 3, f"{species} needs at least 3 pixel frames, got {len(frames)}"
-        assert len({tuple(frame) for frame in frames}) == len(frames), f"{species} repeats an idle frame"
+        assert len(set(frames)) == len(frames), f"{species} repeats an idle frame"
         for frame_idx, frame in enumerate(frames):
             assert len(frame) == PIXEL_HEIGHT, f"{species} frame {frame_idx} must have {PIXEL_HEIGHT} rows"
             for row_idx, row in enumerate(frame):
                 assert len(row) == PIXEL_WIDTH, f"{species} frame {frame_idx} row {row_idx} must be {PIXEL_WIDTH} wide"
+
+
+def test_species_sprite_is_loaded_once_and_read_only():
+    sprite = species_sprite(Species.DUCK)
+
+    assert species_sprite(Species.DUCK) is sprite
+    with pytest.raises(TypeError):
+        sprite.palette[4] = (0, 0, 0, 255)  # type: ignore[index]
+
+
+_VALID_ROWS = ["0" * PIXEL_WIDTH] * (PIXEL_HEIGHT - 1) + ["0034" + "0" * (PIXEL_WIDTH - 4)]
+_VALID_PALETTE = {"0": [0, 0, 0, 0], "3": [1, 2, 3, 255], "4": [30, 30, 30, 255]}
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"frames": [{"rows": _VALID_ROWS}]}, "no [palette] table"),
+        ({"palette": [], "frames": [{"rows": _VALID_ROWS}]}, "no [palette] table"),
+        ({"palette": {**_VALID_PALETTE, "x": [1, 2, 3, 255]}, "frames": [{"rows": _VALID_ROWS}]}, "key 'x'"),
+        ({"palette": {**_VALID_PALETTE, "10": [1, 2, 3, 255]}, "frames": [{"rows": _VALID_ROWS}]}, "key '10'"),
+        ({"palette": {"0": [0, 0, 0, 0], "4": [30, 30, 30, 255]}, "frames": [{"rows": _VALID_ROWS}]}, "no index 3"),
+        ({"palette": {**_VALID_PALETTE, "5": [1, 2, True, 255]}, "frames": [{"rows": _VALID_ROWS}]}, "index 5"),
+        ({"palette": {**_VALID_PALETTE, "5": [1, 2, 3]}, "frames": [{"rows": _VALID_ROWS}]}, "index 5"),
+        ({"palette": {**_VALID_PALETTE, "5": [1, 2, 3, 256]}, "frames": [{"rows": _VALID_ROWS}]}, "index 5"),
+        ({"palette": _VALID_PALETTE}, "no frames"),
+        ({"palette": _VALID_PALETTE, "frames": []}, "no frames"),
+        ({"palette": _VALID_PALETTE, "frames": ["rows"]}, "frame 0 is not"),
+        ({"palette": _VALID_PALETTE, "frames": [{}]}, "frame 0 is not"),
+        ({"palette": _VALID_PALETTE, "frames": [{"rows": _VALID_ROWS[:-1]}]}, "frame 0 is not"),
+        (
+            {"palette": _VALID_PALETTE, "frames": [{"rows": [*_VALID_ROWS[:-1], "0" * (PIXEL_WIDTH + 1)]}]},
+            f"frame 0 is not {PIXEL_WIDTH}x{PIXEL_HEIGHT}",
+        ),
+        ({"palette": _VALID_PALETTE, "frames": [{"rows": [*_VALID_ROWS[:-1], "5" * PIXEL_WIDTH]}]}, "['5']"),
+    ],
+)
+def test_malformed_sprite_data_fails_with_the_file_name(data: dict[str, Any], message: str) -> None:
+    assert _parse_sprite("x.toml", {"palette": _VALID_PALETTE, "frames": [{"rows": _VALID_ROWS}]}).frames
+
+    with pytest.raises(ValueError, match=r"x\.toml") as raised:
+        _parse_sprite("x.toml", data)
+    assert message in str(raised.value)
+
+
+def test_unparsable_sprite_file_fails_with_the_file_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "sprites").mkdir()
+    (tmp_path / "sprites" / "cat.toml").write_text("[palette\n", encoding="utf-8")
+    monkeypatch.setattr(pixel_sprites, "resources", SimpleNamespace(files=lambda _package: tmp_path))
+
+    # Past the per-process cache, which keeps the packaged artwork.
+    with pytest.raises(ValueError, match=r"^cat\.toml: "):
+        species_sprite.__wrapped__(Species.CAT)
 
 
 def test_half_block_colors_preserve_pairing_and_composite_alpha() -> None:

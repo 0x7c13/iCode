@@ -16,15 +16,21 @@ import pytest
 from rich.cells import cell_len
 from rich.text import Text
 from textual import events
+from textual.app import App, ComposeResult
 from textual.color import Color
 from textual.geometry import Size
+from textual.theme import Theme
 from textual.widgets import Tab, Tabs
 
+from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.support.gc_freeze import DetachedLruCache, GcFreezeBlockReason
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.app.tui.widgets.trajectory import DashboardTab, TrajectoryDashboard
-from chrys.app.tui.widgets.trajectory.panel import TrajectoryTextView
+from chrys.app.tui.widgets.trajectory.insights import insights_lines
+from chrys.app.tui.widgets.trajectory.presentation import RenderContext, ResponsiveTier
+from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.trajectory.envelope import SegmentedField
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.service.analytics import TrajectoryAnalyzer, TrajectoryScanCancelled
@@ -39,9 +45,26 @@ from tests.app.tui.widgets._trajectory_fixtures import (
     _write_p2_operations,
     open_dashboard,
     page_text,
+    plain_look,
 )
 from tests.service.analytics._events import EventLog
 from tests.support.waiting import wait_for
+
+# The Insights page as a wide dashboard lays it out.
+_WIDE_PAGE = RenderContext(width=220, tier=ResponsiveTier.WIDE)
+# A primary colour no page style falls back to.
+_THEME_PRIMARY = "#13579b"
+
+
+class _LocalizedThemedDashboardApp(App[None]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.locale_controller = LocaleController(Settings(locale="zh-Hans"))
+        self.register_theme(Theme(name="trajectory-test", primary=_THEME_PRIMARY))
+        self.theme = "trajectory-test"
+
+    def compose(self) -> ComposeResult:
+        yield TrajectoryDashboard(locale_controller=self.locale_controller)
 
 
 async def test_dashboard_has_four_clickable_tabs_without_compare_and_placeholders(tmp_path: Path) -> None:
@@ -143,7 +166,7 @@ async def test_insights_renders_all_p2_sections_on_one_page(tmp_path: Path) -> N
         assert max(cell_len(line.plain) for line in view._lines) <= view.scrollable_content_region.width
 
 
-async def test_insights_keeps_unbalanced_pairs_side_by_side_despite_height_gap(tmp_path: Path) -> None:
+def test_insights_keeps_unbalanced_pairs_side_by_side_despite_height_gap(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     turn = "4" * 32
     log = EventLog()
@@ -154,27 +177,19 @@ async def test_insights_keeps_unbalanced_pairs_side_by_side_despite_height_gap(t
     log.add("turn.finished", 7 * _NS, turn_id=turn, payload={"end_reason": "cancelled", "duration_ms": 0})
     log.write(path)
 
-    async with open_dashboard(path, size=(220, 100)) as (dashboard, pilot):
-        view = dashboard.query_one(TrajectoryTextView)
+    page = insights_lines(plain_look(), _WIDE_PAGE, TrajectoryAnalyzer().load(path))
 
-        await pilot.click("#insights")
-        await wait_for(
-            lambda: "Tool activity" in page_text(view),
-            timeout=10,
-            pilot=pilot,
-            description="insights render",
-        )
-        lines = [line.plain for line in view._lines]
-        # Six tools make the tools box far taller than the empty context-cost
-        # box, yet the pair stays on one row so the tools box does not stretch
-        # full-width; the two integration summaries share a row the same way.
-        assert any("Tool activity" in line and "Context re-send cost · top 5" in line for line in lines)
-        assert any("Skills" in line and "MCP servers" in line for line in lines)
-        assert _in_any_box(view._lines, "filesystem.read · tool5")
-        assert _in_any_box(view._lines, "This session has no MCP calls.")
+    lines = [line.plain for line in page]
+    # Six tools make the tools box far taller than the empty context-cost
+    # box, yet the pair stays on one row so the tools box does not stretch
+    # full-width; the two integration summaries share a row the same way.
+    assert any("Tool activity" in line and "Context re-send cost · top 5" in line for line in lines)
+    assert any("Skills" in line and "MCP servers" in line for line in lines)
+    assert _in_any_box(page, "filesystem.read · tool5")
+    assert _in_any_box(page, "This session has no MCP calls.")
 
 
-async def test_insights_describes_context_re_send_rows_by_message_kind(tmp_path: Path) -> None:
+def test_insights_describes_context_re_send_rows_by_message_kind(tmp_path: Path) -> None:
     item_id = "7" * 32
     revision_id = "8" * 32
     segment_id = "9" * 32
@@ -242,29 +257,21 @@ async def test_insights_describes_context_re_send_rows_by_message_kind(tmp_path:
         encoding="utf-8",
     )
 
-    async with open_dashboard(path, size=(220, 100), session_id="abcd1234") as (dashboard, pilot):
-        view = dashboard.query_one(TrajectoryTextView)
+    page = insights_lines(plain_look(), _WIDE_PAGE, TrajectoryAnalyzer().load(path))
 
-        await pilot.click("#insights")
-        await wait_for(
-            lambda: "Context re-send cost · top 5" in page_text(view),
-            timeout=10,
-            pilot=pilot,
-            description="insights render",
-        )
-        assert _in_any_box(view._lines, "tokens × model requests that re-sent the item")  # noqa: RUF001
-        head_index = next(
-            index
-            for index, line in enumerate(view._lines)
-            if "assistant message (zsh ×2, read_file) · since turn 1" in line.plain  # noqa: RUF001
-        )
-        # Two lines per item: the total cost rides the head line in compact
-        # units, the cost formula and relative bar follow on the next line.
-        assert view._lines[head_index].plain.rstrip(" │").endswith("1.2k")
-        detail = view._lines[head_index + 1].plain
-        assert "1.2k tok × 1 re-sends" in detail  # noqa: RUF001
-        assert "▬" in detail
-        assert not any(item_id[:12] in line.plain for line in view._lines)
+    assert _in_any_box(page, "tokens × model requests that re-sent the item")  # noqa: RUF001
+    head_index = next(
+        index
+        for index, line in enumerate(page)
+        if "assistant message (zsh ×2, read_file) · since turn 1" in line.plain  # noqa: RUF001
+    )
+    # Two lines per item: the total cost rides the head line in compact
+    # units, the cost formula and relative bar follow on the next line.
+    assert page[head_index].plain.rstrip(" │").endswith("1.2k")
+    detail = page[head_index + 1].plain
+    assert "1.2k tok × 1 re-sends" in detail  # noqa: RUF001
+    assert "▬" in detail
+    assert not any(item_id[:12] in line.plain for line in page)
 
 
 async def test_session_data_is_only_json_content_and_obeys_lifecycle_order(
@@ -544,7 +551,7 @@ async def test_render_line_composes_text_base_style_over_widget_background() -> 
         assert content.style.bgcolor.triplet.hex == "#123456"
 
 
-async def test_render_line_composes_widget_line_spans_zebra_and_selection_styles() -> None:
+async def test_render_line_composes_widget_line_spans_and_zebra_styles() -> None:
     async with _StyledDashboardApp().run_test(size=(90, 24)) as pilot:
         dashboard = pilot.app.query_one(TrajectoryDashboard)
         dashboard.display = True
@@ -553,7 +560,6 @@ async def test_render_line_composes_widget_line_spans_zebra_and_selection_styles
         line = Text("base span", style="#ff0000")
         line.stylize("#00ff00 bold", 5, 9)
         line.stylize("on #654321", 0, len(line))
-        line.stylize("reverse", 0, len(line))
         view.set_lines([line])
         await pilot.pause()
 
@@ -568,7 +574,6 @@ async def test_render_line_composes_widget_line_spans_zebra_and_selection_styles
         assert base.style.bgcolor is not None
         assert base.style.bgcolor.triplet is not None
         assert base.style.bgcolor.triplet.hex == "#654321"
-        assert base.style.reverse is True
         assert span.style is not None
         assert span.style.color is not None
         assert span.style.color.triplet is not None
@@ -577,7 +582,6 @@ async def test_render_line_composes_widget_line_spans_zebra_and_selection_styles
         assert span.style.bgcolor.triplet is not None
         assert span.style.bgcolor.triplet.hex == "#654321"
         assert span.style.bold is True
-        assert span.style.reverse is True
 
 
 async def test_theme_and_locale_refresh_invalidate_both_dashboard_cache_levels(tmp_path: Path) -> None:
@@ -615,6 +619,41 @@ async def test_theme_and_locale_refresh_invalidate_both_dashboard_cache_levels(t
 
         assert presentation_marker not in dashboard._presentation_cache
         assert strip_marker not in view._strips
+
+
+@pytest.mark.parametrize(
+    ("tab", "dependencies", "title"),
+    [
+        pytest.param(DashboardTab.OVERVIEW, False, "会话信息", id="overview"),
+        pytest.param(DashboardTab.TIMELINE, False, "第 1 轮", id="timeline"),
+        pytest.param(DashboardTab.TIMELINE, True, "依赖图 · 第 1 轮", id="dependency-graph"),
+        pytest.param(DashboardTab.INSIGHTS, False, "MCP 服务器", id="insights"),
+    ],
+)
+async def test_pages_draw_in_the_dashboard_locale_and_theme(
+    tmp_path: Path, tab: DashboardTab, dependencies: bool, title: str
+) -> None:
+    path = tmp_path / "events.jsonl"
+    _write_p2_operations(path)
+
+    async with open_dashboard(path, size=(150, 40), app=_LocalizedThemedDashboardApp()) as (dashboard, pilot):
+        view = dashboard.query_one(TrajectoryTextView)
+        dashboard.query_one("#trajectory-tabs", Tabs).active = tab
+        await wait_for(lambda: dashboard.active_tab is tab, timeout=5, pilot=pilot, description=f"{tab} tab active")
+        if dependencies:
+            dashboard.action_toggle_timeline_dependencies()
+        await wait_for(
+            lambda: dashboard.active_tab is tab and bool(view._lines) and title in view._lines[0].plain,
+            timeout=5,
+            pilot=pilot,
+            description=f"{tab} page drawn in zh-Hans",
+        )
+
+        heading = view._lines[0]
+        style = heading.get_style_at_offset(pilot.app.console, heading.plain.index(title))
+        assert style.color is not None
+        assert style.color.triplet is not None
+        assert style.color.triplet.hex == _THEME_PRIMARY
 
 
 async def test_resize_reflows_presentation_without_reaggregation(tmp_path: Path) -> None:
@@ -911,6 +950,12 @@ async def test_long_load_shows_loading_indicator_instead_of_empty_state(
         assert loading_state.display is False
         assert view.display is True
         assert "Diagnostics" in page_text(view)
+
+
+def test_dashboard_builds_its_localized_title_before_an_app_runs() -> None:
+    dashboard = TrajectoryDashboard(locale_controller=LocaleController(Settings(locale="zh-Hans")))
+
+    assert dashboard.border_title == "轨迹"
 
 
 async def test_localized_tab_labels_are_rich_text_safe(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -691,7 +691,7 @@ async def test_intermediate_text_stored_as_metadata(tmp_path, agent_engine) -> N
         await engine.shutdown()
 
     # Check that intermediate text is embedded per-message via additional_properties.
-    # The mock client bypasses the instrumented client, so the callback may not
+    # The mock client bypasses the provider wire client, so the callback may not
     # fire.  Just verify session saved successfully and messages are present.
     import json
 
@@ -1447,6 +1447,7 @@ async def test_injection_middleware_captures_content_anchor() -> None:
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     ctx = _FakeCtx()
     ctx.messages = ctx_messages
@@ -1488,6 +1489,7 @@ async def test_injection_middleware_stamps_injected_flag_on_every_appended_messa
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     ctx = _FakeCtx()
     ctx.messages = [Message("user", [Content.from_text("opener")])]
@@ -1522,6 +1524,7 @@ async def test_drained_messages_are_isolated_from_wire_copy_mutation() -> None:
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     ctx = _FakeCtx()
     ctx.messages = [Message("user", [Content.from_text("opener")])]
@@ -1565,6 +1568,7 @@ async def test_injection_middleware_assigns_per_consumption_id() -> None:
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     ctx = _FakeCtx()
     ctx.messages = [Message("user", [Content.from_text("opener")])]
@@ -1605,6 +1609,7 @@ async def test_retry_replays_complete_batch_with_stable_ids_and_new_anchor() -> 
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     middleware = InjectionMiddleware()
     middleware.set_on_consumed_batch(on_consumed)
@@ -1657,6 +1662,7 @@ async def test_retry_preserves_replay_when_next_attempt_fails_before_middleware(
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     middleware = InjectionMiddleware()
     middleware.set_on_consumed_batch(on_consumed)
@@ -1704,6 +1710,7 @@ async def test_cancel_during_batch_callback_replays_every_drained_injection() ->
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     middleware = InjectionMiddleware()
     middleware.set_on_consumed_batch(blocking_callback)
@@ -1797,6 +1804,7 @@ async def test_cancelled_injection_not_delivered_to_model() -> None:
 
     class _FakeCtx:
         messages: list[Any]
+        options: dict[str, Any] | None = None
 
     ctx = _FakeCtx()
     ctx.messages = [Message("user", [Content.from_text("Hello")])]

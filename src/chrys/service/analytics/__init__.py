@@ -2,7 +2,7 @@
 
 """Read-only trajectory analysis for the dashboard and future headless consumers."""
 
-from chrys.service.analytics._turns import classify_hook_ownership
+from chrys.service.analytics._turn_graph import classify_hook_ownership
 from chrys.service.analytics.aggregation import TrajectoryAnalyzer, analyze_trajectory
 from chrys.service.analytics.model import (
     FLOW_TERMINAL_INDEX,

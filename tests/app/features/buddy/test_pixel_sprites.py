@@ -13,22 +13,22 @@ from PIL.PngImagePlugin import PngInfo
 
 from chrys.app.features.buddy.model import Species
 from chrys.app.features.buddy.pixel_sprites import (
-    DEFAULT_PIXEL_FRAMES,
     PIXEL_HEIGHT,
     PIXEL_WIDTH,
-    SPECIES_PALETTES,
     build_pixel_frame,
     load_external_pixel_frame,
+    species_sprite,
 )
+from tests.support.images import image_bytes
 
 
 @pytest.mark.parametrize("species", list(Species))
 def test_idle_artwork_has_no_unmapped_or_transparent_features(species: Species) -> None:
-    for frame_idx, rows in enumerate(DEFAULT_PIXEL_FRAMES[species]):
+    for frame_idx, rows in enumerate(species_sprite(species).frames):
         image = build_pixel_frame(species, frame_idx)
         for y, row in enumerate(rows):
             for x, index in enumerate(row):
-                assert int(index) in SPECIES_PALETTES[species], (species, frame_idx, x, y, index)
+                assert int(index) in species_sprite(species).palette, (species, frame_idx, x, y, index)
                 assert bool(image.getpixel((x, y))[3]) == (index != "0")
 
 
@@ -64,7 +64,7 @@ def test_every_builtin_pose_has_a_visible_blink(species: Species, frame: int) ->
 @pytest.mark.parametrize("blink", [False, True])
 def test_blinks_preserve_visible_pupils(species: Species, blink: bool) -> None:
     for frame_idx in range(6):
-        rows = DEFAULT_PIXEL_FRAMES[species][frame_idx % 3]
+        rows = species_sprite(species).frames[frame_idx % 3]
         idle = build_pixel_frame(species, frame_idx % 3)
         base = build_pixel_frame(species, frame_idx)
         actual = build_pixel_frame(species, frame_idx, blink=blink)
@@ -77,7 +77,7 @@ def test_blinks_preserve_visible_pupils(species: Species, blink: bool) -> None:
         # eye color, even for single-pixel eyes and during a closed-eye pose.
         for x, y in eye_pixels:
             if (x, y + 1) not in eye_pixels:
-                assert actual.getpixel((x, y)) == SPECIES_PALETTES[species][4], (species, frame_idx, blink)
+                assert actual.getpixel((x, y)) == species_sprite(species).palette[4], (species, frame_idx, blink)
         for y in range(base.height):
             for x in range(base.width):
                 if (x, y) not in eye_pixels:
@@ -115,7 +115,7 @@ def test_external_artwork_is_decoded_once_and_returns_independent_frames(tmp_pat
         for _ in range(10):
             frame = build_pixel_frame(Species.RABBIT)
             assert frame.getpixel((0, 0)) == (20, 40, 60, 255)
-        opened.assert_called_once_with(path)
+        opened.assert_called_once_with(path, formats=("PNG",))
 
 
 def test_external_artwork_cache_tracks_same_size_edits(tmp_path, monkeypatch) -> None:
@@ -140,6 +140,15 @@ def test_external_artwork_recovers_after_missing_invalid_and_removed_files(tmp_p
     assert build_pixel_frame(Species.RABBIT).getpixel((0, 0)) == (20, 40, 60, 255)
     path.unlink()
     assert load_external_pixel_frame(Species.RABBIT, 0) is None
+
+
+def test_external_artwork_is_read_only_as_png(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "rabbit_0.png"
+    monkeypatch.setattr("chrys.app.features.buddy.pixel_sprites._get_assets_dir", lambda: tmp_path)
+    path.write_bytes(image_bytes("BMP", size=(16, 10)))
+    assert load_external_pixel_frame(Species.RABBIT, 0) is None
+    Image.new("RGBA", (16, 10), (20, 40, 60, 255)).save(path)
+    assert build_pixel_frame(Species.RABBIT).getpixel((0, 0)) == (20, 40, 60, 255)
 
 
 def test_external_artwork_retries_transient_read_errors_without_a_file_edit(tmp_path, monkeypatch) -> None:
@@ -173,5 +182,5 @@ def test_narrow_pixel_frames_keep_visible_pupils(species: Species, width: int, b
         image = build_pixel_frame(species, frame, blink=blink, width=width)
         assert image.size == (width, PIXEL_HEIGHT)
         colors = {color for _, color in image.getcolors()}
-        assert SPECIES_PALETTES[species][4] in colors
-        assert colors <= set(SPECIES_PALETTES[species].values())
+        assert species_sprite(species).palette[4] in colors
+        assert colors <= set(species_sprite(species).palette.values())

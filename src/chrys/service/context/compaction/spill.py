@@ -20,7 +20,7 @@ from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.files import _fsync_dir, atomic_write_text, is_utf8_encodable
+from chrys.foundation.platform.files import atomic_write_text, fsync_directory, is_utf8_encodable
 from chrys.foundation.text.images import hashable_image_identity
 from chrys.foundation.tool_execution_stamp import (
     canonicalize_effective_arguments,
@@ -1188,7 +1188,7 @@ def _fsync_directory_chains(root: Path, directories: Iterable[Path]) -> None:
                 break
             current = current.parent
     for directory in sorted(pending, key=lambda path: len(path.parts), reverse=True):
-        _fsync_dir(directory)
+        fsync_directory(directory)
 
 
 def _read_live_catalog(root: Path) -> list[CatalogRecord]:

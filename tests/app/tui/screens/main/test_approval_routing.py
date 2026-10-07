@@ -13,8 +13,11 @@ import pytest
 from chrys.app.tui.screens.main.event_handlers import (
     BackendEventHandler,
 )
+from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.foundation.events.types import (
     ApprovalAutoFulfillBlocked,
+    ApprovalCancelled,
     ApprovalRequest,
     ApprovalReviewed,
     InvocationToolCallArgsUpdated,
@@ -46,8 +49,8 @@ from tests.support.tui_helpers import (
 class _FakeApprovalDialog:
     """Mock that mimics ``ApprovalDialog`` without touching the Textual runtime.
 
-    Records ``receive_verdict`` calls and ``call_after_refresh`` schedules
-    so tests can assert both immediate-delivery and deferred-delivery paths.
+    Records the verdict it was constructed with (a flag that arrived before
+    the dialog) and the one ``receive_verdict`` delivers later.
     """
 
     def __init__(
@@ -61,9 +64,10 @@ class _FakeApprovalDialog:
         approval_body=None,
         presentation_kind: str = "",
         reuse_offer=None,
+        verdict=None,
     ) -> None:
         self.caller_name = caller_name
-        self._tool_name = tool_name
+        self.tool_name = tool_name
         self.tool_kind = tool_kind
         self.args = args or {}
         self.judging = judging
@@ -73,8 +77,8 @@ class _FakeApprovalDialog:
         self.remember_choice = ""
         self._dismissed = False
         self._user_decision_submitted = False
+        self.constructed_verdict = verdict
         self.received_verdict = None
-        self.after_refresh_calls: list[tuple] = []
 
     @property
     def is_dismissed(self) -> bool:
@@ -86,11 +90,6 @@ class _FakeApprovalDialog:
 
     def receive_verdict(self, verdict) -> None:
         self.received_verdict = verdict
-
-    def call_after_refresh(self, fn, *args) -> None:
-        # Record for assertion; tests that want to simulate mount will
-        # invoke the recorded callable themselves.
-        self.after_refresh_calls.append((fn, args))
 
 
 class _FakeApp:
@@ -104,6 +103,16 @@ class _FakeApp:
         self.pushed.append((screen, callback))
 
 
+class _FakeHeader:
+    """Records the review counts the header badge is told to show."""
+
+    def __init__(self) -> None:
+        self.review_counts: list[int] = []
+
+    def set_auto_review_count(self, count: int) -> None:
+        self.review_counts.append(count)
+
+
 class _FakeBus:
     """Mock bus that captures frontend → backend events."""
 
@@ -114,8 +123,13 @@ class _FakeBus:
         self.published.append(event)
 
 
-def _make_approval_handler(monkeypatch) -> tuple[BackendEventHandler, _FakeApp, list, list]:
+def _make_approval_handler(
+    monkeypatch, *, defer_while_judging: bool = False
+) -> tuple[BackendEventHandler, _FakeApp, list, list]:
     """Build a ``BackendEventHandler`` wired to mocks for approval flow.
+
+    Requests the judge reviews show at once unless *defer_while_judging*;
+    the header the screen's ``query_one`` finds is ``app.header``.
 
     Returns ``(handler, fake_app, debug_log, response_log)``:
     - ``debug_log`` — every ``screen._debug(event_type, detail)`` call.
@@ -130,6 +144,7 @@ def _make_approval_handler(monkeypatch) -> tuple[BackendEventHandler, _FakeApp, 
     monkeypatch.setattr(_approval_mod, "ApprovalDialog", _FakeApprovalDialog)
 
     app = _FakeApp()
+    app.header = _FakeHeader()
     bus = _FakeBus()
     debug_log: list[tuple[str, str]] = []
     response_log: list[tuple[str, bool, str]] = []
@@ -157,18 +172,24 @@ def _make_approval_handler(monkeypatch) -> tuple[BackendEventHandler, _FakeApp, 
         worker_tasks.append(task)
         return SimpleNamespace(task=task)
 
+    def _query_one(widget_type: type) -> object:
+        if widget_type is not AppHeader:
+            raise LookupError(widget_type)
+        return app.header
+
     screen = SimpleNamespace(
         app=app,
-        _bus=bus,
+        _services=MainScreenServices(bus=bus),
         _debug=_debug,
         _handle_approval_response=_handle_approval_response,
         run_worker=_run_worker,
         worker_tasks=worker_tasks,
+        query_one=_query_one,
     )
     app.screen = screen
     app.bus = bus
     app.worker_tasks = worker_tasks
-    handler = make_backend_handler(screen)
+    handler = make_backend_handler(screen, approval_defer_while_judging=lambda: defer_while_judging)
     handler._approval_queue = deque()
     handler._approval_request_lock = asyncio.Lock()
     handler._approval_dialog_open = False
@@ -317,11 +338,10 @@ def test_approved_pre_mount_verdict_skips_dialog(monkeypatch) -> None:
 # ──────────── flagged pre-mount → dialog shown with verdict ────────────
 
 
-def test_flagged_pre_mount_verdict_applied_after_mount(monkeypatch) -> None:
-    """Judge flags a queued request before its dialog is pushed.  When the
-    dialog eventually mounts, the concern is delivered via
-    ``call_after_refresh`` (not synchronously — ``query_one`` on an
-    unmounted widget would raise)."""
+def test_flagged_pre_mount_verdict_opens_the_dialog_flagged(monkeypatch) -> None:
+    """Judge flags a queued request before its dialog is pushed.  The dialog
+    is built with the verdict, so it opens flagged with nothing left to
+    deliver after mount."""
     handler, app, _debug, _ = _make_approval_handler(monkeypatch)
 
     asyncio.run(handler.on_approval_request(_make_request("req-1")))
@@ -338,16 +358,10 @@ def test_flagged_pre_mount_verdict_applied_after_mount(monkeypatch) -> None:
     assert len(app.pushed) == 2
     dialog2, _cb2 = app.pushed[1]
 
-    # Verdict is NOT delivered synchronously (would race the mount); it's
-    # scheduled via call_after_refresh.
+    assert dialog2.constructed_verdict is not None
+    assert dialog2.constructed_verdict.approved is False
+    assert "rm -rf" in dialog2.constructed_verdict.reason
     assert dialog2.received_verdict is None
-    assert len(dialog2.after_refresh_calls) == 1
-    fn, args = dialog2.after_refresh_calls[0]
-    # Simulate mount completing — the scheduled call fires.
-    fn(*args)
-    assert dialog2.received_verdict is not None
-    assert dialog2.received_verdict.approved is False
-    assert "rm -rf" in dialog2.received_verdict.reason
     # Pending verdict was consumed.
     assert "req-2" not in handler._pending_verdicts
 
@@ -489,8 +503,8 @@ def test_auto_user_decision_marker_clears_when_response_worker_finishes(monkeypa
 def test_parallel_judges_finish_out_of_order(monkeypatch) -> None:
     """Three parallel requests; judges fire for req-2 (approved) and req-3
     (flagged) while req-1's dialog is still visible.  Dismissing req-1
-    drains the queue: req-2 is skipped silently, req-3 shows a dialog with
-    the flag concern ready to deliver after mount."""
+    drains the queue: req-2 is skipped silently, req-3 shows a dialog built
+    with the flag concern."""
     handler, app, _debug, _ = _make_approval_handler(monkeypatch)
 
     asyncio.run(handler.on_approval_request(_make_request("req-1", tool_name="t1")))
@@ -507,17 +521,13 @@ def test_parallel_judges_finish_out_of_order(monkeypatch) -> None:
     _d1, on_result_1 = app.pushed[0]
     on_result_1((True, "", None))
 
-    # req-2 skipped, req-3 pushed with flagged verdict pending.
+    # req-2 skipped, req-3 pushed already flagged.
     assert len(app.pushed) == 2
     d3, _ = app.pushed[1]
-    assert d3._tool_name == "t3"
-    # Flagged verdict delivered after mount (not synchronously).
+    assert d3.tool_name == "t3"
+    assert d3.constructed_verdict.approved is False
+    assert d3.constructed_verdict.reason == "danger"
     assert d3.received_verdict is None
-    assert len(d3.after_refresh_calls) == 1
-    fn, args = d3.after_refresh_calls[0]
-    fn(*args)
-    assert d3.received_verdict.approved is False
-    assert d3.received_verdict.reason == "danger"
 
     # Cache fully drained.
     assert handler._pending_verdicts == {}
@@ -669,3 +679,51 @@ def test_write_file_diff_body_is_passed_to_dialog(monkeypatch, tmp_path) -> None
     assert dialog.approval_body is not None
     assert dialog.approval_body.hidden_arg_keys == frozenset({"content"})
     assert len(dialog.approval_body.widgets) == 1
+
+
+# ──────────── deferral while the judge reviews (setting on) ────────────
+
+
+def test_deferred_request_the_judge_approves_never_reaches_the_screen(monkeypatch) -> None:
+    handler, app, _debug, response_log = _make_approval_handler(monkeypatch, defer_while_judging=True)
+
+    asyncio.run(handler.on_approval_request(_make_request("req-1")))
+
+    assert app.pushed == []
+    assert app.header.review_counts == [1]
+
+    asyncio.run(handler.on_approval_reviewed(_make_reviewed("req-1", approved=True, reason="safe")))
+
+    assert app.pushed == []
+    assert app.header.review_counts == [1, 0]
+    assert app.notification_service.events == []
+    assert response_log == []
+    assert app.bus.published == []
+
+
+def test_deferred_request_the_judge_flags_opens_flagged_and_notifies(monkeypatch) -> None:
+    handler, app, _debug, response_log = _make_approval_handler(monkeypatch, defer_while_judging=True)
+
+    asyncio.run(handler.on_approval_request(_make_request("req-1", tool_name="rm")))
+    asyncio.run(handler.on_approval_reviewed(_make_reviewed("req-1", approved=False, reason="rm -rf")))
+
+    ((dialog, on_result),) = app.pushed
+    assert dialog.tool_name == "rm"
+    assert (dialog.constructed_verdict.approved, dialog.constructed_verdict.reason) == (False, "rm -rf")
+    assert app.header.review_counts == [1, 0]
+    assert len(app.notification_service.events) == 1
+
+    on_result((False, "no", None))
+
+    assert response_log == [("req-1", False, "no")]
+
+
+def test_deferred_request_cancelled_by_the_backend_leaves_nothing_behind(monkeypatch) -> None:
+    handler, app, _debug, response_log = _make_approval_handler(monkeypatch, defer_while_judging=True)
+
+    asyncio.run(handler.on_approval_request(_make_request("req-1")))
+    asyncio.run(handler.on_approval_cancelled(ApprovalCancelled(request_id="req-1")))
+
+    assert app.pushed == []
+    assert app.header.review_counts == [1, 0]
+    assert response_log == []

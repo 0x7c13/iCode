@@ -10,12 +10,18 @@ from typing import TYPE_CHECKING
 import pytest
 
 from chrys.service.skills.loader import (
+    MAX_FRONTMATTER_DEPTH,
+    MAX_FRONTMATTER_LENGTH,
     build_inline_skill_content,
     discover_file_skills,
     discover_skill_directories,
     load_file_skill,
+    parse_frontmatter,
 )
 from chrys.service.skills.model import Skill, SkillLoadFailure, SkillResource
+from chrys.service.skills.provider import ChrysSkillsProvider
+from tests.support.cpu_guard import cpu_bounded
+from tests.support.symlinks import symlink_or_skip
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -105,6 +111,20 @@ def test_load_file_skill_tolerant_fallback_for_sloppy_plain_scalars(tmp_path: Pa
 
     assert isinstance(skill, Skill)
     assert skill.description == "use this: that"
+
+
+def test_load_file_skill_tolerant_fallback_for_a_character_yaml_does_not_allow(tmp_path: Path) -> None:
+    """YAML refuses a control character before parsing anything; the line fallback still reads the fields."""
+    skill_dir = tmp_path / "form-feed"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: form-feed\n# page\x0c break\ndescription: d\n---\nBody.\n", encoding="utf-8"
+    )
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert (skill.name, skill.description) == ("form-feed", "d")
 
 
 def test_load_file_skill_list_frontmatter_fails(tmp_path: Path) -> None:
@@ -496,6 +516,67 @@ def test_nested_skill_boundary_does_not_weaken_symlink_escape_guard(tmp_path: Pa
     assert [resource.name for resource in skill.resources] == ["child/safe.md"]
 
 
+def _backslash_escape_skill(tmp_path: Path) -> tuple[Path, Path]:
+    """A skill whose file names rebuild, with ``\\`` read as a separator, into a path outside it."""
+    secret = tmp_path / "secret.md"
+    secret.write_text("outside content", encoding="utf-8")
+    skill_dir = _write_skill(tmp_path / "skills", "bslash")
+    (skill_dir / "..\\..\\secret.md").write_text("inside resource", encoding="utf-8")
+    (skill_dir / "..\\..\\run.py").write_text("print('inside')", encoding="utf-8")
+    return skill_dir, secret
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a path separator on Windows")
+def test_backslash_named_files_keep_the_path_that_passed_the_checks(tmp_path: Path) -> None:
+    skill_dir, _secret = _backslash_escape_skill(tmp_path)
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert [(r.name, r.full_path) for r in skill.resources] == [
+        ("../../secret.md", str(skill_dir / "..\\..\\secret.md"))
+    ]
+    assert [(s.name, s.full_path) for s in skill.scripts] == [("../../run.py", str(skill_dir / "..\\..\\run.py"))]
+
+
+async def _read_resource(skill: Skill, resource_name: str) -> str:
+    async def load_skills() -> list[Skill]:
+        return [skill]
+
+    skills_provider = ChrysSkillsProvider(load_skills)
+    await skills_provider.initialize()
+    return await skills_provider._read_skill_resource(skills_provider._skills, skill.name, resource_name)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a path separator on Windows")
+async def test_backslash_named_resource_reads_the_file_inside_the_skill(tmp_path: Path) -> None:
+    skill_dir, _secret = _backslash_escape_skill(tmp_path)
+    skill = _load(skill_dir)
+    assert isinstance(skill, Skill)
+
+    assert await _read_resource(skill, "../../secret.md") == "inside resource"
+
+
+async def test_resource_swapped_for_a_symlink_after_loading_is_not_read(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.md"
+    secret.write_text("outside content", encoding="utf-8")
+    skill_dir = _write_skill(tmp_path, "swapped")
+    (skill_dir / "references").mkdir()
+    guide = skill_dir / "references" / "guide.md"
+    guide.write_text("inside", encoding="utf-8")
+    skill = _load(skill_dir)
+    assert isinstance(skill, Skill)
+    assert await _read_resource(skill, "references/guide.md") == "inside"
+
+    guide.unlink()
+    symlink_or_skip(guide, secret)
+    result = await _read_resource(skill, "references/guide.md")
+
+    assert result.startswith("Error: ")
+    assert "outside content" not in result
+    assert "resolves outside skill 'swapped'" in result
+
+
 # ---------------------------------------------------------------------------
 # Inline content building
 # ---------------------------------------------------------------------------
@@ -533,3 +614,180 @@ def test_build_inline_skill_content_without_resources_emits_empty_blocks() -> No
     content = build_inline_skill_content(name="demo", description="d", instructions="i")
 
     assert content.endswith("<resources />\n\n<scripts />")
+
+
+# ---------------------------------------------------------------------------
+# SKILL.md files from untrusted repositories
+# ---------------------------------------------------------------------------
+
+
+def test_frontmatter_without_a_closing_line_is_rejected_in_linear_time(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "blank-lines"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---" + " \n" * 30_000 + "Body.\n", encoding="utf-8")
+
+    loaded = cpu_bounded(lambda: _load(skill_dir))
+
+    assert isinstance(loaded, SkillLoadFailure)
+    assert "does not contain YAML frontmatter" in loaded.reason
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_frontmatter_blocks_match_with_either_newline(tmp_path: Path, newline: str) -> None:
+    for name, block in (("empty-block", ""), ("plain-block", f"name: plain-block{newline}description: d{newline}")):
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_bytes(f"---{newline}{block}---{newline}Body.{newline}".encode())
+
+    empty, plain = _load(tmp_path / "empty-block"), _load(tmp_path / "plain-block")
+
+    assert isinstance(empty, SkillLoadFailure) and empty.reason == "frontmatter is missing a `name`"
+    assert isinstance(plain, Skill) and plain.description == "d"
+
+
+def test_a_skill_md_that_cannot_be_read_or_parsed_fails_alone(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "good")
+    not_utf8 = tmp_path / "not-utf8"
+    not_utf8.mkdir()
+    (not_utf8 / "SKILL.md").write_bytes(b"---\nname: not-utf8\ndescription: \xff\n---\n")
+    no_such_day = tmp_path / "no-such-day"
+    no_such_day.mkdir()
+    # YAML reads this as a date, and building it raises ValueError rather than a YAML error.
+    (no_such_day / "SKILL.md").write_text(
+        "---\nname: no-such-day\ndescription: d\nlicense: 2024-02-30\n---\n", encoding="utf-8"
+    )
+
+    skills, failures = discover_file_skills([str(tmp_path)], script_extensions=(".py",))
+
+    assert [skill.name for skill in skills] == ["good"]
+    reasons = {os.path.basename(failure.skill_dir): failure.reason for failure in failures}
+    assert reasons.keys() == {"not-utf8", "no-such-day"}
+    assert reasons["not-utf8"].startswith("failed to read SKILL.md: 'utf-8' codec can't decode")
+    assert reasons["no-such-day"].startswith("failed to load SKILL.md: day ")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    ["description: &shared d\nlicense: *shared", "description: d\nlicense: &unused MIT"],
+    ids=["alias", "anchor"],
+)
+def test_frontmatter_with_an_anchor_or_alias_fails(tmp_path: Path, fields: str) -> None:
+    skill_dir = tmp_path / "aliased"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(f"---\nname: aliased\n{fields}\n---\n", encoding="utf-8")
+
+    loaded = _load(skill_dir)
+
+    assert isinstance(loaded, SkillLoadFailure)
+    assert loaded.reason == "YAML frontmatter must not use anchors or aliases"
+
+
+@pytest.mark.parametrize(("lists", "loads"), [(MAX_FRONTMATTER_DEPTH - 1, True), (MAX_FRONTMATTER_DEPTH, False)])
+def test_frontmatter_nested_past_the_depth_limit_fails(tmp_path: Path, lists: int, loads: bool) -> None:
+    skill_dir = tmp_path / "nested"
+    skill_dir.mkdir()
+    # The top mapping is one level, so the innermost list sits one level below *lists*.
+    nested = "[" * lists + "]" * lists
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: nested\ndescription: d\nlicense: {nested}\n---\n", encoding="utf-8"
+    )
+
+    loaded = _load(skill_dir)
+
+    if loads:
+        assert isinstance(loaded, Skill)
+    else:
+        assert isinstance(loaded, SkillLoadFailure)
+        assert loaded.reason == f"YAML frontmatter must not nest more than {MAX_FRONTMATTER_DEPTH} levels deep"
+
+
+def test_frontmatter_nested_far_too_deep_stops_after_bounded_work() -> None:
+    nested = "[" * 8_000 + "]" * 8_000
+    content = f"---\nname: nested\ndescription: d\nlicense: {nested}\n---\n"
+
+    fields, reason = cpu_bounded(lambda: parse_frontmatter(content), bound_seconds=2)
+
+    assert fields is None
+    assert reason == f"YAML frontmatter must not nest more than {MAX_FRONTMATTER_DEPTH} levels deep"
+
+
+@pytest.mark.parametrize(("length", "loads"), [(MAX_FRONTMATTER_LENGTH, True), (MAX_FRONTMATTER_LENGTH + 1, False)])
+def test_frontmatter_longer_than_the_limit_fails(tmp_path: Path, length: int, loads: bool) -> None:
+    skill_dir = tmp_path / "sized"
+    skill_dir.mkdir()
+    head = "name: sized\ndescription: d\n"
+    block = head + "#" + "x" * (length - len(head) - 2) + "\n"
+    assert len(block) == length
+    (skill_dir / "SKILL.md").write_text(f"---\n{block}---\n", encoding="utf-8")
+
+    loaded = _load(skill_dir)
+
+    if loads:
+        assert isinstance(loaded, Skill)
+    else:
+        assert isinstance(loaded, SkillLoadFailure)
+        assert loaded.reason == f"YAML frontmatter must be {MAX_FRONTMATTER_LENGTH} characters or fewer"
+
+
+def test_the_line_fallback_reads_a_long_line_in_linear_time() -> None:
+    padding = " " * (MAX_FRONTMATTER_LENGTH - 64)
+    content = f"---\nnote: not: yaml\nname: spaced{padding}out\ndescription: 'quoted'\n---\n"
+
+    fields, reason = cpu_bounded(lambda: parse_frontmatter(content), bound_seconds=0.1)
+
+    assert reason is None
+    assert fields == {"note": "not: yaml", "name": f"spaced{padding}out", "description": "quoted"}
+
+
+@pytest.mark.parametrize("field", ["name", "description"])
+@pytest.mark.parametrize("value", ["[typed]", "{text: typed}"], ids=["list", "mapping"])
+def test_a_name_or_description_that_is_not_text_fails(tmp_path: Path, field: str, value: str) -> None:
+    skill_dir = tmp_path / "typed"
+    skill_dir.mkdir()
+    fields = {"name": "typed", "description": "d", field: value}
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {fields['name']}\ndescription: {fields['description']}\n---\n", encoding="utf-8"
+    )
+
+    loaded = _load(skill_dir)
+
+    assert isinstance(loaded, SkillLoadFailure)
+    assert loaded.reason == f"frontmatter `{field}` must be text, not a list or mapping"
+
+
+def test_optional_fields_that_are_not_text_are_dropped(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "loose-fields"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: loose-fields\n"
+        "description: d\n"
+        "license: [MIT]\n"
+        "compatibility: {chrys: 1}\n"
+        "allowed-tools: [shell, search]\n"
+        "metadata:\n"
+        "  author: someone\n"
+        "  nested: {deep: value}\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert (skill.license, skill.compatibility, skill.allowed_tools, skill.metadata) == (None, None, None, None)
+
+
+def test_flat_metadata_keeps_numbers_and_dates_as_text(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "flat-metadata"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: flat-metadata\ndescription: d\nlicense: 2\nmetadata:\n  count: 3\n  released: 2026-10-05\n---\n",
+        encoding="utf-8",
+    )
+
+    skill = _load(skill_dir)
+
+    assert isinstance(skill, Skill)
+    assert skill.license == "2"
+    assert skill.metadata == {"count": "3", "released": "2026-10-05"}

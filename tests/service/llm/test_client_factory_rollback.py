@@ -14,7 +14,6 @@ import openai
 import pytest
 
 import chrys.service.llm.clients as clients_module
-import chrys.service.llm.instrumented as instrumented_module
 from chrys.service.llm.clients import create_client
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.close_races import ReleaseGate, assert_cancel_during_rollback
@@ -26,10 +25,6 @@ if TYPE_CHECKING:
 
 _SDK_CLASSES: dict[str, type[Any]] = {"openai": openai.AsyncOpenAI, "anthropic": anthropic.AsyncAnthropic}
 _CUSTOM_HEADERS_ENVS = {"openai": "OPENAI_CUSTOM_HEADERS", "anthropic": "ANTHROPIC_CUSTOM_HEADERS"}
-_STACK_BUILDERS = {
-    "openai": "create_instrumented_openai_client",
-    "anthropic": "create_instrumented_anthropic_client",
-}
 
 
 def _profile(provider: str) -> ModelProfile:
@@ -47,11 +42,10 @@ def _fail_sdk_headers(provider: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_CUSTOM_HEADERS_ENVS[provider], "X-Sdk-Header: value▼")
 
 
-def _fail_stack_assembly(provider: str, monkeypatch: pytest.MonkeyPatch) -> BaseException:
+def _fail_stack_assembly(monkeypatch: pytest.MonkeyPatch) -> BaseException:
     error = RuntimeError("stack assembly failed")
-    name = _STACK_BUILDERS[provider]
     monkeypatch.setattr(
-        instrumented_module, name, create_autospec(getattr(instrumented_module, name), side_effect=error)
+        clients_module, "_assemble_stack", create_autospec(clients_module._assemble_stack, side_effect=error)
     )
     return error
 
@@ -67,7 +61,7 @@ async def test_factory_failure_closes_what_it_created(
     elif position == "sdk_headers":
         _fail_sdk_headers(provider, monkeypatch)
     else:
-        expected = _fail_stack_assembly(provider, monkeypatch)
+        expected = _fail_stack_assembly(monkeypatch)
 
     with pytest.raises(Exception) as info:
         await create_client(_profile(provider))
@@ -84,7 +78,7 @@ async def test_factory_failure_closes_what_it_created(
 async def test_rollback_completes_when_the_caller_is_cancelled(
     monkeypatch: pytest.MonkeyPatch, http_client_ledger: HttpClientLedger
 ) -> None:
-    _fail_stack_assembly("openai", monkeypatch)
+    _fail_stack_assembly(monkeypatch)
     release = ReleaseGate()
     build = clients_module._build_profile_http_client
 

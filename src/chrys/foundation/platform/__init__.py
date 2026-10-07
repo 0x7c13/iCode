@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from chrys.foundation.platform.c_api import declare_functions
+
 
 @dataclass(frozen=True)
 class ShellInfo:
@@ -199,27 +201,26 @@ def _win32_clipboard_api() -> _Win32ClipboardAPI:
     windows_ctypes = cast(Any, ctypes)
     user32 = windows_ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = windows_ctypes.WinDLL("kernel32", use_last_error=True)
-
-    user32.OpenClipboard.argtypes = [wintypes.HWND]
-    user32.OpenClipboard.restype = wintypes.BOOL
-    user32.CloseClipboard.restype = wintypes.BOOL
-    user32.EmptyClipboard.restype = wintypes.BOOL
-    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
-    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
-    user32.GetClipboardData.argtypes = [wintypes.UINT]
-    user32.GetClipboardData.restype = wintypes.HANDLE
-    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-    user32.SetClipboardData.restype = wintypes.HANDLE
-
-    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
-    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-    kernel32.GlobalLock.restype = wintypes.LPVOID
-    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-    kernel32.GlobalUnlock.restype = wintypes.BOOL
-    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
-    kernel32.GlobalFree.restype = wintypes.HGLOBAL
-
+    declare_functions(
+        user32,
+        {
+            "OpenClipboard": (wintypes.BOOL, [wintypes.HWND]),
+            "CloseClipboard": (wintypes.BOOL, []),
+            "EmptyClipboard": (wintypes.BOOL, []),
+            "IsClipboardFormatAvailable": (wintypes.BOOL, [wintypes.UINT]),
+            "GetClipboardData": (wintypes.HANDLE, [wintypes.UINT]),
+            "SetClipboardData": (wintypes.HANDLE, [wintypes.UINT, wintypes.HANDLE]),
+        },
+    )
+    declare_functions(
+        kernel32,
+        {
+            "GlobalAlloc": (wintypes.HGLOBAL, [wintypes.UINT, ctypes.c_size_t]),
+            "GlobalLock": (wintypes.LPVOID, [wintypes.HGLOBAL]),
+            "GlobalUnlock": (wintypes.BOOL, [wintypes.HGLOBAL]),
+            "GlobalFree": (wintypes.HGLOBAL, [wintypes.HGLOBAL]),
+        },
+    )
     return _Win32ClipboardAPI(user32=user32, kernel32=kernel32)
 
 
@@ -349,9 +350,9 @@ def _get_shell_version(shell_path: str, name: str) -> str:
     import contextlib
     import subprocess
 
-    from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+    from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
-    win_kwargs = _windows_hidden_subprocess_kwargs()
+    win_kwargs = windows_hidden_subprocess_kwargs()
 
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError, OSError):
         if name in ("pwsh", "powershell"):
@@ -496,7 +497,7 @@ def _detect_git_bash() -> ShellInfo | None:
     def _get_git_version() -> str:
         if not has_git:
             return ""
-        from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+        from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
         with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError, OSError):
             r = subprocess.run(
@@ -510,7 +511,7 @@ def _detect_git_bash() -> ShellInfo | None:
                 encoding="utf-8",
                 errors="replace",
                 timeout=3,
-                **_windows_hidden_subprocess_kwargs(),
+                **windows_hidden_subprocess_kwargs(),
             )
             if r.returncode == 0:
                 return r.stdout.strip()

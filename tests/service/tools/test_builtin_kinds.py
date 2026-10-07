@@ -3,11 +3,10 @@
 """Regression test — every chrys built-in tool is classified out of band.
 
 Each builtin must carry its canonical kind on the chrys-owned channel
-(``get_tool_kind``) while leaving ``FunctionTool.kind`` ``None``: the
-Responses and Anthropic wire serializers reserve ``kind == "shell"`` and
-substitute the provider's hosted shell/bash tool for any
-FunctionTool carrying it, stripping the real JSON schema.  A new builtin that
-writes ``.kind`` (or ships unclassified) is caught here.
+(``get_tool_kind``) while leaving ``FunctionTool.kind`` ``None``:
+``chrys_kind`` is the one kind channel, so approval, the tool loop and tool
+events all read the same value.  A new builtin that writes
+``.kind`` (or ships unclassified) is caught here.
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ def test_static_builtin_tools_use_out_of_band_kinds() -> None:
         assert get_tool_kind(tool) == expected, f"{name}: kind={get_tool_kind(tool)!r} expected {expected!r}"
         assert tool.kind is None, (
             f"{name}: FunctionTool.kind={tool.kind!r} must stay None — "
-            "upstream wire serializers hijack kind=='shell' (schema lost)"
+            "chrys kinds ride only on chrys_kind (set_tool_kind)"
         )
 
 
@@ -69,7 +68,7 @@ def test_shell_tool_uses_out_of_band_kind(tmp_path) -> None:
         assert get_tool_kind(t) == KIND_SHELL, f"shell tool {t.name!r} kind={get_tool_kind(t)!r}"
         assert t.kind is None, (
             f"shell tool {t.name!r} has FunctionTool.kind={t.kind!r} — "
-            "bare 'shell' on .kind is hijacked into the hosted bash tool"
+            "chrys kinds ride only on chrys_kind (set_tool_kind)"
         )
 
 
@@ -115,5 +114,5 @@ def test_registry_loaded_builtins_all_classified_and_kindless(tmp_path) -> None:
     assert not leaked, (
         f"Built-in tools writing FunctionTool.kind: {leaked}. "
         "Use chrys.foundation.tool_kinds.set_tool_kind / the chrys @tool wrapper instead — "
-        ".kind is hijacked by upstream wire serializers."
+        "chrys_kind is the one kind channel."
     )

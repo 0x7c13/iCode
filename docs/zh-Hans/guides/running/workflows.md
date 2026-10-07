@@ -555,6 +555,48 @@ workflow = wf.build()
 
 在 TUI 中新建会话，选择 `count_up` 工作流，输入 `0` 并运行。三轮结果依次为 `1`、`2`、`3`，最终输出为 `3`。可打开循环体节点，查看不同轮次的输入、输出和进度消息。再输入 `-10` 运行，观察达到五轮上限后工作流失败的结果。
 
+## 把工作流拆成多个文件
+
+工作流变大后，可以把它移进同名文件夹，拆成多个 Python 文件和资源文件。新建 `.chrys/workflows/greeting_kit/`，放入两个文件。入口文件必须与文件夹同名，即 `greeting_kit.py`：
+
+```python
+from pathlib import Path
+
+from chrys.workflows import WorkflowBuilder, WorkflowValue
+from phrases import greet
+
+wf = WorkflowBuilder("greeting kit")
+TEMPLATE = (Path(__file__).parent / "template.txt").read_text(encoding="utf-8")
+
+
+def hello(value: WorkflowValue) -> str:
+    return greet(TEMPLATE, value.text.strip() or "friend")
+
+
+node = wf.python("hello", hello)
+wf.start(node)
+wf.output(node)
+workflow = wf.build()
+```
+
+同一文件夹中的 `phrases.py`：
+
+```python
+def greet(template: str, name: str) -> str:
+    return template.format(name=name)
+```
+
+再在文件夹中放一个 `template.txt`，内容为 `Hello, {name}!`。
+
+在 TUI 中选择 `greeting_kit`，确认信任后输入 `Alex` 运行，结果为 `Hello, Alex!`。
+
+- 按模块名导入文件夹中的其他文件，如 `from phrases import greet`。相对导入（如 `from .phrases import greet`）不可用。
+- 资源文件相对 `__file__` 读取。`open("template.txt")` 这类相对路径相对的是工作区，而不是文件夹。
+- 信任确认覆盖文件夹中除以 `.` 开头的名称（如 `.venv`、`.git`）和 Python 在 `__pycache__` 文件夹中保存的编译副本以外的所有文件。修改其中任何文件后，请重新打开工作流进行预览和确认。
+- 在工作流选择器中删除工作流文件夹时，只删除其入口文件，其他文件保留。
+
+完整规则见[工作流参考：工作流文件夹](../../reference/workflows.md#工作流文件夹)。
+
 ## 从命令行运行
 
 CLI 适合无需人工交互的工作流：不支持 `ctx.ask()` 用户问答，工具审批模式固定为 `bypass`，即跳过工具审批。
@@ -567,6 +609,12 @@ CLI 适合无需人工交互的工作流：不支持 `ctx.ask()` 用户问答，
 icode workflow list
 ```
 
+要检查正在编写的工作流，将其文件或文件夹传给 `icode workflow validate`。它会输出 `PASS`，或列出每个问题所在的文件和行，见 [`icode workflow validate`](../../reference/workflows.md#icode-workflow-validate)：
+
+```shell
+icode workflow validate .chrys/workflows/greeting.py
+```
+
 使用列表中的工作流 ID 运行工作流。将以下命令中的 `WORKFLOW_ID` 替换为实际的 ID：
 
 ```shell
@@ -574,6 +622,8 @@ icode workflow run WORKFLOW_ID --input "输入文本" --trust
 ```
 
 `--input` 设置起点节点收到的 `WorkflowValue.text`，省略时为空字符串。初始输入的 `data` 为 `None`，不能通过 CLI 参数直接设置；即使传入 JSON 字符串，也仍是文本，需要工作流自行解析。
+
+输入跨多行时，bash 和 zsh 可用 `$'...'` 引号，以 `\n` 表示换行；PowerShell 中改在双引号内用 `` `n ``，例如 `` --input "第一行`n第二行" ``。见[多行输入](../../reference/workflows.md#多行输入)。
 
 新建或修改工作流文件后，`--trust` 用于确认信任当前源码及运行环境，与在 TUI 中点击“信任”的作用相同。已确认的内容未变化时可以省略；具体检查范围和加载时的行为见[信任确认](../../reference/workflows.md#信任确认)。
 

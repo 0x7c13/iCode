@@ -35,14 +35,25 @@ truncation would otherwise go unobserved.
 """
 
 
-def record_payload_truncation(original_text: str, *, artifact_name: str | None = None) -> None:
-    """Note that the active tool call's output was bounded before reaching the model."""
+def record_payload_truncation(
+    original_text: str,
+    *,
+    original_bytes: int | None = None,
+    artifact_name: str | None = None,
+) -> None:
+    """Note that the active tool call's output was bounded before reaching the model.
+
+    *original_bytes* stands in for *original_text*'s size when the tool saw
+    more output than it kept.
+    """
     observation = tool_payload_observation.get(None)
     if observation is None:
         return
+    if original_bytes is None:
+        original_bytes = len(original_text.encode("utf-8", errors="backslashreplace"))
     # First writer wins the size: a later bounding pass only ever sees text
     # that was already shortened, and the reader wants what the tool produced.
-    observation.setdefault("original_bytes", len(original_text.encode("utf-8", errors="backslashreplace")))
+    observation.setdefault("original_bytes", original_bytes)
     observation["truncated"] = True
     if artifact_name:
         observation["artifact_id"] = artifact_name
@@ -104,6 +115,9 @@ SHELL_TIMED_OUT_METADATA_KEY = "shell_timed_out"
 
 SHELL_TIMEOUT_SECONDS_METADATA_KEY = "shell_timeout_seconds"
 """Configured timeout, in seconds, for timed-out shell commands."""
+
+PARTIAL_OUTPUT_LABEL = "[partial output]"
+"""The line that opens what a timed-out command or script printed, under its error line."""
 
 WEB_SEARCH_METADATA_KEY = "web_search"
 """Provider id and result sources (``title`` and ``url`` only) for the web search card."""

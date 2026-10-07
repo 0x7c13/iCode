@@ -11,7 +11,8 @@ from threading import Event
 
 import pytest
 
-from chrys.app.tui.widgets.trajectory.panel import _fit_path_tail, _session_directory
+from chrys.app.tui.widgets.trajectory.overview import _fit_path_tail
+from chrys.app.tui.widgets.trajectory.panel import _session_directory
 from chrys.app.tui.widgets.trajectory.session_info import SessionStorage, collect_session_storage
 from chrys.service.analytics import TrajectoryScanCancelled
 

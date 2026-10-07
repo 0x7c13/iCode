@@ -13,12 +13,14 @@ from rich.text import Text
 from chrys.app.tui.screens.main.session_handlers import (
     SessionHandler,
 )
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, SessionViewState, UsageViewState
 from chrys.app.tui.support.gc_freeze import (
     GcReclaimReason,
     GcReclaimRequested,
 )
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
+from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     SessionRestored,
     WorkspaceUpdated,
@@ -29,6 +31,8 @@ from chrys.foundation.util.session_ids import session_short_id
 from chrys.kernel import Message
 from chrys.service.context.providers.history import CompressedBlock
 from tests.support.tui_helpers import (
+    fake_session_title,
+    main_screen_state_at,
     make_session_handler,
     stale_file_cache,
     status_text,
@@ -183,19 +187,19 @@ def test_session_restore_resets_terminal_title_to_restored_cwd() -> None:
             return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = MainScreenState(
+        session=SessionViewState(restoring_session=True),
+        usage=UsageViewState(last_usage_tokens=42, last_total_session_tokens=100),
+    )
+    restoring: list[bool] = []
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _last_usage_tokens=42,
-        _last_total_session_tokens=100,
+        _state=state,
+        _set_restoring_session=restoring.append,
         _gc_messages=[],
         context_usage_state=context_usage_state,
-        _state_store=None,
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
-        _set_terminal_title_for_cwd=terminal_title_cwds.append,
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=terminal_title_cwds.append),
         _events=SimpleNamespace(finish_agent_load=lambda message: calls.append(("finish", message))),
         _debug=lambda *_args: None,
     )
@@ -213,7 +217,8 @@ def test_session_restore_resets_terminal_title_to_restored_cwd() -> None:
         )
     )
 
-    assert screen._restoring_session is False
+    assert state.session.restoring_session is False
+    assert restoring == [False]
     assert input_bar.retry_mode is False
     assert panel.welcome_info == ("Code Agent", "/old/missing/path")
     assert terminal_title_cwds == ["/old/missing/path"]
@@ -329,21 +334,16 @@ def test_session_restore_marks_fully_compacted_session_as_having_messages(tmp_pa
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _last_usage_tokens=0,
-        _last_total_session_tokens=0,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
         context_usage_state=ContextUsageState.with_window(
             used_tokens=0,
             max_context_tokens=100_000,
             total_session_tokens=0,
         ),
-        _state_store=_FakeStateStore(),
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
-        _set_terminal_title_for_cwd=lambda cwd: calls.append(("title_cwd", cwd)),
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd: calls.append(("title_cwd", cwd))),
         _events=SimpleNamespace(finish_agent_load=lambda message: calls.append(("finish", message))),
         _debug=lambda *_args: None,
     )
@@ -440,21 +440,15 @@ def test_session_restore_moves_shell_panel_to_existing_restored_cwd(tmp_path: Pa
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _last_usage_tokens=0,
-        _last_total_session_tokens=0,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
         context_usage_state=ContextUsageState.with_window(
             used_tokens=0,
             max_context_tokens=100_000,
             total_session_tokens=0,
         ),
-        _state_store=None,
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
-        _set_terminal_title_for_cwd=lambda cwd: calls.append(("title_cwd", cwd)),
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd: calls.append(("title_cwd", cwd))),
         _events=SimpleNamespace(finish_agent_load=lambda message: calls.append(("finish", message))),
         _debug=lambda *_args: None,
     )
@@ -529,19 +523,22 @@ def test_workspace_update_with_messages_updates_terminal_title_and_chdir_marker(
             return shell
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = main_screen_state_at(str(current_cwd))
+    state.run.has_messages = True
+    workspace_cwds: list[str] = []
     screen = SimpleNamespace(
-        _has_messages=True,
-        _chdir_original_cwd=None,
-        _chdir_current_cwd=str(current_cwd),
+        _state=state,
+        _set_workspace_cwd=workspace_cwds.append,
         _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
         query_one=query_one,
-        _set_terminal_title_for_cwd=terminal_title_cwds.append,
+        _session_title=fake_session_title(set_terminal_title_for_cwd=terminal_title_cwds.append),
         _debug=lambda *_args: None,
     )
 
     asyncio.run(make_session_handler(screen).on_workspace_updated(WorkspaceUpdated(primary_cwd=str(next_cwd))))
 
-    assert screen._chdir_current_cwd == str(next_cwd)
+    assert state.workspace_marker.current_cwd == str(next_cwd)
+    assert workspace_cwds == [str(next_cwd)]
     assert panel.border_subtitle.plain == str(next_cwd)
     assert ("paste_cwd", str(next_cwd)) in calls
     assert ("shell_cwd", str(next_cwd)) in calls
@@ -591,20 +588,22 @@ def test_workspace_update_with_missing_cwd_does_not_change_shell_directory(tmp_p
             return shell
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = main_screen_state_at(str(tmp_path))
+    state.runtime.profile = "Code Agent"
+    workspace_cwds: list[str] = []
     screen = SimpleNamespace(
-        _profile="Code Agent",
-        _has_messages=False,
-        _chdir_original_cwd=None,
-        _chdir_current_cwd=str(tmp_path),
+        _state=state,
+        _set_workspace_cwd=workspace_cwds.append,
         _suggestions=SimpleNamespace(file_cache=stale_file_cache("stale.py")),
         query_one=query_one,
-        _set_terminal_title_for_cwd=terminal_title_cwds.append,
+        _session_title=fake_session_title(set_terminal_title_for_cwd=terminal_title_cwds.append),
         _debug=lambda *_args: None,
     )
 
     asyncio.run(make_session_handler(screen).on_workspace_updated(WorkspaceUpdated(primary_cwd=str(missing_cwd))))
 
-    assert screen._chdir_current_cwd == str(missing_cwd)
+    assert state.workspace_marker.current_cwd == str(missing_cwd)
+    assert workspace_cwds == [str(missing_cwd)]
     assert panel.border_subtitle.plain == str(missing_cwd)
     assert ("paste_cwd", str(missing_cwd)) in calls
     assert ("welcome", ("Code Agent", str(missing_cwd))) in calls
@@ -698,21 +697,16 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _last_usage_tokens=0,
-        _last_total_session_tokens=0,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
         context_usage_state=ContextUsageState.with_window(
             used_tokens=0,
             max_context_tokens=100_000,
             total_session_tokens=0,
         ),
-        _state_store=_FakeStateStore(),
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=query_one,
         _set_has_messages=lambda value: calls.append(("has_messages", value)),
-        _set_terminal_title_for_cwd=lambda cwd: None,
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd: None),
         _events=SimpleNamespace(finish_agent_load=lambda message: None),
         _debug=lambda *_args: None,
     )
@@ -798,18 +792,12 @@ def test_session_restore_without_saved_todos_clears_stale_todo_state() -> None:
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _last_usage_tokens=0,
-        _last_total_session_tokens=0,
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
         context_usage_state=None,
-        _state_store=None,
         todo_state=TodoListState(items=(TodoItem(content="stale"),)),
         query_one=query_one,
         _set_has_messages=lambda value: None,
-        _set_terminal_title_for_cwd=lambda cwd: None,
-        _reset_session_title_state=lambda: None,
-        _set_session_title_state=lambda **_kwargs: None,
-        _session_custom_title="",
+        _session_title=fake_session_title(set_terminal_title_for_cwd=lambda cwd: None),
         _events=SimpleNamespace(finish_agent_load=lambda message: None),
         _debug=lambda *_args: None,
     )

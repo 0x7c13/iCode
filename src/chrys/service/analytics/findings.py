@@ -9,8 +9,8 @@ from collections.abc import Iterable
 from threading import Event
 from typing import Final
 
-from chrys.foundation.trajectory.event_types import ToolOutcome
-from chrys.service.analytics.classification import evidence_key
+from chrys.service.analytics.classification import evidence_key, tool_failed, tool_succeeded
+from chrys.service.analytics.math import interval_length
 from chrys.service.analytics.model import (
     ActionClass,
     ActionOperation,
@@ -23,6 +23,7 @@ from chrys.service.analytics.model import (
     TimeSlice,
     TurnAnalysis,
     ValidationMetrics,
+    least_precision,
     verify_covers_edit,
 )
 from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelled
@@ -30,17 +31,6 @@ from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelle
 _FAILED_CRITICAL_PATH_SHARE: Final = 0.25
 _APPROVAL_BLOCKING_SHARE: Final = 0.25
 _CONTEXT_CARRYING_LOAD_TOP_N: Final = 3
-_FAILED_TOOL_OUTCOMES: Final = frozenset(
-    {
-        ToolOutcome.FAILED,
-        ToolOutcome.ERRORED,
-        ToolOutcome.TIMED_OUT,
-        ToolOutcome.REJECTED,
-        ToolOutcome.INVALID_ARGUMENTS,
-        ToolOutcome.UNKNOWN_TOOL,
-        ToolOutcome.FILTERED,
-    }
-)
 
 
 def evaluate_findings(
@@ -60,7 +50,7 @@ def evaluate_findings(
     turns_by_id = {turn.turn_id: turn for turn in turns}
 
     successful_verifies = [
-        action for action in actions if action.classification is ActionClass.VERIFY and _tool_succeeded(action.outcome)
+        action for action in actions if action.classification is ActionClass.VERIFY and tool_succeeded(action.outcome)
     ]
     last_verify = successful_verifies[-1] if successful_verifies else None
     unverified_edits = [
@@ -101,7 +91,7 @@ def evaluate_findings(
                 occurrence_id=f"repeated:{target.occurrence_id}",
                 severity=FindingSeverity.WARNING,
                 detail_args=(("count", len(repeated)),),
-                precision=_least_precision(
+                precision=least_precision(
                     (
                         validation.tool_count.precision,
                         *(action.classification_precision for action in repeated),
@@ -120,7 +110,7 @@ def evaluate_findings(
         contribution = turn.critical_tool_contributions_ns.get(action.operation_id, 0)
         stable_evidence = _action_evidence(action)
         if (
-            not _tool_failed(action.outcome)
+            not tool_failed(action.outcome)
             or not isinstance(response_cp, int)
             or response_cp <= 0
             or contribution / response_cp < _FAILED_CRITICAL_PATH_SHARE
@@ -184,7 +174,7 @@ def evaluate_findings(
                 severity=FindingSeverity.WARNING,
                 deterministic=True,
                 detail_args=(("count", len(net_zero_rows)),),
-                precision=_least_precision((change_verification.net_zero.precision, validation.tool_count.precision)),
+                precision=least_precision((change_verification.net_zero.precision, validation.tool_count.precision)),
                 turn_id=target_action.turn_id if target_action is not None else None,
                 turn_number=last_turn_number,
                 operation_id=target_action.operation_id if target_action is not None else None,
@@ -226,7 +216,7 @@ def evaluate_findings(
             severity=FindingSeverity.INFO,
             deterministic=True,
             detail_args=(("load", item.load),),
-            precision=_least_precision((Precision.ESTIMATED, validation.tool_count.precision)),
+            precision=least_precision((Precision.ESTIMATED, validation.tool_count.precision)),
             turn_id=item.turn_id,
             turn_number=item.turn_number,
             operation_id=None,
@@ -247,19 +237,7 @@ def _approval_wait_ns(slices: Iterable[TimeSlice]) -> int:
     shared wall time once per request and push the share past the elapsed
     turn time.
     """
-    total = 0
-    span_start: int | None = None
-    span_end = 0
-    for start, end in sorted((item.start_ns, item.end_ns) for item in slices if item.owner == "approval"):
-        if span_start is None or start > span_end:
-            if span_start is not None:
-                total += span_end - span_start
-            span_start, span_end = start, end
-        else:
-            span_end = max(span_end, end)
-    if span_start is not None:
-        total += span_end - span_start
-    return total
+    return interval_length((item.start_ns, item.end_ns) for item in slices if item.owner == "approval")
 
 
 def _action_evidence(action: ActionOperation) -> tuple[str, ...]:
@@ -299,25 +277,6 @@ def _finding(
         turn_number=target.turn_number,
         operation_id=target.operation_id,
     )
-
-
-def _least_precision(values: Iterable[Precision]) -> Precision:
-    order = {
-        Precision.EXACT: 0,
-        Precision.ESTIMATED: 1,
-        Precision.MISSING: 2,
-        Precision.UNRESOLVED: 3,
-    }
-    precisions = list(values)
-    return max(precisions, key=order.__getitem__) if precisions else Precision.EXACT
-
-
-def _tool_succeeded(outcome: str | None) -> bool:
-    return outcome == "success"
-
-
-def _tool_failed(outcome: str | None) -> bool:
-    return outcome in _FAILED_TOOL_OUTCOMES
 
 
 __all__ = ["ContextCarryingLoad", "evaluate_findings"]

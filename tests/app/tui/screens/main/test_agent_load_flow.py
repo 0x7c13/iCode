@@ -13,6 +13,7 @@ import pytest
 
 from chrys.app.tui.screens.diff import RollbackProgressModal
 from chrys.app.tui.screens.main.ports import StatusTrail
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RuntimeState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -20,6 +21,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcReclaimReason,
     GcReclaimRequested,
 )
+from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
     ProfileSwitched,
@@ -30,6 +32,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from tests.support.tui_helpers import (
+    main_screen_state_at,
     make_backend_handler,
     make_session_handler,
     status_text,
@@ -85,9 +88,7 @@ def test_agent_load_events_lock_input_and_wait_for_switch_event() -> None:
 
     screen = SimpleNamespace(
         app=_FakeApp(),
-        _state_store=_FakeStateStore(),
-        _shell_mode=False,
-        _fullscreen_terminal=False,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         _gc_messages=[],
         query_one=_query_one,
         _set_agent_loading=_set_agent_loading,
@@ -162,8 +163,8 @@ def test_agent_load_dialog_replaces_active_rollback_progress_modal() -> None:
             calls.append(("restore-push", screen))
 
     rollback_progress = _RollbackProgress()
-    screen = SimpleNamespace(app=_FakeApp(), _shell_mode=False, _fullscreen_terminal=False)
-    adapter = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    screen = SimpleNamespace(app=_FakeApp())
+    adapter = MainScreenViewAdapter(screen, state=MainScreenState())  # type: ignore[arg-type]
     adapter._rollback_progress_modal = rollback_progress  # type: ignore[assignment]
 
     asyncio.run(adapter.push_agent_load_dialog(restore_dialog))
@@ -186,7 +187,7 @@ def test_rollback_progress_worker_does_not_cancel_prior_handoff_tail() -> None:
     async def operation() -> None:
         return
 
-    adapter = MainScreenViewAdapter(_FakeScreen())  # type: ignore[arg-type]
+    adapter = MainScreenViewAdapter(_FakeScreen(), state=MainScreenState())  # type: ignore[arg-type]
     adapter.open_rollback_progress_modal(operation)
     modal = pushed[0]
     assert isinstance(modal, RollbackProgressModal)
@@ -206,7 +207,11 @@ def test_nonstartup_agent_load_failure_requests_conservative_idle_reclaim(
     from chrys.foundation.events.types import AgentLoadFailed
 
     gc_messages: list[object] = []
-    screen = SimpleNamespace(_gc_messages=gc_messages, _profile="Code", _debug=lambda *_args: None)
+    screen = SimpleNamespace(
+        _state=MainScreenState(runtime=RuntimeState(profile="Code")),
+        _gc_messages=gc_messages,
+        _debug=lambda *_args: None,
+    )
     handler = make_backend_handler(screen)
     monkeypatch.setattr(handler._agent_load(), "on_failed", lambda _event, *, display=None: None)
 
@@ -236,8 +241,11 @@ def test_agent_load_failed_preserves_failed_profile_label() -> None:
             return _FakeStatusBar()
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = MainScreenState()
+    profiles: list[str] = []
     screen = SimpleNamespace(
-        _profile="",
+        _state=state,
+        _set_profile_display=profiles.append,
         _set_agent_loading=loading.append,
         query_one=_query_one,
         _debug=lambda *_args: None,
@@ -252,7 +260,8 @@ def test_agent_load_failed_preserves_failed_profile_label() -> None:
         )
     )
 
-    assert screen._profile == "Code"
+    assert state.runtime.profile == "Code"
+    assert profiles == ["Code"]
     assert subtitles == ["updated"]
     assert loading == [False]
     assert flashes == ["Agent load failed: missing api key"]
@@ -317,9 +326,7 @@ def test_agent_load_restore_waits_for_session_restored() -> None:
 
     screen = SimpleNamespace(
         app=_FakeApp(),
-        _state_store=_FakeStateStore(),
-        _shell_mode=False,
-        _fullscreen_terminal=False,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=_query_one,
         _set_agent_loading=load_states.append,
         _debug=lambda *_args: None,
@@ -385,9 +392,7 @@ def test_begin_session_restore_load_shows_availability_check() -> None:
 
     screen = SimpleNamespace(
         app=_FakeApp(),
-        _state_store=_FakeStateStore(),
-        _shell_mode=False,
-        _fullscreen_terminal=False,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=_query_one,
         _set_agent_loading=load_states.append,
         _debug=lambda *_args: None,
@@ -443,9 +448,6 @@ def test_begin_session_restore_load_lookup_then_resolved_id_reuses_dialog() -> N
 
     screen = SimpleNamespace(
         app=_FakeApp(),
-        _state_store=None,
-        _shell_mode=False,
-        _fullscreen_terminal=False,
         query_one=_query_one,
         _set_agent_loading=lambda _value: None,
         _debug=lambda *_args: None,
@@ -509,9 +511,7 @@ def test_restore_agent_load_started_reuses_availability_dialog() -> None:
 
     screen = SimpleNamespace(
         app=_FakeApp(),
-        _state_store=_FakeStateStore(),
-        _shell_mode=False,
-        _fullscreen_terminal=False,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=_query_one,
         _set_agent_loading=lambda _value: None,
         _debug=lambda *_args: None,
@@ -574,9 +574,7 @@ def test_agent_load_restore_final_message_replaces_pending_message() -> None:
 
     screen = SimpleNamespace(
         app=_FakeApp(),
-        _state_store=_FakeStateStore(),
-        _shell_mode=False,
-        _fullscreen_terminal=False,
+        _services=MainScreenServices(bus=EventBus(), state_store=_FakeStateStore()),
         query_one=_query_one,
         _set_agent_loading=load_states.append,
         _debug=lambda *_args: None,
@@ -660,16 +658,13 @@ def test_profile_switched_finishes_agent_load_after_final_event() -> None:
             return status
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = main_screen_state_at("/repo/current")
+    state.runtime.profile = "Code Agent"
     screen = SimpleNamespace(
+        _state=state,
         _events=_FakeEvents(),
-        _has_messages=False,
-        _profile="Code Agent",
         _gc_messages=[],
-        _profile_switch_from=None,
-        _profile_switch_to=None,
-        _profile_switch_seq=0,
         query_one=_query_one,
-        _workspace_cwd=lambda: "/repo/current",
         _update_subtitle=lambda: None,
         _debug=lambda *_args: None,
     )
@@ -746,10 +741,11 @@ def test_profile_switched_syncs_model_cache_only_for_active_selection(
             return _FakeStatusBar()
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    services = MainScreenServices(bus=EventBus(), active_model_profile_id="old-model")
     screen = SimpleNamespace(
+        _state=MainScreenState(runtime=RuntimeState(profile="Code")),
+        _services=services,
         _events=_FakeEvents(),
-        _active_model_profile_id="old-model",
-        _profile="Code",
         _gc_messages=[],
         query_one=query_one,
         _debug=lambda *_args: None,
@@ -775,6 +771,5 @@ def test_profile_switched_syncs_model_cache_only_for_active_selection(
         )
     )
 
-    assert handler._services.active_model_profile_id == expected
-    assert screen._active_model_profile_id == expected
+    assert services.active_model_profile_id == expected
     assert [status_trail(trail) for trail in tool_trails] == ["1 hook"]

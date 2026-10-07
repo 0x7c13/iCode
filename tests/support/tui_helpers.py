@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-from collections.abc import Callable, Iterable, MutableMapping
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from io import BytesIO
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from PIL import Image
@@ -43,10 +44,8 @@ from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, Pro
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import AgentRuntimeDetails
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
-from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.service.approval.policy import ApprovalMode
 from tests.support.waiting import wait_for
 
@@ -73,125 +72,257 @@ def install_trajectory_dashboard_query(screen: object) -> None:
     screen.query_one = query_one
 
 
-def make_backend_handler(screen: object, *, locale_controller: LocaleController | None = None) -> BackendEventHandler:
-    """Construct a backend event handler around a lightweight screen fake."""
+def discard_worker(_work: Callable[[], Awaitable[object]]) -> None:
+    """A worker hook whose worker never starts, so its work is never called."""
+
+
+def start_fake_worker(screen: object, work: Callable[[], Awaitable[object]]) -> object | None:
+    """Start *work* the way a screen-fake's worker hook would.
+
+    A fake with ``run_worker`` runs its coroutine there; one with a
+    ``_started_workers`` list collects the coroutine for the test to drive;
+    otherwise the work is dropped uncalled, as a worker the test does not
+    care about.
+    """
+    run_worker = getattr(screen, "run_worker", None)
+    if callable(run_worker):
+        return run_worker(work(), thread=False)
+    started = getattr(screen, "_started_workers", None)
+    if isinstance(started, list):
+        started.append(work())
+        return None
+    return None
+
+
+def fake_session_title(**overrides: object) -> SimpleNamespace:
+    """A ``SessionTitleController`` stand-in for screen fakes.
+
+    Every title update the view adapter forwards is a no-op unless the test
+    overrides it by name (``set_terminal_title_for_cwd=recorder.append``).
+    """
+
+    def set_session_title_state(
+        *, custom: str | None = None, generated: str | None = None, fallback: str | None = None
+    ) -> None:
+        return None
+
+    def set_terminal_title_for_cwd(cwd: str | None = None) -> None:
+        return None
+
+    def set_terminal_title_for_user_message(text: str) -> None:
+        return None
+
+    title = SimpleNamespace(
+        custom_title="",
+        set_session_title_state=set_session_title_state,
+        reset_session_title_state=lambda: None,
+        set_terminal_title_for_cwd=set_terminal_title_for_cwd,
+        set_terminal_title_for_user_message=set_terminal_title_for_user_message,
+        clear_terminal_title_result=lambda: None,
+        mark_terminal_title_completed=lambda: None,
+        mark_terminal_title_failed=lambda: None,
+    )
+    for name, value in overrides.items():
+        if not hasattr(title, name):
+            raise AttributeError(f"SessionTitleController has no {name!r}")
+        setattr(title, name, value)
+    return title
+
+
+# MainScreen keeps its run, runtime, session, usage, workspace, shell, overlay
+# and submit state only in ``_state`` (``MainScreenState``), its service handles
+# only in ``_services`` (``MainScreenServices``), live-diff tracking only in
+# ``_live_diff`` (``LiveDiffTracker``), and git-branch and session-title
+# bookkeeping only in their controllers. These are the screen fields and
+# properties that replaced, plus the seed names the old fakes used for them: a
+# fake carrying one would pre-set nothing, so the fakes refuse them.
+_REMOVED_MAIN_SCREEN_FIELDS = frozenset(
+    {
+        # Former MainScreen fields.
+        "_active_model_profile_id",
+        "_agent_loading",
+        "_agent_registry",
+        "_agent_running",
+        "_approval_mode",
+        "_bus",
+        "_chdir_current_cwd",
+        "_chdir_original_cwd",
+        "_creating_new_session",
+        "_fullscreen_terminal",
+        "_git_branch_closed",
+        "_git_branch_monitor",
+        "_git_branch_pending_operation",
+        "_git_branch_poll_timer",
+        "_git_branch_refresh_timer",
+        "_git_branch_retry_cwd_on_display_sync",
+        "_git_branch_task",
+        "_has_messages",
+        "_interrupt_confirm_active",
+        "_last_total_session_tokens",
+        "_last_usage_tokens",
+        "_live_call_paths",
+        "_live_file_mutations",
+        "_main_usage_source_id",
+        "_model_registry",
+        "_pending_active_switch",
+        "_pending_user_submit_blocked",
+        "_profile",
+        "_profile_switch_from",
+        "_profile_switch_seq",
+        "_profile_switch_to",
+        "_quit_after_flush_task",
+        "_restoring_session",
+        "_runtime_details",
+        "_sb_saved",
+        "_session_custom_title",
+        "_session_fallback_title",
+        "_session_generated_title",
+        "_shell_mode",
+        "_state_store",
+        "_submit_state",
+        "_terminal_title_activity_frame",
+        "_terminal_title_activity_timer",
+        "_terminal_title_content",
+        "_terminal_title_result",
+        "_terminal_title_source",
+        "_workspace_git_branch",
+        # Former MainScreen properties.
+        "_deferred_agent_messages",
+        "_engine",
+        "_pending_user_message_render_active",
+        "_pending_user_submit_active",
+        "_pending_user_submit_text",
+        # Seeds only the old fakes read.
+        "_apply_saved_model_on_restore",
+    }
+)
+
+
+def _removed_main_screen_field_error(names: Iterable[str]) -> TypeError:
+    return TypeError(
+        f"main-screen fake sets {', '.join(sorted(names))}, which MainScreen no longer has; "
+        "pre-set _state (MainScreenState), _services (MainScreenServices) or _live_diff (LiveDiffTracker), "
+        "or fake the controller that now owns it"
+    )
+
+
+def _main_screen_part[T](screen: object, name: str, kind: type[T], make: Callable[[], T]) -> T:
+    """The fake's *name* part, made and attached as MainScreen makes it when the fake has none."""
+    part = getattr(screen, name, None)
+    if part is None:
+        part = make()
+        setattr(screen, name, part)
+    elif not isinstance(part, kind):
+        raise TypeError(f"main-screen fake's {name} is {type(part).__name__}, not {kind.__name__}")
+    return part
+
+
+def main_screen_parts(screen: object) -> tuple[MainScreenState, MainScreenServices, LiveDiffTracker]:
+    """The ``_state``, ``_services`` and ``_live_diff`` a main-screen fake's handlers share.
+
+    A fake that lacks one gets a fresh one attached, as a real MainScreen has
+    all three, so a test reads what a handler wrote from the same place. A fake
+    carrying a field these replaced fails instead of silently pre-setting
+    nothing. Each call also routes the fake's ``query_one`` through
+    :func:`install_trajectory_dashboard_query` and gives a fake without
+    ``context_usage_state`` a None one, as the view adapter reads both.
+    """
+    removed = {
+        name
+        for name in _REMOVED_MAIN_SCREEN_FIELDS
+        if name in getattr(screen, "__dict__", {}) or any(name in vars(cls) for cls in type(screen).__mro__)
+    }
+    if removed:
+        raise _removed_main_screen_field_error(removed)
     install_trajectory_dashboard_query(screen)
-    state = getattr(screen, "_state", None)
-    if not isinstance(state, MainScreenState):
-        state = MainScreenState()
-    state.run.agent_running = bool(getattr(screen, "_agent_running", state.run.agent_running))
-    state.run.agent_loading = bool(getattr(screen, "_agent_loading", state.run.agent_loading))
-    state.run.has_messages = bool(getattr(screen, "_has_messages", state.run.has_messages))
-    state.session.creating_new_session = bool(
-        getattr(screen, "_creating_new_session", state.session.creating_new_session)
-    )
-    state.session.restoring_session = bool(getattr(screen, "_restoring_session", state.session.restoring_session))
-    state.runtime.profile = str(getattr(screen, "_profile", state.runtime.profile))
-    state.runtime.details = getattr(screen, "_runtime_details", state.runtime.details)
-    state.runtime.main_usage_source_id = str(
-        getattr(screen, "_main_usage_source_id", state.runtime.main_usage_source_id)
-    )
-    state.usage.last_usage_tokens = int(getattr(screen, "_last_usage_tokens", state.usage.last_usage_tokens))
-    state.usage.last_total_session_tokens = int(
-        getattr(screen, "_last_total_session_tokens", state.usage.last_total_session_tokens)
-    )
-    state.workspace_marker.original_cwd = getattr(screen, "_chdir_original_cwd", state.workspace_marker.original_cwd)
-    state.workspace_marker.current_cwd = str(getattr(screen, "_chdir_current_cwd", state.workspace_marker.current_cwd))
-    state.workspace.current_cwd = state.workspace_marker.current_cwd
-    state.submit.active = bool(getattr(screen, "_pending_user_submit_active", state.submit.active))
-    state.submit.text = str(getattr(screen, "_pending_user_submit_text", state.submit.text))
-    state.submit.blocked = bool(getattr(screen, "_pending_user_submit_blocked", state.submit.blocked))
-    state.render_gate.active = bool(getattr(screen, "_pending_user_message_render_active", state.render_gate.active))
-    screen.context_usage_state = getattr(screen, "context_usage_state", None)
-
-    services = MainScreenServices(
-        bus=getattr(screen, "_bus", EventBus()),
-        state_store=getattr(screen, "_state_store", None),
-        agent_registry=getattr(screen, "_agent_registry", None),
-        model_registry=getattr(screen, "_model_registry", None),
-        active_model_profile_id=str(getattr(screen, "_active_model_profile_id", "")),
-    )
-    live_call_paths = getattr(screen, "_live_call_paths", None)
-    live_file_mutations = getattr(screen, "_live_file_mutations", None)
-    live_diff = LiveDiffTracker(
-        call_paths=live_call_paths if isinstance(live_call_paths, MutableMapping) else None,
-        file_mutations=live_file_mutations if isinstance(live_file_mutations, MutableMapping) else None,
+    if not hasattr(screen, "context_usage_state"):
+        screen.context_usage_state = None
+    return (
+        _main_screen_part(screen, "_state", MainScreenState, MainScreenState),
+        _main_screen_part(screen, "_services", MainScreenServices, lambda: MainScreenServices(bus=EventBus())),
+        _main_screen_part(screen, "_live_diff", LiveDiffTracker, LiveDiffTracker),
     )
 
-    def set_agent_running(value: bool) -> None:
-        state.run.agent_running = value
-        setter = getattr(screen, "_set_agent_running", None)
-        if callable(setter):
-            setter(value)
-        else:
-            screen._agent_running = value
 
-    def set_agent_loading(value: bool) -> None:
-        state.run.agent_loading = value
-        setter = getattr(screen, "_set_agent_loading", None)
-        if callable(setter):
-            setter(value)
-        else:
-            screen._agent_loading = value
+def main_screen_state_at(cwd: str) -> MainScreenState:
+    """A fresh main-screen state in workspace *cwd*, as ``MainScreen._set_workspace_cwd`` leaves it."""
+    state = MainScreenState()
+    state.workspace.current_cwd = cwd
+    state.workspace_marker.current_cwd = cwd
+    return state
 
-    def set_has_messages(value: bool) -> None:
-        state.run.has_messages = value
-        setter = getattr(screen, "_set_has_messages", None)
-        if callable(setter):
-            setter(value)
-        else:
-            screen._has_messages = value
 
-    def set_profile_display(value: str) -> None:
-        state.runtime.profile = value
-        screen._profile = value
+def _call_screen_hook(screen: object, name: str, *args: object) -> object | None:
+    """Call the fake's *name* method when it has one; the result, else None."""
+    hook = getattr(screen, name, None)
+    return hook(*args) if callable(hook) else None
 
-    def set_runtime_details(value: object) -> None:
-        state.runtime.details = value
-        screen._runtime_details = value
 
-    def set_active_model_profile_id(value: str) -> None:
-        services.active_model_profile_id = value
-        screen._active_model_profile_id = value
+class ScreenSetters:
+    """The setter callbacks MainScreen hands its controllers, over a fake's parts.
 
-    def set_main_usage_source_id(value: str) -> None:
-        state.runtime.main_usage_source_id = value
-        screen._main_usage_source_id = value
+    Each writes the field MainScreen's own setter writes, then calls the fake's
+    same-name method (``_set_restoring_session``, …) when it has one, so a test
+    can record the call. Anything else a MainScreen setter does (the run
+    generation bump, controller calls, widget updates) is left to that method.
+    """
 
-    def set_last_usage_tokens(value: int) -> None:
-        state.usage.last_usage_tokens = value
-        screen._last_usage_tokens = value
+    def __init__(self, screen: object, state: MainScreenState, services: MainScreenServices) -> None:
+        self._screen = screen
+        self._state = state
+        self._services = services
 
-    def set_last_total_session_tokens(value: int) -> None:
-        state.usage.last_total_session_tokens = value
-        screen._last_total_session_tokens = value
+    def set_agent_running(self, value: bool) -> None:
+        self._state.run.agent_running = value
+        _call_screen_hook(self._screen, "_set_agent_running", value)
 
-    def set_creating_new_session(value: bool) -> None:
-        state.session.creating_new_session = value
-        screen._creating_new_session = value
+    def set_agent_loading(self, value: bool) -> None:
+        self._state.run.agent_loading = value
+        _call_screen_hook(self._screen, "_set_agent_loading", value)
 
-    def set_restoring_session(value: bool) -> None:
-        state.session.restoring_session = value
-        screen._restoring_session = value
+    def set_has_messages(self, value: bool) -> None:
+        self._state.run.has_messages = value
+        _call_screen_hook(self._screen, "_set_has_messages", value)
 
-    def set_workspace_cwd(value: str) -> None:
-        state.workspace.current_cwd = value
-        state.workspace_marker.current_cwd = value
-        screen._chdir_current_cwd = value
+    def set_profile_display(self, value: str) -> None:
+        self._state.runtime.profile = value
+        _call_screen_hook(self._screen, "_set_profile_display", value)
 
-    def set_workspace_original_cwd(value: str | None) -> None:
-        state.workspace_marker.original_cwd = value
-        screen._chdir_original_cwd = value
+    def set_active_model_profile_id(self, value: str) -> None:
+        self._services.active_model_profile_id = value
+        _call_screen_hook(self._screen, "_set_active_model_profile_id", value)
 
-    def update_subtitle() -> None:
-        updater = getattr(screen, "_update_subtitle", None)
-        if callable(updater):
-            updater()
+    def set_creating_new_session(self, value: bool) -> None:
+        self._state.session.creating_new_session = value
+        _call_screen_hook(self._screen, "_set_creating_new_session", value)
 
-    def update_toc() -> None:
-        updater = getattr(screen, "_update_toc", None)
-        if callable(updater):
-            updater()
+    def set_restoring_session(self, value: bool) -> None:
+        self._state.session.restoring_session = value
+        _call_screen_hook(self._screen, "_set_restoring_session", value)
+
+    def set_workspace_cwd(self, value: str) -> None:
+        self._state.workspace.current_cwd = value
+        self._state.workspace_marker.current_cwd = value
+        _call_screen_hook(self._screen, "_set_workspace_cwd", value)
+
+
+def make_backend_handler(
+    screen: object,
+    *,
+    locale_controller: LocaleController | None = None,
+    approval_defer_while_judging: Callable[[], bool] = lambda: False,
+) -> BackendEventHandler:
+    """Construct a backend event handler around a lightweight screen fake.
+
+    The handler shares the fake's ``_state``, ``_services`` and ``_live_diff``
+    (see :func:`main_screen_parts`). A setter method the fake also defines
+    (``_set_agent_running``, ``_set_restoring_session``, …) runs after the
+    state is updated, as MainScreen's own setter would. Approval requests the
+    judge reviews show at once unless *approval_defer_while_judging* says
+    otherwise.
+    """
+    state, services, live_diff = main_screen_parts(screen)
+    setters = ScreenSetters(screen, state, services)
 
     def on_session_fork_error(event: object, message: str, severity: str) -> None:
         sessions = getattr(screen, "_sessions", None)
@@ -203,45 +334,18 @@ def make_backend_handler(screen: object, *, locale_controller: LocaleController 
         if sessions is not None:
             sessions.on_session_clear_error(event, message=message)
 
-    def block_pending_user_submit() -> None:
-        state.submit.block()
-        screen._pending_user_submit_blocked = True
-
-    def debug(key: str, message: str = "") -> None:
-        debugger = getattr(screen, "_debug", None)
-        if callable(debugger):
-            debugger(key, message)
-
     def handle_approval_response(
         request_id: str,
         approved: bool,
         reason: str,
         modified_args: dict[str, object] | None,
     ) -> object | None:
-        handler = getattr(screen, "_handle_approval_response", None)
-        if callable(handler):
-            return handler(request_id, approved, reason, modified_args)
-        return None
-
-    def handle_ask_user_response(request_id: str, answers: tuple[AskUserAnswer, ...]) -> None:
-        handler = getattr(screen, "_handle_ask_user_response", None)
-        if callable(handler):
-            handler(request_id, answers)
+        return _call_screen_hook(screen, "_handle_approval_response", request_id, approved, reason, modified_args)
 
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
         if isinstance(messages, list):
             messages.append(message)
-
-    def refresh_notification_settings() -> None:
-        refresher = getattr(screen, "_refresh_notification_settings", None)
-        if callable(refresher):
-            refresher()
-
-    def refresh_trajectory_verify_commands() -> None:
-        refresher = getattr(screen, "_refresh_trajectory_verify_commands", None)
-        if callable(refresher):
-            refresher()
 
     return BackendEventHandler(
         state=state,
@@ -249,37 +353,35 @@ def make_backend_handler(screen: object, *, locale_controller: LocaleController 
         locale_controller=locale_controller,
         view=MainScreenViewAdapter(
             screen,  # type: ignore[arg-type]
+            state=state,
             state_store=services.state_store,
             locale_controller=locale_controller,
         ),
         callbacks=BackendEventCallbacks(
-            set_agent_running=set_agent_running,
-            set_agent_loading=set_agent_loading,
-            set_has_messages=set_has_messages,
-            set_profile_display=set_profile_display,
-            set_runtime_details=set_runtime_details,
-            set_active_model_profile_id=set_active_model_profile_id,
-            set_main_usage_source_id=set_main_usage_source_id,
-            set_last_usage_tokens=set_last_usage_tokens,
-            set_last_total_session_tokens=set_last_total_session_tokens,
-            set_creating_new_session=set_creating_new_session,
-            set_restoring_session=set_restoring_session,
-            set_workspace_cwd=set_workspace_cwd,
-            set_workspace_original_cwd=set_workspace_original_cwd,
+            set_agent_running=setters.set_agent_running,
+            set_agent_loading=setters.set_agent_loading,
+            set_has_messages=setters.set_has_messages,
+            set_profile_display=setters.set_profile_display,
+            set_active_model_profile_id=setters.set_active_model_profile_id,
+            set_creating_new_session=setters.set_creating_new_session,
+            set_restoring_session=setters.set_restoring_session,
+            set_workspace_cwd=setters.set_workspace_cwd,
             refresh_git_branch=lambda: None,
-            update_subtitle=update_subtitle,
-            update_toc=update_toc,
+            update_subtitle=lambda: _call_screen_hook(screen, "_update_subtitle"),
+            update_toc=lambda: _call_screen_hook(screen, "_update_toc"),
             on_session_fork_error=on_session_fork_error,
             on_session_clear_error=on_session_clear_error,
-            block_pending_user_submit=block_pending_user_submit,
             handle_approval_response=handle_approval_response,
-            handle_ask_user_response=handle_ask_user_response,
+            handle_ask_user_response=lambda request_id, answers: _call_screen_hook(
+                screen, "_handle_ask_user_response", request_id, answers
+            ),
             question_inline_preferred=lambda: False,
+            approval_defer_while_judging=approval_defer_while_judging,
             post_gc_message=post_gc_message,
-            debug=debug,
+            debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
             refresh_model_indicator=lambda: None,
-            refresh_notification_settings=refresh_notification_settings,
-            refresh_trajectory_verify_commands=refresh_trajectory_verify_commands,
+            refresh_notification_settings=lambda: _call_screen_hook(screen, "_refresh_notification_settings"),
+            refresh_trajectory_verify_commands=lambda: _call_screen_hook(screen, "_refresh_trajectory_verify_commands"),
             settings_reloaded=lambda: None,
         ),
         live_diff=live_diff,
@@ -291,105 +393,18 @@ def make_session_handler(
     *,
     locale_controller: LocaleController | None = None,
 ) -> SessionHandler:
-    install_trajectory_dashboard_query(screen)
-    state = getattr(screen, "_state", None)
-    if not isinstance(state, MainScreenState):
-        state = MainScreenState()
-    state.run.agent_running = bool(getattr(screen, "_agent_running", state.run.agent_running))
-    state.run.agent_loading = bool(getattr(screen, "_agent_loading", state.run.agent_loading))
-    state.run.has_messages = bool(getattr(screen, "_has_messages", state.run.has_messages))
-    state.session.restoring_session = bool(getattr(screen, "_restoring_session", state.session.restoring_session))
-    state.session.creating_new_session = bool(
-        getattr(screen, "_creating_new_session", state.session.creating_new_session)
-    )
-    state.submit.active = bool(getattr(screen, "_pending_user_submit_active", state.submit.active))
-    state.runtime.profile = str(getattr(screen, "_profile", state.runtime.profile))
-    state.runtime.details = getattr(screen, "_runtime_details", state.runtime.details)
-    state.usage.last_usage_tokens = int(getattr(screen, "_last_usage_tokens", state.usage.last_usage_tokens))
-    state.usage.last_total_session_tokens = int(
-        getattr(screen, "_last_total_session_tokens", state.usage.last_total_session_tokens)
-    )
-    state.workspace_marker.original_cwd = getattr(screen, "_chdir_original_cwd", state.workspace_marker.original_cwd)
-    current_cwd = getattr(screen, "_chdir_current_cwd", state.workspace_marker.current_cwd)
-    workspace_cwd = getattr(screen, "_workspace_cwd", None)
-    if current_cwd == state.workspace_marker.current_cwd and callable(workspace_cwd):
-        current_cwd = workspace_cwd()
-    state.workspace_marker.current_cwd = str(current_cwd)
-    state.workspace.current_cwd = state.workspace_marker.current_cwd
+    """Construct a session handler around a lightweight screen fake.
 
-    services = MainScreenServices(
-        bus=getattr(screen, "_bus", EventBus()),
-        state_store=getattr(screen, "_state_store", None),
-        active_model_profile_id=str(getattr(screen, "_active_model_profile_id", "")),
-        apply_saved_model_on_restore=bool(getattr(screen, "_apply_saved_model_on_restore", True)),
-    )
-
-    def set_agent_loading(value: bool) -> None:
-        state.run.agent_loading = value
-        setter = getattr(screen, "_set_agent_loading", None)
-        if callable(setter):
-            setter(value)
-        else:
-            screen._agent_loading = value
-
-    def set_has_messages(value: bool) -> None:
-        state.run.has_messages = value
-        setter = getattr(screen, "_set_has_messages", None)
-        if callable(setter):
-            setter(value)
-        else:
-            screen._has_messages = value
-
-    def set_creating_new_session(value: bool) -> None:
-        state.session.creating_new_session = value
-        screen._creating_new_session = value
-
-    def set_restoring_session(value: bool) -> None:
-        state.session.restoring_session = value
-        screen._restoring_session = value
-
-    def set_profile_display(value: str) -> None:
-        state.runtime.profile = value
-        screen._profile = value
-
-    def set_active_model_profile_id(value: str) -> None:
-        services.active_model_profile_id = value
-        screen._active_model_profile_id = value
-
-    def set_workspace_cwd(value: str) -> None:
-        state.workspace.current_cwd = value
-        state.workspace_marker.current_cwd = value
-        screen._chdir_current_cwd = value
-
-    def set_workspace_original_cwd(value: str | None) -> None:
-        state.workspace_marker.original_cwd = value
-        screen._chdir_original_cwd = value
-
-    def update_subtitle() -> None:
-        updater = getattr(screen, "_update_subtitle", None)
-        if callable(updater):
-            updater()
-
-    def update_toc() -> None:
-        updater = getattr(screen, "_update_toc", None)
-        if callable(updater):
-            updater()
+    As with :func:`make_backend_handler`, the handler shares the fake's
+    ``_state`` and ``_services`` and calls the fake's setter methods.
+    """
+    state, services, _live_diff = main_screen_parts(screen)
+    setters = ScreenSetters(screen, state, services)
 
     def clear_suggestion_file_cache() -> None:
         suggestions = getattr(screen, "_suggestions", None)
         if suggestions is not None:
             suggestions.file_cache = None
-
-    def start_session_restore(session_id: str) -> object | None:
-        restorer = getattr(screen, "_do_session_restore", None)
-        if callable(restorer):
-            return restorer(session_id)
-        return None
-
-    def debug(key: str, message: str = "") -> None:
-        debugger = getattr(screen, "_debug", None)
-        if callable(debugger):
-            debugger(key, message)
 
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)
@@ -420,22 +435,21 @@ def make_session_handler(
     return SessionHandler(
         state=state,
         services=services,
-        view=MainScreenViewAdapter(screen, state_store=services.state_store),  # type: ignore[arg-type]
+        view=MainScreenViewAdapter(screen, state=state, state_store=services.state_store),  # type: ignore[arg-type]
         callbacks=SessionCallbacks(
-            set_agent_loading=set_agent_loading,
-            set_has_messages=set_has_messages,
-            set_creating_new_session=set_creating_new_session,
-            set_restoring_session=set_restoring_session,
-            set_profile_display=set_profile_display,
-            set_active_model_profile_id=set_active_model_profile_id,
-            set_workspace_cwd=set_workspace_cwd,
-            set_workspace_original_cwd=set_workspace_original_cwd,
-            update_subtitle=update_subtitle,
-            update_toc=update_toc,
+            set_agent_loading=setters.set_agent_loading,
+            set_has_messages=setters.set_has_messages,
+            set_creating_new_session=setters.set_creating_new_session,
+            set_restoring_session=setters.set_restoring_session,
+            set_profile_display=setters.set_profile_display,
+            set_active_model_profile_id=setters.set_active_model_profile_id,
+            set_workspace_cwd=setters.set_workspace_cwd,
+            update_subtitle=lambda: _call_screen_hook(screen, "_update_subtitle"),
+            update_toc=lambda: _call_screen_hook(screen, "_update_toc"),
             clear_suggestion_file_cache=clear_suggestion_file_cache,
-            start_session_restore=start_session_restore,
+            start_worker=lambda work: start_fake_worker(screen, work),
             post_gc_message=post_gc_message,
-            debug=debug,
+            debug=lambda key, message="": _call_screen_hook(screen, "_debug", key, message),
             refresh_model_indicator=lambda: None,
         ),
         agent_load=_AgentLoadPort(),
@@ -479,18 +493,6 @@ def make_live_mutation(
         after_hash=after_hash,
         source=source,
     )
-
-
-def pending_submit_defaults() -> dict[str, object]:
-    """Screen attributes describing an idle pending-submit state."""
-    return {
-        "_agent_running": False,
-        "_pending_user_submit_active": False,
-        "_pending_user_submit_text": "",
-        "_pending_user_submit_blocked": False,
-        "_pending_user_message_render_active": False,
-        "_deferred_agent_messages": [],
-    }
 
 
 class BusyWidget(Static):
@@ -996,16 +998,23 @@ class DismissInputBarStub:
 
 
 class SuggestionScreen:
-    """The main-screen surface the suggestion handler reads through its view adapter."""
+    """The main-screen surface the suggestion handler reads through its view adapter.
+
+    Its state and services are ``state`` and ``services``, which the handler
+    shares; writing a field they replaced (see ``main_screen_parts``) fails.
+    """
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in _REMOVED_MAIN_SCREEN_FIELDS:
+            raise _removed_main_screen_field_error((name,))
+        super().__setattr__(name, value)
 
     def __init__(self) -> None:
         self.app = type("_App", (), {"available_themes": ["textual-dark"], "theme": "textual-dark"})()
         self.state = MainScreenState()
+        self.state.runtime.profile = "Code"
+        self._set_workspace_cwd("")
         self.services = MainScreenServices(bus=EventBus(), state_store=object())
-        self._agent_running = False
-        self._profile = "Code"
-        self._chdir_current_cwd = ""
-        self._runtime_details = AgentRuntimeDetails()
         self.is_attached = True
         self.opened: list[str] = []
         self.notifications: list[str] = []
@@ -1017,6 +1026,11 @@ class SuggestionScreen:
         self.applied_titles: list[str] = []
         self.suggestion_list = SuggestionListStub()
         self.input_bar = DismissInputBarStub()
+
+    def _set_workspace_cwd(self, cwd: str) -> None:
+        """Move the workspace as ``MainScreen._set_workspace_cwd`` does."""
+        self.state.workspace.current_cwd = cwd
+        self.state.workspace_marker.current_cwd = cwd
 
     def _debug(self, *_args, **_kwargs) -> None:
         return
@@ -1030,10 +1044,10 @@ class SuggestionScreen:
     def _fork_current_session(self) -> None:
         self.fork_requests += 1
 
-    def _open_session_title_editor(self) -> None:
+    def open_title_editor(self) -> None:
         self.title_editor_requests += 1
 
-    def _apply_session_title_from_command(self, custom_title: str) -> None:
+    def apply_custom_title(self, custom_title: str) -> None:
         self.applied_titles.append(custom_title)
 
     def _create_new_session(self) -> None:
@@ -1048,7 +1062,7 @@ class SuggestionScreen:
     def action_sessions(self) -> None:
         return
 
-    def _chdir(self, _arg: str) -> None:
+    def start_chdir(self, _arg: str) -> None:
         return
 
     def _copy_agent_responses(self, _arg: str) -> None:
@@ -1063,7 +1077,7 @@ class SuggestionScreen:
     def action_show_rollback(self, _arg: str = "") -> None:
         return
 
-    def _set_approval_mode(self, _arg: str) -> None:
+    def start_approval_mode_change(self, _arg: str) -> None:
         return
 
     def _open_model_config(self) -> None:
@@ -1096,55 +1110,6 @@ class SuggestionScreen:
             return self.input_bar
         return self.suggestion_list
 
-    @property
-    def _agent_running(self) -> bool:
-        return self.state.run.agent_running
-
-    @_agent_running.setter
-    def _agent_running(self, value: bool) -> None:
-        self.state.run.agent_running = value
-
-    @property
-    def _state_store(self) -> object | None:
-        return self.services.state_store
-
-    @_state_store.setter
-    def _state_store(self, value: object | None) -> None:
-        self.services.state_store = value
-
-    @property
-    def _profile(self) -> str:
-        return self.state.runtime.profile
-
-    @_profile.setter
-    def _profile(self, value: str) -> None:
-        self.state.runtime.profile = value
-
-    @property
-    def _agent_registry(self) -> object | None:
-        return self.services.agent_registry
-
-    @_agent_registry.setter
-    def _agent_registry(self, value: object | None) -> None:
-        self.services.agent_registry = value
-
-    @property
-    def _chdir_current_cwd(self) -> str:
-        return self.state.workspace_marker.current_cwd
-
-    @_chdir_current_cwd.setter
-    def _chdir_current_cwd(self, value: str) -> None:
-        self.state.workspace.current_cwd = value
-        self.state.workspace_marker.current_cwd = value
-
-    @property
-    def _runtime_details(self) -> AgentRuntimeDetails:
-        return self.state.runtime.details
-
-    @_runtime_details.setter
-    def _runtime_details(self, value: AgentRuntimeDetails) -> None:
-        self.state.runtime.details = value
-
 
 def make_suggestion_screen() -> SuggestionScreen:
     """Build the lightweight main-screen double the suggestion handler drives."""
@@ -1172,15 +1137,15 @@ def make_slash_actions(screen: SuggestionScreen) -> SlashCommandActions:
         workflow_selection=lambda: None,
         open_guide=lambda: None,
         browse_session_list=screen.action_sessions,
-        edit_session_title=screen._open_session_title_editor,
-        apply_session_title=screen._apply_session_title_from_command,
-        change_directory=screen._chdir,
+        edit_session_title=screen.open_title_editor,
+        apply_session_title=screen.apply_custom_title,
+        change_directory=screen.start_chdir,
         copy_conversation=screen._copy_agent_responses,
         fold_tools=screen._toggle_fold,
         open_diff=screen.action_show_diff,
         open_rollback=screen.action_show_rollback,
         get_approval_mode=lambda: ApprovalMode.MANUAL.value,
-        change_approval_mode=screen._set_approval_mode,
+        change_approval_mode=screen.start_approval_mode_change,
         configure_model=screen._open_model_config,
         configure_agent=screen._open_agent_config,
         configure_agent_tab=screen._open_agent_config_tab,
@@ -1197,7 +1162,7 @@ def make_suggestion_handler(
     locale_controller: LocaleController | None = None,
 ) -> SuggestionHandler:
     """Build a suggestion handler around the screen double."""
-    view = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    view = MainScreenViewAdapter(screen, state=screen.state)  # type: ignore[arg-type]
     return SuggestionHandler(
         state=screen.state,
         services=screen.services,
@@ -1205,7 +1170,7 @@ def make_suggestion_handler(
         command_actions=make_slash_actions(screen),
         callbacks=SuggestionCallbacks(
             notify_warning=lambda message, title, timeout: screen.notify(message, title=title, timeout=timeout),
-            show_file_suggestions=lambda: None,
+            start_worker=discard_worker,
             submit_user_text=screen._submit_user_text,
             start_agent_profile_switch=lambda _profile: None,
             start_model_profile_switch=screen.picked_models.append,

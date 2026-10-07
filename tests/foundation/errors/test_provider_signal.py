@@ -8,12 +8,14 @@ from typing import Any, NoReturn
 
 import httpx
 import pytest
+from openai import APIError
 
 from chrys.foundation.errors import (
     ContinuationVerdictError,
     ErrorKind,
     ProviderResponseError,
     classify_error,
+    in_band_failure_retryable,
     invalidates_continuation_token,
 )
 from chrys.foundation.errors import classify as classify_module
@@ -110,8 +112,10 @@ def test_system_exit_code_is_not_a_provider_signal() -> None:
             False,
         ),
         (ProviderResponseError("vendor_specific", "?", retryable=True), ErrorKind.UNKNOWN, True),
+        (ProviderResponseError("network_error", "?", retryable=True), ErrorKind.STREAM_TRUNCATED, True),
+        (ProviderResponseError("insufficient_system_resource", "?", retryable=True), ErrorKind.OVERLOADED, True),
     ],
-    ids=["truncated-retryable", "explicit-kind-not-retryable", "unknown-code"],
+    ids=["truncated-retryable", "explicit-kind-not-retryable", "unknown-code", "network-error", "no-resources"],
 )
 def test_provider_response_error_states_kind_and_retry(
     error: ProviderResponseError, kind: ErrorKind, retryable: bool
@@ -120,6 +124,89 @@ def test_provider_response_error_states_kind_and_retry(
 
     assert (result.kind, result.retryable) == (kind, retryable)
     assert str(error) == f"{error.code}: {error.provider_message}"
+
+
+@pytest.mark.parametrize(
+    ("code", "kind", "retryable"),
+    [
+        ("server_error", ErrorKind.SERVER_ERROR, True),
+        ("rate_limit_exceeded", ErrorKind.RATE_LIMITED, True),
+        ("vector_store_timeout", ErrorKind.UNKNOWN, True),
+        ("vendor_specific", ErrorKind.UNKNOWN, True),
+        ("context_length_exceeded", ErrorKind.CONTEXT_OVERFLOW, False),
+        ("insufficient_quota", ErrorKind.QUOTA_EXHAUSTED, False),
+        ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
+        ("invalid_image_url", ErrorKind.REQUEST_REJECTED, False),
+        ("cyber_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
+    ],
+)
+def test_a_failure_a_response_reports_retries_only_when_its_code_may_pass(
+    code: str, kind: ErrorKind, retryable: bool
+) -> None:
+    error = ProviderResponseError(code, "?", retryable=in_band_failure_retryable(code))
+
+    assert (classify_error(error).kind, classify_error(error).retryable) == (kind, retryable)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "network_error",
+        "insufficient_system_resource",
+        "invalid_prompt",
+        "cyber_policy",
+        "misalignment_policy_violation",
+        "image_content_policy_violation",
+        "invalid_image_url",
+    ],
+)
+@pytest.mark.parametrize("status", [400, 502])
+async def test_an_http_error_carrying_a_code_only_responses_report_is_read_by_its_status(
+    status: int, code: str
+) -> None:
+    # These codes name how a response failed, not what an HTTP error means.
+    carrying = classify_error(await openai_status(status, {"error": {"code": code, "message": "It broke."}}))
+    plain = classify_error(await openai_status(status, {"error": {"code": "vendor_specific", "message": "It broke."}}))
+
+    assert (carrying.kind, carrying.retryable) == (plain.kind, plain.retryable)
+
+
+@pytest.mark.parametrize(
+    ("code", "kind", "retryable"),
+    [
+        ("network_error", ErrorKind.STREAM_TRUNCATED, True),
+        ("insufficient_system_resource", ErrorKind.OVERLOADED, True),
+        ("invalid_prompt", ErrorKind.REQUEST_REJECTED, False),
+        ("cyber_policy", ErrorKind.CONTENT_FILTERED, False),
+        ("image_content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
+        ("invalid_image_url", ErrorKind.REQUEST_REJECTED, False),
+        ("invalid_request_error", ErrorKind.REQUEST_REJECTED, False),
+    ],
+)
+def test_an_error_a_stream_reports_in_band_is_named_and_retried_by_its_code(
+    code: str, kind: ErrorKind, retryable: bool
+) -> None:
+    # The SDK raises an error event inside a 200 stream as a bare APIError:
+    # the code names how that response failed, and a retry meets a final
+    # failure again, as when an adapter raises it.
+    request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
+    carrying = classify_error(APIError("It broke.", request, body={"code": code, "message": "It broke."}))
+    plain = classify_error(APIError("It broke.", request, body={"code": "vendor_specific", "message": "It broke."}))
+
+    assert carrying.kind is kind
+    assert carrying.retryable is retryable
+    assert in_band_failure_retryable(code) is retryable
+    assert (plain.kind, plain.retryable) == (ErrorKind.UNKNOWN, True)
+
+
+def test_an_error_a_stream_reports_in_band_with_only_a_broad_type_keeps_its_retry() -> None:
+    # Only a code names the failure; the type is broad (OpenAI files many
+    # errors under ``invalid_request_error``), so it names the kind alone.
+    request = httpx.Request("POST", "https://api.example.test/v1/chat/completions")
+    typed = classify_error(APIError("It broke.", request, body={"type": "invalid_request_error", "message": "x"}))
+
+    assert (typed.kind, typed.retryable) == (ErrorKind.REQUEST_REJECTED, True)
 
 
 def test_owner_terminal_veto_outranks_a_retryable_provider_response_error() -> None:

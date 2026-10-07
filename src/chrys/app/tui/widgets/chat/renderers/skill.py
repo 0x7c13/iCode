@@ -43,6 +43,7 @@ from chrys.app.tui.widgets.chat.tool_view_builders import TOOL_VIEW_OUTPUT
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.foundation.tool_result_metadata import (
+    PARTIAL_OUTPUT_LABEL,
     result_text_exit_code,
     result_text_without_exit_code,
 )
@@ -107,6 +108,9 @@ _MAX_PREVIEW_LINE_CHARS = 220
 
 _MAX_LIST_ITEMS = 4
 """Max resources/scripts shown in the compact metadata line."""
+
+_PARTIAL_OUTPUT_SEPARATOR = f"\n{PARTIAL_OUTPUT_LABEL}\n"
+"""Separates a timed-out script's error line from what it printed."""
 
 _SUMMARY_LINE_COUNT_SCAN_CHARS = 64 * 1024
 """Max chars scanned for resource line-count subtitles."""
@@ -453,7 +457,12 @@ class SkillToolCall(BaseToolCard):
     def _format_script_result(self, result: str) -> tuple[Text, str, bool]:
         """Return ``(display, subtitle, is_error)`` for script execution."""
         if result.startswith("Error:"):
-            return Text(sanitize_source_text(result, tab_size=8)), self._render_message(_SKILL_ERROR.bind()), True
+            message, label, output = result.partition(_PARTIAL_OUTPUT_SEPARATOR)
+            display = Text(sanitize_source_text(message, tab_size=8))
+            if label:
+                display.append("\n")
+                _append_preview(display, output, render_message=self._render_message)
+            return display, self._render_message(_SKILL_ERROR.bind()), True
 
         exit_code = _parse_exit_code(result)
         output_body = _script_output_body(result)

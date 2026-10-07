@@ -331,7 +331,7 @@ class CompressionEngine:
                     set_excluded(message, excluded=True, reason=_REASON_COMPRESSION)
                 self._ledger.invalidate_for_fold(fold_range)
                 compressions_processed = True
-                tokens_before = self._strategy._last_included_tokens
+                tokens_before = self._strategy.last_included_tokens
                 await self._strategy._notify_compress(
                     CompressInfo(
                         compressed_context_id=pending.compressed_context_id,
@@ -366,7 +366,7 @@ class CompressionEngine:
                 continue
             any_processed = True
             self._ledger.invalidate_for_fold(fold_range)
-            tokens_before = self._strategy._last_included_tokens
+            tokens_before = self._strategy.last_included_tokens
             await self._strategy._notify_compress(
                 CompressInfo(
                     compressed_context_id=pending.compressed_context_id,

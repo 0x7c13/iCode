@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Chrys-owned compaction primitives.
 
@@ -22,14 +24,17 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, cast, runtime_checkable
+from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import HOSTED_WIRE_REPLAY_PROPERTY_KEYS
+from chrys.foundation.models.history_markers import ANTHROPIC_THINKING_STRIPPED_KEY
+from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY
 from chrys.foundation.text.images import inspect_image_dimensions
 from chrys.foundation.tool_execution_stamp import EXECUTION_STAMP_KEY
 
 from ._content import Content
-from ._types import Message
+from ._types import ChatResponse, Message
 from .exchanges import (
     TOOL_CALL_CONTENT_TYPES,
     Exchange,
@@ -96,6 +101,26 @@ class LastWordsToolCallError(RuntimeError):
     ignores it, the requested tool calls must not be executed, so the side
     call is treated as a failed attempt and retried by the caller.
     """
+
+
+# Set True in a response's ``additional_properties`` when the model filled its
+# context window after it began answering: the response reads as cut off
+# (``length``) and keeps what it wrote. A LAST_WORDS note fails instead
+# (:func:`raise_if_context_window_filled`).
+CONTEXT_WINDOW_FILLED_KEY: Final = "chrys_context_window_filled"
+
+
+def raise_if_context_window_filled(response: ChatResponse[Any]) -> None:
+    """Fail a LAST_WORDS note that filled the context window, as an overflow that is not retried.
+
+    The note was cut off and the same prompt fills the window again: the
+    overflow has the caller send a smaller one. Every LAST_WORDS side call
+    checks it, the completer's and the fallback's.
+    """
+    if response.additional_properties.get(CONTEXT_WINDOW_FILLED_KEY) is True:
+        raise ProviderResponseError(
+            "model_context_window_exceeded", "The note filled the context window before it ended.", retryable=False
+        )
 
 
 class CompactionProjectionAtomicityError(RuntimeError):
@@ -195,6 +220,25 @@ class CompactionAdmissionState(Protocol):
 
     @property
     def calibration_ratio(self) -> float: ...
+
+
+@runtime_checkable
+class ContextOverflowSink(Protocol):
+    """Strategy that takes a provider's verdict that the context window is full.
+
+    Separate from :class:`CompactionAdmissionState` on purpose: that
+    protocol's isinstance check gates the output-cap clamp, which a strategy
+    without this method must keep.
+    """
+
+    def note_context_overflow(self, exc: BaseException | None = None) -> bool:
+        """Make the next pass compact whatever the local estimate says.
+
+        *exc* is the provider's rejection, or ``None`` when no error carried
+        the verdict.  Returns whether compacting and resending the same
+        request can help.
+        """
+        ...
 
 
 @runtime_checkable
@@ -745,6 +789,8 @@ def _serialize_content(content: Content) -> dict[str, Any]:
     additional_properties = payload.get("additional_properties")
     if isinstance(additional_properties, dict):
         additional_properties.pop(EXECUTION_STAMP_KEY, None)
+        additional_properties.pop(REASONING_ORIGIN_KEY, None)
+        additional_properties.pop(ANTHROPIC_THINKING_STRIPPED_KEY, None)
         for key in HOSTED_WIRE_REPLAY_PROPERTY_KEYS:
             additional_properties.pop(key, None)
     # ``items`` mirrors ``result`` for function_result content; exclude it

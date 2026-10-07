@@ -78,7 +78,7 @@ def test_suggestion_labels_style_second_separator_space_dim() -> None:
     assert skill_label.plain == "/review  Review changes"
     assert any(span.start == len("/review ") and "dim" in str(span.style) for span in skill_label.spans)
 
-    screen._agent_registry = AgentRegistryStub(
+    screen.services.agent_registry = AgentRegistryStub(
         [AgentProfileStub(name="QA", display_name="Q&A Agent", description="Read-only assistant")]
     )
     agent_items, _disabled = handler._get_agent_items()
@@ -154,7 +154,7 @@ def test_rename_command_opens_session_title_editor() -> None:
 
 def test_runtime_config_commands_stay_available_but_settings_are_disabled_while_agent_runs() -> None:
     screen = make_suggestion_screen()
-    screen._agent_running = True
+    screen.state.run.agent_running = True
     handler = make_suggestion_handler(screen)
 
     handler.build_slash_commands()
@@ -325,7 +325,7 @@ def test_dispatch_settings_opens_the_panel_on_the_requested_tab() -> None:
 
 def test_dispatch_settings_is_rejected_while_agent_runs() -> None:
     screen = make_suggestion_screen()
-    screen._agent_running = True
+    screen.state.run.agent_running = True
     handler = make_suggestion_handler(screen)
     handler.build_slash_commands()
 
@@ -381,7 +381,7 @@ def test_typing_space_switches_to_subcommand_mode_for_theme_and_agents() -> None
 
 def test_slash_suggestions_include_runtime_skills_in_separate_section() -> None:
     screen = make_suggestion_screen()
-    screen._runtime_details = AgentRuntimeDetails(
+    screen.state.runtime.details = AgentRuntimeDetails(
         skill_details=[RuntimeSkillDetails(name="review", description="Review code and identify issues")]
     )
     handler = make_suggestion_handler(screen)
@@ -400,7 +400,7 @@ def test_slash_suggestions_include_runtime_skills_in_separate_section() -> None:
 
 def test_slash_filter_matches_runtime_skills() -> None:
     screen = make_suggestion_screen()
-    screen._runtime_details = AgentRuntimeDetails(
+    screen.state.runtime.details = AgentRuntimeDetails(
         skill_details=[RuntimeSkillDetails(name="review", description="Review code")]
     )
     handler = make_suggestion_handler(screen)
@@ -417,7 +417,7 @@ def test_slash_filter_matches_runtime_skills() -> None:
 
 def test_shadowed_runtime_skill_is_visible_but_disabled() -> None:
     screen = make_suggestion_screen()
-    screen._runtime_details = AgentRuntimeDetails(
+    screen.state.runtime.details = AgentRuntimeDetails(
         skill_details=[RuntimeSkillDetails(name="runtime", description="Runtime-like skill")]
     )
     handler = make_suggestion_handler(screen)
@@ -443,11 +443,11 @@ def test_suggestion_chrome_renders_chinese_at_show_boundary_without_translating_
     and never re-parsed as markup.
     """
     screen = make_suggestion_screen()
-    screen._chdir_current_cwd = "/repo/[literal]"
-    screen._agent_registry = AgentRegistryStub(
+    screen._set_workspace_cwd("/repo/[literal]")
+    screen.services.agent_registry = AgentRegistryStub(
         [AgentProfileStub(name="Explore", display_name="Explorer", description="Profile [red]description")]
     )
-    screen._runtime_details = AgentRuntimeDetails(
+    screen.state.runtime.details = AgentRuntimeDetails(
         skill_details=[RuntimeSkillDetails(name="runtime", description="Skill [blue]description")]
     )
     handler = make_suggestion_handler(screen, locale_controller=LocaleController(Settings(locale="zh-Hans")))
@@ -469,7 +469,7 @@ def test_suggestion_chrome_renders_chinese_at_show_boundary_without_translating_
         for item in screen.suggestion_list.last_items
         if isinstance(item, SuggestionItem) and item.kind == "skill" and item.value == "runtime"
     )
-    assert skill.section == "已加载技能"
+    assert skill.section == "已加载 Skills"
     assert skill.disabled_reason == "被 /runtime 遮蔽"
     assert "Skill [blue]description" in skill.label.plain
 
@@ -504,7 +504,7 @@ def test_suggestion_chrome_renders_chinese_at_show_boundary_without_translating_
 
 def test_shadowed_runtime_skill_dispatches_command() -> None:
     screen = make_suggestion_screen()
-    screen._runtime_details = AgentRuntimeDetails(
+    screen.state.runtime.details = AgentRuntimeDetails(
         skill_details=[RuntimeSkillDetails(name="runtime", description="Runtime-like skill")]
     )
     handler = make_suggestion_handler(screen)

@@ -17,6 +17,7 @@ from textual.widgets import Button, Footer, OptionList, Static, Tab, TabbedConte
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.screens.dialogs.app_mode import AppModeDialog
 from chrys.app.tui.screens.dialogs.runtime_details import RuntimeDetailsDialog
+from chrys.app.tui.screens.dialogs.workflow_input import WorkflowInputDialog
 from chrys.app.tui.screens.dialogs.workflow_picker import WorkflowPickerDialog
 from chrys.app.tui.screens.guides.screen import GuideDialog
 from chrys.app.tui.screens.main import workflow_content
@@ -408,14 +409,14 @@ async def test_slow_source_read_does_not_switch_back_to_code_tab(
         graph = panel.query_one(WorkflowGraph)
         diagram = graph.diagram
         started, release = threading.Event(), threading.Event()
-        read_source = workflow_content.read_source
+        read_entry_bytes = workflow_content.read_entry_bytes
 
-        def delayed_read(path: Path, kind: str):
+        def delayed_read(path: Path, kind: str) -> bytes:
             started.set()
             assert release.wait(10), "source read was not released"
-            return read_source(path, kind)
+            return read_entry_bytes(path, kind)
 
-        monkeypatch.setattr(workflow_content, "read_source", delayed_read)
+        monkeypatch.setattr(workflow_content, "read_entry_bytes", delayed_read)
         try:
             await click_when_settled(pilot, tabs.get_tab("workflow-code-tab"))
             await wait_for(started.is_set, pilot=pilot)
@@ -427,3 +428,27 @@ async def test_slow_source_read_does_not_switch_back_to_code_tab(
         assert graph.diagram is diagram
         await select_workflow_view(main, pilot, "code")
         assert panel.code_visible
+
+
+async def test_a_workflow_title_is_shown_without_terminal_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = make_project(tmp_path)
+    monkeypatch.chdir(project)
+    write_workflow(
+        project, "esc", python_workflow("def fn(value):\n    return value\n", "fn", title="Review\x1b[2JInjected")
+    )
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(120, 40)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        await open_workflow(main, pilot, "esc")
+        panel = main._workflow_panel
+        await wait_for(lambda: "Injected" in str(panel.border_title), pilot=pilot)
+        assert str(panel.border_title) == "Review\ufffd[2JInjected"
+
+        await click_when_settled(pilot, main.query_one("#workflow-start", Button))
+        await wait_for(lambda: isinstance(app.screen, WorkflowInputDialog) and app.screen.is_mounted, pilot=pilot)
+
+        title = app.screen.query_one("#workflow-input-title", Static)
+        assert str(title.content) == str(title.tooltip) == "Review\ufffd[2JInjected"

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Literal
 
@@ -95,6 +95,19 @@ class WorkflowSessionMeta(SessionMetadata):
 
 
 type SessionMeta = ChatSessionMeta | WorkflowSessionMeta
+
+
+def copy_session_meta(meta: SessionMeta) -> SessionMeta:
+    """Return a copy of *meta* that shares none of its mutable fields.
+
+    The store's listing caches hand out copies, so a caller that edits the
+    meta it was given cannot change what later listings read.
+    """
+    if isinstance(meta, ChatSessionMeta):
+        return replace(
+            meta, working_dirs=list(meta.working_dirs), agent_profile_history=list(meta.agent_profile_history)
+        )
+    return replace(meta, working_dirs=list(meta.working_dirs))
 
 
 def _is_visible_message(m: Message) -> bool:

@@ -22,6 +22,10 @@ IMAGE_MIME_BY_EXTENSION: dict[str, str] = {
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 MAX_IMAGE_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_PIXELS = 80_000_000
+# The only formats Pillow decodes for an attached or viewed image: the four
+# model APIs read plus BMP, which converts. A file in any other format behind
+# an image name never reaches the rest of Pillow's decoders.
+IMAGE_DECODE_FORMATS: tuple[str, ...] = ("PNG", "JPEG", "GIF", "WEBP", "BMP")
 
 COMPRESSED_IMAGE_MEDIA_TYPE = "image/jpeg"
 _COMPRESSED_IMAGE_HEADROOM_BYTES = 128 * 1024
@@ -56,6 +60,34 @@ def is_image_media_type(media_type: Any) -> bool:
         return False
     top_level = media_type.split(";", 1)[0].split("/", 1)[0].strip().lower()
     return top_level == "image"
+
+
+_WIRE_IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+_IMAGE_MEDIA_TYPE_ALIASES = {"image/jpg": "image/jpeg"}
+
+
+def wire_image_media_type(data: bytes | None, declared: str | None) -> str | None:
+    """The media type model APIs accept for an image: PNG, JPEG, GIF or WebP; None for any other.
+
+    Bytes decide when there are any: their signature names the type whatever
+    *declared* says, and bytes without one of these signatures are no image
+    a model API reads. Without bytes (an image URL) only *declared* can tell.
+    """
+    if data is not None:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        return None
+    if not isinstance(declared, str):
+        return None
+    media_type = declared.split(";", 1)[0].strip().lower()
+    media_type = _IMAGE_MEDIA_TYPE_ALIASES.get(media_type, media_type)
+    return media_type if media_type in _WIRE_IMAGE_MEDIA_TYPES else None
 
 
 def detect_image_media_type(path: str | Path, data: bytes | None = None) -> str | None:
@@ -96,8 +128,11 @@ def load_image_file(path: Path, media_type: str | None = None) -> LoadedImage:
         raise ImageProcessingError("This file is not a supported image. Use PNG, JPEG, or WebP.")
 
     width, height = inspect_image_dimensions(data)
-    if len(data) <= MAX_IMAGE_BYTES:
-        return LoadedImage(data=data, media_type=detected_media_type, width=width, height=height)
+    # Sent as it is only when the bytes are a format model APIs read; other
+    # bytes behind an image name (a renamed BMP) are converted like an
+    # oversized image.
+    if len(data) <= MAX_IMAGE_BYTES and (wire_media_type := wire_image_media_type(data, None)) is not None:
+        return LoadedImage(data=data, media_type=wire_media_type, width=width, height=height)
 
     compressed = compress_image_data(data)
     compressed_width, compressed_height = inspect_image_dimensions(compressed)
@@ -109,14 +144,14 @@ def load_image_file(path: Path, media_type: str | None = None) -> LoadedImage:
     )
 
 
-def inspect_image_dimensions(data: bytes) -> tuple[int, int]:
-    """Decode image metadata and validate dimensions."""
+def inspect_image_dimensions(data: bytes, *, formats: tuple[str, ...] = IMAGE_DECODE_FORMATS) -> tuple[int, int]:
+    """Decode image metadata, in one of *formats*, and validate dimensions."""
     from PIL import Image, UnidentifiedImageError
 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(data)) as opened:
+            with Image.open(BytesIO(data), formats=formats) as opened:
                 validate_image_dimensions(opened.size)
                 return opened.size
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
@@ -127,14 +162,16 @@ def inspect_image_dimensions(data: bytes) -> tuple[int, int]:
         ) from exc
 
 
-def compress_image_data(data: bytes, *, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
-    """Compress image bytes to a JPEG under *max_bytes*."""
+def compress_image_data(
+    data: bytes, *, max_bytes: int = MAX_IMAGE_BYTES, formats: tuple[str, ...] = IMAGE_DECODE_FORMATS
+) -> bytes:
+    """Compress image bytes, in one of *formats*, to a JPEG under *max_bytes*."""
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(data)) as opened:
+            with Image.open(BytesIO(data), formats=formats) as opened:
                 validate_image_dimensions(opened.size)
                 opened = ImageOps.exif_transpose(opened)
                 image = _to_jpeg_rgb(opened)

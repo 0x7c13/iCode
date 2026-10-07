@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -635,3 +636,17 @@ async def test_forked_sessions_nest_under_parent_with_tree_guides() -> None:
         first_column = [table.get_row_at(i)[0].plain for i in range(3)]
         assert first_column == ["session0", "└ session2", "session1"]
         assert "Forked from: session0" in table._row_tooltips[1].plain
+
+
+async def test_session_titles_are_shown_without_terminal_controls() -> None:
+    store = FakeSessionStore(1)
+    store.sessions[0] = replace(store.sessions[0], title="Bad\x1b[2Jtitle\udcff")
+    screen = SessionsScreen(store)
+
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
+        await pilot.app.push_screen(screen)
+        await wait_for_load_idle(screen, pilot)
+        cells = [str(cell) for cell in screen.query_one("#sessions", DataTable).get_row_at(0)]
+
+    # The control is replaced; the undecodable byte shows as its escape.
+    assert any(cell.endswith("Bad\ufffd[2Jtitle\\udcff") for cell in cells)

@@ -1,0 +1,308 @@
+name: Pillow manylinux2014 wheels
+
+# Pillow stopped publishing manylinux2014 (glibc 2.17) wheels in 12.3.0, while
+# the offline Linux binaries promise a glibc 2.17 floor (2.18 on aarch64, set by
+# the vendored ripgrep). This workflow rebuilds the CPython 3.14 wheel the
+# offline distribution bundles with Pillow's own recipe — its cibuildwheel
+# config, native dependency script and test suite — inside the manylinux2014
+# image. The Pillow, pillow-depends and test-images repositories and
+# cibuildwheel are pinned by commit, the build images by digest, and the native
+# library sources Pillow's dependency script would download by SHA-256; the
+# build fails if the script downloads any source archive. libavif's build
+# clones the libraries it bundles at the revisions libavif names: libyuv by
+# commit, and aom, dav1d and libwebp (for libsharpyuv) by tag. The rest is
+# fetched unpinned, as in Pillow's own wheel builds: from PyPI cibuildwheel's
+# dependencies, Pillow's build requirements and test extra, and meson and
+# ninja; from the image's yum repositories rsync for the dependency script and
+# fribidi for the tests; and the libraqm release files Pillow's SBOM script
+# compares its vendored copy with.
+#
+# A run uploads the wheels as artifacts. With "publish" set, a run from the
+# default branch also releases them, with their SHA-256 sums, as a pre-release
+# of this repository tagged pillow-<version>-manylinux2014.<build>, for the
+# offline distribution to download by URL and hash. A published tag is never
+# replaced: rebuilding the same version takes the next build number.
+#
+# This repository is synced from GitCode, and the sync deletes tags GitCode
+# lacks: the release then reverts to a draft and its wheels stop downloading.
+# Right after publishing, create the same tag on GitCode at the run's commit
+# (the release notes link the run). Not before: a run refuses a tag that
+# already exists. If the sync deleted the tag first, create it on GitCode, wait
+# until it reaches GitHub, and publish the draft again:
+#   gh release edit <tag> --repo openJiuwen-ai/iCode --tag <tag> --verify-tag \
+#     --draft=false --prerelease --latest=false
+# --verify-tag refuses while GitHub lacks the tag: published without it, the
+# release would get a new tag at main's current commit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Build number in the release tag pillow-<version>-manylinux2014.<build>
+        required: true
+        default: "1"
+      publish:
+        description: Publish the wheels as a pre-release (default branch only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pillow-manylinux2014-${{ github.ref }}
+  # Never cancel a run that may be publishing a release.
+  cancel-in-progress: false
+
+env:
+  PILLOW_VERSION: "12.3.0"
+  PILLOW_COMMIT: bb1d8e8ab8d29048624d96e3ee53cecf7c13d13d
+  # Pillow's build and test scripts download each repository's main branch;
+  # these are the main commits current at the 12.3.0 release.
+  PILLOW_DEPENDS_COMMIT: 8aa03253ae251784d8cbee25d783fefde7589a70
+  TEST_IMAGES_COMMIT: 7077675d2cda485d63de4aefe0fefbf6f655c5a0
+  GLIBC_FLOOR: "2.17"
+  FORCE_COLOR: 1
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:5e3012db7af44490157351ba6726fd92e8dba9b421ea819ac7925b4478ad3f17 # 2026.06.04-1
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux2014_aarch64@sha256:88be65bf6654ffb068b2c07fb321ce1a128ccc092b62bbb79027217dbdec12ae # 2026.06.04-1
+    steps:
+      - name: Check release tag
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ inputs.build }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # Fail before the build, not after it: a publishing run comes from
+          # the default branch (the full ref, so a tag of the same name never
+          # passes) and names a new tag.
+          if [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::only a run from the ${DEFAULT_BRANCH} branch publishes; this one is on ${GITHUB_REF}"
+            exit 1
+          fi
+          if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::build must be a positive integer, got '$BUILD_NUMBER'"
+            exit 1
+          fi
+          tag="pillow-${PILLOW_VERSION}-manylinux2014.${BUILD_NUMBER}"
+          if lookup=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" 2>&1); then
+            echo "::error::tag ${tag} already exists; rebuild with the next build number"
+            exit 1
+          elif [[ "$lookup" != *"(HTTP 404)"* ]]; then
+            echo "::error::could not check whether tag ${tag} exists: ${lookup}"
+            exit 1
+          fi
+
+      - name: Check out Pillow
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: python-pillow/Pillow
+          ref: ${{ env.PILLOW_COMMIT }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Check Pillow's dependency setup
+        run: |
+          # The build step runs Pillow's before-all command with a check of the
+          # directory its Linux build takes source archives from, so fail if a
+          # Pillow bump changes the command or that directory.
+          script=.github/workflows/wheels-dependencies.sh
+          if [ "$(grep before-all pyproject.toml)" != "before-all = \"$script\"" ] ||
+            ! grep -qxF '    WORKDIR=$(pwd)/build' "$script" ||
+            ! grep -qxF 'ARCHIVE_SDIR=pillow-depends-main' "$script"; then
+            grep -n before-all pyproject.toml || true
+            grep -n -E 'WORKDIR=|ARCHIVE_SDIR=' "$script" || true
+            echo "::error::Pillow's before-all or its source archive directory changed; update the pillow-depends checkout path, Stage pinned dependency sources and CIBW_BEFORE_ALL_LINUX"
+            exit 1
+          fi
+
+      - name: Check out Pillow's dependency sources
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: python-pillow/pillow-depends
+          ref: ${{ env.PILLOW_DEPENDS_COMMIT }}
+          # wheels-dependencies.sh downloads main unless this directory exists.
+          path: build/pillow-depends-main
+          persist-credentials: false
+
+      - name: Stage pinned dependency sources
+        working-directory: build/pillow-depends-main
+        run: |
+          # wheels-dependencies.sh takes each source archive from this
+          # directory and downloads, unchecked, only the ones it lacks. Supply
+          # those here under the file names the script looks for, each checked
+          # against its SHA-256: a copy where pillow-depends has the archive
+          # under another name, a download otherwise. After a Pillow bump the
+          # build check names any archive still missing.
+          while read -r sha256 name source; do
+            case $source in
+              https://*) curl -fsSL --retry 3 -o "$name" "$source" ;;
+              *) cp -- "$source" "$name" ;;
+            esac
+            echo "$sha256  $name" | sha256sum --strict -c -
+          done <<'EOF'
+          f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1 2.3.3.tar.gz zlib-ng-2.3.3.tar.gz
+          eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3 zstd-1.5.7.tar.gz https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+          2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d libavif-1.4.2.tar.gz https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.4.2.tar.gz
+          bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8 lcms2-2.19.1.tar.gz https://downloads.sourceforge.net/project/lcms/lcms/2.19.1/lcms2-2.19.1.tar.gz
+          a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a v2.5.4.tar.gz openjpeg-2.5.4.tar.gz
+          a54a5d8e9380a41fbb762ce367bcbf7704792dfca0d93f1bbca86c5a57902e0e harfbuzz-14.2.1.tar.xz https://github.com/harfbuzz/harfbuzz/releases/download/14.2.1/harfbuzz-14.2.1.tar.xz
+          EOF
+          # The build checks the directory against this manifest afterwards.
+          find . -maxdepth 1 ! -type d -printf '%P\n' | LC_ALL=C sort \
+            | xargs -d '\n' sha256sum -- > ../pinned-sources.sha256
+
+      - name: Check out Pillow's test images
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: python-pillow/test-images
+          ref: ${{ env.TEST_IMAGES_COMMIT }}
+          path: test-images-main
+          persist-credentials: false
+
+      - name: Stage test images
+        run: |
+          # wheels-test.sh downloads main and moves it into Tests/images unless
+          # test-images-main exists, so do its move here.
+          mv test-images-main/* Tests/images/
+
+      - name: Build and test wheel
+        uses: pypa/cibuildwheel@f03ac7617d6cff873ccf24cc0d567ef5ba5a9e6d # v4.0.0
+        env:
+          CIBW_PLATFORM: linux
+          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD: cp314-manylinux_${{ matrix.arch }}
+          # Only the image for this leg's architecture is used.
+          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.image }}
+          CIBW_MANYLINUX_AARCH64_IMAGE: ${{ matrix.image }}
+          CIBW_ENVIRONMENT_PASS_LINUX: FORCE_COLOR
+          # Pillow's before-all (as checked above), then fail if it downloaded
+          # or changed a source archive instead of taking the pinned set.
+          CIBW_BEFORE_ALL_LINUX: >-
+            .github/workflows/wheels-dependencies.sh &&
+            cd build/pillow-depends-main &&
+            if ! find . -maxdepth 1 ! -type d -printf '%P\n' | LC_ALL=C sort |
+            xargs -d '\n' sha256sum -- | diff ../pinned-sources.sha256 -; then
+            echo "::error::the dependency script downloaded or changed the source archives diff marks >; pin them in Stage pinned dependency sources";
+            exit 1; fi
+          # NumPy publishes no CPython 3.14 wheel for glibc 2.17 and its source
+          # build needs GCC 10.3 (the image has 10.2.1). Pillow's NumPy tests
+          # skip without it; the rest of the suite runs as upstream.
+          CIBW_TEST_REQUIRES: ""
+        with:
+          output-dir: wheelhouse
+
+      - name: Embed SBOM
+        run: |
+          mkdir sbom
+          python3 .github/generate-sbom.py "sbom/pillow-${PILLOW_VERSION}.cdx.json"
+          python3 .github/embed-sbom.py wheelhouse sbom
+
+      - name: Check glibc floor
+        run: |
+          python3 - wheelhouse "$GLIBC_FLOOR" <<'PYCODE'
+          import re
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheelhouse, floor_text = Path(sys.argv[1]), sys.argv[2]
+          floor = tuple(int(part) for part in floor_text.split("."))
+          wheels = sorted(wheelhouse.glob("*.whl"))
+          if len(wheels) != 1:
+              sys.exit(f"expected exactly one wheel, found {[w.name for w in wheels]}")
+          worst, offenders, scanned = (0,), [], 0
+          with zipfile.ZipFile(wheels[0]) as archive:
+              for name in archive.namelist():
+                  blob = archive.read(name)
+                  if not blob.startswith(b"\x7fELF"):
+                      continue
+                  scanned += 1
+                  versions = {
+                      tuple(int(part) for part in match[6:].split(b"."))
+                      for match in re.findall(rb"GLIBC_\d+\.\d+(?:\.\d+)?", blob)
+                  }
+                  top = max(versions, default=(0,))
+                  worst = max(worst, top)
+                  if top > floor:
+                      offenders.append(f"GLIBC_{'.'.join(map(str, top))}  {name}")
+          print(f"{wheels[0].name}: {scanned} ELF objects, highest GLIBC_{'.'.join(map(str, worst))}")
+          if not scanned:
+              sys.exit("no ELF objects found in the wheel")
+          if offenders:
+              sys.exit("objects above the glibc floor:\n  " + "\n  ".join(offenders))
+          PYCODE
+
+      - name: Record wheel hash
+        run: |
+          cd wheelhouse
+          sha256sum -- *.whl | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pillow-${{ env.PILLOW_VERSION }}-${{ matrix.arch }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: Publish pre-release
+    needs: build
+    # Only the reviewed workflow on the default branch publishes. As a
+    # pre-release it never becomes the repository's latest release, and
+    # GitHub's generated notes for the next iCode release keep comparing
+    # against the previous full release.
+    if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: pillow-${{ env.PILLOW_VERSION }}-*
+          merge-multiple: true
+          path: wheelhouse
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ inputs.build }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tag="pillow-${PILLOW_VERSION}-manylinux2014.${BUILD_NUMBER}"
+          cd wheelhouse
+          wheels=(*.whl)
+          if [ "${#wheels[@]}" -ne 2 ]; then
+            echo "::error::expected the x86_64 and aarch64 wheels, found: ${wheels[*]}"
+            exit 1
+          fi
+          sha256sum -- "${wheels[@]}" > SHA256SUMS
+          {
+            echo "Pillow ${PILLOW_VERSION} (python-pillow/Pillow@${PILLOW_COMMIT}) for CPython 3.14 on glibc ${GLIBC_FLOOR}, built and tested by ${RUN_URL}."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > notes.md
+          # Creating the tag fails when it exists, even without a release (one
+          # deleted by hand keeps its tag), so no build ever lands on an old tag.
+          # GitCode needs the same tag too (see the top of this file).
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${GITHUB_SHA}" --silent
+          gh release create "$tag" "${wheels[@]}" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "Pillow ${PILLOW_VERSION} manylinux2014 (build ${BUILD_NUMBER})" \
+            --notes-file notes.md

@@ -55,7 +55,9 @@ from chrys.app.tui.widgets import (
 from chrys.app.tui.widgets.input import EnhancedInput
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayPath, MessageRef, msg
+from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.util.session_ids import session_short_id
 
 if TYPE_CHECKING:
@@ -427,7 +429,8 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
         """Cell renderables for one row, with tree guides and match marks."""
         texts: list[Text] = []
         for column in self._columns:
-            value = Text(row.cells[column.key], justify="right" if column.numeric else "left")
+            cell = sanitize_legacy_scalar(surrogate_safe_text(row.cells[column.key]))
+            value = Text(cell, justify="right" if column.numeric else "left")
             if highlight:
                 value.highlight_words([highlight], match_style, case_sensitive=False)
                 if not row.matched:

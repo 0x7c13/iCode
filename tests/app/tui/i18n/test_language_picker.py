@@ -99,7 +99,7 @@ def _new_navigation(controller: LocaleController, view: _NavigationView) -> Main
         delete_current_and_new=_unused_session_operation,
         restore_session=_unused_session_operation,
         flush_notifications=_unused_flush,
-        start_worker=lambda _awaitable: None,
+        start_worker=lambda _work: None,
         debug=lambda _key, _message: None,
         locale_controller=controller,
     )

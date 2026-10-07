@@ -338,7 +338,7 @@ def test_spill_fsyncs_records_catalog_and_directory_entries(tmp_path: Path, monk
         fsynced_files.add((stat.st_dev, stat.st_ino))
 
     monkeypatch.setattr(spill_mod.os, "fsync", remember_fsync)
-    monkeypatch.setattr(spill_mod, "_fsync_dir", fsynced_directories.append)
+    monkeypatch.setattr(spill_mod, "fsync_directory", fsynced_directories.append)
 
     result = write_spill_batch(
         tmp_path,

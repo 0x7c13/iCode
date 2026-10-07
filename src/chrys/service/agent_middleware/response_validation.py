@@ -74,17 +74,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
-from chrys.foundation.errors import ContinuationVerdictError
+from chrys.foundation.errors import ContinuationVerdictError, ProviderResponseError
 from chrys.foundation.hosted_tools import (
+    HeldHostedEvidence,
     HostedRetrySafety,
     HostedToolPhase,
     HostedToolStatus,
     normalize_hosted_tool_status,
 )
 from chrys.foundation.retry import RetryAttemptInfo
+from chrys.foundation.trajectory.event_types import ValidationReason
 from chrys.kernel import (
     ChatResponse,
     ChatResponseUpdate,
+    ContextOverflowSink,
     Message,
     ResponseStream,
     in_internal_side_call,
@@ -338,6 +341,23 @@ def _hosted_commit_labels_from_plan(plan: ResponsePresentationPlan) -> tuple[str
     return tuple(labels)
 
 
+def _note_output_truncated(context: ChatContext, verdict: ValidationResult, response: ChatResponse) -> None:
+    """Tell the compaction strategy when the input left the reply no room.
+
+    A length stop with nothing generated stays terminal; the next request
+    compacts first. A reasoning-only length stop is not this: the model did
+    generate, so the window was not full. Neither is an empty reply whose
+    usage counts reasoning tokens the API did not return.
+    """
+    if verdict.code != ValidationReason.OUTPUT_TRUNCATED:
+        return
+    if (response.usage_details or {}).get("reasoning_output_token_count"):
+        return
+    strategy = context.kwargs.get("compaction_strategy")
+    if isinstance(strategy, ContextOverflowSink):
+        strategy.note_context_overflow()
+
+
 class ResponseValidationMiddleware(ChatMiddleware):
     """Retry the LLM call on structurally invalid final responses.
 
@@ -422,9 +442,11 @@ class ResponseValidationMiddleware(ChatMiddleware):
         # pre-run history, so ANY hosted work this run would re-execute); the
         # wire-attempt scope backs the kernel's per-wire replay veto (an
         # in-place replay only re-sends the current request, so only hosted
-        # work from the aborted attempt itself is at risk). The attempt's
-        # commits also keep their pairing keys, so a pass resumed from
-        # repaired history can tell which ones that history already answers.
+        # work from the aborted attempt itself is at risk — an attempt being
+        # the request that started a response plus the polls that resume it).
+        # The attempt's commits also keep their pairing keys, so a pass
+        # resumed from repaired history can tell which ones that history
+        # already answers.
         self._hosted_commits_seen: list[str] = []
         self._hosted_commits_in_flight: list[str] = []
         self._hosted_commit_keys_in_flight: list[tuple[str, PairingKey | None]] = []
@@ -443,7 +465,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
         return tuple(self._hosted_commits_seen)
 
     def hosted_commits_in_flight(self) -> tuple[str, ...]:
-        """Hosted tool calls executed within the current wire attempt."""
+        """Hosted tool calls executed within the current wire attempt, polls that resumed it included."""
         return tuple(self._hosted_commits_in_flight)
 
     def hosted_commits_in_flight_unkept(
@@ -480,7 +502,12 @@ class ResponseValidationMiddleware(ChatMiddleware):
         if not resumes_background_response:
             self.reset_hosted_commit_observations()
 
-    def _begin_wire_attempt(self) -> None:
+    def _begin_wire_attempt(self, *, continuation: bool) -> None:
+        # A poll resumes the response an earlier attempt started: the hosted
+        # work that response ran stays at risk until it ends, since a fresh
+        # request would run it again.
+        if continuation:
+            return
         self._hosted_commits_in_flight.clear()
         self._hosted_commit_keys_in_flight.clear()
         self._hosted_call_labels_in_flight.clear()
@@ -505,6 +532,16 @@ class ResponseValidationMiddleware(ChatMiddleware):
                 self._hosted_commits_in_flight.append(label)
             if commit not in self._hosted_commit_keys_in_flight:
                 self._hosted_commit_keys_in_flight.append(commit)
+
+    async def _observe_failed_response(self, error: ProviderResponseError) -> None:
+        """Count the hosted work a failed response showed but never yielded.
+
+        The adapter raised before the response landed, so this is the only
+        place the retry gates learn that the work already ran.
+        """
+        if contents := list(error.observed_contents):
+            self._observe_hosted_contents(contents)
+            await self._notify_contents_observed(contents, is_final=True)
 
     async def _notify_contents_observed(self, contents: Sequence[Any], *, is_final: bool) -> None:
         if self._observation_hook is None or in_internal_side_call():
@@ -595,12 +632,16 @@ class ResponseValidationMiddleware(ChatMiddleware):
         # bad output.
         previous_reason: str | None = None
         for attempt in range(self._max_retries + 1):
-            self._begin_wire_attempt()
             continuation = (
                 isinstance(context.options, Mapping) and context.options.get("continuation_token") is not None
             )
+            self._begin_wire_attempt(continuation=continuation)
             await self._notify_attempt_started(continuation=continuation)
-            await call_next()
+            try:
+                await call_next()
+            except ProviderResponseError as error:
+                await self._observe_failed_response(error)
+                raise
             result = context.result
             if not isinstance(result, ChatResponse):
                 return
@@ -612,6 +653,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
                 return
 
             verdict = self._validator.validate(result)
+            _note_output_truncated(context, verdict, result)
             hosted_commits = () if verdict.ok else _hosted_commit_labels(result)
             give_up = not verdict.ok and self._gives_up(
                 verdict,
@@ -643,7 +685,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
                 return
             if service_side:
                 await self._notify_attempt_rejected(verdict.reason)
-                self._service_side_failure(verdict.reason, result, give_up=give_up)
+                self._service_side_failure(verdict.reason, result, code=verdict.code, give_up=give_up)
             if hosted_commits:
                 # The rejected response already executed provider-hosted tool
                 # calls server-side; replaying the request in place would run
@@ -662,7 +704,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
                 self.reset_service_retry_state()
                 if not verdict.retryable or verdict.terminal_on_giveup:
                     await self._notify_attempt_rejected(verdict.reason)
-                    self._raise_terminal(verdict.reason, result)
+                    self._raise_terminal(verdict.reason, result, code=verdict.code)
                 # Give-up path: scrub the exhausted response so neither
                 # the tool loop NOR persisted history is
                 # polluted by the malformed output:
@@ -696,6 +738,9 @@ class ResponseValidationMiddleware(ChatMiddleware):
     ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
         """Validate lazily while emitting safe transport progress for every update."""
         final_response: ChatResponse | None = None
+        # The inner stream of the attempt being read; None once that attempt
+        # was accepted or closed for a retry.
+        active_result: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
         proxy: ResponseStream[ChatResponseUpdate, ChatResponse]
 
         def _select_response(
@@ -711,15 +756,16 @@ class ResponseValidationMiddleware(ChatMiddleware):
             proxy._result_hooks[:0] = result_hooks
 
         async def _updates() -> AsyncIterator[ChatResponseUpdate]:
+            nonlocal active_result
             previous_reason: str | None = None
-            active_result: ResponseStream[ChatResponseUpdate, ChatResponse] | None = None
-            try:
-                for attempt in range(self._max_retries + 1):
-                    self._begin_wire_attempt()
-                    continuation = (
-                        isinstance(context.options, Mapping) and context.options.get("continuation_token") is not None
-                    )
-                    await self._notify_attempt_started(continuation=continuation)
+            for attempt in range(self._max_retries + 1):
+                continuation = (
+                    isinstance(context.options, Mapping) and context.options.get("continuation_token") is not None
+                )
+                self._begin_wire_attempt(continuation=continuation)
+                await self._notify_attempt_started(continuation=continuation)
+                updates: list[ChatResponseUpdate] = []
+                try:
                     await call_next()
                     result = context.result
                     if not isinstance(result, ResponseStream):
@@ -728,8 +774,15 @@ class ResponseValidationMiddleware(ChatMiddleware):
 
                     await result
                     inner_hooks = _collect_and_clear_hooks(result)
-                    updates: list[ChatResponseUpdate] = []
                     async for update in result:
+                        if isinstance(evidence := update.raw_representation, HeldHostedEvidence):
+                            # Hosted work the adapter holds behind an
+                            # unfinished call already ran: the retry gates
+                            # count it now. The update that releases it in
+                            # order presents it and keeps it for the replay.
+                            self._observe_hosted_contents(evidence.contents)
+                            yield _stream_heartbeat_for(update)
+                            continue
                         # Record hosted executions the moment their updates
                         # land — a stall or transport drop after this point
                         # must reach the retry owners as commit evidence even
@@ -739,98 +792,113 @@ class ResponseValidationMiddleware(ChatMiddleware):
                         await self._notify_contents_observed(observed_contents, is_final=False)
                         updates.append(update)
                         yield _stream_heartbeat_for(update)
-                    final = await _preview_finalize(result, updates)
-                    final_contents = [content for message in final.messages or [] for content in message.contents]
-                    self._observe_hosted_contents(final_contents)
-                    await self._notify_contents_observed(final_contents, is_final=True)
+                except ProviderResponseError as error:
+                    await self._observe_failed_response(error)
+                    raise
+                final = await _preview_finalize(result, updates)
+                final_contents = [content for message in final.messages or [] for content in message.contents]
+                self._observe_hosted_contents(final_contents)
+                await self._notify_contents_observed(final_contents, is_final=True)
 
-                    if final.continuation_token is not None:
-                        _select_response(final, inner_hooks)
-                        await self._notify_attempt_accepted(final.messages or [])
-                        active_result = None
-                        return
+                if final.continuation_token is not None:
+                    _select_response(final, inner_hooks)
+                    await self._notify_attempt_accepted(final.messages or [])
+                    active_result = None
+                    return
 
-                    verdict = self._validator.validate(final)
-                    hosted_commits = () if verdict.ok else _hosted_commit_labels(final)
-                    give_up = not verdict.ok and self._gives_up(
-                        verdict,
-                        attempt=attempt,
-                        previous_reason=previous_reason,
-                        hosted_committed=bool(hosted_commits),
-                        service_side=service_side,
+                verdict = self._validator.validate(final)
+                _note_output_truncated(context, verdict, final)
+                hosted_commits = () if verdict.ok else _hosted_commit_labels(final)
+                give_up = not verdict.ok and self._gives_up(
+                    verdict,
+                    attempt=attempt,
+                    previous_reason=previous_reason,
+                    hosted_committed=bool(hosted_commits),
+                    service_side=service_side,
+                )
+                if validation is not None:
+                    await validation.finished(
+                        accepted=verdict.ok,
+                        reason_code=None if verdict.ok else verdict.code,
+                        retryable=None if verdict.ok else verdict.retryable,
+                        gave_up=give_up,
                     )
-                    if validation is not None:
-                        await validation.finished(
-                            accepted=verdict.ok,
-                            reason_code=None if verdict.ok else verdict.code,
-                            retryable=None if verdict.ok else verdict.retryable,
-                            gave_up=give_up,
-                        )
-                    if verdict.ok:
-                        self.reset_service_retry_state()
-                        _drop_empty_assistant_outputs(final, updates)
-                        _select_response(final, inner_hooks)
-                        await self._notify_attempt_accepted(final.messages or [])
-                        for update in updates:
-                            if not _is_stream_heartbeat(update):
-                                yield update
-                        active_result = None
-                        return
+                if verdict.ok:
+                    self.reset_service_retry_state()
+                    _drop_empty_assistant_outputs(final, updates)
+                    _select_response(final, inner_hooks)
+                    await self._notify_attempt_accepted(final.messages or [])
+                    for update in updates:
+                        if not _is_stream_heartbeat(update):
+                            yield update
+                    active_result = None
+                    return
 
-                    if service_side:
+                if service_side:
+                    await self._notify_attempt_rejected(verdict.reason)
+                    self._service_side_failure(
+                        verdict.reason,
+                        final,
+                        code=verdict.code,
+                        give_up=give_up,
+                        stream_usage_chunks=_usage_chunks_from_updates(updates),
+                    )
+                if hosted_commits:
+                    # Same rule as the blocking path: hosted side effects
+                    # in the rejected response forbid an in-place re-send.
+                    logger.warning(
+                        "Response validation would retry, but provider-hosted tool call(s) "
+                        "already executed (%s) — not re-sending the request: %s",
+                        ", ".join(hosted_commits),
+                        verdict.reason,
+                    )
+                if give_up:
+                    # A concluded cycle — terminal raise or scrubbed
+                    # acceptance — must not leave stale service-side
+                    # carry-over behind a later storage-mode flip.
+                    self.reset_service_retry_state()
+                    if not verdict.retryable or verdict.terminal_on_giveup:
                         await self._notify_attempt_rejected(verdict.reason)
-                        self._service_side_failure(
+                        self._raise_terminal(
                             verdict.reason,
                             final,
-                            give_up=give_up,
+                            code=verdict.code,
                             stream_usage_chunks=_usage_chunks_from_updates(updates),
                         )
-                    if hosted_commits:
-                        # Same rule as the blocking path: hosted side effects
-                        # in the rejected response forbid an in-place re-send.
-                        logger.warning(
-                            "Response validation would retry, but provider-hosted tool call(s) "
-                            "already executed (%s) — not re-sending the request: %s",
-                            ", ".join(hosted_commits),
-                            verdict.reason,
-                        )
-                    if give_up:
-                        # A concluded cycle — terminal raise or scrubbed
-                        # acceptance — must not leave stale service-side
-                        # carry-over behind a later storage-mode flip.
-                        self.reset_service_retry_state()
-                        if not verdict.retryable or verdict.terminal_on_giveup:
-                            await self._notify_attempt_rejected(verdict.reason)
-                            self._raise_terminal(
-                                verdict.reason,
-                                final,
-                                stream_usage_chunks=_usage_chunks_from_updates(updates),
-                            )
-                        _strip_function_calls(final, updates)
-                        _drop_empty_assistant_outputs(final, updates)
-                        _select_response(final, inner_hooks)
-                        await self._notify_attempt_accepted(final.messages or [])
-                        for update in updates:
-                            if not _is_stream_heartbeat(update):
-                                yield update
-                        active_result = None
-                        return
-
-                    previous_reason = verdict.reason
-                    await self._notify_attempt_rejected(verdict.reason)
-                    await result.aclose()
+                    _strip_function_calls(final, updates)
+                    _drop_empty_assistant_outputs(final, updates)
+                    _select_response(final, inner_hooks)
+                    await self._notify_attempt_accepted(final.messages or [])
+                    for update in updates:
+                        if not _is_stream_heartbeat(update):
+                            yield update
                     active_result = None
-                    await self._note_retry(verdict.reason, attempt, validation=validation)
-            finally:
-                if active_result is not None:
-                    await active_result.aclose()
+                    return
+
+                previous_reason = verdict.reason
+                await self._notify_attempt_rejected(verdict.reason)
+                await result.aclose()
+                active_result = None
+                await self._note_retry(verdict.reason, attempt, validation=validation)
+
+        async def _close_active_result() -> None:
+            # A proxy left mid-attempt closes the inner stream that attempt
+            # was reading: after a failed or cancelled pull, and on an
+            # explicit close. It is the proxy's cleanup hook, never the
+            # generator's exit: finalization closes each abandoned generator
+            # in a task of its own, and an exit closing another generator
+            # would collide with that generator's own close.
+            nonlocal active_result
+            reading, active_result = active_result, None
+            if reading is not None:
+                await reading.aclose()
 
         def _finalizer(_updates: Sequence[ChatResponseUpdate]) -> ChatResponse:
             if final_response is None:
                 raise RuntimeError("Streaming response validation ended without a final response.")
             return final_response
 
-        proxy = ResponseStream(_updates(), finalizer=_finalizer)
+        proxy = ResponseStream(_updates(), finalizer=_finalizer).with_cleanup_hook(_close_active_result)
         return proxy
 
     # ------------------------------------------------------------------
@@ -951,6 +1019,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
         reason: str,
         response: ChatResponse,
         *,
+        code: str,
         give_up: bool,
         stream_usage_chunks: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -965,7 +1034,7 @@ class ResponseValidationMiddleware(ChatMiddleware):
         """
         if give_up:
             self.reset_service_retry_state()
-            self._raise_terminal(reason, response, stream_usage_chunks=stream_usage_chunks)
+            self._raise_terminal(reason, response, code=code, stream_usage_chunks=stream_usage_chunks)
         self._service_retry_count += 1
         self._service_retry_reason = reason
         self._raise_service_retry(reason, response, stream_usage_chunks=stream_usage_chunks)
@@ -975,9 +1044,15 @@ class ResponseValidationMiddleware(ChatMiddleware):
         reason: str,
         response: ChatResponse,
         *,
+        code: str,
         stream_usage_chunks: list[dict[str, Any]] | None = None,
     ) -> None:
-        """Raise a terminal validation failure into the pass observer error path."""
+        """Raise a terminal validation failure into the pass observer error path.
+
+        A filtered response is raised as the provider's own content-filter
+        failure: it is classified as filtered, and a live continuation token
+        names a finished response that a retry must not poll.
+        """
         logger.warning("Response validation failed terminally (giving up): %s", reason)
         usage_details = None
         if stream_usage_chunks is not None:
@@ -985,7 +1060,12 @@ class ResponseValidationMiddleware(ChatMiddleware):
             usage_details = dict(normalized) if normalized else None
         if usage_details is None and response.usage_details:
             usage_details = dict(response.usage_details)
-        raise TerminalResponseValidationError(reason, usage_details=usage_details)
+        error = TerminalResponseValidationError(reason, usage_details=usage_details)
+        if code == ValidationReason.CONTENT_FILTERED:
+            raise error from ProviderResponseError(
+                "content_filter", reason, retryable=False, invalidates_continuation_token=True
+            )
+        raise error
 
     def _raise_service_retry(
         self,

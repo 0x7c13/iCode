@@ -555,6 +555,48 @@ The loop node is the start of this workflow, so the first iteration's entry node
 
 Create a new session in the TUI, select `count_up`, enter `0`, and run. The three iterations produce `1`, `2`, and `3`, with `3` as the final output. Open nodes inside the loop to inspect their inputs, outputs, and progress messages across iterations. Then run with `-10` to see the workflow fail after reaching the five-iteration limit.
 
+## Split a workflow into several files
+
+When a workflow grows, move it into a folder of the same name and split it into several Python files and resource files. Create `.chrys/workflows/greeting_kit/` with two files. The entry file must have exactly the folder's name, `greeting_kit.py`:
+
+```python
+from pathlib import Path
+
+from chrys.workflows import WorkflowBuilder, WorkflowValue
+from phrases import greet
+
+wf = WorkflowBuilder("greeting kit")
+TEMPLATE = (Path(__file__).parent / "template.txt").read_text(encoding="utf-8")
+
+
+def hello(value: WorkflowValue) -> str:
+    return greet(TEMPLATE, value.text.strip() or "friend")
+
+
+node = wf.python("hello", hello)
+wf.start(node)
+wf.output(node)
+workflow = wf.build()
+```
+
+`phrases.py`, in the same folder:
+
+```python
+def greet(template: str, name: str) -> str:
+    return template.format(name=name)
+```
+
+And `template.txt`, also in the folder, containing `Hello, {name}!`.
+
+Select `greeting_kit` in the TUI, confirm trust, and run it with `Alex`. The result is `Hello, Alex!`.
+
+- Import other files in the folder by their module name, as `from phrases import greet` does. Relative imports such as `from .phrases import greet` do not work.
+- Read resource files relative to `__file__`. A relative path such as `open("template.txt")` is relative to the workspace, not to the folder.
+- Trust covers every file in the folder except names starting with `.` (such as `.venv` or `.git`) and the compiled copies Python keeps in `__pycache__` folders. After changing any of them, reopen the workflow to preview and confirm it again.
+- Deleting a workflow folder in the workflow picker deletes only its entry file; the other files stay.
+
+See [Workflow reference: Workflow folders](../../reference/workflows.md#workflow-folders) for the full rules.
+
 ## Run from the command line
 
 The CLI is suitable for workflows that need no human interaction. It does not support `ctx.ask()`, and its tool approval mode is fixed to `bypass`, which skips tool approval.
@@ -567,6 +609,12 @@ Run this command in the project directory to list available workflows:
 icode workflow list
 ```
 
+To check a workflow you are writing, pass its file or folder to `icode workflow validate`. It prints `PASS`, or each problem with its file and line; see [`icode workflow validate`](../../reference/workflows.md#icode-workflow-validate):
+
+```shell
+icode workflow validate .chrys/workflows/greeting.py
+```
+
 Use a workflow ID from the list to run it. Replace `WORKFLOW_ID` below with the actual ID:
 
 ```shell
@@ -574,6 +622,8 @@ icode workflow run WORKFLOW_ID --input "Input text" --trust
 ```
 
 `--input` sets the `WorkflowValue.text` received by the start node and defaults to an empty string. The initial `data` is `None` and cannot be set directly through CLI arguments. Even a JSON string is still text; the workflow must parse it itself.
+
+For input that spans several lines, bash and zsh accept `$'...'` quoting with `\n` for each line break. In PowerShell, use `` `n `` inside double quotes instead, as in `` --input "first line`nsecond line" ``. See [Multi-line input](../../reference/workflows.md#multi-line-input).
 
 After creating or changing a workflow file, `--trust` confirms trust in the current source and execution environment, just as clicking “Trust” does in the TUI. It can be omitted if the previously trusted content has not changed. See [Trust confirmation](../../reference/workflows.md#trust-confirmation) for the scope of these checks and what happens during loading.
 

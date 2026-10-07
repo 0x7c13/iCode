@@ -117,6 +117,28 @@ class TestServiceHandleInvalidation:
         await stream.aclose()
         assert session.service_session_id is None
 
+    async def test_tool_limit_result_abandonment_does_not_keep_stale_handle(self) -> None:
+        # A hit tool limit goes to the exhaustion tail too, so the batch that
+        # hit it is the last one, well before max_iterations.
+        previous_round_update = _service_metadata_update("conv-old")
+        layer, _wire = _stack(
+            [
+                [_call_update("c1", "echo", {"text": "a"}), previous_round_update],
+                [_call_update("c2", "echo", {"text": "b"})],
+            ],
+            max_iterations=5,
+            max_function_calls=1,
+        )
+        session = AgentSession()
+        agent = Agent(client=layer, name="T", tools=[_make_tool()])
+        stream = agent.run("hi", stream=True, session=session, options={"store": True})
+        async for update in stream:
+            raw = update.raw_representation
+            if any(c.type == "function_result" for c in getattr(raw, "contents", None) or []):
+                break
+        await stream.aclose()
+        assert session.service_session_id is None
+
     async def test_invalidation_installs_history_fallback_preserving_next_run_context(self) -> None:
         # store=True suppresses the auto-injected plain local history
         # provider, so the discarded service transcript would otherwise be

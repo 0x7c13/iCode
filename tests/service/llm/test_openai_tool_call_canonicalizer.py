@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the instrumented OpenAI tool-call canonicalizer and argument repair on history replay."""
+"""Tests for the Chat Completions tool-call canonicalizer and argument repair on history replay."""
 
 from __future__ import annotations
 
@@ -9,21 +9,30 @@ from typing import Any
 import pytest
 
 from chrys.kernel import Content, Message
-from tests.service.llm._instrumented_clients import make_chat_client
+from chrys.service.llm.chat_completions.client import OPENAI
+from chrys.service.llm.chat_completions.history import encode_messages
+from tests.service.llm._wire_stacks import make_chat_client
+from tests.support.openai_chat_wire import scripted_openai
 
 
-def test_openai_prepare_message_merges_text_and_tool_calls_for_vllm_replay() -> None:
+def _encode(chat_client: Any, message: Message) -> list[dict[str, Any]]:
+    """The wire messages one kernel message becomes in a request."""
+    return encode_messages([message], variant=chat_client.VARIANT)
+
+
+def test_openai_encode_message_merges_text_and_tool_calls_for_vllm_replay() -> None:
     """Text + tool call from one kernel message must stay one wire message."""
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [
                 Content.from_text("I'll read it."),
                 Content.from_function_call(call_id="call_bad", name="read_file", arguments="{}"),
             ],
-        )
+        ),
     )
 
     assert len(prepared) == 1
@@ -38,15 +47,16 @@ def test_openai_prepare_message_merges_text_and_tool_calls_for_vllm_replay() -> 
     ]
 
 
-def test_openai_prepare_message_function_call_only_includes_empty_content() -> None:
+def test_openai_encode_message_function_call_only_includes_empty_content() -> None:
     """Strict OpenAI-compatible servers reject assistant tool_calls without content."""
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [Content.from_function_call(call_id="call_bad", name="read_file", arguments="{}")],
-        )
+        ),
     )
 
     assert prepared == [
@@ -64,15 +74,16 @@ def test_openai_prepare_message_function_call_only_includes_empty_content() -> N
     ]
 
 
-def test_openai_prepare_message_repairs_malformed_tool_call_arguments() -> None:
+def test_openai_encode_message_repairs_malformed_tool_call_arguments() -> None:
     """Strict OpenAI-compatible servers reject malformed historical arguments."""
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [Content.from_function_call(call_id="call_bad", name="glob", arguments="{")],
-        )
+        ),
     )
 
     assert prepared == [
@@ -91,25 +102,27 @@ def test_openai_prepare_message_repairs_malformed_tool_call_arguments() -> None:
 
 
 @pytest.mark.parametrize("arguments", [None, [], 123])
-def test_openai_prepare_message_repairs_non_string_tool_call_arguments(arguments: object) -> None:
+def test_openai_encode_message_repairs_non_string_tool_call_arguments(arguments: object) -> None:
     """OpenAI Chat Completions requires function arguments to be a JSON string."""
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [Content.from_function_call(call_id="call_bad", name="glob", arguments=arguments)],
-        )
+        ),
     )
 
     assert prepared[0]["tool_calls"][0]["function"]["arguments"] == "{}"
 
 
-def test_openai_prepare_message_repairs_only_bad_arguments_in_parallel_batch() -> None:
+def test_openai_encode_message_repairs_only_bad_arguments_in_parallel_batch() -> None:
     """One malformed parallel call must not poison the whole vLLM replay."""
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [
@@ -130,7 +143,7 @@ def test_openai_prepare_message_repairs_only_bad_arguments_in_parallel_batch() -
                     arguments='{"path": "README.md"}',
                 ),
             ],
-        )
+        ),
     )
 
     assert len(prepared) == 1
@@ -169,7 +182,7 @@ def test_openai_canonicalizer_keeps_reasoning_aggregate_and_multimodal_fragment(
     function_call = Content.from_function_call(call_id="call_1", name="lookup", arguments="{}")
     contents = [text, image, reasoning, function_call] if text_first else [image, text, reasoning, function_call]
 
-    prepared = chat_client._prepare_message_for_openai(Message("assistant", contents))
+    prepared = _encode(chat_client, Message("assistant", contents))
 
     assert len(prepared) == 2
     image_message, aggregate = prepared
@@ -184,7 +197,8 @@ def test_openai_canonicalizer_keeps_reasoning_aggregate_and_multimodal_fragment(
 def test_openai_canonicalizer_zero_text_reasoning_aggregate_not_merged_with_image() -> None:
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [
@@ -195,7 +209,7 @@ def test_openai_canonicalizer_zero_text_reasoning_aggregate_not_merged_with_imag
                 ),
                 Content.from_function_call(call_id="call_1", name="lookup", arguments="{}"),
             ],
-        )
+        ),
     )
 
     assert len(prepared) == 2
@@ -209,7 +223,8 @@ def test_openai_canonicalizer_zero_text_reasoning_aggregate_not_merged_with_imag
 def test_openai_canonicalizer_keeps_vllm_reasoning_aggregate_separate_from_image() -> None:
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [
@@ -221,7 +236,7 @@ def test_openai_canonicalizer_keeps_vllm_reasoning_aggregate_separate_from_image
                 ),
                 Content.from_function_call(call_id="call_1", name="lookup", arguments="{}"),
             ],
-        )
+        ),
     )
 
     assert len(prepared) == 2
@@ -239,7 +254,8 @@ def test_openai_canonicalizer_preserves_multimodal_content_next_to_tool_calls() 
     ahead of the carrier, keeping the carrier adjacent to its tool results."""
     chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [
@@ -247,7 +263,7 @@ def test_openai_canonicalizer_preserves_multimodal_content_next_to_tool_calls() 
                 Content.from_function_call(call_id="call_1", name="lookup", arguments="{}"),
                 Content.from_uri(uri="https://example.com/img.png", media_type="image/png"),
             ],
-        )
+        ),
     )
 
     assert len(prepared) == 2
@@ -258,12 +274,11 @@ def test_openai_canonicalizer_preserves_multimodal_content_next_to_tool_calls() 
     assert "tool_calls" not in image_message
 
 
-def test_openai_instrumented_no_reasoning_multimodal_keeps_carrier_adjacent_to_tool_result() -> None:
+def test_openai_stack_no_reasoning_multimodal_keeps_carrier_adjacent_to_tool_result() -> None:
     """The tool result must directly follow the tool_calls carrier: a trailing
     image fragment may not strand between them in a full replayed history."""
-    chat_client = make_chat_client()
 
-    prepared = chat_client._prepare_messages_for_openai(
+    prepared = encode_messages(
         [
             Message("user", ["Q"]),
             Message(
@@ -275,7 +290,8 @@ def test_openai_instrumented_no_reasoning_multimodal_keeps_carrier_adjacent_to_t
                 ],
             ),
             Message("tool", [Content.from_function_result(call_id="call_1", result="found")]),
-        ]
+        ],
+        variant=OPENAI,
     )
 
     assert [message["role"] for message in prepared] == ["user", "assistant", "assistant", "tool"]
@@ -287,8 +303,7 @@ def test_openai_instrumented_no_reasoning_multimodal_keeps_carrier_adjacent_to_t
 
 
 @pytest.mark.parametrize("image_first", [True, False])
-def test_openai_instrumented_plural_keeps_aggregate_adjacent_to_tool_result(image_first: bool) -> None:
-    chat_client = make_chat_client()
+def test_openai_stack_plural_keeps_aggregate_adjacent_to_tool_result(image_first: bool) -> None:
     text = Content.from_text("Preface")
     function_call = Content.from_function_call(call_id="call_1", name="lookup", arguments="{}")
     image = Content.from_uri(uri="https://example.com/img.png", media_type="image/png")
@@ -298,12 +313,13 @@ def test_openai_instrumented_plural_keeps_aggregate_adjacent_to_tool_result(imag
     )
     contents = [image, text, function_call, reasoning] if image_first else [text, function_call, image, reasoning]
 
-    prepared = chat_client._prepare_messages_for_openai(
+    prepared = encode_messages(
         [
             Message("user", ["Q"]),
             Message("assistant", contents),
             Message("tool", [Content.from_function_result(call_id="call_1", result="found")]),
-        ]
+        ],
+        variant=OPENAI,
     )
 
     assert [message["role"] for message in prepared] == ["user", "assistant", "assistant", "tool"]
@@ -323,73 +339,58 @@ async def test_openai_tool_loop_replays_argument_error_with_canonical_tool_call_
     from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
 
     from chrys.kernel import FunctionTool
-    from chrys.service.llm.instrumented import create_instrumented_openai_client
+    from chrys.service.llm.chat_completions import ChatCompletionsClient
+    from tests.service.llm._wire_stacks import assemble_openai_stack
 
-    captured_requests: list[dict[str, Any]] = []
-
-    class _FakeCompletions:
-        def __init__(self) -> None:
-            self._call_count = 0
-
-        async def create(self, stream: bool = False, **kwargs: Any) -> ChatCompletion:
-            captured_requests.append(kwargs)
-            self._call_count += 1
-            if self._call_count == 1:
-                return ChatCompletion(
-                    id="resp-1",
-                    object="chat.completion",
-                    created=1234567890,
-                    model="vllm-model",
-                    choices=[
-                        Choice(
-                            index=0,
-                            message=ChatCompletionMessage(
-                                role="assistant",
-                                content="I'll read it.",
-                                tool_calls=[
-                                    ChatCompletionMessageToolCall(
-                                        id="call_bad",
-                                        type="function",
-                                        function=Function(name="read_file", arguments="{}"),
-                                    )
-                                ],
-                            ),
-                            finish_reason="tool_calls",
-                        )
-                    ],
+    replies = [
+        ChatCompletion(
+            id="resp-1",
+            object="chat.completion",
+            created=1234567890,
+            model="vllm-model",
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChatCompletionMessage(
+                        role="assistant",
+                        content="I'll read it.",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                id="call_bad",
+                                type="function",
+                                function=Function(name="read_file", arguments="{}"),
+                            )
+                        ],
+                    ),
+                    finish_reason="tool_calls",
                 )
-            return ChatCompletion(
-                id="resp-2",
-                object="chat.completion",
-                created=1234567891,
-                model="vllm-model",
-                choices=[
-                    Choice(
-                        index=0,
-                        message=ChatCompletionMessage(role="assistant", content="Recovered."),
-                        finish_reason="stop",
-                    )
-                ],
-            )
-
-    class _FakeChat:
-        def __init__(self) -> None:
-            self.completions = _FakeCompletions()
-
-    class _FakeAsyncOpenAI:
-        def __init__(self) -> None:
-            self.chat = _FakeChat()
+            ],
+        ),
+        ChatCompletion(
+            id="resp-2",
+            object="chat.completion",
+            created=1234567891,
+            model="vllm-model",
+            choices=[
+                Choice(
+                    index=0,
+                    message=ChatCompletionMessage(role="assistant", content="Recovered."),
+                    finish_reason="stop",
+                )
+            ],
+        ),
+    ]
 
     def read_file(path: str) -> str:
         return path
 
-    client = create_instrumented_openai_client(model_id="vllm-model", client=_FakeAsyncOpenAI())
     tool = FunctionTool(name="read_file", description="Read a file", func=read_file)
+    async with scripted_openai(replies) as wire:
+        client = assemble_openai_stack(ChatCompletionsClient, wire.client, model_id="vllm-model")
+        await client.get_response([Message("user", ["read x"])], options={"tools": [tool]})
 
-    await client.get_response([Message("user", ["read x"])], options={"tools": [tool]})
-
-    assert len(captured_requests) == 2
-    assert captured_requests[1]["messages"] == [
+    assert len(wire.requests) == 2
+    assert wire.requests[1]["messages"] == [
         {"role": "user", "content": "read x"},
         {
             "role": "assistant",
@@ -417,13 +418,12 @@ def test_openai_canonicalizes_messages_after_session_json_round_trip() -> None:
     them via ``Message.from_dict()``. The per-Message canonicalization scope
     only holds if a single restored Message still bundles text and the
     matching function_call as separate Contents on one Message — the same
-    shape AF emits when parsing a live OpenAI choice.  Round-tripping the
+    shape the Chat Completions parser emits for a live choice.  Round-tripping the
     poisoned pair through serialization here pins that invariant: a new
     user message replayed against the reloaded history must still produce
     the merged, ``content``-bearing assistant tool-call wire message that
     vLLM accepts.
     """
-    chat_client = make_chat_client()
 
     poisoned_assistant = Message(
         "assistant",
@@ -448,7 +448,7 @@ def test_openai_canonicalizes_messages_after_session_json_round_trip() -> None:
 
     # Replay: append a new user message to the reloaded history and prep.
     history_for_replay = [*reloaded, Message("user", ["please retry"])]
-    prepared = chat_client._prepare_messages_for_openai(history_for_replay)
+    prepared = encode_messages(history_for_replay, variant=OPENAI)
 
     assert prepared == [
         {"role": "user", "content": "read x"},
@@ -470,7 +470,6 @@ def test_openai_canonicalizes_messages_after_session_json_round_trip() -> None:
 
 def test_openai_canonicalizes_malformed_arguments_after_session_json_round_trip() -> None:
     """Reloaded bad tool-call arguments must not make the next vLLM request 400."""
-    chat_client = make_chat_client()
 
     poisoned_assistant = Message(
         "assistant",
@@ -507,7 +506,7 @@ def test_openai_canonicalizes_malformed_arguments_after_session_json_round_trip(
     reloaded = [Message.from_dict(d) for d in persisted]
 
     history_for_replay = [*reloaded, Message("user", ["please continue"])]
-    prepared = chat_client._prepare_messages_for_openai(history_for_replay)
+    prepared = encode_messages(history_for_replay, variant=OPENAI)
 
     assert prepared == [
         {"role": "user", "content": "find files"},
@@ -528,12 +527,13 @@ def test_openai_canonicalizes_malformed_arguments_after_session_json_round_trip(
 
 
 def test_openai_repairs_malformed_arguments_with_deepseek_client_cls() -> None:
-    """The instrumented wrapper must repair arguments after DeepSeek-specific prep."""
-    from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
+    """DeepSeek's own message assembler repairs malformed arguments after its per-message prep."""
+    from chrys.service.llm.chat_completions import DeepSeekChatCompletionsClient
 
-    chat_client = make_chat_client(chat_client_cls=DeepSeekChatCompletionClient)
+    chat_client = make_chat_client(chat_client_cls=DeepSeekChatCompletionsClient)
 
-    prepared = chat_client._prepare_message_for_openai(
+    prepared = _encode(
+        chat_client,
         Message(
             "assistant",
             [
@@ -545,7 +545,7 @@ def test_openai_repairs_malformed_arguments_with_deepseek_client_cls() -> None:
                     additional_properties={"openai_reasoning_format": "reasoning_content"},
                 ),
             ],
-        )
+        ),
     )
 
     assert prepared == [

@@ -18,6 +18,8 @@ from rich.console import Console, ConsoleOptions, RenderResult
 from rich.style import Style
 from rich.text import Text
 
+from chrys.foundation.text.images import IMAGE_DECODE_FORMATS
+
 _HALF_BLOCK = "\u2580"
 _TRANSPARENT_BACKGROUND = (15, 18, 24)
 _DEFAULT_MAX_ROWS = 16
@@ -152,7 +154,7 @@ def _decode_data_uri(uri: str) -> bytes:
 
 
 def _load_preview_image(data: bytes) -> Image.Image:
-    with Image.open(BytesIO(data)) as opened:
+    with Image.open(BytesIO(data), formats=IMAGE_DECODE_FORMATS) as opened:
         if opened.width * opened.height > _MAX_PREVIEW_INPUT_PIXELS:
             msg = "image preview input exceeds the supported pixel limit"
             raise ValueError(msg)

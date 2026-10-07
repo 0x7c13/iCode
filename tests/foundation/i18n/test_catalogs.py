@@ -88,7 +88,7 @@ def test_load_catalog_rejects_corrupt_and_truncated_mo(tmp_path: Path, data: byt
     "metadata",
     [
         "Content-Type: text/plain; charset=bogus-charset\n",
-        "Content-Type: text/plain; charset=UTF-8\nPlural-Forms: nplurals=2; plural=0 >= ! 1;\n",
+        "Content-Type: text/plain; charset=UTF-8\nPlural-Forms: nplurals=2; plural=(n;\n",
     ],
 )
 def test_load_catalog_rejects_undecodable_or_unparseable_metadata(tmp_path: Path, metadata: str) -> None:

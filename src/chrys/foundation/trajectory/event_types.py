@@ -191,6 +191,7 @@ class ValidationReason:
     OUTPUT_TRUNCATED = "output_truncated"
     REASONING_ONLY = "reasoning_only"
     HOSTED_EVIDENCE_ONLY = "hosted_evidence_only"
+    CONTENT_FILTERED = "content_filtered"
     WHITESPACE_ONLY = "whitespace_only"
     LEAKED_TOOL_CALL = "leaked_tool_call"
     RULE_VIOLATION = "rule_violation"
@@ -261,6 +262,8 @@ class RetryMode:
     """A compaction side call is retried without replaying the model run."""
     VALIDATION = "validation"
     """The response was rejected by validation and the request is re-issued."""
+    CONTEXT_OVERFLOW = "context_overflow"
+    """The provider found the context window full; the request is re-issued once after compacting."""
 
 
 class RetryReason:

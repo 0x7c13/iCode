@@ -40,6 +40,7 @@ from chrys.service.profiles.agents.schema import (
     SubAgentsConfig,
     ToolsConfig,
 )
+from chrys.service.profiles.coercion import coerce_bool
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -58,21 +59,6 @@ _MAX_SKILL_DESCRIPTION_LENGTH = 1024
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ACP_DEPTH_ENV = "CHRYS_ACP_SUBAGENT_DEPTH"
 _ACP_RESULT_MODES = frozenset({"last_segment", "transcript"})
-
-
-def _coerce_bool(value: object, *, default: bool) -> bool:
-    """Coerce YAML scalar bool-ish values into a Python bool."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    return bool(value)
 
 
 def _mapping_section(raw: object, section: str) -> dict[str, Any]:
@@ -111,6 +97,29 @@ def _string_list_field(raw: object, field: str) -> list[str]:
         msg = f"Agent profile field '{field}' must be a list of strings; got {raw!r}"
         raise AgentProfileLoadError(msg)
     return list(cast("list[str]", raw))
+
+
+def _instructions_field(raw: object, field: str) -> str:
+    """Parse instructions text; a list of strings joins one item per line.
+
+    Any other value would reach the prompt as its Python repr.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, list):
+        msg = f"Agent profile field '{field}' must be a string or a list of strings; got {type(raw).__name__}"
+        raise AgentProfileLoadError(msg)
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, str):
+            # YAML reads an unquoted `- Note: text` or `- Heading:` item as a mapping.
+            msg = (
+                f"Agent profile field '{field}' must be a string or a list of strings; item {index} is a "
+                f"{type(item).__name__} (quote list items that contain ': ' or end with ':')"
+            )
+            raise AgentProfileLoadError(msg)
+    return "\n".join(cast("list[str]", raw))
 
 
 def _approval_rule(raw: object, field: str) -> Literal["auto", "require", "skip"]:
@@ -266,7 +275,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
             if entry.get("allowed_tools") is None
             else _string_list_field(entry.get("allowed_tools"), "tools.mcp.allowed_tools")
         )
-        use_progressive_disclosure = _coerce_bool(entry.get("use_progressive_disclosure"), default=False)
+        use_progressive_disclosure = coerce_bool(entry.get("use_progressive_disclosure"), default=False)
         tool_name_prefix = entry.get("tool_name_prefix", "")
         prefix_error = validate_mcp_tool_name_prefix(
             tool_name_prefix,
@@ -306,10 +315,10 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 # http
                 url=entry.get("url", ""),
                 headers=entry.get("headers", {}),
-                resolve_header_templates=_coerce_bool(entry.get("resolve_header_templates"), default=True),
+                resolve_header_templates=coerce_bool(entry.get("resolve_header_templates"), default=True),
                 terminate_on_close=entry.get("terminate_on_close"),
-                verify_ssl=_coerce_bool(entry.get("verify_ssl"), default=True),
-                bypass_proxy=_coerce_bool(entry.get("bypass_proxy"), default=False),
+                verify_ssl=coerce_bool(entry.get("verify_ssl"), default=True),
+                bypass_proxy=coerce_bool(entry.get("bypass_proxy"), default=False),
                 # common
                 enabled=entry.get("enabled", entry.get("enable", True)),
                 description=entry.get("description", ""),
@@ -320,7 +329,7 @@ def _parse_mcp_servers(raw: object) -> list[MCPServerConfig]:
                 request_timeout=entry.get("timeout", entry.get("request_timeout")),
                 max_tool_result_tokens=max_tool_result_tokens,
                 load_prompts=entry.get("load_prompts", True),
-                expose_instructions=_coerce_bool(entry.get("expose_instructions"), default=True),
+                expose_instructions=coerce_bool(entry.get("expose_instructions"), default=True),
             )
         )
     return configs
@@ -402,7 +411,7 @@ def _parse_skills(raw: object) -> SkillsConfig:
             SkillConfig(
                 name=entry["name"],
                 description=entry.get("description", ""),
-                instructions=entry.get("instructions", ""),
+                instructions=_instructions_field(entry.get("instructions"), f"skills.inline[{index}].instructions"),
                 resources=_parse_skill_resources(entry.get("resources", []), "skills.inline.resources"),
                 scripts=_parse_skill_scripts(entry.get("scripts", []), "skills.inline.scripts"),
             )
@@ -696,7 +705,7 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
             description=data.get("description", ""),
             sub_agent_only=bool(data.get("sub_agent_only", False)),
             acp=_parse_acp(data.get("acp")) if acp_present else None,
-            instructions=data.get("instructions", ""),
+            instructions=_instructions_field(data.get("instructions"), "instructions"),
             tools=_parse_tools(data.get("tools")),
             skills=_parse_skills(data.get("skills")),
             approval=_parse_approval(data.get("approval")),

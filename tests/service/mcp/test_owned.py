@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the owned MCP engine: allowed-tools filtering, closure argument hygiene, sampling, catalog reloads, lifecycle."""
+"""Tests for the owned MCP engine: allowed-tools filtering, closure argument hygiene, catalog reloads, lifecycle."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -14,15 +15,17 @@ from unittest.mock import patch
 
 import anyio
 import pytest
-from mcp import ClientSession, types
-from mcp.shared.context import RequestContext
+from mcp import types
+from mcp.shared.message import SessionMessage
 
 import chrys.service.mcp.owned as owned_mcp
-from chrys.kernel import ChatResponse, Message
+from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.middleware import FunctionInvocationContext
+from chrys.kernel.types import ChatResponseUpdate
 from chrys.service.mcp._http_transport import _HTTPMCPTool
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.errors import (
+    MCPToolNameAmbiguityError,
     MCPToolNameCollisionError,
     MCPToolNameValidationError,
 )
@@ -30,10 +33,10 @@ from chrys.service.mcp.owned import (
     _MCP_FRAMEWORK_DENYLIST,
     _MCP_NORMALIZED_NAME_KEY,
     _MCP_REMOTE_NAME_KEY,
-    MCPStreamableHTTPTool,
     MCPTool,
 )
 from chrys.service.profiles.agents.schema import MCPServerConfig
+from tests.kernel._fakes import _final_response, _result_contents, _stack, _text_response, _text_update, _user
 from tests.service.mcp._helpers import (
     _as_client_session,
     _FakeConnectionTool,
@@ -48,7 +51,6 @@ if TYPE_CHECKING:
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
     from mcp.client.experimental.task_handlers import ExperimentalTaskHandlers
     from mcp.client.session import ElicitationFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
-    from mcp.shared.message import SessionMessage
 
 
 def _ok_result() -> types.CallToolResult:
@@ -62,39 +64,10 @@ async def _load_calling_remote_tools(tool: MCPTool, *remote_tools: types.Tool) -
     return session
 
 
-def _sampling_context() -> RequestContext[ClientSession, Any]:
-    return RequestContext(
-        request_id=1, meta=None, session=_as_client_session(_ScriptedClientSession()), lifespan_context=None
-    )
-
-
-def _sampling_params(max_tokens: int = 9999) -> Any:
-    from mcp import types
-
-    return types.CreateMessageRequestParams(
-        messages=[
-            types.SamplingMessage(
-                role="user",
-                content=types.TextContent(type="text", text="hi"),
-            )
-        ],
-        maxTokens=max_tokens,
-    )
-
-
 def _tool_list_changed_notification() -> Any:
     from mcp import types
 
     return types.ServerNotification(root=types.ToolListChangedNotification())
-
-
-class _SamplingClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def get_response(self, messages: Any, options: Any = None) -> ChatResponse:
-        self.calls.append({"messages": messages, "options": dict(options or {})})
-        return ChatResponse(messages=[Message(role="assistant", contents=["sampled"])], model="m-test")
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +234,42 @@ async def test_mcp_generated_tool_cannot_override_bound_remote_name() -> None:
     assert call.arguments == {"value": "ok"}
 
 
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+@pytest.mark.parametrize(
+    ("arguments", "server_calls"),
+    [("oops", []), ("[1]", []), ("null", []), ("", [{}]), ('{"state": "open"}', [{"state": "open"}])],
+    ids=["word", "array", "null", "empty", "object"],
+)
+async def test_mcp_tool_called_through_the_loop_never_runs_on_non_object_arguments(
+    stream: bool, arguments: str, server_calls: list[dict[str, Any]]
+) -> None:
+    """A lenient remote schema would accept the parser's ``{"raw": ...}`` wrapper; the server must not be called."""
+    tool = MCPTool(name="m")
+    session = await _load_calling_remote_tools(
+        tool,
+        _mcp_remote_tool(
+            "list_issues",
+            input_schema={
+                "type": "object",
+                "properties": {"state": {"type": "string"}, "limit": {"type": "integer"}},
+            },
+        ),
+    )
+    (function,) = tool.functions
+    call = Content.from_function_call("c1", function.name, arguments=arguments)
+    if stream:
+        turns: list[Any] = [[ChatResponseUpdate(contents=[call], role="assistant")], [_text_update("done")]]
+    else:
+        turns = [ChatResponse(messages=[Message("assistant", [call])]), _text_response()]
+    layer, _wire = _stack(turns)
+
+    response = await _final_response(layer, [_user()], stream=stream, options={"tools": [function]})
+
+    assert [server_call.arguments for server_call in session.tool_calls] == server_calls
+    (result,) = _result_contents(response)
+    assert str(result.result).startswith("Error: ") is (not server_calls)
+
+
 async def test_mcp_declared_remote_name_argument_is_data_not_dispatch_control() -> None:
     tool = MCPTool(name="m", allowed_tools=["safe"])
     session = await _load_calling_remote_tools(
@@ -386,51 +395,6 @@ async def test_mcp_declared_collision_reaches_client_session_without_model_meta(
     assert call.meta is None or "forged" not in call.meta
 
 
-async def test_mcp_header_provider_sees_model_arguments_and_explicit_runtime_extras_only() -> None:
-    provider_inputs: list[dict[str, Any]] = []
-
-    def provide_headers(arguments: dict[str, Any]) -> dict[str, str]:
-        provider_inputs.append(dict(arguments))
-        return {}
-
-    session = _ScriptedClientSession(
-        tools=[
-            _mcp_remote_tool(
-                "remote",
-                input_schema={
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                },
-            )
-        ],
-        call_tool=_ok_result(),
-    )
-    tool = MCPStreamableHTTPTool(
-        name="m",
-        url="https://mcp.example/mcp",
-        session=_as_client_session(session),
-        header_provider=provide_headers,
-        additional_tool_argument_names={"remote": ["tenant_id"]},
-    )
-    await tool.load_tools()
-    func = tool._functions[0]
-    context = FunctionInvocationContext(
-        function=func,
-        arguments={"value": "model-value", "_meta": {"forged": "bad"}},
-        kwargs={"tenant_id": "trusted-tenant", "session": object(), "internal": object()},
-    )
-
-    await func.invoke(
-        arguments={"value": "model-value", "_meta": {"forged": "bad"}},
-        context=context,
-        skip_parsing=True,
-    )
-
-    assert provider_inputs == [{"tenant_id": "trusted-tenant", "value": "model-value"}]
-    (call,) = session.tool_calls
-    assert call.arguments == {"tenant_id": "trusted-tenant", "value": "model-value"}
-
-
 def test_mcp_request_meta_precedence_is_tool_meta_over_otel_over_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     def inject(carrier: dict[str, str]) -> None:
         carrier.update({"traceparent": "otel", "baggage": "otel"})
@@ -455,111 +419,6 @@ def test_mcp_request_meta_precedence_is_tool_meta_over_otel_over_caller(monkeypa
         "baggage": "otel",
         "tool": "meta",
     }
-
-
-# ---------------------------------------------------------------------------
-# MCPTool.sampling_callback
-# ---------------------------------------------------------------------------
-
-
-def _approve(_params: Any) -> bool:
-    return True
-
-
-async def _approve_async(_params: Any) -> bool:
-    return True
-
-
-async def _deny_async(_params: Any) -> bool:
-    return False
-
-
-def _fail(_params: Any) -> bool:
-    raise RuntimeError("nope")
-
-
-@pytest.mark.parametrize(
-    ("tool_kwargs", "params_kwargs", "expected_max_tokens", "expected_message"),
-    [
-        pytest.param({}, {}, None, "disabled by default", id="denied-by-default"),
-        pytest.param(
-            {"sampling_approval_callback": _approve, "sampling_max_tokens": 10},
-            {"max_tokens": 99},
-            10,
-            None,
-            id="sync-approve-clamps-to-cap",
-        ),
-        pytest.param(
-            {"sampling_approval_callback": _approve_async, "sampling_max_tokens": None},
-            {"max_tokens": 99},
-            99,
-            None,
-            id="async-approve-uncapped",
-        ),
-        pytest.param(
-            {"sampling_approval_callback": _approve_async, "sampling_max_tokens": 100},
-            {"max_tokens": 99},
-            99,
-            None,
-            id="async-approve-under-cap",
-        ),
-        pytest.param({"sampling_approval_callback": _deny_async}, {}, None, None, id="async-deny"),
-        pytest.param({"sampling_approval_callback": _fail}, {}, None, None, id="callback-error"),
-    ],
-)
-async def test_mcp_sampling_callback_gates_and_caps_requests(
-    tool_kwargs: dict[str, Any],
-    params_kwargs: dict[str, Any],
-    expected_max_tokens: int | None,
-    expected_message: str | None,
-) -> None:
-    """Sampling is denied unless the approval callback allows it; the client only sees the capped budget.
-
-    The denial rows pass only the argument they are about: ``denied-by-default``
-    supplies no callback and no cap at all, so it exercises ``MCPTool``'s own
-    defaults, and the two rejecting-callback rows leave the cap unset because no
-    budget is negotiated on a request the callback never lets through.
-    """
-    from mcp import types
-
-    client = _SamplingClient()
-    tool = MCPTool(name="m", client=client, **tool_kwargs)
-
-    result = await tool.sampling_callback(_sampling_context(), _sampling_params(**params_kwargs))
-
-    if expected_max_tokens is None:
-        assert isinstance(result, types.ErrorData)
-        assert result.code == types.INVALID_REQUEST
-        if expected_message is not None:
-            assert expected_message in result.message
-        assert client.calls == []
-    else:
-        assert isinstance(result, types.CreateMessageResult)
-        assert result.model == "m-test"
-        assert client.calls[0]["options"]["max_tokens"] == expected_max_tokens
-
-
-async def test_mcp_sampling_rate_limit_resets_with_session_state() -> None:
-    from mcp import types
-
-    client = _SamplingClient()
-    tool = MCPTool(
-        name="m",
-        client=client,
-        sampling_approval_callback=lambda params: True,
-        sampling_max_requests=1,
-    )
-
-    first = await tool.sampling_callback(_sampling_context(), _sampling_params())
-    second = await tool.sampling_callback(_sampling_context(), _sampling_params())
-    tool._reset_session_state()
-    third = await tool.sampling_callback(_sampling_context(), _sampling_params())
-
-    assert isinstance(first, types.CreateMessageResult)
-    assert isinstance(second, types.ErrorData)
-    assert second.code == types.INVALID_REQUEST
-    assert isinstance(third, types.CreateMessageResult)
-    assert len(client.calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +490,65 @@ async def test_owned_catalog_filters_allowlist_before_collision_validation(remot
     assert [
         (function.name, function.additional_properties[_MCP_REMOTE_NAME_KEY]) for function in owned_tool.functions
     ] == [("a-b", "a/b")]
+
+
+async def _prefixed_catalog_where_one_local_name_is_another_remote_name(
+    allowed_tools: list[str] | None,
+) -> list[Any]:
+    owned_tool = MCPTool(name="s", tool_name_prefix="gh", allowed_tools=allowed_tools)
+    await _load_fake_remote_tools(owned_tool, _mcp_remote_tool("gh_search"), _mcp_remote_tool("search"))
+    return owned_tool.functions
+
+
+@pytest.mark.parametrize("connection_path", ["test", "agent"])
+async def test_allowed_tools_name_selecting_two_tools_fails_test_and_agent_connection(connection_path: str) -> None:
+    # ``gh_search`` is one tool's original name and the other's prefixed name.
+    functions = await _prefixed_catalog_where_one_local_name_is_another_remote_name(["gh_search"])
+    assert [(function.name, function.additional_properties[_MCP_REMOTE_NAME_KEY]) for function in functions] == [
+        ("gh_gh_search", "gh_search"),
+        ("gh_search", "search"),
+    ]
+
+    adapter = MCPAdapter()
+    config = MCPServerConfig(
+        name="s", transport="stdio", command="python", tool_name_prefix="gh", allowed_tools=["gh_search"]
+    )
+    fake = _FakeConnectionTool(functions=functions)
+    with (
+        patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
+        pytest.raises(MCPToolNameAmbiguityError) as exc_info,
+    ):
+        if connection_path == "test":
+            await adapter.test_connection(config)
+        else:
+            await adapter.connect(config)
+
+    assert (
+        "has invalid tool configuration: a configured tool name selects more than one tool: 'gh_search' matches "
+        "the server's 'gh_search' (write 'gh_gh_search' to select only it), "
+        "the server's 'search' (write 'search' to select only it)."
+    ) in str(exc_info.value)
+    assert "Tool Name Prefix" not in str(exc_info.value)
+    await adapter.disconnect_all()
+
+
+async def test_allowed_tools_names_selecting_one_tool_each_connect() -> None:
+    # The names the ambiguity error suggests for the two tools.
+    functions = await _prefixed_catalog_where_one_local_name_is_another_remote_name(["search", "gh_gh_search"])
+
+    adapter = MCPAdapter()
+    config = MCPServerConfig(
+        name="s",
+        transport="stdio",
+        command="python",
+        tool_name_prefix="gh",
+        allowed_tools=["search", "gh_gh_search"],
+    )
+    with patch("chrys.service.mcp._connection._create_mcp_tool", return_value=_FakeConnectionTool(functions=functions)):
+        tools = await adapter.connect(config)
+
+    assert sorted(tool.name for tool in tools) == ["gh_gh_search", "gh_search"]
+    await adapter.disconnect_all()
 
 
 async def test_owned_catalog_tool_and_prompt_collision_fails_connection() -> None:
@@ -838,6 +756,54 @@ async def test_owned_mcp_close_runs_on_lifecycle_owner_task(monkeypatch: pytest.
     await close_task
 
     assert exit_task is enter_task
+
+
+async def test_owned_mcp_initialize_declares_no_sampling_capability() -> None:
+    """The client answers no sampling requests, so the handshake must not offer sampling to the server."""
+    client_send, server_receive = anyio.create_memory_object_stream[SessionMessage](4)
+    server_send, client_receive = anyio.create_memory_object_stream[SessionMessage | Exception](4)
+    declared: list[types.ClientCapabilities] = []
+
+    async def stub_server() -> None:
+        request = (await server_receive.receive()).message.root
+        assert isinstance(request, types.JSONRPCRequest)
+        assert request.method == "initialize"
+        declared.append(types.InitializeRequestParams.model_validate(request.params).capabilities)
+        result = types.InitializeResult(
+            protocolVersion=types.LATEST_PROTOCOL_VERSION,
+            capabilities=types.ServerCapabilities(),
+            serverInfo=types.Implementation(name="stub", version="0"),
+        )
+        response = types.JSONRPCResponse(
+            jsonrpc="2.0", id=request.id, result=result.model_dump(by_alias=True, mode="json", exclude_none=True)
+        )
+        await server_send.send(SessionMessage(types.JSONRPCMessage(response)))
+        notification = (await server_receive.receive()).message.root
+        assert isinstance(notification, types.JSONRPCNotification)
+        assert notification.method == "notifications/initialized"
+
+    @asynccontextmanager
+    async def transport() -> Any:
+        yield client_receive, client_send
+
+    class _StubServerTool(MCPTool):
+        def get_mcp_client(self) -> Any:
+            return transport()
+
+    tool = _StubServerTool(name="stub", load_tools=False, load_prompts=False)
+    server = asyncio.create_task(stub_server())
+    async with client_send, client_receive, server_send, server_receive:
+        try:
+            await tool.connect()
+            await server
+        finally:
+            await tool.close()
+            server.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server
+
+    assert len(declared) == 1
+    assert declared[0].sampling is None
 
 
 async def test_owned_mcp_initialize_failure_does_not_commit_closed_session(monkeypatch: pytest.MonkeyPatch) -> None:

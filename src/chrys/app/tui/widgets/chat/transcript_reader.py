@@ -29,7 +29,7 @@ class TranscriptReader:
                 messages.append(child)
             elif child.is_attached:
                 messages.extend(child.query(AgentMessage))
-        return [(message._profile_name or "Agent", message.text) for message in messages if message.text]
+        return [(message.profile_name or "Agent", message.text) for message in messages if message.text]
 
     def get_user_messages(self) -> list[tuple[str, str]]:
         """Return (role_label, raw_text) of all user messages in document order."""
@@ -44,7 +44,7 @@ class TranscriptReader:
             if isinstance(child, UserMessage) and child.text:
                 result.append(("You", child.text))
             elif isinstance(child, AgentMessage) and child.text:
-                result.append((child._profile_name or "Agent", child.text))
+                result.append((child.profile_name or "Agent", child.text))
         return result
 
     def _document_children(self) -> list[Widget]:

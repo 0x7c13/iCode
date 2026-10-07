@@ -33,15 +33,19 @@ import contextvars
 import inspect
 import io
 import json
+import linecache
 import math
 import os
 import platform
 import queue
+import re
 import sys
 import threading
 import time
 import traceback
 import types
+import unicodedata
+import warnings
 from collections import deque
 from collections.abc import Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -758,23 +762,39 @@ class Host:
         source, filename, workspace = params.get("source"), params.get("filename"), params.get("workspace")
         if not isinstance(source, str) or not isinstance(filename, str) or not isinstance(workspace, str):
             raise _Invalid("load needs source, filename and workspace strings.")
+        bytecode_cache, package_dir = params.get("bytecode_cache"), params.get("package_dir")
+        if not isinstance(bytecode_cache, str) or not isinstance(package_dir, (str, type(None))):
+            raise _Invalid("load needs a bytecode_cache string and an optional package_dir string.")
+        diagnose, precompile = params.get("diagnose", False), params.get("precompile", [])
+        if not isinstance(diagnose, bool) or not (
+            isinstance(precompile, list) and all(isinstance(path, str) for path in precompile)
+        ):
+            raise _Invalid("load takes an optional diagnose boolean and an optional precompile list of strings.")
+        problem = _bytecode_cache_problem(bytecode_cache, package_dir)
+        if problem is not None:
+            self.send(_error(request_id, ERROR_LOAD_FAILED, problem, {"stdout": self.load_stdout.snapshot()}))
+            return None
         context = contextvars.copy_context()
         context.run(_CURRENT_ATTEMPT.set, _LOAD_PHASE)
         try:
             os.chdir(workspace)
         except OSError as exc:
             raise _Invalid("workspace is not usable: " + str(exc)) from exc
+        # Before the workflow's folder joins sys.path: a file of it named like a stdlib module must not shadow it here.
+        places = _Places(filename, self.sdk_dir) if diagnose else None
         sys.path.insert(0, os.path.dirname(filename))
         os.environ[ENTRY_ENV] = filename
-        module = types.ModuleType(MODULE_NAME)
-        module.__file__ = filename
-        sys.modules[MODULE_NAME] = module
+        if places is not None:
+            broken = await self.loop.run_in_executor(self.pool, _precompile, source, precompile, places)
+            if broken:
+                data = {"traceback": "", "stdout": self.load_stdout.snapshot()}
+                data.update(_diagnostics_data(broken))
+                self.send(_error(request_id, ERROR_LOAD_FAILED, broken[0]["message"], data))
+                return None
+        module = _entry_module(filename)
 
         def run_module() -> None:
-            # A BOM belongs to the file bytes (and the entry digest) but not to the program.
-            # dont_inherit: the file gets its own future flags, not this module's (PEP 563 annotations).
-            code = compile(source.removeprefix("\ufeff"), filename, "exec", dont_inherit=True)
-            exec(code, module.__dict__)  # noqa: S102 - running the user's workflow file is this process's purpose
+            _exec_entry(source, filename, module)
 
         try:
             await self.loop.run_in_executor(self.pool, context.run, run_module)
@@ -786,25 +806,31 @@ class Host:
             to_dict = getattr(exc, "to_dict", None)
             if isinstance(exc, self.sdk.WorkflowValidationError) and callable(to_dict):
                 data["validation"] = {
-                    field: _diagnostic(text) if isinstance(text, str) else text for field, text in to_dict().items()
+                    field: _diagnostic(text) if isinstance(text, str) else text
+                    for field, text in to_dict().items()
+                    if field in ("message", "location")
                 }
             message = _diagnostic(type(exc).__name__ + ": " + str(exc))
+            if places is None:
+                self.send(_error(request_id, ERROR_LOAD_FAILED, message, data))
+                return None
+            data["traceback"] = _diagnostic(_user_traceback(exc, places), tail=True)
+            data.update(_diagnostics_data([_failure_diagnostic(exc, places, self.sdk.WorkflowValidationError)]))
             self.send(_error(request_id, ERROR_LOAD_FAILED, message, data))
             return None
-        workflow = module.__dict__.get("workflow")
-        if not isinstance(workflow, self.sdk.Workflow):
-            self.send(
-                _error(
-                    request_id,
-                    ERROR_LOAD_FAILED,
-                    "the workflow file must bind a module-level `workflow` to the result of build().",
-                    {"stdout": self.load_stdout.snapshot()},
-                )
-            )
+        found = module.__dict__.get("workflow", _MISSING)
+        if not isinstance(found, self.sdk.Workflow):
+            message = "the workflow file must bind a module-level `workflow` to the result of build()."
+            data = {"stdout": self.load_stdout.snapshot()}
+            if diagnose:
+                data.update(_diagnostics_data([_missing_workflow_diagnostic(found, filename)]))
+            self.send(_error(request_id, ERROR_LOAD_FAILED, message, data))
             return None
-        self.definition = workflow.definition
-        manifest = workflow.manifest()
-        return {"manifest": manifest, "stdout": self.load_stdout.snapshot()}
+        self.definition = found.definition
+        result = {"manifest": found.manifest(), "stdout": self.load_stdout.snapshot()}
+        if diagnose:
+            return _with_sites(request_id, result, _declaration_sites(found.definition), int(LIMITS["max_frame_bytes"]))
+        return result
 
     async def _run_python(self, request_id: int, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ref, ref_key = _ref_of(params)
@@ -1280,6 +1306,356 @@ def _error(request_id: int, code: str, message: str, data: Optional[Dict[str, An
     return {"id": request_id, "error": {"code": code, "message": message, "data": data or {}}}
 
 
+# -- load diagnostics ----------------------------------------------------------------
+# A load with ``diagnose`` reports failures as a compiler would: a structured
+# diagnostic with the file, line and character column at fault, the source line,
+# notes saying how the entry led there, and a hint for common mistakes. Every
+# field and the number of diagnostics and notes are capped, so the error frame
+# stays far below the frame limit whatever user code raised.
+
+_MISSING = object()
+_MAX_DIAGNOSTICS = 20
+_MAX_NOTES = 5
+_MESSAGE_CHARS = 4096
+_SOURCE_LINE_CHARS = 1024
+_NOTE_CHARS = 512
+_HINT_CHARS = 512
+_PATH_CHARS = 4096
+_FILE_TOO_LONG = " (file name too long to report)"
+_RELATIVE_IMPORT = re.compile(r"\s*from\s+\.+([\w.]*)\s+import\b")
+
+
+def _capped(text: str, limit: int) -> str:
+    """*text* made frame-safe and cut at *limit* characters, saying how many were dropped."""
+    text = _clean(text)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "... [" + str(len(text) - limit) + " chars dropped]"
+
+
+class _Places:
+    """Tells the workflow author's own files from the SDK, this host, installed packages and made-up names."""
+
+    def __init__(self, entry: str, sdk_dir: str) -> None:
+        import sysconfig
+
+        self.entry = entry
+        paths = sysconfig.get_paths()
+        roots = [sdk_dir] + [paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib") if key in paths]
+        # Real paths on both sides: an interpreter may name its stdlib through a symlink its frames don't use.
+        self.roots = tuple(os.path.join(os.path.normcase(os.path.realpath(root)), "") for root in roots)
+        self.host = os.path.normcase(os.path.realpath(__file__))
+
+    def is_file(self, name: Any) -> bool:
+        """Whether *name* is the entry or an existing file; anything else, such as ``<generated>``, is a label."""
+        return isinstance(name, str) and (name == self.entry or (os.path.isabs(name) and os.path.isfile(name)))
+
+    def is_user(self, name: Any) -> bool:
+        if name == self.entry:
+            return True
+        if not self.is_file(name):
+            return False
+        folded = os.path.normcase(os.path.realpath(name))
+        parts = folded.split(os.sep)
+        installed = "site-packages" in parts or "dist-packages" in parts or folded.startswith(self.roots)
+        return folded != self.host and not installed
+
+
+class _Spot:
+    """A place in a file: 1-based line, 1-based character columns (``end_column`` is just past the end)."""
+
+    def __init__(
+        self,
+        file: str,
+        line: Optional[int],
+        column: Optional[int] = None,
+        end_line: Optional[int] = None,
+        end_column: Optional[int] = None,
+        module: bool = False,
+    ) -> None:
+        self.file = file
+        self.line = line
+        self.column = column
+        self.end_line = end_line if end_column is not None else None
+        self.end_column = end_column
+        self.module = module  # the code running here is a module's top level, so reaching it was an import
+
+
+def _line_number(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _line_text(file: str, line: Optional[int]) -> str:
+    return linecache.getline(file, line) if line is not None else ""
+
+
+def _byte_column(text: str, offset: Any) -> Optional[int]:
+    """The 1-based character column of 0-based UTF-8 byte *offset* into *text*, if it lands on a character."""
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        return None
+    raw = text.encode("utf-8", "surrogatepass")
+    if offset > len(raw.rstrip(b"\r\n")):
+        return None
+    try:
+        return len(raw[:offset].decode("utf-8", "surrogatepass")) + 1
+    except UnicodeDecodeError:
+        return None
+
+
+def _syntax_column(offset: Any) -> Optional[int]:
+    """A ``SyntaxError`` offset as a character column; before Python 3.11 some count bytes, so none is given."""
+    if sys.version_info < (3, 11) or not isinstance(offset, int) or isinstance(offset, bool) or offset < 1:
+        return None
+    return offset
+
+
+def _frame_spot(frame: traceback.FrameSummary) -> _Spot:
+    line = _line_number(frame.lineno)
+    text = _line_text(frame.filename, line)
+    column = _byte_column(text, getattr(frame, "colno", None)) if text else None  # Python 3.11+
+    end_line = _line_number(getattr(frame, "end_lineno", None))
+    end_column = None
+    if column is not None and line is not None and end_line is not None and end_line >= line:
+        end_text = text if end_line == line else _line_text(frame.filename, end_line)
+        end_column = _byte_column(end_text, getattr(frame, "end_colno", None)) if end_text else None
+    return _Spot(frame.filename, line, column, end_line, end_column, frame.name == "<module>")
+
+
+def _syntax_spot(exc: SyntaxError) -> _Spot:
+    line = _line_number(exc.lineno)
+    column = _syntax_column(exc.offset) if line is not None else None
+    end_line = _line_number(getattr(exc, "end_lineno", None))
+    end_column = None
+    if column is not None and line is not None and end_line is not None and end_line >= line:
+        end_column = _syntax_column(getattr(exc, "end_offset", None))
+        if end_line == line and end_column is not None and end_column <= column:
+            end_column = None
+    return _Spot(str(exc.filename), line, column, end_line, end_column, module=True)
+
+
+def _describe(exc: BaseException) -> str:
+    try:
+        text = str(exc)
+    except Exception:
+        text = "<str() of the exception failed>"
+    name = type(exc).__name__
+    return name + ": " + text if text else name
+
+
+def _label(name: Any) -> str:
+    """A made-up file name, kept on one line for a message."""
+    text = name if isinstance(name, str) else repr(name)
+    return _capped("".join(char if char.isprintable() else "�" for char in text), _NOTE_CHARS)
+
+
+def _reported_file(file: Optional[str]) -> Tuple[Optional[str], str]:
+    """The file name to report, raw, and the message suffix that says when it was too long to."""
+    if file is not None and len(file) > _PATH_CHARS:
+        return None, _FILE_TOO_LONG
+    return file, ""
+
+
+def _record(
+    code: str,
+    message: str,
+    spot: Optional[_Spot],
+    *,
+    node: Any = None,
+    notes: Optional[List[Dict[str, Any]]] = None,
+    hint: Optional[str] = None,
+) -> Dict[str, Any]:
+    file, suffix = _reported_file(spot.file if spot is not None else None)
+    placed = spot if file is not None else None
+    source_line = None
+    if placed is not None:
+        text = _line_text(placed.file, placed.line)
+        text = text.removesuffix("\n")
+        if text and len(text) <= _SOURCE_LINE_CHARS:  # a longer line is not quoted: a cut excerpt misplaces the caret
+            source_line = _clean(text)
+    return {
+        "code": code,
+        "message": _capped(message + suffix, _MESSAGE_CHARS),
+        "file": file,
+        "line": placed.line if placed is not None else None,
+        "column": placed.column if placed is not None else None,
+        "end_line": placed.end_line if placed is not None else None,
+        "end_column": placed.end_column if placed is not None else None,
+        "node": node if isinstance(node, str) and len(node) <= _MESSAGE_CHARS else None,
+        "source_line": source_line,
+        "notes": notes or [],
+        "hint": _capped(hint, _HINT_CHARS) if hint is not None else None,
+    }
+
+
+def _note(message: str, spot: _Spot) -> Dict[str, Any]:
+    file, suffix = _reported_file(spot.file)
+    return {
+        "message": _capped(message + suffix, _NOTE_CHARS),
+        "file": file,
+        "line": spot.line if file is not None else None,
+    }
+
+
+def _notes(chain: List[_Spot], lead: Optional[str]) -> List[Dict[str, Any]]:
+    """How the entry led to ``chain[0]``, one note per outer place; a long chain keeps its innermost and outermost."""
+    notes = []
+    for index in range(1, len(chain)):
+        if index == 1 and lead is not None:
+            message = lead
+        else:
+            message = "imported from" if chain[index - 1].module else "called from"
+        notes.append(_note(message, chain[index]))
+    if len(notes) <= _MAX_NOTES:
+        return notes
+    gap = {"message": str(len(notes) - _MAX_NOTES + 1) + " more frames not shown", "file": None, "line": None}
+    return [*notes[: _MAX_NOTES - 2], gap, *notes[-1:]]
+
+
+def _failure_diagnostic(exc: BaseException, places: _Places, validation_error: Any) -> Dict[str, Any]:
+    """The diagnostic of a load that raised *exc*: placed at the innermost line of the author's own code."""
+    try:
+        return _placed_failure(exc, places, validation_error)
+    except Exception:  # a diagnostic that can't be placed still reports the failure
+        return _record("load_error", _describe(exc), None)
+
+
+def _user_traceback(exc: BaseException, places: _Places) -> str:
+    """*exc*'s traceback, chained exceptions included, with only the frames of the author's own code."""
+    try:
+        shown = traceback.TracebackException.from_exception(exc, limit=sys.maxsize)
+        pending = [shown]
+        while pending:
+            current = pending.pop()
+            current.stack = traceback.StackSummary.from_list(
+                [frame for frame in current.stack if places.is_user(frame.filename)]
+            )
+            pending.extend(chained for chained in (current.__cause__, current.__context__) if chained is not None)
+            pending.extend(getattr(current, "exceptions", None) or ())  # an exception group's members, Python 3.11+
+        return "".join(shown.format())
+    except Exception:  # the whole traceback still beats none
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _placed_failure(exc: BaseException, places: _Places, validation_error: Any) -> Dict[str, Any]:
+    # extract_tb, not walk_tb: only it carries the column ranges of Python 3.11+; an explicit limit ignores
+    # whatever sys.tracebacklimit the workflow set.
+    frames = traceback.extract_tb(exc.__traceback__, limit=sys.maxsize)
+    chain: List[_Spot] = []
+    for frame in reversed(frames):
+        if places.is_user(frame.filename):
+            spot = _frame_spot(frame)
+            if not chain or (chain[-1].file, chain[-1].line) != (spot.file, spot.line):  # recursion repeats a line
+                chain.append(spot)
+    message = _describe(exc)
+    node: Any = None
+    lead: Optional[str] = None
+    hint: Optional[str] = None
+    if isinstance(exc, SyntaxError):
+        code = "syntax_error"
+        message = type(exc).__name__ + ": " + str(exc.msg)
+        if places.is_file(exc.filename):
+            chain.insert(0, _syntax_spot(exc))
+        else:  # code compiled under a made-up name is placed at the line that compiled it
+            line = _line_number(exc.lineno)
+            message += " (in " + _label(exc.filename) + (", line " + str(line) if line is not None else "") + ")"
+    elif validation_error is not None and isinstance(exc, validation_error):
+        code = "sdk_validation_error"
+        error: Any = exc  # the SDK's WorkflowValidationError, loaded by the user's interpreter
+        node = error.location
+        site = error.site
+        if isinstance(site, tuple) and len(site) == 2 and places.is_file(site[0]) and _line_number(site[1]) is not None:
+            chain.insert(0, _Spot(site[0], site[1]))
+            lead = "build() was called at"
+    else:
+        code = "load_error"
+        # Python's own wording for a relative import outside a package; inside a real subpackage one is fine.
+        if isinstance(exc, ImportError) and chain and str(exc).startswith("attempted relative import"):
+            match = _RELATIVE_IMPORT.match(_line_text(chain[0].file, chain[0].line))
+            if match is not None:
+                written = "from " + match.group(1) + " import ..." if match.group(1) else "import ..."
+                hint = "files of a workflow import each other by name: write '" + written + "'"
+    return _record(code, message, chain[0] if chain else None, node=node, notes=_notes(chain, lead), hint=hint)
+
+
+def _missing_workflow_diagnostic(found: Any, entry: str) -> Dict[str, Any]:
+    if found is _MISSING:
+        message = "the workflow file defines no module-level `workflow`"
+    else:
+        message = "module-level `workflow` is a " + type(found).__name__ + ", not the Workflow that build() returns"
+    return _record("missing_workflow", message, _Spot(entry, None), hint="assign workflow = wf.build() at module level")
+
+
+def _precompile(source: str, paths: List[str], places: _Places) -> List[Dict[str, Any]]:
+    """The syntax errors of a folder's Python files, the entry's first, found without running any of them.
+
+    Each file compiles from its bytes as an import would (honouring its
+    coding declaration). When any is broken, the entry is compiled too, so
+    the report lists every syntax error at once.
+    """
+    import importlib.machinery
+
+    suffixes = tuple(_fold(suffix) for suffix in importlib.machinery.SOURCE_SUFFIXES)
+    found: List[Dict[str, Any]] = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the import reports a file's warnings; compiling it here must not twice
+        for path in paths:
+            if path == places.entry or not _fold(path).endswith(suffixes):
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    payload = handle.read()
+            except OSError:
+                continue  # a file that can't be read now fails its import, if anything imports it
+            try:
+                compile(payload, path, "exec", dont_inherit=True)
+            except (SyntaxError, ValueError) as exc:  # ValueError: a null byte, before Python 3.12
+                found.append(_compile_failure(exc, path, places))
+        if found:
+            try:
+                _compile_entry(source, places.entry)
+            except (SyntaxError, ValueError) as exc:
+                found.insert(0, _compile_failure(exc, places.entry, places))
+    return found
+
+
+def _compile_failure(exc: Exception, path: str, places: _Places) -> Dict[str, Any]:
+    if isinstance(exc, SyntaxError):
+        if exc.filename is None:  # a null byte, such as a UTF-16 file has: Python names no file
+            exc.filename = path
+        return _failure_diagnostic(exc, places, None)
+    return _record("syntax_error", _describe(exc), _Spot(path, None))
+
+
+def _diagnostics_data(found: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The ``diagnostics`` of a failed load, at most ``_MAX_DIAGNOSTICS``, and whether any were dropped."""
+    return {"diagnostics": found[:_MAX_DIAGNOSTICS], "diagnostics_truncated": len(found) > _MAX_DIAGNOSTICS}
+
+
+def _declaration_sites(definition: Any) -> Dict[str, Any]:
+    """Where each node was declared: ``{"files": [file, ...], "nodes": {node_id: [file_index, line]}}``."""
+    files: List[Optional[str]] = []
+    index: Dict[str, int] = {}
+    nodes: Dict[str, List[int]] = {}
+    for node_id in definition.node_order:
+        site = definition.nodes[node_id].site
+        if site is None:
+            continue
+        file, line = site
+        if file not in index:
+            index[file] = len(files)
+            files.append(_reported_file(file)[0])
+        nodes[node_id] = [index[file], line]
+    return {"files": files, "nodes": nodes}
+
+
+def _with_sites(request_id: int, result: Dict[str, Any], sites: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    """*result* with the declaration sites, unless they would push the frame past *limit* bytes."""
+    with_sites = dict(result, sites=sites)
+    if len(_dumps({"id": request_id, "result": with_sites})) <= limit:
+        return with_sites
+    return dict(result, sites_truncated=True)
+
+
 def _take_stdio() -> Tuple[int, int, int, _NativeTail]:
     """Move fd 0/1/2 off the protocol channel; return the private protocol in/out fds, a diagnostics fd and the tail."""
     input_fd = os.dup(0)
@@ -1327,23 +1703,115 @@ def main(argv: List[str]) -> int:
     return 0
 
 
+def _entry_module(filename: str) -> types.ModuleType:
+    """The module the entry runs in, registered under ``MODULE_NAME`` so its functions pickle by reference."""
+    module = types.ModuleType(MODULE_NAME)
+    module.__file__ = filename
+    sys.modules[MODULE_NAME] = module
+    return module
+
+
+def _exec_entry(source: str, filename: str, module: types.ModuleType) -> None:
+    """Run the entry's text as the program: the host and its multiprocessing children share this one rule."""
+    exec(_compile_entry(source, filename), module.__dict__)  # noqa: S102 - running the user's workflow file is this process's purpose
+
+
+def _compile_entry(source: str, filename: str) -> types.CodeType:
+    # A BOM belongs to the file bytes (and the entry digest) but not to the program.
+    program = source.removeprefix("\ufeff")
+    # Tracebacks quote the text that ran, not whatever the file holds by then; no mtime keeps checkcache off it.
+    # Lines split as Python reads a file: str.splitlines() would also break at a U+2028 inside a string.
+    lines = io.StringIO(program, newline=None).readlines()
+    linecache.cache[filename] = (len(program), None, lines, filename)
+    try:
+        # dont_inherit: the file gets its own future flags, not this module's (PEP 563 annotations).
+        return compile(program, filename, "exec", dont_inherit=True)
+    except SyntaxError as exc:
+        if exc.filename is None:  # a null byte: Python names no file
+            exc.filename = filename
+        raise
+
+
+def _fold(name: str) -> str:
+    """One spelling per file name on a case-insensitive or normalizing file system."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _bytecode_cache_problem(bytecode_cache: str, package_dir: Optional[str]) -> Optional[str]:
+    """Why loading must not go ahead with this cache, after clearing what *package_dir* left in it.
+
+    The main process starts this interpreter with ``PYTHONPYCACHEPREFIX`` so
+    no bytecode cached next to a workflow's source (which nobody confirmed)
+    can run instead of the source. That cache is still keyed by whole-second
+    mtimes and sizes, so a folder's own entries are cleared on every load and
+    its modules compile from the source that was confirmed.
+    """
+    prefix = sys.pycache_prefix
+    if prefix is None or os.path.normcase(os.path.abspath(prefix)) != os.path.normcase(os.path.abspath(bytecode_cache)):
+        return (
+            "the workflow interpreter ignores PYTHONPYCACHEPREFIX (is it started with -E or -I?), so bytecode "
+            "cached next to the workflow source could run instead of the source."
+        )
+    if package_dir is None:
+        return None
+    try:
+        _clear_cached_bytecode(package_dir)
+    except OSError as exc:
+        return "could not clear the cached bytecode of the workflow folder: " + _clean(str(exc))
+    return None
+
+
+def _clear_cached_bytecode(package_dir: str) -> None:
+    """Delete every cached variant (any optimization level, any interpreter tag) of the folder's source files.
+
+    Hidden entries are skipped, as the confirmation skips them; a
+    ``__pycache__`` folder is searched like any other, since it can hold
+    sources. A name matches by its stem whatever its case or normalization,
+    and deleting a cache too many only costs one compilation.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    suffixes = tuple(_fold(suffix) for suffix in importlib.machinery.SOURCE_SUFFIXES)
+    stems: Dict[str, Set[str]] = {}
+    for current, folders, files in os.walk(package_dir):
+        folders[:] = [name for name in folders if not name.startswith(".")]
+        for name in files:
+            folded = _fold(name)
+            suffix = next((suffix for suffix in suffixes if folded.endswith(suffix)), None)
+            if name.startswith(".") or suffix is None:
+                continue
+            try:
+                cached = importlib.util.cache_from_source(os.path.join(current, name))
+            except NotImplementedError:  # no cache tag: this interpreter never caches bytecode
+                return
+            stems.setdefault(os.path.dirname(cached), set()).add(folded[: len(folded) - len(suffix)] + ".")
+    for mirror, prefixes in stems.items():
+        try:
+            with os.scandir(mirror) as listing:
+                entries = list(listing)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for entry in entries:
+            folded = _fold(entry.name)
+            if folded.endswith(".pyc") and folded.startswith(tuple(prefixes)) and entry.is_file(follow_symlinks=False):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(entry.path)
+
+
 def _import_entry_in_child() -> None:
     """Re-import the workflow module in a multiprocessing child of the host.
 
     A spawned or forkserver child re-imports the parent's main module, which here is this file, not the
-    user's; functions pickled by reference from the workflow file need its module importable by name.
+    user's; functions pickled by reference from the workflow file need its module importable by name. The
+    entry runs from its UTF-8 text exactly as the host ran it, whatever coding declaration it carries.
     """
     entry = os.environ.get(ENTRY_ENV)
     if not entry:
         return
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(MODULE_NAME, entry)
-    if spec is None or spec.loader is None:
-        return
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[MODULE_NAME] = module
-    spec.loader.exec_module(module)
+    with open(entry, "rb") as handle:
+        source = handle.read().decode("utf-8")
+    _exec_entry(source, entry, _entry_module(entry))
 
 
 if __name__ == "__main__":

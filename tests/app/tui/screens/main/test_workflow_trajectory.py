@@ -65,11 +65,11 @@ async def test_f12_waits_for_completion_and_lease_release(
                 )
             )
             # The frontend submit can precede the engine's admission lease.
-            main._begin_pending_submit("Review this")
+            main._state.submit.begin("Review this")
             await pilot.press("f12")
             assert not dashboard.foreground and chat.display
             assert main.check_action("toggle_trajectory_dashboard", ()) is False
-            main._clear_pending_submit()
+            main._state.submit.clear()
         composer.replace_draft("Review this")
         if workflow:
             await start_workflow(pilot, "Review this")
@@ -93,7 +93,7 @@ async def test_f12_waits_for_completion_and_lease_release(
             )
             await bus.publish(events.WorkflowRunStarted(run_id="run", title=preview.title, manifest=preview.manifest))
         else:
-            await wait_for(lambda: main._agent_running, pilot=pilot)
+            await wait_for(lambda: main._state.run.agent_running, pilot=pilot)
             await engine.set_execution(ExecutionSnapshot("turn", cancellable=True), main._services.bus)
         await wait_for(lambda: main._execution_binding_busy == (engine.snapshot.kind != "idle"), pilot=pilot)
         await pilot.press("f12")
@@ -108,7 +108,7 @@ async def test_f12_waits_for_completion_and_lease_release(
             await bus.publish(events.WorkflowRunFinished(run_id="run", outcome="completed"))
         else:
             await bus.publish(events.InvocationMessage(origin=InvocationOrigin("turn", "", "turn", None), text="Done."))
-            await wait_for(lambda: not main._agent_running, pilot=pilot)
+            await wait_for(lambda: not main._state.run.agent_running, pilot=pilot)
         # Terminal output arrives before saving/draining releases the execution lease.
         await pilot.press("f12")
         assert not dashboard.foreground

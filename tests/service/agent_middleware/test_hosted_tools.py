@@ -1368,12 +1368,24 @@ class TestSubAgentHostedPresentation:
             InvocationToolCallResult,
         ]
         for event in events:
-            assert event.call_id.startswith("hosted:1:0:0:")
+            assert event.call_id.startswith(f"hosted:{bridge.run_generation}:0:0:")
             assert event.provider_hosted is True
             assert event.hosted_family == "search"
             assert event.provider == "openai"
         assert events[0].provider_call_id == "search_1"
         assert events[-1].result == "found"
+
+    async def test_sub_agent_hosted_passes_never_share_a_generation(self) -> None:
+        # Each sub-agent call builds a fresh middleware; its cards must not reuse an earlier call's ids.
+        def middleware(invocation_id: str) -> SubAgentEventMiddleware:
+            return SubAgentEventMiddleware(
+                EventBus(), "Explore", invocation_id, origin=InvocationOrigin("sub_agent", "", invocation_id, None)
+            )
+
+        generations = [middleware("inv-1").begin_hosted_pass().run_generation for _ in range(2)]
+        generations.append(middleware("inv-2").begin_hosted_pass().run_generation)
+
+        assert len(set(generations)) == 3
 
     async def test_sub_agent_retry_terminalizes_visible_hosted_card_as_interrupted(self) -> None:
         bus = EventBus()

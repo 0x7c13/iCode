@@ -16,6 +16,7 @@ import chrys.app.tui.screens.dialogs.ask_user as _ask_user_mod
 from chrys.app.tui.screens.main.event_handlers import (
     BackendEventHandler,
 )
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets import PromptDraft
 from chrys.foundation.events.types import (
@@ -103,7 +104,7 @@ def test_question_dialog_offers_inline_for_chat_calls_before_card_mount(
     monkeypatch.setattr(_ask_user_mod, "AskUserDialog", _FakeAskUserDialog)
     app = _FakeAskUserApp()
     screen = SimpleNamespace(app=app)
-    adapter = MainScreenViewAdapter(screen)  # type: ignore[arg-type]
+    adapter = MainScreenViewAdapter(screen, state=MainScreenState())  # type: ignore[arg-type]
 
     # External ACP questions carry no call id, so no card can take the
     # hand-off; the modal must not offer a button that only reopens itself.
@@ -325,9 +326,7 @@ def test_inline_tool_result_restores_input_focus() -> None:
         raise AssertionError(f"unexpected query_one({cls})")
 
     screen = SimpleNamespace(
-        _agent_running=True,
-        _state_store=None,
-        _live_call_paths={},
+        _state=MainScreenState(run=RunState(agent_running=True)),
         _debug=lambda *_args: None,
         query_one=query_one,
     )
@@ -397,7 +396,7 @@ def test_question_dialog_routes_by_session_without_probing_a_tool_card(
 ) -> None:
     monkeypatch.setattr(_ask_user_mod, "AskUserDialog", _FakeAskUserDialog)
     app = _FakeAskUserApp()
-    adapter = MainScreenViewAdapter(SimpleNamespace(app=app))  # type: ignore[arg-type]
+    adapter = MainScreenViewAdapter(SimpleNamespace(app=app), state=MainScreenState())  # type: ignore[arg-type]
     monkeypatch.setattr(
         adapter, "current_chat_session_id", create_autospec(adapter.current_chat_session_id, return_value="chat")
     )

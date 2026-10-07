@@ -83,7 +83,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
-| Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. | On close |
+| Max transient retries | Sets the maximum number of automatic retries for errors that may resolve shortly, such as temporary network interruptions, request timeouts, temporary model service unavailability, or server rate limits. It does not retry problems that waiting cannot resolve, such as invalid model configuration or request parameters. A higher limit gives temporary failures more chances to recover; if retries keep failing, it also increases the wait and the number of model requests before the final failure. Leave blank to use the TUI default; set to `0` to disable automatic retries. This setting does not cover the one resend after iCode compacts a full context window. | On close |
 
 ### Security
 
@@ -92,13 +92,17 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Default approval mode | Sets the default approval mode for the next iCode launch; it does not affect the current session. Only `manual` and `auto` are offered; to bypass approval in the current session, use `/approval bypass`. For switching the current session's mode and the differences between modes, see [Configure approval modes](./approval.md). | Saved immediately; applies at the next launch |
+| Show the approval dialog only when Auto-Review flags a call | On by default. In automatic mode, no dialog opens while the approval judge model evaluates a call, and calls it judges safe run without one; the dialog opens only for flagged calls or when evaluation fails. When disabled, the dialog opens at once and shows **Evaluating**, so you can decide before evaluation finishes. Requests already waiting keep the behavior they started with. See [Handle approval requests in the TUI](./approval.md#handle-approval-requests-in-the-tui). | Immediately |
 
 #### Project trust
+
+Project settings, hooks, and skills come with the repository you open, so all three are off by default. When the working directory has any of them that are not loaded, iCode shows a notice naming the setting to turn on.
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Load project settings | Reads `.chrys/settings.yaml` in the current working directory and applies its project settings, such as request retries, automatic session titles, and working directory notices. See [Project-level settings](../../reference/settings.md#project-level-settings) for allowed keys and override restrictions. | On close |
 | Load project hooks | Controls whether iCode loads hooks from `.chrys/hooks` in the current working directory; it does not affect user-level hooks. To create and validate hooks, see [Configure and write hooks](../extensions/hooks.md). For the complete configuration fields, see the [Hooks configuration reference](../../reference/hooks.md). | On close |
+| Load project skills | Controls whether iCode loads skills from `.agents/skills` in the current working directory; it does not affect your own skills directories. See [Install and use skills](../extensions/skills.md). | On close |
 
 #### Diagnostics
 
