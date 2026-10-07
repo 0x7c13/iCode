@@ -15,6 +15,7 @@ import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,8 +26,9 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetails, UserRetry
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import UserMessageKind
+from chrys.foundation.models.workspace import Workspace
 from chrys.kernel import Message
-from chrys.orchestration.engine.state.machine import EngineStateMachine, Trigger
+from chrys.orchestration.engine.state.machine import EngineState, EngineStateMachine, Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
@@ -623,7 +625,7 @@ async def test_pending_retry_dispatch_strips_trailing_markers_before_task() -> N
         def __init__(self) -> None:
             self.current = make_current(loaded=SimpleNamespace(), manifest=make_manifest())
             self._current = self.current
-            self.session = SimpleNamespace(mark_surface=lambda: None)
+            self.session = SimpleNamespace(mark_surface=lambda: None, workspace=None)
             self._turn_state = make_turn_state()
             self._history = _OrderedHistory()
             self._fsm = EngineStateMachine()
@@ -655,6 +657,66 @@ async def test_pending_retry_dispatch_strips_trailing_markers_before_task() -> N
     assert task is not None
     await task
     assert order == ["remove_trailing_markers", "retry_task"]
+
+
+@pytest.mark.parametrize(
+    ("cwd_exists", "shutting_down", "dropped_for_missing_cwd"),
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids=["missing-cwd-drop", "dispatch", "shutdown-drop-first"],
+)
+async def test_pending_retry_reports_only_the_missing_cwd_drop(
+    tmp_path: Path, cwd_exists: bool, shutting_down: bool, dropped_for_missing_cwd: bool
+) -> None:
+    """Only the missing-cwd drop returns the directory, so the runner settles the FSM the pass left RUNNING."""
+    from chrys.orchestration.engine.execution import PendingRetry
+
+    work = tmp_path / "work"
+    if cwd_exists:
+        work.mkdir()
+    order: list[str] = []
+
+    class _History:
+        def remove_trailing_markers(self) -> None:
+            order.append("remove_trailing_markers")
+
+    fsm = EngineStateMachine()
+    fsm.try_transition(Trigger.START)
+    fsm.try_transition(Trigger.USER_MESSAGE)  # RUNNING
+    host = SimpleNamespace(
+        current=make_current(loaded=SimpleNamespace(), manifest=make_manifest()),
+        session=SimpleNamespace(
+            mark_surface=lambda: None, workspace=Workspace.from_cwd(str(work)), shutting_down=shutting_down
+        ),
+        _turn_state=make_turn_state(),
+        permits=SimpleNamespace(session_generation=0, build_generation=0),
+    )
+    install_loaded_agent(host, reminder_middleware=SystemReminderMiddleware())
+    host._turn_state.lease.pending_retry = PendingRetry(owner_admission_id=1)
+
+    async def _retry_and_save(*_args: object, **_kwargs: object) -> None:
+        order.append("retry_task")
+
+    result = make_turn_retry(
+        current=host.current,
+        session=host.session,
+        turn_state=host._turn_state,
+        permits=host.permits,
+        fsm=fsm,
+        history=_History(),
+        retry_and_save=_retry_and_save,
+    ).start_pending_retry_if_due()
+
+    assert result == (str(work) if dropped_for_missing_cwd else None)
+    assert fsm.state is EngineState.RUNNING
+    task = host._turn_state.lease.run_task
+    if cwd_exists:
+        assert task is not None
+        await task
+        assert order == ["remove_trailing_markers", "retry_task"]
+    else:
+        assert task is None
+        assert order == []
+        assert host._turn_state.lease.pending_retry == PendingRetry()
 
 
 async def test_later_retry_after_interrupted_finalization_preserves_last_words_and_turn_reminders() -> None:

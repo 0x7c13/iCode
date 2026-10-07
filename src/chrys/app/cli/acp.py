@@ -15,6 +15,7 @@ import acp as acp_sdk
 
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.app.acp.session_manager import AcpSessionManager
+from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import Settings
@@ -161,6 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.cwd)) is not None:
+        sys.stderr.write(f"Error: {missing_cwd}\n")
+        return 1
     try:
         return asyncio.run(run_command(args))
     except KeyboardInterrupt:

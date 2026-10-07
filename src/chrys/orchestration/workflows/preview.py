@@ -11,6 +11,7 @@ the CLI can show and confirm exactly what a run would execute.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any, Final
 
 from chrys.foundation.events.types import WorkflowRunRequest
 from chrys.foundation.models.workflow_session import WorkflowPins, WorkflowTarget
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.workflows.worker_client import (
     LOAD_TIMED_OUT,
@@ -50,6 +52,7 @@ PREVIEW_ENVIRONMENT_ERROR: Final = "environment_error"
 PREVIEW_WORKER_START_FAILED: Final = "worker_start_failed"
 PREVIEW_LOAD_FAILED: Final = "load_failed"
 PREVIEW_WORKER_LOST: Final = "worker_lost"
+PREVIEW_WORKING_DIR_MISSING: Final = "working_dir_missing"
 REJECT_SPEC_CHANGED: Final = "spec_changed"
 REJECT_NOT_CONFIRMED: Final = "not_confirmed"
 
@@ -215,6 +218,7 @@ async def load_workflow(
     *diagnose* (validation) also compiles a folder's other Python files first
     and places a failure in the error's ``diagnostics``.
     """
+    _require_workspace(workspace)
     try:
         client = await WorkflowWorkerClient.launch(
             environment=environment,
@@ -270,6 +274,7 @@ async def preview_workflow(
     diagnose: bool = False,
 ) -> WorkflowPreview:
     """Prepare the environment and load the file on a worker that is closed before returning."""
+    _require_workspace(workspace)
     environment = await prepare_workflow_environment(source, sdk=sdk)
     if on_environment_ready is not None:
         await on_environment_ready(environment)
@@ -289,6 +294,15 @@ async def preview_workflow(
         manifest=loaded.manifest,
         spec_digest=loaded.spec_digest,
     )
+
+
+def _require_workspace(workspace: Path) -> None:
+    """Refuse before probing or spawning anything when the worker's cwd is gone."""
+    if not workspace.is_dir():
+        raise WorkflowPreviewError(
+            PREVIEW_WORKING_DIR_MISSING,
+            f"The working directory no longer exists: {surrogate_safe_text(os.fspath(workspace))}",
+        )
 
 
 def _located(exc: WorkflowEnvironmentError) -> str:

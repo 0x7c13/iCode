@@ -72,3 +72,7 @@ FilePicker #fsd-buttons > Button {
 FilePicker #fsd-buttons > #fsd-cancel {
     margin-right: 0;
 }
+
+FilePicker.-narrow #fsd-buttons > Button {
+    min-width: 10;
+}

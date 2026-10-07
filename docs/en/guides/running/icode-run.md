@@ -159,7 +159,7 @@ Standard error output:
 
 ## Continue an existing session
 
-For an ongoing conversation, use `-s` or `--session` to resume an existing session and submit another task based on the conversation so far. Without `-C` or `--workdir`, the restored session uses its saved working directory rather than the directory where you run the command. `-C` or `--workdir` uses the directory you specify instead. For automation tasks that need a known working directory, specify `-C` or `--workdir` explicitly.
+For an ongoing conversation, use `-s` or `--session` to resume an existing session and submit another task based on the conversation so far. Without `-C` or `--workdir`, the restored session uses its saved working directory rather than the directory where you run the command. `-C` or `--workdir` uses the directory you specify instead. For automation tasks that need a known working directory, specify `-C` or `--workdir` explicitly. If the session's saved working directory no longer exists, iCode stops with an error; use `-C` or `--workdir` to continue the session in another directory.
 
 In headless mode, get the session ID from the `session_id` field in the first turn's JSON output:
 

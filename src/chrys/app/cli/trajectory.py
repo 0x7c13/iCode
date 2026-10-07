@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.foundation.branding import APP_COMMAND
 from chrys.foundation.config.settings import Settings, resolve_sessions_dir
 from chrys.foundation.platform.files import atomic_create_text, atomic_write_text, surrogate_safe_text
@@ -118,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     _ = args.command
+    if (missing_cwd := launch_cwd_missing_message(workdir_flag=False)) is not None:
+        _write_stderr(f"Error: {missing_cwd}")
+        return 1
     settings = _prepare_runtime()
     if args.events is not None:
         events = Path(args.events)

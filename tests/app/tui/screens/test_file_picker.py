@@ -5,15 +5,22 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import OptionList, Static
 
-from chrys.app.tui.screens.dialogs.file_picker import FilePicker, FilePickerMode, _FilteredDirectoryTree
+from chrys.app.tui.screens.dialogs import file_picker as file_picker_module
+from chrys.app.tui.screens.dialogs.file_picker import (
+    FilePicker,
+    FilePickerMode,
+    _FilteredDirectoryTree,
+    _nearest_existing_dir,
+)
 from chrys.app.tui.screens.main.recent_dirs import WorkspaceMruRecentDirs
 from chrys.app.tui.support import workspace_mru
 from chrys.app.tui.support.path_shortcuts import format_recent_path_label
@@ -23,6 +30,7 @@ from chrys.app.tui.support.workspace_mru import (
     session_root_key,
     workspace_mru_exists,
 )
+from chrys.foundation.platform import safe_getcwd
 from tests.support.waiting import wait_for
 
 
@@ -195,6 +203,80 @@ async def test_file_picker_parent_entry_does_not_block_normal_directory_expansio
         await pilot.pause()
 
         assert [node.data.path for node in nested_node.children if node.data is not None] == [leaf]
+
+
+# ──────────── deleted initial folder ───────────────────────────────────
+
+
+def test_nearest_existing_dir_walks_up_to_a_folder_that_exists(tmp_path: Path) -> None:
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    file = folder / "notes.txt"
+    file.write_text("notes", encoding="utf-8")
+
+    assert _nearest_existing_dir(str(folder)) == str(folder)
+    assert _nearest_existing_dir(str(folder / "deleted" / "nested")) == str(folder)
+    # A file is not a folder to open at.
+    assert _nearest_existing_dir(str(file)) == str(folder)
+    assert _nearest_existing_dir(str(file / "child")) == str(folder)
+    # Relative paths are taken from the process cwd, as before.
+    assert _nearest_existing_dir(os.path.join("deleted", "nested")) == os.getcwd()
+
+
+def test_nearest_existing_dir_is_none_when_no_ancestor_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # As on Windows for a drive that is no longer there: not even the root is a folder.
+    shadow = ModuleType("os")
+    shadow.path = SimpleNamespace(  # type: ignore[attr-defined]
+        abspath=os.path.abspath, expanduser=os.path.expanduser, dirname=os.path.dirname, isdir=lambda _path: False
+    )
+    monkeypatch.setattr(file_picker_module, "os", shadow)
+
+    assert _nearest_existing_dir(str(tmp_path / "gone")) is None
+    # The picker then opens where the app runs.
+    assert FilePicker(initial_path=str(tmp_path / "gone"))._initial_path == safe_getcwd()
+
+
+def test_file_picker_without_a_process_cwd_opens_home_for_a_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process cwd can be the deleted working directory; only a relative path needs it."""
+    home = tmp_path / "home"
+    (home / "deleted").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    try:
+        gone.rmdir()
+    except OSError:
+        pytest.skip("this OS cannot remove the current directory")
+
+    assert _nearest_existing_dir("sessions") is None
+    assert FilePicker(initial_path="sessions")._initial_path == str(home)
+    # "~" is expanded first, so it never needs the process cwd.
+    assert FilePicker(initial_path=os.path.join("~", "deleted", "nested"))._initial_path == str(home / "deleted")
+
+
+@pytest.mark.asyncio
+async def test_file_picker_opens_a_deleted_folder_at_its_nearest_existing_parent(tmp_path: Path) -> None:
+    parent = tmp_path / "parent"
+    sibling = parent / "sibling"
+    sibling.mkdir(parents=True)
+
+    app = _FilePickerApp()
+    async with app.run_test() as pilot:
+        screen = FilePicker(mode=FilePickerMode.FOLDER, initial_path=str(parent / "deleted" / "nested"))
+        await app.push_screen(screen)
+        tree = screen.query_one("#fsd-tree", _FilteredDirectoryTree)
+        await wait_for(
+            lambda: any(node.data is not None and node.data.path == sibling for node in tree.root.children),
+            pilot=pilot,
+            description="the parent's folders listed",
+        )
+
+        assert screen._initial_path == str(parent)
+        assert tree.path == parent
 
 
 # ──────────── WorkspaceMruRecentDirs provider ──────────────────────────

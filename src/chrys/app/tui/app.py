@@ -31,6 +31,7 @@ from textual.theme import Theme
 from textual.widget import Widget
 
 from chrys import __version__
+from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.app.features.session_title import SessionTitleUpdater
 from chrys.app.parsing import SanitizingArgumentParser
@@ -236,7 +237,6 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     """Textual application for Chrys."""
 
     TITLE = format_app_version_title(__version__)
-    SUB_TITLE = os.getcwd()
     CSS_PATH: ClassVar[list[str]] = ["chrys.tcss", "screens/themes/editor.tcss"]
     COMMAND_PALETTE_BINDING = "ctrl+q"
     BINDINGS: ClassVar[list] = [
@@ -1003,10 +1003,13 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         session_id = meta.session_id or session_id
         await self._dismiss_startup_load_dialog_before_restore(screen)
         try:
-            restored = await screen.restore_startup_session(session_id)
-            if restored:
+            outcome = await screen.restore_startup_session(session_id)
+            if outcome == "restored":
                 return True
             screen.cancel_startup_session_restore()
+            if outcome == "declined":
+                # The user chose no folder for a session whose folder is gone: start fresh, quietly.
+                return False
             logger.warning("Startup session restore produced no SessionRestored event for %s", session_id)
             self._show_startup_session_warning(
                 screen,
@@ -1200,6 +1203,8 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     )
     parser.add_argument("-C", "--workdir", default="", metavar="DIR", help="Start in the given working directory.")
     args = parser.parse_args()
+    if (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.workdir)) is not None:
+        parser.exit(1, f"Error: {missing_cwd}\n")
     if args.workdir:
         workdir = Path(args.workdir).expanduser()
         if not workdir.is_dir():

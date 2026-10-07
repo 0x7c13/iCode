@@ -31,10 +31,11 @@ from chrys.foundation.events.types import (
     WorkspaceChange,
     WorkspaceUpdated,
 )
-from chrys.foundation.i18n import DisplaySequence, msg
+from chrys.foundation.i18n import DisplayPath, DisplaySequence, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
 from chrys.service.approval.policy import ApprovalMode
 
@@ -67,6 +68,10 @@ _CONTROLS_MODEL_SWITCH_NOT_READY = msg(
 _CONTROLS_WORKSPACE_SWITCH_NOT_READY = msg(
     "controls.workspace_switch_not_ready",
     fallback="No active agent — cannot change workspace",
+)
+_CONTROLS_WORKSPACE_MISSING = msg(
+    "controls.workspace_missing",
+    fallback="Cannot change the working directory: {path} does not exist.",
 )
 _CONTROLS_SETTINGS_RESTART_REQUIRED = msg(
     "controls.settings_restart_required",
@@ -569,6 +574,16 @@ class RuntimeControls:
                     code="runtime_mutation_not_ready",
                     message="No active agent — cannot change workspace",
                     display_message=_CONTROLS_WORKSPACE_SWITCH_NOT_READY.bind(),
+                    session_id=self._session.session_id,
+                )
+            )
+            return
+        if event.primary_cwd and (missing := Workspace.from_cwd(event.primary_cwd).missing_primary()) is not None:
+            await self._bus.publish(
+                Error(
+                    code="workspace_change_failed",
+                    message=f"Working directory does not exist: {surrogate_safe_text(missing)}",
+                    display_message=_CONTROLS_WORKSPACE_MISSING.bind(path=DisplayPath(missing)),
                     session_id=self._session.session_id,
                 )
             )

@@ -8,8 +8,9 @@ import asyncio
 import contextlib
 import inspect
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import Enum
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -122,6 +123,21 @@ _WORKING_DIRECTORY_INDICATOR = msg(
 )
 
 
+class RestoreRequest(Enum):
+    """What :meth:`SessionHandler.do_session_restore` did."""
+
+    REQUESTED = "requested"
+    """A restore was published; ``SessionRestored`` or an ``Error`` follows."""
+    DECLINED = "declined"
+    """The session's folder is gone and the user chose no other one."""
+    SKIPPED = "skipped"
+    """Nothing was published (busy, or the loading UI could not open)."""
+
+
+async def _decline_missing_working_dir(_missing: str) -> str | None:
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class SessionCallbacks:
     """Screen-owned effects required by session handlers."""
@@ -140,6 +156,7 @@ class SessionCallbacks:
     post_gc_message: Callable[[GcAbsorbRequested | GcReclaimRequested], object]
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
+    choose_missing_working_dir: Callable[[str], Awaitable[str | None]] = _decline_missing_working_dir
 
 
 def _samepath(a: str, b: str) -> bool:
@@ -546,15 +563,37 @@ class SessionHandler:
         self._fork_new_session_id = ""
 
     async def do_session_restore(
-        self, session_id: str | WorkflowSessionPick, *, allow_while_loading: bool = False
-    ) -> None:
+        self,
+        session_id: str | WorkflowSessionPick,
+        *,
+        allow_while_loading: bool = False,
+        primary_cwd: str = "",
+    ) -> RestoreRequest:
+        """Restore *session_id*, in *primary_cwd* when given instead of its saved folder.
+
+        A session whose saved folder is gone is restored only in a folder the
+        user picks; declining leaves the current session as it was.
+        """
         s = self
         if s.agent_running or self._services.execution_busy() or (s.agent_loading and not allow_while_loading):
-            return
+            return RestoreRequest.SKIPPED
         if isinstance(session_id, WorkflowSessionPick):
             await self._restore_workflow_session(session_id)
-            return
+            return RestoreRequest.REQUESTED
         from chrys.foundation.events.types import SessionRestore
+
+        if not primary_cwd and (missing := await self._missing_saved_cwd(session_id)) is not None:
+            # /resume and startup open their loading UI first; the prompt replaces it.
+            if s.agent_loading:
+                with contextlib.suppress(Exception):
+                    self._agent_load.cancel_agent_load()
+            s.restoring_session = False
+            chosen = await self._callbacks.choose_missing_working_dir(missing)
+            if chosen is None:
+                return RestoreRequest.DECLINED
+            return await self.do_session_restore(
+                session_id, allow_while_loading=allow_while_loading, primary_cwd=chosen
+            )
 
         s.restoring_session = True
         try:
@@ -564,13 +603,31 @@ class SessionHandler:
             with contextlib.suppress(Exception):
                 self._agent_load.cancel_agent_load()
             s.debug("SessionRestore", f"failed to open loading UI: {exc}")
-            return
+            return RestoreRequest.SKIPPED
         await s.bus.publish(
             SessionRestore(
                 session_id=session_id,
+                primary_cwd=primary_cwd,
                 apply_saved_model=self._services.apply_saved_model_on_restore,
             )
         )
+        return RestoreRequest.REQUESTED
+
+    async def _missing_saved_cwd(self, session_id: str) -> str | None:
+        """The saved folder of *session_id* when it no longer exists, read the way restore reads it.
+
+        Restoring another session prefers its crash-recovery copy, so this
+        does too. Read failures are left for the restore itself to report.
+        """
+        store = self.state_store
+        if store is None:
+            return None
+        try:
+            meta = await store.load_session_meta(session_id, prefer_recovery=True)
+        except Exception:
+            return None
+        saved = meta.primary_cwd if meta is not None else ""
+        return saved if saved and not os.path.isdir(saved) else None
 
     async def _restore_workflow_session(self, selection: WorkflowSessionPick) -> None:
         self.restoring_session = True
@@ -676,8 +733,6 @@ class SessionHandler:
             event.session_id,
             prefer_recovery=event.recovered_from_sidecar,
         )
-        if event.cwd_warning:
-            await ui.add_error(event.cwd_warning, action_label=None)
 
         # Load compressed blocks (needed for both replay and Context Panel)
         compressed_blocks_map: dict[str, CompressedBlock] = {}

@@ -45,6 +45,38 @@ class SubprocessStoppedError(RuntimeError):
     """Raised when a POSIX subprocess group/session enters job-control stopped state."""
 
 
+class MissingWorkingDirectoryError(OSError):
+    """A child could not start because its working directory no longer exists.
+
+    A spawn into a deleted cwd fails with the same ``FileNotFoundError`` as a
+    missing executable on POSIX (``NotADirectoryError``/``WinError 267`` on
+    Windows). This is deliberately NOT a ``FileNotFoundError`` subclass, so
+    "executable not found" handlers do not swallow it.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(errno.ENOENT, "working directory no longer exists", path)
+        self.path = path
+
+    def __str__(self) -> str:
+        return f"working directory no longer exists: {self.path}"
+
+
+def raise_if_missing_cwd(cwd: object, error: OSError) -> None:
+    """Re-raise a failed spawn as :class:`MissingWorkingDirectoryError` when *cwd* is gone.
+
+    Called from an ``except OSError`` around a spawn. Checking the directory
+    after the failure covers both platforms without parsing errno, winerror
+    or ``filename``; when *cwd* still exists this returns and the caller
+    re-raises the original error.
+    """
+    if isinstance(error, MissingWorkingDirectoryError) or not isinstance(cwd, str | os.PathLike):
+        return
+    path = os.fspath(cwd)
+    if isinstance(path, str) and path and not os.path.isdir(path):
+        raise MissingWorkingDirectoryError(path) from error
+
+
 @dataclass(frozen=True)
 class _ProcessStatus:
     pid: int
@@ -366,26 +398,34 @@ async def spawn_managed_stdio_process(
     from chrys.foundation.platform import get_platform
 
     if get_platform().is_windows:
-        return await _spawn_windows_managed_stdio_process(
+        try:
+            return await _spawn_windows_managed_stdio_process(
+                command,
+                args,
+                cwd=cwd,
+                env=env,
+                limit=limit,
+                parent_env=parent_env,
+            )
+        except OSError as exc:
+            raise_if_missing_cwd(cwd, exc)
+            raise
+
+    try:
+        process = await asyncio.create_subprocess_exec(
             command,
-            args,
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
             limit=limit,
-            parent_env=parent_env,
+            start_new_session=True,
         )
-
-    process = await asyncio.create_subprocess_exec(
-        command,
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        env=env,
-        limit=limit,
-        start_new_session=True,
-    )
+    except OSError as exc:
+        raise_if_missing_cwd(cwd, exc)
+        raise
     if process.stdin is None or process.stdout is None or process.stderr is None or process.pid is None:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
@@ -854,7 +894,11 @@ async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncIterator[as
     # lets the static sweep accept the ``**kwargs`` splat below as proof.
     kwargs.setdefault("stdin", subprocess.DEVNULL)
 
-    proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+    try:
+        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+    except OSError as exc:
+        raise_if_missing_cwd(kwargs.get("cwd"), exc)
+        raise
     process_group_id = _infer_process_group_id(proc, kwargs)
     body_raised = False
     try:

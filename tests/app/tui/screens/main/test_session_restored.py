@@ -224,7 +224,8 @@ def test_session_restore_resets_terminal_title_to_restored_cwd() -> None:
     assert terminal_title_cwds == ["/old/missing/path"]
     assert ("paste_cwd", "/old/missing/path") in calls
     assert ("workspace_cwd", "/old/missing/path") in calls
-    assert ("error", ("Working directory no longer exists: /old/missing/path", None)) in calls
+    # A missing directory is asked about when the user next submits, not reported as a chat error.
+    assert not [value for name, value in calls if name == "error"]
     assert ("session_id", "session-old") in calls
     assert screen.context_usage_state == context_usage_state
     assert len(screen._gc_messages) == 1

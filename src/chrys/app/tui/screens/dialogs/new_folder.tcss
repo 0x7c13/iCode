@@ -1,0 +1,51 @@
+NewFolderDialog {
+    align: center middle;
+}
+
+#new-folder-container {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    min-height: 10;
+    border: round $tui-border-primary $border-opacity;
+    border-title-color: $primary;
+    border-title-style: bold;
+}
+
+#new-folder-inner {
+    width: 100%;
+    height: auto;
+    min-height: 7;
+    background: $surface;
+    padding: 1 2 0 2;
+}
+
+#new-folder-hint {
+    width: 100%;
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#new-folder-input {
+    width: 100%;
+}
+
+#new-folder-error {
+    width: 100%;
+    height: auto;
+    min-height: 1;
+    padding: 0 1;
+    color: $error;
+}
+
+#new-folder-buttons {
+    dock: bottom;
+    align: center top;
+    height: 3;
+    padding: 0 1 0 1;
+}
+
+#new-folder-buttons > Button {
+    margin: 0 1;
+}

@@ -35,7 +35,7 @@ from chrys.foundation.events.types import (
     SessionRestored,
     Warning,
 )
-from chrys.foundation.i18n import DisplayBlock, DisplaySequence, MessageRef, msg
+from chrys.foundation.i18n import DisplayBlock, DisplayPath, DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.history_markers import SUB_AGENT_STATE_DISCARDED_MESSAGE, HistoryMarkerKind
 from chrys.foundation.models.workspace import WorkingDir, Workspace
@@ -43,6 +43,7 @@ from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.trajectory.event_types import RuntimeFinishReason as TrajectoryRuntimeFinishReason
 from chrys.foundation.util.lock import FileLock
+from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.state import lifecycle_permits
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.invoker.contracts import AbortCause
@@ -174,6 +175,10 @@ _RESTORE_AGENT_PROFILE_UNRESOLVED_USING_CURRENT = msg(
 _RESTORE_AGENT_PROFILE_UNRESOLVED = msg(
     "restore.agent_profile_unresolved",
     fallback="The saved agent profile {saved} could not be uniquely resolved. Session restore was stopped.",
+)
+_RESTORE_SESSION_CWD_MISSING = msg(
+    "restore.session_cwd_missing",
+    fallback="The working directory of this session no longer exists: {path}",
 )
 _RESTORE_REQUESTED_AGENT_PROFILE_UNRESOLVED = msg(
     "restore.requested_agent_profile_unresolved",
@@ -1411,6 +1416,22 @@ class SessionLifecycle:
             target_cwd = event.primary_cwd or saved_cwd or self._workspace_cwd()
             target_cwd_exists = os.path.isdir(target_cwd)
             if target_cwd and not target_cwd_exists:
+                if not restoring_current:
+                    # Never switch to a session whose directory is gone; the
+                    # frontend lets the user pick another one (``primary_cwd``).
+                    # Rolling back the current session keeps it and only warns.
+                    await self._bus.publish(
+                        Error(
+                            code="session_cwd_missing",
+                            message=(
+                                f"Working directory of session {session_short_id(event.session_id)} "
+                                f"no longer exists: {surrogate_safe_text(target_cwd)}"
+                            ),
+                            display_message=_RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(target_cwd)),
+                            session_id=event.session_id,
+                        )
+                    )
+                    return
                 cwd_warning = f"Working directory no longer exists: {surrogate_safe_text(target_cwd)}"
 
             profile_name = event.profile_name or (meta.agent_profile if meta else "")

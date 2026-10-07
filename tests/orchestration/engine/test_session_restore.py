@@ -26,13 +26,16 @@ from chrys.foundation.events.types import (
     SettingsReload,
     Warning,
 )
+from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mutations import workspace_changes
 from chrys.service.profiles.agents.schema import (
     AgentProfile,
 )
+from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import SESSION_RECOVERY_FILE_NAME, JsonFileStateStore
 from tests.orchestration.engine._recovery_helpers import (
     _profile,
@@ -919,3 +922,105 @@ async def test_session_restore_aborts_before_teardown_when_the_settings_load_fai
     assert shutdown_calls == []
     assert engine.session.session_id == "current-session"
     assert engine.loaded_settings is installed
+
+
+async def test_session_restore_refuses_a_session_whose_working_dir_is_gone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing is torn down or switched; the target's lock is free again for the next attempt."""
+    profile = _profile()
+    store = JsonFileStateStore(tmp_path / "sessions")
+    gone = tmp_path / "gone"
+    await _seed_restorable_session(store, agent_profile=profile.name, primary_cwd=str(gone))
+    bus = EventBus()
+    errors: list[Error] = []
+    restored: list[SessionRestored] = []
+    await bus.subscribe(Error, lambda event: collect_events(errors, event))
+    await bus.subscribe(SessionRestored, lambda event: collect_events(restored, event))
+    engine = assemble_agent_engine(bus, settings=Settings(), state_store=store, agent_registry=_registry(profile))
+    engine.session.session_id = "current-session"
+    start = AsyncMock()
+    monkeypatch.setattr(engine.lifecycle, "start", start)
+    shutdown_calls = stub_engine_shutdown(monkeypatch, engine)
+
+    await engine.on_session_restore(SessionRestore(session_id="restore_me"))
+
+    assert [(event.code, event.session_id) for event in errors] == [("session_cwd_missing", "restore_me")]
+    assert (
+        errors[0].message == f"Working directory of session {session_short_id('restore_me')} no longer exists: {gone}"
+    )
+    assert_display_message(errors[0], "restore.session_cwd_missing", {"path": DisplayPath(str(gone))})
+    assert restored == []
+    start.assert_not_awaited()
+    assert shutdown_calls == []
+    assert engine.session.session_id == "current-session"
+    assert not engine.session.guard.owns("restore_me")
+    other = ActiveSessionGuard(store)
+    try:
+        assert await asyncio.to_thread(other.ensure, "restore_me")
+    finally:
+        other.release()
+
+
+async def test_current_session_restore_keeps_a_missing_working_dir_as_a_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rolling back the session already open is not a switch: it proceeds and only warns."""
+    profile = _profile()
+    store = JsonFileStateStore(tmp_path / "sessions")
+    gone = tmp_path / "gone"
+    await _seed_restorable_session(store, agent_profile=profile.name, primary_cwd=str(gone))
+    bus = EventBus()
+    errors: list[Error] = []
+    restored: list[SessionRestored] = []
+    await bus.subscribe(Error, lambda event: collect_events(errors, event))
+    await bus.subscribe(SessionRestored, lambda event: collect_events(restored, event))
+    engine = assemble_agent_engine(bus, settings=Settings(), state_store=store, agent_registry=_registry(profile))
+    active_lock = engine.session.guard.acquire_for_restore("restore_me")
+    engine.session.guard.install("restore_me", active_lock)
+    stubbed = stub_engine_lifecycle(monkeypatch, engine)
+
+    try:
+        await engine.on_session_restore(SessionRestore(session_id="restore_me"))
+    finally:
+        engine.session.guard.release()
+
+    assert errors == []
+    assert [(event.session_id, event.cwd_warning) for event in restored] == [
+        ("restore_me", f"Working directory no longer exists: {gone}")
+    ]
+    assert len(stubbed.start_calls) == 1
+
+
+async def test_session_restore_into_a_chosen_directory_passes_the_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The frontend's recovery path: the user picked another directory for the session."""
+    profile = _profile()
+    store = JsonFileStateStore(tmp_path / "sessions")
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    await _seed_restorable_session(store, agent_profile=profile.name, primary_cwd=str(tmp_path / "gone"))
+    bus = EventBus()
+    errors: list[Error] = []
+    restored: list[SessionRestored] = []
+    await bus.subscribe(Error, lambda event: collect_events(errors, event))
+    await bus.subscribe(SessionRestored, lambda event: collect_events(restored, event))
+    engine = assemble_agent_engine(bus, settings=Settings(), state_store=store, agent_registry=_registry(profile))
+    stubbed = stub_engine_lifecycle(monkeypatch, engine)
+
+    try:
+        await engine.on_session_restore(SessionRestore(session_id="restore_me", primary_cwd=str(chosen)))
+    finally:
+        engine.session.guard.release()
+
+    assert errors == []
+    assert [(event.session_id, event.primary_cwd, event.cwd_warning) for event in restored] == [
+        ("restore_me", str(chosen), "")
+    ]
+    assert engine.session.workspace is not None
+    assert engine.session.workspace.primary_cwd == str(chosen)
+    assert len(stubbed.start_calls) == 1

@@ -33,6 +33,7 @@ from chrys.service.tools.kinds import KIND_DOC_CONVERTER, tool
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.session_artifacts import make_document_artifact_handle, resolve_tool_session_dir
 from chrys.service.tools.spill import run_spill_finalizer
+from chrys.service.tools.workspace_paths import missing_base_cwd_error
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -444,6 +445,9 @@ class DocConverterTools:
         from chrys.service.tools.builtins.doc_converter.registry import get_parser, supported_extensions
 
         # Resolve and validate
+        missing_base = missing_base_cwd_error(path, self._runtime.cwd)
+        if missing_base is not None:
+            return missing_base
         resolved = resolve_existing_path(path, base_cwd=self._runtime.cwd)
         if resolved is None:
             resolved = resolve_workspace_path(path, base_cwd=self._runtime.cwd)

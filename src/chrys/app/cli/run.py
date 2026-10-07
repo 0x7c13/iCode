@@ -14,6 +14,7 @@ from pathlib import Path
 
 from chrys.app.cli import headless
 from chrys.app.cli.headless import PreparedRuntime
+from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.app.cli.progress import ProgressWriter, RunContext, TurnProgress, guarded, progress_console
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.app.parsing import SanitizingArgumentParser
@@ -48,6 +49,10 @@ _HEADLESS_RUN_TIMEOUT = msg(
 _INTERRUPTED = msg(
     "run.interrupted",
     fallback="Interrupted by user.",
+)
+_SESSION_CWD_MISSING_HINT = msg(
+    "run.session_cwd_missing_hint",
+    fallback="Pass -C <dir> to continue it in another directory.",
 )
 _MODEL_PROFILE_NOT_FOUND = msg(
     "run.model_profile_not_found",
@@ -332,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.prompt is None) == (args.task is None):
         parser.error("provide either a prompt or --task FILE, not both")
+    if (missing_cwd := launch_cwd_missing_message(workdir_flag=True, workdir=args.cwd)) is not None:
+        headless.write_error(missing_cwd, as_json=args.json, code=LAUNCH_CWD_MISSING_CODE)
+        return 1
     holder = PreparedRuntimeHolder()
     try:
         return asyncio.run(run_command(args, holder))
@@ -353,6 +361,11 @@ def main(argv: list[str] | None = None) -> int:
             if event.code == "executor_error":
                 # The display says what went wrong; the raw text is the evidence.
                 detail = event.message.strip() or None
+        if event.code == "session_cwd_missing":
+            hint = _localized_or_english(_SESSION_CWD_MISSING_HINT.bind(), as_json=args.json, runtime=runtime)
+            message = _localized_or_english(
+                DISPLAY_WITH_HINT.bind(message=message, hint=hint), as_json=args.json, runtime=runtime
+            )
         headless.write_error(
             message,
             as_json=args.json,

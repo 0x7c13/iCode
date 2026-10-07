@@ -22,6 +22,7 @@ from rich.text import Text
 
 from chrys.app.cli import headless
 from chrys.app.cli.headless import PreparedRuntime
+from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.app.cli.progress import ProgressWriter, WorkflowProgress, guarded, progress_console
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
@@ -553,6 +554,9 @@ def main(argv: list[str] | None = None) -> int:
     headless.configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (missing_cwd := launch_cwd_missing_message(workdir_flag=False)) is not None:
+        headless.write_error(missing_cwd, as_json=args.json, code=LAUNCH_CWD_MISSING_CODE)
+        return 1
     if args.command == "list":
         return _list_command(args)
     if args.command == "validate":

@@ -52,6 +52,7 @@ from chrys.orchestration.engine.run.runner import TurnRunner
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
 from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate, TurnHookDispatcher
 from chrys.orchestration.engine.run.turn_state import CurrentTurnInput, TurnRuntimeState
+from chrys.orchestration.engine.run.working_dir import refuse_while_working_dir_missing
 from chrys.orchestration.engine.state.machine import EngineState, EngineStateMachine, Trigger
 from chrys.orchestration.engine.state.session_writer import SessionWriter
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
@@ -433,6 +434,10 @@ class TurnCoordinator:
                     preparation_tracker,
                 )
                 continue
+            if await refuse_while_working_dir_missing(self._bus, self._session):
+                if preparation is not None:
+                    await preparation.finished(outcome=PreparationOutcome.REJECTED)
+                return False
             # A workflow run may have taken the lease while this message was preparing.
             if await self._turn_state.lease.refuse_while_workflow_active(self._bus, self._session.session_id):
                 if preparation is not None:

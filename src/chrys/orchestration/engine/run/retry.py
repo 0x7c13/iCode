@@ -31,6 +31,7 @@ from chrys.orchestration.engine.run.runtime_skills import (
 )
 from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate
 from chrys.orchestration.engine.run.turn_state import ActiveInjectionTarget
+from chrys.orchestration.engine.run.working_dir import publish_working_dir_missing, refuse_while_working_dir_missing
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
 from chrys.service.hooks.schema import HookDecision
 from chrys.service.trajectory.preparation import (
@@ -257,6 +258,9 @@ class RetryCoordinator:
                     preparation_tracker,
                 )
                 continue
+            if await refuse_while_working_dir_missing(self._bus, self._session):
+                await self._finish_preparation(preparation, PreparationOutcome.REJECTED)
+                return
             # A workflow run may have taken the lease while this retry was preparing.
             if await self._turn_state.lease.refuse_while_workflow_active(self._bus, self._session.session_id):
                 await self._finish_preparation(preparation, PreparationOutcome.REJECTED)
@@ -416,6 +420,10 @@ class RetryCoordinator:
             if self._turn_state.lease.run_task is not None and not self._turn_state.lease.run_task.done():
                 await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)
                 return
+            # The run this retry waited for can end because its directory was deleted.
+            if await refuse_while_working_dir_missing(self._bus, self._session):
+                await self._finish_preparation(preparation, PreparationOutcome.REJECTED)
+                return
             if not self._claim_immediate_retry_start():
                 await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)
                 return
@@ -472,35 +480,46 @@ class RetryCoordinator:
             if admission is not None and not admission_released:
                 self._turn_state.lease.release_prompt_admission(admission)
 
-    def start_pending_retry_if_due(self) -> None:
-        """Start a queued retry when post-run state allows retry dispatch."""
+    def start_pending_retry_if_due(self) -> str | None:
+        """Start a queued retry when post-run state allows retry dispatch.
+
+        Return the working directory only when a due retry was dropped because
+        that directory is gone, else None. The finished pass left the FSM
+        RUNNING for that retry, so the caller settles it to the pass's own
+        terminal state and then reports the drop
+        (:meth:`report_retry_dropped_for_missing_cwd`).
+        """
         if self._session.shutting_down:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
         if self._fsm.state != EngineState.RUNNING:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
         if self._turn_state.lease.pending_retry.dispatch_disabled:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
         pending = self._turn_state.lease.pending_retry
         scope = self._turn_state.lease.current_run_scope
         if pending.owner_admission_id is None:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
         if pending.session_generation != self._permits.session_generation:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
         if pending.run_generation == 0:
             if scope is not None:
                 self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-                return
+                return None
         elif scope is None or pending.run_generation != scope.run_generation:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
         if self._turn_state.lease.pending_retry_dispatch_disabled_for_session_generation == pending.session_generation:
             self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
-            return
+            return None
+        workspace = self._session.workspace
+        if workspace is not None and (missing := workspace.missing_primary()) is not None:
+            self._turn_state.lease.clear_pending_retry(outcome=PreparationOutcome.DROPPED)
+            return missing
         self._history.remove_trailing_markers()
         text = pending.text
         created_at = pending.created_at
@@ -510,6 +529,15 @@ class RetryCoordinator:
             created_at=created_at,
             admission_preparation=dispatched.preparation_trace,
         )
+        return None
+
+    async def report_retry_dropped_for_missing_cwd(self, path: str) -> None:
+        """Tell frontends a queued retry will not run because *path* is gone.
+
+        A frontend shows an accepted retry as running until a run ends it; no
+        run will, so this error does.
+        """
+        await publish_working_dir_missing(self._bus, self._session.session_id, path)
 
     async def _wait_for_existing_run_task(self) -> None:
         """Wait for current run-task cleanup, if any."""

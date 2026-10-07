@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from chrys.foundation.platform import windows_program_files_dirs
 from chrys.foundation.platform.output_capture import BoundedCapture, CapturedOutput, drain_process_pipes
 from chrys.foundation.platform.process import (
+    MissingWorkingDirectoryError,
     SubprocessStoppedError,
     managed_subprocess,
     wait_for_subprocess,
@@ -35,6 +36,7 @@ from chrys.foundation.tool_result_metadata import PARTIAL_OUTPUT_LABEL
 from chrys.service.skills.constants import DEFAULT_SCRIPT_RESULT_MAX_TOKENS
 from chrys.service.tools.result_metadata import record_process_result, record_process_timeout, tool_error
 from chrys.service.tools.spill import bound_process_output
+from chrys.service.tools.workspace_paths import working_dir_missing_error
 
 if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
@@ -258,6 +260,11 @@ class SubprocessScriptRunner:
                 details={"skill_name": skill.name, "script_name": script.name, "script_path": script.full_path},
             )
 
+        # A project skill can live inside the deleted working directory: report
+        # the directory, not its script, so the model stops instead of retrying.
+        if cwd is None and self._runtime is not None and self._runtime.cwd and not os.path.isdir(self._runtime.cwd):
+            return working_dir_missing_error(self._runtime.cwd)
+
         if not script_path.is_file():
             return tool_error(
                 "script_file_not_found",
@@ -342,6 +349,10 @@ class SubprocessScriptRunner:
                 f"Script '{script.name}' entered stopped state and was terminated.",
                 details={"skill_name": skill.name, "script_name": script.name},
             )
+        except MissingWorkingDirectoryError as e:
+            if cwd is None:
+                return working_dir_missing_error(e.path)
+            return tool_error("invalid_cwd", f"'cwd' is not an existing directory: {e.path}", details={"cwd": e.path})
         except FileNotFoundError:
             return tool_error(
                 "interpreter_not_found",

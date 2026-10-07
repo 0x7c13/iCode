@@ -194,6 +194,12 @@ msgstr "未找到智能体配置“{profile_name}”"
 msgid "controls.settings_restart_required"
 msgstr "已保存；重启后生效：{keys}。"
 
+#. English: Cannot change the working directory: {path} does not exist.
+#. chrys-meta={"fingerprint":"a65947fbb2a1685469d4e7b418c5bd3b11d44b21ae07cfec374c9afcd4b5e9c8","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_missing"
+msgstr "无法切换工作目录：{path} 不存在。"
+
 #. English: No active agent — cannot change workspace
 #. chrys-meta={"fingerprint":"88d664d319b260319f23708d3336d6eb7df69dc9773816d14e8ce597e6e29f96","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
@@ -290,6 +296,12 @@ msgstr "未配置状态存储。"
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "engine.fork_turn_active"
 msgstr "轮次进行中无法派生会话。"
+
+#. English: The working directory no longer exists: {path}
+#. chrys-meta={"fingerprint":"2ec9b264988bd8d372b55afd83c92c0543296ebe3b67668a111cee2ef6171237","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/run/working_dir.py
+msgid "engine.working_dir_missing"
+msgstr "工作目录已不存在：{path}"
 
 #. English: {message} {hint}
 #. chrys-meta={"fingerprint":"2915288bdaf397f8a07684a40dfd5a081efc73c131b2a6bc33225423748ec73c","multiline":false,"placeholders":["hint","message"]}
@@ -615,6 +627,12 @@ msgstr "找不到请求的 Agent 配置 {profile}。会话恢复已停止。"
 msgid "restore.service_session_incompatible"
 msgstr "此会话保存时使用了 OpenAI Responses 服务会话。当前智能体/模型配置、工作区、服务地址或存储模式与其不兼容，{app} 将仅从本地历史继续。"
 
+#. English: The working directory of this session no longer exists: {path}
+#. chrys-meta={"fingerprint":"94c6df5e3ae85fa40fa98e0ab4ebf38e05b12dea94539053017b4cc6f08543bb","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.session_cwd_missing"
+msgstr "该会话的工作目录已不存在：{path}"
+
 #. English: {discarded} paused sub-agent(s) from a previous session were
 #. discarded: {names}
 #. chrys-meta={"fingerprint":"5be1263df8739ec915d380c3d1e24cf7bbb0b24a3cf6791e8829b90f1f90c471","multiline":false,"placeholders":["discarded","names"]}
@@ -774,6 +792,12 @@ msgstr "未找到模型配置：{model}"
 #: src/chrys/app/cli/run.py
 msgid "run.model_profile_not_found_with_available"
 msgstr "未找到模型配置：{model}。可用模型配置：{available}"
+
+#. English: Pass -C <dir> to continue it in another directory.
+#. chrys-meta={"fingerprint":"cf403302bf53005778ba686af15e573154017a629880c6d102e3de389c674a5b","multiline":false,"placeholders":[]}
+#: src/chrys/app/cli/run.py
+msgid "run.session_cwd_missing_hint"
+msgstr "使用 -C <dir> 在另一个目录中继续该会话。"
 
 #. English: Agent profile not found: {name}
 #. chrys-meta={"fingerprint":"ec893f5d09a72a0bc5334e2a6bbd62d2fa0fcd1a41f9aa7b97e2bbafc304ab63","multiline":false,"placeholders":["name"]}
@@ -5607,11 +5631,119 @@ msgstr "未知错误"
 msgid "tui.file_picker.button.cancel"
 msgstr "取消"
 
+#. English: New Folder
+#. chrys-meta={"fingerprint":"94eb357c12cdfd0d0e47112f2da0337fd8fc3777551c437ce58236997a11320c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/file_picker.py
+msgid "tui.file_picker.button.new_folder"
+msgstr "新建文件夹"
+
 #. English: Select
 #. chrys-meta={"fingerprint":"0ce70d4333424fe527d32c0aeab9226b4b5f97d5c9a953bc2e51c0c47bf763b2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/file_picker.py
 msgid "tui.file_picker.button.select"
 msgstr "选择"
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.button.cancel"
+msgstr "取消"
+
+#. English: Create
+#. chrys-meta={"fingerprint":"3652670dc82bbf917d06335e5e3e17a77758cc25db3fc9e23ac899f0194b5390","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.button.create"
+msgstr "创建"
+
+#. English: A folder name can't contain control characters.
+#. chrys-meta={"fingerprint":"e3ce3d814e1578a07cfa0ee726e95004b4bb2273eb0baa036d38b63df6445158","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.control_char"
+msgstr "文件夹名称不能包含控制字符。"
+
+#. English: "." and ".." can't be used as folder names.
+#. chrys-meta={"fingerprint":"abf53e36d4c58cada9b8ee271e3947aae30b0ab4d060db87dfc6d1f1afa56955","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.dot_name"
+msgstr "“.” 和 “..” 不能用作文件夹名称。"
+
+#. English: A file or folder named {name} already exists here.
+#. chrys-meta={"fingerprint":"ab031bcda66452fedabba2bf662478327716d0e3c23c735a965e4983e455e61d","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.exists"
+msgstr "此处已存在名为 {name} 的文件或文件夹。"
+
+#. English: Couldn't create the folder: {reason}
+#. chrys-meta={"fingerprint":"335b0b780702d6a5b0ca8cffb6496a38458cc1160ca9bdd316abf240d948cec0","multiline":false,"placeholders":["reason"]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.failed"
+msgstr "无法创建文件夹：{reason}"
+
+#. English: A folder name can't contain {char}
+#. chrys-meta={"fingerprint":"2b670044ab0275f0cf3df1a9966deeac50536d9b3ffc9fb7f744ceb118984260","multiline":false,"placeholders":["char"]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.invalid_char"
+msgstr "文件夹名称不能包含 {char}"
+
+#. English: This name isn't allowed on this drive.
+#. chrys-meta={"fingerprint":"4b20d6fe88528030817e6da74bf4533600b8a2daacfb0e23447a278626a725b4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.not_allowed"
+msgstr "此驱动器不允许使用这个名称。"
+
+#. English: The containing folder no longer exists.
+#. chrys-meta={"fingerprint":"281c83c5b9db49c52c44050462d26cbf1ff9d3186af2992c5b108aa4791a0cdd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.parent_missing"
+msgstr "所在的文件夹已不存在。"
+
+#. English: You don't have permission to create a folder here.
+#. chrys-meta={"fingerprint":"c35a493a7128a2a73b1fd595a69352c8db46dbe0dc998e29ffdd9d66086aed4a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.permission"
+msgstr "你没有在此处创建文件夹的权限。"
+
+#. English: This location is read-only.
+#. chrys-meta={"fingerprint":"5a7df85633713a7863fee3d40c9ea174fa4d51f78c735ef7c01a3e1371884afb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.read_only"
+msgstr "此位置为只读。"
+
+#. English: {name} is a reserved name on Windows.
+#. chrys-meta={"fingerprint":"30477283019ce66b0a98aeb4ed7ee592c1b283694247fc2865d147da40a60d8f","multiline":false,"placeholders":["name"]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.reserved"
+msgstr "{name} 是 Windows 的保留名称。"
+
+#. English: The folder name or path is too long.
+#. chrys-meta={"fingerprint":"45e2b5352f9e6ad54d14d4794f11dc29fae5c96d007a5ac2d4af4b5f04e02072","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.too_long"
+msgstr "文件夹名称或路径过长。"
+
+#. English: On Windows, a folder name can't end with a period.
+#. chrys-meta={"fingerprint":"6a0c00364c5d46ae57af6295a8835d4e783248dd5e5337ef78e22224033115d0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.error.trailing_dot"
+msgstr "在 Windows 上，文件夹名称不能以句点结尾。"
+
+#. English: Create a folder in {path}
+#. chrys-meta={"fingerprint":"88b186253be8ad3211c49d15c68c234fac97e3c02221ce02aca8cd3822131e00","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.hint"
+msgstr "在 {path} 中新建文件夹"
+
+#. English: Folder name
+#. chrys-meta={"fingerprint":"650ce07da061a1ffe26d7861eaa2de52b7e3563215b87ea614bf7804fff9b8b5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.placeholder"
+msgstr "文件夹名称"
+
+#. English: New Folder
+#. chrys-meta={"fingerprint":"94eb357c12cdfd0d0e47112f2da0337fd8fc3777551c437ce58236997a11320c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/new_folder.py
+msgid "tui.file_picker.new_folder.title"
+msgstr "新建文件夹"
 
 #. English: ─ Recent ─
 #. chrys-meta={"fingerprint":"306c54870cc208deffdf55df2d1a0e3dc5089e6c21529b9a88b633b0c9b2ad43","multiline":false,"placeholders":[]}
@@ -13845,6 +13977,38 @@ msgstr "智能体运行时无法更改目录"
 #: src/chrys/app/tui/screens/main/workspace_actions.py
 msgid "tui.workspace.invalid_directory"
 msgstr "不是有效目录：{path}"
+
+#. English: Choose Folder…
+#. chrys-meta={"fingerprint":"6ed767badd06759198c1333a77ae9d7ed112831b73c05fdb083e1ec53cb2d04e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.choose"
+msgstr "选择文件夹…"
+
+#. English: {path} was deleted or moved. Choose a folder to continue.
+#. chrys-meta={"fingerprint":"7a14bfdc37f6c31ba8534b7dc2a1f7a4fc029683efdf67c603c73bc222954e5b","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.message"
+msgstr "{path} 已被删除或移动。请选择一个文件夹后再继续。"
+
+#. English: The folder of this session, {path}, was deleted or moved. Choose a
+#. folder to open the session in.
+#. chrys-meta={"fingerprint":"c0d544ab98578f2da8813f1cc653529ac90cb342ec373a0e4a4984c69f62cdf0","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.message_restore"
+msgstr "该会话的文件夹 {path} 已被删除或移动。请选择一个文件夹来打开该会话。"
+
+#. English: {path} was deleted or moved. Choose a folder to continue. Your
+#. message is still in the input box.
+#. chrys-meta={"fingerprint":"8e78ff2273001f4f695afac926f420e33cdb7b96dc3956b0ceb343672df86d4d","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.message_submit"
+msgstr "{path} 已被删除或移动。请选择一个文件夹后再继续。你的消息还在输入框里。"
+
+#. English: Working Folder Not Found
+#. chrys-meta={"fingerprint":"6a9508e9ac6d3836655cc05140f4edf38564ceacdef50e414eb6729e23af9c56","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.title"
+msgstr "工作文件夹不存在"
 
 #. English: Busy
 #. chrys-meta={"fingerprint":"a9c58612686934ef18a443da044d7a0d81b9c35390dfc9ef9acc91d62a95c5fb","multiline":false,"placeholders":[]}
