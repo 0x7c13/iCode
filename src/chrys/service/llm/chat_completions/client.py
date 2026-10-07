@@ -129,6 +129,9 @@ class ChatCompletionsClient(WireClient):
     """
 
     OTEL_PROVIDER_NAME: ClassVar[str] = "openai"
+    # Chat Completions keeps no conversation state (``store`` only keeps a
+    # completion for evals), so the option never moves history to the service side.
+    FORCES_STATELESS: ClassVar[bool] = True
     INJECTABLE: ClassVar[set[str]] = {"sdk_client"}
     VARIANT: ClassVar[ChatCompletionsVariant] = OPENAI
 
@@ -216,7 +219,7 @@ class ChatCompletionsClient(WireClient):
             # Already the failure to report; wrapping would hide its verdict.
             raise
         except Exception as ex:
-            raise _service_error(type(self), ex) from ex
+            raise _service_error(ex) from ex
 
     @override
     def _open_stream(
@@ -273,7 +276,7 @@ class ChatCompletionsClient(WireClient):
                     )
                 if isinstance(ex, ChatClientException):
                     raise
-                raise _service_error(type(self), ex) from ex
+                raise _service_error(ex) from ex
             finally:
                 if sdk_stream is not None:
                     try:
@@ -358,9 +361,9 @@ class GlmChatCompletionsClient(ChatCompletionsClient):
     VARIANT: ClassVar[ChatCompletionsVariant] = GLM
 
 
-def _service_error(client_type: type, error: Exception) -> ChatClientException:
+def _service_error(error: Exception) -> ChatClientException:
     if isinstance(error, BadRequestError) and error.code == "content_filter":
         return OpenAIContentFilterException(
-            f"{client_type} service encountered a content error: {error}", inner_exception=error
+            f"Chat Completions request was blocked by a content filter: {error}", inner_exception=error
         )
-    return ChatClientException(f"{client_type} service failed to complete the prompt: {error}", inner_exception=error)
+    return ChatClientException(f"Chat Completions request failed: {error}", inner_exception=error)

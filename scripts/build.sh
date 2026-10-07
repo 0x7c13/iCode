@@ -40,9 +40,18 @@ if [ "$USE_UV" = "true" ] && [ "$OFFLINE" = "true" ]; then
 fi
 
 PYAPP_VERSION="${PYAPP_VERSION:-0.29.0}"
-PYTHON_VERSION=3.14
+# The binary ships the CPython version .python-version pins (the one CI tests
+# on), built by this python-build-standalone release; bump it together with
+# PYTHON_BUILD_STANDALONE_RELEASE in .github/workflows/cd.yml.
+PYTHON_BUILD_STANDALONE_RELEASE=20261003
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+CPYTHON_VERSION="$(tr -d '[:space:]' < "$PROJECT_ROOT/.python-version")"
+if ! [[ "$CPYTHON_VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: .python-version must pin a full CPython version, got '$CPYTHON_VERSION'" >&2
+    exit 1
+fi
+PYTHON_VERSION="${CPYTHON_VERSION%.*}"
 
 # Env-var paths may be relative to the caller's directory; resolve them before
 # any cd so they survive the working-directory changes below.  "?:*" spares
@@ -113,9 +122,8 @@ if [[ "$BUILD_OS" == MINGW* ]] || [[ "$BUILD_OS" == MSYS* ]] || [[ "$BUILD_OS" =
 fi
 
 # ── Resolve the Python distribution ───────────────────────────────────
-# PyApp's build.rs pins one python-build-standalone URL per platform; read it
-# back out so the offline distribution is built on exactly the interpreter the
-# binary will ship.
+# The pinned CPython from the pinned python-build-standalone release, rather
+# than the one PyApp's build.rs names.
 #
 # Linux always resolves to the glibc build.  The musl Rust target below makes
 # the launcher itself dependency-free, but python-build-standalone's musl
@@ -135,9 +143,7 @@ esac
 
 DIST_URL=""
 if [ -n "$DIST_TRIPLE" ]; then
-    DIST_URL=$(grep -o "https://[^\"]*-${DIST_TRIPLE}-install_only_stripped[^\"]*" build.rs \
-               | grep "cpython-${PYTHON_VERSION}" | head -1 || true)
-    DIST_URL="${DIST_URL//%2B/+}"
+    DIST_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_STANDALONE_RELEASE}/cpython-${CPYTHON_VERSION}+${PYTHON_BUILD_STANDALONE_RELEASE}-${DIST_TRIPLE}-install_only_stripped.tar.gz"
 fi
 
 # ── Configure PyApp ───────────────────────────────────────────────────
@@ -161,7 +167,7 @@ if [ "$OFFLINE" = "true" ]; then
             DIST_ARGS=(--dist-archive "$PYTHON_DIST")
         else
             if [ -z "$DIST_URL" ]; then
-                echo "Error: no python-build-standalone URL for ${BUILD_OS}-${BUILD_ARCH} in build.rs" >&2
+                echo "Error: no python-build-standalone build for ${BUILD_OS}-${BUILD_ARCH}" >&2
                 exit 1
             fi
             DIST_ARGS=(--dist-url "$DIST_URL")
@@ -291,15 +297,15 @@ case "$BUILD_OS-$BUILD_ARCH" in
     Linux-aarch64) TARGET="aarch64-unknown-linux-musl" ;;
 esac
 
-# ── Override Python distribution for musl builds ─────────────────────
-# The musl Rust target makes PyApp embed a musl Python, but most Linux
-# users run glibc.  Force the glibc distribution so the extracted
-# interpreter works on standard Linux systems.  Offline builds already
-# embed a glibc distribution via PYAPP_DISTRIBUTION_PATH, and setting a
-# source alongside a path makes build.rs panic.
-if [[ "$TARGET" == *-musl ]] && [ "$OFFLINE" != "true" ] && [ -n "$DIST_URL" ]; then
+# ── Pin the Python distribution ──────────────────────────────────────
+# Installer builds embed the pinned distribution as well.  On Linux it is
+# also the glibc build: left to itself, the musl Rust target makes PyApp
+# embed a musl Python that most Linux users cannot run.  Offline builds and a
+# local PYTHON_DIST already embed a distribution via PYAPP_DISTRIBUTION_PATH,
+# and setting a source alongside a path makes build.rs panic.
+if [ "$OFFLINE" != "true" ] && [ -z "${PYTHON_DIST:-}" ] && [ -n "$DIST_URL" ]; then
     export PYAPP_DISTRIBUTION_SOURCE="$DIST_URL"
-    echo "==> Overriding Python distribution: glibc (for standard Linux)"
+    echo "==> Python distribution: $DIST_URL"
 fi
 
 # ── Build ─────────────────────────────────────────────────────────────

@@ -1007,6 +1007,28 @@ def test_edit_file_identical(tmp_path: Path) -> None:
     assert "identical" in result
 
 
+@pytest.mark.parametrize("existing", [b"abc\n", b"", None], ids=["text", "empty", "missing"])
+@pytest.mark.parametrize("replace_all", [False, True], ids=["one", "all"])
+def test_edit_file_rejects_an_empty_old_string(tmp_path: Path, existing: bytes | None, replace_all: bool) -> None:
+    """An empty old_string names no place in the file: the model is pointed at write_file."""
+    f = tmp_path / "e.txt"
+    if existing is not None:
+        f.write_bytes(existing)
+
+    plan = plan_edit_file(str(f), "", "X", replace_all=replace_all)
+    result = edit_file(str(f), "", "X", replace_all=replace_all)
+
+    assert isinstance(plan, FileToolPreviewError)
+    assert plan.kind == "empty_old_string"
+    assert result.startswith(
+        "Error: old_string is empty. To create a file or replace a file's whole content, use write_file"
+    )
+    if existing is None:
+        assert not f.exists()
+    else:
+        assert f.read_bytes() == existing
+
+
 # -- edit_file — EOL handling --------------------------------------------------
 
 
@@ -1121,6 +1143,90 @@ def test_edit_file_diff_insertion(tmp_path: Path) -> None:
     assert "2|B" in result  # original
     assert "3|B2" in result  # inserted
     assert "4|B3" in result  # inserted
+
+
+def test_edit_file_diff_elides_the_middle_of_each_side_over_thirty_lines(tmp_path: Path) -> None:
+    """A side longer than 30 lines keeps its first and last 15 and names the lines left out."""
+    f = tmp_path / "d.txt"
+    before = [f"L{number}" for number in range(1, 51)]
+    f.write_text("\n".join(before) + "\n", encoding="utf-8")
+    inserted = [f"N{index}" for index in range(1, 41)]
+
+    plan = plan_edit_file(str(f), "\n".join(before[5:40]), "\n".join(inserted))
+
+    assert isinstance(plan, EditFilePlan)
+    after = [*before[:5], *inserted, *before[40:]]
+    assert plan.snippet == "\n".join(
+        [
+            "Before:",
+            *(f"  {number}|{before[number - 1]}" for number in range(4, 19)),
+            "  [... 9 lines omitted (19-27) ...]",
+            *(f"  {number}|{before[number - 1]}" for number in range(28, 43)),
+            "After:",
+            *(f"  {number}|{after[number - 1]}" for number in range(4, 19)),
+            "  [... 14 lines omitted (19-32) ...]",
+            *(f"  {number}|{after[number - 1]}" for number in range(33, 48)),
+        ]
+    )
+
+
+@pytest.mark.parametrize("side_lines", [30, 31])
+def test_edit_file_diff_keeps_a_side_of_up_to_thirty_one_lines_whole(tmp_path: Path, side_lines: int) -> None:
+    """Hiding a single line would save nothing: the marker takes its place."""
+    f = tmp_path / "d.txt"
+    f.write_text("L1\nL2\nL3\nL4\nL5\n", encoding="utf-8")
+    inserted = [f"N{index}" for index in range(1, side_lines - 3)]
+
+    plan = plan_edit_file(str(f), "L3", "\n".join(inserted))
+
+    assert isinstance(plan, EditFilePlan)
+    after = ["L1", "L2", *inserted, "L4", "L5"]
+    assert len(after) == side_lines
+    assert plan.snippet.split("After:\n")[1] == "\n".join(
+        f"  {number}|{line}" for number, line in enumerate(after, start=1)
+    )
+
+
+# -- line numbers count newlines only ------------------------------------------
+
+# str.splitlines also breaks at these; the file's lines, and grep's, do not.
+# A vertical tab is the soft line break python-pptx keeps from a slide. The
+# lines around one are long enough that the file still reads as text.
+_IN_LINE_BREAKS = pytest.mark.parametrize(
+    "separator",
+    ["\x0b", "\x0c", "\x85", "\u2028"],
+    ids=["vertical-tab", "form-feed", "next-line", "line-separator"],
+)
+
+
+@_IN_LINE_BREAKS
+def test_read_file_numbers_lines_by_newline_only(tmp_path: Path, separator: str) -> None:
+    f = tmp_path / "r.txt"
+    f.write_bytes(f"first half{separator}second half\nnext line\n".encode())
+
+    result = read_file(str(f))
+
+    assert "(2 lines," in result
+    assert result.endswith(f"1|first half{separator}second half\n2|next line\n")
+
+
+@_IN_LINE_BREAKS
+def test_edit_file_diff_numbers_lines_by_newline_only(tmp_path: Path, separator: str) -> None:
+    f = tmp_path / "d.txt"
+    f.write_bytes(f"first half{separator}second half\nL2\nL3\nL4\nL5\n".encode())
+
+    result = edit_file(str(f), "L4", "X4")
+
+    assert result.endswith("Before:\n  2|L2\n  3|L3\n  4|L4\n  5|L5\nAfter:\n  2|L2\n  3|L3\n  4|X4\n  5|L5")
+
+
+@_IN_LINE_BREAKS
+def test_write_file_counts_lines_by_newline_only(tmp_path: Path, separator: str) -> None:
+    content = f"first half{separator}second half\nnext line\n"
+
+    result = write_file(str(tmp_path / "w.txt"), content)
+
+    assert result.startswith(f"Written {len(content)} chars (2 lines) to ")
 
 
 # -- read_file — long-line truncation ------------------------------------------

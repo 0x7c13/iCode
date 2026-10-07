@@ -440,10 +440,10 @@ def test_offline_wheel_overrides_match_the_lock() -> None:
     locked: dict[str, set[str]] = {}
     for package in lock["package"]:
         locked.setdefault(package["name"], set()).add(package["version"])
-    cd_workflow = (REPO_ROOT / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
-    python_version = re.search(r'PYAPP_PYTHON_VERSION: "(\d+\.\d+)"', cd_workflow)
+    # The offline binaries ship the CPython version .python-version pins.
+    python_version = re.fullmatch(r"3\.(\d+)\.\d+", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
     assert python_version is not None
-    abi = "cp" + python_version.group(1).replace(".", "")
+    abi = f"cp3{python_version.group(1)}"
     manifest = (REPO_ROOT / "scripts" / "offline_wheel_overrides.txt").read_text(encoding="utf-8")
 
     machines: dict[str, set[str]] = {}

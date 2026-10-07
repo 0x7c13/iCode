@@ -76,7 +76,7 @@ def _write_catalog(root: Path, entries: Mapping[str, str | tuple[str, ...]] | by
 
 _UNPARSEABLE_PLURAL_MO = _mo_bytes(
     {_GREETING.key: "你好, {name}"},
-    metadata="Content-Type: text/plain; charset=UTF-8\nPlural-Forms: nplurals=2; plural=0 >= ! 1;\n",
+    metadata="Content-Type: text/plain; charset=UTF-8\nPlural-Forms: nplurals=2; plural=(n;\n",
 )
 
 

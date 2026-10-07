@@ -139,6 +139,10 @@ ARCHITECTURE_RULES = (
     TestRule("tests/architecture/test_hygiene_tui_prose.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/architecture/test_layering.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_network_egress.py"),
+    TestRule(
+        "tests/architecture/test_python_pin.py",
+        (".python-version", ".github/workflows/**", "scripts/build.sh", "scripts/build.ps1"),
+    ),
     TestRule("tests/architecture/test_quarantine.py"),
     TestRule("tests/architecture/test_test_file_size.py", ("tests/**",)),
     TestRule("tests/architecture/test_test_hygiene.py"),

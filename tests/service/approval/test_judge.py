@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -188,7 +188,7 @@ def _make_judge(client: _FakeClient) -> ApprovalJudge:
 async def test_approval_judge_passes_session_id_to_client() -> None:
     judge = ApprovalJudge(default_profile(), session_id="sess-judge", parent_session_id="parent-judge")
 
-    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
+    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
         await judge._get_client()
 
     create_client.assert_called_once()

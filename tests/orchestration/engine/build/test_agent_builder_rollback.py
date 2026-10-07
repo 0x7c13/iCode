@@ -131,7 +131,7 @@ def _build_agent_env(
     fake_ctx.providers = []
     fake_ctx.middleware = []
     fake_ctx.compaction_strategy = MagicMock()
-    last_words_cls = MagicMock(return_value=MagicMock())
+    last_words_cls = MagicMock(return_value=MagicMock(aclose=AsyncMock()))
     reminder_cls = MagicMock(return_value=MagicMock())
 
     mcp_patch = (
@@ -143,7 +143,7 @@ def _build_agent_env(
     with (
         patch.object(runtime_factory_module, "Agent", return_value=agent_mock),
         patch.object(runtime_factory_module, "ContextManager", return_value=fake_ctx) as context_manager_cls,
-        patch.object(ab, "create_client", return_value=MagicMock()),
+        patch.object(ab, "create_client", return_value=MagicMock(aclose=AsyncMock())),
         patch.object(
             ab,
             "resolve_selection_for_agent",
@@ -249,7 +249,7 @@ async def test_build_agent_surfaces_missing_chat_options_env(monkeypatch: pytest
     with (
         patch.object(runtime_factory_module, "Agent", return_value=agent_mock),
         patch.object(runtime_factory_module, "ContextManager", return_value=fake_ctx),
-        patch.object(ab, "create_client", return_value=MagicMock()),
+        patch.object(ab, "create_client", return_value=MagicMock(aclose=AsyncMock())),
         patch.object(
             ab,
             "resolve_selection_for_agent",
@@ -444,7 +444,7 @@ async def test_success_path_does_not_disconnect_mcp() -> None:
     with (
         _build_agent_env(mcp_mock=mcp_mock, agent_mock=agent_mock),
         patch.object(ab, "TurnBindings", return_value=executor_mock),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -477,7 +477,7 @@ async def test_build_result_fingerprint_includes_loaded_memory_and_interaction_c
             return_value=MemoryContent(text="memory v1", loaded_files=["AGENTS.md"]),
         ),
         patch.object(ab, "TurnBindings", return_value=executor_mock),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -522,7 +522,7 @@ async def test_build_agent_publishes_protected_chat_options_warning() -> None:
             return_value=ProtectedChatOptionsWarning(keys=("conversation_id", "prompt")),
         ),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -557,7 +557,7 @@ async def test_build_agent_reports_hosted_web_tools_that_displace_a_local_catego
         _build_agent_env(mcp_mock=None, agent_mock=_agent_mock()),
         patch.object(ab, "effective_chat_options", return_value=hosted),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
         patch("chrys.service.tools.registry.ToolRegistry", return_value=registry),
@@ -580,7 +580,7 @@ async def test_build_agent_does_not_expose_displaced_local_web_tool_to_model() -
         _build_agent_env(mcp_mock=None, agent_mock=_agent_mock(), tool_registry=ToolRegistry()),
         patch.object(ab, "effective_chat_options", return_value=hosted),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -601,7 +601,7 @@ async def test_build_agent_omits_hosted_web_notice_when_no_local_category_yields
         _build_agent_env(mcp_mock=None, agent_mock=_agent_mock()),
         patch.object(ab, "effective_chat_options", return_value=hosted),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
         patch("chrys.service.tools.registry.ToolRegistry", return_value=registry),
@@ -636,7 +636,7 @@ async def test_build_agent_publishes_semantic_memory_truncation_warning() -> Non
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock),
         patch.object(ab, "load_memory_content", return_value=memory),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -677,7 +677,7 @@ async def test_build_agent_keeps_skill_warning_pass_through_unbound() -> None:
             new=AsyncMock(return_value=(None, [skill_warning])),
         ),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -739,7 +739,7 @@ async def test_build_agent_passes_session_id_to_last_words_generator() -> None:
     with (
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock) as env,
         patch.object(ab, "TurnBindings", return_value=MagicMock()) as bindings_cls,
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -798,7 +798,7 @@ async def test_build_agent_validation_retry_keeps_english_message_and_binds_reas
     with (
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock),
         patch.object(ab, "TurnBindings", return_value=MagicMock()) as bindings_cls,
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
         patch.object(
@@ -844,7 +844,7 @@ async def test_build_agent_threads_effective_transient_retry_budget() -> None:
     with (
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock) as env,
         patch.object(ab, "TurnBindings", executor_cls),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -874,7 +874,7 @@ async def test_build_agent_wires_dark_recovery_callback_and_spill_quota() -> Non
     with (
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock) as env,
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -920,7 +920,7 @@ async def test_build_agent_wires_compaction_status_to_bus_events() -> None:
     with (
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock) as env,
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -967,7 +967,7 @@ async def test_build_agent_wires_side_call_usage_to_last_words_generator() -> No
     with (
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock) as env,
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -1025,7 +1025,7 @@ async def test_sub_agent_progress_counts_after_register_completes() -> None:
             "chrys.orchestration.sub_agents.tools.SubAgentTools", return_value=sub_agent_tools
         ) as sub_agent_tools_cls,
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -1112,7 +1112,7 @@ async def test_sub_agent_skip_progress_preserves_message_and_exposes_reason(
         _build_agent_env(mcp_mock=None, agent_mock=agent_mock),
         patch("chrys.orchestration.sub_agents.tools.SubAgentTools", return_value=sub_agent_tools),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -1191,7 +1191,7 @@ async def test_agent_load_progress_maps_builder_and_mcp_states_without_changing_
     with (
         _build_agent_env(mcp_mock=mcp_mock, agent_mock=agent_mock),
         patch.object(ab, "TurnBindings", return_value=MagicMock()),
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
         patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
         patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
     ):
@@ -1262,7 +1262,7 @@ async def test_build_warns_once_when_on_demand_mcp_tools_can_unbind_thinking(
             ),
             patch.object(MCPAdapter, "connect", new=create_autospec(MCPAdapter.connect, side_effect=connect)),
             patch.object(ab, "TurnBindings", return_value=MagicMock()),
-            patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock()),
+            patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
             patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
             patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
             caplog.at_level(logging.WARNING, logger="chrys.service.mcp.thinking_warning"),

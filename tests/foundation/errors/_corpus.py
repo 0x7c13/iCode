@@ -133,7 +133,7 @@ def _wrapped(
 
 
 def _chat_client_error(inner: BaseException) -> BaseException:
-    return ChatClientException(f"service failed to complete the prompt: {inner}", inner_exception=inner)
+    return ChatClientException(f"Chat Completions request failed: {inner}", inner_exception=inner)
 
 
 def _rate_limited() -> Awaitable[BaseException]:

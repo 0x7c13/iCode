@@ -167,9 +167,7 @@ def _wrapped_network_error() -> ChatClientException:
     cause = ConnectionError("peer closed connection")
     try:
         raise ChatClientException(
-            "<class 'chrys.service.llm.chat_completions.client.ChatCompletionsClient'> "
-            "service failed to complete the prompt: peer closed connection",
-            inner_exception=cause,
+            "Chat Completions request failed: peer closed connection", inner_exception=cause
         ) from cause
     except ChatClientException as exc:
         return exc
@@ -1651,7 +1649,7 @@ async def test_wrapped_invalidating_error_clears_token_before_retry(stream: bool
         "stream_truncated", "stream ended early", retryable=True, invalidates_continuation_token=True
     )
     try:
-        raise ChatClientException("service failed to complete the prompt", inner_exception=inner) from inner
+        raise ChatClientException("Chat Completions request failed", inner_exception=inner) from inner
     except ChatClientException as exc:
         wrapped = exc
     wire = _ScriptedWire([pending, wrapped])

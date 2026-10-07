@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import ClassVar
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -722,7 +722,7 @@ async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
         parent_session_id="parent-phase4",
     )
 
-    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
+    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
         await gen._get_client()
 
     create_client.assert_called_once()

@@ -448,6 +448,31 @@ async def test_convert_large_document_returns_path_usable_without_session_bound_
     assert "filesystem or shell tool" in result
 
 
+@pytest.mark.parametrize(
+    ("separator", "suffix", "heading_line", "line_count"),
+    [("\x0b", ".pptx", 5, 7), ("\r", ".xlsx", 6, 8), ("\r\n", ".xlsx", 6, 8)],
+    ids=["slide-soft-break", "cell-carriage-return", "crlf"],
+)
+async def test_large_document_toc_numbers_lines_as_read_file_does(
+    tmp_path: Path, separator: str, suffix: str, heading_line: int, line_count: int
+) -> None:
+    """A slide's soft line break (a vertical tab) ends no line; a carriage return ends one, as in read_file."""
+    doc = tmp_path / f"document{suffix}"
+    doc.write_bytes(b"PK-fake")
+    markdown = f"# Part 1\n\nfirst{separator}second\n\n# Part 2\n\n" + "content " * 5000 + "\n"
+    parser = _FakeParser(markdown, extensions=frozenset({suffix}))
+    tools = DocConverterTools(_make_runtime(tmp_path), session_dir=tmp_path / "session")
+
+    with patch(f"{_PATCH_REGISTRY}.get_parser", return_value=parser):
+        result = await tools.convert_document(str(doc))
+
+    assert f"({line_count} lines, " in result
+    assert "1|- Part 1" in result
+    assert f"{heading_line}|- Part 2" in result
+    saved_path = os.fspath(_saved_markdown_absolute_path(result))
+    assert read_file(saved_path, line_range=[heading_line, heading_line]).endswith(f"{heading_line}|# Part 2\n")
+
+
 async def test_concurrent_same_name_large_conversions_keep_different_markdown(tmp_path: Path) -> None:
     doc = tmp_path / "report.pdf"
     doc.write_bytes(b"%PDF-fake")
