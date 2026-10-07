@@ -10,8 +10,10 @@ published before its tools run, that internal side calls are neither timed
 nor published (nor reported to a forwarded exchange trace) while the
 LAST_WORDS side call reports an exchange of its own, that concurrent
 requests on one client keep their own exchange traces, the exact chat and
-tool span attributes, the exact User-Agent, the SDK retry hook Chrys
-overrides, and that importing the package loads no provider SDK.
+tool span attributes, the exact User-Agent, that a profile header spelled in
+another case goes out once, the text a failed request is wrapped in, the SDK
+retry hook Chrys overrides, and that importing the package loads no provider
+SDK.
 """
 
 from __future__ import annotations
@@ -19,7 +21,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import dataclasses
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -37,9 +41,18 @@ from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, Excha
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
-from chrys.kernel import TELEMETRY_GATE, Message, ResponseStream, instrumentation, internal_side_call_scope, tool
+from chrys.kernel import (
+    TELEMETRY_GATE,
+    ChatClientException,
+    Message,
+    ResponseStream,
+    instrumentation,
+    internal_side_call_scope,
+    tool,
+)
 from chrys.kernel.client import _ClientLastWordsCompleter
 from chrys.service.llm.clients import create_client
+from chrys.service.llm.openai_exceptions import OpenAIContentFilterException
 from chrys.service.profiles.models.options import effective_chat_options
 from chrys.service.profiles.models.schema import API_STYLE_RESPONSES, ModelProfile
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
@@ -116,12 +129,12 @@ async def _land(result: Any, *, stream: bool) -> Any:
 
 # OTEL provider name, stores by default, forces stateless, minimum output cap, service URL.
 TRAITS: dict[str, tuple[str, bool, bool, int, str]] = {
-    "openai_cc": ("openai", False, False, 1, "https://api.openai.com/v1/"),
-    "deepseek_cc": ("openai", False, False, 1, "https://api.deepseek.com"),
-    "glm_cc": ("openai", False, False, 1, "https://open.bigmodel.cn/api/paas/v4/"),
-    "openai_responses": ("openai", True, False, 16, "Unknown"),
-    "deepseek_responses": ("openai", False, True, 16, "Unknown"),
-    "anthropic": ("anthropic", False, False, 1, "https://api.anthropic.com"),
+    "openai_cc": ("openai", False, True, 1, "https://api.openai.com/v1/"),
+    "deepseek_cc": ("openai", False, True, 1, "https://api.deepseek.com"),
+    "glm_cc": ("openai", False, True, 1, "https://open.bigmodel.cn/api/paas/v4/"),
+    "openai_responses": ("openai", True, False, 16, "https://api.openai.com/v1/"),
+    "deepseek_responses": ("openai", False, True, 16, "https://api.deepseek.com"),
+    "anthropic": ("anthropic", False, True, 1, "https://api.anthropic.com"),
 }
 
 
@@ -768,7 +781,7 @@ async def test_tuned_request_options_add_no_span_attributes(
 
 
 # ---------------------------------------------------------------------------
-# User-Agent
+# Static headers
 # ---------------------------------------------------------------------------
 
 
@@ -796,6 +809,80 @@ async def test_the_user_agent_names_chrys_python_and_the_sdk(combo: str, monkeyp
         else f"AsyncOpenAI/Python {openai.__version__}"
     )
     assert user_agents == [[f"Chrys/{__version__} Python/{runtime.major}.{runtime.minor}.{runtime.micro} {sdk}"]]
+
+
+# Headers each protocol's SDK sets itself, spelled in another case than the SDK's.
+_SDK_HEADERS = {
+    "cc": ("authorization", "openai-organization", "openai-project"),
+    "responses": ("authorization", "openai-organization", "openai-project"),
+    "anthropic": ("x-api-key", "Anthropic-Version"),
+}
+
+
+@pytest.mark.parametrize("combo", COMBOS)
+async def test_a_profile_header_in_another_case_replaces_the_one_chrys_or_the_sdk_sets(
+    combo: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Header names are case-insensitive: each goes out once, with the profile's value."""
+    pin_wire_inputs(monkeypatch)
+    names = ("user-agent", "x-client-name", *_SDK_HEADERS[PROTOCOLS[combo]])
+    base = _case(combo, stream=False)
+    case = dataclasses.replace(
+        base,
+        profile_fields={**base.profile_fields, "http_headers": json.dumps({name: f"profile {name}" for name in names})},
+    )
+    reply = case.replies[0]
+    sent: list[list[tuple[str, list[str]]]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append([(name, request.headers.get_list(name)) for name in names])
+        return httpx.Response(reply.status, headers=list(reply.headers), content=reply.body, request=request)
+
+    async with _stack(case, httpx.MockTransport(handle), monkeypatch) as stack:
+        await stack.inner.inner.get_response(case.messages(), options=_options(case))
+
+    assert sent == [[(name, [f"profile {name}"]) for name in names]]
+
+
+# ---------------------------------------------------------------------------
+# Failed requests
+# ---------------------------------------------------------------------------
+
+# The protocol name an OpenAI SDK client's failure wrapper starts with.
+_FAILURE_PREFIXES = {"cc": "Chat Completions", "responses": "Responses API"}
+
+
+@pytest.mark.parametrize("combo", [combo for combo in COMBOS if PROTOCOLS[combo] != "anthropic"])
+@MODES
+@pytest.mark.parametrize(
+    ("code", "wrapper", "says"),
+    [
+        (None, ChatClientException, "request failed"),
+        ("content_filter", OpenAIContentFilterException, "request was blocked by a content filter"),
+    ],
+    ids=["rejected", "content-filter"],
+)
+async def test_a_failed_request_is_wrapped_under_the_protocol_name(
+    combo: str,
+    stream: bool,
+    code: str | None,
+    wrapper: type[ChatClientException],
+    says: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wrapper's text names the protocol and the provider error, never the client class."""
+    pin_wire_inputs(monkeypatch)
+    case = _case(combo, stream=stream)
+    body = json.dumps({"error": {"message": "rejected", "type": "invalid_request_error", "code": code}})
+    rejection = Reply(400, body.encode("utf-8"), (("content-type", "application/json"),))
+    async with _stack(case, ScriptedWire([rejection]).transport, monkeypatch) as stack:
+        with pytest.raises(ChatClientException) as raised:
+            await _land(
+                stack.inner.inner.get_response(case.messages(), stream=stream, options=_options(case)), stream=stream
+            )
+
+    assert type(raised.value) is wrapper
+    assert raised.value.args[0] == f"{_FAILURE_PREFIXES[PROTOCOLS[combo]]} {says}: {raised.value.__cause__}"
 
 
 # ---------------------------------------------------------------------------

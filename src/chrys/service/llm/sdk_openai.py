@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from openai import AsyncOpenAI
 
+from chrys.service.llm.sdk_headers import CaseFoldedDefaultHeaders
 from chrys.service.llm.sdk_retry import DeterministicConnectionSleepGuard
 
 
-class RetryGuardedAsyncOpenAI(DeterministicConnectionSleepGuard, AsyncOpenAI):
-    """``AsyncOpenAI`` that does not retry a connection error that cannot self-heal."""
+class RetryGuardedAsyncOpenAI(DeterministicConnectionSleepGuard, CaseFoldedDefaultHeaders, AsyncOpenAI):
+    """``AsyncOpenAI`` that does not retry a connection error that cannot self-heal, and sends each header name once."""

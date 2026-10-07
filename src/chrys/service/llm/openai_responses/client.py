@@ -134,6 +134,10 @@ class ResponsesApiClient(WireClient):
     ) -> Self:
         return cls(model=model, sdk_client=sdk_client, observer=observer, request_headers=request_headers)
 
+    @override
+    def service_url(self) -> str:
+        return str(self.sdk_client.base_url)
+
     async def aclose(self) -> None:
         """Close the SDK client and its HTTP pool; concurrent callers share one close."""
         await self._close_sdk()
@@ -186,7 +190,7 @@ class ResponsesApiClient(WireClient):
             # one when it was given a model to parse into).
             response = cast("Response | ParsedResponse[BaseModel]", raw.parse())
         except Exception as ex:
-            raise _service_error(type(self), ex) from ex
+            raise _service_error(ex) from ex
         return self._decoded(response, raw, validated)
 
     async def _poll(self, token: OpenAIContinuationToken, options: Mapping[str, Any]) -> ChatResponse:
@@ -196,7 +200,7 @@ class ResponsesApiClient(WireClient):
             raw = await self.sdk_client.responses.with_raw_response.retrieve(token["response_id"])
             response = cast("Response", raw.parse())
         except Exception as ex:
-            raise _service_error(type(self), ex) from ex
+            raise _service_error(ex) from ex
         chat_response = self._decoded(response, raw, validated)
         # The tool loop reuses the caller's options across iterations: a
         # token left there would retrieve this finished response again
@@ -281,7 +285,7 @@ class ResponsesApiClient(WireClient):
                 # A refusal with calls outranks how the stream broke off.
                 if (failure := state.failure()) is not None:
                     raise failure from ex
-                raise _service_error(type(self), ex) from ex
+                raise _service_error(ex) from ex
 
         return ResponseStream(
             updates(),
@@ -311,9 +315,9 @@ def served_model(headers: Any) -> str | None:
     return None
 
 
-def _service_error(client_type: type, error: Exception) -> ChatClientException:
+def _service_error(error: Exception) -> ChatClientException:
     if isinstance(error, BadRequestError) and error.code == "content_filter":
         return OpenAIContentFilterException(
-            f"{client_type} service encountered a content error: {error}", inner_exception=error
+            f"Responses API request was blocked by a content filter: {error}", inner_exception=error
         )
-    return ChatClientException(f"{client_type} service failed to complete the prompt: {error}", inner_exception=error)
+    return ChatClientException(f"Responses API request failed: {error}", inner_exception=error)

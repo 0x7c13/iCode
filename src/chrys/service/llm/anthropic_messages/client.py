@@ -56,6 +56,9 @@ class AnthropicMessagesClient(WireClient):
     """
 
     OTEL_PROVIDER_NAME: ClassVar[str] = "anthropic"
+    # The Messages API keeps no conversation state, so a ``store`` option
+    # copied into a profile never moves its history to the service side.
+    FORCES_STATELESS: ClassVar[bool] = True
 
     def __init__(
         self,
