@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import re
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
 from typing import Any, ClassVar, Final, Literal, TypeGuard, TypeVar, cast
@@ -282,8 +281,6 @@ def _restore_compaction_annotation_in_additional_properties(
 
 
 # region Constants and types
-URI_PATTERN = re.compile(r"^data:(?P<media_type>[^;]+);base64,(?P<base64_data>[A-Za-z0-9+/=]+)$")
-
 KNOWN_MEDIA_TYPES = [
     "application/json",
     "application/octet-stream",
