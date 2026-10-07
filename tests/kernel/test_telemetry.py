@@ -648,7 +648,9 @@ class TestChatLayerNonStreaming:
         assert span.attributes[OtelAttr.ERROR_TYPE] == "RuntimeError"
         assert span.exceptions == [error]
         assert span.status is not None and span.status[1] == repr(error)
-        assert client.duration_histogram.records == [], "error path records no duration"
+        ((duration, duration_attrs),) = client.duration_histogram.records
+        assert duration >= 0
+        assert duration_attrs[OtelAttr.ERROR_TYPE] == "RuntimeError"
         assert client.token_usage_histogram.records == []
 
     @pytest.mark.asyncio
@@ -849,6 +851,48 @@ class TestChatLayerStreaming:
         assert span.attributes[OtelAttr.ERROR_TYPE] == "RuntimeError"
         assert span.exceptions == [error]
         assert client.token_usage_histogram.records == [], "get_final_response skipped on stream error"
+        ((duration, duration_attrs),) = client.duration_histogram.records
+        assert duration >= 0
+        assert duration_attrs[OtelAttr.ERROR_TYPE] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_failing_result_hook_fails_the_stream_once(self, fake_otel: _FakeOtel, gate_on: None) -> None:
+        client = _TelChat()
+        stream = client.get_response([Message(role="user", contents=["hi"])], stream=True)
+        hook_calls: list[str] = []
+
+        def first(response: ChatResponse) -> None:
+            hook_calls.append("first")
+
+        def failing(response: ChatResponse) -> None:
+            hook_calls.append("failing")
+            raise RuntimeError("hook failed")
+
+        stream.with_result_hook(first).with_result_hook(failing)
+        with pytest.raises(RuntimeError, match="hook failed"):
+            _ = [update async for update in stream]
+
+        assert hook_calls == ["first", "failing"], "no hook runs a second time"
+        (span,) = fake_otel.spans
+        assert span.end_count == 1
+        assert span.attributes[OtelAttr.ERROR_TYPE] == "RuntimeError"
+        ((_, duration_attrs),) = client.duration_histogram.records
+        assert duration_attrs[OtelAttr.ERROR_TYPE] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_telemetry_capture_failure_never_fails_the_stream(
+        self, fake_otel: _FakeOtel, gate_on: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken_capture(**_kwargs: Any) -> None:
+            raise ValueError("telemetry bug")
+
+        monkeypatch.setattr(instrumentation, "_capture_response", broken_capture)
+        client = _TelChat()
+        stream = client.get_response([Message(role="user", contents=["hi"])], stream=True)
+        _ = [update async for update in stream]
+
+        assert (await stream.get_final_response()).text == "done"
+        assert fake_otel.spans[0].end_count == 1
 
     def test_sync_raise_closes_span_and_propagates(self, fake_otel: _FakeOtel, gate_on: None) -> None:
         error = RuntimeError("sync boom")

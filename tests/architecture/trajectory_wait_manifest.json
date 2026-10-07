@@ -374,16 +374,19 @@
     },
     "chrys.kernel.instrumentation": {
       "AgentTelemetryLayer._trace_agent_invocation._finalize_stream": [
-        ["awaitable", "await result_stream.get_final_response()", "unresolved"]
+        ["awaitable", "await stream_span.final_response(result_stream)", "unresolved"]
       ],
       "AgentTelemetryLayer._trace_agent_invocation._run": [
         ["awaitable", "await cast('Awaitable[AgentResponse[Any]]', execute())", "unresolved"]
       ],
       "ChatTelemetryLayer.get_response._finalize_stream": [
-        ["awaitable", "await result_stream.get_final_response()", "unresolved"]
+        ["awaitable", "await stream_span.final_response(result_stream)", "unresolved"]
       ],
       "ChatTelemetryLayer.get_response._get_response": [
         ["awaitable", "await super_get_response(messages=messages, stream=False, options=opts, compaction_strategy=compaction_strategy, tokenizer=tokenizer, function_invocation_kwargs=function_invocation_kwargs, client_kwargs=merged_client_kwargs, **prepared_observer_kwargs)", "unresolved"]
+      ],
+      "_StreamingSpan.final_response": [
+        ["awaitable", "await stream.get_final_response()", "unresolved"]
       ]
     },
     "chrys.kernel.loop": {
