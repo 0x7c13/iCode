@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Annotated
 
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes, is_utf8_encodable, surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
+from chrys.foundation.text.lines import normalize_line_endings, split_lines
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.service.tools.builtins.doc_converter.artifacts import (
     DocumentImageSink,
@@ -68,7 +69,7 @@ def _extract_toc(markdown: str) -> str:
     bottom with a notice showing how many entries were omitted.
     """
     toc_lines: list[str] = []
-    for i, line in enumerate(markdown.splitlines(), 1):
+    for i, line in enumerate(split_lines(markdown), 1):
         stripped = line.strip()
         if stripped.startswith("#"):
             level = len(stripped) - len(stripped.lstrip("#"))
@@ -363,11 +364,13 @@ class DocConverterTools:
         out_dir: str | None,
     ) -> str:
         """Render inline output or save complete Markdown and return its stable preview."""
-        markdown = _compose_document_markdown(parsed)
+        # LF-only, as read_file reads the saved copy back, so the table of
+        # contents and the line count match its line numbers.
+        markdown = normalize_line_endings(_compose_document_markdown(parsed))
         if not markdown.strip():
             return f"File: {display_resolved}\n(document converted but produced no text content)"
 
-        line_count = len(markdown.splitlines())
+        line_count = len(split_lines(markdown))
         char_count = len(markdown)
         token_count = _tokenizer.count_tokens(markdown)
         header = f"File: {display_resolved} ({line_count} lines, {char_count} chars, ~{token_count} tokens)\n"
