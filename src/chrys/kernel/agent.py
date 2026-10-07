@@ -217,7 +217,9 @@ class _AgentCore:
         values take precedence in ``_prepare_run_context``.
         """
         # Store middleware as supplied; run() re-reads it on every call so
-        # changes between runs take effect.
+        # changes between runs take effect. Validating it here rejects an
+        # unsupported value at construction rather than on the first run.
+        split_middleware(middleware)
         self.id = id if id is not None else str(uuid4())
         self.name = name
         self.description = description

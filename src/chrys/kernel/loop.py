@@ -2149,7 +2149,7 @@ class ToolLoopLayer:
         *,
         stream: bool = False,
         options: Mapping[str, Any] | None = None,
-        middleware: Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
+        middleware: ChatMiddleware | FunctionMiddleware | Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
         compaction_strategy: Any = None,
         tokenizer: Any = None,
         function_invocation_kwargs: Mapping[str, Any] | None = None,
@@ -2170,7 +2170,7 @@ class ToolLoopLayer:
             existing = effective_client_kwargs.get("middleware")
             effective_client_kwargs["middleware"] = [
                 *_as_middleware_list(existing),
-                *middleware,
+                *_as_middleware_list(middleware),
             ]
         runtime_split = split_middleware(effective_client_kwargs.pop("middleware", None))
         pipeline = FunctionMiddlewarePipeline(*self.function_middleware, *runtime_split.function)
