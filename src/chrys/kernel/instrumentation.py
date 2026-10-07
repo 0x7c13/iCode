@@ -1272,15 +1272,11 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
                 )
                 _mark_inner_response_telemetry_captured(response)
                 if TELEMETRY_GATE.sensitive_enabled and response.messages and span.is_recording():
-                    finish_reason = cast(
-                        "FinishReason | None",
-                        response.finish_reason if response.finish_reason in FINISH_REASON_MAP else None,
-                    )
                     _capture_messages(
                         span=span,
                         provider_name=provider_name,
                         messages=response.messages,
-                        finish_reason=finish_reason,
+                        finish_reason=response.finish_reason,
                         output=True,
                     )
                 return response  # type: ignore[return-value,no-any-return]

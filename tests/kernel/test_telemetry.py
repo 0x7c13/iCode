@@ -756,6 +756,20 @@ class TestChatLayerNonStreaming:
         assert events[1].__dict__[OtelAttr.EVENT_NAME] == OtelAttr.CHOICE
         assert events[0].__dict__[MessageListTimestampFilter.INDEX_KEY] == 0
 
+    @pytest.mark.asyncio
+    async def test_sensitive_non_streaming_keeps_unmapped_finish_reason(
+        self, fake_otel: _FakeOtel, gate_sensitive: None
+    ) -> None:
+        # Streaming and non-streaming report the same provider reason: one no map
+        # entry covers is emitted verbatim on both paths, never dropped.
+        client = _TelChat(turns=[_chat_response(finish_reason="max_tokens")])
+        await client.get_response([Message(role="user", contents=["hi"])])
+        (span,) = fake_otel.spans
+        output_messages = json.loads(span.attributes[OtelAttr.OUTPUT_MESSAGES])
+        assert output_messages[-1]["finish_reason"] == "max_tokens"
+        assert span.exceptions == []
+        assert span.status is None
+
 
 # ---------------------------------------------------------------------------
 # D. ChatTelemetryLayer — streaming, gate on
@@ -885,9 +899,9 @@ class TestChatLayerStreaming:
     async def test_sensitive_streaming_survives_unmapped_finish_reason(
         self, fake_otel: _FakeOtel, gate_sensitive: None
     ) -> None:
-        # Streaming is the only _capture_messages caller that forwards the provider's
-        # raw finish_reason, and the capture runs inside the span's own except/finally,
-        # so a failed lookup would mark an otherwise successful chat span as errored.
+        # The streaming capture runs inside the span's own except/finally, so a failed
+        # lookup of the provider's raw finish_reason would mark an otherwise successful
+        # chat span as errored.
         client = _TelChat(turns=[[_text_update("a", finish_reason="max_tokens")]])
         stream = client.get_response([Message(role="user", contents=["hi"])], stream=True)
         _ = [update async for update in stream]
