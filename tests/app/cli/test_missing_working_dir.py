@@ -15,6 +15,7 @@ import pytest
 
 from chrys.app.cli import acp as acp_cli
 from chrys.app.cli import headless, launch_cwd
+from chrys.app.cli import profiles as profiles_cli
 from chrys.app.cli import run as run_cli
 from chrys.app.cli import trajectory as trajectory_cli
 from chrys.app.cli import workflow as workflow_cli
@@ -360,6 +361,50 @@ def test_trajectory_in_an_existing_directory_loads_settings(tmp_path: Path, monk
 
     with pytest.raises(_PastLaunchCheck):
         trajectory_cli.main(["export", "--events", str(events), "--out", str(tmp_path / "trace.json")])
+
+    assert calls == ["prepare"]
+
+
+# --- icode agents / icode models ---------------------------------------------
+
+
+def _stub_profiles_runtime(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def prepare_runtime() -> Settings:
+        calls.append("prepare")
+        raise _PastLaunchCheck
+
+    monkeypatch.setattr(profiles_cli, "_prepare_runtime", prepare_runtime)
+    return calls
+
+
+def _profiles_main(command: str, argv: list[str]) -> int:
+    return profiles_cli.agents_main(argv) if command == "agents" else profiles_cli.models_main(argv)
+
+
+@pytest.mark.parametrize("command", ["agents", "models"])
+def test_profile_listing_from_a_deleted_directory_stops_before_loading_settings(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _enter_deleted_directory(tmp_path, monkeypatch)
+    calls = _stub_profiles_runtime(monkeypatch)
+
+    rc = _profiles_main(command, ["--json"])
+
+    output = capsys.readouterr()
+    assert rc == 1
+    assert calls == []
+    assert output.out == ""
+    assert output.err == f"Error: {_MISSING_WITHOUT_WORKDIR}\n"
+
+
+@pytest.mark.parametrize("command", ["agents", "models"])
+def test_profile_listing_in_an_existing_directory_loads_settings(command: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stub_profiles_runtime(monkeypatch)
+
+    with pytest.raises(_PastLaunchCheck):
+        _profiles_main(command, [])
 
     assert calls == ["prepare"]
 

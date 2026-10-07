@@ -226,12 +226,36 @@ def test_nearest_existing_dir_walks_up_to_a_folder_that_exists(tmp_path: Path) -
 def test_nearest_existing_dir_is_none_when_no_ancestor_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # As on Windows for a drive that is no longer there: not even the root is a folder.
     shadow = ModuleType("os")
-    shadow.path = SimpleNamespace(abspath=os.path.abspath, dirname=os.path.dirname, isdir=lambda _path: False)  # type: ignore[attr-defined]
+    shadow.path = SimpleNamespace(  # type: ignore[attr-defined]
+        abspath=os.path.abspath, expanduser=os.path.expanduser, dirname=os.path.dirname, isdir=lambda _path: False
+    )
     monkeypatch.setattr(file_picker_module, "os", shadow)
 
     assert _nearest_existing_dir(str(tmp_path / "gone")) is None
     # The picker then opens where the app runs.
     assert FilePicker(initial_path=str(tmp_path / "gone"))._initial_path == safe_getcwd()
+
+
+def test_file_picker_without_a_process_cwd_opens_home_for_a_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process cwd can be the deleted working directory; only a relative path needs it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    try:
+        gone.rmdir()
+    except OSError:
+        pytest.skip("this OS cannot remove the current directory")
+
+    assert _nearest_existing_dir("sessions") is None
+    assert FilePicker(initial_path="sessions")._initial_path == str(home)
+    # "~" is expanded first, so it never needs the process cwd.
+    assert FilePicker(initial_path=os.path.join("~", "deleted", "nested"))._initial_path == str(home)
 
 
 @pytest.mark.asyncio

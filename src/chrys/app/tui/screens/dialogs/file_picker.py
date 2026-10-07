@@ -238,8 +238,15 @@ class _FilteredDirectoryTree(DirectoryTree):
 
 
 def _nearest_existing_dir(path: str) -> str | None:
-    """Return *path* as an absolute directory, or its nearest existing ancestor."""
-    current = os.path.abspath(path)
+    """Return *path* as an absolute directory, or its nearest existing ancestor.
+
+    ``None`` when nothing on the way up exists, or when a relative *path*
+    can't be made absolute because the process working directory is gone.
+    """
+    try:
+        current = os.path.abspath(os.path.expanduser(path))
+    except OSError:
+        return None
     while not os.path.isdir(current):
         parent = os.path.dirname(current)
         if parent == current:
