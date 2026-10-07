@@ -47,7 +47,8 @@ class _FakeRuntime:
 def _make_runtime(tmp_path: Path) -> _FakeRuntime:
     """Create a minimal fake SessionEnvironment-like object."""
     platform = _FakePlatformInfo(config_dir=tmp_path)
-    return _FakeRuntime(platform=platform)
+    # A folder that exists on every host: the tool reports a missing working directory first.
+    return _FakeRuntime(platform=platform, cwd=str(tmp_path))
 
 
 class _FakeParser:

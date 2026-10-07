@@ -49,7 +49,27 @@ def missing_base_cwd_error(raw_path: str, base_cwd: str | None) -> str | None:
 
 
 def _is_within(path: str, base: str) -> bool:
-    """Return whether absolute *path* is *base* or lies under it, compared lexically."""
+    """Return whether absolute *path* is *base* or lies under it.
+
+    Compared as written and then with symlinks resolved, so another spelling
+    of the same place (a symlinked parent folder, macOS's ``/tmp`` and
+    ``/private/tmp``) also counts. Resolving follows the parts that still
+    exist and keeps the missing rest as written.
+    """
+    if _is_lexically_within(path, base):
+        return True
+    # A path absolute only under the other platform's rules names no place here.
+    if not (os.path.isabs(path) and os.path.isabs(base)):
+        return False
+    # ".." is removed first, as the tools' own resolver does, so a ".." after a
+    # symlink climbs the path as written rather than the link's target.
+    try:
+        return _is_lexically_within(os.path.realpath(os.path.normpath(path)), os.path.realpath(os.path.normpath(base)))
+    except OSError, ValueError:
+        return False
+
+
+def _is_lexically_within(path: str, base: str) -> bool:
     # normpath, not abspath: abspath of a relative base would read the process
     # cwd, which may be the deleted directory itself.
     path_key = os.path.normcase(os.path.normpath(path))

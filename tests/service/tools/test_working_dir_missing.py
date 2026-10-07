@@ -33,6 +33,7 @@ from chrys.service.tools.workspace_paths import (
     missing_base_cwd_error,
     working_dir_missing_error,
 )
+from tests.support.symlinks import symlink_or_skip
 
 
 def _missing_text(path: Path | str) -> str:
@@ -115,6 +116,24 @@ def test_absolute_path_beside_a_deleted_base_is_not_inside_it(gone: Path) -> Non
     sibling = f"{gone}-other{os.sep}notes.txt"
 
     assert missing_base_cwd_error(sibling, str(gone)) is None
+
+
+@pytest.mark.parametrize("spelling", ["base_through_link", "path_through_link", "dots_after_link"])
+def test_absolute_path_inside_a_deleted_base_through_a_symlink_is_reported(tmp_path: Path, spelling: str) -> None:
+    """The base and the path may name the same folder through a symlinked parent."""
+    real = tmp_path / "deep" / "real"
+    (real / "app").mkdir(parents=True)
+    link = tmp_path / "link"
+    symlink_or_skip(link, real, target_is_directory=True)
+    (real / "app").rmdir()
+    base, path = {
+        "base_through_link": (link / "app", str(real / "app" / "out.txt")),
+        "path_through_link": (real / "app", str(link / "app" / "out.txt")),
+        # The tools drop ".." as written: this names deep/real/app, not the link target's parent.
+        "dots_after_link": (link / "app", os.path.join(str(link), "..", "deep", "real", "app", "out.txt")),
+    }[spelling]
+
+    assert missing_base_cwd_error(path, str(base)) == _missing_text(base)
 
 
 def test_absolute_and_home_paths_never_depend_on_the_base(gone: Path, elsewhere: Path) -> None:
