@@ -38,7 +38,7 @@ from tests.orchestration.engine._recovery_helpers import (
     _registry,
     stub_engine_start,
 )
-from tests.support.event_capture import collect_events
+from tests.support.event_capture import capture_events, collect_events
 from tests.support.loaded_agents import install_loaded_agent
 
 
@@ -230,8 +230,7 @@ async def test_settings_reload_reports_a_value_it_had_to_reject(
     """
     monkeypatch.setenv("CHRYS_SESSION_TITLE_AUTO", "nonsense")
     bus = EventBus()
-    warnings: list[Warning] = []
-    await bus.subscribe(Warning, warnings.append)
+    warnings = await capture_events(bus, Warning)
     engine = assemble_agent_engine(bus, settings=Settings())
     engine.session.session_id = "sid"
     engine.session.agent_profile = _profile()
@@ -302,8 +301,7 @@ async def test_settings_reload_holds_a_routed_restart_field_and_says_so(
     monkeypatch.delenv("CHRYS_OTEL", raising=False)
     install_process_settings(load_settings())
     bus = EventBus()
-    warnings: list[Warning] = []
-    await bus.subscribe(Warning, warnings.append)
+    warnings = await capture_events(bus, Warning)
     engine = assemble_agent_engine(bus, settings=Settings())
     engine.session.session_id = "sid"
     engine.session.agent_profile = _profile()
@@ -331,8 +329,7 @@ async def test_settings_reload_applies_a_dev_mode_change_without_restart_noise(
     monkeypatch.delenv("CHRYS_DEV_MODE", raising=False)
     install_process_settings(load_settings())
     bus = EventBus()
-    warnings: list[Warning] = []
-    await bus.subscribe(Warning, warnings.append)
+    warnings = await capture_events(bus, Warning)
     engine = assemble_agent_engine(bus, settings=Settings())
     engine.session.agent_profile = _profile()
     install_loaded_agent(engine, loaded=None)

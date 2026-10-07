@@ -25,6 +25,7 @@ from chrys.service.session.persistence import (
     model_profile_context_fingerprint,
 )
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.event_capture import capture_events
 
 
 @pytest.fixture
@@ -284,8 +285,7 @@ async def test_save_publishes_session_saved(persistence: SessionPersistence, bus
     """save_session should publish a SessionSaved event."""
     from chrys.foundation.events.types import SessionSaved
 
-    events: list[Any] = []
-    await bus.subscribe(SessionSaved, events.append)
+    events = await capture_events(bus, SessionSaved)
 
     await persistence.save_session(
         "sess-1",
