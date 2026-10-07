@@ -76,7 +76,7 @@ If "Code review" appears in the list, the profile has loaded. If it does not app
 | `display_name` | String | Empty | Display name. |
 | `description` | String | Empty | Describes the agent's purpose. Also used as the default tool description for a sub-agent when none is specified. |
 | `sub_agent_only` | Boolean | `false` | If `true`, the agent cannot be selected as the main agent and can only be called by other agents. Forced to `true` for external ACP agents. |
-| `instructions` | String | Empty | Main behavioral instructions for agents of the built-in type. External ACP profiles ignore this field. |
+| `instructions` | String or list of strings | Empty | Main behavioral instructions for agents of the built-in type. A list is joined into one text, one item per line. External ACP profiles ignore this field. |
 | `model` | Object | `{}` | Binds a model profile. See [model](#model). |
 | `tools` | Object | `{}` | Configures built-in tools, MCP, and shell filtering. See [tools](#tools). |
 | `approval` | Object | See below | Configures which tool calls require approval. See [approval](#approval). |
@@ -426,7 +426,7 @@ When multiple sources contain skills with the same name, precedence from highest
 | --- | --- | --- | --- |
 | `name` | String | Required | 1-64 characters, using lowercase letters, digits, and hyphens. Hyphens cannot be consecutive or appear at the start or end. |
 | `description` | String | Required | Non-empty, up to 1024 characters. Helps the agent decide when to load the skill. |
-| `instructions` | String | Empty | Instructions provided to the agent when the skill is loaded. |
+| `instructions` | String or list of strings | Empty | Instructions provided to the agent when the skill is loaded. A list is joined into one text, one item per line. |
 | `resources` | List of objects | `[]` | Inline text resources loaded with the skill. See the following table. |
 
 | `resources` field | Type | Default | Description |

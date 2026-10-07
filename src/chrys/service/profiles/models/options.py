@@ -107,6 +107,28 @@ def _drop_protected_chat_options(profile_name: str, options: dict[str, Any]) -> 
     return sanitized
 
 
+def _normalize_instructions_option(profile_name: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Join a list-of-strings ``instructions`` one item per line; drop any other non-string.
+
+    The kernel concatenates instructions as text, so any other value would
+    reach the prompt as its Python repr.
+    """
+    value = options.get("instructions")
+    if value is None or isinstance(value, str):
+        return options
+    sanitized = dict(options)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        sanitized["instructions"] = "\n".join(cast("list[str]", value))
+        return sanitized
+    _log.warning(
+        "ModelProfile %r chat_options key 'instructions' must be a string or a list of strings; ignoring %s",
+        profile_name,
+        type(value).__name__,
+    )
+    del sanitized["instructions"]
+    return sanitized
+
+
 def _managed_header_names(headers: dict[Any, Any]) -> list[str]:
     return sorted((str(k) for k in headers if is_chrys_managed_header_name(str(k))), key=str.casefold)
 
@@ -160,6 +182,7 @@ def parse_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
         _log.warning("ModelProfile %r chat_options is not a JSON object, ignoring: %r", profile.name, raw)
         return None
     opts = _drop_protected_chat_options(profile.name, opts)
+    opts = _normalize_instructions_option(profile.name, opts)
     opts = _drop_managed_extra_headers(profile.name, opts)
     resolved = cast(
         "dict[str, Any]",
