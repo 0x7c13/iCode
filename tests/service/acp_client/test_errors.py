@@ -10,6 +10,7 @@ import pytest
 from acp.exceptions import RequestError
 from acp.schema import InitializeResponse, PromptResponse
 
+from chrys.foundation.platform.process import MissingWorkingDirectoryError
 from chrys.service.acp_client import (
     AcpAuthRequiredError,
     AcpConfigError,
@@ -162,6 +163,16 @@ def test_spawn_unknown_oserror_is_retryable_connect_failure() -> None:
 @pytest.mark.parametrize("error", [TypeError("bad env"), ValueError("embedded null")])
 def test_spawn_python_boundary_validation_errors_are_deterministic(error: BaseException) -> None:
     assert isinstance(classify_spawn_error(error), AcpSpawnError)
+
+
+def test_spawn_into_a_deleted_working_directory_names_the_directory() -> None:
+    error = MissingWorkingDirectoryError("/work/gone-\udcff")
+
+    classified = classify_spawn_error(error)
+
+    assert isinstance(classified, AcpSpawnError)
+    assert classified.detail == r"The ACP agent's working directory no longer exists: /work/gone-\udcff"
+    assert classified.cause is error
 
 
 def test_complete_invalid_and_truncated_frames_split_before_stateful_phase() -> None:

@@ -787,7 +787,9 @@ async def test_convert_file_not_found_escapes_display_path_but_keeps_raw_metadat
             patch(f"{_PATCH_TOOL}.resolve_workspace_path", return_value=resolved),
             patch(f"{_PATCH_TOOL}.os.path.isdir", return_value=False),
         ):
-            result = await tools.convert_document("missing.pdf")
+            # Absolute, so the patched isdir() is read only for the resolved path,
+            # not as a missing working directory.
+            result = await tools.convert_document(str(tmp_path / "missing.pdf"))
     finally:
         tool_result_metadata.reset(token)
 

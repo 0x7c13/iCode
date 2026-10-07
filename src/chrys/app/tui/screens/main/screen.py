@@ -11,7 +11,7 @@ import reprlib
 from collections.abc import Awaitable, Callable
 from functools import partial
 from types import FunctionType, MethodType
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import on, work
@@ -51,7 +51,7 @@ from chrys.app.tui.screens.main.navigation import MainNavigationController
 from chrys.app.tui.screens.main.ports import StatusMessage
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
-from chrys.app.tui.screens.main.session_handlers import SessionCallbacks, SessionHandler
+from chrys.app.tui.screens.main.session_handlers import RestoreRequest, SessionCallbacks, SessionHandler
 from chrys.app.tui.screens.main.session_title import SessionTitleController
 from chrys.app.tui.screens.main.settings_coordinator import (
     SETTINGS_TITLE,
@@ -151,6 +151,9 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+type StartupRestore = Literal["restored", "declined", "failed"]
+"""Startup restore result; ``declined`` means the user chose no folder for a session whose folder is gone."""
 
 _SESSIONS_BINDING = msg("tui.binding.sessions", fallback="Sessions")
 _AGENTS_BINDING = msg("tui.binding.agents", fallback="Agents")
@@ -361,7 +364,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 allow_change=lambda: self._workflow.browser.request_workspace_change(),  # noqa: PLW0108 — constructed later
                 selected_cwd=lambda: self._workflow.project_cwd if self._workflow.workflow_mode else "",
                 apply_workflow_cwd=self._apply_workflow_cwd,
+                workflow_mode=lambda: self._workflow.workflow_mode,
             ),
+            locale_controller=self._locale_controller,
         )
         self._copy_actions = CopyActionController(view=self._view_adapter, debug=self._debug)
         self._chat_selection = ChatSelectionController(self)
@@ -376,6 +381,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             callbacks=BackendEventCallbacks(
                 accept_approval_update=self._accept_approval_update,
                 route_session_error=self._route_session_error,
+                prompt_missing_working_dir=self._workspace_actions.prompt_missing_working_dir,
                 set_agent_running=self._set_agent_running,
                 set_agent_loading=self._set_agent_loading,
                 set_has_messages=self._set_has_messages,
@@ -430,6 +436,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
+                choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
             ),
             agent_load=self._events,
             runtime_info=self._runtime_info,
@@ -906,7 +913,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             except Exception:
                 logger.exception("Failed to restore GC-freeze participant %s", type(participant).__name__)
 
-    async def restore_startup_session(self, session_id: str) -> bool:
+    async def restore_startup_session(self, session_id: str) -> StartupRestore:
         """Restore at startup and confirm the matching backend success event."""
         restored = False
 
@@ -917,10 +924,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
         await self._services.bus.subscribe(SessionRestored, observe_restored)
         try:
-            await self._sessions.do_session_restore(session_id, allow_while_loading=True)
+            request = await self._sessions.do_session_restore(session_id, allow_while_loading=True)
         finally:
             await self._services.bus.unsubscribe(SessionRestored, observe_restored)
-        return restored
+        if restored:
+            return "restored"
+        return "declined" if request is RestoreRequest.DECLINED else "failed"
 
     def cancel_startup_session_restore(self) -> None:
         """Close restore loading UI before falling back to a fresh runtime."""
@@ -1797,6 +1806,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         was_running = self._state.run.agent_running
         self._state.run.agent_running = running
         if running:
+            self._state.run.turn_end_check_pending = True
             if not was_running:
                 self._session_title.run_started()
                 self._state.run.generation += 1
@@ -1815,6 +1825,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # runs when the user next types ``@``.  Mirrors the
             # invalidation in ``on_workspace_updated``.
             self._suggestions.file_cache = None
+            if self._state.run.turn_end_check_pending:
+                self._state.run.turn_end_check_pending = False
+                self._workspace_actions.check_after_turn()
         input_bar = self.query_one(InputBar)
         if not running and input_bar.locked:
             input_bar.unlock_and_keep()

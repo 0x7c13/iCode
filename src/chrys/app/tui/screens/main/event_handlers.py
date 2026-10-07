@@ -116,6 +116,7 @@ from chrys.service.state.store import StateStore
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
+    from chrys.app.tui.screens.main.workspace_actions import MissingDirReason
     from chrys.foundation.models.invocations import InvocationOrigin
 
 _IMAGE_ERROR_CODES = {"image_attachment_error", "vision_unsupported"}
@@ -125,11 +126,13 @@ _IMAGE_WARNING_CODES = {
     "image_attachment_while_running",
 }
 _SUBMIT_BLOCKING_WARNING_CODES = _IMAGE_WARNING_CODES | {"sub_agent_paused"}
+_WORKING_DIR_MISSING_CODE = "working_dir_missing"
 _SUBMIT_BLOCKING_ERROR_CODES = _IMAGE_ERROR_CODES | {
     "hook_blocked",
     "not_ready",
     "prompt_admission_conflict",
     "retry_missing_user_anchor",
+    _WORKING_DIR_MISSING_CODE,
 }
 _STALE_RUN_FILTERED_ERROR_CODES = {"executor_error", "retry_missing_user_anchor"}
 
@@ -210,6 +213,7 @@ class BackendEventCallbacks:
     settings_reloaded: Callable[[], None]
     accept_approval_update: Callable[[ApprovalModeUpdated], bool] = lambda _event: True
     route_session_error: Callable[[Error], bool] = lambda _event: False
+    prompt_missing_working_dir: Callable[[MissingDirReason], None] = lambda _reason: None
 
 
 def _usage_source_debug_suffix(source_id: str, *, main_source_id: str) -> str:
@@ -1864,6 +1868,12 @@ class BackendEventHandler:
             if event.code in _IMAGE_ERROR_CODES:
                 self._show_image_rejection_dialog(event.code, display_full)
                 s.debug("ImageAttachmentBlocked", full_msg.splitlines()[0][:80])
+                return
+            if event.code == _WORKING_DIR_MISSING_CODE:
+                # The draft goes back first; the folder prompt never writes to it.
+                restored = self._restore_pending_submit_text() is not None
+                self._callbacks.prompt_missing_working_dir("submit" if restored else "turn_end")
+                s.debug("Error", f"[{event.code}] {full_msg[:60]}")
                 return
             await self._show_pending_submit_error(event.code, display_full, raw_message=full_msg)
             return

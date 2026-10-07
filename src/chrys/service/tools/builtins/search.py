@@ -35,10 +35,15 @@ from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.platform.output_capture import BoundedCapture, drain_process_pipes
 from chrys.foundation.platform.paths import resolve_workspace_path
-from chrys.foundation.platform.process import decode_subprocess_output, managed_subprocess
+from chrys.foundation.platform.process import (
+    MissingWorkingDirectoryError,
+    decode_subprocess_output,
+    managed_subprocess,
+)
 from chrys.foundation.vendor import find_rg
 from chrys.service.tools.kinds import KIND_SEARCH, tool
 from chrys.service.tools.result_metadata import record_process_result, record_process_timeout, tool_error
+from chrys.service.tools.workspace_paths import missing_base_cwd_error
 
 if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
@@ -322,7 +327,7 @@ async def _run_rg(
             returncode = proc.returncode or 0
     except _RgStopped:
         pass
-    except (FileNotFoundError, NotADirectoryError) as exc:
+    except (FileNotFoundError, NotADirectoryError, MissingWorkingDirectoryError) as exc:
         # Process creation can fail because cwd disappeared, even while rg exists.
         if cwd is not None and not os.path.isdir(cwd):
             raise NotADirectoryError(f"search directory unavailable — {cwd}") from exc
@@ -902,6 +907,9 @@ async def _grep_impl(
     respect_gitignore: bool = True,
 ) -> str:
     max_results = min(max_results, _MAX_RESULTS_HARD_LIMIT)
+    missing_base = missing_base_cwd_error(path, base_cwd)
+    if missing_base is not None:
+        return missing_base
     root = resolve_workspace_path(path, base_cwd=base_cwd)
     if not os.path.exists(root):
         return tool_error("path_not_found", f"path not found — {root}", details={"path": path, "resolved_path": root})
@@ -1020,6 +1028,10 @@ async def _grep_impl(
                 if fatal_error or not encoding_args or limited or total_matches + len(oversized) >= max_results:
                     break
     except NotADirectoryError as exc:
+        # The session directory can vanish between the check above and rg's spawn.
+        missing_base = missing_base_cwd_error(path, base_cwd)
+        if missing_base is not None:
+            return missing_base
         return tool_error("path_not_found", str(exc), details={"path": path, "resolved_path": root})
     except FileNotFoundError:
         return tool_error("ripgrep_not_found", "ripgrep (rg) not found")
@@ -1032,6 +1044,10 @@ async def _grep_impl(
     if not total_matches and not oversized:
         if errors.exit_code is not None:
             record_process_result(errors.exit_code)
+            # rg reports a session directory deleted after the check above as its own IO error.
+            missing_base = missing_base_cwd_error(path, base_cwd)
+            if missing_base is not None:
+                return missing_base
             return tool_error("search_process_failed", errors.summary(), details={"path": path, "pattern": pattern})
         return surrogate_safe_text(f"No matches found for /{pattern}/ in {root}")
 
@@ -1104,6 +1120,9 @@ async def _glob_impl(
     respect_gitignore: bool = True,
 ) -> str:
     max_results = min(max_results, _MAX_RESULTS_HARD_LIMIT)
+    missing_base = missing_base_cwd_error(path, base_cwd)
+    if missing_base is not None:
+        return missing_base
     root = resolve_workspace_path(path, base_cwd=base_cwd)
     if not os.path.exists(root):
         return tool_error("path_not_found", f"path not found — {root}", details={"path": path, "resolved_path": root})
@@ -1112,6 +1131,10 @@ async def _glob_impl(
         async with asyncio.timeout(_TIMEOUT):
             files = await _search_files(root, pattern, respect_gitignore)
     except NotADirectoryError as exc:
+        # The session directory can vanish between the check above and rg's spawn.
+        missing_base = missing_base_cwd_error(path, base_cwd)
+        if missing_base is not None:
+            return missing_base
         return tool_error("path_not_found", str(exc), details={"path": path, "resolved_path": root})
     except FileNotFoundError:
         return tool_error("ripgrep_not_found", "ripgrep (rg) not found")

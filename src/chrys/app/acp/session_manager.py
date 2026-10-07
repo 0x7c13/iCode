@@ -53,6 +53,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import WorkingDir, Workspace
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.yaml_io import dump_yaml
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN, session_short_id
 from chrys.orchestration.session_host import ChrysSessionHost
@@ -1231,6 +1232,9 @@ class AcpSessionManager:
     def _resolve_requested_cwd(self, cwd: str | None) -> str:
         if cwd is None:
             if self._process_cwd is not None:
+                if not os.path.isdir(self._process_cwd):
+                    msg = f"working directory no longer exists: {surrogate_safe_text(self._process_cwd)}"
+                    raise AcpSessionError(msg)
                 return self._process_cwd
             msg = "cwd is required when this ACP process was not started with --workdir."
             raise AcpSessionError(msg)
@@ -1314,6 +1318,12 @@ class AcpSessionManager:
             msg = (
                 f"Session '{session_short_id(meta.session_id)}' has no saved cwd metadata and cannot be loaded "
                 "over ACP."
+            )
+            raise AcpSessionError(msg)
+        if not os.path.isdir(meta.primary_cwd):
+            msg = (
+                f"working directory of session '{session_short_id(meta.session_id)}' no longer exists: "
+                f"{surrogate_safe_text(meta.primary_cwd)}"
             )
             raise AcpSessionError(msg)
         if not _same_dir(meta.primary_cwd, requested_cwd):
@@ -1438,7 +1448,14 @@ def _resolve_dir(path: str) -> str:
         # workspace, so reject it instead of guessing.
         msg = f"path must be absolute: {raw}"
         raise AcpSessionError(msg)
-    resolved = expanded.resolve(strict=True)
+    try:
+        resolved = expanded.resolve(strict=True)
+    except FileNotFoundError, NotADirectoryError:
+        msg = f"cwd does not exist: {surrogate_safe_text(raw)}"
+        raise AcpSessionError(msg) from None
+    except OSError:
+        msg = f"cwd is not accessible: {surrogate_safe_text(raw)}"
+        raise AcpSessionError(msg) from None
     if not resolved.is_dir():
         msg = f"cwd is not a directory: {resolved}"
         raise AcpSessionError(msg)

@@ -5,13 +5,15 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from chrys.foundation.platform.process import ManagedStdioProcess
+from chrys.foundation.platform.process import ManagedStdioProcess, MissingWorkingDirectoryError
 from chrys.service.acp_client import AcpConfigError, AcpSpawnError
 from chrys.service.acp_client.spawn import (
     DEPTH_ENV_VAR,
@@ -116,6 +118,24 @@ async def test_missing_executable_is_deterministic_spawn_error(tmp_path: Path) -
 
     with pytest.raises(AcpSpawnError):
         await spawn_acp_process(missing)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX spawn; the Windows spawn branch is stubbed in the process tests"
+)
+async def test_deleted_cwd_is_deterministic_spawn_error_naming_the_directory(tmp_path: Path) -> None:
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    gone.rmdir()
+    deleted = dataclasses.replace(make_spec(tmp_path), cwd=str(gone))
+
+    from chrys.service.acp_client.spawn import spawn_acp_process
+
+    with pytest.raises(AcpSpawnError) as raised:
+        await spawn_acp_process(deleted)
+
+    assert raised.value.detail == f"The ACP agent's working directory no longer exists: {gone}"
+    assert isinstance(raised.value.cause, MissingWorkingDirectoryError)
 
 
 async def test_stderr_setup_failure_closes_transports_even_when_cancelled(

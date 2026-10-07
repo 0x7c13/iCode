@@ -46,3 +46,14 @@ class Workspace:
         """Create from a working directory (defaults to os.getcwd())."""
         raw = cwd or os.getcwd()
         return cls(primary_cwd=os.path.abspath(os.path.expanduser(raw)))
+
+    def missing_primary(self) -> str | None:
+        """Return the primary cwd when it is no longer a directory, else ``None``.
+
+        New work (turns, retries, restores, workflow runs) refuses to start
+        while this returns a path; additional working dirs are optional and
+        never block. The raw path is returned for display and filesystem use.
+        """
+        if self.primary_cwd and not os.path.isdir(self.primary_cwd):
+            return self.primary_cwd
+        return None

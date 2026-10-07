@@ -237,6 +237,17 @@ class _FilteredDirectoryTree(DirectoryTree):
 # ---------------------------------------------------------------------------
 
 
+def _nearest_existing_dir(path: str) -> str | None:
+    """Return *path* as an absolute directory, or its nearest existing ancestor."""
+    current = os.path.abspath(path)
+    while not os.path.isdir(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+    return current
+
+
 class FilePicker(BaseDialog[str | None]):
     """Generic file/folder selection dialog.
 
@@ -290,9 +301,10 @@ class FilePicker(BaseDialog[str | None]):
         self._recent_paths = recent_paths
         self._recent_paths_task: asyncio.Task[None] | None = None
 
-        # Resolve initial path
-        if initial_path and os.path.isdir(initial_path):
-            self._initial_path = os.path.abspath(initial_path)
+        # Resolve initial path: a deleted folder opens at its nearest existing parent.
+        nearest = _nearest_existing_dir(initial_path) if initial_path else None
+        if nearest is not None:
+            self._initial_path = nearest
         else:
             from chrys.foundation.platform import safe_getcwd
 

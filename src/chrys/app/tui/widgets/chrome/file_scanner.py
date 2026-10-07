@@ -20,7 +20,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.process import decode_subprocess_output, managed_subprocess
+from chrys.foundation.platform.process import (
+    MissingWorkingDirectoryError,
+    decode_subprocess_output,
+    managed_subprocess,
+)
 from chrys.foundation.vendor import find_rg
 
 ProjectPathKind = Literal["file", "directory"]
@@ -363,7 +367,7 @@ async def _scan_rg_files(root: str, max_files: int) -> _PathSourceResult:
             result = await _read_limited_stdout_lines(proc, max_files)
             if result.truncated or proc.returncode == 0:
                 return result
-    except FileNotFoundError, NotADirectoryError:
+    except FileNotFoundError, NotADirectoryError, MissingWorkingDirectoryError:
         pass
     return _PathSourceResult([])
 
@@ -393,7 +397,7 @@ async def _append_git_cached_files(root: str, paths: list[str], seen: set[str], 
             stderr=asyncio.subprocess.DEVNULL,
         ) as proc:
             return await _append_unseen_stdout_lines(proc, paths, seen, file_budget=file_budget)
-    except FileNotFoundError, NotADirectoryError:
+    except FileNotFoundError, NotADirectoryError, MissingWorkingDirectoryError:
         return False
 
 
@@ -415,7 +419,7 @@ async def _scan_git_ls_files(root: str, *args: str, max_files: int) -> _PathSour
             result = await _read_limited_stdout_lines(proc, max_files)
             if result.truncated or proc.returncode == 0:
                 return result
-    except FileNotFoundError, NotADirectoryError:
+    except FileNotFoundError, NotADirectoryError, MissingWorkingDirectoryError:
         pass
     return _PathSourceResult([])
 
@@ -468,7 +472,7 @@ async def _append_dot_entries(root: str, paths: list[str], seen: set[str], *, fi
             truncated = await _append_unseen_stdout_lines(proc, paths, seen, file_budget=file_budget)
             if truncated or proc.returncode == 0:
                 return truncated
-    except FileNotFoundError, NotADirectoryError:
+    except FileNotFoundError, NotADirectoryError, MissingWorkingDirectoryError:
         pass
 
     return await asyncio.to_thread(
@@ -577,7 +581,7 @@ async def _scan_ignored_visible_files(root: str, max_files: int) -> _PathSourceR
                     extra = await proc.stdout.readline()
                     return _PathSourceResult(paths, truncated=bool(extra))
             return _PathSourceResult(paths)
-    except FileNotFoundError, NotADirectoryError:
+    except FileNotFoundError, NotADirectoryError, MissingWorkingDirectoryError:
         pass
     return _PathSourceResult([])
 

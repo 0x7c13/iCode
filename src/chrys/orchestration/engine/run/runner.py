@@ -21,6 +21,7 @@ from chrys.orchestration.engine.run.prompt_content import PromptContentPreparer
 from chrys.orchestration.engine.run.retry import RetryCoordinator
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
 from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
+from chrys.orchestration.engine.state.machine import EngineState, Trigger
 from chrys.orchestration.invoker.contracts import OverlappingRun, PreparedClosed, StaleContinuation, UnsupportedRequest
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
 
@@ -329,10 +330,12 @@ class TurnRunner:
         """Finalize the just-ended executor pass and close the terminal boundary."""
         try:
             outcome = await self._finalizer.finalize()
-            self._complete_finalized_run(outcome)
+            dropped_retry_cwd = self._complete_finalized_run(outcome)
         except BaseException:
             self._clear_current_input()
             raise
+        if dropped_retry_cwd is not None:
+            await self._retry_factory().report_retry_dropped_for_missing_cwd(dropped_retry_cwd)
         return outcome
 
     async def pre_run(
@@ -594,10 +597,13 @@ class TurnRunner:
             return None
         return format_skill_reference_reminder(reference)
 
-    def _complete_finalized_run(self, outcome: PostRunOutcome) -> None:
-        """Synchronously finish retry dispatch, scope expiry, and recovery cleanup."""
+    def _complete_finalized_run(self, outcome: PostRunOutcome) -> str | None:
+        """Synchronously finish retry dispatch, scope expiry, and recovery cleanup.
+
+        Return the missing working directory when it made a queued retry drop.
+        """
         task_before_pending_retry = self._turn_state.lease.run_task
-        self._retry_factory().start_pending_retry_if_due()
+        dropped_retry_cwd = self._retry_factory().start_pending_retry_if_due()
         self._turn_state.lease.discard_pre_executor_interrupt(task_before_pending_retry)
         task_after_pending_retry = self._turn_state.lease.run_task
         retry_dispatched = (
@@ -605,9 +611,14 @@ class TurnRunner:
             and task_after_pending_retry is not task_before_pending_retry
             and not task_after_pending_retry.done()
         )
+        if dropped_retry_cwd is not None and not retry_dispatched and self._fsm.state == EngineState.RUNNING:
+            # The pass moved PENDING_RETRY to RUNNING for a retry that will not
+            # start; end in the state the pass itself reached.
+            self._fsm.try_transition(Trigger.RUN_INTERRUPTED if outcome.interrupted else Trigger.RUN_COMPLETED)
         if not retry_dispatched and not outcome.failed:
             _expire_current_run_scope(self._turn_state, self._current, outcome.completed_scope)
         self._clear_current_input()
+        return dropped_retry_cwd
 
     def _clear_current_input(self) -> None:
         """Clear current-turn recovery input after run finalization."""

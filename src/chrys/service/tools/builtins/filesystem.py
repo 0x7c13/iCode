@@ -33,6 +33,7 @@ from chrys.service.tools.session_artifacts import (
     resolve_document_markdown_artifact_handle,
     resolve_tool_session_dir,
 )
+from chrys.service.tools.workspace_paths import missing_base_cwd_error
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -320,6 +321,10 @@ def _read_file_impl(
     from chrys.foundation.text.encoding import EncodingDetector
     from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 
+    missing_base = missing_base_cwd_error(path, base_cwd)
+    if missing_base is not None:
+        return missing_base
+
     tokenizer = MixedLanguageTokenizer()
     detector = EncodingDetector()
     effective_path = path
@@ -492,6 +497,9 @@ def _view_image_impl(
 ) -> list[Content]:
     from pathlib import Path
 
+    missing_base = missing_base_cwd_error(path, base_cwd)
+    if missing_base is not None:
+        return [Content.from_text(missing_base)]
     effective_path = path
     try:
         try:
@@ -602,6 +610,11 @@ def _write_file_impl(
     *,
     base_cwd: str | None = None,
 ) -> str:
+    # Checked first: a relative write would otherwise recreate the deleted
+    # working directory through ``os.makedirs`` below.
+    missing_base = missing_base_cwd_error(path, base_cwd)
+    if missing_base is not None:
+        return missing_base
     try:
         with _fs_write_lock(path, base_cwd):
             plan = plan_write_file(path, content, overwrite=overwrite, base_cwd=base_cwd)
@@ -859,6 +872,9 @@ def _edit_file_impl(
     *,
     base_cwd: str | None = None,
 ) -> str:
+    missing_base = missing_base_cwd_error(path, base_cwd)
+    if missing_base is not None:
+        return missing_base
     try:
         with _fs_write_lock(path, base_cwd):
             plan = plan_edit_file(path, old_string, new_string, replace_all=replace_all, base_cwd=base_cwd)

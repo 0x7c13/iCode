@@ -31,6 +31,7 @@ from chrys.foundation.events.types import (
     WorkspaceChange,
     WorkspaceUpdated,
 )
+from chrys.foundation.i18n import DisplayPath
 from chrys.foundation.models.workspace import Workspace
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.state import lifecycle_permits
@@ -508,7 +509,9 @@ def test_current_profile_snapshot_reflects_live_runtime() -> None:
     assert list(engine.current.manifest.tool_names) == ["shell", "read_file"]
 
 
-async def test_runtime_control_denials_publish_captured_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_runtime_control_denials_publish_captured_session_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     bus = EventBus()
     errors: list[Error] = []
     await bus.subscribe(Error, lambda event: collect_events(errors, event))
@@ -537,7 +540,7 @@ async def test_runtime_control_denials_publish_captured_session_id(monkeypatch: 
     engine.session.session_id = "old-session"
     await engine._on_settings_reload(SettingsReload())
     engine.session.session_id = "old-session"
-    await engine._on_workspace_change(WorkspaceChange(primary_cwd="/tmp/chrys-new"))
+    await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(tmp_path)))
 
     assert [event.code for event in errors] == [
         "runtime_mutation_session_changed",
@@ -548,7 +551,39 @@ async def test_runtime_control_denials_publish_captured_session_id(monkeypatch: 
     assert {event.session_id for event in errors} == {"old-session"}
 
 
-async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_workspace_change_to_a_missing_directory_is_refused_before_any_rebuild(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bus = EventBus()
+    errors: list[Error] = []
+    await bus.subscribe(Error, lambda event: collect_events(errors, event))
+    engine = assemble_agent_engine(bus, settings=Settings(), agent_registry=_registry(_profile()))
+    engine.session.session_id = "sid"
+    engine.session.agent_profile = _profile()
+    engine.session.workspace = Workspace.from_cwd(str(tmp_path))
+    install_loaded_agent(engine, bindings=object())  # type: ignore[assignment]
+    acquire_calls: list[lifecycle_permits.RebuildControlToken] = []
+
+    async def record_acquire(
+        token: lifecycle_permits.RebuildControlToken,
+    ) -> lifecycle_permits.RebuildPermitDenied:
+        acquire_calls.append(token)
+        return lifecycle_permits.RebuildPermitDenied(reason="superseded", code="unexpected", message="unexpected")
+
+    monkeypatch.setattr(engine.permits, "acquire_rebuild_permit", record_acquire)
+    missing = tmp_path / "missing"
+
+    await engine._on_workspace_change(WorkspaceChange(primary_cwd=str(missing)))
+
+    assert [(event.code, event.session_id) for event in errors] == [("workspace_change_failed", "sid")]
+    assert errors[0].message == f"Working directory does not exist: {missing}"
+    assert_display_message(errors[0], "controls.workspace_missing", {"path": DisplayPath(str(missing))})
+    assert acquire_calls == []
+    assert engine.session.workspace.primary_cwd == str(tmp_path)
+
+
+async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    current = str(tmp_path)
     bus = EventBus()
     profile_events: list[ProfileSwitched] = []
     model_events: list[ModelProfileSwitched] = []
@@ -567,7 +602,7 @@ async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pyte
     install_loaded_agent(
         engine, active_profile=ModelProfile(id="model-1", name="Model", provider="openai", model_id="gpt-5")
     )
-    engine.session.workspace = Workspace.from_cwd("/tmp/chrys-current")
+    engine.session.workspace = Workspace.from_cwd(current)
     denied = lifecycle_permits.RebuildPermitDenied(
         reason="superseded",
         code="runtime_mutation_superseded",
@@ -586,7 +621,7 @@ async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pyte
 
     await engine._on_profile_switch(AgentProfileSwitch(profile_name="Code"))
     await engine._on_set_model_profile(SetModelProfile(profile_id="model-1"))
-    await engine._on_workspace_change(WorkspaceChange(primary_cwd="/tmp/chrys-current"))
+    await engine._on_workspace_change(WorkspaceChange(primary_cwd=current))
 
     assert acquire_calls == 3
     assert [(event.from_profile, event.to_profile, event.session_id) for event in profile_events] == [
@@ -597,7 +632,7 @@ async def test_already_satisfied_denials_publish_typed_success(monkeypatch: pyte
     assert engine.settings.model_profile == "model-1"
     assert engine.settings.model_profile_override == "model-1"
     assert engine.settings.model_profile_override_sub_agents is False
-    assert [(event.primary_cwd, event.session_id) for event in workspace_events] == [("/tmp/chrys-current", "sid")]
+    assert [(event.primary_cwd, event.session_id) for event in workspace_events] == [(current, "sid")]
 
 
 @pytest.mark.parametrize(
@@ -611,7 +646,9 @@ async def test_terminal_denials_are_not_masked_by_live_satisfied_state(
     monkeypatch: pytest.MonkeyPatch,
     reason: lifecycle_permits.RebuildPermitDeniedReason,
     code: str,
+    tmp_path: Path,
 ) -> None:
+    current = str(tmp_path)
     bus = EventBus()
     errors: list[Error] = []
     profile_events: list[ProfileSwitched] = []
@@ -632,7 +669,7 @@ async def test_terminal_denials_are_not_masked_by_live_satisfied_state(
     install_loaded_agent(
         engine, active_profile=ModelProfile(id="model-1", name="Model", provider="openai", model_id="gpt-5")
     )
-    engine.session.workspace = Workspace.from_cwd("/tmp/chrys-current")
+    engine.session.workspace = Workspace.from_cwd(current)
     denied = lifecycle_permits.RebuildPermitDenied(reason=reason, code=code, message=reason)
 
     async def deny_after_boundary(
@@ -649,7 +686,7 @@ async def test_terminal_denials_are_not_masked_by_live_satisfied_state(
     engine.session.session_id = "old-session"
     await engine._on_set_model_profile(SetModelProfile(profile_id="model-1"))
     engine.session.session_id = "old-session"
-    await engine._on_workspace_change(WorkspaceChange(primary_cwd="/tmp/chrys-current"))
+    await engine._on_workspace_change(WorkspaceChange(primary_cwd=current))
 
     assert [(event.code, event.session_id) for event in errors] == [
         (code, "old-session"),

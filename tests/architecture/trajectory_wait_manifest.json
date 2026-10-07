@@ -1035,6 +1035,8 @@
         ["wrapper", "await self._wait_for_pre_admission_gate(self._wait_for_existing_run_task, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_active_admissions_idle, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
+        ["wrapper", "await refuse_while_working_dir_missing(self._bus, self._session)", "unresolved", "chrys.orchestration.engine.run.working_dir.refuse_while_working_dir_missing"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"],
         ["awaitable", "await self._turn_state.lease.refuse_while_workflow_active(self._bus, self._session.session_id)", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
@@ -1232,6 +1234,8 @@
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.NOT_READY)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_active_admissions_idle, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._wait_for_pre_admission_gate"],
+        ["wrapper", "await refuse_while_working_dir_missing(self._bus, self._session)", "unresolved", "chrys.orchestration.engine.run.working_dir.refuse_while_working_dir_missing"],
+        ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["awaitable", "await self._turn_state.lease.refuse_while_workflow_active(self._bus, self._session.session_id)", "unresolved"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["awaitable", "await self._bus.publish(Error(code='retry_missing_user_anchor', message='Cannot retry without a real user message in history.', display_message=_RETRY_MISSING_USER_ANCHOR.bind(), recoverable=True, session_id=self._session.session_id))", "unresolved"],
@@ -1255,6 +1259,8 @@
         ["wrapper", "await input_admission_wait(self._wait_for_existing_run_task, preparation, wait_entry)", "unresolved", "chrys.service.trajectory.preparation.input_admission_wait"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.OWNER_CHANGED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
+        ["wrapper", "await refuse_while_working_dir_missing(self._bus, self._session)", "unresolved", "chrys.orchestration.engine.run.working_dir.refuse_while_working_dir_missing"],
+        ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.OWNER_CHANGED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._commit_deferred_retry_note_side_effects(deferred_retry_note, scope)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._commit_deferred_retry_note_side_effects"],
@@ -1288,6 +1294,9 @@
         ["wrapper", "await self._start_pre_admission_preparation(preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._start_pre_admission_preparation"],
         ["wrapper", "await self._handle_user_retry(event, preparation_tracker=preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._handle_user_retry"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.PREPARATION_FAILED)", "unresolved"]
+      ],
+      "RetryCoordinator.report_retry_dropped_for_missing_cwd": [
+        ["wrapper", "await publish_working_dir_missing(self._bus, self._session.session_id, path)", "unresolved", "chrys.orchestration.engine.run.working_dir.publish_working_dir_missing"]
       ]
     },
     "chrys.orchestration.engine.run.runner": {
@@ -1308,7 +1317,8 @@
         ["awaitable", "await self._skills.refresh(update_active_turn=update_active_turn)", "unresolved"]
       ],
       "TurnRunner.finalize_current_run": [
-        ["awaitable", "await self._finalizer.finalize()", "unresolved"]
+        ["awaitable", "await self._finalizer.finalize()", "unresolved"],
+        ["awaitable", "await self._retry_factory().report_retry_dropped_for_missing_cwd(dropped_retry_cwd)", "unresolved"]
       ],
       "TurnRunner.pre_run": [
         ["wrapper", "await self._record_trajectory_turn_started(is_retry=is_retry, has_opening_input=has_opening_input, preparation_scope_operation_id=preparation_scope_operation_id)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._record_trajectory_turn_started"]
@@ -1390,6 +1400,14 @@
     "chrys.orchestration.engine.run.turn_state": {
       "TurnRuntimeState.drain_for_boundary": [
         ["awaitable", "await self.lease.observe_run_task_chain(propagate_inner_cancel=False)", "unresolved"]
+      ]
+    },
+    "chrys.orchestration.engine.run.working_dir": {
+      "publish_working_dir_missing": [
+        ["awaitable", "await bus.publish(Error(code=WORKING_DIR_MISSING_CODE, message=f'Working directory no longer exists: {surrogate_safe_text(path)}', display_message=_WORKING_DIR_MISSING.bind(path=DisplayPath(path)), session_id=session_id))", "unresolved"]
+      ],
+      "refuse_while_working_dir_missing": [
+        ["wrapper", "await publish_working_dir_missing(bus, session.session_id, missing)", "unresolved", "chrys.orchestration.engine.run.working_dir.publish_working_dir_missing"]
       ]
     },
     "chrys.orchestration.engine.session_lifecycle": {
@@ -1510,6 +1528,7 @@
         ["awaitable", "await self._persistence.load_session_meta(event.session_id, prefer_recovery=prefer_recovery)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='session_kind_mismatch', message='Open this session in Workflow mode.', session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._persistence.recovery_session_wins(event.session_id)", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='session_cwd_missing', message=f'Working directory of session {session_short_id(event.session_id)} no longer exists: {surrogate_safe_text(target_cwd)}', display_message=_RESTORE_SESSION_CWD_MISSING.bind(path=DisplayPath(target_cwd)), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='requested_agent_profile_unresolved', message=f\"Requested agent profile '{event.profile_name}' could not be resolved; session restore was stopped.\", display_message=_RESTORE_REQUESTED_AGENT_PROFILE_UNRESOLVED.bind(profile=event.profile_name), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='saved_agent_profile_unresolved', message=f\"Saved agent profile id '{saved_profile_id}' for '{saved_profile_name}' could not be uniquely resolved, and no current profile is active.\", display_message=_RESTORE_AGENT_PROFILE_UNRESOLVED.bind(saved=saved_display), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._permits.prepare_session_transition('restore')", "unresolved"],
@@ -1621,6 +1640,7 @@
       ],
       "RuntimeControls.on_workspace_change": [
         ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot change workspace', display_message=_CONTROLS_WORKSPACE_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='workspace_change_failed', message=f'Working directory does not exist: {surrogate_safe_text(missing)}', display_message=_CONTROLS_WORKSPACE_MISSING.bind(path=DisplayPath(missing)), session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
         ["wrapper", "await self._publish_workspace_satisfied_or_denied(event.primary_cwd, permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_workspace_satisfied_or_denied"],
         ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(new_workspace.primary_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides())", "unresolved"],

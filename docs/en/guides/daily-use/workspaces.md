@@ -36,3 +36,16 @@ After the switch, the new working directory path appears at the right end of the
 When switching working directories, iCode reloads the current agent and loads memory and skills from the new working directory (its skills only while “Load project skills” is on). For configuration details, see [Configure memory](../configuration/memory.md) and [Install and use skills](../extensions/skills.md).
 
 Switching working directories does not create a new session; the current conversation history is preserved. When working on an unrelated project, first enter `/new` to create a new session, then switch working directories in that session. This avoids recording the working directory change in the original session or mixing context from different projects.
+
+## If the working directory is deleted or moved
+
+If the working directory is deleted or moved outside iCode, for example in a file manager or another terminal, iCode cannot keep using it:
+
+- A task that is already running continues. Commands and file operations that need the working directory fail, and the agent tells you that the directory no longer exists.
+- When the task ends, or when you send a message, iCode shows the "Working Folder Not Found" dialog. Click "Choose Folder…" and select a folder; the "Change Directory" dialog opens at the nearest folder that still exists. iCode switches to the selected folder and keeps the current conversation.
+- A message you sent stays in the input field. Send it again after switching.
+- If you close the dialog without choosing a folder, it appears again the next time you send a message. You can also switch with `/chdir`, or move the folder back to where it was.
+
+When you resume a session whose working directory no longer exists, iCode asks you to choose a folder to open the session in. If you cancel, the session is not resumed; if you started iCode with `-s`, iCode starts a new session instead.
+
+If you start iCode from a directory that no longer exists, iCode shows an error and exits. Enter an existing directory, or pass `-C` with the full path of your project directory, such as `icode -C ~/projects/my-app`.

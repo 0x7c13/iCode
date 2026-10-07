@@ -171,6 +171,12 @@ msgstr ""
 msgid "controls.settings_restart_required"
 msgstr ""
 
+#. English: Cannot change the working directory: {path} does not exist.
+#. chrys-meta={"fingerprint":"a65947fbb2a1685469d4e7b418c5bd3b11d44b21ae07cfec374c9afcd4b5e9c8","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.workspace_missing"
+msgstr ""
+
 #. English: No active agent — cannot change workspace
 #. chrys-meta={"fingerprint":"88d664d319b260319f23708d3336d6eb7df69dc9773816d14e8ce597e6e29f96","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
@@ -266,6 +272,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"e2025e440bd5bb775616c298de01d489e01bed7694792e310f287ac5723d617a","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "engine.fork_turn_active"
+msgstr ""
+
+#. English: The working directory no longer exists: {path}
+#. chrys-meta={"fingerprint":"2ec9b264988bd8d372b55afd83c92c0543296ebe3b67668a111cee2ef6171237","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/run/working_dir.py
+msgid "engine.working_dir_missing"
 msgstr ""
 
 #. English: {message} {hint}
@@ -590,6 +602,12 @@ msgstr ""
 msgid "restore.service_session_incompatible"
 msgstr ""
 
+#. English: The working directory of this session no longer exists: {path}
+#. chrys-meta={"fingerprint":"94c6df5e3ae85fa40fa98e0ab4ebf38e05b12dea94539053017b4cc6f08543bb","multiline":false,"placeholders":["path"]}
+#: src/chrys/orchestration/engine/session_lifecycle.py
+msgid "restore.session_cwd_missing"
+msgstr ""
+
 #. English: {discarded} paused sub-agent(s) from a previous session were
 #. discarded: {names}
 #. chrys-meta={"fingerprint":"5be1263df8739ec915d380c3d1e24cf7bbb0b24a3cf6791e8829b90f1f90c471","multiline":false,"placeholders":["discarded","names"]}
@@ -748,6 +766,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"51380a50a39ac81deb7457add89ee4e91aea3ce112b974c767e096e3693ba507","multiline":false,"placeholders":["available","model"]}
 #: src/chrys/app/cli/run.py
 msgid "run.model_profile_not_found_with_available"
+msgstr ""
+
+#. English: Pass -C <dir> to continue it in another directory.
+#. chrys-meta={"fingerprint":"cf403302bf53005778ba686af15e573154017a629880c6d102e3de389c674a5b","multiline":false,"placeholders":[]}
+#: src/chrys/app/cli/run.py
+msgid "run.session_cwd_missing_hint"
 msgstr ""
 
 #. English: Agent profile not found: {name}
@@ -13800,6 +13824,38 @@ msgstr ""
 #. chrys-meta={"fingerprint":"095157fcb1341f2869d5ee80fd0fb609ffd3c4bf6ef79cdfa6fb8c4e78b50186","multiline":false,"placeholders":["path"]}
 #: src/chrys/app/tui/screens/main/workspace_actions.py
 msgid "tui.workspace.invalid_directory"
+msgstr ""
+
+#. English: Choose Folder…
+#. chrys-meta={"fingerprint":"6ed767badd06759198c1333a77ae9d7ed112831b73c05fdb083e1ec53cb2d04e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.choose"
+msgstr ""
+
+#. English: {path} was deleted or moved. Choose a folder to continue.
+#. chrys-meta={"fingerprint":"7a14bfdc37f6c31ba8534b7dc2a1f7a4fc029683efdf67c603c73bc222954e5b","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.message"
+msgstr ""
+
+#. English: The folder of this session, {path}, was deleted or moved. Choose a
+#. folder to open the session in.
+#. chrys-meta={"fingerprint":"c0d544ab98578f2da8813f1cc653529ac90cb342ec373a0e4a4984c69f62cdf0","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.message_restore"
+msgstr ""
+
+#. English: {path} was deleted or moved. Choose a folder to continue. Your
+#. message is still in the input box.
+#. chrys-meta={"fingerprint":"8e78ff2273001f4f695afac926f420e33cdb7b96dc3956b0ceb343672df86d4d","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.message_submit"
+msgstr ""
+
+#. English: Working Folder Not Found
+#. chrys-meta={"fingerprint":"6a9508e9ac6d3836655cc05140f4edf38564ceacdef50e414eb6729e23af9c56","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/workspace_actions.py
+msgid "tui.workspace.missing.title"
 msgstr ""
 
 #. English: Busy

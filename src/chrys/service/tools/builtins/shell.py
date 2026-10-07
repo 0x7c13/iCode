@@ -37,11 +37,13 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 from chrys.foundation.platform.output_capture import BoundedCapture
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.platform.process import (
+    MissingWorkingDirectoryError,
     SubprocessStoppedError,
     decode_subprocess_output,
     kill_process_group,
     kill_process_session,
     managed_subprocess,
+    raise_if_missing_cwd,
     wait_for_subprocess,
 )
 from chrys.foundation.platform.pty_output import PtyOutputProtocol
@@ -64,6 +66,7 @@ from chrys.service.mutations.trace import shell_trace_argv
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.spill import bound_process_output
+from chrys.service.tools.workspace_paths import missing_base_cwd_error, working_dir_missing_error
 
 if sys.platform != "win32":
     import fcntl
@@ -126,6 +129,14 @@ def _record_shell_error() -> None:
     metadata = shell_result_metadata.get(None)
     if metadata is not None:
         metadata[TOOL_ERRORED_METADATA_KEY] = True
+
+
+def _working_dir_not_found(resolved: str, working_dir: str) -> str:
+    return tool_error(
+        "working_dir_not_found",
+        f"working_dir not found — {resolved}",
+        details={"working_dir": working_dir, "resolved_path": resolved},
+    )
 
 
 _PROGRESS_THROTTLE_INTERVAL = 0.2
@@ -554,7 +565,17 @@ class ShellTools:
                 )
 
         shell = self._shell
-        cwd = resolve_workspace_path(working_dir, base_cwd=self._runtime.cwd) if working_dir else self._runtime.cwd
+        if working_dir:
+            missing_base = missing_base_cwd_error(working_dir, self._runtime.cwd)
+            if missing_base is not None:
+                _record_shell_error()
+                return missing_base
+            cwd = resolve_workspace_path(working_dir, base_cwd=self._runtime.cwd)
+            if not os.path.isdir(cwd):
+                _record_shell_error()
+                return _working_dir_not_found(cwd, working_dir)
+        else:
+            cwd = self._runtime.cwd
 
         try:
             if sys.platform == "win32":
@@ -591,6 +612,11 @@ class ShellTools:
         except SubprocessStoppedError:
             _record_shell_error()
             return tool_error("process_stopped", "command entered stopped state and was terminated.")
+        except MissingWorkingDirectoryError as exc:
+            _record_shell_error()
+            if working_dir:
+                return _working_dir_not_found(exc.path, working_dir)
+            return working_dir_missing_error(exc.path)
         except FileNotFoundError:
             _record_shell_error()
             return tool_error("shell_not_found", f"shell not found at {shell.path}", details={"shell_path": shell.path})
@@ -642,7 +668,8 @@ class ShellTools:
                         preexec_fn=_setup_pty,
                     )
                     break
-                except OSError:
+                except OSError as exc:
+                    raise_if_missing_cwd(cwd, exc)
                     if index == len(argv_variants) - 1:
                         raise
                     logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
@@ -786,6 +813,8 @@ class ShellTools:
                         )
                     )
                     break
+                except MissingWorkingDirectoryError:
+                    raise
                 except OSError:
                     # Spawn failure surfaces at context entry, before the
                     # cleanup registers — safe to retry the bare argv.
