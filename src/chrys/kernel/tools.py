@@ -23,7 +23,6 @@ import asyncio
 import contextvars
 import copy
 import inspect
-import json
 import logging
 import types
 import typing
@@ -51,6 +50,8 @@ from pydantic import (
     ValidationError,
     create_model,
 )
+
+from chrys.foundation.text.model_json import model_json
 
 from ._content import Content
 from ._null_overlay import (
@@ -844,13 +845,13 @@ class FunctionTool(SerializationMixin):
                     parsed_items.append(content)
                 else:
                     dumpable = FunctionTool._make_dumpable(item)
-                    text = dumpable if isinstance(dumpable, str) else json.dumps(dumpable, default=str)
+                    text = dumpable if isinstance(dumpable, str) else model_json(dumpable, default=str)
                     parsed_items.append(Content.from_text(text))
             return parsed_items
         dumpable = FunctionTool._make_dumpable(result)
         if isinstance(dumpable, str):
             return [Content.from_text(dumpable)]
-        return [Content.from_text(json.dumps(dumpable, default=str))]
+        return [Content.from_text(model_json(dumpable, default=str))]
 
     @staticmethod
     def _normalize_parser_output(parsed: Any) -> Any:
@@ -872,7 +873,7 @@ class FunctionTool(SerializationMixin):
                 normalized.append(content)
             else:
                 dumpable = FunctionTool._make_dumpable(item)
-                text = dumpable if isinstance(dumpable, str) else json.dumps(dumpable, default=str)
+                text = dumpable if isinstance(dumpable, str) else model_json(dumpable, default=str)
                 normalized.append(Content.from_text(text))
         return normalized
 

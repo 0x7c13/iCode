@@ -4,12 +4,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Mapping
 from typing import Any
 
 from chrys.foundation.text.images import is_image_media_type
+from chrys.foundation.text.model_json import model_json
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def _render_attr_value(val: Any) -> str:
         return extract_result_text(list(val))
     if isinstance(val, Mapping):
         try:
-            return json.dumps(val, default=str, ensure_ascii=False)
+            return model_json(val, default=str)
         except TypeError, ValueError:
             return str(val)
     return str(val)
@@ -112,7 +112,7 @@ def _content_to_text(item: Any) -> str:
             {k: _summarize_value(v) for k, v in d.items()},
         )
         return (
-            f"{_ERROR_PREFIX}unrecognized tool result content (type={type_hint}); fields: {json.dumps(d, default=str)}"
+            f"{_ERROR_PREFIX}unrecognized tool result content (type={type_hint}); fields: {model_json(d, default=str)}"
         )
     return str(item)
 

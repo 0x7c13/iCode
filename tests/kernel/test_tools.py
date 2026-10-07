@@ -175,6 +175,14 @@ class TestToolInvocationContracts:
             "exclude_none": False,
         }
 
+    def test_structured_results_keep_non_ascii_text_readable(self) -> None:
+        mixed = FunctionTool.parse_result([_foreign_content("见下"), {"城市": "北京"}])
+        direct = Content.from_function_result(call_id="c1", result={"城市": "北京"})
+
+        assert [item.text for item in FunctionTool.parse_result({"城市": "北京"})] == ['{"城市": "北京"}']
+        assert [item.text for item in mixed] == ["见下", '{"城市": "北京"}']
+        assert [item.text for item in direct.items or []] == ['{"城市": "北京"}']
+
     def test_skip_parsing_sentinel_repr_stays_stable(self) -> None:
         assert repr(SKIP_PARSING) == "SKIP_PARSING"
 

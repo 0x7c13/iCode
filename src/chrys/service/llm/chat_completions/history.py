@@ -18,6 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from chrys.foundation.text.model_json import model_json
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, Content, Message, is_image_content
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
 from chrys.service.llm.images import UNSUPPORTED_IMAGE_TEXT, WireImage, wire_image
@@ -360,7 +361,7 @@ def encode_content(content: Content) -> dict[str, Any]:
     """One content as a wire content part, tool call or result."""
     match content.type:
         case "function_call":
-            arguments = json.dumps(content.arguments) if isinstance(content.arguments, Mapping) else content.arguments
+            arguments = model_json(content.arguments) if isinstance(content.arguments, Mapping) else content.arguments
             return {
                 "id": content.call_id,
                 "type": "function",
@@ -578,7 +579,7 @@ def _json_object_arguments(arguments: Any) -> str:
     """The arguments as a JSON object string; ``"{}"`` for anything else."""
     if isinstance(arguments, Mapping):
         try:
-            return json.dumps(arguments)
+            return model_json(arguments)
         except TypeError, ValueError:
             return "{}"
     if isinstance(arguments, str):

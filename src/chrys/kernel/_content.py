@@ -17,6 +17,7 @@ from typing_extensions import TypedDict
 
 from chrys.foundation.hosted_tools import PRESENTATION_TEXT_SEGMENT_ID_KEY, HostedToolFamily
 from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY
+from chrys.foundation.text.model_json import model_json
 
 from .exceptions import AdditionItemMismatch, ContentError
 
@@ -876,7 +877,7 @@ class Content:
             items_list = [Content.from_text(result)]
         elif result is not None:
             try:
-                text = json.dumps(result, default=str)
+                text = model_json(result, default=str)
             except TypeError, ValueError:
                 text = str(result)
             items_list = [Content.from_text(text)]

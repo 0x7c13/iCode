@@ -28,6 +28,7 @@ from opentelemetry import propagate
 from opentelemetry import trace as otel_trace
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.text.model_json import model_json
 from chrys.foundation.tool_call_context import set_tool_context
 from chrys.foundation.trajectory.context import current_tool_operation_id
 from chrys.foundation.trajectory.event_types import WaitCategory
@@ -956,7 +957,7 @@ class MCPTool:
             return ""
         if len(parts) == 1:
             return parts[0]
-        return json.dumps(parts, default=str)
+        return model_json(parts, default=str)
 
     def _parse_tool_result_from_mcp(self, mcp_type: types.CallToolResult) -> list[Content]:
         from mcp import types

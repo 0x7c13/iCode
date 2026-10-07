@@ -153,3 +153,11 @@ def test_the_first_bounding_pass_owns_the_original_size() -> None:
     observation = _observed("x" * 5_000, 100, preset={"original_bytes": 9_000_000, "truncated": True})
 
     assert observation["original_bytes"] == 9_000_000
+
+
+def test_bounded_structured_result_keeps_non_ascii_text_readable() -> None:
+    result = apply_result_ceiling({"摘要": "北京" * 5_000}, 100)
+
+    assert isinstance(result, str)
+    assert result.startswith('{"摘要": "北京北京')
+    assert "\\u" not in result
