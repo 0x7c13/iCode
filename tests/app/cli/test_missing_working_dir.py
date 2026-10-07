@@ -383,20 +383,24 @@ def _profiles_main(command: str, argv: list[str]) -> int:
     return profiles_cli.agents_main(argv) if command == "agents" else profiles_cli.models_main(argv)
 
 
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
 @pytest.mark.parametrize("command", ["agents", "models"])
 def test_profile_listing_from_a_deleted_directory_stops_before_loading_settings(
-    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    command: str, as_json: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _enter_deleted_directory(tmp_path, monkeypatch)
     calls = _stub_profiles_runtime(monkeypatch)
 
-    rc = _profiles_main(command, ["--json"])
+    rc = _profiles_main(command, ["--json"] if as_json else [])
 
     output = capsys.readouterr()
     assert rc == 1
     assert calls == []
     assert output.out == ""
-    assert output.err == f"Error: {_MISSING_WITHOUT_WORKDIR}\n"
+    if as_json:
+        assert json.loads(output.err) == {"error": _MISSING_WITHOUT_WORKDIR, "code": "working_dir_missing"}
+    else:
+        assert output.err == f"Error: {_MISSING_WITHOUT_WORKDIR}\n"
 
 
 @pytest.mark.parametrize("command", ["agents", "models"])

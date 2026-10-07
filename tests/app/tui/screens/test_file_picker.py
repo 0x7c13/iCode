@@ -241,7 +241,7 @@ def test_file_picker_without_a_process_cwd_opens_home_for_a_relative_path(
 ) -> None:
     """The process cwd can be the deleted working directory; only a relative path needs it."""
     home = tmp_path / "home"
-    home.mkdir()
+    (home / "deleted").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     gone = tmp_path / "gone"
@@ -255,7 +255,7 @@ def test_file_picker_without_a_process_cwd_opens_home_for_a_relative_path(
     assert _nearest_existing_dir("sessions") is None
     assert FilePicker(initial_path="sessions")._initial_path == str(home)
     # "~" is expanded first, so it never needs the process cwd.
-    assert FilePicker(initial_path=os.path.join("~", "deleted", "nested"))._initial_path == str(home)
+    assert FilePicker(initial_path=os.path.join("~", "deleted", "nested"))._initial_path == str(home / "deleted")
 
 
 @pytest.mark.asyncio
