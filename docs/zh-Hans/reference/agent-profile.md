@@ -179,7 +179,7 @@ tools:
 | `bypass_proxy` | 布尔值 | `false` | HTTP | 是否绕过环境变量配置的 HTTP/HTTPS 代理，直接连接服务器。 |
 | `terminate_on_close` | 布尔值或 `null` | `null` | HTTP | 关闭连接时是否请求终止远程会话；`null` 使用默认值 `true`。 |
 
-`allowed_tools` 和 `always_load` 填写服务器提供的原始工具名称。`tool_name_prefix` 会改变智能体调用工具时使用的名称；`approval.overrides` 也使用这个名称。名称生成规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。如果填写的某个名称可能指两个工具（例如前缀为 `gh` 时，服务器的 `search` 工具会变成 `gh_search`，恰好是另一个工具的原始名称），智能体会加载失败，错误信息会指出这个名称；请换一个 `tool_name_prefix`。
+`allowed_tools` 和 `always_load` 填写服务器提供的原始工具名称。`tool_name_prefix` 会改变智能体调用工具时使用的名称；`approval.overrides` 也使用这个名称。名称生成规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。如果填写的某个名称可能指两个工具（例如前缀为 `gh` 时，服务器的 `search` 工具会变成 `gh_search`，恰好是另一个工具的原始名称），智能体会加载失败。错误信息会指出这个名称，并为它匹配到的每个工具给出一个只对应该工具的名称：本例中服务器的 `search` 写 `search`，服务器的 `gh_search` 写 `gh_gh_search`。把这个名称换成你想让智能体使用的那些工具对应的名称。如果错误信息说没有名称能单独对应某个工具，请换一个 `tool_name_prefix`。
 
 启用按需加载时，iCode 还会添加用于查看、加载和卸载 MCP 工具的控制工具，名称规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。此时，`tool_name_prefix` 不能超过 49 个字符。
 

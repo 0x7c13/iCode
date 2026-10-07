@@ -516,19 +516,24 @@ async def test_allowed_tools_name_selecting_two_tools_fails_test_and_agent_conne
     fake = _FakeConnectionTool(functions=functions)
     with (
         patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
-        pytest.raises(
-            MCPToolNameAmbiguityError, match=r"invalid tool configuration.*'gh_search' matches gh_gh_search, gh_search"
-        ),
+        pytest.raises(MCPToolNameAmbiguityError) as exc_info,
     ):
         if connection_path == "test":
             await adapter.test_connection(config)
         else:
             await adapter.connect(config)
 
+    assert (
+        "has invalid tool configuration: a configured tool name selects more than one tool: 'gh_search' matches "
+        "the server's 'gh_search' (write 'gh_gh_search' to select only it), "
+        "the server's 'search' (write 'search' to select only it)."
+    ) in str(exc_info.value)
+    assert "Tool Name Prefix" not in str(exc_info.value)
     await adapter.disconnect_all()
 
 
 async def test_allowed_tools_names_selecting_one_tool_each_connect() -> None:
+    # The names the ambiguity error suggests for the two tools.
     functions = await _prefixed_catalog_where_one_local_name_is_another_remote_name(["search", "gh_gh_search"])
 
     adapter = MCPAdapter()

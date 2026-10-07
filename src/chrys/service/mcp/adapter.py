@@ -173,6 +173,24 @@ def _flatten_server_capabilities(capabilities: Any) -> tuple[str, ...]:
     return tuple(sorted(flattened))
 
 
+def _mcp_remote_name(tool: FunctionTool) -> str:
+    remote_name = (tool.additional_properties or {}).get(_MCP_REMOTE_NAME_KEY)
+    return remote_name if isinstance(remote_name, str) else tool.name
+
+
+def _sole_config_name(tool: FunctionTool, catalog: list[FunctionTool]) -> str | None:
+    """Return the first ``allowed_tools``/``always_load`` name that selects *tool* and no other catalog tool."""
+    others = [other for other in catalog if other is not tool]
+    return next(
+        (
+            name
+            for name in _mcp_config_names_for(tool)
+            if all(name not in _mcp_config_names_for(other) for other in others)
+        ),
+        None,
+    )
+
+
 class MCPAdapter:
     """Manages MCP server connections and exposes their tools.
 
@@ -371,9 +389,9 @@ class MCPAdapter:
         # selects survives that filter, so the permitted catalog shows it.
         configured_names = dict.fromkeys([*(config.allowed_tools or ()), *config.always_load])
         matches_by_name = {
-            name: matches
+            name: [(_mcp_remote_name(tool), _sole_config_name(tool, catalog)) for tool in matches]
             for name in configured_names
-            if len(matches := [tool.name for tool in catalog if name in _mcp_config_names_for(tool)]) > 1
+            if len(matches := [tool for tool in catalog if name in _mcp_config_names_for(tool)]) > 1
         }
         if matches_by_name:
             raise MCPToolNameAmbiguityError(config.name, config.transport, matches_by_name=matches_by_name)
