@@ -27,7 +27,7 @@ import json
 import logging
 import types
 import typing
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from functools import reduce, wraps
 from operator import or_
@@ -61,7 +61,7 @@ from ._null_overlay import (
     restore_explicit_nulls,
 )
 from ._serialization import SerializationMixin
-from .exceptions import ToolException
+from .exceptions import ModelVisibleToolError, ToolException
 from .middleware import FunctionInvocationContext
 
 __all__ = [
@@ -497,9 +497,19 @@ class FunctionTool(SerializationMixin):
             func = self.func
             if func is None:
                 raise ToolException(f"Function '{self.name}' has no implementation.")
-            if self._instance is not None:
-                return func(self._instance, *args, **kwargs)
-            return func(*args, **kwargs)
+            call_args = (self._instance, *args) if self._instance is not None else args
+            result = func(*call_args, **kwargs)
+        except Exception:
+            self.invocation_exception_count += 1
+            raise
+        if inspect.isawaitable(result):
+            return self._count_awaited_exception(result)
+        return result
+
+    async def _count_awaited_exception(self, awaitable: Awaitable[Any]) -> Any:
+        """Await an async tool's result; its failure surfaces only here, so count it here."""
+        try:
+            return await awaitable
         except Exception:
             self.invocation_exception_count += 1
             raise
@@ -610,7 +620,7 @@ class FunctionTool(SerializationMixin):
 
         configured_parser = self.result_parser
         skip_parsing = skip_parsing or _is_skip_parsing_sentinel(configured_parser)
-        parser = configured_parser if _is_result_parser(configured_parser) else FunctionTool.parse_result
+        custom_parser = configured_parser if _is_result_parser(configured_parser) else None
         arguments_in_callable_keyspace = bool(kwargs.pop("_arguments_in_callable_keyspace", False))
 
         parameter_names = set(self.parameters().get("properties", {}).keys())
@@ -708,19 +718,33 @@ class FunctionTool(SerializationMixin):
             # have produced.
             if not skip_parsing:
                 try:
-                    parsed = parser(exc.completed_result)
-                except Exception:
-                    logger.warning("Function %s: result parser failed, falling back to str().", self.name)
-                    parsed = [Content.from_text(str(exc.completed_result))]
-                exc.completed_result = FunctionTool._normalize_parser_output(parsed)
+                    exc.completed_result = self._parse_invocation_result(exc.completed_result, custom_parser)
+                except ModelVisibleToolError as parse_error:
+                    exc.completed_result = [Content.from_text(parse_error.result_text or "")]
             raise
         if skip_parsing:
             return result
+        return self._parse_invocation_result(result, custom_parser)
+
+    def _parse_invocation_result(self, result: Any, custom_parser: ResultParser | None) -> Any:
+        """Convert a completed call's value to Content.
+
+        A failing custom parser fails the call without showing the raw value,
+        which can be large or internal; the default parser falls back to ``str()``.
+        """
+        if custom_parser is None:
+            try:
+                parsed: Any = FunctionTool.parse_result(result)
+            except Exception:
+                logger.warning("Function %s: result parser failed, falling back to str().", self.name)
+                parsed = [Content.from_text(str(result))]
+            return FunctionTool._normalize_parser_output(parsed)
         try:
-            parsed = parser(result)
-        except Exception:
-            logger.warning("Function %s: result parser failed, falling back to str().", self.name)
-            parsed = [Content.from_text(str(result))]
+            parsed = custom_parser(result)
+        except Exception as exc:
+            raise ModelVisibleToolError(
+                f"Function '{self.name}' completed, but its result parser failed.", inner_exception=exc
+            ) from exc
         return FunctionTool._normalize_parser_output(parsed)
 
     @property

@@ -537,6 +537,9 @@
       ]
     },
     "chrys.kernel.tools": {
+      "FunctionTool._count_awaited_exception": [
+        ["awaitable", "await awaitable", "unresolved"]
+      ],
       "FunctionTool._invoke_function": [
         ["awaitable", "await res", "unresolved"],
         ["thread_pool", "await asyncio.get_running_loop().run_in_executor(None, _call_and_record)", "unresolved"],
