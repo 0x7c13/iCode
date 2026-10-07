@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the owned MCP engine: allowed-tools filtering, closure argument hygiene, sampling, catalog reloads, lifecycle."""
+"""Tests for the owned MCP engine: allowed-tools filtering, closure argument hygiene, catalog reloads, lifecycle."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -14,8 +15,8 @@ from unittest.mock import patch
 
 import anyio
 import pytest
-from mcp import ClientSession, types
-from mcp.shared.context import RequestContext
+from mcp import types
+from mcp.shared.message import SessionMessage
 
 import chrys.service.mcp.owned as owned_mcp
 from chrys.kernel import ChatResponse, Content, Message
@@ -50,7 +51,6 @@ if TYPE_CHECKING:
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
     from mcp.client.experimental.task_handlers import ExperimentalTaskHandlers
     from mcp.client.session import ElicitationFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
-    from mcp.shared.message import SessionMessage
 
 
 def _ok_result() -> types.CallToolResult:
@@ -64,39 +64,10 @@ async def _load_calling_remote_tools(tool: MCPTool, *remote_tools: types.Tool) -
     return session
 
 
-def _sampling_context() -> RequestContext[ClientSession, Any]:
-    return RequestContext(
-        request_id=1, meta=None, session=_as_client_session(_ScriptedClientSession()), lifespan_context=None
-    )
-
-
-def _sampling_params(max_tokens: int = 9999) -> Any:
-    from mcp import types
-
-    return types.CreateMessageRequestParams(
-        messages=[
-            types.SamplingMessage(
-                role="user",
-                content=types.TextContent(type="text", text="hi"),
-            )
-        ],
-        maxTokens=max_tokens,
-    )
-
-
 def _tool_list_changed_notification() -> Any:
     from mcp import types
 
     return types.ServerNotification(root=types.ToolListChangedNotification())
-
-
-class _SamplingClient:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def get_response(self, messages: Any, options: Any = None) -> ChatResponse:
-        self.calls.append({"messages": messages, "options": dict(options or {})})
-        return ChatResponse(messages=[Message(role="assistant", contents=["sampled"])], model="m-test")
 
 
 # ---------------------------------------------------------------------------
@@ -496,111 +467,6 @@ def test_mcp_request_meta_precedence_is_tool_meta_over_otel_over_caller(monkeypa
 
 
 # ---------------------------------------------------------------------------
-# MCPTool.sampling_callback
-# ---------------------------------------------------------------------------
-
-
-def _approve(_params: Any) -> bool:
-    return True
-
-
-async def _approve_async(_params: Any) -> bool:
-    return True
-
-
-async def _deny_async(_params: Any) -> bool:
-    return False
-
-
-def _fail(_params: Any) -> bool:
-    raise RuntimeError("nope")
-
-
-@pytest.mark.parametrize(
-    ("tool_kwargs", "params_kwargs", "expected_max_tokens", "expected_message"),
-    [
-        pytest.param({}, {}, None, "disabled by default", id="denied-by-default"),
-        pytest.param(
-            {"sampling_approval_callback": _approve, "sampling_max_tokens": 10},
-            {"max_tokens": 99},
-            10,
-            None,
-            id="sync-approve-clamps-to-cap",
-        ),
-        pytest.param(
-            {"sampling_approval_callback": _approve_async, "sampling_max_tokens": None},
-            {"max_tokens": 99},
-            99,
-            None,
-            id="async-approve-uncapped",
-        ),
-        pytest.param(
-            {"sampling_approval_callback": _approve_async, "sampling_max_tokens": 100},
-            {"max_tokens": 99},
-            99,
-            None,
-            id="async-approve-under-cap",
-        ),
-        pytest.param({"sampling_approval_callback": _deny_async}, {}, None, None, id="async-deny"),
-        pytest.param({"sampling_approval_callback": _fail}, {}, None, None, id="callback-error"),
-    ],
-)
-async def test_mcp_sampling_callback_gates_and_caps_requests(
-    tool_kwargs: dict[str, Any],
-    params_kwargs: dict[str, Any],
-    expected_max_tokens: int | None,
-    expected_message: str | None,
-) -> None:
-    """Sampling is denied unless the approval callback allows it; the client only sees the capped budget.
-
-    The denial rows pass only the argument they are about: ``denied-by-default``
-    supplies no callback and no cap at all, so it exercises ``MCPTool``'s own
-    defaults, and the two rejecting-callback rows leave the cap unset because no
-    budget is negotiated on a request the callback never lets through.
-    """
-    from mcp import types
-
-    client = _SamplingClient()
-    tool = MCPTool(name="m", client=client, **tool_kwargs)
-
-    result = await tool.sampling_callback(_sampling_context(), _sampling_params(**params_kwargs))
-
-    if expected_max_tokens is None:
-        assert isinstance(result, types.ErrorData)
-        assert result.code == types.INVALID_REQUEST
-        if expected_message is not None:
-            assert expected_message in result.message
-        assert client.calls == []
-    else:
-        assert isinstance(result, types.CreateMessageResult)
-        assert result.model == "m-test"
-        assert client.calls[0]["options"]["max_tokens"] == expected_max_tokens
-
-
-async def test_mcp_sampling_rate_limit_resets_with_session_state() -> None:
-    from mcp import types
-
-    client = _SamplingClient()
-    tool = MCPTool(
-        name="m",
-        client=client,
-        sampling_approval_callback=lambda params: True,
-        sampling_max_requests=1,
-    )
-
-    first = await tool.sampling_callback(_sampling_context(), _sampling_params())
-    second = await tool.sampling_callback(_sampling_context(), _sampling_params())
-    tool._reset_session_state()
-    third = await tool.sampling_callback(_sampling_context(), _sampling_params())
-
-    assert isinstance(first, types.CreateMessageResult)
-    assert isinstance(second, types.ErrorData)
-    assert second.code == types.INVALID_REQUEST
-    assert isinstance(third, types.CreateMessageResult)
-    assert len(client.calls) == 2
-
-
-# ---------------------------------------------------------------------------
 # owned catalog — normalization, collisions, notification-driven reloads
 # ---------------------------------------------------------------------------
 
@@ -876,6 +742,54 @@ async def test_owned_mcp_close_runs_on_lifecycle_owner_task(monkeypatch: pytest.
     await close_task
 
     assert exit_task is enter_task
+
+
+async def test_owned_mcp_initialize_declares_no_sampling_capability() -> None:
+    """The client answers no sampling requests, so the handshake must not offer sampling to the server."""
+    client_send, server_receive = anyio.create_memory_object_stream[SessionMessage](4)
+    server_send, client_receive = anyio.create_memory_object_stream[SessionMessage | Exception](4)
+    declared: list[types.ClientCapabilities] = []
+
+    async def stub_server() -> None:
+        request = (await server_receive.receive()).message.root
+        assert isinstance(request, types.JSONRPCRequest)
+        assert request.method == "initialize"
+        declared.append(types.InitializeRequestParams.model_validate(request.params).capabilities)
+        result = types.InitializeResult(
+            protocolVersion=types.LATEST_PROTOCOL_VERSION,
+            capabilities=types.ServerCapabilities(),
+            serverInfo=types.Implementation(name="stub", version="0"),
+        )
+        response = types.JSONRPCResponse(
+            jsonrpc="2.0", id=request.id, result=result.model_dump(by_alias=True, mode="json", exclude_none=True)
+        )
+        await server_send.send(SessionMessage(types.JSONRPCMessage(response)))
+        notification = (await server_receive.receive()).message.root
+        assert isinstance(notification, types.JSONRPCNotification)
+        assert notification.method == "notifications/initialized"
+
+    @asynccontextmanager
+    async def transport() -> Any:
+        yield client_receive, client_send
+
+    class _StubServerTool(MCPTool):
+        def get_mcp_client(self) -> Any:
+            return transport()
+
+    tool = _StubServerTool(name="stub", load_tools=False, load_prompts=False)
+    server = asyncio.create_task(stub_server())
+    async with client_send, client_receive, server_send, server_receive:
+        try:
+            await tool.connect()
+            await server
+        finally:
+            await tool.close()
+            server.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await server
+
+    assert len(declared) == 1
+    assert declared[0].sampling is None
 
 
 async def test_owned_mcp_initialize_failure_does_not_commit_closed_session(monkeypatch: pytest.MonkeyPatch) -> None:

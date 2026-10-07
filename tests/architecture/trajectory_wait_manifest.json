@@ -4311,7 +4311,7 @@
         ["awaitable", "await self._exit_stack.enter_async_context(self.get_mcp_client())", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["wrapper", "await self._safe_close_exit_stack()", "unresolved", "chrys.service.mcp.owned.MCPTool._safe_close_exit_stack"],
-        ["awaitable", "await self._exit_stack.enter_async_context(ClientSession(read_stream=transport[0], write_stream=transport[1], read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None, message_handler=self.message_handler, logging_callback=self.logging_callback, sampling_callback=self.sampling_callback, sampling_capabilities=sampling_capabilities))", "unresolved"],
+        ["awaitable", "await self._exit_stack.enter_async_context(ClientSession(read_stream=transport[0], write_stream=transport[1], read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None, message_handler=self.message_handler, logging_callback=self.logging_callback))", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["awaitable", "await session.initialize()", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
@@ -4368,9 +4368,6 @@
       "MCPTool._safe_close_exit_stack": [
         ["awaitable", "await self._exit_stack.aclose()", "unresolved"]
       ],
-      "MCPTool._sampling_request_approved": [
-        ["awaitable", "await outcome", "unresolved"]
-      ],
       "MCPTool._schedule_reload._safe_reload": [
         ["awaitable", "await coro", "unresolved"]
       ],
@@ -4399,10 +4396,6 @@
       "MCPTool.load_tools": [
         ["sync_primitive", "async with self._function_load_lock", "unresolved"],
         ["wrapper", "await self._load_tools_locked()", "unresolved", "chrys.service.mcp.owned.MCPTool._load_tools_locked"]
-      ],
-      "MCPTool.sampling_callback": [
-        ["wrapper", "await self._sampling_request_approved(params)", "unresolved", "chrys.service.mcp.owned.MCPTool._sampling_request_approved"],
-        ["awaitable", "await self.client.get_response(messages, options=options or None)", "unresolved"]
       ],
       "_expand_mcp_tool": [
         ["awaitable", "await tool_.connect()", "unresolved"]
