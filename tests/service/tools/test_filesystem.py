@@ -40,6 +40,7 @@ from chrys.service.tools.builtins.filesystem import (
 )
 from chrys.service.tools.session_artifacts import make_document_artifact_handle
 from tests.support.images import image_bytes
+from tests.support.windows_replace import briefly_locked_rename
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1413,26 +1414,14 @@ def test_atomic_write_retries_transient_windows_replace_lock(tmp_path: Path, mon
 
     target = tmp_path / "doc.txt"
     target.write_text("before", encoding="utf-8")
-    real_replace = fs.os.replace
-    replace_attempts = 0
-
-    def flaky_replace(source: str, destination: str) -> None:
-        nonlocal replace_attempts
-        replace_attempts += 1
-        if replace_attempts < 3:
-            raise PermissionError("destination is temporarily locked")
-        real_replace(source, destination)
-
     monkeypatch.setattr(fs, "get_platform", Mock(return_value=Mock(is_windows=True)))
-    monkeypatch.setattr(fs.os, "replace", flaky_replace)
-    sleep = Mock()
-    monkeypatch.setattr(fs.time, "sleep", sleep)
+    rename = briefly_locked_rename(monkeypatch, failures=2)
 
     fs._atomic_write(str(target), "after")
 
     assert target.read_text(encoding="utf-8") == "after"
-    assert replace_attempts == 3
-    assert [call.args[0] for call in sleep.call_args_list] == [0.01, 0.02]
+    assert len(rename.attempts) == 3
+    assert rename.sleeps == [0.01, 0.02]
 
 
 @pytest.mark.skipif(_WINDOWS, reason="POSIX fchmod behavior is not available on Windows")

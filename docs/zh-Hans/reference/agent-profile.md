@@ -76,7 +76,7 @@ icode agents
 | `display_name` | 字符串 | 空 | 显示名称。 |
 | `description` | 字符串 | 空 | 说明智能体用途，也作为子智能体未填写工具描述时的默认描述。 |
 | `sub_agent_only` | 布尔值 | `false` | 为 `true` 时不能选作主智能体，只能被其他智能体调用。外部 ACP 智能体会被强制设为 `true`。 |
-| `instructions` | 字符串 | 空 | 提供给内置类型智能体的主要行为指令。外部 ACP 配置会忽略此字段。 |
+| `instructions` | 字符串或字符串列表 | 空 | 提供给内置类型智能体的主要行为指令。写成列表时，各项按每项一行合成一段文本。外部 ACP 配置会忽略此字段。 |
 | `model` | 对象 | `{}` | 绑定模型配置，见 [model](#model)。 |
 | `tools` | 对象 | `{}` | 配置内置工具、MCP 和 Shell 过滤，见 [tools](#tools)。 |
 | `approval` | 对象 | 见下文 | 配置哪些工具调用需要审批，见 [approval](#approval)。 |
@@ -179,7 +179,7 @@ tools:
 | `bypass_proxy` | 布尔值 | `false` | HTTP | 是否绕过环境变量配置的 HTTP/HTTPS 代理，直接连接服务器。 |
 | `terminate_on_close` | 布尔值或 `null` | `null` | HTTP | 关闭连接时是否请求终止远程会话；`null` 使用默认值 `true`。 |
 
-`allowed_tools` 和 `always_load` 填写服务器提供的原始工具名称。`tool_name_prefix` 会改变智能体调用工具时使用的名称；`approval.overrides` 也使用这个名称。名称生成规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。
+`allowed_tools` 和 `always_load` 填写服务器提供的原始工具名称。`tool_name_prefix` 会改变智能体调用工具时使用的名称；`approval.overrides` 也使用这个名称。名称生成规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。如果填写的某个名称可能指两个工具（例如前缀为 `gh` 时，服务器的 `search` 工具会变成 `gh_search`，恰好是另一个工具的原始名称），智能体会加载失败。错误信息会指出这个名称，并为它匹配到的每个工具给出一个只对应该工具的名称：本例中服务器的 `search` 写 `search`，服务器的 `gh_search` 写 `gh_gh_search`。把这个名称换成你想让智能体使用的那些工具对应的名称。如果错误信息说没有名称能单独对应某个工具，请换一个 `tool_name_prefix`。
 
 启用按需加载时，iCode 还会添加用于查看、加载和卸载 MCP 工具的控制工具，名称规则见 [MCP 工具名称](./tool-kinds-and-names.md#mcp-工具名称)。此时，`tool_name_prefix` 不能超过 49 个字符。
 
@@ -426,7 +426,7 @@ iCode 用户 Skill 目录始终加载；Agent Skills 用户级共享目录默认
 | --- | --- | --- | --- |
 | `name` | 字符串 | 必填 | 1～64 个字符，可使用小写字母、数字和连字符；连字符不能连续出现，也不能位于开头或结尾。 |
 | `description` | 字符串 | 必填 | 非空，最长 1024 个字符。用于帮助智能体判断何时加载 Skill。 |
-| `instructions` | 字符串 | 空 | Skill 加载后提供给智能体的操作说明。 |
+| `instructions` | 字符串或字符串列表 | 空 | Skill 加载后提供给智能体的操作说明。写成列表时，各项按每项一行合成一段文本。 |
 | `resources` | 对象列表 | `[]` | 随 Skill 加载的内嵌文本资源，见下表。 |
 
 | `resources` 子字段 | 类型 | 默认值 | 说明 |

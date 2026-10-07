@@ -89,6 +89,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     PresentationAttemptAcceptedOp,
     PresentationAttemptRejectedOp,
     PresentationSinkOperation,
+    next_hosted_run_generation,
 )
 from chrys.service.agent_middleware.events.tool_events import ToolEventRetrySnapshot
 from chrys.service.agent_middleware.response_validation import (
@@ -674,7 +675,7 @@ class TurnBindings:
         self.state.last_error = ""
         self._interrupt.reset()
         self._attempt_trace.reset()
-        self._hosted_run_generation += 1
+        self._hosted_run_generation = next_hosted_run_generation()
         emitter = self._emitter
         self._hosted_bridge = HostedPresentationBridge(
             lambda operation: self._publish_hosted_operation(operation, emitter=emitter),

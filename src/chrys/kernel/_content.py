@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import re
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
 from typing import Any, ClassVar, Final, Literal, TypeGuard, TypeVar, cast
@@ -18,6 +17,7 @@ from typing_extensions import TypedDict
 
 from chrys.foundation.hosted_tools import PRESENTATION_TEXT_SEGMENT_ID_KEY, HostedToolFamily
 from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY
+from chrys.foundation.text.model_json import model_json
 
 from .exceptions import AdditionItemMismatch, ContentError
 
@@ -282,8 +282,6 @@ def _restore_compaction_annotation_in_additional_properties(
 
 
 # region Constants and types
-URI_PATTERN = re.compile(r"^data:(?P<media_type>[^;]+);base64,(?P<base64_data>[A-Za-z0-9+/=]+)$")
-
 KNOWN_MEDIA_TYPES = [
     "application/json",
     "application/octet-stream",
@@ -879,7 +877,7 @@ class Content:
             items_list = [Content.from_text(result)]
         elif result is not None:
             try:
-                text = json.dumps(result, default=str)
+                text = model_json(result, default=str)
             except TypeError, ValueError:
                 text = str(result)
             items_list = [Content.from_text(text)]

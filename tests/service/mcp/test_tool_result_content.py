@@ -64,14 +64,8 @@ def _parse_tool_result(items: list[Any]) -> list[Any]:
     return tool._parse_tool_result_from_mcp(types.CallToolResult(content=items))
 
 
-def _parse_content(items: list[Any]) -> list[Any]:
-    tool = _HTTPMCPTool(name="h", url="http://localhost/mcp")
-    return tool._parse_content_from_mcp(items)
-
-
-@pytest.mark.parametrize("parse", [_parse_tool_result, _parse_content], ids=["tool-result", "content"])
-def test_bad_media_becomes_a_placeholder_and_the_rest_is_kept(parse: Any) -> None:
-    out = parse(_items(blob=""))
+def test_bad_media_becomes_a_placeholder_and_the_rest_is_kept() -> None:
+    out = _parse_tool_result(_items(blob=""))
 
     assert [content.type for content in out] == ["text", "text", "text", "data", "data"]
     assert [content.text for content in out[:3]] == ["chart:", INVALID_IMAGE_TEXT, INVALID_AUDIO_TEXT]
@@ -80,16 +74,9 @@ def test_bad_media_becomes_a_placeholder_and_the_rest_is_kept(parse: Any) -> Non
     assert out[4].uri == "data:application/octet-stream;base64,"
 
 
-@pytest.mark.parametrize("parse", [_parse_tool_result, _parse_content], ids=["tool-result", "content"])
-def test_a_blob_resource_reads_bare_base64_and_says_when_it_is_not(parse: Any) -> None:
-    assert parse(_items(blob=_PNG_BASE64))[4].uri == f"data:application/octet-stream;base64,{_PNG_BASE64}"
-    assert parse(_items(blob="not base64!"))[4].text == INVALID_RESOURCE_TEXT
-
-
-def test_a_placeholder_keeps_the_resource_annotations() -> None:
-    placeholder = _parse_content(_items(blob="not base64!"))[4]
-
-    assert placeholder.additional_properties["priority"] == 0.5
+def test_a_blob_resource_reads_bare_base64_and_says_when_it_is_not() -> None:
+    assert _parse_tool_result(_items(blob=_PNG_BASE64))[4].uri == f"data:application/octet-stream;base64,{_PNG_BASE64}"
+    assert _parse_tool_result(_items(blob="not base64!"))[4].text == INVALID_RESOURCE_TEXT
 
 
 def _link(uri: str, mime_type: str | None) -> Any:

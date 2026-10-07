@@ -206,10 +206,9 @@ def test_create_http_tool() -> None:
     assert tool.url == "http://localhost:8080/mcp"
     assert tool.allowed_tools == ["echo"]
     assert tool.request_timeout == 15
-    # Static headers use ``_HTTPMCPTool``'s same-origin request hook, not
-    # header_provider, which would skip them on initialize / list_tools.
+    # Static headers use ``_HTTPMCPTool``'s same-origin request hook, so they
+    # reach initialize / list_tools as well as tool calls.
     assert tool._static_headers == {"Authorization": "Bearer token"}
-    assert tool._header_provider is None
 
 
 def test_create_http_tool_resolves_header_env_templates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,7 +245,6 @@ def test_create_mcp_tool_rejects_missing_env_template(monkeypatch: pytest.Monkey
 def test_create_http_tool_without_headers_has_empty_static_headers() -> None:
     config = MCPServerConfig(name="h", transport="http", url="http://localhost:8080/mcp")
     tool = _create_mcp_tool(config)
-    assert tool._header_provider is None
     assert tool._static_headers == {}
 
 

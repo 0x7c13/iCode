@@ -99,6 +99,29 @@ def _string_list_field(raw: object, field: str) -> list[str]:
     return list(cast("list[str]", raw))
 
 
+def _instructions_field(raw: object, field: str) -> str:
+    """Parse instructions text; a list of strings joins one item per line.
+
+    Any other value would reach the prompt as its Python repr.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, list):
+        msg = f"Agent profile field '{field}' must be a string or a list of strings; got {type(raw).__name__}"
+        raise AgentProfileLoadError(msg)
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, str):
+            # YAML reads an unquoted `- Note: text` or `- Heading:` item as a mapping.
+            msg = (
+                f"Agent profile field '{field}' must be a string or a list of strings; item {index} is a "
+                f"{type(item).__name__} (quote list items that contain ': ' or end with ':')"
+            )
+            raise AgentProfileLoadError(msg)
+    return "\n".join(cast("list[str]", raw))
+
+
 def _approval_rule(raw: object, field: str) -> Literal["auto", "require", "skip"]:
     """Parse an approval rule without YAML truthiness coercion."""
     if not isinstance(raw, str) or raw not in _VALID_APPROVAL_RULES:
@@ -388,7 +411,7 @@ def _parse_skills(raw: object) -> SkillsConfig:
             SkillConfig(
                 name=entry["name"],
                 description=entry.get("description", ""),
-                instructions=entry.get("instructions", ""),
+                instructions=_instructions_field(entry.get("instructions"), f"skills.inline[{index}].instructions"),
                 resources=_parse_skill_resources(entry.get("resources", []), "skills.inline.resources"),
                 scripts=_parse_skill_scripts(entry.get("scripts", []), "skills.inline.scripts"),
             )
@@ -682,7 +705,7 @@ def load_profile_from_yaml(path: Path) -> AgentProfile:
             description=data.get("description", ""),
             sub_agent_only=bool(data.get("sub_agent_only", False)),
             acp=_parse_acp(data.get("acp")) if acp_present else None,
-            instructions=data.get("instructions", ""),
+            instructions=_instructions_field(data.get("instructions"), "instructions"),
             tools=_parse_tools(data.get("tools")),
             skills=_parse_skills(data.get("skills")),
             approval=_parse_approval(data.get("approval")),

@@ -139,6 +139,24 @@ def test_parse_chat_options_strips_protected_keys_before_env_resolution(
     assert "extra_body.max_tokens" in caplog.text
 
 
+def test_parse_chat_options_joins_list_instructions_and_drops_other_non_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert parse_chat_options(_profile('{"instructions": "Plain."}')) == {"instructions": "Plain."}
+    assert parse_chat_options(_profile('{"instructions": null}')) == {"instructions": None}
+    assert parse_chat_options(_profile('{"instructions": ["First.", "Second."]}')) == {
+        "instructions": "First.\nSecond."
+    }
+
+    with caplog.at_level(logging.WARNING, logger="chrys.service.profiles.models.options"):
+        dropped_dict = parse_chat_options(_profile('{"instructions": {"text": "x"}, "temperature": 0.2}'))
+        dropped_mixed = parse_chat_options(_profile('{"instructions": ["x", 1]}'))
+
+    assert dropped_dict == {"temperature": 0.2}
+    assert dropped_mixed == {}
+    assert caplog.text.count("chat_options key 'instructions' must be a string or a list of strings") == 2
+
+
 def test_protected_chat_option_warning_is_pure_and_explains_migration() -> None:
     profile = _profile('{"prompt": {"id": "pmpt_1"}, "conversation_id": "resp_1"}')
 

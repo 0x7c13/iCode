@@ -13,6 +13,7 @@ import os
 import secrets
 import stat
 import tempfile
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 from functools import cache
@@ -131,6 +132,26 @@ def fsync_directory(path: Path) -> None:
 _fsync_dir = fsync_directory
 """Backward-compatible alias for callers predating the public helper."""
 
+_WINDOWS_REPLACE_MAX_ATTEMPTS = 6
+_WINDOWS_REPLACE_RETRY_DELAY_SECONDS = 0.01
+
+
+def replace_with_retry(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+    """``os.replace`` that tries again briefly on Windows while the target is held open.
+
+    Antivirus scanners, the search indexer and sync clients open files for a
+    moment, and Windows refuses the rename with ``PermissionError`` meanwhile.
+    Up to six tries with about 0.3 s of sleeps in all; elsewhere one try.
+    """
+    for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == _WINDOWS_REPLACE_MAX_ATTEMPTS - 1 or not _is_windows():
+                raise
+            time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * 2**attempt)
+
 
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Atomically write *payload* to *path* via temp-file + ``os.replace``."""
@@ -142,7 +163,7 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        replace_with_retry(tmp_path, path)
         fsync_directory(path.parent)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
@@ -1282,7 +1303,7 @@ def atomic_write_owner_only_bytes(path: Path, payload: bytes, *, create_parents:
             file.write(payload)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(tmp_path, path)
+        replace_with_retry(tmp_path, path)
         published = True
         verify_fd = secure_open_owner_only(path, read=True)
         os.close(verify_fd)

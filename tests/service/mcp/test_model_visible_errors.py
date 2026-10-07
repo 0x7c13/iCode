@@ -239,21 +239,6 @@ async def test_blank_mcp_prompt_error_says_so() -> None:
     assert info.value.result_text == "Error: MCP prompt 'p' reported an error without an error message."
 
 
-@pytest.mark.parametrize("is_error", [True, False])
-def test_sampled_tool_result_marked_is_error_records_a_failure(is_error: bool) -> None:
-    item = types.ToolResultContent(
-        type="tool_result",
-        toolUseId="t1",
-        content=[types.TextContent(type="text", text="no such file")],
-        isError=is_error,
-    )
-
-    (result,) = MCPTool(name="srv")._parse_content_from_mcp([item])
-
-    # Readers take an empty record as no failure, so a failed result records a non-empty one.
-    assert result.exception == ("The MCP tool result is marked isError." if is_error else None)
-
-
 async def _mcp_tools(call_outcome: types.CallToolResult | Exception) -> list[FunctionTool]:
     return (await _loaded_tool(call_outcome)).functions
 

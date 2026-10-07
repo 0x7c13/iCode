@@ -157,6 +157,35 @@ class TestStackAndDelegation:
         assert probe.calls == 1
         assert response.messages[-1].text == "done"
 
+    @pytest.mark.asyncio
+    async def test_single_per_call_middleware_is_accepted_like_a_list(self) -> None:
+        chat_probe = _ProbeChat()
+        function_probe = _ProbeFunction()
+        layer, wire = _stack([_call_response(("c1", "echo", {"text": "a"})), _text_response()])
+
+        response = await layer.get_response(
+            [_user()],
+            options={"tools": [_make_tool()]},
+            middleware=function_probe,
+            client_kwargs={"middleware": chat_probe},
+        )
+
+        assert len(wire.calls) == 2
+        assert chat_probe.calls == 2
+        assert [ctx.function.name for ctx in function_probe.contexts] == ["echo"]
+        assert response.messages[-1].text == "done"
+
+    def test_unsupported_per_call_middleware_rejected_synchronously(self) -> None:
+        layer, wire = _stack([_text_response()])
+
+        async def naked(_context: object, _call_next: object) -> None:
+            return None
+
+        with pytest.raises(TypeError, match="plain callables are not supported"):
+            layer.get_response([_user()], middleware=naked)  # type: ignore[arg-type]
+
+        assert wire.calls == []
+
     def test_getattr_two_hop_delegation(self) -> None:
         wire = _ScriptedClient([])
         wire.model = "wire-model"  # type: ignore[attr-defined]

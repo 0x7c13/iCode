@@ -300,6 +300,19 @@ class TestConstructor:
         assert agent.middleware is mw
         assert Agent(client=_BareClient()).middleware is None
 
+    def test_middleware_validated_at_construction(self) -> None:
+        log: list[str] = []
+        single = _LogFn("f", log)
+        assert Agent(client=_BareClient(), middleware=single).middleware is single
+
+        async def naked(context: Any, call_next: Any) -> None:  # pragma: no cover - never executed
+            await call_next()
+
+        with pytest.raises(TypeError, match="plain callables are not supported"):
+            Agent(client=_BareClient(), middleware=[_LogChat("c", log), naked])  # type: ignore[list-item]
+        with pytest.raises(TypeError):
+            Agent(client=_BareClient(), middleware=_ForeignOnlyChat())  # type: ignore[arg-type]
+
     def test_context_providers_listified_and_additional_properties(self) -> None:
         provider = _RecordingProvider("p1")
         providers = (provider,)

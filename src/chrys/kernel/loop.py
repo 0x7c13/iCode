@@ -171,6 +171,10 @@ class ConsumedInjectionMessageProbe:
 
 
 _MAX_ITERATIONS_FALLBACK_TEXT = "Maximum iterations reached before a final answer could be produced."
+_CONSECUTIVE_ERRORS_FALLBACK_TEXT = (
+    "Tool calls kept failing, so they were stopped before a final answer could be produced."
+)
+_MAX_FUNCTION_CALLS_FALLBACK_TEXT = "Maximum function calls reached before a final answer could be produced."
 
 _USER_VISIBLE_CONTENT_TYPES = frozenset({"data", "uri", "error", "hosted_file", "hosted_vector_store"})
 
@@ -269,8 +273,8 @@ def _response_has_visible_content(response: ChatResponse) -> bool:
     return False
 
 
-def _ensure_exhaustion_fallback_response(response: ChatResponse) -> bool:
-    """Synthesize fallback text when the final response has nothing visible.
+def _ensure_exhaustion_fallback_response(response: ChatResponse, fallback_text: str) -> bool:
+    """Synthesize *fallback_text* when the final response has nothing visible.
 
     Runs unconditionally after the tail strip (and, in streaming, after echo
     shell cleanup): a blank or reasoning-only final response would otherwise
@@ -279,7 +283,7 @@ def _ensure_exhaustion_fallback_response(response: ChatResponse) -> bool:
     """
     if _response_has_visible_content(response):
         return False
-    fallback_content = Content.from_text(_MAX_ITERATIONS_FALLBACK_TEXT)
+    fallback_content = Content.from_text(fallback_text)
     if response.messages and not response.messages[-1].contents:
         response.messages[-1].role = "assistant"
         response.messages[-1].contents = [fallback_content]
@@ -1703,20 +1707,27 @@ class _LoopRun:
         self._total_function_calls += sum(1 for r in results if r.type == "function_result")
         return results, should_terminate, action
 
-    def _limit_next_tool_choice(self, action: str) -> None:
+    def _tool_limit_fallback_text(self, action: str) -> str | None:
+        """Return the final turn's fallback text when the batch just run hit a tool limit, else None.
+
+        A hit limit ends the loop like iteration exhaustion: the collected
+        results go out once more in the final turn without tools, whose calls
+        are stripped, never run — a provider ignoring ``tool_choice="none"``
+        cannot get another batch executed.
+        """
         if action == "stop":
-            # Error threshold reached: force a final non-tool turn so
-            # function results are submitted before exit.
-            self._options["tool_choice"] = "none"
-        elif self._max_function_calls is not None and self._total_function_calls >= self._max_function_calls:
+            return _CONSECUTIVE_ERRORS_FALLBACK_TEXT
+        if self._max_function_calls is not None and self._total_function_calls >= self._max_function_calls:
             # Best-effort limit, checked after each parallel batch.
             logger.info(
                 "Maximum function calls reached (%d/%d). Stopping further function calls for this request.",
                 self._total_function_calls,
                 self._max_function_calls,
             )
-            self._options["tool_choice"] = "none"
+            return _MAX_FUNCTION_CALLS_FALLBACK_TEXT
+        return None
 
+    def _reset_required_tool_choice(self) -> None:
         # 'required' tool_choice resets after one iteration.
         if self._options.get("tool_choice") == "required" or (
             isinstance(self._options.get("tool_choice"), dict)
@@ -1734,13 +1745,12 @@ class _LoopRun:
         else:
             self._prepped_messages.extend(response.messages)
 
-    def _begin_exhaustion_tail(self, response: ChatResponse | None) -> None:
+    def _log_iterations_exhausted(self, response: ChatResponse | None) -> None:
         if response is not None:
             logger.info(
                 "Maximum iterations reached (%d). Requesting final response without tools.",
                 self._max_iterations,
             )
-        self._options["tool_choice"] = "none"
 
     # -- blocking driver ----------------------------------------------------
 
@@ -1763,6 +1773,8 @@ class _LoopRun:
     async def _blocking_iterations(self) -> ChatResponse:
         self._start()
         response: ChatResponse | None = None
+        tail_cycle_index = self._max_iterations
+        fallback_text = _MAX_ITERATIONS_FALLBACK_TEXT
 
         for cycle_index in range(self._max_iterations):
             await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get("tools")))
@@ -1799,13 +1811,20 @@ class _LoopRun:
                     _invalidate_service_continuation_state(response, self._session)
                 response.usage_details = self._aggregated_usage
                 return _clear_internal_conversation_id(response)
-            self._limit_next_tool_choice(action)
             self._queue_batch(response)
+            limit_text = self._tool_limit_fallback_text(action)
+            if limit_text is not None:
+                tail_cycle_index, fallback_text = cycle_index + 1, limit_text
+                break
+            self._reset_required_tool_choice()
+        else:
+            self._log_iterations_exhausted(response)
 
-        # Loop exhausted: final model call with tool_choice="none" so the
-        # model produces plain text instead of orphaned function calls.
-        self._begin_exhaustion_tail(response)
-        await self._trajectory.cycle_started(self._max_iterations, tools_offered=bool(self._options.get("tools")))
+        # Loop exhausted or a tool limit hit: final model call with
+        # tool_choice="none" so the model produces plain text instead of
+        # orphaned function calls.
+        self._options["tool_choice"] = "none"
+        await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get("tools")))
         response = await self._wire.blocking_response(
             self._prepped_messages,
             request_message_observer=self._wire_request_observer,
@@ -1816,7 +1835,7 @@ class _LoopRun:
         # reported none would read as a compliant one.
         await self._finish_cycle(response)
         stripped = _strip_unexecutable_calls_from_response(response)
-        _ensure_exhaustion_fallback_response(response)
+        _ensure_exhaustion_fallback_response(response, fallback_text)
         # Gate on the resolved storage mode, not response metadata: under
         # conversation storage the service holds the stripped calls even
         # when the parsed response failed to carry the handle, and a
@@ -1855,6 +1874,8 @@ class _LoopRun:
         try:
             self._start()
             response: ChatResponse | None = None
+            tail_cycle_index = self._max_iterations
+            fallback_text = _MAX_ITERATIONS_FALLBACK_TEXT
 
             for cycle_index in range(self._max_iterations):
                 await self._trajectory.cycle_started(cycle_index, tools_offered=bool(self._options.get("tools")))
@@ -1901,6 +1922,7 @@ class _LoopRun:
                     return
 
                 results, should_terminate, action = await self._run_tool_batch(response, function_calls)
+                limit_text = None if should_terminate else self._tool_limit_fallback_text(action)
                 if should_terminate and self._service_side:
                     # No further request ever posts this batch's results, so
                     # the service transcript behind the mirrored handle keeps
@@ -1912,10 +1934,15 @@ class _LoopRun:
                     # assembled response for the agent post-hook.
                     self._service_state_invalidated = True
                     _invalidate_service_continuation_state(response, self._session)
-                elif cycle_index + 1 == self._max_iterations and self._service_side and self._session is not None:
-                    # Last iteration: the yield below is the final suspension
-                    # point before the exhaustion tail, and these results are
-                    # not posted to the service until the tail request lands.
+                elif (
+                    (limit_text is not None or cycle_index + 1 == self._max_iterations)
+                    and self._service_side
+                    and self._session is not None
+                ):
+                    # Last batch (iterations exhausted or a tool limit hit):
+                    # the yield below is the final suspension point before
+                    # the exhaustion tail, and these results are not posted
+                    # to the service until the tail request lands.
                     # A consumer closing at that yield must not inherit the
                     # mirrored handle — the service transcript behind it still
                     # holds this batch's unanswered calls. The finalized tail
@@ -1934,11 +1961,16 @@ class _LoopRun:
                     # each path keeps its existing transcript shape.
                     self._final_messages = list(self._fcc_messages)
                     return
-                self._limit_next_tool_choice(action)
                 self._queue_batch(response)
+                if limit_text is not None:
+                    tail_cycle_index, fallback_text = cycle_index + 1, limit_text
+                    break
+                self._reset_required_tool_choice()
+            else:
+                self._log_iterations_exhausted(response)
 
-            # Loop exhausted: final non-tool streaming turn.
-            self._begin_exhaustion_tail(response)
+            # Loop exhausted or a tool limit hit: final non-tool streaming turn.
+            self._options["tool_choice"] = "none"
             if self._service_side and self._session is not None:
                 # The tail request consumes the mirrored handle: the moment it
                 # lands, the service transcript behind that handle holds this
@@ -1953,7 +1985,7 @@ class _LoopRun:
                 _strip_echoed_update,
                 echo_registry=self._echo_registry,
             )
-            await self._trajectory.cycle_started(self._max_iterations, tools_offered=bool(self._options.get("tools")))
+            await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get("tools")))
             final_logical_stream = self._wire.streaming_response(
                 self._prepped_messages,
                 stream_update_filter=echo_filter,
@@ -1989,7 +2021,7 @@ class _LoopRun:
             await self._finish_cycle(final_response)
             _record_stream_fragment_identities(final_logical_stream, self._echo_registry)
             stripped = _strip_unexecutable_calls_from_response(final_response)
-            fallback_added = _ensure_exhaustion_fallback_response(final_response)
+            fallback_added = _ensure_exhaustion_fallback_response(final_response, fallback_text)
             # Invalidate BEFORE the fallback yield: a yield suspends the
             # generator, and a consumer that stops right after the fallback
             # would otherwise leave the session pointing at the stale service
@@ -2011,7 +2043,7 @@ class _LoopRun:
                 # left to route.
                 yield ChatResponseUpdate(
                     role="assistant",
-                    contents=[Content.from_text(_MAX_ITERATIONS_FALLBACK_TEXT)],
+                    contents=[Content.from_text(fallback_text)],
                     finish_reason="stop",
                 )
             elif stripped and final_response.finish_reason:
@@ -2149,7 +2181,7 @@ class ToolLoopLayer:
         *,
         stream: bool = False,
         options: Mapping[str, Any] | None = None,
-        middleware: Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
+        middleware: ChatMiddleware | FunctionMiddleware | Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
         compaction_strategy: Any = None,
         tokenizer: Any = None,
         function_invocation_kwargs: Mapping[str, Any] | None = None,
@@ -2170,7 +2202,7 @@ class ToolLoopLayer:
             existing = effective_client_kwargs.get("middleware")
             effective_client_kwargs["middleware"] = [
                 *_as_middleware_list(existing),
-                *middleware,
+                *_as_middleware_list(middleware),
             ]
         runtime_split = split_middleware(effective_client_kwargs.pop("middleware", None))
         pipeline = FunctionMiddlewarePipeline(*self.function_middleware, *runtime_split.function)

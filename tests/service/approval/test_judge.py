@@ -299,6 +299,22 @@ async def test_evaluate_includes_all_current_turn_user_messages() -> None:
 
 
 @pytest.mark.asyncio
+async def test_evaluate_shows_non_ascii_tool_arguments_as_written() -> None:
+    client = _FakeClient(['{"approved": true, "reason": "只读"}'])
+    judge = _make_judge(client)
+
+    await judge.evaluate(
+        user_message="统计报告行数",
+        tool_name="zsh",
+        tool_kind="shell",
+        args={"command": "wc -l 报告.txt"},
+        workspace_roots=["/ws"],
+    )
+
+    assert '"command": "wc -l 报告.txt"' in client.calls[0][1].text
+
+
+@pytest.mark.asyncio
 async def test_evaluate_uses_model_profile_stream_setting() -> None:
     client = _FakeClient(['{"approved": true, "reason": "safe read"}'])
     profile = default_profile()

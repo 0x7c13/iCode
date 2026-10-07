@@ -22,6 +22,7 @@ import pytest
 from pydantic import BaseModel, model_validator
 
 from chrys.kernel import SKIP_PARSING, FunctionTool, ToolException, normalize_tools, tool
+from chrys.kernel.exceptions import ModelVisibleToolError
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.kernel.tools import (
     SyncToolCancelledAfterCompletion,
@@ -101,6 +102,10 @@ def _foreign_content(text: str) -> object:
     return ForeignContent()
 
 
+def _broken_parser(_result: Any) -> str:
+    raise RuntimeError("parser broke")
+
+
 # ---------------------------------------------------------------------------
 # A. Surface pins — owned behavior
 # ---------------------------------------------------------------------------
@@ -169,6 +174,14 @@ class TestToolInvocationContracts:
             "payload": {"kept": True},
             "exclude_none": False,
         }
+
+    def test_structured_results_keep_non_ascii_text_readable(self) -> None:
+        mixed = FunctionTool.parse_result([_foreign_content("见下"), {"城市": "北京"}])
+        direct = Content.from_function_result(call_id="c1", result={"城市": "北京"})
+
+        assert [item.text for item in FunctionTool.parse_result({"城市": "北京"})] == ['{"城市": "北京"}']
+        assert [item.text for item in mixed] == ["见下", '{"城市": "北京"}']
+        assert [item.text for item in direct.items or []] == ['{"城市": "北京"}']
 
     def test_skip_parsing_sentinel_repr_stays_stable(self) -> None:
         assert repr(SKIP_PARSING) == "SKIP_PARSING"
@@ -315,15 +328,30 @@ class TestInvokeResultParsing:
         assert [item.text for item in result] == ["a", "b"]
 
     @pytest.mark.asyncio
-    async def test_parser_exception_falls_back_with_warning(self, caplog: pytest.LogCaptureFixture) -> None:
-        def boom(result: Any) -> str:
-            raise RuntimeError("parser broke")
+    async def test_custom_parser_exception_fails_the_call_without_the_raw_value(self) -> None:
+        t = _introspected_tool(result_parser=_broken_parser)
 
-        t = _introspected_tool(result_parser=boom)
+        with pytest.raises(ModelVisibleToolError) as exc_info:
+            await t.invoke(arguments={"text": "hi"})
+
+        assert exc_info.value.result_text == "Error: Function 'echo' completed, but its result parser failed."
+        assert "echo:hi" not in exc_info.value.model_message
+        assert t.invocation_exception_count == 0
+
+    @pytest.mark.asyncio
+    async def test_default_parser_exception_falls_back_with_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        # A cycle makes the default parser's ``json.dumps`` raise.
+        cyclic: dict[str, Any] = {"self": None}
+        cyclic["self"] = cyclic
+
+        async def impl() -> Any:
+            return cyclic
+
+        t = tool(impl, name="cyclic", description="d")
         with caplog.at_level(logging.WARNING, logger="chrys.kernel.tools"):
-            result = await t.invoke(arguments={"text": "hi"})
+            result = await t.invoke(arguments={})
         assert [c.type for c in result] == ["text"]
-        assert result[0].text == "echo:hi"
+        assert result[0].text == str(cyclic)
         assert any("result parser failed" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
@@ -479,19 +507,24 @@ class TestOwnedCallSemantics:
             await t.invoke(arguments={"text": "b"})
 
     @pytest.mark.asyncio
-    async def test_max_invocation_exceptions_enforced(self) -> None:
-        # Sync tool on purpose: ``__call__`` only counts exceptions raised
-        # synchronously inside it; an async tool's exception surfaces later,
-        # at the ``_invoke_function`` await.
-        @tool(name="boom", max_invocation_exceptions=1)
-        def boom(text: str) -> str:
+    @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+    async def test_max_invocation_exceptions_enforced(self, is_async: bool) -> None:
+        # An async tool's exception surfaces only when its coroutine is awaited.
+        def sync_boom(text: str) -> str:
             raise RuntimeError("nope")
 
-        with pytest.raises(RuntimeError):
-            await boom.invoke(arguments={"text": "a"})
-        assert boom.invocation_exception_count == 1
+        async def async_boom(text: str) -> str:
+            raise RuntimeError("nope")
+
+        boom = tool(async_boom if is_async else sync_boom, name="boom", max_invocation_exceptions=2)
+
+        for text in ("a", "b"):
+            with pytest.raises(RuntimeError):
+                await boom.invoke(arguments={"text": text})
+        assert boom.invocation_exception_count == 2
         with pytest.raises(ToolException, match="maximum exception limit"):
-            await boom.invoke(arguments={"text": "b"})
+            await boom.invoke(arguments={"text": "c"})
+        assert boom.invocation_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -670,11 +703,24 @@ class TestAgentPathUpcastGuarantee:
 class TestSyncWorkerCancellationDrain:
     """Cancellation racing a threaded sync tool that already returned."""
 
-    async def test_cancel_after_worker_completion_carries_parsed_result(self) -> None:
+    @pytest.mark.parametrize(
+        ("result_parser", "expected_text"),
+        [
+            pytest.param(None, "done", id="default-parser"),
+            pytest.param(
+                _broken_parser,
+                "Error: Function 'threaded' completed, but its result parser failed.",
+                id="failing-custom-parser",
+            ),
+        ],
+    )
+    async def test_cancel_after_worker_completion_carries_parsed_result(
+        self, result_parser: Any, expected_text: str
+    ) -> None:
         """Cancellation in the worker-done/await-suspended window drains the value."""
         release = ThreadEvent()
 
-        @tool(name="threaded")
+        @tool(name="threaded", result_parser=result_parser)
         def threaded() -> str:
             release.wait(timeout=5)
             return "done"
@@ -694,7 +740,7 @@ class TestSyncWorkerCancellationDrain:
         with pytest.raises(SyncToolCancelledAfterCompletion) as exc_info:
             coro.throw(asyncio.CancelledError())
         completed = exc_info.value.completed_result
-        assert [content.text for content in completed] == ["done"]
+        assert [content.text for content in completed] == [expected_text]
 
     async def test_cancelled_future_with_completed_worker_still_drains(self) -> None:
         """Race shape (b): the future loses to cancellation but the worker still finished.

@@ -77,6 +77,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     PresentationAttemptAcceptedOp,
     PresentationAttemptRejectedOp,
     PresentationSinkOperation,
+    next_hosted_run_generation,
 )
 from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
 from chrys.service.agent_middleware.events.rejection_metadata import rejection_result_metadata, rejection_source
@@ -205,7 +206,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
 
     def begin_hosted_pass(self) -> HostedPresentationBridge:
         """Create the presentation bridge owned by the next controller pass."""
-        self._hosted_run_generation += 1
+        self._hosted_run_generation = next_hosted_run_generation()
         origin = self._origin
         self._hosted_bridge = HostedPresentationBridge(
             lambda operation: self._publish_hosted_operation(operation, origin),

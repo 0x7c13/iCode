@@ -174,7 +174,8 @@ def _wire_tool_choice(tool_choice: Any) -> Any:
         return {"type": "function", "function": {"name": function}}
     if name in ("auto", "required") and mode.get("allowed_tools") is not None:
         logger.warning(
-            "Chat Completions has no allowed_tools; the setting is ignored (the Responses API client supports it)."
+            "The Chat Completions client does not send allowed_tools; the setting is ignored "
+            "(the Responses API client sends it)."
         )
     return name
 

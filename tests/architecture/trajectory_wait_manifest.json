@@ -374,16 +374,19 @@
     },
     "chrys.kernel.instrumentation": {
       "AgentTelemetryLayer._trace_agent_invocation._finalize_stream": [
-        ["awaitable", "await result_stream.get_final_response()", "unresolved"]
+        ["awaitable", "await stream_span.final_response(result_stream)", "unresolved"]
       ],
       "AgentTelemetryLayer._trace_agent_invocation._run": [
         ["awaitable", "await cast('Awaitable[AgentResponse[Any]]', execute())", "unresolved"]
       ],
       "ChatTelemetryLayer.get_response._finalize_stream": [
-        ["awaitable", "await result_stream.get_final_response()", "unresolved"]
+        ["awaitable", "await stream_span.final_response(result_stream)", "unresolved"]
       ],
       "ChatTelemetryLayer.get_response._get_response": [
         ["awaitable", "await super_get_response(messages=messages, stream=False, options=opts, compaction_strategy=compaction_strategy, tokenizer=tokenizer, function_invocation_kwargs=function_invocation_kwargs, client_kwargs=merged_client_kwargs, **prepared_observer_kwargs)", "unresolved"]
+      ],
+      "_StreamingSpan.final_response": [
+        ["awaitable", "await stream.get_final_response()", "unresolved"]
       ]
     },
     "chrys.kernel.loop": {
@@ -395,7 +398,7 @@
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
-        ["awaitable", "await self._trajectory.cycle_started(self._max_iterations, tools_offered=bool(self._options.get('tools')))", "unresolved"],
+        ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"]
       ],
@@ -418,7 +421,7 @@
         ["awaitable", "await logical_stream.get_final_response()", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
-        ["awaitable", "await self._trajectory.cycle_started(self._max_iterations, tools_offered=bool(self._options.get('tools')))", "unresolved"],
+        ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
         ["async_iteration", "async for update in final_logical_stream", "unresolved"],
         ["awaitable", "await final_logical_stream.get_final_response()", "unresolved"],
         ["wrapper", "await self._finish_cycle(final_response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
@@ -537,6 +540,9 @@
       ]
     },
     "chrys.kernel.tools": {
+      "FunctionTool._count_awaited_exception": [
+        ["awaitable", "await awaitable", "unresolved"]
+      ],
       "FunctionTool._invoke_function": [
         ["awaitable", "await res", "unresolved"],
         ["thread_pool", "await asyncio.get_running_loop().run_in_executor(None, _call_and_record)", "unresolved"],
@@ -4284,10 +4290,6 @@
       ]
     },
     "chrys.service.mcp.owned": {
-      "MCPStreamableHTTPTool.call_tool": [
-        ["awaitable", "await super().call_tool(tool_name, **kwargs)", "unresolved"],
-        ["awaitable", "await super().call_tool(tool_name, **kwargs)", "unresolved"]
-      ],
       "MCPTool.__aenter__": [
         ["wrapper", "await self.connect()", "unresolved", "chrys.service.mcp.owned.MCPTool.connect"],
         ["wrapper", "await self.close()", "unresolved", "chrys.service.mcp.owned.MCPTool.close"]
@@ -4311,7 +4313,7 @@
         ["awaitable", "await self._exit_stack.enter_async_context(self.get_mcp_client())", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["wrapper", "await self._safe_close_exit_stack()", "unresolved", "chrys.service.mcp.owned.MCPTool._safe_close_exit_stack"],
-        ["awaitable", "await self._exit_stack.enter_async_context(ClientSession(read_stream=transport[0], write_stream=transport[1], read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None, message_handler=self.message_handler, logging_callback=self.logging_callback, sampling_callback=self.sampling_callback, sampling_capabilities=sampling_capabilities))", "unresolved"],
+        ["awaitable", "await self._exit_stack.enter_async_context(ClientSession(read_stream=transport[0], write_stream=transport[1], read_timeout_seconds=timedelta(seconds=self.request_timeout) if self.request_timeout else None, message_handler=self.message_handler, logging_callback=self.logging_callback))", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
         ["awaitable", "await session.initialize()", "unresolved"],
         ["wrapper", "await self._close_and_check_cancelled(ex)", "unresolved", "chrys.service.mcp.owned.MCPTool._close_and_check_cancelled"],
@@ -4368,9 +4370,6 @@
       "MCPTool._safe_close_exit_stack": [
         ["awaitable", "await self._exit_stack.aclose()", "unresolved"]
       ],
-      "MCPTool._sampling_request_approved": [
-        ["awaitable", "await outcome", "unresolved"]
-      ],
       "MCPTool._schedule_reload._safe_reload": [
         ["awaitable", "await coro", "unresolved"]
       ],
@@ -4399,10 +4398,6 @@
       "MCPTool.load_tools": [
         ["sync_primitive", "async with self._function_load_lock", "unresolved"],
         ["wrapper", "await self._load_tools_locked()", "unresolved", "chrys.service.mcp.owned.MCPTool._load_tools_locked"]
-      ],
-      "MCPTool.sampling_callback": [
-        ["wrapper", "await self._sampling_request_approved(params)", "unresolved", "chrys.service.mcp.owned.MCPTool._sampling_request_approved"],
-        ["awaitable", "await self.client.get_response(messages, options=options or None)", "unresolved"]
       ],
       "_expand_mcp_tool": [
         ["awaitable", "await tool_.connect()", "unresolved"]

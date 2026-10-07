@@ -18,12 +18,12 @@ replay from local history the way :mod:`.replay` planned.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.hosted_tools import OPENAI_HOSTED_WIRE_ITEM_KEY, HostedToolFamily
+from chrys.foundation.text.model_json import model_json
 from chrys.kernel import OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY, Content
 from chrys.kernel.exchanges import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
@@ -347,7 +347,7 @@ def _local_shell_output(content: Content) -> str:
     # A failed call's exception is a record for people, never for the model:
     # stdout already holds the error result the model reads.
     payload.setdefault("exit_code", 1 if content.exception is not None else 0)
-    return json.dumps(payload, ensure_ascii=False)
+    return model_json(payload)
 
 
 def _shell_call_output(content: Content) -> list[dict[str, Any]]:
@@ -383,7 +383,7 @@ def arguments_text(arguments: Any) -> str:
     if isinstance(arguments, str):
         return arguments
     try:
-        return json.dumps(arguments)
+        return model_json(arguments)
     except TypeError, ValueError:
         return str(arguments)
 
@@ -400,7 +400,7 @@ def mcp_output_text(output: Any) -> str:
         return output
     if isinstance(output, Sequence) and not isinstance(output, (bytes, bytearray)):
         return "".join(_entry_text(entry) for entry in output)
-    return json.dumps(output, default=str)
+    return model_json(output, default=str)
 
 
 def _entry_text(entry: Any) -> str:
@@ -410,7 +410,7 @@ def _entry_text(entry: Any) -> str:
         return text
     if isinstance(entry, Mapping) and isinstance(text := entry.get("text"), str):
         return text
-    return json.dumps(entry, default=str)
+    return model_json(entry, default=str)
 
 
 def image_replay_base64(content: Content) -> str | None:
