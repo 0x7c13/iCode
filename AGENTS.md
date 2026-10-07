@@ -9,7 +9,7 @@ uv sync --extra all                  # setup, as CI; bare `uv sync` uninstalls t
 uv run icode                         # TUI (-s session, -a agent, -m model, -C workdir); `chrys` is the same entry point
 uv run icode run "<prompt>" -a Code  # headless, approval BYPASS (as `icode workflow run`)
 uv run icode acp                     # ACP stdio server; also: serve, agents, models, workflow, trajectory, install
-uv run python scripts/chrys_test.py --smart --paths <changed files...>   # default verification
+uv run python scripts/chrys_test.py --smart --paths <changed files...>   # default verification; both modes run below normal CPU priority
 uv run python scripts/chrys_test.py --full        # complete non-integration suite; only when asked
 uv run pytest tests/x/test_y.py::test_fn -n0      # debugging only
 uv run ruff check src/ tests/ scripts/chrys_test.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py   # pyproject's fix = true EDITS files (--no-fix inspects); CI auto-fixes too, so only unfixable errors fail there

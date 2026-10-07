@@ -23,10 +23,61 @@ pytestmark = CI_LINUX_ONLY
 _AGENTS_NUMERIC_ANCHOR = re.compile(r"AGENTS[.]md:\d+")
 
 
+@pytest.fixture(autouse=True)
+def priority_lowerings(monkeypatch: pytest.MonkeyPatch) -> list[None]:
+    """Record ``main()``'s priority drop instead of lowering the test worker's own priority for good."""
+    lowerings: list[None] = []
+    monkeypatch.setattr(chrys_test, "_lower_priority", lambda: lowerings.append(None))
+    return lowerings
+
+
 def _write(root: Path, relative: str, source: str = "") -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
+
+
+def test_main_runs_below_normal_priority(monkeypatch: pytest.MonkeyPatch, priority_lowerings: list[None]) -> None:
+    monkeypatch.setattr(chrys_test, "changes_from_paths", lambda paths: ())
+
+    assert chrys_test.main(["--smart", "--paths", "README.md"]) == 0
+    assert len(priority_lowerings) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX niceness")
+@pytest.mark.parametrize("start", [None, chrys_test._BELOW_NORMAL_NICENESS + 5])
+def test_lowered_priority_reaches_the_processes_tests_start(start: int | None) -> None:
+    # A separate interpreter: lowering this worker's priority could not be undone.
+    probe = dedent(
+        f"""
+        import os, subprocess, sys
+        from scripts import chrys_test
+        if {start!r} is not None:
+            os.setpriority(os.PRIO_PROCESS, 0, max({start!r}, os.getpriority(os.PRIO_PROCESS, 0)))
+        before = os.getpriority(os.PRIO_PROCESS, 0)
+        chrys_test._lower_priority()
+        child = subprocess.run(
+            [sys.executable, "-c", "import os; print(os.getpriority(os.PRIO_PROCESS, 0))"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True,
+        )
+        print(before, child.stdout.strip())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=REPO_ROOT,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    before, child = (int(value) for value in result.stdout.split())
+    # Lowered to the floor, never raised above where it already was. Under a
+    # parent already at the floor (Smart Test itself) the default case only
+    # shows inheritance; at normal priority, as in CI, it shows the drop.
+    assert child == max(before, chrys_test._BELOW_NORMAL_NICENESS)
 
 
 def test_every_architecture_test_has_an_explicit_smart_test_classification() -> None:
