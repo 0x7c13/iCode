@@ -20,7 +20,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.retry import StreamStall
 from chrys.kernel import Agent, ChatResponse, Message, ResponseStream, report_wire_progress
 from chrys.service.llm.mock import MockChatClient
-from chrys.service.llm.responses import get_final_response
+from chrys.service.llm.one_shot import get_final_response
 from tests.kernel.test_wire_retry import _text_update
 from tests.orchestration.sub_agents._controller_fixtures import _make_controller
 from tests.support.waiting import wait_for

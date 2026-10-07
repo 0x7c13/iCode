@@ -13,10 +13,11 @@ controlling terminal, so interactive terminal reads fail instead of triggering
 job-control stops.  On Windows, commands run with stdout/stderr pipes (no PTY
 available).
 
-Output is automatically truncated to ``max_tokens`` with a 1:2 head:tail
-ratio.  Every backend first assembles the same canonical result shape; when a
-session directory is available, the complete cleaned result is spilled there
-before the bounded view is returned.
+Each output stream is captured within a byte limit that keeps its head and
+tail (``foundation/platform/output_capture.py``), and the result is truncated
+to ``max_tokens`` with a 1:2 head:tail ratio.  Every backend first assembles
+the same canonical result shape; when a session directory is available, the
+cleaned result is spilled there before the bounded view is returned.
 """
 
 from __future__ import annotations
@@ -28,10 +29,12 @@ import os
 import struct
 import sys
 import time
+from collections import deque
 from contextlib import AsyncExitStack, suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
+from chrys.foundation.platform.output_capture import BoundedCapture
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.platform.process import (
     SubprocessStoppedError,
@@ -50,10 +53,8 @@ from chrys.foundation.text.tool_output import (
 from chrys.foundation.text.tool_output import (
     strip_ansi as _strip_ansi,
 )
-from chrys.foundation.text.tool_output import (
-    truncate_output as _truncate_output,
-)
 from chrys.foundation.tool_result_metadata import (
+    PARTIAL_OUTPUT_LABEL,
     SHELL_EXIT_CODE_METADATA_KEY,
     SHELL_TIMED_OUT_METADATA_KEY,
     SHELL_TIMEOUT_SECONDS_METADATA_KEY,
@@ -62,7 +63,7 @@ from chrys.foundation.tool_result_metadata import (
 from chrys.service.mutations.trace import shell_trace_argv
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import tool_error
-from chrys.service.tools.spill import truncate_with_spill
+from chrys.service.tools.spill import bound_process_output
 
 if sys.platform != "win32":
     import fcntl
@@ -72,11 +73,12 @@ if sys.platform != "win32":
     import termios
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.foundation.platform import ShellInfo
+    from chrys.foundation.platform.output_capture import CapturedOutput
     from chrys.service.tools.builtins.shell_filter import ShellCommandFilter
 
 logger = logging.getLogger(__name__)
@@ -128,6 +130,41 @@ def _record_shell_error() -> None:
 
 _PROGRESS_THROTTLE_INTERVAL = 0.2
 """Minimum seconds between progress emissions to avoid flooding the TUI."""
+
+_PROGRESS_LINE_LIMIT = 64 * 1024
+"""Most of an unfinished output line held for progress; its start is dropped past this."""
+
+_PROGRESS_PENDING_LIMIT = 256 * 1024
+"""Most characters of progress lines held between emissions; the oldest lines go first."""
+
+
+class _ProgressLines:
+    """Output lines waiting for the next progress emission, within a size limit.
+
+    Dropping lines here only thins the live progress display; the command's
+    result comes from its output capture.
+    """
+
+    def __init__(self) -> None:
+        self._lines: deque[str] = deque()
+        self._size = 0
+
+    def __bool__(self) -> bool:
+        return bool(self._lines)
+
+    def add(self, line: str) -> None:
+        # Each line counts its newline too, so blank lines fill the limit.
+        self._lines.append(line)
+        self._size += len(line) + 1
+        while self._size > _PROGRESS_PENDING_LIMIT and len(self._lines) > 1:
+            self._size -= len(self._lines.popleft()) + 1
+
+    def take(self) -> list[str]:
+        lines = list(self._lines)
+        self._lines.clear()
+        self._size = 0
+        return lines
+
 
 _PTY_DRAIN_GRACE = 2.0
 """Seconds to let the PTY reader catch up before the last slave fd is closed."""
@@ -186,17 +223,17 @@ def _kill_pty_process(
         os.kill(proc.pid, signal.SIGKILL)
 
 
-def _format_timeout_result(timeout: int, output: str = "", stderr: str = "") -> str:
-    """Assemble the canonical timeout result with captured output."""
-    message = f"Error: command timed out after {timeout} seconds."
-    body = _process_carriage_returns(_strip_ansi(output)) if output else ""
-    stderr_clean = _process_carriage_returns(_strip_ansi(stderr)) if stderr else ""
-    if not body and not stderr_clean:
-        return message
+def _clean_output(text: str) -> str:
+    return _process_carriage_returns(_strip_ansi(text))
 
-    parts = [message]
+
+def _format_partial_output(output: CapturedOutput | None, stderr: CapturedOutput | None) -> str:
+    """Assemble what a timed-out command printed, or ``""`` when it printed nothing."""
+    parts: list[str] = []
+    body = output.text(_clean_output) if output is not None else ""
     if body:
-        parts.append(f"[partial output]\n{body}")
+        parts.append(f"{PARTIAL_OUTPUT_LABEL}\n{body}")
+    stderr_clean = stderr.text(_clean_output) if stderr is not None else ""
     if stderr_clean:
         parts.append(f"[partial stderr]\n{stderr_clean}")
     return "\n".join(parts)
@@ -322,11 +359,10 @@ class ShellTools:
         """Return the shell configuration used by this tool instance."""
         return self._shell
 
-    async def _bound_result(self, canonical: str, budget: int) -> str:
-        plain = _truncate_output(canonical, budget)
-        if plain == canonical:
-            return canonical
-        return await truncate_with_spill(self._session_dir, "shell", canonical, budget)
+    async def _bound_result(
+        self, canonical: str, budget: int, captures: Sequence[CapturedOutput] = (), *, lead: str = ""
+    ) -> str:
+        return await bound_process_output(self._session_dir, "shell", canonical, budget, captures, lead=lead)
 
     def tools(self) -> list:
         """Return all tool instances bound to this object.
@@ -367,8 +403,9 @@ class ShellTools:
             "state must go in a later response. "
             "No asynchronous task handle is provided. "
             "Output is truncated to max_tokens (default 8000) preserving the first "
-            "and last portions with a truncation notice in the middle; when possible, "
-            "the complete output is saved under the current session directory. "
+            "and last portions with a truncation notice in the middle. Very large output "
+            "keeps only its beginning and end; the middle cannot be recovered. When possible, "
+            "the kept output is saved under the current session directory. "
             f"{output_guidance}"
             "Set reason to a brief user-facing intent in the same language as the user's latest prompt; "
             "it is shown to the user and audit logs. "
@@ -531,9 +568,9 @@ class ShellTools:
                 # outer chrys without mouse/keyboard input after it exits.
                 # See ``preserve_console_mode`` for the full rationale.
                 with preserve_console_mode():
-                    stdout_text, returncode, stderr_text = await self._execute_pipe(command, shell, cwd, timeout)
-                body = _process_carriage_returns(_strip_ansi(stdout_text))
-                stderr_clean = _process_carriage_returns(_strip_ansi(stderr_text)) if stderr_text else ""
+                    stdout, returncode, stderr = await self._execute_pipe(command, shell, cwd, timeout)
+                body = stdout.text(_clean_output)
+                stderr_clean = stderr.text(_clean_output)
                 exit_suffix = f"[exit_code: {returncode}]"
                 parts: list[str] = []
                 if body:
@@ -542,17 +579,20 @@ class ShellTools:
                     parts.append(f"[stderr]\n{stderr_clean}")
                 parts.append(exit_suffix)
                 _record_shell_exit_code(returncode)
-                return await self._bound_result("\n".join(parts), budget)
+                return await self._bound_result("\n".join(parts), budget, (stdout, stderr))
             merged, returncode = await self._execute_pty(command, shell, cwd, timeout)
-            body = _process_carriage_returns(_strip_ansi(merged))
+            body = merged.text(_clean_output)
             suffix = f"[exit_code: {returncode}]"
             parts = [body, suffix] if body else [suffix]
             _record_shell_exit_code(returncode)
-            return await self._bound_result("\n".join(parts), budget)
+            return await self._bound_result("\n".join(parts), budget, (merged,))
         except _Timeout as exc:
             _record_shell_timeout(timeout)
-            canonical = _format_timeout_result(timeout, exc.output, exc.stderr)
-            return await self._bound_result(canonical, budget)
+            message = f"Error: command timed out after {timeout} seconds."
+            partial = _format_partial_output(exc.output, exc.stderr)
+            if not partial:
+                return message
+            return await self._bound_result(partial, budget, exc.captures, lead=f"{message}\n")
         except SubprocessStoppedError:
             _record_shell_error()
             return tool_error("process_stopped", "command entered stopped state and was terminated.")
@@ -569,7 +609,9 @@ class ShellTools:
     # Execution backends
     # ------------------------------------------------------------------
 
-    async def _execute_pty(self, command: str, shell: ShellInfo, cwd: str, timeout: int | float) -> tuple[str, int]:
+    async def _execute_pty(
+        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float
+    ) -> tuple[CapturedOutput, int]:
         """Run *command* in a PTY (Unix only). Returns ``(output, returncode)``."""
         master, slave = pty.openpty()
         try:
@@ -628,6 +670,7 @@ class ShellTools:
         process_session_id = proc.pid
         cleanup_process_group = True
         slave_closed = False
+        capture = BoundedCapture()
 
         def _release_slave() -> None:
             nonlocal slave_closed
@@ -645,49 +688,44 @@ class ShellTools:
                 os.fdopen(master, "rb", 0),
             )
 
-            output = bytearray()
-
             async def _drain() -> None:
                 progress_cb = shell_progress_callback.get(None)
                 if progress_cb is None:
                     # Original path — no progress streaming
                     while chunk := await reader.read(64 * 1024):
-                        output.extend(chunk)
+                        capture.feed(chunk)
                     return
 
                 # Streaming path — extract lines and emit progress
                 decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                 line_buf = ""
-                pending: list[str] = []
+                pending = _ProgressLines()
                 last_emit = time.monotonic()
                 # The callback below may still be busy when the program ends.  What
                 # arrived meanwhile is read all the same: PtyOutputProtocol ends the
                 # output after it, however the master reported the end.
                 while chunk := await reader.read(64 * 1024):
-                    output.extend(chunk)
-                    text = decoder.decode(chunk)
-                    line_buf += text
-                    while "\n" in line_buf:
-                        line, line_buf = line_buf.split("\n", 1)
-                        cleaned = _strip_ansi(line.rstrip("\r"))
-                        # Preserve completed blank lines.  The tool card
-                        # renders the streamed progress after completion,
-                        # so dropping empty lines here changes visible
-                        # command output compared to a real terminal.
-                        pending.append(cleaned)
+                    capture.feed(chunk)
+                    *lines, line_buf = (line_buf + decoder.decode(chunk)).split("\n")
+                    # Preserve completed blank lines.  The tool card renders the
+                    # streamed progress after completion, so dropping empty lines
+                    # here changes visible command output compared to a real terminal.
+                    for line in lines:
+                        pending.add(_strip_ansi(line.rstrip("\r")))
+                    if len(line_buf) > _PROGRESS_LINE_LIMIT:
+                        line_buf = line_buf[-_PROGRESS_LINE_LIMIT:]
                     now = time.monotonic()
                     if pending and now - last_emit >= _PROGRESS_THROTTLE_INTERVAL:
-                        await progress_cb(pending)
-                        pending = []
+                        await progress_cb(pending.take())
                         last_emit = now
                 # Flush remaining
                 line_buf += decoder.decode(b"", final=True)
                 if line_buf.strip():
                     remaining = _strip_ansi(line_buf.rstrip("\r\n"))
                     if remaining:
-                        pending.append(remaining)
+                        pending.add(remaining)
                 if pending:
-                    await progress_cb(pending)
+                    await progress_cb(pending.take())
 
             async def _wait_then_release() -> None:
                 # Once the child exits, release the parent's slave fd so the PTY
@@ -709,9 +747,9 @@ class ShellTools:
             )
             returncode = proc.returncode if proc.returncode is not None else -1
             cleanup_process_group = False
-            return decode_subprocess_output(output), returncode
+            return capture.snapshot(), returncode
         except TimeoutError:
-            raise _Timeout(output=decode_subprocess_output(output)) from None
+            raise _Timeout(output=capture.snapshot()) from None
         finally:
             # Release the parent's slave fd on every exit path (success,
             # timeout, cancellation, stopped-state, or error) so it is never
@@ -727,7 +765,7 @@ class ShellTools:
 
     async def _execute_pipe(
         self, command: str, shell: ShellInfo, cwd: str, timeout: int | float
-    ) -> tuple[str, int, str]:
+    ) -> tuple[CapturedOutput, int, CapturedOutput]:
         """Run *command* with pipes (Windows fallback). Returns ``(stdout, returncode, stderr)``."""
         env = _build_subprocess_env()
         command = _prepare_pipe_command(command, shell)
@@ -771,17 +809,10 @@ class ShellTools:
                     process_group_id=process_group_id,
                 )
             except TimeoutError:
-                raise _Timeout(
-                    output=decode_subprocess_output(capture.stdout_bytes()),
-                    stderr=decode_subprocess_output(capture.stderr_bytes()),
-                ) from None
+                raise _Timeout(output=capture.stdout.snapshot(), stderr=capture.stderr.snapshot()) from None
 
             returncode = proc.returncode if proc.returncode is not None else -1
-            return (
-                decode_subprocess_output(stdout) if stdout else "",
-                returncode,
-                decode_subprocess_output(stderr) if stderr else "",
-            )
+            return stdout, returncode, stderr
 
     @staticmethod
     async def _stream_pipe(
@@ -789,10 +820,10 @@ class ShellTools:
         progress_cb: Callable[[list[str]], Awaitable[None]] | None,
         *,
         capture: _PipeOutputCapture | None = None,
-    ) -> tuple[bytes, bytes]:
+    ) -> tuple[CapturedOutput, CapturedOutput]:
         """Read stdout line-by-line with progress, read stderr fully."""
         capture = capture or _PipeOutputCapture()
-        pending: list[str] = []
+        pending = _ProgressLines()
         last_emit = time.monotonic()
 
         async def _drain_stdout() -> None:
@@ -801,7 +832,7 @@ class ShellTools:
                 raise RuntimeError("The shell process has no stdout pipe.")
             line_buf = bytearray()
             while chunk := await proc.stdout.read(64 * 1024):
-                capture.stdout_parts.append(chunk)
+                capture.stdout.feed(chunk)
                 if progress_cb is None:
                     continue
                 line_buf.extend(chunk)
@@ -809,29 +840,29 @@ class ShellTools:
                     newline_idx = line_buf.index(0x0A)
                     raw_line = bytes(line_buf[:newline_idx]).rstrip(b"\r")
                     del line_buf[: newline_idx + 1]
-                    pending.append(_strip_ansi(decode_subprocess_output(raw_line)))
+                    pending.add(_strip_ansi(decode_subprocess_output(raw_line)))
+                if len(line_buf) > _PROGRESS_LINE_LIMIT:
+                    del line_buf[:-_PROGRESS_LINE_LIMIT]
                 now = time.monotonic()
                 if pending and now - last_emit >= _PROGRESS_THROTTLE_INTERVAL:
-                    await progress_cb(list(pending))
-                    pending.clear()
+                    await progress_cb(pending.take())
                     last_emit = now
             if progress_cb is not None:
                 if line_buf.strip():
                     remaining = _strip_ansi(decode_subprocess_output(bytes(line_buf).rstrip(b"\r\n")))
                     if remaining:
-                        pending.append(remaining)
+                        pending.add(remaining)
                 if pending:
-                    await progress_cb(list(pending))
-                    pending.clear()
+                    await progress_cb(pending.take())
 
         async def _drain_stderr() -> None:
             if proc.stderr is None:
                 raise RuntimeError("The shell process has no stderr pipe.")
             while chunk := await proc.stderr.read(64 * 1024):
-                capture.stderr_parts.append(chunk)
+                capture.stderr.feed(chunk)
 
         await asyncio.gather(_drain_stdout(), _drain_stderr(), proc.wait())
-        return capture.stdout_bytes(), capture.stderr_bytes()
+        return capture.stdout.snapshot(), capture.stderr.snapshot()
 
     # ------------------------------------------------------------------
     # Other tools
@@ -856,23 +887,21 @@ class ShellTools:
 
 
 class _PipeOutputCapture:
-    """Mutable byte buffers shared with the timeout handler."""
+    """Stream captures shared with the timeout handler."""
 
     def __init__(self) -> None:
-        self.stdout_parts: list[bytes] = []
-        self.stderr_parts: list[bytes] = []
-
-    def stdout_bytes(self) -> bytes:
-        return b"".join(self.stdout_parts)
-
-    def stderr_bytes(self) -> bytes:
-        return b"".join(self.stderr_parts)
+        self.stdout = BoundedCapture()
+        self.stderr = BoundedCapture()
 
 
 class _Timeout(Exception):
     """Internal sentinel — keeps timeout handling out of the backends."""
 
-    def __init__(self, output: str = "", stderr: str = "") -> None:
+    def __init__(self, output: CapturedOutput | None = None, stderr: CapturedOutput | None = None) -> None:
         super().__init__()
         self.output = output
         self.stderr = stderr
+
+    @property
+    def captures(self) -> tuple[CapturedOutput, ...]:
+        return tuple(capture for capture in (self.output, self.stderr) if capture is not None)

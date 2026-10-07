@@ -16,6 +16,7 @@ import json
 import socket
 import sys
 from collections.abc import AsyncIterator
+from http import HTTPStatus
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -36,7 +37,7 @@ from chrys.orchestration.engine.run.bindings import TurnBindings
 from tests.support.event_capture import capture_events
 from tests.support.llm_client_engines import SUB_AGENT, ClientEngine, start_client_engine
 from tests.support.network_faults import NetworkFaults, gaierror, network_faults
-from tests.support.provider_errors import API_HOST
+from tests.support.provider_errors import API_HOST, OPENAI_CONTEXT_OVERFLOW_BODY
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
 
 if TYPE_CHECKING:
@@ -73,9 +74,16 @@ def _delegate(prompt: str) -> bytes:
     return _completion({"role": "assistant", "content": None, "tool_calls": [call]}, "tool_calls")
 
 
+# The server's window (131072) is below the loopback profiles' default of 200000.
+_OVERFLOW = (HTTPStatus.BAD_REQUEST, json.dumps(OPENAI_CONTEXT_OVERFLOW_BODY).encode())
+
+
 @contextlib.asynccontextmanager
-async def _provider(*replies: bytes) -> AsyncIterator[int]:
-    """Answer one scripted reply per connection, then close: every request resolves the host again."""
+async def _provider(*replies: bytes | tuple[HTTPStatus, bytes]) -> AsyncIterator[int]:
+    """Answer one scripted reply (200 unless a status is given) per connection, then close.
+
+    Every request resolves the host again.
+    """
     queue = list(replies)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -90,9 +98,11 @@ async def _provider(*replies: bytes) -> AsyncIterator[int]:
                 0,
             )
             await reader.readexactly(length)
-            body = queue.pop(0)
+            reply = queue.pop(0)
+            status, body = reply if isinstance(reply, tuple) else (HTTPStatus.OK, reply)
             writer.write(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                f"HTTP/1.1 {status.value} {status.phrase}\r\n".encode()
+                + b"Content-Type: application/json\r\nConnection: close\r\n"
                 + f"Content-Length: {len(body)}\r\n\r\n".encode()
                 + body
             )
@@ -241,3 +251,60 @@ async def test_a_paused_sub_agent_says_what_went_wrong(agent_engine: AgentEngine
         {"host": f"{API_HOST}:{port}"},
     )
     assert _key(pause.last_error_hint) == "error.hint.maybe_offline"
+
+
+_MISMATCH_ARGS = {"configured_max_context_tokens": 200_000, "server_max_context_tokens": 131_072}
+
+
+@pytest.mark.usefixtures("direct_route")
+async def test_a_turn_over_a_smaller_server_window_says_which_window_to_set(
+    agent_engine: AgentEngineFactory, tmp_path: Path
+) -> None:
+    async with _provider(_OVERFLOW) as port:
+        with network_faults() as faults:
+            _script_lookups(faults)
+            started = await start_client_engine(
+                agent_engine, tmp_path, sub_agent=False, base_url=f"http://{API_HOST}:{port}/v1", compaction=True
+            )
+            errors = await capture_events(started.bus, Error)
+            retries = await capture_events(started.bus, InvocationRetryAttempt)
+
+            await started.bus.publish(UserMessage(text="hello"))
+            await wait_for(lambda: bool(errors), timeout=ENGINE_TURN_TIMEOUT, description="turn error")
+            await _settle(started)
+
+    [error] = errors
+    assert "maximum context length is 131072 tokens" in error.message
+    assert error.display_message is not None
+    assert (_key(error.display_message), dict(error.display_message.args)) == (
+        "error.kind.context_overflow_config_mismatch",
+        _MISMATCH_ARGS,
+    )
+    # Only the user can fix the window: no resend.
+    assert retries == []
+
+
+@pytest.mark.usefixtures("direct_route")
+async def test_a_paused_sub_agent_over_a_smaller_server_window_says_which_window_to_set(
+    agent_engine: AgentEngineFactory, tmp_path: Path
+) -> None:
+    async with _provider(_delegate("look around"), _OVERFLOW, _answer("done without it")) as port:
+        with network_faults() as faults:
+            _script_lookups(faults)
+            started = await start_client_engine(agent_engine, tmp_path, base_url=f"http://{API_HOST}:{port}/v1")
+            messages = await capture_events(started.bus, InvocationMessage)
+            paused = await capture_events(started.bus, InvocationPaused)
+
+            await started.bus.publish(UserMessage(text="delegate"))
+            await wait_for(lambda: bool(paused), timeout=ENGINE_TURN_TIMEOUT, description="sub-agent pause")
+            [pause] = paused
+            await started.bus.publish(InvocationAbortRequested(invocation_id=pause.origin.invocation_id))
+            await wait_for(lambda: _final_answers(messages) == 1, timeout=ENGINE_TURN_TIMEOUT, description="answer")
+            await _settle(started)
+
+    assert pause.origin.kind == "sub_agent"
+    assert pause.last_error_display is not None
+    assert (_key(pause.last_error_display), dict(pause.last_error_display.args)) == (
+        "error.kind.context_overflow_config_mismatch",
+        _MISMATCH_ARGS,
+    )

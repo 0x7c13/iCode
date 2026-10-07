@@ -151,7 +151,7 @@ async def test_windows_process_tree_cleanup_runs_taskkill_as_a_hidden_async_subp
 
     hidden = {"creationflags": process_mod._CREATE_NEW_CONSOLE, "startupinfo": "hidden-startupinfo"}
     monkeypatch.setattr(process_mod.sys, "platform", "win32")
-    monkeypatch.setattr(process_mod, "_windows_hidden_subprocess_kwargs", lambda: dict(hidden))
+    monkeypatch.setattr(process_mod, "windows_hidden_subprocess_kwargs", lambda: dict(hidden))
     monkeypatch.setattr(process_mod.shutil, "which", lambda name: "C:\\Windows\\System32\\taskkill.exe")
     _stub_subprocess_spawn(monkeypatch, spawn)
 

@@ -33,7 +33,7 @@ def test_runtime_details_values_follow_localization_contract() -> None:
     assert _api_style_label("chat_completions") == "Chat Completions"
 
     chinese = Localizer("zh-Hans")
-    assert chinese.render(_INLINE_SKILLS_SOURCE.bind()) == "内联配置技能"
+    assert chinese.render(_INLINE_SKILLS_SOURCE.bind()) == "配置文件内联的 Skills"
     assert _api_style_label("chat_completions", chinese.render) == "Chat Completions"
     assert _api_style_label("responses", chinese.render) == "Responses"
     assert chinese.render(_BASE_URL.bind()) == "服务地址"

@@ -4,9 +4,22 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+import base64
+import json
+from types import ModuleType
+from typing import Any, ClassVar
 
+import pytest
+from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+
+from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.util.chrys_headers import X_SESSION_ID_HEADER
 from chrys.kernel import Content, Message
+from chrys.kernel.client import _ClientLastWordsCompleter, start_with_wire_progress
 from chrys.service.context.compaction.last_words import (
     _BASE_GUIDANCE,
     _FORMAT_CONTRACT,
@@ -15,8 +28,17 @@ from chrys.service.context.compaction.last_words import (
     LastWordsGenerator,
     LastWordsSpendBudgetExceeded,
 )
+from chrys.service.llm import one_shot
+from chrys.service.llm.chat_completions import ChatCompletionsClient
+from chrys.service.llm.chat_completions import client as chat_completions_client
 from chrys.service.profiles.agents.schema import DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS
-from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.options import (
+    AUTO_INTERLEAVED_THINKING_OPTION,
+    STREAM_REQUIRES_FINISH_REASON_OPTION,
+    THINKING_BLOCK_BINDING_OPTION,
+)
+from chrys.service.profiles.models.schema import API_STYLE_RESPONSES, ModelProfile
+from tests.service.context.compaction._compaction_helpers import _anthropic_fetched_pdf_exchange
 from tests.service.context.compaction._last_words_helpers import (
     FailingFallbackClient,
     FakeCompleter,
@@ -28,9 +50,36 @@ from tests.service.context.compaction._last_words_helpers import (
     structured_note,
     user,
 )
+from tests.support.openai_chat_wire import ChatReply, scripted_openai
 from tests.support.provider_errors import openai_status
+from tests.support.scripted_wire import ScriptedWire, pin_wire_inputs, route_clients_to
+from tests.support.wire_cases._kit import anth_replies, anth_text, resp_message, resp_replies, resp_response
 
 pytestmark = pytest.mark.usefixtures("no_note_floor")
+
+
+def _note_chunk(text: str, finish_reason: str | None = None) -> ChatCompletionChunk:
+    delta = ChoiceDelta.model_construct(role="assistant", content=text)
+    return ChatCompletionChunk.model_construct(
+        id="chunk-1",
+        object="chat.completion.chunk",
+        created=1_717_171_717,
+        model="model",
+        choices=[ChunkChoice.model_construct(index=0, delta=delta, finish_reason=finish_reason)],
+        usage=None,
+    )
+
+
+def _note_completion(text: str, finish_reason: str) -> ChatCompletion:
+    message = ChatCompletionMessage.model_construct(role="assistant", content=text)
+    return ChatCompletion.model_construct(
+        id="completion-1",
+        object="chat.completion",
+        created=1_717_171_717,
+        model="model",
+        choices=[Choice.model_construct(index=0, message=message, finish_reason=finish_reason)],
+        usage=None,
+    )
 
 
 @pytest.mark.parametrize("template", ["", " \n\t", "TEMPLATE TEXT"])
@@ -81,6 +130,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -106,7 +156,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
     ),
     [
         pytest.param(
-            ModelProfile(id="t", name="t", model_id="deepseek-chat", max_output_tokens=8192),
+            ModelProfile(id="t", name="t", model_id="deepseek-chat", max_output_tokens=8192, stream=False),
             {},
             8192,
             "8192-token output cap",
@@ -122,6 +172,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
                 model_id="claude-test",
                 max_output_tokens=0,  # unknown cap — this case targets the unclamped math
                 chat_options='{"thinking": {"type": "enabled", "budget_tokens": 16000}}',
+                stream=False,
             ),
             {"max_output_tokens": 12000},
             12000 + 16000,
@@ -137,6 +188,7 @@ async def test_fallback_prompt_states_length_contract(tmp_path):
                 model_id="deepseek-chat",
                 max_output_tokens=8192,
                 chat_options='{"max_tokens": 20000}',
+                stream=False,
             ),
             {},
             8192,
@@ -175,6 +227,7 @@ async def test_note_call_output_budget_is_clamped_on_both_paths(
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -283,6 +336,7 @@ async def test_fallback_uses_three_scoped_blocks_and_interleaves_followups(tmp_p
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -304,6 +358,72 @@ async def test_fallback_uses_three_scoped_blocks_and_interleaves_followups(tmp_p
     assert "- user said: also test it" in prompt
 
 
+async def test_fallback_renders_an_image_result_as_a_placeholder_not_base64(tmp_path):
+    from chrys.service.context.compaction.last_words import LastWordsGenerator
+    from chrys.service.profiles.models.resolver import default_profile
+
+    captured: dict = {}
+
+    class _Client:
+        async def get_response(self, messages, *_args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["prompt"] = messages[1].text
+
+            class _Response:
+                usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
+                raw_text = structured_note()
+
+            return _Response()
+
+    image = Content.from_data(data=b"\x89PNG" + b"\x00" * 3000, media_type="image/png")
+    dropped = [
+        Message("assistant", [Content.from_function_call("call-1", "read_file", arguments={"path": "shot.png"})]),
+        Message(
+            "tool",
+            [Content.from_function_result("call-1", result=[Content.from_text("Read shot.png"), image])],
+        ),
+    ]
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(gen, user_request="look at it", previous_last_words=None, dropped_messages=dropped)
+
+    prompt = captured["prompt"]
+    assert "  result[read_file]: Read shot.png\n[image/png image]" in prompt
+    assert image.uri is not None
+    assert image.uri.split(",", 1)[1][:64] not in prompt
+
+
+@pytest.mark.parametrize("restored", [False, True], ids=["live", "restored"])
+async def test_fallback_renders_a_hosted_base64_document_as_a_placeholder(tmp_path, restored):
+    from chrys.service.context.compaction.last_words import LastWordsGenerator
+    from chrys.service.profiles.models.resolver import default_profile
+
+    captured: dict = {}
+
+    class _Client:
+        async def get_response(self, messages, *_args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["prompt"] = messages[1].text
+
+            class _Response:
+                usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
+                raw_text = structured_note()
+
+            return _Response()
+
+    payload = base64.b64encode(b"%PDF-1.7\n" + b"binary-payload" * 150).decode()
+    dropped = _anthropic_fetched_pdf_exchange(payload)
+    if restored:
+        dropped = [Message.from_dict(message.to_dict()) for message in dropped]
+    gen = LastWordsGenerator(profile=default_profile(), log_dir=tmp_path)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(gen, user_request="read the paper", previous_last_words=None, dropped_messages=dropped)
+
+    prompt = captured["prompt"]
+    assert "[application/pdf artifact]" in prompt
+    assert payload[:64] not in prompt
+
+
 async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path):
     from chrys.service.context.compaction.last_words import LastWordsGenerator
     from chrys.service.profiles.models.schema import ModelProfile
@@ -311,11 +431,14 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
     captured: dict = {}
 
     class _Client:
-        async def get_response(self, _messages, *_args, **kwargs):  # type: ignore[no-untyped-def]
-            captured.update(kwargs["options"])
+        async def get_response(self, _messages: list[Message], *, stream: bool, options: dict[str, object]) -> object:
+            # Every setting reaches the client inside the options, never as a keyword of its own.
+            assert stream is False
+            captured.update(options)
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -330,6 +453,7 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
             '"response_format":{"type":"json_schema"},"schema":{"huge":true},"store":true,'
             '"previous_response_id":"resp","conversation_id":"conv","unknown_input":"drop"}'
         ),
+        stream=False,
     )
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
     gen._client = _Client()  # type: ignore[assignment]
@@ -341,6 +465,148 @@ async def test_fallback_option_allowlist_drops_all_input_shaping_fields(tmp_path
         "reasoning_effort": "low",
         "max_tokens": DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS,
     }
+
+
+@pytest.mark.parametrize(
+    ("chat_options", "expected_key"),
+    [
+        ({}, "note-session"),
+        ({"prompt_cache_key": "mine"}, "mine"),
+        ({"extra_body": {"prompt_cache_key": "nested", "user_tag": "drop"}}, "nested"),
+        ({"prompt_cache_key": None}, None),
+        ({"extra_body": {"prompt_cache_key": None}}, None),
+    ],
+    ids=["automatic", "top_level", "extra_body", "top_level_null", "extra_body_null"],
+)
+async def test_a_fallback_note_keeps_the_prompt_cache_key_the_profile_sets(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, chat_options: dict[str, object], expected_key: str | None
+) -> None:
+    pin_wire_inputs(monkeypatch)
+    note = resp_response(response_id="resp_note", output=[resp_message("msg_note", structured_note())])
+    wire = ScriptedWire(resp_replies([note], stream=False))
+    route_clients_to(wire.transport, monkeypatch)
+    profile = ModelProfile(
+        id="cache",
+        name="cache",
+        provider="openai",
+        api_style=API_STYLE_RESPONSES,
+        model_id="model",
+        api_key="sk-cache",
+        chat_options=json.dumps(chat_options),
+        stream=False,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, session_id="note-session")
+    try:
+        await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+    finally:
+        await gen.aclose()
+
+    [request] = wire.requests
+    body = json.loads(request.content)
+    assert request.headers[X_SESSION_ID_HEADER] == "note-session"
+    assert body.get("prompt_cache_key") == expected_key
+    assert ("prompt_cache_key" in body) is (expected_key is not None)
+    assert "user_tag" not in body
+
+
+@pytest.mark.parametrize(
+    ("binding", "interleaved", "expected"),
+    [
+        ("error", True, {THINKING_BLOCK_BINDING_OPTION: "error"}),
+        ("off", True, {THINKING_BLOCK_BINDING_OPTION: "off"}),
+        ("auto", False, {AUTO_INTERLEAVED_THINKING_OPTION: False}),
+    ],
+    ids=["error", "off", "interleaved_off"],
+)
+async def test_a_fallback_note_keeps_the_profile_thinking_settings(
+    tmp_path, binding: Any, interleaved: bool, expected: dict[str, object]
+) -> None:
+    captured: dict = {}
+
+    class _Client:
+        async def get_response(self, _messages: list[Message], *, stream: bool, options: dict[str, object]) -> object:
+            # Every setting reaches the client inside the options, never as a keyword of its own.
+            assert stream is False
+            captured.update(options)
+
+            class _Response:
+                usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
+                raw_text = structured_note()
+
+            return _Response()
+
+    profile = ModelProfile(
+        id="claude",
+        name="claude",
+        provider="anthropic",
+        model_id="claude-opus-5-5",
+        stream=False,
+        thinking_block_binding=binding,
+        auto_interleaved_thinking=interleaved,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
+    gen._client = _Client()  # type: ignore[assignment]
+    await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+
+    assert captured == {"max_tokens": DEFAULT_LAST_WORDS_MAX_OUTPUT_TOKENS, **expected}
+
+
+@pytest.mark.parametrize("interleaved", [True, False], ids=["automatic", "turned_off"])
+async def test_a_streamed_fallback_note_sends_the_interleaved_beta_as_the_profile_says(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, interleaved: bool
+) -> None:
+    pin_wire_inputs(monkeypatch)
+    wire = ScriptedWire(anth_replies([anth_text(structured_note(), message_id="msg_note")], stream=True))
+    route_clients_to(wire.transport, monkeypatch)
+    profile = ModelProfile(
+        id="claude",
+        name="claude",
+        provider="anthropic",
+        model_id="claude-sonnet-4-5",
+        api_key="sk-ant-note",
+        chat_options=json.dumps({"thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        stream=True,
+        auto_interleaved_thinking=interleaved,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
+    try:
+        await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+    finally:
+        await gen.aclose()
+
+    [request] = wire.requests
+    [betas] = request.headers.get_list("anthropic-beta")
+    assert ("interleaved-thinking-2025-05-14" in betas.split(",")) is interleaved
+    assert AUTO_INTERLEAVED_THINKING_OPTION not in json.loads(request.content)
+
+
+@pytest.mark.parametrize("requires_finish_reason", [True, False], ids=["requires_a_finish_reason", "lenient"])
+async def test_a_fallback_note_streamed_without_a_finish_reason_is_judged_as_the_profile_says(
+    tmp_path, requires_finish_reason: bool
+) -> None:
+    note = structured_note()
+    profile = ModelProfile(
+        id="cut",
+        name="cut",
+        model_id="model",
+        stream=True,
+        stream_requires_finish_reason=requires_finish_reason,
+    )
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, max_transient_retries=0)
+    async with scripted_openai([[_note_chunk(note)]]) as wire:
+        gen._client = ChatCompletionsClient(model="model", sdk_client=wire.client)  # type: ignore[assignment]
+        if requires_finish_reason:
+            with pytest.raises(LastWordsGenerationError) as raised:
+                await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[])
+            cause = raised.value.__cause__
+            assert isinstance(cause, ProviderResponseError)
+            assert cause.code == "stream_truncated"
+        else:
+            assert await generate(gen, user_request="do X", previous_last_words=None, dropped_messages=[]) == note
+
+    [request] = wire.requests
+    assert STREAM_REQUIRES_FINISH_REASON_OPTION not in request
 
 
 async def test_fallback_caps_supplement_and_middle_truncates_previous_note(tmp_path):
@@ -360,6 +626,7 @@ async def test_fallback_caps_supplement_and_middle_truncates_previous_note(tmp_p
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -408,6 +675,7 @@ async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_p
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -418,6 +686,7 @@ async def test_fallback_shrinks_timeline_without_truncating_fixed_guidance(tmp_p
         model_id="small",
         max_context_tokens=12_000,
         max_output_tokens=500,
+        stream=False,
     )
     gen = LastWordsGenerator(profile=profile, template="T" * 100_000, log_dir=tmp_path)
     gen._client = _Client()  # type: ignore[assignment]
@@ -459,6 +728,7 @@ async def test_fallback_format_correction_is_readmitted_and_shrunk(tmp_path, mon
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = invalid if len(self.messages) == 1 else valid
 
             return _Response()
@@ -472,6 +742,7 @@ async def test_fallback_format_correction_is_readmitted_and_shrunk(tmp_path, mon
         # the shared guidance/contract text shifts both and moves this line.
         max_context_tokens=9_560,
         max_output_tokens=500,
+        stream=False,
     )
     client = _Client()
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
@@ -542,6 +813,7 @@ async def test_fallback_small_window_final_candidate_is_provider_authoritative(t
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -552,6 +824,7 @@ async def test_fallback_small_window_final_candidate_is_provider_authoritative(t
         model_id="small-window",
         max_context_tokens=9_000,
         max_output_tokens=8_192,
+        stream=False,
     )
     client = _Client()
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path)
@@ -600,6 +873,7 @@ async def test_fallback_bypass_never_raises_max_tokens_above_model_cap(tmp_path)
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -610,6 +884,7 @@ async def test_fallback_bypass_never_raises_max_tokens_above_model_cap(tmp_path)
         model_id="tiny-cap",
         max_context_tokens=2_000,
         max_output_tokens=256,
+        stream=False,
     )
     client = _Client()
     gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, max_output_tokens=256)
@@ -639,6 +914,7 @@ async def test_fallback_short_note_acceptance_still_canonicalizes(tmp_path, monk
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = short_relaxed
 
             return _Response()
@@ -665,6 +941,7 @@ async def test_provider_context_rejection_advances_fallback_shrink_sequence(tmp_
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -718,6 +995,7 @@ async def _prompt_lengths_after(tmp_path, monkeypatch, rejection: BaseException)
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()
@@ -754,6 +1032,137 @@ async def test_a_server_error_naming_the_context_window_shrinks_the_fallback(
     assert len(prompt_lengths) == 2
     assert prompt_lengths[1] < prompt_lengths[0]
     assert retries == 0
+
+
+async def test_a_candidate_that_overflows_as_its_read_timeout_runs_out_still_shrinks_the_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    """The chunk that ends a candidate's stream on a context overflow restarts
+    the side call's read timeout and the stall watchdog waiting on it: reading
+    on for its usage ends on the overflow, and a smaller candidate follows
+    instead of the timeout cutting the stream off and sending it again."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    monkeypatch.setattr(chat_completions_client, "_ENDED_STREAM_WAIT_SECONDS", 1.0)
+    read_timeouts: list[asyncio.Timeout] = []
+
+    def timeout(delay: float | None) -> asyncio.Timeout:
+        read_timeouts.append(asyncio.timeout(delay))
+        return read_timeouts[-1]
+
+    shadow = ModuleType("asyncio")
+    shadow.__dict__.update(vars(asyncio), timeout=timeout)
+    monkeypatch.setattr(one_shot, "asyncio", shadow)
+    loop = asyncio.get_running_loop()
+    events = 0
+
+    async def pace() -> None:
+        nonlocal events
+        events += 1
+        if events == 2:
+            # The overflow comes as the read timeout of its pull runs out.
+            read_timeouts[-1].reschedule(loop.time() + 0.5)
+        elif events == 3:
+            # Then the connection stays open, sending no usage.
+            await asyncio.Event().wait()
+
+    reported_at: list[int] = []
+    retry_events, publish_retry = retry_collector()
+    profile = ModelProfile(id="streamed", name="streamed", model_id="model", stream=True)
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, publish_retry=publish_retry)
+    overflow = [_note_chunk("## Task"), _note_chunk("", finish_reason="model_context_window_exceeded")]
+    async with scripted_openai([overflow, [_note_chunk(structured_note(), finish_reason="stop")]], pace=pace) as wire:
+        gen._client = ChatCompletionsClient(model="model", sdk_client=wire.client)  # type: ignore[assignment]
+        note = await start_with_wire_progress(
+            generate(
+                gen,
+                user_request="do X",
+                previous_last_words="previous",
+                dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+            ),
+            lambda: reported_at.append(events),
+        )
+
+    assert note == structured_note()
+    first, second = (len(json.dumps(request["messages"])) for request in wire.requests)
+    assert second < first
+    assert retry_events == []
+    # Before the first candidate, after its first chunk, at its overflow.
+    assert reported_at[:3] == [0, 1, 2]
+
+
+@pytest.mark.parametrize("partial", ["## Task\nDo", "## Task\n" + "Done so far. " * 60], ids=["short", "long"])
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_note_that_filled_the_context_window_part_way_shrinks_the_fallback(
+    tmp_path, monkeypatch, stream: bool, partial: str
+) -> None:
+    """The main turn keeps an answer the full window cut off; a note is asked for again, with a smaller prompt."""
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    reason = "model_context_window_exceeded"
+    filled: ChatReply = (
+        [_note_chunk(partial), _note_chunk("", finish_reason=reason)] if stream else _note_completion(partial, reason)
+    )
+    note: ChatReply = (
+        [_note_chunk(structured_note(), finish_reason="stop")]
+        if stream
+        else _note_completion(structured_note(), "stop")
+    )
+    retry_events, publish_retry = retry_collector()
+    profile = ModelProfile(id="model", name="model", model_id="model", stream=stream)
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, publish_retry=publish_retry)
+    async with scripted_openai([filled, note]) as wire:
+        gen._client = ChatCompletionsClient(model="model", sdk_client=wire.client)  # type: ignore[assignment]
+        written = await generate(
+            gen,
+            user_request="do X",
+            previous_last_words="previous",
+            dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+        )
+
+    assert written == structured_note()
+    first, second = (len(json.dumps(request["messages"])) for request in wire.requests)
+    assert second < first
+    assert retry_events == []
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_a_note_the_completer_wrote_until_the_context_window_filled_falls_back(
+    tmp_path, monkeypatch, stream: bool
+) -> None:
+    """The completer sends the whole conversation, the call most likely to fill the window.
+
+    A note it cut off is not asked for again with that prompt: LAST_WORDS
+    falls back to the smaller one.
+    """
+    monkeypatch.setattr(LastWordsGenerator, "_BACKOFF_SCHEDULE", (0,))
+    reason = "model_context_window_exceeded"
+    filled: ChatReply = (
+        [_note_chunk("## Task\nDo"), _note_chunk("", finish_reason=reason)]
+        if stream
+        else _note_completion("## Task\nDo", reason)
+    )
+    note: ChatReply = (
+        [_note_chunk(long_structured_note(), finish_reason="stop")]
+        if stream
+        else _note_completion(long_structured_note(), "stop")
+    )
+    retry_events, publish_retry = retry_collector()
+    profile = ModelProfile(id="model", name="model", model_id="model", stream=stream)
+    gen = LastWordsGenerator(profile=profile, log_dir=tmp_path, publish_retry=publish_retry)
+    async with scripted_openai([filled, note]) as wire:
+        client = ChatCompletionsClient(model="model", sdk_client=wire.client)
+        gen._client = client  # type: ignore[assignment]
+        written = await generate(
+            gen,
+            user_request="do X",
+            previous_last_words="previous",
+            dropped_messages=[Message("assistant", [f"work-{index} " * 1_000]) for index in range(20)],
+            completer=_ClientLastWordsCompleter(client, stream=stream, options={}, client_kwargs={}),
+        )
+
+    assert written == long_structured_note()
+    completer_request, fallback_request = (len(json.dumps(request["messages"])) for request in wire.requests)
+    assert fallback_request < completer_request
+    assert retry_events == []
 
 
 async def test_a_rate_limit_naming_tokens_retries_the_same_fallback_candidate(tmp_path, monkeypatch) -> None:
@@ -879,6 +1288,7 @@ async def test_sibling_call_run_admission_charges_one_merged_timeline(tmp_path):
         async def get_response(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = structured_note()
 
             return _Response()

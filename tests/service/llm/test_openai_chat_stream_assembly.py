@@ -17,12 +17,15 @@ from openai.types.chat.chat_completion_chunk import (
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
 from openai.types.chat.chat_completion_chunk import ChoiceDelta as ChunkChoiceDelta
 
-from chrys.kernel import ChatMiddlewareLayer, ChatResponse, Content, FunctionTool, Message, ResponseStream
+from chrys.kernel import ChatResponse, Content, FunctionTool, Message, ResponseStream
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
-from chrys.service.llm import instrumented as instrumented_module
-from chrys.service.llm.instrumented import create_instrumented_openai_client
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
-from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
+from chrys.service.llm.chat_completions import ChatCompletionsClient
+from chrys.service.llm.chat_completions.client import OPENAI
+from chrys.service.llm.chat_completions.history import encode_messages
+from chrys.service.llm.observer import intermediate_text_signal
+from tests.service.llm._wire_stacks import assemble_openai_stack
+from tests.support.openai_chat_wire import scripted_openai
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 _MISSING = object()
 
@@ -83,46 +86,34 @@ def _tool_chunk(
     )
 
 
-class _FakeCompletions:
-    def __init__(self, responses: Sequence[Sequence[ChatCompletionChunk]]) -> None:
-        self.responses = [list(chunks) for chunks in responses]
-        self.requests: list[dict[str, Any]] = []
-
-    async def create(self, *, stream: bool, **kwargs: Any) -> Any:
-        assert stream is True
-        self.requests.append(kwargs)
-        chunks = self.responses.pop(0)
-
-        async def _iterate() -> Any:
-            for chunk in chunks:
-                yield chunk
-
-        return _iterate()
-
-
-class _FakeAsyncOpenAI:
-    base_url = "https://api.test"
-
-    def __init__(self, completions: Any) -> None:
-        self.chat = type("_Chat", (), {"completions": completions})()
-
-
 async def _raw_stream_response(
     chunks: Sequence[ChatCompletionChunk],
 ) -> tuple[list[Any], ChatResponse]:
-    completions = _FakeCompletions([chunks])
-    client = RawOpenAIChatCompletionClient(
-        model="glm-5.2",
-        async_client=_FakeAsyncOpenAI(completions),
-    )
-    stream = client._inner_get_response(
-        messages=[Message("user", ["test"])],
-        options={},
-        stream=True,
-    )
-    assert isinstance(stream, ResponseStream)
-    updates = [update async for update in stream]
-    return updates, await stream.get_final_response()
+    async with scripted_openai([chunks]) as wire:
+        client = ChatCompletionsClient(model="glm-5.2", sdk_client=wire.client)
+        stream = client._inner_get_response(
+            messages=[Message("user", ["test"])],
+            options={},
+            stream=True,
+        )
+        assert isinstance(stream, ResponseStream)
+        updates = [update async for update in stream]
+        return updates, await stream.get_final_response()
+
+
+async def _updates_until_failure(chunks: Sequence[ChatCompletionChunk], *, match: str) -> list[Any]:
+    emitted: list[Any] = []
+    async with scripted_openai([chunks]) as wire:
+        client = ChatCompletionsClient(model="glm-5.2", sdk_client=wire.client)
+        stream = client._inner_get_response(
+            messages=[Message("user", ["test"])],
+            options={},
+            stream=True,
+        )
+        with pytest.raises(ChatClientInvalidResponseException, match=match):
+            async for update in stream:
+                emitted.append(update)
+    return emitted
 
 
 def _function_calls(response: ChatResponse) -> list[Content]:
@@ -165,32 +156,12 @@ async def test_mixed_reasoning_tail_and_text_matches_sequential_chunks(
         assert contents[0].additional_properties["openai_reasoning_format"] == reasoning_field
         assert contents[2].type == "function_call"
         assert contents[2].call_id == "call_1"
-        assert instrumented_module._extract_intermediate_text(restored) == first_text + last_text
+        assert intermediate_text_signal(restored) == first_text + last_text
 
 
 @pytest.mark.asyncio
-async def test_instrumented_glm_stream_assembles_tool_and_preserves_markdown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Exercise the production dynamic subclass, tool loop, replay, and final text stream."""
-
-    def _checked_stack(
-        chat_client: Any,
-        *,
-        max_iterations: int | None,
-        max_consecutive_errors: int | None,
-        tool_result_ceiling_tokens: int | None = None,
-    ) -> InvariantCheckedToolLoopLayer:
-        knobs: dict[str, Any] = {}
-        if max_iterations is not None:
-            knobs["max_iterations"] = max_iterations
-        if max_consecutive_errors is not None:
-            knobs["max_consecutive_errors"] = max_consecutive_errors
-        if tool_result_ceiling_tokens is not None:
-            knobs["tool_result_ceiling_tokens"] = tool_result_ceiling_tokens
-        return InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(chat_client), **knobs)
-
-    monkeypatch.setattr(instrumented_module, "_compose_client_stack", _checked_stack)
+async def test_glm_stream_through_the_client_stack_assembles_tool_and_preserves_markdown() -> None:
+    """Exercise the production wire client, tool loop, replay, and final text stream."""
     argument_fragments = [
         "{",
         '"command": ',
@@ -240,25 +211,22 @@ async def test_instrumented_glm_stream_assembles_tool_and_preserves_markdown(
             chunk_id="chunk-2",
         )
     )
-    completions = _FakeCompletions([tool_chunks, final_chunks])
     executions: list[tuple[str, str]] = []
 
     def zsh(command: str, reason: str) -> str:
         executions.append((command, reason))
         return "AGENTS.md\nsrc"
 
-    client = create_instrumented_openai_client(
-        model_id="glm-5.2",
-        client=_FakeAsyncOpenAI(completions),
-    )
-    tool = FunctionTool(name="zsh", description="Run a command", func=zsh)
-    stream = client.get_response(
-        [Message("user", ["list files"])],
-        stream=True,
-        options={"tools": [tool], "extra_body": {"tool_stream": True}},
-    )
-    updates = [update async for update in stream]
-    response = await stream.get_final_response()
+    async with scripted_openai([tool_chunks, final_chunks]) as wire:
+        client = assemble_openai_stack(ChatCompletionsClient, wire.client, model_id="glm-5.2")
+        tool = FunctionTool(name="zsh", description="Run a command", func=zsh)
+        stream = client.get_response(
+            [Message("user", ["list files"])],
+            stream=True,
+            options={"tools": [tool], "extra_body": {"tool_stream": True}},
+        )
+        updates = [update async for update in stream]
+        response = await stream.get_final_response()
 
     assert executions == [("ls", "List files in the current directory")]
     assert response.messages[-1].text == "".join(markdown_fragments)
@@ -269,10 +237,8 @@ async def test_instrumented_glm_stream_assembles_tool_and_preserves_markdown(
             {"command": "ls", "reason": "List files in the current directory"},
         )
     ]
-    assert len(completions.requests) == 2
-    replayed_call_message = next(
-        message for message in completions.requests[1]["messages"] if message.get("tool_calls")
-    )
+    assert len(wire.requests) == 2
+    replayed_call_message = next(message for message in wire.requests[1]["messages"] if message.get("tool_calls"))
     assert replayed_call_message["reasoning_content"] == ""
     assert replayed_call_message["tool_calls"] == [
         {
@@ -429,21 +395,7 @@ async def test_conflicting_complete_function_names_fail_before_emission() -> Non
         _tool_chunk(_tool_delta(index=0, name="read_file", arguments='{"path":"a"}')),
         _tool_chunk(_tool_delta(index=0, name="write_file", arguments='{"path":"b"}')),
     ]
-    completions = _FakeCompletions([chunks])
-    client = RawOpenAIChatCompletionClient(
-        model="glm-5.2",
-        async_client=_FakeAsyncOpenAI(completions),
-    )
-    stream = client._inner_get_response(
-        messages=[Message("user", ["test"])],
-        options={},
-        stream=True,
-    )
-    emitted: list[Any] = []
-
-    with pytest.raises(ChatClientInvalidResponseException, match="Conflicting streamed tool-call names"):
-        async for update in stream:
-            emitted.append(update)
+    emitted = await _updates_until_failure(chunks, match="Conflicting streamed tool-call names")
 
     assert not any(content.type == "function_call" for update in emitted for content in update.contents)
 
@@ -471,27 +423,13 @@ async def test_ambiguous_idless_fragment_fails_before_function_call_emission() -
         ),
         _tool_chunk(_tool_delta(index=_MISSING, arguments='"value":1}')),
     ]
-    completions = _FakeCompletions([chunks])
-    client = RawOpenAIChatCompletionClient(
-        model="glm-5.2",
-        async_client=_FakeAsyncOpenAI(completions),
-    )
-    stream = client._inner_get_response(
-        messages=[Message("user", ["test"])],
-        options={},
-        stream=True,
-    )
-    emitted: list[Any] = []
-
-    with pytest.raises(ChatClientInvalidResponseException, match="Ambiguous streamed tool-call fragment"):
-        async for update in stream:
-            emitted.append(update)
+    emitted = await _updates_until_failure(chunks, match="Ambiguous streamed tool-call fragment")
 
     assert not any(content.type == "function_call" for update in emitted for content in update.contents)
 
 
 @pytest.mark.asyncio
-async def test_azure_null_terminal_delta_drains_complete_call_before_finish() -> None:
+async def test_null_terminal_delta_drains_complete_call_before_finish() -> None:
     chunks = [
         _tool_chunk(_tool_delta(index=0, call_id="call-a", name="alpha", arguments="{")),
         _tool_chunk(_tool_delta(index=0, arguments='"value":1')),
@@ -579,10 +517,7 @@ async def test_vllm_reasoning_stream_suppresses_later_empty_and_replays_exact_fi
     assert reasoning[0].additional_properties["openai_reasoning_format"] == "reasoning"
     assert response.raw_text == "answer"
 
-    replayed = RawOpenAIChatCompletionClient(
-        model="qwen",
-        async_client=_FakeAsyncOpenAI(_FakeCompletions([])),
-    )._prepare_messages_for_openai(response.messages)
+    replayed = encode_messages(response.messages, variant=OPENAI)
     assert replayed == [{"role": "assistant", "content": "answer", "reasoning": "think hard"}]
 
 
@@ -672,10 +607,7 @@ async def test_vllm_empty_reasoning_presence_marker_precedes_tool_call_and_repla
     assert reasoning.text == ""
     assert reasoning.additional_properties["openai_reasoning_format"] == "reasoning"
 
-    replayed = RawOpenAIChatCompletionClient(
-        model="qwen",
-        async_client=_FakeAsyncOpenAI(_FakeCompletions([])),
-    )._prepare_messages_for_openai(response.messages)
+    replayed = encode_messages(response.messages, variant=OPENAI)
     assert replayed[0]["reasoning"] == ""
     assert "reasoning_content" not in replayed[0]
     assert replayed[0]["tool_calls"][0]["id"] == "call-qwen"
@@ -696,23 +628,11 @@ async def test_nonempty_reasoning_before_glm_tool_fragments_replays_real_reasoni
         ),
         _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
     ]
-    completions = _FakeCompletions([chunks])
-    client = RawOpenAIChatCompletionClient(
-        model="glm-5.2",
-        async_client=_FakeAsyncOpenAI(completions),
-    )
-    stream = client._inner_get_response(
-        messages=[Message("user", ["test"])],
-        options={},
-        stream=True,
-    )
-    assert isinstance(stream, ResponseStream)
-
-    response = await stream.get_final_response()
+    _, response = await _raw_stream_response(chunks)
 
     assert [content.type for content in response.messages[0].contents] == ["text_reasoning", "function_call"]
     assert response.messages[0].contents[0].text == "think hard"
-    replayed = client._prepare_messages_for_openai(response.messages)
+    replayed = encode_messages(response.messages, variant=OPENAI)
     assert replayed == [
         {
             "role": "assistant",
@@ -776,7 +696,7 @@ async def test_plain_openai_text_stream_adds_no_reasoning_content() -> None:
 
 @pytest.mark.asyncio
 async def test_idless_single_tool_call_preserves_legacy_behavior(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level("DEBUG", logger="chrys.service.llm.openai_chat_completion")
+    caplog.set_level("DEBUG", logger="chrys.service.llm.chat_completions.stream")
     chunks = [
         _tool_chunk(_tool_delta(index=0, name="alpha", arguments='{"value":1}')),
         _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
@@ -825,49 +745,40 @@ async def test_length_truncated_nameless_call_is_discarded(caplog: pytest.LogCap
 
 @pytest.mark.asyncio
 async def test_stream_assembly_state_is_isolated_between_concurrent_requests() -> None:
-    class _ConcurrentCompletions:
-        async def create(self, *, stream: bool, **kwargs: Any) -> Any:
-            assert stream is True
-            prompt = kwargs["messages"][0]["content"]
-            suffix = "a" if prompt == "request-a" else "b"
-            chunks = [
-                _tool_chunk(
-                    _tool_delta(index=0, call_id=f"call-{suffix}", name=f"tool_{suffix}", arguments="{"),
-                    chunk_id=f"chunk-{suffix}",
-                ),
-                _tool_chunk(
-                    _tool_delta(index=0, arguments=f'"value":"{suffix}"}}'),
-                    chunk_id=f"chunk-{suffix}",
-                ),
-                _chunk(
-                    ChunkChoiceDelta.model_construct(role="assistant"),
-                    finish_reason="tool_calls",
-                    chunk_id=f"chunk-{suffix}",
-                ),
-            ]
+    def reply(body: dict[str, Any]) -> list[ChatCompletionChunk]:
+        suffix = "a" if body["messages"][0]["content"] == "request-a" else "b"
+        return [
+            _tool_chunk(
+                _tool_delta(index=0, call_id=f"call-{suffix}", name=f"tool_{suffix}", arguments="{"),
+                chunk_id=f"chunk-{suffix}",
+            ),
+            _tool_chunk(
+                _tool_delta(index=0, arguments=f'"value":"{suffix}"}}'),
+                chunk_id=f"chunk-{suffix}",
+            ),
+            _chunk(
+                ChunkChoiceDelta.model_construct(role="assistant"),
+                finish_reason="tool_calls",
+                chunk_id=f"chunk-{suffix}",
+            ),
+        ]
 
-            async def _iterate() -> Any:
-                for chunk in chunks:
-                    await asyncio.sleep(0)
-                    yield chunk
+    # Lockstep events: each stream's next event waits for the other's.
+    async with scripted_openai(reply, pace=asyncio.Barrier(2).wait) as wire:
+        client = ChatCompletionsClient(model="glm-5.2", sdk_client=wire.client)
 
-            return _iterate()
+        async def _run(prompt: str) -> ChatResponse:
+            stream = client._inner_get_response(
+                messages=[Message("user", [prompt])],
+                options={},
+                stream=True,
+            )
+            assert isinstance(stream, ResponseStream)
+            return await stream.get_final_response()
 
-    client = RawOpenAIChatCompletionClient(
-        model="glm-5.2",
-        async_client=_FakeAsyncOpenAI(_ConcurrentCompletions()),
-    )
-
-    async def _run(prompt: str) -> ChatResponse:
-        stream = client._inner_get_response(
-            messages=[Message("user", [prompt])],
-            options={},
-            stream=True,
-        )
-        assert isinstance(stream, ResponseStream)
-        return await stream.get_final_response()
-
-    response_a, response_b = await asyncio.gather(_run("request-a"), _run("request-b"))
+        # A stream that stops reading early would leave the other at the barrier.
+        async with asyncio.timeout(DEFAULT_WAIT_TIMEOUT):
+            response_a, response_b = await asyncio.gather(_run("request-a"), _run("request-b"))
 
     assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response_a)] == [
         ("call-a", "tool_a", {"value": "a"})

@@ -13,6 +13,8 @@ VALID_API_STYLES = frozenset({API_STYLE_CHAT_COMPLETIONS, API_STYLE_RESPONSES})
 VALID_PROVIDERS = frozenset({"openai", "anthropic", "deepseek-openai", "glm-openai", "mock"})
 UNCONFIGURED_MODEL_ID = "<Model Not Configured>"
 ApiStyle = Literal["chat_completions", "responses"]
+ThinkingBlockBinding = Literal["auto", "drop_block", "error", "off"]
+VALID_THINKING_BLOCK_BINDINGS: frozenset[str] = frozenset({"auto", "drop_block", "error", "off"})
 
 # Default per-response output-token cap for every provider.  Applied as the
 # live ``max_tokens`` default (``effective_chat_options``) and as the
@@ -48,8 +50,16 @@ class ModelProfile:
     bypass_proxy: bool = False  # Route this profile's LLM traffic around configured proxies
     http_headers: str = ""  # JSON object of additional provider HTTP headers
     chat_options: str = ""  # JSON object of provider request options
-    stream: bool = False  # Stream response
+    stream: bool = True  # Stream response
     vision: bool = False  # Supports image input
+    # Chat Completions: a stream that ends without a finish reason fails as
+    # truncated instead of being accepted with a warning.
+    stream_requires_finish_reason: bool = False
+    # Anthropic: what a request tells the service to do with replayed thinking
+    # that no longer matches the conversation before it ("auto" chooses).
+    thinking_block_binding: ThinkingBlockBinding = "auto"
+    # Anthropic: add the interleaved-thinking beta to budgeted thinking.
+    auto_interleaved_thinking: bool = True
 
 
 def is_model_profile_selectable(profile: ModelProfile) -> bool:

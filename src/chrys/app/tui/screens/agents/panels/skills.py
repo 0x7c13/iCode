@@ -69,7 +69,7 @@ _RELATIVE_PATH_ERROR = msg(
 _PREVIEW_NOTE = msg("tui.agent_config.skills.preview_note", fallback="  · {note}")
 _AUTO_LOAD_COVERED = msg(
     "tui.agent_config.skills.auto_load_covered",
-    fallback="Already covered by working-folder auto-load",
+    fallback="Also auto-loaded when Load skills from working folder and Load project skills are on",
 )
 _CURRENT_PATH = msg("tui.agent_config.skills.current_path", fallback="Current: {path}{note}")
 _SKILL_DIRECTORIES = msg("tui.agent_config.skills.title", fallback="Skill Directories")
@@ -92,8 +92,9 @@ _LOAD_WORKING_FOLDER = msg(
 _LOAD_WORKING_FOLDER_TOOLTIP = msg(
     "tui.agent_config.skills.load_working_folder_tooltip",
     fallback=(
-        "Auto-load skills from the agents skills directory under the current working folder. Reloaded automatically "
-        "when the workspace cwd changes (/chdir or file picker)."
+        "Auto-load skills from the agents skills directory under the current working folder when Load project "
+        "skills is on under Settings → Security → Project trust. Reloaded automatically when the workspace cwd "
+        "changes (/chdir or file picker)."
     ),
 )
 _ADD = msg("tui.agent_config.skills.add", fallback="+ Add")

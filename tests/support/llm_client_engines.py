@@ -63,14 +63,14 @@ def loopback_model(profile_id: str, *, base_url: str = REFUSED_BASE_URL) -> Mode
     )
 
 
-def parent_profile(*, sub_agent: bool = True) -> AgentProfile:
+def parent_profile(*, sub_agent: bool = True, compaction: bool = False) -> AgentProfile:
     return AgentProfile(
         name="Parent",
         instructions="Reply briefly.",
         tools=ToolsConfig(builtins=[]),
         skills=_NO_SKILLS,
         approval=ApprovalConfig(default="auto"),
-        compaction=CompactionConfig(enabled=False),
+        compaction=CompactionConfig(enabled=compaction),
         sub_agents=SubAgentsConfig(agents=[SubAgentRef(profile=SUB_AGENT, tool_name=SUB_AGENT)] if sub_agent else []),
     )
 
@@ -100,12 +100,13 @@ async def start_client_engine(
     *,
     sub_agent: bool = True,
     base_url: str = REFUSED_BASE_URL,
+    compaction: bool = False,
 ) -> ClientEngine:
     """Start an engine over loopback OpenAI profiles; the fixture shuts it down."""
     model_registry = ModelProfileRegistry()
     for profile_id in (MAIN_MODEL, ALT_MODEL, SUB_MODEL):
         model_registry.register(loopback_model(profile_id, base_url=base_url))
-    profile = parent_profile(sub_agent=sub_agent)
+    profile = parent_profile(sub_agent=sub_agent, compaction=compaction)
     agent_registry = AgentProfileRegistry()
     agent_registry.register(profile)
     agent_registry.register(_sub_agent_profile())

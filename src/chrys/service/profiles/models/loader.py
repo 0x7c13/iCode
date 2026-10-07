@@ -11,14 +11,17 @@ from typing import TYPE_CHECKING, Any, cast
 import yaml
 
 from chrys.foundation.text.encoding import decode_bytes
+from chrys.service.profiles.coercion import coerce_bool
 from chrys.service.profiles.models.options import OUTPUT_CAP_OPTION_ALIASES, output_cap_option_value
 from chrys.service.profiles.models.schema import (
     API_STYLE_CHAT_COMPLETIONS,
     DEFAULT_MAX_CONTEXT_TOKENS,
     DEFAULT_MAX_OUTPUT_TOKENS,
     VALID_API_STYLES,
+    VALID_THINKING_BLOCK_BINDINGS,
     ApiStyle,
     ModelProfile,
+    ThinkingBlockBinding,
 )
 
 if TYPE_CHECKING:
@@ -29,21 +32,6 @@ logger = logging.getLogger(__name__)
 
 class ModelProfileLoadError(Exception):
     """Raised when a model profile YAML file cannot be loaded or validated."""
-
-
-def _coerce_bool(value: object, *, default: bool) -> bool:
-    """Coerce YAML scalar bool-ish values into a Python bool."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    return bool(value)
 
 
 def _coerce_int(data: dict[str, object], field: str, default: int, path: Path) -> int:
@@ -95,6 +83,20 @@ def _coerce_api_style(data: dict[str, object], path: Path) -> ApiStyle:
         API_STYLE_CHAT_COMPLETIONS,
     )
     return API_STYLE_CHAT_COMPLETIONS
+
+
+def _coerce_thinking_block_binding(data: dict[str, object], path: Path) -> ThinkingBlockBinding:
+    value = data.get("thinking_block_binding", "auto")
+    if value is False:
+        # YAML reads a bare ``off`` as false.
+        return "off"
+    if not isinstance(value, str) or value not in VALID_THINKING_BLOCK_BINDINGS:
+        msg = (
+            f"Model profile field 'thinking_block_binding' must be one of "
+            f"{', '.join(sorted(VALID_THINKING_BLOCK_BINDINGS))} in {path}, got {value!r}"
+        )
+        raise ModelProfileLoadError(msg)
+    return cast("ThinkingBlockBinding", value)
 
 
 def _migrate_chat_options_output_cap(data: dict[str, object], path: Path) -> tuple[Any, int]:
@@ -239,12 +241,15 @@ def load_profile_from_yaml(path: Path) -> ModelProfile:
             http_connect_timeout=_coerce_float(data, "http_connect_timeout", 10.0, path),
             http_read_timeout=_coerce_float(data, "http_read_timeout", 300.0, path),
             http_max_retries=_coerce_int(data, "http_max_retries", 2, path),
-            verify_ssl=_coerce_bool(data.get("verify_ssl"), default=True),
-            bypass_proxy=_coerce_bool(data.get("bypass_proxy"), default=False),
+            verify_ssl=coerce_bool(data.get("verify_ssl"), default=True),
+            bypass_proxy=coerce_bool(data.get("bypass_proxy"), default=False),
             http_headers=data.get("http_headers", ""),
             chat_options=chat_options,
-            stream=_coerce_bool(data.get("stream"), default=False),
-            vision=_coerce_bool(data.get("vision"), default=False),
+            stream=coerce_bool(data.get("stream"), default=True),
+            vision=coerce_bool(data.get("vision"), default=False),
+            stream_requires_finish_reason=coerce_bool(data.get("stream_requires_finish_reason"), default=False),
+            thinking_block_binding=_coerce_thinking_block_binding(data, path),
+            auto_interleaved_thinking=coerce_bool(data.get("auto_interleaved_thinking"), default=True),
         )
     except ModelProfileLoadError:
         raise

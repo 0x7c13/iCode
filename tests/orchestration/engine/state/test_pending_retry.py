@@ -4,7 +4,7 @@
 
 When a user interrupts a running agent and clicks Resume before the LLM call
 returns, the retry must be queued and executed once the current run finishes.
-Without this, the TUI sets ``_agent_running = True`` but the backend silently
+Without this, the TUI shows the agent as running but the backend silently
 drops the retry, leaving the UI stuck in "Thinking" forever.
 
 Verifies:

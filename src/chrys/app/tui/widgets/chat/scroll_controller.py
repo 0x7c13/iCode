@@ -217,8 +217,13 @@ class ChatScrollController:
         self._host.call_after_refresh(self._host.scroll_to_widget_top, widget)
 
     def after_replay_history_mounted(self) -> None:
-        """Schedule final replay scroll-to-bottom."""
-        self._host.call_after_refresh(self._host.scroll_end, animate=False)
+        """Schedule final replay scroll-to-bottom, unless a TOC jump lands first."""
+        self._host.call_after_refresh(self._scroll_end_unless_jumped, self._settle_reanchor_generation)
+
+    def _scroll_end_unless_jumped(self, generation: int) -> None:
+        if generation == self._settle_reanchor_generation:
+            # Laid out by now: a deferred scroll would wait for another refresh, which a jump can land before.
+            self._host.scroll_end(animate=False, immediate=True)
 
     def scroll_to_region(self, region: Region, **kwargs: Any) -> Offset:
         """Ignore focus-restoration center scrolls inside the transcript."""
@@ -274,22 +279,6 @@ class ChatScrollController:
         self.view_hold_active = False
         self._view_hold_arrangement = None
 
-    def prepare_insertion_above(self) -> None:
-        """Pick the tracked child from the last layout before content lands above it.
-
-        A scroll since the last arrange has not re-picked yet; the child that
-        layout shows first at the current offset is still the one to keep.
-        """
-        arrangement = self._view_hold_arrangement
-        if (
-            self.view_hold_active
-            and self._view_hold_child is None
-            and arrangement is not None
-            and self._host.is_anchored()
-            and self._host.is_anchor_released()
-        ):
-            self._view_hold_child = self._first_visible_child(arrangement, self._host.scroll_y)
-
     def _hold_view(self, result: DockArrangeResult) -> None:
         """Shift a released view by the height that landed above its first child.
 
@@ -299,6 +288,11 @@ class ChatScrollController:
         move ``scroll_y`` by the same amount before the compositor reads the
         offset (the compositor's own anchor pin writes it the same way). A
         bottom-following view needs nothing: the compositor re-pins it.
+
+        The child is re-picked from the last layout at the current offset: a
+        jump or a scroll since that arrange chose its offset in that layout,
+        and a view that has not moved picks the same child again. Once the
+        hold ends, the child picked last applies the final shift.
         """
         host = self._host
         if not (host.is_anchored() and host.is_anchor_released()):
@@ -307,6 +301,8 @@ class ChatScrollController:
             return
         scroll_y = host.scroll_y
         tracked = self._view_hold_child
+        if self._view_hold_arrangement is not None:
+            tracked = self._first_visible_child(self._view_hold_arrangement, scroll_y)
         if tracked is not None:
             child, old_y = tracked
             for placement in result.placements:
@@ -525,10 +521,10 @@ class ChatScrollController:
             self.set_scroll_y_programmatically(new_y)
         self.sync_scroll_to_bottom_button()
 
-    def watch_virtual_size(self, old: object, new: object) -> None:
+    def watch_virtual_size(self, old: Size, new: Size) -> None:
         """Post-layout hook: re-engage anchor, sync scrollbar, toggle spacer."""
-        old_h = getattr(old, "height", 0)
-        new_h = getattr(new, "height", 0)
+        old_h = old.height
+        new_h = new.height
         if (
             self.agent_running
             and new_h > old_h

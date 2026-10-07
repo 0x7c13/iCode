@@ -159,6 +159,17 @@ App:ansi #mode-badge:hover, App:ansi #mode-badge:focus, App:ansi #mode-badge.-ac
     pointer: pointer;
 }
 
+/* Calls under auto-review: AppHeader keeps it left of the approval badge with
+   a right margin and shows it only while the count is above zero. */
+#approval-reviewing {
+    layer: overlay;
+    dock: right;
+    width: auto;
+    height: 1;
+    color: $warning;
+    visibility: hidden;
+}
+
 #approval-badge.approval-manual {
     background: $primary;
     color: $button-color-foreground;

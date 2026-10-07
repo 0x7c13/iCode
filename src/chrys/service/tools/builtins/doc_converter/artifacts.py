@@ -26,7 +26,7 @@ from chrys.foundation.text.images import (
     detect_image_media_type,
     inspect_image_dimensions,
 )
-from chrys.service.tools.builtins.doc_converter.parsers.base import VisualOccurrence
+from chrys.service.tools.builtins.doc_converter.parsers.base import DOCUMENT_IMAGE_DECODE_FORMATS, VisualOccurrence
 from chrys.service.tools.session_artifacts import (
     DOCUMENT_IMAGE_ARTIFACT_MAX_FILE_BYTES,
     DOCUMENT_IMAGE_ARTIFACT_MAX_FILES,
@@ -285,7 +285,7 @@ class DocumentImageSink:
                 "image/webp": ".webp",
             }[media_type]
             return data, suffix
-        normalized = compress_image_data(data, max_bytes=MAX_STORED_IMAGE_BYTES)
+        normalized = compress_image_data(data, max_bytes=MAX_STORED_IMAGE_BYTES, formats=DOCUMENT_IMAGE_DECODE_FORMATS)
         if len(normalized) > MAX_STORED_IMAGE_BYTES:
             raise ImageProcessingError("normalized embedded image exceeds the storage limit")
         return normalized, ".jpg"

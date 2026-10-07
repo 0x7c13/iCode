@@ -7,7 +7,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 
-from chrys.foundation.util.shell_tokens import _split_on_operators
+from chrys.foundation.util.shell_tokens import split_on_operators
 
 
 # Coarse legacy parser used by configured filters and mutation hints.
@@ -20,7 +20,7 @@ def parse_commands(command: str) -> list[str]:
 
     Returns a list of command names (the first token of each segment).
     """
-    segments = _split_on_operators(command)
+    segments = split_on_operators(command)
     commands: list[str] = []
     for segment in segments:
         segment = segment.strip()

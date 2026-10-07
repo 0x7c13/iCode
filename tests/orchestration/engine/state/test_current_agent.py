@@ -33,7 +33,11 @@ def test_empty_current_records_have_independent_manifests() -> None:
 async def test_loaded_close_delegates_to_its_resource_owner() -> None:
     loaded = make_loaded_agent()
     closed: list[str] = []
-    loaded.prepared.own(lambda: closed.append("owned resource"))
+
+    async def close_resource() -> None:
+        closed.append("owned resource")
+
+    loaded.prepared.own(close_resource)
     await loaded.aclose()
     assert closed == ["owned resource"]
 

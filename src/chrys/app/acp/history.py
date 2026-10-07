@@ -264,7 +264,7 @@ async def replay_session_history(
                     and hosted is not None
                     and _hosted_view_is_terminal(hosted[1])
                 ):
-                    call, view = hosted
+                    view = hosted[1]
                     status = hosted_replay_status(view, has_result=False)
                     fallback_text = view.result_text
                     if status == "interrupted" and not fallback_text:
@@ -273,8 +273,6 @@ async def replay_session_history(
                         session_id=session_id,
                         update=_hosted_terminal_update(
                             replay_id,
-                            call,
-                            None,
                             view,
                             status=status,
                             fallback_text=fallback_text,
@@ -295,11 +293,11 @@ async def replay_session_history(
                     continue
                 await emit_call_start(coordinate)
                 open_replay_ids.pop(replay_id, None)
-                result, view = hosted
+                view = hosted[1]
                 status = hosted_replay_status(view, has_result=True)
                 await client.session_update(
                     session_id=session_id,
-                    update=_hosted_terminal_update(replay_id, None, result, view, status=status),
+                    update=_hosted_terminal_update(replay_id, view, status=status),
                 )
                 continue
             replay_id = replay_id_by_call.get(call_coordinate)
@@ -325,14 +323,14 @@ async def replay_session_history(
     for replay_id in open_replay_ids:
         hosted = pending_hosted.get(replay_id)
         if hosted is not None:
-            call, view = hosted
+            view = hosted[1]
             status = hosted_replay_status(view, has_result=False)
             text = view.result_text
             if status == "interrupted" and not text:
                 text = "Provider-hosted tool was interrupted before the session was persisted."
             await client.session_update(
                 session_id=session_id,
-                update=_hosted_terminal_update(replay_id, call, None, view, status=status, fallback_text=text),
+                update=_hosted_terminal_update(replay_id, view, status=status, fallback_text=text),
             )
             continue
         await client.session_update(
@@ -492,14 +490,11 @@ def _hosted_tool_contents(view: HostedToolView) -> list[Any]:
 
 def _hosted_terminal_update(
     replay_id: str,
-    call: Content | None,
-    result: Content | None,
     view: HostedToolView,
     *,
     status: str,
     fallback_text: str = "",
 ) -> acp_schema.ToolCallProgress:
-    del call, result
     content = _hosted_tool_contents(view)
     text = _bounded_text(view.result_text or fallback_text)
     if not content and text:
@@ -523,7 +518,7 @@ def _hosted_terminal_update(
 def _hosted_tool_call_result(call: Content, result: Content, replay_id: str) -> acp_schema.ToolCallProgress:
     view = adapt_hosted_tool(call, result)
     status = hosted_replay_status(view, has_result=True)
-    return _hosted_terminal_update(replay_id, call, result, view, status=status)
+    return _hosted_terminal_update(replay_id, view, status=status)
 
 
 def _tool_call_result(

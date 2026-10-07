@@ -4,8 +4,11 @@
 
 from __future__ import annotations
 
+import ast
+import zipfile
 from io import BytesIO
 from pathlib import Path
+from typing import IO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,10 +17,12 @@ from chrys.service.tools.builtins.doc_converter.artifacts import (
     MAX_IMAGE_OCCURRENCES,
     DocumentImageSink,
 )
+from chrys.service.tools.builtins.doc_converter.parsers.base import DOCUMENT_IMAGE_DECODE_FORMATS
 from tests.service.tools._doc_converter_fakes import (
     _png_bytes,
     _session_artifact_path,
 )
+from tests.support.images import image_bytes
 
 
 class _FakePdfImages:
@@ -41,6 +46,61 @@ def _pdf_image(
     data: bytes, name: str, *, is_displayed: bool = True, indirect_reference: object = None
 ) -> dict[str, object]:
     return {"data": data, "name": name, "is_displayed": is_displayed, "indirect_reference": indirect_reference}
+
+
+@pytest.fixture
+def mocked_pypdf_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that replace pypdf itself have no pypdf image module to restrict."""
+    from chrys.service.tools.builtins.doc_converter.parsers import pdf
+
+    def leave_unrestricted() -> None:
+        return None
+
+    monkeypatch.setattr(pdf, "_restrict_pypdf_image_decoders", leave_unrestricted)
+
+
+class _PillowOpenRecorder:
+    """Wraps the real ``PIL.Image.open``, recording the formats each call allows and the format it decoded."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from PIL import Image
+
+        self._open = Image.open
+        self.allowed: list[tuple[str, ...] | None] = []
+        self.decoded: list[str | None] = []
+        monkeypatch.setattr(Image, "open", self.open)
+
+    def open(self, fp: str | IO[bytes], mode: str = "r", formats: list[str] | tuple[str, ...] | None = None) -> object:
+        self.allowed.append(None if formats is None else tuple(formats))
+        image = self._open(fp, mode, formats)
+        self.decoded.append(image.format)
+        return image
+
+
+def _pdf_with_image(filter_name: str, stream: bytes) -> bytes:
+    """A one-page PDF drawing one 2-by-2 RGB image XObject whose stream *filter_name* claims to encode."""
+    content = b"q 20 0 0 20 0 0 cm /Im0 Do Q"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 "
+        b"/Filter /%s /Length %d >>\nstream\n%s\nendstream" % (filter_name.encode(), len(stream), stream),
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(content), content),
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    return bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +192,134 @@ def test_pdf_parser_extracts_image_only_page_and_keeps_no_text_placeholder(tmp_p
     assert _session_artifact_path(tmp_path / "session", result.visuals[0].reference).exists()
 
 
+def test_pdf_parser_extracts_a_dct_image_through_the_restricted_decoders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import PdfParser
+
+    pillow = _PillowOpenRecorder(monkeypatch)
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(_pdf_with_image("DCTDecode", image_bytes("JPEG")))
+    sink = DocumentImageSink(tmp_path / "session" / "doc_converter", source_stem="scan")
+
+    result = PdfParser().parse(str(pdf), image_sink=sink)
+
+    assert len(result.visuals) == 1
+    assert result.warnings == ()
+    assert "JPEG" in pillow.decoded
+    assert all(formats is not None and set(formats) <= set(DOCUMENT_IMAGE_DECODE_FORMATS) for formats in pillow.allowed)
+
+
+@pytest.mark.parametrize("image_format", ["PCX", "EPS"])
+def test_pdf_parser_never_decodes_a_foreign_format_behind_dct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, image_format: str
+) -> None:
+    """pypdf opens a /DCTDecode stream with every Pillow decoder (EPS runs Ghostscript) unless restricted."""
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import PdfParser
+
+    pillow = _PillowOpenRecorder(monkeypatch)
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(_pdf_with_image("DCTDecode", image_bytes(image_format)))
+    sink = DocumentImageSink(tmp_path / "session" / "doc_converter", source_stem="scan")
+
+    result = PdfParser().parse(str(pdf), image_sink=sink)
+
+    assert pillow.allowed
+    assert all(formats is not None and set(formats) <= set(DOCUMENT_IMAGE_DECODE_FORMATS) for formats in pillow.allowed)
+    assert image_format not in pillow.decoded
+    assert result.visuals == ()
+    assert len(result.warnings) == 1
+    assert "could not be decoded or normalized" in result.warnings[0]
+
+
+def test_pdf_image_restriction_is_installed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image
+    from pypdf.generic import _image_xobject
+
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import _restrict_pypdf_image_decoders
+
+    monkeypatch.setattr(_image_xobject, "Image", Image)
+    _restrict_pypdf_image_decoders()
+    installed = _image_xobject.Image
+    _restrict_pypdf_image_decoders()
+
+    assert installed is not Image
+    assert _image_xobject.Image is installed
+
+
+def test_pdf_parser_extracts_a_jbig2_image_that_jbig2dec_wrote_as_pbm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """jbig2dec built without libpng writes PBM even when pypdf asks it for PNG."""
+    from pypdf import filters
+
+    from chrys.service.tools.builtins.doc_converter.artifacts import DocumentImageSink
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import PdfParser
+
+    def jbig2dec_writing_pbm(data: bytes, decode_parms: object = None) -> bytes:
+        return b"P4\n2 2\n\x80\x40"
+
+    monkeypatch.setattr(filters.JBIG2Decode, "decode", staticmethod(jbig2dec_writing_pbm))
+    pillow = _PillowOpenRecorder(monkeypatch)
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(_pdf_with_image("JBIG2Decode", b"jbig2 segments"))
+    sink = DocumentImageSink(tmp_path / "session" / "doc_converter", source_stem="scan")
+
+    result = PdfParser().parse(str(pdf), image_sink=sink)
+
+    assert len(result.visuals) == 1
+    assert result.warnings == ()
+    assert "PPM" in pillow.decoded
+    assert "PPM" not in DOCUMENT_IMAGE_DECODE_FORMATS
+
+
+def test_pdf_image_restriction_keeps_only_reviewed_formats_pypdf_names() -> None:
+    from PIL import Image, UnidentifiedImageError
+
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import _DocumentFormatsImage
+
+    restricted = _DocumentFormatsImage(Image)
+    pcx = image_bytes("PCX")
+
+    assert Image.open(BytesIO(pcx), formats=("PNG", "PCX")).format == "PCX"
+    with pytest.raises(UnidentifiedImageError):
+        restricted.open(BytesIO(pcx), formats=("PNG", "PCX"))
+    assert restricted.open(BytesIO(image_bytes("PPM")), formats=("PNG", "PPM")).format == "PPM"
+
+
+def test_pdf_image_restriction_keeps_every_format_the_installed_pypdf_names() -> None:
+    """A pypdf upgrade that names a new format fails here instead of skipping those images: review it first."""
+    from pypdf.generic import _image_xobject
+
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import _PYPDF_NAMED_FORMATS
+
+    tree = ast.parse(Path(str(_image_xobject.__file__)).read_text(encoding="utf-8"))
+    named = [
+        keyword.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "open"
+        for keyword in node.keywords
+        if keyword.arg == "formats"
+    ]
+
+    assert named
+    assert {name for value in named for name in ast.literal_eval(value)} <= set(_PYPDF_NAMED_FORMATS)
+
+
+def test_pdf_image_restriction_refuses_a_pypdf_that_stopped_using_pil_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pypdf.generic import _image_xobject
+
+    from chrys.service.tools.builtins.doc_converter.parsers.pdf import _restrict_pypdf_image_decoders
+
+    replacement = object()
+    monkeypatch.setattr(_image_xobject, "Image", replacement)
+
+    with pytest.raises(RuntimeError, match=r"pypdf no longer decodes images through PIL\.Image"):
+        _restrict_pypdf_image_decoders()
+    assert _image_xobject.Image is replacement
+
+
+@pytest.mark.usefixtures("mocked_pypdf_images")
 def test_pdf_parser_deduplicates_repeated_indirect_reference(tmp_path: Path) -> None:
     from chrys.service.tools.builtins.doc_converter.parsers.pdf import PdfParser
 
@@ -162,6 +350,7 @@ def test_pdf_parser_deduplicates_repeated_indirect_reference(tmp_path: Path) -> 
     assert len(list((tmp_path / "session" / "doc_converter").iterdir())) == 1
 
 
+@pytest.mark.usefixtures("mocked_pypdf_images")
 def test_pdf_parser_skips_undisplayed_resource_without_writing(tmp_path: Path) -> None:
     from chrys.service.tools.builtins.doc_converter.parsers.pdf import PdfParser
 
@@ -181,6 +370,7 @@ def test_pdf_parser_skips_undisplayed_resource_without_writing(tmp_path: Path) -
     assert not (tmp_path / "session" / "doc_converter").exists()
 
 
+@pytest.mark.usefixtures("mocked_pypdf_images")
 def test_pdf_parser_corrupt_image_preserves_text_and_other_images(tmp_path: Path) -> None:
     from chrys.service.tools.builtins.doc_converter.parsers.pdf import PdfParser
 
@@ -205,6 +395,7 @@ def test_pdf_parser_corrupt_image_preserves_text_and_other_images(tmp_path: Path
     assert "could not be decoded or normalized" in result.warnings[0]
 
 
+@pytest.mark.usefixtures("mocked_pypdf_images")
 @pytest.mark.parametrize(
     ("key_template", "image_name"),
     [("/Im{index}", "logo.png"), ("~{index}~", "inline.png")],
@@ -499,28 +690,89 @@ def test_pptx_parser_skips_linked_only_picture_with_bounded_warning(tmp_path: Pa
     assert "linked image(s)" in result.warnings[0]
 
 
-def test_xlsx_parser_tables() -> None:
+def test_xlsx_parser_tables(tmp_path: Path) -> None:
     """XlsxParser produces sheet-based Markdown tables."""
+    from openpyxl import Workbook
+
     from chrys.service.tools.builtins.doc_converter.parsers.xlsx import XlsxParser
 
-    mock_ws = MagicMock()
-    mock_ws.iter_rows.return_value = [("Name", "Age"), ("Alice", 30), ("Bob", 25)]
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    for row in [("Name", "Age"), ("Alice", 30), ("Bob", 25)]:
+        worksheet.append(row)
+    spreadsheet = tmp_path / "people.xlsx"
+    workbook.save(spreadsheet)
+    workbook.close()
 
-    mock_wb = MagicMock()
-    mock_wb.sheetnames = ["Sheet1"]
-    mock_wb.__getitem__ = lambda self, key: mock_ws
-
-    mock_openpyxl = MagicMock()
-    mock_openpyxl.load_workbook.return_value = mock_wb
-
-    with patch.dict("sys.modules", {"openpyxl": mock_openpyxl}):
-        parser = XlsxParser()
-        result = parser.parse("/fake.xlsx", image_sink=MagicMock(spec=DocumentImageSink))
+    result = XlsxParser().parse(str(spreadsheet), image_sink=MagicMock(spec=DocumentImageSink))
 
     assert "# Sheet: Sheet1" in result.markdown
     assert "| Name | Age |" in result.markdown
     assert "| Alice | 30 |" in result.markdown
     assert result.warnings == ()
+
+
+def _workbook_with_picture_chart_sheet(tmp_path: Path, picture: bytes) -> Path:
+    """Save a "Data" worksheet and a "Chart" sheet, then make "Chart" a chart sheet showing *picture*.
+
+    openpyxl writes pictures on worksheets only, so the second sheet is saved as
+    a worksheet with one picture and its parts are rewritten into a chart sheet.
+    """
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as SpreadsheetImage
+
+    picture_path = tmp_path / "placeholder.png"
+    picture_path.write_bytes(_png_bytes())
+    workbook = Workbook()
+    workbook.active.title = "Data"
+    workbook.active.append(("Region", "Sales"))
+    workbook.active.append(("North", 12))
+    chart = workbook.create_sheet("Chart")
+    chart.add_image(SpreadsheetImage(picture_path), "A1")
+    saved = tmp_path / "saved.xlsx"
+    workbook.save(saved)
+    workbook.close()
+
+    worksheet_type = b"/relationships/worksheet"
+    rewritten = tmp_path / "report.xlsx"
+    with zipfile.ZipFile(saved) as source, zipfile.ZipFile(rewritten, "w") as target:
+        workbook_rels = source.read("xl/_rels/workbook.xml.rels")
+        sheet2 = b'Target="/xl/worksheets/sheet2.xml"'
+        relationships = workbook_rels.split(b"<Relationship ")
+        workbook_rels = b"<Relationship ".join(
+            part.replace(worksheet_type, b"/relationships/chartsheet") if sheet2 in part else part
+            for part in relationships
+        )
+        parts = {
+            "xl/_rels/workbook.xml.rels": workbook_rels,
+            "xl/worksheets/sheet2.xml": (
+                b'<chartsheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                b'<sheetViews><sheetView workbookViewId="0"/></sheetViews><drawing r:id="rId1"/></chartsheet>'
+            ),
+            "xl/media/image1.png": picture,
+        }
+        for item in source.infolist():
+            target.writestr(item, parts.get(item.filename, source.read(item.filename)))
+    return rewritten
+
+
+def test_xlsx_parser_converts_worksheets_and_leaves_chart_sheet_pictures_undecoded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """openpyxl loads a chart sheet's drawings even read-only, opening each picture with every decoder."""
+    from chrys.service.tools.builtins.doc_converter.parsers.xlsx import XlsxParser
+
+    spreadsheet = _workbook_with_picture_chart_sheet(tmp_path, image_bytes("PCX"))
+    pillow = _PillowOpenRecorder(monkeypatch)
+
+    result = XlsxParser().parse(str(spreadsheet))
+
+    assert pillow.allowed == []
+    assert "# Sheet: Data" in result.markdown
+    assert "| North | 12 |" in result.markdown
+    assert "Chart" not in result.markdown
 
 
 def test_xlsx_parser_with_embedded_image_stays_text_only_without_result_warning(tmp_path: Path) -> None:

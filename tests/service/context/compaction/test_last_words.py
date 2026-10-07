@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from unittest.mock import MagicMock, create_autospec, patch
+from typing import ClassVar
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -159,6 +160,7 @@ async def test_last_words_generator_retries_empty_response_then_raises(tmp_path,
 
     class _EmptyResponse:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = ""
 
     class _EmptyClient:
@@ -202,6 +204,7 @@ async def test_last_words_generator_retries_transient_failure_and_succeeds(tmp_p
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _FlakyClient:
@@ -254,6 +257,7 @@ async def test_fallback_attempts_report_wire_progress_before_each_dispatch(tmp_p
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     at_dispatch: list[int] = []
@@ -316,6 +320,7 @@ async def test_zero_transient_budget_keeps_fixed_corrective_retry_events(tmp_pat
 
             class _Response:
                 usage_details = None
+                additional_properties: ClassVar[dict[str, object]] = {}
                 raw_text = "" if self.calls == 1 else structured_note()
 
             return _Response()
@@ -341,6 +346,7 @@ async def test_last_words_generator_publishes_status_around_success(tmp_path):
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _Client:
@@ -444,6 +450,7 @@ async def test_last_words_generator_publish_committed_correlates_with_last_gener
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _Client:
@@ -572,6 +579,7 @@ async def test_last_words_generator_cancelled_during_finished_publish_raises(tmp
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _Client:
@@ -631,6 +639,7 @@ async def test_last_words_generator_swallows_status_publish_failures(tmp_path):
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _Client:
@@ -655,6 +664,7 @@ async def test_last_words_generator_uses_model_profile_stream_setting(tmp_path):
 
     class _Response:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _Stream:
@@ -712,7 +722,7 @@ async def test_last_words_generator_passes_session_ids_to_client(tmp_path):
         parent_session_id="parent-phase4",
     )
 
-    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock()) as create_client:
+    with patch("chrys.service.llm.clients.create_client", return_value=MagicMock(aclose=AsyncMock())) as create_client:
         await gen._get_client()
 
     create_client.assert_called_once()
@@ -755,6 +765,7 @@ async def test_last_words_generator_renders_only_scoped_timeline(tmp_path):
 
     class _CapturingResponse:
         usage_details = None
+        additional_properties: ClassVar[dict[str, object]] = {}
         raw_text = structured_note()
 
     class _CapturingClient:

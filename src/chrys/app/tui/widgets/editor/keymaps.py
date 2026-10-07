@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
+from chrys.app.tui.widgets.editor.coordinates import location_to_offset, offset_to_location
 from chrys.app.tui.widgets.editor.types import (
     COMMON_EDITOR_INTENTS,
     EditorCommand,
@@ -61,25 +62,8 @@ def _lines(text: str) -> list[str]:
     return text.split("\n")
 
 
-def _location_to_offset(text: str, location: EditorLocation) -> int:
-    lines = _lines(text)
-    row = min(max(location[0], 0), len(lines) - 1)
-    column = min(max(location[1], 0), len(lines[row]))
-    return sum(len(line) + 1 for line in lines[:row]) + column
-
-
-def _offset_to_location(text: str, offset: int) -> EditorLocation:
-    lines = _lines(text)
-    remaining = min(max(offset, 0), len(text))
-    for row, line in enumerate(lines[:-1]):
-        if remaining <= len(line):
-            return row, remaining
-        remaining -= len(line) + 1
-    return len(lines) - 1, min(remaining, len(lines[-1]))
-
-
 def _ordered_range(text: str, first: EditorLocation, second: EditorLocation) -> EditorTextRange:
-    if _location_to_offset(text, first) <= _location_to_offset(text, second):
+    if location_to_offset(text, first) <= location_to_offset(text, second):
         return EditorTextRange(first, second)
     return EditorTextRange(second, first)
 
@@ -244,23 +228,23 @@ class EmacsKeymap:
 
     def _delete_left(self, host: EditorCommandHost) -> None:
         text = host.editor_text
-        cursor_offset = _location_to_offset(text, host.editor_cursor_location)
+        cursor_offset = location_to_offset(text, host.editor_cursor_location)
         if cursor_offset == 0:
             host.notify_editor_activity()
             return
         host.delete_editor_range(
-            EditorTextRange(_offset_to_location(text, cursor_offset - 1), host.editor_cursor_location)
+            EditorTextRange(offset_to_location(text, cursor_offset - 1), host.editor_cursor_location)
         )
         self._mark = None
 
     def _delete_right(self, host: EditorCommandHost) -> None:
         text = host.editor_text
-        cursor_offset = _location_to_offset(text, host.editor_cursor_location)
+        cursor_offset = location_to_offset(text, host.editor_cursor_location)
         if cursor_offset >= len(text):
             host.notify_editor_activity()
             return
         host.delete_editor_range(
-            EditorTextRange(host.editor_cursor_location, _offset_to_location(text, cursor_offset + 1))
+            EditorTextRange(host.editor_cursor_location, offset_to_location(text, cursor_offset + 1))
         )
         self._mark = None
 
@@ -277,22 +261,22 @@ class EmacsKeymap:
         backward = True
         if region is None:
             text = host.editor_text
-            cursor_offset = _location_to_offset(text, host.editor_cursor_location)
+            cursor_offset = location_to_offset(text, host.editor_cursor_location)
             start_offset = _previous_word_offset(text, cursor_offset)
-            region = EditorTextRange(_offset_to_location(text, start_offset), host.editor_cursor_location)
+            region = EditorTextRange(offset_to_location(text, start_offset), host.editor_cursor_location)
         else:
-            backward = _location_to_offset(host.editor_text, host.editor_cursor_location) > _location_to_offset(
+            backward = location_to_offset(host.editor_text, host.editor_cursor_location) > location_to_offset(
                 host.editor_text, self._mark or host.editor_cursor_location
             )
         self._kill(host, region, backward=backward)
 
     def _kill_next_word(self, host: EditorCommandHost) -> None:
         text = host.editor_text
-        cursor_offset = _location_to_offset(text, host.editor_cursor_location)
+        cursor_offset = location_to_offset(text, host.editor_cursor_location)
         end_offset = _next_word_offset(text, cursor_offset)
         self._kill(
             host,
-            EditorTextRange(host.editor_cursor_location, _offset_to_location(text, end_offset)),
+            EditorTextRange(host.editor_cursor_location, offset_to_location(text, end_offset)),
             backward=False,
         )
 
@@ -304,8 +288,8 @@ class EmacsKeymap:
         if column < len(lines[row]):
             region = EditorTextRange(host.editor_cursor_location, line_end)
         elif row < len(lines) - 1:
-            start_offset = _location_to_offset(text, line_end)
-            region = EditorTextRange(line_end, _offset_to_location(text, start_offset + 1))
+            start_offset = location_to_offset(text, line_end)
+            region = EditorTextRange(line_end, offset_to_location(text, start_offset + 1))
         else:
             region = EditorTextRange(line_end, line_end)
         self._kill(host, region, backward=False)

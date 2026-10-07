@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import tomllib
 
@@ -429,3 +430,38 @@ def test_ci_and_build_paths_include_serve_dependencies() -> None:
     offline_ps1 = (root / "scripts" / "build_offline_dist.ps1").read_text(encoding="utf-8")
     assert 'EXTRAS="tui,doc_converter,observability"' in offline_sh
     assert '[string]$Extras = "tui,doc_converter,observability"' in offline_ps1
+
+
+def test_offline_wheel_overrides_match_the_lock() -> None:
+    # build_offline_dist.sh refuses an override whose version differs from
+    # uv.lock, but only once a Linux offline distribution is built; a pin bump
+    # that forgets the rebuilt wheel should fail here instead.
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    locked: dict[str, set[str]] = {}
+    for package in lock["package"]:
+        locked.setdefault(package["name"], set()).add(package["version"])
+    # The offline binaries ship the CPython version .python-version pins.
+    python_version = re.fullmatch(r"3\.(\d+)\.\d+", (REPO_ROOT / ".python-version").read_text(encoding="utf-8").strip())
+    assert python_version is not None
+    abi = f"cp3{python_version.group(1)}"
+    manifest = (REPO_ROOT / "scripts" / "offline_wheel_overrides.txt").read_text(encoding="utf-8")
+
+    machines: dict[str, set[str]] = {}
+    for raw in manifest.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        project, version, machine, sha256, url = line.split()
+        assert locked.get(project) == {version}, line
+        assert re.fullmatch(r"[0-9a-f]{64}", sha256), line
+        # The main repository's CD downloads these, so each wheel must be
+        # published there, not on a fork, in a release tagged for its version.
+        assert url.startswith(f"https://github.com/openJiuwen-ai/iCode/releases/download/{project}-{version}-"), line
+        filename = url.rsplit("/", 1)[1]
+        assert filename.startswith(f"{project}-{version}-{abi}-{abi}-"), line
+        assert filename.endswith(f"_{machine}.whl"), line
+        machines.setdefault(project, set()).add(machine)
+
+    # PyPI has no glibc 2.17 Pillow wheel for either machine CD builds the
+    # Linux offline binaries on.
+    assert machines.get("pillow") == {"x86_64", "aarch64"}

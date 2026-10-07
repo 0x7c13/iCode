@@ -522,7 +522,7 @@ def _read_unborn_delta(
 
 
 def _run_git(root: str, args: list[str], *, timeout: float) -> subprocess.CompletedProcess[bytes] | None:
-    from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+    from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
     if timeout <= 0:
         return None
@@ -541,7 +541,7 @@ def _run_git(root: str, args: list[str], *, timeout: float) -> subprocess.Comple
             capture_output=True,
             timeout=timeout,
             check=False,
-            **_windows_hidden_subprocess_kwargs(),
+            **windows_hidden_subprocess_kwargs(),
         )
     except OSError, subprocess.TimeoutExpired:
         return None
@@ -555,7 +555,7 @@ def _run_git_nul_stream(
     consume: Callable[[bytes], bool],
 ) -> _StreamResult:
     """Stream NUL fields under a monotonic deadline and reap the child."""
-    from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+    from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
     if timeout <= 0:
         raise OSError("git deadline expired")
@@ -570,7 +570,7 @@ def _run_git_nul_stream(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        **_windows_hidden_subprocess_kwargs(),
+        **windows_hidden_subprocess_kwargs(),
     )
     stdout = proc.stdout
     if not isinstance(stdout, BufferedReader):

@@ -16,7 +16,7 @@ Each option corresponds to a kind of built-in tool. Enable the kinds the agent n
 
 | Tool kind | Available operations | When to enable |
 | --- | --- | --- |
-| Filesystem Read | Read files and view images | Enable when the agent needs to analyze project files; the agent can use the image viewing tool only if the selected model supports image input |
+| Filesystem Read | Read files and view images (PNG, JPEG, or WebP) | Enable when the agent needs to analyze project files; the agent can use the image viewing tool only if the selected model supports image input |
 | Filesystem Write | Create, overwrite, and precisely edit files | Enable only when the agent needs to modify files |
 | File search | Search file contents or find files by name pattern | Enable when the agent needs to locate code and files in a project |
 | Web search | Find online URLs and summaries; uses Exa (exa.ai) unless the agent profile names other providers | Enable when the agent needs current external information, such as documentation or release details. Queries go to that outside service and can carry details from your conversation, so mind your data and privacy |
@@ -56,3 +56,5 @@ For example:
 Enabling a tool only makes that capability available to the agent; operations that require approval are still handled according to the current approval mode. For details on approval requests and how to confirm them, see [Configure approval modes](./approval.md).
 
 For filesystem, search, and Shell tools, relative paths are resolved against the current [working directory](../daily-use/workspaces.md), and shell commands run in the current working directory by default. Switching working directories changes the base for these relative paths and the default working directory for commands. The working directory is the default location for operations; it does not restrict tools to paths within it. Whether an operation can run also depends on its tool arguments, whether approval is granted when required, and the permissions of the system user running iCode.
+
+When a command prints a lot, the agent sees the beginning and the end of its output, and iCode saves the output in the session directory when it can. If a command prints more than 32 MiB, iCode keeps only the first and last parts; the middle is not saved anywhere, and the result tells the agent how much was left out.

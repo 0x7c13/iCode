@@ -11,7 +11,7 @@ import pytest
 from openai import AsyncOpenAI, BadRequestError
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.kernel import ChatResponse, Content, Message, annotate_message_groups
+from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, annotate_message_groups
 from chrys.kernel.compaction import (
     GROUP_ANNOTATION_KEY,
     GROUP_HAS_REASONING_KEY,
@@ -20,13 +20,16 @@ from chrys.kernel.compaction import (
     GROUP_KIND_KEY,
 )
 from chrys.kernel.exceptions import ChatClientException
-from chrys.service.llm.openai_responses import (
+from chrys.service.llm.openai_responses import ResponsesApiClient
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.history import (
     OPENAI_SHELL_OUTPUT_TYPE_KEY,
     OPENAI_SHELL_OUTPUT_TYPE_LOCAL_SHELL_CALL,
     OPENAI_SHELL_OUTPUT_TYPE_SHELL_CALL,
-    RawOpenAIChatClient,
-    _partition_replay_message_groups,
 )
+from chrys.service.llm.openai_responses.replay import partition_groups
+from chrys.service.llm.openai_responses.request import build_request
+from chrys.service.llm.openai_responses.stream import StreamState
 
 
 class _FakeAsyncOpenAI:
@@ -40,8 +43,20 @@ _USER_ITEM = {
 }
 
 
-def _client(async_client: object | None = None) -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=async_client or _FakeAsyncOpenAI())
+_MODEL = "gpt-test"
+
+
+def _client(sdk_client: object | None = None) -> ResponsesApiClient:
+    return ResponsesApiClient(model=_MODEL, sdk_client=sdk_client or _FakeAsyncOpenAI())
+
+
+def _build(messages: list[Message], options: dict[str, object]) -> dict[str, object]:
+    return build_request(messages, options, model=_MODEL, variant=OPENAI_RESPONSES)
+
+
+def _fresh_update(event: object) -> ChatResponseUpdate:
+    """The update *event* makes as the first event of its own stream."""
+    return StreamState({}, model=_MODEL, variant=OPENAI_RESPONSES).update_for(event)
 
 
 def _reasoning(
@@ -88,21 +103,21 @@ def _mcp_result(call_id: str, output: str) -> Content:
     return Content.from_mcp_server_tool_result(call_id, output=[Content.from_text(output)])
 
 
-async def _prepare(
+def _prepare(
     messages: list[Message],
     options: dict[str, object] | None = None,
 ) -> dict[str, object]:
     request_options: dict[str, object] = {"store": False}
     if options:
         request_options.update(options)
-    return await _client()._prepare_options(
+    return _build(
         [Message("user", ["Start"]), *messages],
         request_options,
     )
 
 
-async def test_completed_reasoning_function_group_replays_exact_items() -> None:
-    prepared = await _prepare(
+def test_completed_reasoning_function_group_replays_exact_items() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -135,8 +150,8 @@ async def test_completed_reasoning_function_group_replays_exact_items() -> None:
     ]
 
 
-async def test_active_reasoning_mcp_group_replays_without_output() -> None:
-    prepared = await _prepare(
+def test_active_reasoning_mcp_group_replays_without_output() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning(), _mcp_call("mcp_1")]),
         ]
@@ -160,8 +175,8 @@ async def test_active_reasoning_mcp_group_replays_without_output() -> None:
     ]
 
 
-async def test_parallel_reasoning_function_group_replays_all_calls_and_results() -> None:
-    prepared = await _prepare(
+def test_parallel_reasoning_function_group_replays_all_calls_and_results() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -216,8 +231,8 @@ async def test_parallel_reasoning_function_group_replays_all_calls_and_results()
     ]
 
 
-async def test_encrypted_only_reasoning_replays_empty_visible_arrays() -> None:
-    prepared = await _prepare(
+def test_encrypted_only_reasoning_replays_empty_visible_arrays() -> None:
+    prepared = _prepare(
         [Message("assistant", [_reasoning(text=""), _function_call("call_1", "lookup", fc_id="fc_live")])]
     )
 
@@ -239,8 +254,8 @@ async def test_encrypted_only_reasoning_replays_empty_visible_arrays() -> None:
     ]
 
 
-async def test_ordinary_function_group_without_payload_degrades_without_item_id() -> None:
-    prepared = await _prepare(
+def test_ordinary_function_group_without_payload_degrades_without_item_id() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -266,8 +281,8 @@ async def test_ordinary_function_group_without_payload_degrades_without_item_id(
     ]
 
 
-async def test_hosted_mcp_group_without_payload_degrades_atomically() -> None:
-    prepared = await _prepare(
+def test_hosted_mcp_group_without_payload_degrades_atomically() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning(encrypted_content=None), _mcp_call("mcp_1")]),
             Message("tool", [_mcp_result("mcp_1", "done")]),
@@ -277,8 +292,8 @@ async def test_hosted_mcp_group_without_payload_degrades_atomically() -> None:
     assert prepared["input"] == [_USER_ITEM]
 
 
-async def test_replayable_mcp_group_survives_same_call_id_in_degraded_group() -> None:
-    prepared = await _prepare(
+def test_replayable_mcp_group_survives_same_call_id_in_degraded_group() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning("rs_bad", encrypted_content=None), _mcp_call("shared")]),
             Message("tool", [_mcp_result("shared", "discarded")]),
@@ -306,8 +321,8 @@ async def test_replayable_mcp_group_survives_same_call_id_in_degraded_group() ->
     ]
 
 
-async def test_duplicate_call_id_results_coalesce_only_inside_their_group() -> None:
-    prepared = await _prepare(
+def test_duplicate_call_id_results_coalesce_only_inside_their_group() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_mcp_call("shared", "first")]),
             Message("tool", [_mcp_result("shared", "first output")]),
@@ -329,8 +344,8 @@ async def test_duplicate_call_id_results_coalesce_only_inside_their_group() -> N
     ]
 
 
-async def test_reused_ordinary_call_id_keeps_each_positional_result() -> None:
-    prepared = await _prepare(
+def test_reused_ordinary_call_id_keeps_each_positional_result() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -382,8 +397,8 @@ async def test_reused_ordinary_call_id_keeps_each_positional_result() -> None:
     ]
 
 
-async def test_idless_reasoning_with_payload_degrades_function_group() -> None:
-    prepared = await _prepare(
+def test_idless_reasoning_with_payload_degrades_function_group() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -449,14 +464,14 @@ def _hosted_content(shape: str) -> Content:
         "shell_result",
     ],
 )
-async def test_non_replayable_hosted_shapes_degrade_with_reasoning(shape: str) -> None:
-    prepared = await _prepare([Message("assistant", [_reasoning(), _hosted_content(shape)])])
+def test_non_replayable_hosted_shapes_degrade_with_reasoning(shape: str) -> None:
+    prepared = _prepare([Message("assistant", [_reasoning(), _hosted_content(shape)])])
 
     assert prepared["input"] == [_USER_ITEM]
 
 
 @pytest.mark.parametrize("item_type", [None, "custom_tool_call"])
-async def test_informational_function_calls_degrade_by_semantic_field(item_type: str | None) -> None:
+def test_informational_function_calls_degrade_by_semantic_field(item_type: str | None) -> None:
     additional_properties = {"item_type": item_type} if item_type else None
     informational_call = Content.from_function_call(
         "hosted_1",
@@ -466,7 +481,7 @@ async def test_informational_function_calls_degrade_by_semantic_field(item_type:
         additional_properties=additional_properties,
     )
 
-    prepared = await _prepare(
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning(), informational_call]),
             Message("tool", [Content.from_function_result("hosted_1", result="provider output")]),
@@ -480,9 +495,9 @@ async def test_informational_function_calls_degrade_by_semantic_field(item_type:
     "shell_marker",
     [OPENAI_SHELL_OUTPUT_TYPE_SHELL_CALL, OPENAI_SHELL_OUTPUT_TYPE_LOCAL_SHELL_CALL],
 )
-async def test_marker_bearing_local_shell_groups_degrade(shell_marker: str) -> None:
+def test_marker_bearing_local_shell_groups_degrade(shell_marker: str) -> None:
     marker = {OPENAI_SHELL_OUTPUT_TYPE_KEY: shell_marker}
-    prepared = await _prepare(
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -514,11 +529,11 @@ async def test_marker_bearing_local_shell_groups_degrade(shell_marker: str) -> N
 
 @pytest.mark.integration
 @pytest.mark.skip(reason="Requires a live reasoning model and shell tool endpoint")
-async def test_local_shell_reasoning_replay_live_validity_gate() -> None:
+def test_local_shell_reasoning_replay_live_validity_gate() -> None:
     """Keep local-shell reasoning replay disabled until this live contract passes."""
 
 
-async def test_duplicate_message_and_group_ids_do_not_merge_positional_twins() -> None:
+def test_duplicate_message_and_group_ids_do_not_merge_positional_twins() -> None:
     messages = [
         Message(
             "assistant",
@@ -541,7 +556,7 @@ async def test_duplicate_message_and_group_ids_do_not_merge_positional_twins() -
     second_group_id = messages[2].additional_properties["_group"]["id"]
     assert first_group_id == second_group_id
 
-    prepared = await _prepare(messages)
+    prepared = _prepare(messages)
 
     assert prepared["input"] == [
         _USER_ITEM,
@@ -577,26 +592,26 @@ async def test_duplicate_message_and_group_ids_do_not_merge_positional_twins() -
     ]
 
 
-async def test_annotated_tool_group_reasoning_only_survivor_is_dropped() -> None:
+def test_annotated_tool_group_reasoning_only_survivor_is_dropped() -> None:
     complete_group = [
         Message("assistant", [_reasoning()]),
         Message("assistant", [_function_call("call_1", "lookup", fc_id="fc_live")]),
     ]
     annotate_message_groups(complete_group, force_reannotate=True)
 
-    prepared = await _prepare([complete_group[0]])
+    prepared = _prepare([complete_group[0]])
 
     assert prepared["input"] == [_USER_ITEM]
 
 
-async def test_annotated_reasoning_message_without_tool_calls_still_replays() -> None:
+def test_annotated_reasoning_message_without_tool_calls_still_replays() -> None:
     reasoning_message = Message(
         "assistant",
         [_reasoning(), Content.from_text("Answer")],
     )
     annotate_message_groups([reasoning_message], force_reannotate=True)
 
-    prepared = await _prepare([reasoning_message])
+    prepared = _prepare([reasoning_message])
 
     assert prepared["input"][1] == {
         "type": "reasoning",
@@ -619,8 +634,8 @@ async def test_annotated_reasoning_message_without_tool_calls_still_replays() ->
     ],
     ids=["function", "mcp"],
 )
-async def test_result_only_reasoning_groups_drop_orphan_outputs(result: Content) -> None:
-    prepared = await _prepare(
+def test_result_only_reasoning_groups_drop_orphan_outputs(result: Content) -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning()]),
             Message("tool", [result]),
@@ -631,7 +646,7 @@ async def test_result_only_reasoning_groups_drop_orphan_outputs(result: Content)
 
 
 @pytest.mark.parametrize("second_call_id", ["mcp_2", "mcp_1"], ids=["distinct-id", "reused-id"])
-async def test_degraded_later_mcp_sibling_preserves_earlier_owned_result(second_call_id: str) -> None:
+def test_degraded_later_mcp_sibling_preserves_earlier_owned_result(second_call_id: str) -> None:
     messages = [
         Message("assistant", [_reasoning("rs_valid"), _mcp_call("mcp_1", "first")]),
         Message("assistant", [_mcp_call(second_call_id, "second")]),
@@ -645,7 +660,7 @@ async def test_degraded_later_mcp_sibling_preserves_earlier_owned_result(second_
     ]
     annotate_message_groups(messages)
 
-    prepared = await _prepare(messages)
+    prepared = _prepare(messages)
 
     assert prepared["input"] == [
         _USER_ITEM,
@@ -666,8 +681,8 @@ async def test_degraded_later_mcp_sibling_preserves_earlier_owned_result(second_
     ]
 
 
-async def test_same_call_id_replayable_mcp_twins_degrade_the_later_group() -> None:
-    prepared = await _prepare(
+def test_same_call_id_replayable_mcp_twins_degrade_the_later_group() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning("rs_first", text="First"), _mcp_call("shared", "first")]),
             Message("tool", [_mcp_result("shared", "one")]),
@@ -695,8 +710,8 @@ async def test_same_call_id_replayable_mcp_twins_degrade_the_later_group() -> No
     ]
 
 
-async def test_duplicate_reasoning_id_twins_do_not_merge_across_groups() -> None:
-    prepared = await _prepare(
+def test_duplicate_reasoning_id_twins_do_not_merge_across_groups() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -745,12 +760,10 @@ async def test_duplicate_reasoning_id_twins_do_not_merge_across_groups() -> None
     ]
 
 
-async def test_multi_sibling_reasoning_accepts_payload_on_one_sibling() -> None:
+def test_multi_sibling_reasoning_accepts_payload_on_one_sibling() -> None:
     private = _reasoning(text="Private", reasoning_text=True)
     summary = _reasoning(text="Visible", encrypted_content=None)
-    prepared = await _prepare(
-        [Message("assistant", [private, summary, _function_call("call_1", "lookup", fc_id="fc_live")])]
-    )
+    prepared = _prepare([Message("assistant", [private, summary, _function_call("call_1", "lookup", fc_id="fc_live")])])
 
     assert prepared["input"] == [
         _USER_ITEM,
@@ -771,8 +784,8 @@ async def test_multi_sibling_reasoning_accepts_payload_on_one_sibling() -> None:
     ]
 
 
-async def test_legacy_encrypted_content_payload_replays() -> None:
-    prepared = await _prepare(
+def test_legacy_encrypted_content_payload_replays() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -802,8 +815,8 @@ async def test_legacy_encrypted_content_payload_replays() -> None:
     ]
 
 
-async def test_mapping_conversation_uses_service_storage_without_inline_reconstruction() -> None:
-    prepared = await _prepare(
+def test_mapping_conversation_uses_service_storage_without_inline_reconstruction() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -839,11 +852,11 @@ async def test_mapping_conversation_uses_service_storage_without_inline_reconstr
         ),
     ],
 )
-async def test_caller_include_values_are_preserved_when_encrypted_reasoning_is_appended(
+def test_caller_include_values_are_preserved_when_encrypted_reasoning_is_appended(
     caller_include: list[str],
     expected_include: list[str],
 ) -> None:
-    prepared = await _prepare(
+    prepared = _prepare(
         [],
         {"include": caller_include},
     )
@@ -851,20 +864,20 @@ async def test_caller_include_values_are_preserved_when_encrypted_reasoning_is_a
     assert prepared["include"] == expected_include
 
 
-async def test_stateless_request_without_caller_include_injects_encrypted_reasoning() -> None:
-    prepared = await _prepare([])
+def test_stateless_request_without_caller_include_injects_encrypted_reasoning() -> None:
+    prepared = _prepare([])
 
     assert prepared["include"] == ["reasoning.encrypted_content"]
 
 
-async def test_explicit_empty_caller_include_is_omitted() -> None:
-    prepared = await _prepare([], {"include": []})
+def test_explicit_empty_caller_include_is_omitted() -> None:
+    prepared = _prepare([], {"include": []})
 
     assert "include" not in prepared
 
 
-async def test_service_storage_string_marker_keeps_existing_strip_behavior() -> None:
-    prepared = await _prepare(
+def test_service_storage_string_marker_keeps_existing_strip_behavior() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -886,9 +899,9 @@ async def test_service_storage_string_marker_keeps_existing_strip_behavior() -> 
     ]
 
 
-async def test_degraded_groups_emit_one_aggregate_warning(caplog: pytest.LogCaptureFixture) -> None:
+def test_degraded_groups_emit_one_aggregate_warning(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING", logger="chrys.service.llm.openai_responses"):
-        await _prepare(
+        _prepare(
             [
                 Message(
                     "assistant",
@@ -948,8 +961,8 @@ async def test_encrypted_reasoning_capability_rejection_is_terminal() -> None:
     ],
     ids=["function", "mcp"],
 )
-async def test_assistant_role_orphan_results_degrade_with_their_reasoning(result: Content) -> None:
-    prepared = await _prepare(
+def test_assistant_role_orphan_results_degrade_with_their_reasoning(result: Content) -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning()]),
             Message("assistant", [result]),
@@ -959,8 +972,8 @@ async def test_assistant_role_orphan_results_degrade_with_their_reasoning(result
     assert prepared["input"] == [_USER_ITEM]
 
 
-async def test_assistant_role_mcp_result_coalesces_into_its_reasoning_call_group() -> None:
-    prepared = await _prepare(
+def test_assistant_role_mcp_result_coalesces_into_its_reasoning_call_group() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning(), _mcp_call("independent")]),
             Message("assistant", [_mcp_result("independent", "independent output")]),
@@ -986,8 +999,8 @@ async def test_assistant_role_mcp_result_coalesces_into_its_reasoning_call_group
     ]
 
 
-async def test_assistant_role_mcp_result_coalesces_without_reasoning() -> None:
-    prepared = await _prepare(
+def test_assistant_role_mcp_result_coalesces_without_reasoning() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_mcp_call("independent")]),
             Message("assistant", [_mcp_result("independent", "independent output")]),
@@ -1007,8 +1020,8 @@ async def test_assistant_role_mcp_result_coalesces_without_reasoning() -> None:
     ]
 
 
-async def test_plain_mcp_group_yields_to_earlier_reasoning_twin() -> None:
-    prepared = await _prepare(
+def test_plain_mcp_group_yields_to_earlier_reasoning_twin() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning("rs_first", text="First"), _mcp_call("shared", "first")]),
             Message("tool", [_mcp_result("shared", "one")]),
@@ -1036,8 +1049,8 @@ async def test_plain_mcp_group_yields_to_earlier_reasoning_twin() -> None:
     ]
 
 
-async def test_reasoning_mcp_group_yields_to_later_function_only_wire_id() -> None:
-    prepared = await _prepare(
+def test_reasoning_mcp_group_yields_to_later_function_only_wire_id() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning(), _mcp_call("fc_call_9")]),
             Message("tool", [_mcp_result("fc_call_9", "one")]),
@@ -1063,8 +1076,8 @@ async def test_reasoning_mcp_group_yields_to_later_function_only_wire_id() -> No
     ]
 
 
-async def test_same_fc_wire_id_replayable_function_twins_degrade_the_later_group() -> None:
-    prepared = await _prepare(
+def test_same_fc_wire_id_replayable_function_twins_degrade_the_later_group() -> None:
+    prepared = _prepare(
         [
             Message(
                 "assistant",
@@ -1113,8 +1126,8 @@ async def test_same_fc_wire_id_replayable_function_twins_degrade_the_later_group
     ]
 
 
-async def test_reused_call_id_reasoning_twins_degrade_the_later_group() -> None:
-    prepared = await _prepare(
+def test_reused_call_id_reasoning_twins_degrade_the_later_group() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_reasoning("rs_first", text="First"), _function_call("call_1", "first")]),
             Message("tool", [Content.from_function_result("call_1", result="one")]),
@@ -1157,8 +1170,8 @@ async def test_reused_call_id_reasoning_twins_degrade_the_later_group() -> None:
     ]
 
 
-async def test_plain_function_group_wire_id_is_reserved_before_reasoning_twin() -> None:
-    prepared = await _prepare(
+def test_plain_function_group_wire_id_is_reserved_before_reasoning_twin() -> None:
+    prepared = _prepare(
         [
             Message("assistant", [_function_call("call_1", "plain")]),
             Message("tool", [Content.from_function_result("call_1", result="one")]),
@@ -1195,7 +1208,7 @@ async def test_plain_function_group_wire_id_is_reserved_before_reasoning_twin() 
     ]
 
 
-async def test_annotated_assistant_role_mcp_result_still_joins_its_call_group() -> None:
+def test_annotated_assistant_role_mcp_result_still_joins_its_call_group() -> None:
     messages = [
         Message("user", ["Start"]),
         Message("assistant", [_reasoning(), _mcp_call("independent")]),
@@ -1203,7 +1216,7 @@ async def test_annotated_assistant_role_mcp_result_still_joins_its_call_group() 
     ]
     annotate_message_groups(messages)
 
-    prepared = await _client()._prepare_options(messages, {"store": False})
+    prepared = _build(messages, {"store": False})
 
     assert prepared["input"] == [
         _USER_ITEM,
@@ -1224,9 +1237,9 @@ async def test_annotated_assistant_role_mcp_result_still_joins_its_call_group() 
     ]
 
 
-async def test_shared_reasoning_content_instance_emits_its_item_once() -> None:
+def test_shared_reasoning_content_instance_emits_its_item_once() -> None:
     shared = _reasoning()
-    prepared = await _prepare(
+    prepared = _prepare(
         [
             Message("assistant", [shared]),
             Message("assistant", [shared, _function_call("call_1", "lookup", fc_id="fc_live")]),
@@ -1271,8 +1284,8 @@ def test_partition_splits_followers_with_conflicting_annotation_signatures() -> 
     foreign_result = _annotated(Message("tool", [Content.from_function_result("call_1", result="x")]), "group_other")
     owned_result = _annotated(Message("tool", [Content.from_function_result("call_1", result="x")]), "group_call")
 
-    split = _partition_replay_message_groups([call_message, foreign_result])
-    joined = _partition_replay_message_groups([call_message, owned_result])
+    split = partition_groups([call_message, foreign_result])
+    joined = partition_groups([call_message, owned_result])
 
     assert [group.messages for group in split] == [(call_message,), (foreign_result,)]
     assert [group.messages for group in joined] == [(call_message, owned_result)]
@@ -1298,8 +1311,8 @@ def test_partition_assistant_result_with_conflicting_annotation_splits_unless_it
     owned_result = _annotated(Message("assistant", [_mcp_result("call_a", "owned output")]), "group_b")
     orphan_result = _annotated(Message("assistant", [_mcp_result("call_b", "stray output")]), "group_b")
 
-    joined = _partition_replay_message_groups([call_message, owned_result])
-    split = _partition_replay_message_groups([call_message, orphan_result])
+    joined = partition_groups([call_message, owned_result])
+    split = partition_groups([call_message, orphan_result])
 
     assert [group.messages for group in joined] == [(call_message, owned_result)]
     assert [group.messages for group in split] == [(call_message,), (orphan_result,)]
@@ -1313,7 +1326,7 @@ def test_partition_marker_message_owned_result_splits_from_call_group() -> None:
     marker_result = Message("assistant", [Content.from_function_result("call_1", result="late")])
     marker_result.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.TURN
 
-    groups = _partition_replay_message_groups([call_message, marker_result])
+    groups = partition_groups([call_message, marker_result])
 
     assert [group.messages for group in groups] == [(call_message,), (marker_result,)]
 
@@ -1341,7 +1354,7 @@ def test_partition_image_result_with_conflicting_annotation_joins_owned_call() -
         "group_other",
     )
 
-    groups = _partition_replay_message_groups([image_call, image_result])
+    groups = partition_groups([image_call, image_result])
 
     assert [group.messages for group in groups] == [(image_call, image_result)]
 
@@ -1363,7 +1376,7 @@ def test_partition_sibling_call_group_carries_shared_reasoning_annotation() -> N
     messages = [first_call, second_call, results]
     annotate_message_groups(messages)
 
-    groups = _partition_replay_message_groups(messages)
+    groups = partition_groups(messages)
 
     second_call_group = next(group for group in groups if second_call in group.messages)
     assert second_call_group.annotated_reasoning_tool_call is True
@@ -1381,12 +1394,12 @@ def test_annotate_keeps_user_role_result_message_out_of_reasoning_group() -> Non
     annotation = user_result.additional_properties.get(GROUP_ANNOTATION_KEY)
     assert annotation is None or annotation[GROUP_KIND_KEY] != "tool_call"
 
-    groups = _partition_replay_message_groups(messages)
+    groups = partition_groups(messages)
     user_group = next(group for group in groups if user_result in group.messages)
     assert user_group.annotated_reasoning_tool_call is False
 
 
-async def test_orphan_assistant_result_degrades_alone_and_valid_group_replays_intact() -> None:
+def test_orphan_assistant_result_degrades_alone_and_valid_group_replays_intact() -> None:
     """The stray result's group degrades by itself; the reasoning tool-call
     group it used to attach to keeps its encrypted reasoning on the wire."""
 
@@ -1405,7 +1418,7 @@ async def test_orphan_assistant_result_degrades_alone_and_valid_group_replays_in
         _annotated(Message("assistant", [_mcp_result("call_b", "stray output")]), "group_b"),
     ]
 
-    prepared = await _client()._prepare_options(messages, {"store": False})
+    prepared = _build(messages, {"store": False})
 
     assert prepared["input"] == [
         _USER_ITEM,
@@ -1425,34 +1438,28 @@ async def test_orphan_assistant_result_degrades_alone_and_valid_group_replays_in
     ]
 
 
-async def test_same_id_snapshot_then_final_payload_replays_final() -> None:
+def test_same_id_snapshot_then_final_payload_replays_final() -> None:
     """`added` stamps a snapshot payload; `done` delivers the terminal one.
 
     The payload-only shape merges in the kernel (same-id later-wins), and the
     replay selection must never resurrect the stale snapshot."""
-    client = _client()
     snapshot = SimpleNamespace(type="reasoning", id="rs_1", content=None, summary=[], encrypted_content="snapshot-A")
     final = SimpleNamespace(type="reasoning", id="rs_1", content=None, summary=[], encrypted_content="final-B")
     updates = [
-        client._parse_chunk_from_openai(
-            SimpleNamespace(type="response.output_item.added", item=snapshot, output_index=0), {}, {}
-        ),
-        client._parse_chunk_from_openai(
-            SimpleNamespace(type="response.output_item.done", item=final, output_index=0), {}, {}
-        ),
+        _fresh_update(SimpleNamespace(type="response.output_item.added", item=snapshot, output_index=0)),
+        _fresh_update(SimpleNamespace(type="response.output_item.done", item=final, output_index=0)),
     ]
 
-    prepared = await _prepare(list(ChatResponse.from_updates(updates).messages))
+    prepared = _prepare(list(ChatResponse.from_updates(updates).messages))
 
     reasoning_items = [item for item in prepared["input"] if item.get("type") == "reasoning"]
     assert len(reasoning_items) == 1
     assert reasoning_items[0]["encrypted_content"] == "final-B"
 
 
-async def test_multi_sibling_snapshot_then_final_payload_replays_final() -> None:
+def test_multi_sibling_snapshot_then_final_payload_replays_final() -> None:
     """Private-text + summary siblings cannot merge; `done`'s terminal payload
     lands on the later sibling and must win over the snapshot on the first."""
-    client = _client()
     snapshot = SimpleNamespace(
         type="reasoning",
         id="rs_1",
@@ -1462,15 +1469,11 @@ async def test_multi_sibling_snapshot_then_final_payload_replays_final() -> None
     )
     final = SimpleNamespace(type="reasoning", id="rs_1", content=None, summary=[], encrypted_content="final-B")
     updates = [
-        client._parse_chunk_from_openai(
-            SimpleNamespace(type="response.output_item.added", item=snapshot, output_index=0), {}, {}
-        ),
-        client._parse_chunk_from_openai(
-            SimpleNamespace(type="response.output_item.done", item=final, output_index=0), {}, {}
-        ),
+        _fresh_update(SimpleNamespace(type="response.output_item.added", item=snapshot, output_index=0)),
+        _fresh_update(SimpleNamespace(type="response.output_item.done", item=final, output_index=0)),
     ]
 
-    prepared = await _prepare(list(ChatResponse.from_updates(updates).messages))
+    prepared = _prepare(list(ChatResponse.from_updates(updates).messages))
 
     reasoning_items = [item for item in prepared["input"] if item.get("type") == "reasoning"]
     assert len(reasoning_items) == 1
@@ -1479,16 +1482,14 @@ async def test_multi_sibling_snapshot_then_final_payload_replays_final() -> None
     assert reasoning_items[0]["content"] == [{"type": "reasoning_text", "text": "Private"}]
 
 
-async def test_format_stamped_idless_reasoning_degrades_function_group() -> None:
+def test_format_stamped_idless_reasoning_degrades_function_group() -> None:
     """GLM/DeepSeek dialect reasoning is id-less foreign state on the Responses
     path; the group degrades exactly like other id-less reasoning."""
     glm_reasoning = Content.from_text_reasoning(
         text="GLM chain of thought",
         additional_properties={"openai_reasoning_format": "reasoning_content"},
     )
-    prepared = await _prepare(
-        [Message("assistant", [glm_reasoning, _function_call("call_1", "lookup", fc_id="fc_live")])]
-    )
+    prepared = _prepare([Message("assistant", [glm_reasoning, _function_call("call_1", "lookup", fc_id="fc_live")])])
 
     assert prepared["input"] == [
         _USER_ITEM,
@@ -1501,8 +1502,7 @@ async def test_format_stamped_idless_reasoning_degrades_function_group() -> None
     ]
 
 
-async def test_streamed_snapshot_reasoning_replays_content_and_summary() -> None:
-    client = _client()
+def test_streamed_snapshot_reasoning_replays_content_and_summary() -> None:
     snapshot = SimpleNamespace(
         type="reasoning",
         id="rs_snapshot",
@@ -1510,13 +1510,9 @@ async def test_streamed_snapshot_reasoning_replays_content_and_summary() -> None
         summary=[SimpleNamespace(text="Visible summary")],
         encrypted_content="encrypted-snapshot",
     )
-    update = client._parse_chunk_from_openai(
-        SimpleNamespace(type="response.output_item.added", item=snapshot, output_index=0),
-        {},
-        {},
-    )
+    update = _fresh_update(SimpleNamespace(type="response.output_item.added", item=snapshot, output_index=0))
 
-    prepared = await _prepare(list(ChatResponse.from_updates([update]).messages))
+    prepared = _prepare(list(ChatResponse.from_updates([update]).messages))
 
     assert prepared["input"] == [
         _USER_ITEM,

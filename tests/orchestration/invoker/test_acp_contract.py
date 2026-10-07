@@ -31,6 +31,7 @@ from chrys.service.acp_client.errors import AcpTransportError
 from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.orchestration.sub_agents._acp_fakes import make_controller
 from tests.service.acp_client.helpers import make_spec
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 @pytest.mark.parametrize("scenario", ["happy", "refusal", "empty", "prompt_truncated"])
@@ -228,7 +229,13 @@ async def test_real_acp_overlap_rejected_before_factory_prompt_ordinal_and_disk(
         controller.policy.backend.run(RunRequest([Message("user", ["first"])], RunIntent.FRESH, controller.origin))
     )
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        # The window spawns and initializes the stub agent: a cold process start.
+        await wait_for(
+            lambda: entered.is_set() or first.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="first prompt sent to the ACP stub",
+        )
+        assert entered.is_set(), first.result()
         ordinal = controller.policy.backend.transport_ordinal
         active = controller.policy.backend.active_handle
         factory_calls = factory.call_count

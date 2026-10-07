@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -69,7 +70,7 @@ def test_profile_to_dict_non_defaults_emitted() -> None:
         bypass_proxy=True,
         http_headers='{"X-Foo": "bar"}',
         chat_options='{"temperature": 0.5}',
-        stream=True,
+        stream=False,
         vision=True,
     )
     d = profile_to_dict(p)
@@ -90,7 +91,7 @@ def test_profile_to_dict_non_defaults_emitted() -> None:
     assert d["bypass_proxy"] is True
     assert d["http_headers"] == '{"X-Foo": "bar"}'
     assert d["chat_options"] == '{"temperature": 0.5}'
-    assert d["stream"] is True
+    assert d["stream"] is False
     assert d["vision"] is True
 
 
@@ -182,3 +183,45 @@ def test_delete_profile_false_when_dir_missing(fake_config_dir: Path) -> None:
     # fake_config_dir exists, but models/ subdir doesn't
     assert not (fake_config_dir / "models").exists()
     assert delete_profile("anything") is False
+
+
+def test_stream_requires_finish_reason_round_trips(tmp_path: Path) -> None:
+    data = profile_to_dict(ModelProfile(id="glm", name="GLM", stream_requires_finish_reason=True))
+    path = tmp_path / "glm.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    assert data["stream_requires_finish_reason"] is True
+    assert "stream_requires_finish_reason" not in profile_to_dict(ModelProfile(id="d", name="D"))
+    assert load_profile_from_yaml(path).stream_requires_finish_reason is True
+
+
+@pytest.mark.parametrize("binding", ["drop_block", "error", "off"])
+def test_thinking_settings_round_trip_through_disk(fake_config_dir: Path, binding: Any) -> None:
+    profile = ModelProfile(id="c", name="Claude", thinking_block_binding=binding, auto_interleaved_thinking=False)
+
+    raw = yaml.safe_load(save_profile(profile).read_text(encoding="utf-8"))
+    loaded = load_profile_from_yaml(fake_config_dir / "models" / "c.yaml")
+
+    assert (raw["thinking_block_binding"], raw["auto_interleaved_thinking"]) == (binding, False)
+    assert (loaded.thinking_block_binding, loaded.auto_interleaved_thinking) == (binding, False)
+    defaults = profile_to_dict(ModelProfile(id="d", name="D"))
+    assert "thinking_block_binding" not in defaults
+    assert "auto_interleaved_thinking" not in defaults
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_stream_round_trips_through_disk(fake_config_dir: Path, stream: bool) -> None:
+    """Streaming on is the default and is omitted on disk; off is written out and survives a re-save."""
+    profile = ModelProfile(id="rt", name="RT", stream=stream, stream_requires_finish_reason=True)
+    path = save_profile(profile)
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert ("stream" in raw) is (not stream)
+    if not stream:
+        assert raw["stream"] is False
+    loaded = load_profile_from_yaml(path)
+    assert loaded.stream is stream
+    assert loaded.stream_requires_finish_reason is True
+
+    save_profile(loaded)
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == raw

@@ -43,6 +43,7 @@ from tests.support.close_races import assert_entered_before_completion
 from tests.support.loaded_agents import install_loaded_agent
 from tests.support.paths import SRC_ROOT
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 def test_parent_commit_cannot_rebind_after_consumption():
@@ -191,7 +192,13 @@ async def test_prepared_close_drains_registered_operation_in_all_three_windows(
         sub_agent_parent_result_metadata.reset(token)
     closing: asyncio.Task[None] | None = None
     try:
-        await asyncio.wait_for(entered.wait(), 10)
+        # For the ACP backend the window spawns and initializes the stub agent: a cold process start.
+        await wait_for(
+            lambda: entered.is_set() or operation.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="child operation reached the close window",
+        )
+        assert entered.is_set(), operation.result()
         controller = next(iter(tools._controllers.values()))
         original_request = controller.request_close
         original_commit = controller._parent_interrupted_result_commit

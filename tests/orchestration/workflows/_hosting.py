@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
@@ -108,13 +108,16 @@ def make_host(
     settings: Settings | None = None,
     approval_mode: ApprovalMode | None = ApprovalMode.BYPASS,
     surface: SessionSurface | None = None,
+    models: Sequence[ModelProfile] = (),
 ) -> ChrysSessionHost:
-    models = ModelProfileRegistry()
-    models.register(
+    model_registry = ModelProfileRegistry()
+    model_registry.register(
         ModelProfile(
             id="mock-profile", name="mock", provider="mock", model_id="mock", stream=stream, chat_options=chat_options
         )
     )
+    for model in models:
+        model_registry.register(model)
     agents = AgentProfileRegistry()
     for profile in profiles or (make_profile(),):
         agents.register(profile)
@@ -124,7 +127,7 @@ def make_host(
         loaded_settings=loaded_settings,
         approval_mode=approval_mode,
         agent_registry=agents,
-        model_registry=models,
+        model_registry=model_registry,
         state_store=JsonFileStateStore(tmp_path / "sessions"),
         cwd=str(project) if project is not None else None,
         workspace=workspace,
@@ -145,6 +148,21 @@ def write_workflow(project: Path, workflow_id: str, source: bytes) -> Path:
     path = project_workflows_dir(project) / f"{workflow_id}.py"
     atomic_write_owner_only_bytes(path, source)
     return path
+
+
+def write_workflow_package(
+    project: Path, workflow_id: str, source: bytes, files: Mapping[str, bytes] | None = None
+) -> Path:
+    """Write (or rewrite) a project workflow folder ``<id>/<id>.py`` plus *files* (relative paths); returns the entry."""
+    folder = project_workflows_dir(project) / workflow_id
+    for relative, content in (files or {}).items():
+        member = folder / relative
+        member.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_owner_only_bytes(member, content)
+    folder.mkdir(exist_ok=True)
+    entry = folder / f"{workflow_id}.py"
+    atomic_write_owner_only_bytes(entry, source)
+    return entry
 
 
 async def confirm(host: ChrysSessionHost, workflow_id: str) -> WorkflowPreview:

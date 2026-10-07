@@ -46,6 +46,19 @@ class ProtectedChatOptionsWarning:
         )
 
 
+# The Chat Completions option that carries ``ModelProfile.stream_requires_finish_reason``
+# to the client; it is never sent.
+STREAM_REQUIRES_FINISH_REASON_OPTION = "stream_requires_finish_reason"
+# The Responses option that routes OpenAI's prompt cache; a client sets one
+# itself unless the options do (a null: none).
+PROMPT_CACHE_KEY_OPTION = "prompt_cache_key"
+# The Anthropic options that carry ``ModelProfile.thinking_block_binding`` and
+# ``ModelProfile.auto_interleaved_thinking`` to the client when they are not
+# the defaults; neither is sent.
+THINKING_BLOCK_BINDING_OPTION = "thinking_block_binding"
+AUTO_INTERLEAVED_THINKING_OPTION = "auto_interleaved_thinking"
+_CHAT_COMPLETIONS_PROVIDERS = frozenset({"openai", "deepseek-openai", "glm-openai"})
+
 PROTECTED_TOP_LEVEL_CHAT_OPTION_KEYS = frozenset(
     {
         "messages",
@@ -91,6 +104,28 @@ def _drop_protected_chat_options(profile_name: str, options: dict[str, Any]) -> 
         sanitized["extra_body"] = cleaned_extra_body
     for path in protected:
         _log.warning("ModelProfile %r chat_options key %r is protected and will be ignored", profile_name, path)
+    return sanitized
+
+
+def _normalize_instructions_option(profile_name: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Join a list-of-strings ``instructions`` one item per line; drop any other non-string.
+
+    The kernel concatenates instructions as text, so any other value would
+    reach the prompt as its Python repr.
+    """
+    value = options.get("instructions")
+    if value is None or isinstance(value, str):
+        return options
+    sanitized = dict(options)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        sanitized["instructions"] = "\n".join(cast("list[str]", value))
+        return sanitized
+    _log.warning(
+        "ModelProfile %r chat_options key 'instructions' must be a string or a list of strings; ignoring %s",
+        profile_name,
+        type(value).__name__,
+    )
+    del sanitized["instructions"]
     return sanitized
 
 
@@ -147,6 +182,7 @@ def parse_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
         _log.warning("ModelProfile %r chat_options is not a JSON object, ignoring: %r", profile.name, raw)
         return None
     opts = _drop_protected_chat_options(profile.name, opts)
+    opts = _normalize_instructions_option(profile.name, opts)
     opts = _drop_managed_extra_headers(profile.name, opts)
     resolved = cast(
         "dict[str, Any]",
@@ -233,12 +269,40 @@ def effective_chat_options(profile: ModelProfile) -> dict[str, Any] | None:
             # gate, conversation-id learning, session persistence) agrees
             # with what the service actually stores.
             effective["store"] = False
+        extra_body = effective.get("extra_body")
+        if (
+            PROMPT_CACHE_KEY_OPTION in effective
+            and effective[PROMPT_CACHE_KEY_OPTION] is None
+            and (extra_body is None or isinstance(extra_body, Mapping))
+        ):
+            # A null asks for no prompt cache key, but the agent drops options
+            # set to null, which would leave the client choosing one: the null
+            # rides in extra_body, which keeps it.
+            del effective[PROMPT_CACHE_KEY_OPTION]
+            effective["extra_body"] = {**(extra_body or {}), PROMPT_CACHE_KEY_OPTION: None}
     if profile.max_output_tokens > 0 and (
         effective is None or all(effective.get(alias) is None for alias in OUTPUT_CAP_OPTION_ALIASES)
     ):
         if effective is None or effective is opts:
             effective = dict(opts or {})
         effective["max_tokens"] = profile.max_output_tokens
+    if (
+        profile.stream_requires_finish_reason
+        and profile.provider in _CHAT_COMPLETIONS_PROVIDERS
+        and not uses_responses_wire_dialect(profile)
+    ):
+        if effective is None or effective is opts:
+            effective = dict(opts or {})
+        effective[STREAM_REQUIRES_FINISH_REASON_OPTION] = True
+    if profile.provider == "anthropic":
+        if profile.thinking_block_binding != "auto":
+            if effective is None or effective is opts:
+                effective = dict(opts or {})
+            effective[THINKING_BLOCK_BINDING_OPTION] = profile.thinking_block_binding
+        if not profile.auto_interleaved_thinking:
+            if effective is None or effective is opts:
+                effective = dict(opts or {})
+            effective[AUTO_INTERLEAVED_THINKING_OPTION] = False
     return effective
 
 

@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """OpenTelemetry layers for chat calls, agent runs and tool execution.
 
@@ -982,6 +984,20 @@ def _capture_response(
         operation_duration_histogram.record(duration, attributes=attrs)
 
 
+def _record_failed_duration(
+    histogram: metrics.Histogram | None,
+    attributes: Mapping[str, Any],
+    exception: BaseException,
+    duration: float | None,
+) -> None:
+    """Record a failed operation's duration under its ``error.type``, beside the successful ones."""
+    if histogram is None or duration is None:
+        return
+    attrs: dict[str, Any] = {k: v for k, v in attributes.items() if k in GEN_AI_METRIC_ATTRIBUTES}
+    attrs[OtelAttr.ERROR_TYPE] = type(exception).__name__
+    histogram.record(duration, attributes=attrs)
+
+
 def _stream_error_of(stream: Any) -> Exception | None:
     """Read a stream failure, defaulting to None when the stream exposes no error field."""
     return getattr(stream, "_stream_error", None)
@@ -998,10 +1014,22 @@ def _stream_abandoned(stream: Any) -> bool:
 
 
 class _StreamingSpan:
-    """Own span closure, elapsed time and stream hooks without retaining the stream."""
+    """Own span closure, elapsed time and stream hooks without retaining the stream.
 
-    def __init__(self, span: trace.Span) -> None:
+    With a *duration_histogram*, a failed stream records its duration there
+    under its ``error.type``.
+    """
+
+    def __init__(
+        self,
+        span: trace.Span,
+        *,
+        attributes: Mapping[str, Any],
+        duration_histogram: metrics.Histogram | None = None,
+    ) -> None:
         self._span = span
+        self._attributes = attributes
+        self._duration_histogram = duration_histogram
         self._closed = False
         self.duration: float | None = None
         self._start_time = perf_counter()
@@ -1015,16 +1043,34 @@ class _StreamingSpan:
     def _record_duration(self) -> None:
         self.duration = perf_counter() - self._start_time
 
+    def _fail(self, exception: BaseException) -> None:
+        capture_exception(span=self._span, exception=exception, timestamp=time_ns())
+        _record_failed_duration(self._duration_histogram, self._attributes, exception, self.duration)
+
     def should_finalize(self, stream: ResponseStream[Any, Any]) -> bool:
         stream_error = _stream_error_of(stream)
         if stream_error is not None:
             # Skip result hooks such as after_run context providers on error
             # paths. Capture the error on the span before returning.
-            capture_exception(span=self._span, exception=stream_error, timestamp=time_ns())
+            self._fail(stream_error)
             return False
         # Closed before completion (cancel/stall abandonment): partial
         # updates are not a response and must not be finalized.
         return not _stream_abandoned(stream)
+
+    async def final_response[FinalT](self, stream: ResponseStream[Any, FinalT]) -> FinalT:
+        """Finalize *stream* from its cleanup hook; a failing finalizer or result hook fails it once.
+
+        The failure is recorded on the span and re-raised to the consumer.
+        Swallowed, it would leave the stream unfinalized, and the stream
+        finalizes again right after its cleanup hooks, re-running every result
+        hook that already succeeded.
+        """
+        try:
+            return await stream.get_final_response()
+        except Exception as exception:
+            self._fail(exception)
+            raise
 
     def wrap[UpdateT, FinalT](
         self,
@@ -1048,8 +1094,8 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
     """Trace chat calls through ``super().get_response()`` under ``TELEMETRY_GATE``.
 
     Telemetry must wrap ``get_response`` and must never define
-    ``_inner_get_response``: the intermediate-text mixin delegates below
-    this layer when it reaches the wire client.
+    ``_inner_get_response``: the wire client below this layer implements
+    that hook, and request reporting rides on it.
     """
 
     def __init__(self, *args: Any, otel_provider_name: str | None = None, **kwargs: Any) -> None:
@@ -1170,7 +1216,7 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
                     system_instructions=system_instructions,
                 )
 
-            stream_span = _StreamingSpan(span)
+            stream_span = _StreamingSpan(span, attributes=attributes, duration_histogram=self.duration_histogram)
 
             try:
                 with _activate_span(span):
@@ -1196,33 +1242,35 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
                 try:
                     if not stream_span.should_finalize(result_stream):
                         return
-                    response: ChatResponse[Any] = await result_stream.get_final_response()
-                    duration = stream_span.duration
-                    response_attributes = _get_response_attributes(attributes, response)
-                    self._backfill_request_model(span, response_attributes)
-                    _capture_response(
-                        span=span,
-                        attributes=response_attributes,
-                        token_usage_histogram=self.token_usage_histogram,
-                        operation_duration_histogram=self.duration_histogram,
-                        duration=duration,
-                    )
-                    _mark_inner_response_telemetry_captured(response)
-                    if (
-                        TELEMETRY_GATE.sensitive_enabled
-                        and isinstance(response, ChatResponse)
-                        and response.messages
-                        and span.is_recording()
-                    ):
-                        _capture_messages(
+                    response: ChatResponse[Any] = await stream_span.final_response(result_stream)
+                    try:
+                        duration = stream_span.duration
+                        response_attributes = _get_response_attributes(attributes, response)
+                        self._backfill_request_model(span, response_attributes)
+                        _capture_response(
                             span=span,
-                            provider_name=provider_name,
-                            messages=response.messages,
-                            finish_reason=response.finish_reason,  # type: ignore[arg-type]
-                            output=True,
+                            attributes=response_attributes,
+                            token_usage_histogram=self.token_usage_histogram,
+                            operation_duration_histogram=self.duration_histogram,
+                            duration=duration,
                         )
-                except Exception as exception:
-                    capture_exception(span=span, exception=exception, timestamp=time_ns())
+                        _mark_inner_response_telemetry_captured(response)
+                        if (
+                            TELEMETRY_GATE.sensitive_enabled
+                            and isinstance(response, ChatResponse)
+                            and response.messages
+                            and span.is_recording()
+                        ):
+                            _capture_messages(
+                                span=span,
+                                provider_name=provider_name,
+                                messages=response.messages,
+                                finish_reason=response.finish_reason,  # type: ignore[arg-type]
+                                output=True,
+                            )
+                    except Exception as exception:
+                        # Telemetry's own failure never fails the call.
+                        capture_exception(span=span, exception=exception, timestamp=time_ns())
                 finally:
                     stream_span.close()
 
@@ -1257,6 +1305,9 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
                     )
                 except Exception as exception:
                     capture_exception(span=span, exception=exception, timestamp=time_ns())
+                    _record_failed_duration(
+                        self.duration_histogram, attributes, exception, perf_counter() - start_time_stamp
+                    )
                     raise
                 duration = perf_counter() - start_time_stamp
                 response_attributes = _get_response_attributes(attributes, response)
@@ -1270,15 +1321,11 @@ class ChatTelemetryLayer(_ChatTelemetryBase):
                 )
                 _mark_inner_response_telemetry_captured(response)
                 if TELEMETRY_GATE.sensitive_enabled and response.messages and span.is_recording():
-                    finish_reason = cast(
-                        "FinishReason | None",
-                        response.finish_reason if response.finish_reason in FINISH_REASON_MAP else None,
-                    )
                     _capture_messages(
                         span=span,
                         provider_name=provider_name,
                         messages=response.messages,
-                        finish_reason=finish_reason,
+                        finish_reason=response.finish_reason,
                         output=True,
                     )
                 return response  # type: ignore[return-value,no-any-return]
@@ -1357,7 +1404,7 @@ class AgentTelemetryLayer(_AgentTelemetryBase):
                     system_instructions=_get_instructions_from_options(dict(merged_options)),
                 )
 
-            stream_span = _StreamingSpan(span)
+            stream_span = _StreamingSpan(span, attributes=attributes)
 
             def _reset_inner_vars() -> None:
                 # The finalizer may run in a different context than the sync
@@ -1395,31 +1442,33 @@ class AgentTelemetryLayer(_AgentTelemetryBase):
                 try:
                     if not stream_span.should_finalize(result_stream):
                         return
-                    response: AgentResponse[Any] = await result_stream.get_final_response()
-                    duration = stream_span.duration
-                    response_attributes = _get_response_attributes(
-                        attributes,
-                        response,
-                        capture_response_id=INNER_RESPONSE_ID_CAPTURED_FIELD
-                        not in inner_response_telemetry_captured_fields,
-                        capture_usage=INNER_USAGE_CAPTURED_FIELD not in inner_response_telemetry_captured_fields,
-                    )
-                    _apply_accumulated_usage(response_attributes, inner_response_telemetry_captured_fields)
-                    _capture_response(span=span, attributes=response_attributes, duration=duration)
-                    if (
-                        TELEMETRY_GATE.sensitive_enabled
-                        and isinstance(response, AgentResponse)
-                        and response.messages
-                        and span.is_recording()
-                    ):
-                        _capture_messages(
-                            span=span,
-                            provider_name=provider_name,
-                            messages=response.messages,
-                            output=True,
+                    response: AgentResponse[Any] = await stream_span.final_response(result_stream)
+                    try:
+                        duration = stream_span.duration
+                        response_attributes = _get_response_attributes(
+                            attributes,
+                            response,
+                            capture_response_id=INNER_RESPONSE_ID_CAPTURED_FIELD
+                            not in inner_response_telemetry_captured_fields,
+                            capture_usage=INNER_USAGE_CAPTURED_FIELD not in inner_response_telemetry_captured_fields,
                         )
-                except Exception as exception:
-                    capture_exception(span=span, exception=exception, timestamp=time_ns())
+                        _apply_accumulated_usage(response_attributes, inner_response_telemetry_captured_fields)
+                        _capture_response(span=span, attributes=response_attributes, duration=duration)
+                        if (
+                            TELEMETRY_GATE.sensitive_enabled
+                            and isinstance(response, AgentResponse)
+                            and response.messages
+                            and span.is_recording()
+                        ):
+                            _capture_messages(
+                                span=span,
+                                provider_name=provider_name,
+                                messages=response.messages,
+                                output=True,
+                            )
+                    except Exception as exception:
+                        # Telemetry's own failure never fails the run.
+                        capture_exception(span=span, exception=exception, timestamp=time_ns())
                 finally:
                     # Close first: a cross-context reset must never leave the span open.
                     stream_span.close()

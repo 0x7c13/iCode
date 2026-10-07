@@ -20,7 +20,7 @@ from chrys.app.tui.screens.main.session_handlers import (
     _PROFILE_SWITCH_INDICATOR,
     _WORKING_DIRECTORY_INDICATOR,
 )
-from chrys.app.tui.screens.main.state import MainScreenState
+from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
@@ -47,6 +47,7 @@ from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY
 from chrys.service.approval.policy import ApprovalMode
 from tests.support.tui_helpers import (
+    fake_session_title,
     make_backend_handler,
     status_text,
 )
@@ -119,7 +120,7 @@ def test_settings_reloaded_reprojects_the_verify_command_word_list() -> None:
 
 # ──────────── on_sub_agent_paused (interrupt-race gate) ─────────────────
 #
-# During a user interrupt the screen flips ``_agent_running`` to False
+# During a user interrupt the screen flips ``agent_running`` to False
 # BEFORE the backend cascade tears down live sub-agent controllers.  A
 # ``InvocationPaused`` event that was already in-flight when the interrupt
 # fired can therefore arrive at the TUI handler AFTER the UI has already
@@ -146,7 +147,7 @@ def _make_pause_handler(agent_running: bool) -> tuple[BackendEventHandler, list[
     def _query_one(_cls):
         return _FakePanel()
 
-    screen = SimpleNamespace(_agent_running=agent_running, query_one=_query_one)
+    screen = SimpleNamespace(_state=MainScreenState(run=RunState(agent_running=agent_running)), query_one=_query_one)
     handler = make_backend_handler(screen)
     return handler, calls
 
@@ -171,7 +172,7 @@ def test_on_sub_agent_paused_forwards_when_running() -> None:
 
 
 def test_on_sub_agent_paused_gated_after_interrupt() -> None:
-    """Late paused event after the interrupt sets ``_agent_running=False``
+    """Late paused event after the interrupt clears ``agent_running``
     is dropped — no ChatPanel lookup, no paused card."""
     handler, calls = _make_pause_handler(agent_running=False)
     asyncio.run(_run_pause(handler))
@@ -219,7 +220,9 @@ def _make_compaction_handler(agent_running: bool) -> tuple[BackendEventHandler, 
             calls.append(("show", status_text(text)))
 
     widget = _FakeWidget()
-    screen = SimpleNamespace(_agent_running=agent_running, query_one=lambda _cls: widget)
+    screen = SimpleNamespace(
+        _state=MainScreenState(run=RunState(agent_running=agent_running)), query_one=lambda _cls: widget
+    )
     handler = make_backend_handler(screen)
     return handler, calls
 
@@ -408,7 +411,7 @@ def test_sub_agent_invocation_start_forwards_display_name() -> None:
             calls.append((parent_call_id, invocation_id, agent_name, sub_agent_log_file, tool_name))
 
     panel = _FakePanel()
-    screen = SimpleNamespace(_agent_running=True, query_one=lambda _cls: panel)
+    screen = SimpleNamespace(_state=MainScreenState(run=RunState(agent_running=True)), query_one=lambda _cls: panel)
     handler = make_backend_handler(screen)
 
     asyncio.run(
@@ -434,7 +437,7 @@ def test_sub_agent_interrupted_tool_result_preserves_canonical_status() -> None:
             calls.append(kwargs)
 
     panel = _FakePanel()
-    screen = SimpleNamespace(_agent_running=True, query_one=lambda _cls: panel)
+    screen = SimpleNamespace(_state=MainScreenState(run=RunState(agent_running=True)), query_one=lambda _cls: panel)
     handler = make_backend_handler(screen)
 
     asyncio.run(
@@ -512,7 +515,9 @@ def test_on_retry_attempt_calls_prepare_retry_before_add_retry() -> None:
     def _debug(_tag: str, _msg: str) -> None:
         pass
 
-    screen = SimpleNamespace(_agent_running=True, query_one=_query_one, _debug=_debug)
+    screen = SimpleNamespace(
+        _state=MainScreenState(run=RunState(agent_running=True)), query_one=_query_one, _debug=_debug
+    )
     handler = make_backend_handler(screen)
 
     event = InvocationRetryAttempt(
@@ -562,7 +567,9 @@ def test_on_retry_attempt_compaction_scope_uses_detail_without_parsing_message()
             return status_inst
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
-    screen = SimpleNamespace(_agent_running=True, query_one=_query_one, _debug=lambda *_: None)
+    screen = SimpleNamespace(
+        _state=MainScreenState(run=RunState(agent_running=True)), query_one=_query_one, _debug=lambda *_: None
+    )
     handler = make_backend_handler(screen)
 
     event = InvocationRetryAttempt(
@@ -616,7 +623,9 @@ def test_retry_attempt_display_message_localizes_banner_and_keeps_english_bytes(
                 return status
             raise AssertionError(f"unexpected query_one({cls.__name__})")
 
-        screen = SimpleNamespace(_agent_running=True, query_one=_query_one, _debug=lambda *_: None)
+        screen = SimpleNamespace(
+            _state=MainScreenState(run=RunState(agent_running=True)), query_one=_query_one, _debug=lambda *_: None
+        )
         return make_backend_handler(screen, locale_controller=locale_controller), banners, cards
 
     stalled = InvocationRetryAttempt(
@@ -667,9 +676,11 @@ def test_on_retry_attempt_skipped_when_not_running() -> None:
             call_log.append("add_retry")
 
     def _query_one(_cls):
-        raise AssertionError("query_one must not be called when _agent_running is False")
+        raise AssertionError("query_one must not be called when the agent is not running")
 
-    screen = SimpleNamespace(_agent_running=False, query_one=_query_one, _debug=lambda *_: None)
+    screen = SimpleNamespace(
+        _state=MainScreenState(run=RunState(agent_running=False)), query_one=_query_one, _debug=lambda *_: None
+    )
     handler = make_backend_handler(screen)
 
     event = InvocationRetryAttempt(
@@ -865,8 +876,8 @@ def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(
             super().append(message)
 
     class _FakeStatusBar:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, _message: str) -> None:
             order.append("status")
@@ -889,9 +900,9 @@ def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(
 
     gc_messages = _GcMessages()
     screen = SimpleNamespace(
-        _agent_running=True,
+        _state=MainScreenState(run=RunState(agent_running=True)),
         _gc_messages=gc_messages,
-        _mark_terminal_title_completed=lambda: order.append("completed"),
+        _session_title=fake_session_title(mark_terminal_title_completed=lambda: order.append("completed")),
         _set_agent_running=lambda _value: order.append("idle"),
         query_one=query_one,
         _debug=lambda *_args: None,
@@ -916,8 +927,8 @@ def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(
 
 def test_final_agent_message_render_failure_releases_turn_without_absorb() -> None:
     class _FakeStatusBar:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, _message: str) -> None:
             pass
@@ -940,9 +951,9 @@ def test_final_agent_message_render_failure_releases_turn_without_absorb() -> No
     running: list[bool] = []
     gc_messages: list[object] = []
     screen = SimpleNamespace(
-        _agent_running=True,
+        _state=MainScreenState(run=RunState(agent_running=True)),
         _gc_messages=gc_messages,
-        _mark_terminal_title_completed=lambda: None,
+        _session_title=fake_session_title(),
         _set_agent_running=running.append,
         query_one=query_one,
         _debug=lambda *_args: None,
@@ -971,7 +982,7 @@ def test_prior_run_terminal_message_cannot_stop_new_retry() -> None:
     def query_one(_cls: object) -> object:
         raise AssertionError("stale terminal event must not touch the current retry UI")
 
-    screen = SimpleNamespace(_state=state, _agent_running=True, query_one=query_one)
+    screen = SimpleNamespace(_state=state, query_one=query_one)
     handler = make_backend_handler(screen)
 
     asyncio.run(
@@ -1000,8 +1011,8 @@ async def test_terminal_render_completion_cannot_stop_successor_generation() -> 
     state.run.started_at = datetime.now(UTC)
 
     class _Status:
-        def _format_elapsed(self) -> str:
-            return "1s"
+        def flash_completed(self) -> None:
+            self.flash("Completed in 1s")
 
         def flash(self, _message: str) -> None:
             return
@@ -1021,9 +1032,8 @@ async def test_terminal_render_completion_cannot_stop_successor_generation() -> 
     completed: list[None] = []
     screen = SimpleNamespace(
         _state=state,
-        _agent_running=True,
         _gc_messages=gc_messages,
-        _mark_terminal_title_completed=lambda: completed.append(None),
+        _session_title=fake_session_title(mark_terminal_title_completed=lambda: completed.append(None)),
         _set_agent_running=running.append,
         query_one=query_one,
         _debug=lambda *_args: None,

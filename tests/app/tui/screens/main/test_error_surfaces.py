@@ -18,7 +18,7 @@ from chrys.app.tui.screens.main.event_handlers import (
     BackendEventHandler,
     _WarningDedupeKey,
 )
-from chrys.app.tui.screens.main.state import MainScreenState
+from chrys.app.tui.screens.main.state import MainScreenState, RunState, SessionViewState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
@@ -31,9 +31,10 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import Localizer, MessageRef
 from tests.support.tui_helpers import (
+    fake_session_title,
+    main_screen_state_at,
     make_backend_handler,
     make_session_handler,
-    pending_submit_defaults,
     status_text,
 )
 
@@ -58,10 +59,10 @@ def test_session_in_use_error_uses_modal_not_chat_or_status() -> None:
     def debug(key: str, msg: str) -> None:
         debug_calls.append((key, msg))
 
+    restoring: list[bool] = []
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _agent_loading=False,
-        **pending_submit_defaults(),
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
+        _set_restoring_session=restoring.append,
         app=SimpleNamespace(push_screen=push_screen),
         _set_agent_running=set_agent_running,
         query_one=query_one,
@@ -73,7 +74,8 @@ def test_session_in_use_error_uses_modal_not_chat_or_status() -> None:
     message = f"Session '40d9a0483e08' is already open in another {APP_DISPLAY_NAME} instance (pid=47219)."
     asyncio.run(handler.on_error(Error(code="session_in_use", message=message)))
 
-    assert screen._restoring_session is False
+    assert screen._state.session.restoring_session is False
+    assert restoring == [False]
     assert running == [False]
     assert len(pushed) == 1
     dialog = pushed[0]
@@ -111,7 +113,6 @@ def test_hosted_web_warning_uses_modal_once_per_configuration() -> None:
         app=SimpleNamespace(push_screen=push_screen),
         notify=notify,
         _debug=debug,
-        **pending_submit_defaults(),
     )
     handler = make_backend_handler(screen)
     event = Warning(
@@ -183,10 +184,10 @@ def test_session_in_use_error_dismisses_active_load_modal() -> None:
         debug_calls.append((key, msg))
 
     fake_dialog = _FakeDialog()
+    restoring: list[bool] = []
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _agent_loading=True,
-        **pending_submit_defaults(),
+        _state=MainScreenState(run=RunState(agent_loading=True), session=SessionViewState(restoring_session=True)),
+        _set_restoring_session=restoring.append,
         app=SimpleNamespace(push_screen=push_screen),
         _set_agent_running=running.append,
         _set_agent_loading=loading.append,
@@ -200,7 +201,8 @@ def test_session_in_use_error_dismisses_active_load_modal() -> None:
     message = f"Session '40d9a0483e08' is already open in another {APP_DISPLAY_NAME} instance (pid=47219)."
     asyncio.run(handler.on_error(Error(code="session_in_use", message=message)))
 
-    assert screen._restoring_session is False
+    assert screen._state.session.restoring_session is False
+    assert restoring == [False]
     assert fake_dialog.dismissed is True
     assert fake_dialog.result_calls == []
     assert handler._agent_load_dialog is None
@@ -244,18 +246,12 @@ def test_session_fork_error_uses_notification_without_retry_mode() -> None:
     def notify(message: str, *, title: str, severity: str, **_kwargs: object) -> None:
         notifications.append((title, severity, message))
 
-    def set_agent_loading(value: bool) -> None:
-        screen._agent_loading = value
-        loading.append(value)
-
-    defaults = pending_submit_defaults()
-    defaults["_agent_running"] = True
+    restoring: list[bool] = []
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _agent_loading=False,
-        **defaults,
+        _state=MainScreenState(run=RunState(agent_running=True), session=SessionViewState(restoring_session=True)),
+        _set_restoring_session=restoring.append,
         _set_agent_running=running.append,
-        _set_agent_loading=set_agent_loading,
+        _set_agent_loading=loading.append,
         query_one=query_one,
         notify=notify,
         _debug=lambda key, value: debug_calls.append((key, value)),
@@ -266,7 +262,8 @@ def test_session_fork_error_uses_notification_without_retry_mode() -> None:
 
     asyncio.run(handler.on_error(Error(code="session_fork_empty", message="Cannot fork an empty session.")))
 
-    assert screen._restoring_session is False
+    assert screen._state.session.restoring_session is False
+    assert restoring == [False]
     assert running == []
     assert loading == [False]
     assert [(status_text(message), error) for message, error in flashes] == [
@@ -278,7 +275,9 @@ def test_session_fork_error_uses_notification_without_retry_mode() -> None:
     assert debug_calls == [("Error", "[session_fork_empty] Cannot fork an empty session.")]
 
 
-def _make_screen_for_image_rejection(*, text: str) -> tuple[SimpleNamespace, SimpleNamespace, list[object], list[bool]]:
+def _make_screen_for_image_rejection(
+    *, text: str, cwd: str | None = None
+) -> tuple[SimpleNamespace, SimpleNamespace, list[object], list[bool]]:
     class _FakeInputBar(_RestorableDraftFake):
         def __init__(self) -> None:
             self.value = ""
@@ -304,13 +303,10 @@ def _make_screen_for_image_rejection(*, text: str) -> tuple[SimpleNamespace, Sim
             return input_bar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
+    state = MainScreenState() if cwd is None else main_screen_state_at(cwd)
+    state.submit.begin(text)
     screen = SimpleNamespace(
-        _restoring_session=False,
-        _agent_loading=False,
-        _agent_running=False,
-        _pending_user_submit_active=True,
-        _pending_user_submit_text=text,
-        _pending_user_submit_blocked=False,
+        _state=state,
         app=_FakeApp(),
         _pushed_callbacks=callbacks,
         _set_agent_running=running.append,
@@ -334,7 +330,7 @@ def test_image_attachment_error_from_backend_uses_modal_and_restores_prompt() ->
         )
     )
 
-    assert screen._pending_user_submit_blocked is True
+    assert handler._state.submit.blocked is True
     assert running == [False]
     assert input_bar.value == "describe @shot.png"
     assert input_bar.unlocked is True
@@ -349,8 +345,7 @@ def test_image_rejection_dialog_action_rewrites_image_mentions_to_paths(tmp_path
     first = tmp_path / "shot.png"
     second = tmp_path / "screen two.jpg"
     text = f'inspect @{first.name} and @"{second}" but keep @notes.txt'
-    screen, input_bar, pushed, running = _make_screen_for_image_rejection(text=text)
-    screen._chdir_current_cwd = str(tmp_path)
+    screen, input_bar, pushed, running = _make_screen_for_image_rejection(text=text, cwd=str(tmp_path))
     handler = make_backend_handler(screen)
     handler._agent_load_dialog = None
 
@@ -388,7 +383,7 @@ def test_image_attachment_timeout_error_uses_modal_and_restores_prompt() -> None
 
     asyncio.run(handler.on_error(Error(code="image_attachment_error", message=message)))
 
-    assert screen._pending_user_submit_blocked is True
+    assert handler._state.submit.blocked is True
     assert running == [False]
     assert input_bar.value == "describe @huge.png"
     assert input_bar.unlocked is True
@@ -396,6 +391,14 @@ def test_image_attachment_timeout_error_uses_modal_and_restores_prompt() -> None
     dialog = pushed[0]
     assert dialog._title == "Image Not Attached"
     assert "Image preparation took longer than 1 second" in dialog._message
+
+
+def _blocked_prompt_state() -> MainScreenState:
+    """A submit still being admitted while its user bubble renders."""
+    state = MainScreenState()
+    state.submit.begin("blocked prompt")
+    state.render_gate.begin()
+    return state
 
 
 def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> None:
@@ -431,13 +434,7 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=False,
-        _agent_loading=False,
-        _agent_running=False,
-        _pending_user_submit_active=True,
-        _pending_user_submit_text="blocked prompt",
-        _pending_user_submit_blocked=False,
-        _pending_user_message_render_active=True,
+        _state=_blocked_prompt_state(),
         _set_agent_running=running.append,
         query_one=query_one,
         _debug=lambda *_args: None,
@@ -447,7 +444,7 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
 
     asyncio.run(handler.on_error(Error(code="hook_blocked", message="Prompt denied")))
 
-    assert screen._pending_user_submit_blocked is True
+    assert handler._state.submit.blocked is True
     assert running == [False]
     assert input_bar.value == "blocked prompt"
     assert input_bar.unlocked is True
@@ -488,14 +485,7 @@ def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_en
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
-        _restoring_session=False,
-        _agent_loading=False,
-        _agent_running=False,
-        _pending_user_submit_active=True,
-        _pending_user_submit_text="blocked prompt",
-        _pending_user_submit_blocked=False,
-        _pending_user_message_render_active=True,
-        _set_agent_running=lambda _value: None,
+        _state=_blocked_prompt_state(),
         query_one=query_one,
         _debug=lambda key, msg: debug_calls.append((key, msg)),
     )
@@ -536,7 +526,7 @@ def test_prior_run_error_cannot_interrupt_newer_run(error_code: str, pending_sub
         _state=state,
         query_one=query_one,
         _debug=lambda *_args: None,
-        _mark_terminal_title_failed=lambda: None,
+        _session_title=fake_session_title(),
     )
     handler = make_backend_handler(screen)
 
@@ -614,11 +604,9 @@ def test_live_turn_error_requests_terminal_absorb_after_render() -> None:
 
     gc_messages = _GcMessages()
     screen = SimpleNamespace(
-        _agent_running=True,
-        _agent_loading=False,
-        _restoring_session=False,
+        _state=MainScreenState(run=RunState(agent_running=True)),
         _gc_messages=gc_messages,
-        _mark_terminal_title_failed=lambda: order.append("failed"),
+        _session_title=fake_session_title(mark_terminal_title_failed=lambda: order.append("failed")),
         _set_agent_running=lambda _value: order.append("idle"),
         query_one=query_one,
         _debug=lambda *_args: None,
@@ -669,11 +657,9 @@ def test_live_turn_error_render_failure_releases_input_without_absorb() -> None:
     running: list[bool] = []
     gc_messages: list[object] = []
     screen = SimpleNamespace(
-        _agent_running=True,
-        _agent_loading=False,
-        _restoring_session=False,
+        _state=MainScreenState(run=RunState(agent_running=True)),
         _gc_messages=gc_messages,
-        _mark_terminal_title_failed=lambda: None,
+        _session_title=fake_session_title(),
         _set_agent_running=running.append,
         query_one=query_one,
         _debug=lambda *_args: None,
@@ -711,7 +697,7 @@ def test_image_attachment_warning_from_backend_uses_modal_and_restores_prompt() 
         )
     )
 
-    assert screen._pending_user_submit_blocked is True
+    assert handler._state.submit.blocked is True
     assert running == []
     assert input_bar.value == "continue with @shot.png"
     assert input_bar.unlocked is True
@@ -744,10 +730,10 @@ def test_submit_blocking_warning_restores_prompt_without_modal() -> None:
     def notify(message: str, *, title: str, severity: str, **_kwargs: object) -> None:
         notifications.append((message, title, severity))
 
+    state = MainScreenState()
+    state.submit.begin("retry after the other agent finishes")
     screen = SimpleNamespace(
-        _pending_user_submit_active=True,
-        _pending_user_submit_text="retry after the other agent finishes",
-        _pending_user_submit_blocked=False,
+        _state=state,
         app=SimpleNamespace(push_screen=pushed.append),
         notify=notify,
         query_one=query_one,
@@ -765,7 +751,7 @@ def test_submit_blocking_warning_restores_prompt_without_modal() -> None:
         )
     )
 
-    assert screen._pending_user_submit_blocked is True
+    assert handler._state.submit.blocked is True
     assert input_bar.value == "retry after the other agent finishes"
     assert input_bar.unlocked is True
     assert pushed == []
@@ -818,10 +804,10 @@ def test_error_event_empty_message_uses_code_fallback() -> None:
     def debug(key: str, msg: str) -> None:
         debug_calls.append((key, msg))
 
+    restoring: list[bool] = []
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _agent_loading=False,
-        **pending_submit_defaults(),
+        _state=MainScreenState(session=SessionViewState(restoring_session=True)),
+        _set_restoring_session=restoring.append,
         _set_agent_running=set_agent_running,
         query_one=query_one,
         _debug=debug,
@@ -831,7 +817,8 @@ def test_error_event_empty_message_uses_code_fallback() -> None:
 
     asyncio.run(handler.on_error(Error(code="executor_error", message="")))
 
-    assert screen._restoring_session is False
+    assert screen._state.session.restoring_session is False
+    assert restoring == [False]
     assert running == [False]
     assert [(status_text(message), error) for message, error in flashes] == [("Error: Executor error", True)]
     assert chat_errors == ["Executor error"]
@@ -880,10 +867,6 @@ def test_error_display_message_localizes_ui_surfaces_and_keeps_raw_debug() -> No
         raise AssertionError(f"unexpected query_one({cls})")
 
     screen = SimpleNamespace(
-        _restoring_session=False,
-        _agent_loading=False,
-        **pending_submit_defaults(),
-        _set_agent_running=lambda _value: None,
         query_one=query_one,
         _debug=lambda key, msg: debug_calls.append((key, msg)),
     )
@@ -956,9 +939,7 @@ def _make_agent_load_error_handler(dialog: object) -> tuple[BackendEventHandler,
         raise AssertionError(f"unexpected query_one({cls})")
 
     screen = SimpleNamespace(
-        _restoring_session=True,
-        _agent_loading=True,
-        **pending_submit_defaults(),
+        _state=MainScreenState(run=RunState(agent_loading=True), session=SessionViewState(restoring_session=True)),
         _set_agent_loading=probe.loading.append,
         _set_agent_running=probe.running.append,
         query_one=query_one,

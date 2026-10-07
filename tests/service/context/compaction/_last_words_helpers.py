@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from chrys.foundation.retry import RetryAttemptInfo
 from chrys.service.context.compaction.last_words import CompactionStatus, LastWordsGenerator
@@ -88,6 +88,7 @@ class FallbackClient:
 
         class _Response:
             usage_details = None
+            additional_properties: ClassVar[dict[str, object]] = {}
             raw_text = self.text
 
         return _Response()
@@ -111,6 +112,7 @@ class SequenceFallbackClient:
 
         class _Response:
             usage_details = None
+            additional_properties: ClassVar[dict[str, object]] = {}
             raw_text = text
 
         return _Response()

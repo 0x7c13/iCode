@@ -67,6 +67,9 @@ class WorkflowFeedback:
         dismiss_label: MessageRef = _DISMISS_LABEL,
         action: WorkflowNoticeAction | None = None,
     ) -> None:
+        if isinstance(message, str):
+            # Error text can carry file names and paths: keep their control characters off the terminal.
+            message = text.shown(message, block=True)
         rendered = self.render(message)
         if not rendered or rendered == self._notice_text:
             return

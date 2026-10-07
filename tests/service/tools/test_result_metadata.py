@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,7 +184,13 @@ def test_filesystem_read_file_records_production_failure_metadata(tmp_path: Path
 async def test_search_process_failure_records_production_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def fake_run_rg(args: list[str], *, timeout: int = 30, cwd: str | None = None) -> tuple[str, str, int]:
+    async def fake_run_rg(
+        args: list[str],
+        *,
+        timeout: int = 30,
+        cwd: str | None = None,
+        consume: Callable[[bytes], bool] | None = None,
+    ) -> tuple[str, str, int]:
         return "", "regex parse error", 2
 
     monkeypatch.setattr(search_module, "_run_rg", fake_run_rg)

@@ -174,7 +174,7 @@ class TestRollbackDiffAggregation:
         """
         tracker = _simulate_mv_into_new_dir(tmp_path)
 
-        entries = _entries_for_target(tracker, target_turn=1, cwd=str(tmp_path), available_turns=[0, 1, 2])
+        entries = _entries_for_target(tracker, target_turn=1, cwd=str(tmp_path))
         # Normalise to forward slashes — ``rel_path`` uses ``os.sep`` and the
         # test runs on Windows in CI.
         rels = {Path(e.rel_path).as_posix(): e for e in entries}
@@ -194,7 +194,7 @@ class TestRollbackDiffAggregation:
         """
         tracker = _simulate_mv_into_new_dir(tmp_path)
 
-        entries = _entries_for_target(tracker, target_turn=0, cwd=str(tmp_path), available_turns=[0, 1, 2])
+        entries = _entries_for_target(tracker, target_turn=0, cwd=str(tmp_path))
         rels = {Path(e.rel_path).as_posix(): e for e in entries}
 
         assert "docs/README.md" in rels

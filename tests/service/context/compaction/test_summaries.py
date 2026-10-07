@@ -2,6 +2,7 @@
 
 """Tests for ``_build_summary`` output and ``_set_summarized`` bookkeeping."""
 
+import base64
 import copy
 
 import pytest
@@ -16,6 +17,7 @@ from chrys.service.context.compaction import (
 )
 from chrys.service.context.compaction.summaries import _SUMMARY_TOTAL_MAX
 from tests.service.context.compaction._compaction_helpers import (
+    _anthropic_fetched_pdf_exchange,
     _assistant_text,
     _assistant_tool_call,
     _build_tool_group,
@@ -83,6 +85,19 @@ def test_summary_preserves_hosted_mcp_name_and_result_text(restored: bool) -> No
     assert "search_docs" in summary
     assert 'query="Chrys"' in summary
     assert "found the guide" in summary
+
+
+@pytest.mark.parametrize("restored", [False, True], ids=["live", "restored"])
+def test_summary_replaces_a_hosted_base64_document_with_a_placeholder(restored: bool) -> None:
+    payload = base64.b64encode(b"%PDF-1.7\n" + b"binary" * 40).decode()
+    messages = _anthropic_fetched_pdf_exchange(payload)
+    if restored:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+
+    summary = _build_summary(messages)
+
+    assert "[application/pdf artifact]" in summary
+    assert payload[:32] not in summary
 
 
 def test_summary_prefers_hosted_items_over_duplicate_result_mirror() -> None:

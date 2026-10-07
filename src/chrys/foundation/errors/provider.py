@@ -54,6 +54,51 @@ _PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
     "billing_error": ErrorKind.QUOTA_EXHAUSTED,
     "stream_truncated": ErrorKind.STREAM_TRUNCATED,
 }
+# Codes only a response's own failure reports (``ProviderResponseError``, or
+# an error event inside its stream): an HTTP error that carries one keeps the
+# kind its status gives it.
+_IN_BAND_CODE_KINDS: Mapping[str, ErrorKind] = {
+    **_PROVIDER_CODE_KINDS,
+    # Finish reasons a Chat Completions service (GLM, DeepSeek) ends a
+    # completion with when it failed to finish it.
+    "network_error": ErrorKind.STREAM_TRUNCATED,
+    "insufficient_system_resource": ErrorKind.OVERLOADED,
+    # Codes a failed Responses API response reports.
+    "invalid_prompt": ErrorKind.REQUEST_REJECTED,
+    "cyber_policy": ErrorKind.CONTENT_FILTERED,
+    "misalignment_policy_violation": ErrorKind.CONTENT_FILTERED,
+    "image_content_policy_violation": ErrorKind.CONTENT_FILTERED,
+    **dict.fromkeys(
+        (
+            "invalid_image",
+            "invalid_image_format",
+            "invalid_base64_image",
+            "invalid_image_url",
+            "image_too_large",
+            "image_too_small",
+            "image_parse_error",
+            "invalid_image_mode",
+            "image_file_too_large",
+            "unsupported_image_media_type",
+            "empty_image_file",
+            "failed_to_download_image",
+            "image_file_not_found",
+        ),
+        ErrorKind.REQUEST_REJECTED,
+    ),
+}
+# Kinds of a failure a response reported in-band that the same request meets
+# again when sent anew.
+_FINAL_IN_BAND_KINDS = frozenset(
+    {
+        ErrorKind.QUOTA_EXHAUSTED,
+        ErrorKind.CONTEXT_OVERFLOW,
+        ErrorKind.PAYLOAD_TOO_LARGE,
+        ErrorKind.AUTH_FAILED,
+        ErrorKind.REQUEST_REJECTED,
+        ErrorKind.CONTENT_FILTERED,
+    }
+)
 
 _CONTEXT_OVERFLOW_CODES = frozenset({"context_length_exceeded", "model_context_window_exceeded"})
 # Only phrasings that name the context window or the model's token limit.
@@ -72,6 +117,21 @@ _CONTEXT_OVERFLOW_PATTERNS = tuple(
         r"exceeds the available context size",  # llama.cpp
         r"greater than the context length",  # LM Studio
         r"exceeded model token limit",  # Kimi
+    )
+)
+# The window limit, in tokens, that an overflow phrasing above names: a
+# plain decimal, optionally with thousands commas; never a "128k" shorthand.
+_LIMIT = r"(\d{1,3}(?:,\d{3})+|\d+)(?!\w|[.,]\d)"
+_CONTEXT_LIMIT_PATTERNS = tuple(
+    re.compile(pattern.replace("{limit}", _LIMIT), re.IGNORECASE)
+    for pattern in (
+        r"maximum context length is {limit} tokens",  # OpenAI, vLLM, DeepSeek, OpenRouter
+        r"prompt is too long: [\d,]+ tokens > {limit} maximum",  # Anthropic
+        r"maximum number of tokens allowed \({limit}\)",  # Google Gemini
+        r"maximum prompt length is {limit}",  # xAI
+        r"available context size \({limit} tokens\)",  # llama.cpp
+        r"n_ctx: {limit}",  # LM Studio
+        r"exceeded model token limit: {limit}",  # Kimi
     )
 )
 # Throttling that happens to mention tokens ("Too many tokens, please wait",
@@ -117,7 +177,18 @@ def _code_kind(code: str) -> ErrorKind:
         return ErrorKind.CONTEXT_OVERFLOW
     if code in NON_RETRYABLE_PROVIDER_ERROR_CODES:
         return ErrorKind.QUOTA_EXHAUSTED
-    return _PROVIDER_CODE_KINDS.get(code, ErrorKind.UNKNOWN)
+    return _IN_BAND_CODE_KINDS.get(code, ErrorKind.UNKNOWN)
+
+
+def in_band_failure_retryable(code: str) -> bool:
+    """Whether a request whose response failed with *code* may succeed when sent again.
+
+    Adapters raising :class:`ProviderResponseError` for a failure the
+    response itself reported decide its retry by this, and the classifier
+    applies it to an error an SDK raised from inside a stream; an unknown
+    code may pass.
+    """
+    return _code_kind(code) not in _FINAL_IN_BAND_KINDS
 
 
 class ContinuationVerdictError(Exception):
@@ -137,6 +208,12 @@ class ProviderResponseError(ContinuationVerdictError):
     Adapters raise it for failures the SDK does not raise itself — a stream
     that ended without its terminal event, an error-typed finish reason — and
     state the retry decision explicitly.
+
+    ``observed_contents`` holds what the failed response showed that the
+    adapter never yielded, such as provider-hosted tool work: the retry gates
+    count it as executed. It is opaque here; the layer that reads it knows
+    its type. ``usage_details`` holds the token usage the failed response
+    reported, so the tokens it consumed are still counted.
     """
 
     def __init__(
@@ -148,6 +225,8 @@ class ProviderResponseError(ContinuationVerdictError):
         retry_after: float | None = None,
         invalidates_continuation_token: bool = False,
         kind: ErrorKind | None = None,
+        observed_contents: tuple[object, ...] = (),
+        usage_details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(f"{code}: {provider_message}")
         self.code = code
@@ -156,6 +235,8 @@ class ProviderResponseError(ContinuationVerdictError):
         self.retry_after = retry_after
         self.invalidates_continuation_token = invalidates_continuation_token
         self.kind = kind if kind is not None else _code_kind(code)
+        self.observed_contents = observed_contents
+        self.usage_details = usage_details
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,14 +364,17 @@ def signal_kind(signal: ProviderSignal) -> tuple[ErrorKind, str]:
     evidence = f"{type(source).__name__} http {signal.status_code}"
     if _is_quota(signal):
         return ErrorKind.QUOTA_EXHAUSTED, f"{evidence} {signal.code or signal.error_type or ''}".rstrip()
-    if signal.code is not None and (kind := _PROVIDER_CODE_KINDS.get(signal.code)) is not None:
+    # An error a stream reports in-band, with no status of its own, is how
+    # that response failed: the codes only a response reports name it too.
+    codes = _IN_BAND_CODE_KINDS if signal.status_code is None else _PROVIDER_CODE_KINDS
+    if signal.code is not None and (kind := codes.get(signal.code)) is not None:
         return kind, f"{evidence} {signal.code}"
     # An error status outranks the error type, which can be broad
     # (OpenAI answers a bad key with 401 ``invalid_request_error``); the type
     # decides only for errors reported without one, e.g. inside a 2xx stream.
     if signal.status_code is not None and (kind := status_kind(signal.status_code)) is not ErrorKind.UNKNOWN:
         return kind, evidence
-    if signal.error_type is not None and (kind := _PROVIDER_CODE_KINDS.get(signal.error_type)) is not None:
+    if signal.error_type is not None and (kind := codes.get(signal.error_type)) is not None:
         return kind, f"{evidence} {signal.error_type}"
     return ErrorKind.UNKNOWN, evidence
 
@@ -321,6 +405,18 @@ def names_context_overflow(signal: ProviderSignal | None, unstructured_texts: It
     if signal.code in _CONTEXT_OVERFLOW_CODES:
         return True
     return _names_overflow((signal.message or "", _clean_exception_text(source)))
+
+
+def named_context_limit(texts: Iterable[str]) -> int | None:
+    """Return the one positive window limit, in tokens, that an overflow's *texts* name; None for none or several."""
+    limits = {
+        int(match.group(1).replace(",", ""))
+        for text in texts
+        for pattern in _CONTEXT_LIMIT_PATTERNS
+        for match in pattern.finditer(text)
+    }
+    limits.discard(0)
+    return limits.pop() if len(limits) == 1 else None
 
 
 def names_server_error_overflow(signal: ProviderSignal) -> bool:

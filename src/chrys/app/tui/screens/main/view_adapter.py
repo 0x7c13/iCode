@@ -42,11 +42,11 @@ from chrys.app.tui.widgets import PromptDraft
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
+from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.app.tui.widgets.chrome.image_paste import clipboard_image_dir_for_session
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_AGENT_LOAD_FAILED,
-    STATUS_COMPLETED,
     STATUS_INTERACTIVE_MODE,
     STATUS_INTERRUPTED,
     STATUS_RETRYING,
@@ -80,11 +80,13 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.diff.rollback_modal import RollbackModalState
     from chrys.app.tui.screens.main.engine_read_model import RollbackReadState
     from chrys.app.tui.screens.main.screen import MainScreen
+    from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
+    from chrys.service.approval.judge import JudgeVerdict
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.state.store import StateStore
 
@@ -94,6 +96,12 @@ logger = logging.getLogger(__name__)
 def _push_screen_untyped(app: Any, screen: object, callback: object | None = None) -> object:
     """Push adapter-typed screens or callbacks that Textual's push_screen overloads cannot model."""
     return app.push_screen(screen) if callback is None else app.push_screen(screen, callback)
+
+
+def _judge_verdict(event: ApprovalReviewed) -> JudgeVerdict:
+    from chrys.service.approval.judge import JudgeVerdict
+
+    return JudgeVerdict(approved=event.approved, reason=event.reason)
 
 
 class _StatusFlashKwargs(TypedDict, total=False):
@@ -111,16 +119,20 @@ class MainScreenViewAdapter:
         self,
         screen: MainScreen,
         *,
+        state: MainScreenState,
         state_store: StateStore | None = None,
         locale_controller: LocaleController | None = None,
     ) -> None:
         self._screen = screen
+        self._state = state
         self._state_store = state_store
         self._locale_controller = locale_controller
         self._rollback_progress_modal: RollbackProgressModal | None = None
         self._input_restore_generation = 0
         # The sessions browser's surface filter per mode (workflow mode or not), kept while the app runs.
         self._session_surfaces: dict[bool, frozenset[SessionSurface]] = {}
+        # The status bar as shell mode found it, restored when shell mode exits.
+        self._shell_status_snapshot: dict = {}
 
     # -------------------------------------------------------------- #
     # Generic screen effects
@@ -226,13 +238,13 @@ class MainScreenViewAdapter:
     # -------------------------------------------------------------- #
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
-        self._screen._set_terminal_title_for_user_message(text)
+        self._screen._session_title.set_terminal_title_for_user_message(text)
 
     def clear_terminal_title_result(self) -> None:
-        self._screen._clear_terminal_title_result()
+        self._screen._session_title.clear_terminal_title_result()
 
     def set_terminal_title_for_cwd(self, cwd: str | None = None) -> None:
-        self._screen._set_terminal_title_for_cwd(cwd)
+        self._screen._session_title.set_terminal_title_for_cwd(cwd)
 
     def current_chat_session_id(self) -> str:
         return self._screen.query_one(ChatPanel).session_id
@@ -332,14 +344,13 @@ class MainScreenViewAdapter:
         self._screen.query_one(StatusBar).flash(text, **kwargs)
 
     def flash_turn_complete(self) -> None:
-        status = self._screen.query_one(StatusBar)
-        status.flash(STATUS_COMPLETED.bind(elapsed=status._format_elapsed()))
+        self._screen.query_one(StatusBar).flash_completed()
 
     def mark_terminal_title_completed(self) -> None:
-        self._screen._mark_terminal_title_completed()
+        self._screen._session_title.mark_terminal_title_completed()
 
     def mark_terminal_title_failed(self) -> None:
-        self._screen._mark_terminal_title_failed()
+        self._screen._session_title.mark_terminal_title_failed()
 
     def start_tool_status(self, tool_name: str) -> None:
         status = self._screen.query_one(StatusBar)
@@ -377,13 +388,13 @@ class MainScreenViewAdapter:
         generated: str | None = None,
         fallback: str | None = None,
     ) -> None:
-        self._screen._set_session_title_state(custom=custom, generated=generated, fallback=fallback)
+        self._screen._session_title.set_session_title_state(custom=custom, generated=generated, fallback=fallback)
 
     def reset_session_title_state(self) -> None:
-        self._screen._reset_session_title_state()
+        self._screen._session_title.reset_session_title_state()
 
     def session_custom_title(self) -> str:
-        return self._screen._session_custom_title
+        return self._screen._session_title.custom_title
 
     def set_context_usage_state(self, state: ContextUsageState | None) -> None:
         self._screen.context_usage_state = state
@@ -561,7 +572,7 @@ class MainScreenViewAdapter:
 
     def sync_main_surface(self) -> None:
         dashboard = self._screen.query_one(TrajectoryDashboard)
-        shell = self._screen._shell_mode
+        shell = self._state.shell.active
         workflow = self._screen._workflow.workflow_mode
         dashboard.display = dashboard.foreground and not shell
         self._screen._workflow_panel.display = workflow and not dashboard.foreground and not shell
@@ -680,7 +691,7 @@ class MainScreenViewAdapter:
         # The rolled-back session's file is gone; stale title state would
         # otherwise keep suppressing future auto-title updates (a custom
         # title in UI state blocks them) and pin a stale terminal title.
-        self._screen._reset_session_title_state()
+        self.reset_session_title_state()
         if session_id:
             self._screen.chat_session_id = session_id
             panel.set_session_id(session_id)
@@ -1188,6 +1199,8 @@ class MainScreenViewAdapter:
         event: ApprovalRequest,
         approval_body: object | None,
         on_result: Callable[[tuple[bool, str, dict[str, Any] | None] | None], None],
+        *,
+        verdict: ApprovalReviewed | None,
     ) -> ApprovalDialogHandle:
         from chrys.app.tui.screens.dialogs.approval import ApprovalBody, ApprovalDialog
 
@@ -1201,27 +1214,17 @@ class MainScreenViewAdapter:
             approval_body=body,
             presentation_kind=event.presentation_kind,
             reuse_offer=event.reuse_offer,
+            verdict=_judge_verdict(verdict) if verdict is not None else None,
         )
         self._screen.app.push_screen(dialog, on_result)
         return dialog
 
-    def deliver_approval_verdict(
-        self,
-        dialog: ApprovalDialogHandle,
-        event: ApprovalReviewed,
-        *,
-        after_refresh: bool,
-    ) -> None:
+    def deliver_approval_verdict(self, dialog: ApprovalDialogHandle, event: ApprovalReviewed) -> None:
         from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
-        from chrys.service.approval.judge import JudgeVerdict
 
-        if not isinstance(dialog, ApprovalDialog):
-            return
-        verdict = JudgeVerdict(approved=event.approved, reason=event.reason)
-        if after_refresh:
-            dialog.call_after_refresh(dialog.receive_verdict, verdict)
-        else:
-            dialog.receive_verdict(verdict)
+        if isinstance(dialog, ApprovalDialog):
+            # The dialog keeps a verdict that beats its mount and shows it then.
+            dialog.receive_verdict(_judge_verdict(event))
 
     def dismiss_approval_dialog(self, dialog: ApprovalDialogHandle) -> None:
         """Close a cancelled approval through its cancellation-only path."""
@@ -1234,8 +1237,11 @@ class MainScreenViewAdapter:
         from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
 
         if isinstance(dialog, ApprovalDialog):
-            return dialog._tool_name
+            return dialog.tool_name
         return ""
+
+    def set_auto_review_count(self, count: int) -> None:
+        self._screen.query_one(AppHeader).set_auto_review_count(count)
 
     def notify_approval_required(self) -> None:
         self.notify_event(NotificationEvent.APPROVAL_REQUIRED)
@@ -1429,7 +1435,7 @@ class MainScreenViewAdapter:
         shell = self._screen.query_one(ShellPanel)
         status = self._screen.query_one(StatusBar)
         sidebar = self._screen.query_one(SidebarPanel)
-        self._screen._sb_saved = status.snapshot()
+        self._shell_status_snapshot = status.snapshot()
         if dashboard.suspend_for_shell_mode():
             session_json.suspend_for_shell_mode()
         else:
@@ -1460,12 +1466,9 @@ class MainScreenViewAdapter:
         sidebar.remove_class("-shell-active")
         # Restore last for the same reason flash runs last in enter_shell_mode:
         # its map rebuild must see the fully restored layout.
-        status.restore(self._screen._sb_saved)
+        status.restore(self._shell_status_snapshot)
         if not dashboard_restored and input_bar.display:
             input_bar.focus_input()
-
-    async def send_shell_interrupt(self) -> None:
-        await self._screen.query_one(ShellPanel).send_interrupt()
 
     def set_alternate_screen_active(self, active: bool) -> None:
         status = self._screen.query_one(StatusBar)
@@ -1477,7 +1480,7 @@ class MainScreenViewAdapter:
             status.flash(STATUS_INTERACTIVE_MODE.bind(), warn=True)
             self._screen.query_one(ShellPanel).query_one(Terminal).focus()
             return
-        if self._screen._shell_mode:
+        if self._state.shell.active:
             status.flash(STATUS_SHELL_MODE.bind(), warn=True)
             self._screen.query_one(ShellPanel).query_one(Terminal).focus()
         else:
@@ -1527,7 +1530,7 @@ class MainScreenViewAdapter:
             rollback_modal.handoff_to_session_restore()
 
         def _restore_input_focus(_result: None = None) -> None:
-            if self._screen._shell_mode or self._screen._fullscreen_terminal:
+            if self._state.shell.active or self._state.shell.fullscreen_terminal:
                 return
             with contextlib.suppress(Exception):
                 self._screen.query_one(InputBar).focus_input()

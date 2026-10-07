@@ -964,6 +964,7 @@ def test_builtin_profiles_select_service_engine_and_application_consumers() -> N
     path = "src/chrys/service/profiles/agents/builtins/Code.yaml"
     expected = {
         "tests/app/acp/test_session_manager_profiles.py",
+        "tests/app/cli/test_workflow_validate.py",
         "tests/app/tui/behaviors/test_chrys_themes.py",
         "tests/app/tui/screens",
         "tests/orchestration/engine/build",
@@ -979,6 +980,61 @@ def test_builtin_profiles_select_service_engine_and_application_consumers() -> N
     assert all((REPO_ROOT / target).exists() for target in expected)
 
 
+def _selects(selection: chrys_test.Selection, test_path: str) -> bool:
+    return any(test_path == target or test_path.startswith(f"{target}/") for target in selection.regular)
+
+
+def _select_alone(path: str) -> chrys_test.Selection:
+    # No import edges: these consumers start a worker or discover a template by path. The nearby-directory
+    # fallback is off, so only the rules can select them.
+    return chrys_test.select_smart_tests(
+        (chrys_test.Change(path, frozenset({"changed"})),),
+        chrys_test.ImportGraph({}, {}, {}, ()),
+        defer_fixture_fallbacks=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "path", ["src/chrys/service/workflows/worker_host.py", "src/chrys/service/workflows/sdk/_builder.py"]
+)
+def test_a_worker_host_or_sdk_change_selects_the_tests_that_start_a_real_worker(path: str) -> None:
+    selection = _select_alone(path)
+
+    for consumer in (
+        "tests/orchestration/workflows/test_catalog.py",
+        "tests/orchestration/workflows/test_preview_trust.py",
+        "tests/orchestration/workflows/test_run_faults.py",
+        "tests/orchestration/workflows/test_worker_diagnostics.py",
+        "tests/app/cli/test_workflow.py",
+        "tests/app/cli/test_workflow_validate.py",
+        "tests/app/tui/screens/main/test_workflow_chrome.py",
+        "tests/app/tui/widgets/test_workflow_transcript_order.py",
+        "tests/service/workflows/test_py39_harness.py",
+    ):
+        assert (REPO_ROOT / consumer).exists()
+        assert _selects(selection, consumer), consumer
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/chrys/service/workflows/builtins/demo-workflow.py",
+        "src/chrys/service/workflows/builtins/demo-workflow.manifest.json",
+    ],
+)
+def test_a_builtin_workflow_change_selects_the_tests_that_discover_it(path: str) -> None:
+    selection = _select_alone(path)
+
+    for consumer in (
+        "tests/orchestration/workflows/test_catalog.py",
+        "tests/app/tui/screens/main/test_workflow_run_settings.py",
+        "tests/app/cli/test_workflow.py",
+    ):
+        assert (REPO_ROOT / consumer).exists()
+        assert _selects(selection, consumer), consumer
+    assert all((REPO_ROOT / target).exists() for target in chrys_test._BUILTIN_WORKFLOW_TEST_TARGETS)
+
+
 @pytest.mark.parametrize(
     "changed_path",
     [
@@ -986,6 +1042,7 @@ def test_builtin_profiles_select_service_engine_and_application_consumers() -> N
         "scripts/build.ps1",
         "scripts/build_offline_dist.sh",
         "scripts/build_offline_dist.ps1",
+        "scripts/offline_wheel_overrides.txt",
         ".github/workflows/ci.yml",
         ".github/workflows/cd.yml",
     ],
@@ -1035,6 +1092,14 @@ def test_runtime_asset_without_a_subsystem_scope_reports_the_gap() -> None:
         (
             "src/chrys/app/features/session_title/generator.py",
             "tests/architecture/test_trajectory_wait_inventory.py::test_pending_retry_clear_calls_declare_a_terminal_reason",
+        ),
+        (
+            "src/chrys/kernel/loop.py",
+            "tests/architecture/test_trajectory_wait_inventory.py::test_wait_manifest_matches_source",
+        ),
+        (
+            "src/chrys/kernel/loop.py",
+            "tests/architecture/test_trajectory_wait_inventory.py::test_wait_inventory_covers_every_explicit_and_implicit_async_wait",
         ),
     ],
 )

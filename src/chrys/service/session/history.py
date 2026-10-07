@@ -199,7 +199,7 @@ _REPAIR_PAIRING_POLICY = PairingPolicy(
 )
 
 
-def _repair_call_entries(messages: list[Message], pairing: ExchangePairing) -> list[tuple[Occurrence, object, bool]]:
+def _repair_call_entries(pairing: ExchangePairing) -> list[tuple[Occurrence, object, bool]]:
     """One exchange's repairable call occurrences in transcript order.
 
     Returns ``(occurrence, truthy pairing key or None, answered)`` per call.
@@ -928,7 +928,7 @@ class SessionHistoryManager:
         accessor = LiveAccessor()
         exchange_list = list(iter_exchanges(messages, accessor))
         entries_per_exchange = [
-            _repair_call_entries(messages, pair_results(messages, exchange, accessor, _REPAIR_PAIRING_POLICY))
+            _repair_call_entries(pair_results(messages, exchange, accessor, _REPAIR_PAIRING_POLICY))
             for exchange in exchange_list
         ]
 
@@ -1229,7 +1229,7 @@ class SessionHistoryManager:
                     len(text),
                 )
                 continue
-            # Match _extract_intermediate_text(), which concatenates text
+            # Match intermediate_text_signal(), which concatenates text
             # parts without separators before deciding whether a sidecar is
             # needed. Replay also recognizes this form for compatibility.
             existing_text = "".join((c.text or "") for c in msg.contents if c.type == "text")

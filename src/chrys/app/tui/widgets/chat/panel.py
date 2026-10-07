@@ -664,7 +664,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Resume bottom-follow once when the agent starts its final answer."""
         self._scroll_controller.on_final_response_started()
 
-    def watch_virtual_size(self, old: object, new: object) -> None:
+    def watch_virtual_size(self, old: Size, new: Size) -> None:
         """Post-layout hook: re-engage anchor, sync scrollbar, toggle spacer.
 
         1. Anchor re-engage on growth: ``add_user_message`` releases the
@@ -761,10 +761,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
         precompose_tree(batch)
         try:
+            # An explicit ``before=None`` would skip ``mount``'s default place above the bottom spacer.
             if before is None:
                 await self.mount(*batch)
             else:
-                self._scroll_controller.prepare_insertion_above()
                 await self.mount(*batch, before=before)
             # AwaitMount only covers the roots passed to ``mount``. The
             # precomposed descendants run their own async Mount handlers;

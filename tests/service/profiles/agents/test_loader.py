@@ -57,6 +57,60 @@ def test_load_minimal_yaml(tmp_path: Path) -> None:
     assert profile.sub_agents.max_total_concurrency == 3
 
 
+@pytest.mark.parametrize(
+    ("yaml_value", "expected"),
+    [('"Plain text."', "Plain text."), ("null", ""), ("[First rule., Second rule.]", "First rule.\nSecond rule.")],
+)
+def test_load_instructions_text_joins_a_list_one_item_per_line(tmp_path: Path, yaml_value: str, expected: str) -> None:
+    p = tmp_path / "instructions.yaml"
+    p.write_text(
+        f"""\
+name: listed
+instructions: {yaml_value}
+skills:
+  inline:
+    - name: notes
+      description: Notes.
+      instructions: {yaml_value}
+""",
+        encoding="utf-8",
+    )
+    profile = load_profile_from_yaml(p)
+    assert profile.instructions == expected
+    assert profile.skills.inline[0].instructions == expected
+
+
+@pytest.mark.parametrize("yaml_value", ["{rule: text}", "42", "[text, 1]"])
+def test_load_rejects_instructions_that_are_not_text(tmp_path: Path, yaml_value: str) -> None:
+    p = tmp_path / "bad_instructions.yaml"
+    p.write_text(f"name: bad\ninstructions: {yaml_value}\n", encoding="utf-8")
+    with pytest.raises(AgentProfileLoadError, match=r"field 'instructions' must be a string or a list of strings"):
+        load_profile_from_yaml(p)
+
+    skill = tmp_path / "bad_skill_instructions.yaml"
+    skill.write_text(
+        f"""\
+name: bad
+skills:
+  inline:
+    - name: notes
+      description: Notes.
+      instructions: {yaml_value}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(AgentProfileLoadError, match=r"skills\.inline\[1\]\.instructions' must be a string"):
+        load_profile_from_yaml(skill)
+
+
+@pytest.mark.parametrize("item", ["Note: never push", "When editing files:"])
+def test_load_names_the_instructions_item_yaml_read_as_a_mapping(tmp_path: Path, item: str) -> None:
+    p = tmp_path / "colon_item.yaml"
+    p.write_text(f"name: bad\ninstructions:\n  - Be brief.\n  - {item}\n  - Keep diffs small.\n", encoding="utf-8")
+    with pytest.raises(AgentProfileLoadError, match=r"item 2 is a dict \(quote list items that contain ': ' or end"):
+        load_profile_from_yaml(p)
+
+
 def test_load_sub_agents_uses_default_concurrency_limits(tmp_path: Path) -> None:
     path = tmp_path / "sub-agents.yaml"
     path.write_text("name: parent\nsub_agents:\n  agents:\n    - profile: Explore\n", encoding="utf-8")

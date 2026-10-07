@@ -75,10 +75,11 @@ async def test_load_deadline_closes_the_worker(
 ) -> None:
     client = await launch()
     monkeypatch.setattr(worker_client, "LIMITS", replace(LIMITS, load_timeout=0.2))
-    with pytest.raises(WorkerRpcError, match="load did not finish"):
+    with pytest.raises(WorkerRpcError, match="load did not finish") as timed_out:
         await client.load(
             b"import threading\nthreading.Event().wait()\n", filename=str(workspace / "wf.py"), workspace=workspace
         )
+    assert timed_out.value.data["reason"] == worker_client.LOAD_TIMED_OUT
     assert client._process.returncode is not None
     assert client._closing is not None and client._closing.done()
     assert not client._pending

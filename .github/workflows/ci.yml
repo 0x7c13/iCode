@@ -30,7 +30,7 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - run: uv sync --extra all
       - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
@@ -76,7 +76,7 @@ jobs:
           python-version: "3.9"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - run: uv sync --extra all
       - name: Prewarm src bytecode
@@ -135,7 +135,7 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - run: uv sync --extra all
       - name: Prewarm src bytecode
@@ -174,45 +174,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Either suite alone saturates a two-vCPU runner, and hosted Windows
-          # runners differ up to ~1.7x in speed, so each splits across runners
-          # at measured, roughly even wall-clock cuts: core in two, and TUI in
-          # three because the main screen's tests drive whole workflow runs.
-          # Each last shard takes everything the earlier ones do not name.
-          - label: windows/1/core
-            artifact: windows-core-1
+          # The core suite fits one four-vCPU runner. The TUI suite splits in
+          # two at a measured, roughly even cut: the main screen's tests drive
+          # whole workflow runs and, with the behaviors tests, weigh as much as
+          # the rest of the TUI suite; the second shard takes everything the
+          # first does not name.
+          - label: windows/core
+            artifact: windows-core
             workers: 4
             py39: true
-            pytest_args: tests/service tests/integration
-          - label: windows/2/core
-            artifact: windows-core-2
-            workers: 4
-            py39: true
-            skip_typecheck: true
-            pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui --ignore=tests/service --ignore=tests/integration
+            pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
           - label: windows/1/tui
             artifact: windows-tui-1
             workers: 4
             py39: false
-            pytest_args: >-
-              tests/app/tui/screens/themes tests/app/tui/screens/settings tests/app/tui/behaviors
-              tests/app/tui/support tests/app/tui/i18n tests/app/tui/widgets/editor
-              tests/app/tui/widgets/chat tests/app/tui/widgets/markdown
+            pytest_args: tests/app/tui/screens/main tests/app/tui/behaviors
           - label: windows/2/tui
             artifact: windows-tui-2
             workers: 4
             py39: false
-            pytest_args: tests/app/tui/screens/main
-          - label: windows/3/tui
-            artifact: windows-tui-3
-            workers: 4
-            py39: false
             pytest_args: >-
               tests/app/tui --ignore=tests/app/tui/screens/main
-              --ignore=tests/app/tui/screens/themes --ignore=tests/app/tui/screens/settings
-              --ignore=tests/app/tui/behaviors --ignore=tests/app/tui/support --ignore=tests/app/tui/i18n
-              --ignore=tests/app/tui/widgets/editor --ignore=tests/app/tui/widgets/chat
-              --ignore=tests/app/tui/widgets/markdown
+              --ignore=tests/app/tui/behaviors
     steps:
       # Hosted Windows images already disable real-time Defender scanning, so
       # changing Defender settings here is a measured no-op.
@@ -234,7 +217,7 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - name: Install Python 3.9
         # The oldest interpreter a workflow worker may run in; only the core
@@ -248,7 +231,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py3.14-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+          key: venv-${{ runner.os }}-${{ hashFiles('.python-version', 'uv.lock', 'pyproject.toml') }}
       - run: uv sync --extra all
       - name: Prewarm src bytecode
         run: uv run python -m compileall -q src
@@ -290,7 +273,7 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - run: uv sync --extra all
       - name: Run architecture tests
@@ -357,7 +340,7 @@ jobs:
           enable-cache: true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.14"
+          python-version-file: .python-version
           allow-prereleases: true
       - run: uv build
       - name: Check the wheel bundles the user guide

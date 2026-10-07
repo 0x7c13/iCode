@@ -158,8 +158,9 @@ class WorkflowInputDialog(BaseDialog[WorkflowInputResult]):
 
     def _refresh_context(self) -> None:
         title = self.query_one("#workflow-input-title", Static)
-        title.update(Text(self._input_context.title))
-        title.tooltip = Text(self._input_context.title)
+        shown = text.shown(self._input_context.title)
+        title.update(Text(shown))
+        title.tooltip = Text(shown)
         source = text.SOURCES.get(self._input_context.source_kind)
         self.query_one("#workflow-input-source", Static).update(
             Text(text.render(source.bind(), self._locale) if source is not None else self._input_context.source_kind)

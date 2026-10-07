@@ -49,14 +49,11 @@ from chrys.service.agent_middleware.events.hosted_tools import (
 )
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 from chrys.service.llm.mock import MockResponse
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.stream import StreamState
 from tests.orchestration.invoker._main_pass import continuation_pass
 from tests.support.pipeline_helpers import create_test_engine
 from tests.support.scripted_clients import HostedMockResponse, hosted_image_result
-
-
-class _FakeAsyncOpenAI:
-    base_url = "https://api.openai.test"
 
 
 def _responses_events(*, before: str = "", after: str = "", status: str = "completed") -> list[SimpleNamespace]:
@@ -174,18 +171,9 @@ class _ValidatedAgent:
         )
 
         async def _raw_updates() -> AsyncIterator[ChatResponseUpdate]:
-            client = RawOpenAIChatClient(model="gpt-test", async_client=_FakeAsyncOpenAI())
-            function_call_ids: dict[int, tuple[str, str]] = {}
-            calls: dict[int, Content] = {}
-            results: dict[int, Content] = {}
+            state = StreamState({}, model="gpt-test", variant=OPENAI_RESPONSES)
             for event in self._events:
-                yield client._parse_chunk_from_openai(
-                    event,
-                    {},
-                    function_call_ids,
-                    hosted_call_contents=calls,
-                    hosted_result_contents=results,
-                )
+                yield state.update_for(event)
             if self._explode_after_updates:
                 raise RuntimeError("wire exploded")
             if self._wait_after_updates:
@@ -409,6 +397,19 @@ async def test_output_item_added_and_done_publish_one_start_through_hook_and_bri
     assert len(starts) == len(results) == 1
     assert starts[0].call_id == results[0].call_id
     assert starts[0].provider_call_id == "ws_1"
+
+
+@pytest.mark.asyncio
+async def test_hosted_card_ids_stay_unique_across_rebuilt_bindings() -> None:
+    # An engine rebuild (model or agent switch) builds new TurnBindings; frontends key cards by call_id.
+    call_ids: list[str] = []
+    for _ in range(2):
+        executor, _agent, events = await _executor_fixture(_responses_events(after="Done."))
+        await continuation_pass(executor, [Message("user", ["search"])])
+        (start,) = [event for event in events if isinstance(event, InvocationToolCallStart)]
+        call_ids.append(start.call_id)
+
+    assert call_ids[0] != call_ids[1]
 
 
 @pytest.mark.asyncio

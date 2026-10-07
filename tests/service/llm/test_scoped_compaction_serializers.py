@@ -4,10 +4,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
-
-from openai import AsyncOpenAI
 
 from chrys.kernel import Content, Message, annotate_message_groups
 from chrys.service.context.compaction.scoped import (
@@ -16,52 +13,21 @@ from chrys.service.context.compaction.scoped import (
     build_scoped_group_timeline,
     prepare_scoped_slice,
 )
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
-from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
-from chrys.service.llm.openai_responses import (
+from chrys.service.llm.anthropic_messages.history import encode_messages
+from chrys.service.llm.chat_completions import history as chat_history
+from chrys.service.llm.chat_completions.client import DEEPSEEK, OPENAI
+from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
+from chrys.service.llm.openai_responses.history import (
     OPENAI_SHELL_OUTPUT_TYPE_KEY,
     OPENAI_SHELL_OUTPUT_TYPE_SHELL_CALL,
-    RawOpenAIChatClient,
 )
+from chrys.service.llm.openai_responses.replay import encode_input
+from tests.support.images import image_bytes
 
 
 class _LenTokenizer:
     def count_tokens(self, text: str) -> int:
         return len(text)
-
-
-class _UnusedCompletions:
-    async def create(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("serializer tests should not call the SDK")
-
-
-class _UnusedChat:
-    def __init__(self) -> None:
-        self.completions = _UnusedCompletions()
-
-
-class _UnusedAsyncOpenAI:
-    base_url = "https://api.deepseek.test"
-
-    def __init__(self) -> None:
-        self.chat = _UnusedChat()
-
-
-def _openai_client() -> RawOpenAIChatCompletionClient:
-    return RawOpenAIChatCompletionClient(model="gpt-test", async_client=AsyncOpenAI(api_key="sk-fake"))
-
-
-def _responses_client() -> RawOpenAIChatClient:
-    return RawOpenAIChatClient(model="gpt-test", async_client=AsyncOpenAI(api_key="sk-fake"))
-
-
-def _deepseek_client() -> DeepSeekChatCompletionClient:
-    return DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_UnusedAsyncOpenAI())
-
-
-def _anthropic_client() -> RawAnthropicClient:
-    return RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
 
 
 def _call(call_id: str, name: str, fc_id: str) -> Content:
@@ -80,7 +46,7 @@ def _representative_slice() -> tuple[Message, ...]:
         "reused",
         result=[
             Content.from_text("start-" + "x" * 12_000 + "-finish"),
-            Content.from_data(b"image-bytes", "image/png"),
+            Content.from_data(image_bytes("PNG"), "image/png"),
         ],
     )
     shell_result = Content.from_function_result(
@@ -152,7 +118,7 @@ def _assert_nonempty_content_arrays(prepared: list[dict[str, Any]]) -> None:
 
 
 def test_anthropic_scoped_slice_has_strict_tool_use_result_groups() -> None:
-    prepared = _anthropic_client()._prepare_messages_for_anthropic(_representative_slice())
+    prepared = encode_messages(_representative_slice())
 
     assert prepared[0] == {"role": "user", "content": [{"type": "text", "text": DEGRADED_SCOPED_PREAMBLE}]}
     _assert_nonempty_content_arrays(prepared)
@@ -176,7 +142,7 @@ def test_anthropic_scoped_slice_has_strict_tool_use_result_groups() -> None:
 
 
 def test_openai_chat_scoped_slice_has_parallel_calls_images_and_reused_ids() -> None:
-    prepared = _openai_client()._prepare_messages_for_openai(_representative_slice())
+    prepared = chat_history.encode_messages(_representative_slice(), variant=OPENAI)
 
     assert prepared[0] == {"role": "user", "content": DEGRADED_SCOPED_PREAMBLE}
     _assert_nonempty_content_arrays(prepared)
@@ -195,7 +161,7 @@ def test_openai_chat_scoped_slice_has_parallel_calls_images_and_reused_ids() -> 
 
 
 def test_deepseek_scoped_slice_has_chat_completion_shape() -> None:
-    prepared = _deepseek_client()._prepare_messages_for_openai(_representative_slice())
+    prepared = chat_history.encode_messages(_representative_slice(), variant=DEEPSEEK)
 
     assert prepared[0]["role"] == "user"
     _assert_nonempty_content_arrays(prepared)
@@ -207,10 +173,7 @@ def test_deepseek_scoped_slice_has_chat_completion_shape() -> None:
 
 
 def test_responses_store_false_preserves_replayable_fc_ids_and_pairing() -> None:
-    prepared = _responses_client()._prepare_messages_for_openai(
-        _representative_slice(),
-        request_uses_service_side_storage=False,
-    )
+    prepared = encode_input(_representative_slice(), service_side=False, variant=OPENAI_RESPONSES)
 
     assert prepared[0]["type"] == "message"
     assert prepared[0]["role"] == "user"
@@ -250,23 +213,24 @@ def _foreign_responses_reasoning_history() -> list[Message]:
 
 
 def test_openai_chat_drops_foreign_encrypted_reasoning_instead_of_crashing() -> None:
-    prepared = _openai_client()._prepare_messages_for_openai(_foreign_responses_reasoning_history())
+    prepared = chat_history.encode_messages(_foreign_responses_reasoning_history(), variant=OPENAI)
 
     assert all("reasoning_details" not in message for message in prepared)
 
 
 def test_deepseek_drops_foreign_encrypted_reasoning_instead_of_crashing() -> None:
-    prepared = _deepseek_client()._prepare_messages_for_openai(_foreign_responses_reasoning_history())
+    prepared = chat_history.encode_messages(_foreign_responses_reasoning_history(), variant=DEEPSEEK)
 
     assert all("reasoning_details" not in message for message in prepared)
-    assert all("reasoning_content" not in message for message in prepared)
+    # The foreign reasoning is not replayed; thinking mode still gets the empty field it requires.
+    assert [message.get("reasoning_content") for message in prepared] == [None, "", None, None]
 
 
 def test_anthropic_drops_foreign_responses_reasoning_and_keeps_own_thinking() -> None:
     history = _foreign_responses_reasoning_history()
     history[1].contents.append(Content.from_text_reasoning(text="own thinking", protected_data="anthropic-signature"))
 
-    prepared = _anthropic_client()._prepare_messages_for_anthropic(history)
+    prepared = encode_messages(history)
 
     thinking_blocks = [
         block

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.matcher import matches
 from chrys.service.hooks.schema import HookArgMatch, HookConfig, HookExecution, HookMatch, HookRun
@@ -93,7 +95,15 @@ def test_missing_arg_fails_match() -> None:
     assert not matches(h, {"tool": {"args": {"path": "y"}}})
 
 
-def test_invalid_regex_logs_and_no_match() -> None:
-    h = _hook(HookMatch(args={"command": HookArgMatch(regex="[invalid(")}))
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        pytest.param("[invalid(", id="re-error"),
+        pytest.param("a{4294967296}", id="repeat-count-overflow"),
+        pytest.param("(" * 5000 + ")" * 5000, id="nesting-too-deep"),
+    ],
+)
+def test_invalid_regex_logs_and_no_match(pattern: str) -> None:
+    h = _hook(HookMatch(args={"command": HookArgMatch(regex=pattern)}))
     # No exception, just a non-match.
     assert not matches(h, {"tool": {"args": {"command": "anything"}}})

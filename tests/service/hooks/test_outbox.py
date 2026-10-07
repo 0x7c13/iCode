@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from chrys.service.hooks.outbox import DONE, FAILED, PENDING, Outbox
+from tests.support.windows_replace import briefly_locked_rename
 
 
 def test_creates_subdirs(tmp_path: Path) -> None:
@@ -37,6 +38,18 @@ def test_pending_write_then_done(tmp_path: Path) -> None:
     assert data["state"] == "done"
     assert data["exit_code"] == 0
     assert data["retries"] == 1
+
+
+def test_mark_started_retries_a_briefly_locked_pending_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outbox = Outbox(tmp_path / "outbox")
+    job = outbox.write_pending(hook_id="h1", event="after_turn", payload={"x": 1})
+    rename = briefly_locked_rename(monkeypatch, failures=2)
+
+    outbox.mark_started(job)
+
+    assert len(rename.attempts) == 3
+    pending_path = tmp_path / "outbox" / PENDING / f"{job.job_id}.json"
+    assert json.loads(pending_path.read_text(encoding="utf-8"))["retries"] == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not portable on Windows")

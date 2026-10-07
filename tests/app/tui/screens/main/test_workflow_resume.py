@@ -47,7 +47,7 @@ async def test_resume_chat_ignores_a_newer_workflow_session(tmp_path: Path) -> N
         await bus.subscribe(events.SessionRestore, restore)
         try:
             assert main._suggestions.dispatch_slash_command("/resume")
-            await wait_for(lambda: restored == [chat_id] and not main._agent_loading, pilot=pilot)
+            await wait_for(lambda: restored == [chat_id] and not main._state.run.agent_loading, pilot=pilot)
             assert main.query_one(ChatPanel).session_id == chat_id
             assert not main._workflow.workflow_mode
         finally:

@@ -4,12 +4,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 import pytest
 
-from chrys.kernel import ChatResponse, CompactionCallContext, Content, Message, internal_side_call_scope
+from chrys.kernel import (
+    ChatContext,
+    ChatMiddleware,
+    ChatResponse,
+    CompactionCallContext,
+    Content,
+    Message,
+    internal_side_call_scope,
+)
 from chrys.service.llm.mock import MockChatClient, MockResponse
 
 
@@ -216,11 +224,12 @@ async def test_custom_finish_reason() -> None:
 
 # ──────────────── LAST_WORDS completer through the mock stack ────────────
 #
-# The mock's loop adapter must build the same per-call CompactionCallContext
-# as BaseChatClient.get_response (via _build_compaction_call_context), so
-# mock-stack Phase 4 exercises the cache-safe completer path — including the
-# store-mode gate and side-call intermediate-text suppression — instead of
-# silently diverging to the reconstruction fallback.
+# Beneath its tool loop the mock calls BaseChatClient.get_response, so it
+# builds the same per-call CompactionCallContext (via
+# _build_compaction_call_context) and mock-stack Phase 4 exercises the
+# cache-safe completer path — including the store-mode gate and side-call
+# intermediate-text suppression — instead of silently diverging to the
+# reconstruction fallback.
 
 
 class _ContextCapturingStrategy:
@@ -297,8 +306,8 @@ async def test_mock_stack_completer_side_call_consumes_scripted_response() -> No
 
 
 @pytest.mark.asyncio
-async def test_mock_adapter_observes_and_views_post_compaction_summary() -> None:
-    """The mock's loop adapter keeps the same final provider boundary as Base."""
+async def test_mock_stack_observes_and_views_post_compaction_summary() -> None:
+    """Beneath its tool loop the mock keeps the same final provider boundary as Base."""
     summary_content = Content.from_text("COMPACTED")
     summary = Message("assistant", [summary_content], additional_properties={"summary": True})
     seen_provider_messages: list[Message] = []
@@ -337,6 +346,84 @@ async def test_mock_adapter_observes_and_views_post_compaction_summary() -> None
     assert len(seen_provider_messages) == 1
     assert seen_provider_messages[0] is not summary
     assert seen_provider_messages[0].additional_properties is summary.additional_properties
+
+
+class _SetCallKwargs(ChatMiddleware):
+    def __init__(self, kwargs: Mapping[str, Any], function_invocation_kwargs: Mapping[str, Any] | None = None) -> None:
+        self._kwargs = kwargs
+        self._function_invocation_kwargs = function_invocation_kwargs
+
+    async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        context.kwargs.update(self._kwargs)
+        if self._function_invocation_kwargs is not None:
+            context.function_invocation_kwargs = self._function_invocation_kwargs
+        await call_next()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("compacting", [False, True])
+@pytest.mark.parametrize("client_kwargs", [None, {"max_tokens": 20}], ids=["joins", "overrides"])
+async def test_mock_middleware_kwargs_join_and_override_client_kwargs(
+    stream: bool, compacting: bool, client_kwargs: dict[str, Any] | None
+) -> None:
+    client = MockChatClient(responses=[MockResponse(text="capped")], middleware=[_SetCallKwargs({"max_tokens": 7})])
+    strategy = _ContextCapturingStrategy() if compacting else None
+    messages = [Message(role="user", contents=["Hi"])]
+    options = {"model": "mock"}
+
+    if stream:
+        response = await client.get_response(
+            messages, stream=True, options=options, compaction_strategy=strategy, client_kwargs=client_kwargs
+        ).get_final_response()
+    else:
+        response = await client.get_response(
+            messages, options=options, compaction_strategy=strategy, client_kwargs=client_kwargs
+        )
+
+    assert response.text == "capped"
+    _messages, sent_options = client.call_history[0]
+    assert sent_options == {"model": "mock", "max_tokens": 7}
+    if strategy is not None:
+        assert len(strategy.contexts) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_function_invocation_kwargs", [None, {"y": 0}], ids=["joins", "overrides"])
+@pytest.mark.parametrize("middleware_function_invocation_kwargs", [{"x": 1}, None], ids=["middleware", "no-middleware"])
+async def test_mock_wire_method_receives_client_kwargs_and_layer_function_invocation_kwargs(
+    client_function_invocation_kwargs: dict[str, Any] | None,
+    middleware_function_invocation_kwargs: dict[str, Any] | None,
+) -> None:
+    # Without middleware the chat layer still passes function_invocation_kwargs=None,
+    # and that None overrides a value nested in client_kwargs.
+    seen_kwargs: list[dict[str, Any]] = []
+
+    class _KwargsSpyMock(MockChatClient):
+        def _inner_get_response(
+            self,
+            *,
+            messages: Sequence[Message],
+            stream: bool,
+            options: Mapping[str, Any],
+            **kwargs: Any,
+        ) -> Any:
+            seen_kwargs.append(dict(kwargs))
+            return super()._inner_get_response(messages=messages, stream=stream, options=options, **kwargs)
+
+    client_kwargs: dict[str, Any] = {"keep": "client"}
+    if client_function_invocation_kwargs is not None:
+        client_kwargs["function_invocation_kwargs"] = client_function_invocation_kwargs
+    middleware = (
+        [_SetCallKwargs({}, function_invocation_kwargs=middleware_function_invocation_kwargs)]
+        if middleware_function_invocation_kwargs is not None
+        else []
+    )
+    client = _KwargsSpyMock(responses=[MockResponse(text="OK")], middleware=middleware)
+
+    await client.get_response([Message(role="user", contents=["Hi"])], client_kwargs=client_kwargs)
+
+    assert seen_kwargs == [{"keep": "client", "function_invocation_kwargs": middleware_function_invocation_kwargs}]
 
 
 @pytest.mark.asyncio

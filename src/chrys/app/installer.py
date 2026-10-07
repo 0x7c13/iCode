@@ -559,7 +559,7 @@ def install_to_path() -> None:
         _print_success(f"Installed {APP_DISPLAY_NAME} to {dest}. Run it with {_installed_commands(alias)}.")
 
         # Add to user PATH if not already there
-        from chrys.foundation.platform.process import _windows_hidden_subprocess_kwargs
+        from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 
         result = subprocess.run(
             [
@@ -579,7 +579,7 @@ def install_to_path() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            **_windows_hidden_subprocess_kwargs(),
+            **windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
             path_message = result.stdout.strip()

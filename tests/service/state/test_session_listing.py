@@ -24,7 +24,7 @@ from chrys.foundation.util.lock import FileLock
 from chrys.kernel import Message
 from chrys.service.state.session_catalog import CATALOG_DERIVATION_VERSION
 from chrys.service.state.session_listing import SessionListing, SessionListingEntry, page_slice
-from chrys.service.state.store import JsonFileStateStore, SessionMeta
+from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, SessionMeta
 from chrys.service.state.workflow import WorkflowSessionState
 from chrys.service.trajectory.tombstone import INTENT_SUFFIX, DeleteOutcome, DeleteResult, tombstones_dir
 from chrys.service.workflows import history as history_module
@@ -218,6 +218,36 @@ async def test_legacy_flat_file_sessions_are_listed_and_paged(tmp_path: Path) ->
     assert listing.entries[1].legacy and listing.entries[1].source == tmp_path / "flat.json"
     assert [meta.session_id for meta in page.metas] == ["folder", "legacy-id"]
     assert "legacy-id" not in _catalog_ids(tmp_path)
+
+
+async def test_a_caller_editing_a_listed_meta_never_changes_later_listings(tmp_path: Path) -> None:
+    """The listing caches hand out copies: nested lists included, for folder, legacy and workflow sessions."""
+    write_legacy_envelope(tmp_path / "flat.json", "legacy-id", updated_at=_at(8), message_count=1)
+    store = JsonFileStateStore(tmp_path)
+    await _chat(store, "folder")
+    workflow = await _workflow(store, tmp_path)
+
+    def edit(metas: Collection[SessionMeta]) -> None:
+        for meta in metas:
+            meta.title = "edited"
+            meta.working_dirs.append("edited")
+            if isinstance(meta, ChatSessionMeta):
+                meta.agent_profile_history.append("edited")
+
+    # The first round fills the caches; the second edits what they hand out.
+    for _ in range(2):
+        edit(await store.list_sessions())
+        for kind in ("chat", "workflow"):
+            listing = await store.open_session_listing(kind=kind)
+            edit((await store.load_session_page(listing, surfaces=ALL)).metas)
+
+    metas = await store.list_sessions()
+    assert sorted(meta.session_id for meta in metas) == sorted(["folder", "legacy-id", workflow])
+    for meta in metas:
+        assert meta.title != "edited"
+        assert "edited" not in meta.working_dirs
+        if isinstance(meta, ChatSessionMeta):
+            assert "edited" not in meta.agent_profile_history
 
 
 async def test_a_legacy_session_migrated_since_the_snapshot_keeps_its_row(

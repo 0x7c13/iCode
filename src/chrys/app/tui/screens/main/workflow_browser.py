@@ -37,7 +37,6 @@ from chrys.orchestration.workflows.preview import (
     WorkflowPreviewError,
     WorkflowTrustDeclined,
 )
-from chrys.service.workflows.discovery import global_workflows_dir, project_workflows_dir
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -314,14 +313,11 @@ class WorkflowBrowser:
             *((item.source, True) for item in discovery.shadowed),
         ]:
             rows.append(WorkflowRow(source, catalog.title(source, ledger=ledger) or "", shadowed=shadowed))
-        directories = {
-            global_workflows_dir(catalog.config_dir).resolve(),
-            project_workflows_dir(catalog.project_cwd).resolve(),
-        }
-        for warning in discovery.skipped:
-            path = Path(warning.path)
-            if warning.source_kind in {"global", "project"} and path.parent in directories and path.suffix == ".py":
-                rows.append(WorkflowRow(warning, "", shadowed=discovery.find(path.stem) is not None))
+        rows.extend(
+            WorkflowRow(warning, "", shadowed=discovery.find(warning.workflow_id) is not None)
+            for warning in discovery.skipped
+            if warning.workflow_id is not None and warning.source_kind in {"global", "project"}
+        )
         return rows, "\n".join(f"⚠ {item.path}: {item.reason}" for item in discovery.skipped)
 
     def _delete_busy(self, row: WorkflowRow) -> bool:
@@ -339,13 +335,23 @@ class WorkflowBrowser:
             self.host.show_error(text.DELETE_ACTIVE.bind())
             return
         catalog = self._picker_catalog or self.catalog
+        try:
+            # What deleting would refuse is said now, not after the user confirmed a deletion.
+            catalog.check_delete(row.canonical_path)
+        except (OSError, ValueError) as exc:
+            self.host.show_error(str(exc))
+            return
         source_label = text.render(text.SOURCES[row.source.source_kind].bind(), self.host.locale_controller)
         note = text.DELETE_GLOBAL if row.source.source_kind == "global" else text.DELETE_PROJECT
+        notes = [text.render(note.bind(), self.host.locale_controller)]
+        if (folder := row.package_folder) is not None:
+            package_note = text.DELETE_PACKAGE_NOTE.bind(
+                entry=DisplayPath(f"{row.workflow_id}.py"), folder=DisplayPath(folder)
+            )
+            notes.insert(0, text.render(package_note, self.host.locale_controller))
         dialog = ConfirmDialog(
             title=text.DELETE.bind(),
-            message=Text(
-                f"{row.canonical_path}\n{source_label}\n\n{text.render(note.bind(), self.host.locale_controller)}"
-            ),
+            message=Text(f"{text.shown(row.canonical_path)}\n{source_label}\n\n" + "\n".join(notes)),
             confirm_label=text.DELETE.bind(),
             confirm_variant="error",
             locale_controller=self.host.locale_controller,

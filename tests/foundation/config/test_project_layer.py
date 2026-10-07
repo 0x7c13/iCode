@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -90,8 +92,9 @@ def test_a_root_with_nothing_to_say_reports_nothing(config_dir: Path, project_ro
     assert load_settings(project_root=project_root).dormant_project == ()
 
 
+@pytest.mark.parametrize("spelling", ["home", "HOME"])
 def test_user_settings_are_not_reclassified_when_the_workspace_is_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
 ) -> None:
     home = tmp_path / "home"
     config_dir = home / ".chrys"
@@ -103,8 +106,11 @@ def test_user_settings_are_not_reclassified_when_the_workspace_is_home(
     monkeypatch.setattr(platform_mod, "get_platform", lambda: fake)
     freeze_process_env()
     path = _write_user_yaml(config_dir, "approval:\n  default_mode: bypass\n")
+    workspace = tmp_path / spelling
+    if not workspace.exists():
+        pytest.skip("Case-sensitive filesystem: the other spelling is another folder")
 
-    loaded = load_settings(project_root=home)
+    loaded = load_settings(project_root=workspace)
 
     assert loaded.settings.default_approval_mode == "bypass"
     origin = loaded.source_for("approval.default_mode")
@@ -519,3 +525,138 @@ def test_reading_a_project_file_leaves_no_droppings_in_the_repository(config_dir
     load_settings(project_root=project_root)
 
     assert list((project_root / ".chrys").iterdir()) == [path]
+
+
+# ── project hooks and skills ─────────────────────────────────────────
+
+
+def _write_project_hooks(root: Path) -> Path:
+    (root / ".chrys" / "hooks").mkdir(parents=True, exist_ok=True)
+    path = root / ".chrys" / "hooks" / "hooks.yml"
+    path.write_text("hooks: []\n", encoding="utf-8")
+    return path
+
+
+def _write_project_skill(root: Path) -> Path:
+    skills = root / ".agents" / "skills"
+    (skills / "review").mkdir(parents=True)
+    (skills / "review" / "SKILL.md").write_text("---\nname: review\ndescription: d\n---\n", encoding="utf-8")
+    return skills
+
+
+def test_project_hooks_and_skills_are_off_by_default_and_reported(config_dir: Path, project_root: Path) -> None:
+    freeze_process_env()
+    hooks = _write_project_hooks(project_root)
+    skills = _write_project_skill(project_root)
+
+    loaded = load_settings(project_root=project_root)
+
+    assert loaded.settings.project_hooks_enabled is False
+    assert loaded.settings.project_skills_enabled is False
+    assert [(source.key, source.path) for source in loaded.dormant_project_sources] == [
+        ("project.hooks_enabled", hooks),
+        ("project.skills_enabled", skills),
+    ]
+
+
+def test_enabled_project_hooks_and_skills_are_not_reported(config_dir: Path, project_root: Path) -> None:
+    freeze_process_env()
+    _write_user_yaml(config_dir, "project:\n  hooks_enabled: true\n  skills_enabled: true\n")
+    _write_project_hooks(project_root)
+    _write_project_skill(project_root)
+
+    loaded = load_settings(project_root=project_root)
+
+    assert loaded.settings.project_hooks_enabled is True
+    assert loaded.settings.project_skills_enabled is True
+    assert loaded.dormant_project_sources == ()
+
+
+def test_a_project_cannot_turn_its_own_hooks_or_skills_on(config_dir: Path, project_root: Path) -> None:
+    freeze_process_env()
+    _enable_gate(config_dir)
+    _write_project_yaml(project_root, "project:\n  hooks_enabled: true\n  skills_enabled: true\n")
+
+    loaded = load_settings(project_root=project_root)
+
+    assert loaded.settings.project_hooks_enabled is False
+    assert loaded.settings.project_skills_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("skill_file", "reported"),
+    [
+        ("SKILL.md", True),
+        ("review/SKILL.md", True),
+        ("team/review/SKILL.md", True),
+        ("team/group/review/SKILL.md", False),
+        ("review/notes.md", False),
+    ],
+)
+def test_the_skills_folder_is_reported_only_when_discovery_would_find_a_skill(
+    config_dir: Path, project_root: Path, skill_file: str, reported: bool
+) -> None:
+    """Skill discovery looks for SKILL.md in the folder and two levels below it, and so does the notice."""
+    freeze_process_env()
+    skills = project_root / ".agents" / "skills"
+    (skills / skill_file).parent.mkdir(parents=True, exist_ok=True)
+    (skills / skill_file).write_text("---\nname: review\ndescription: d\n---\n", encoding="utf-8")
+
+    sources = load_settings(project_root=project_root).dormant_project_sources
+
+    assert [(source.key, source.path) for source in sources] == (
+        [("project.skills_enabled", skills)] if reported else []
+    )
+
+
+@pytest.mark.parametrize("spelling", ["home", "HOME"])
+def test_the_users_own_hooks_and_skills_are_not_reported_when_the_workspace_is_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    home = tmp_path / "home"
+    config_dir = home / ".chrys"
+    fake = dataclasses.replace(platform_mod.get_platform(), config_dir=config_dir, data_dir=config_dir)
+    monkeypatch.setattr(platform_mod, "get_platform", lambda: fake)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    freeze_process_env()
+    _write_project_hooks(home)
+    _write_project_skill(home)
+    workspace = tmp_path / spelling
+    if not workspace.exists():
+        pytest.skip("Case-sensitive filesystem: the other spelling is another folder")
+
+    assert load_settings(project_root=workspace).dormant_project_sources == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_a_folder_that_cannot_be_listed_does_not_hide_the_project_skills(
+    config_dir: Path, project_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_process_env()
+    skills = _write_project_skill(project_root)
+    locked = skills / "locked"
+    locked.mkdir()
+    list_folder = Path.iterdir
+
+    def locked_first(self: Path) -> Iterator[Path]:
+        return iter(sorted(list_folder(self), key=lambda child: child.name != "locked"))
+
+    monkeypatch.setattr(Path, "iterdir", locked_first)
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip("Permission bits do not apply to this user")
+        sources = load_settings(project_root=project_root).dormant_project_sources
+    finally:
+        locked.chmod(0o755)
+
+    assert [(source.key, source.path) for source in sources] == [("project.skills_enabled", skills)]
+
+
+def test_a_hermetic_load_reports_no_project_hooks_or_skills(config_dir: Path, project_root: Path) -> None:
+    freeze_process_env()
+    _write_project_hooks(project_root)
+    _write_project_skill(project_root)
+
+    assert load_settings(env={}, project_root=project_root).dormant_project_sources == ()

@@ -10,10 +10,10 @@ Choose an installation location based on where the skill should be available and
 | --- | --- | --- |
 | iCode user skills directory | Make skills available to all agents of the "Built-in" type in iCode | Always loaded automatically |
 | Agent Skills shared directory | Share skills between iCode and other tools that support Agent Skills | Loaded automatically by default; can be disabled per agent |
-| `<working-directory>/.agents/skills` | Make skills available only in the current working directory | Loaded automatically by default; can be disabled per agent |
+| `<working-directory>/.agents/skills` | Make skills available only in the current working directory | Loaded only after you turn on “Load project skills”; can also be disabled per agent |
 | Custom directory | Load skills from a specific location | Must be added manually to the corresponding agent's configuration |
 
-Here, `<working-directory>` is the current working directory. When you switch working directories, iCode reloads the skills from the new working directory.
+Here, `<working-directory>` is the current working directory. Skills in a working directory come with the repository, so iCode does not load them until you turn on “Load project skills” under “Settings → Security → Project trust” (`project.skills_enabled`). When the working directory has skills that are not loaded, iCode shows a notice. When you switch working directories, iCode reloads the skills from the new working directory.
 
 The two user-level skills directories have the following paths on each platform:
 
@@ -28,7 +28,7 @@ iCode searches for `SKILL.md` files in configured skills directories and up to t
 
 ## Install and enable skills
 
-The iCode user skills directory is always loaded automatically. The Agent Skills shared directory and the current working directory's skills directory are also loaded automatically by default. If a source has been disabled in the agent's configuration, enable it again. For a custom directory, add it to the corresponding agent's configuration.
+The iCode user skills directory is always loaded automatically. The Agent Skills shared directory is also loaded automatically by default. The current working directory's skills directory loads once “Load project skills” is on. If a source has been disabled in the agent's configuration, enable it again. For a custom directory, add it to the corresponding agent's configuration.
 
 To define an inline skill without files directly in an agent's YAML, see [Agent profile reference](../../reference/agent-profile.md#skillsinline).
 
@@ -38,7 +38,7 @@ To check or adjust an agent's skill configuration:
 2. Confirm that the source corresponding to the skill's location is enabled:
 
    * "Load skills from user folder (if present)" corresponds to the Agent Skills shared directory.
-   * "Load skills from working folder (if present)" corresponds to `<working-directory>/.agents/skills`.
+   * "Load skills from working folder (if present)" corresponds to `<working-directory>/.agents/skills`. It takes effect only while “Load project skills” is on in “Settings → Security → Project trust”.
 
 3. If the skill is in another directory, click "+ Add" and enter the directory containing the skill:
 
@@ -51,6 +51,8 @@ To check or adjust an agent's skill configuration:
 
 > **Note**: Skill scripts run as local processes without sandbox isolation. Before installing a third-party skill, inspect its `SKILL.md`, scripts, and other related files, and install skills only from trusted sources. iCode runs skill scripts through the `run_skill_script` tool. Whether this tool requires confirmation depends on the agent's approval rules and the [current approval mode](../configuration/approval.md).
 
+When a skill script prints more than 32 MiB to standard output or standard error, iCode keeps only the beginning and end of that output; the middle is not saved, and the result tells the agent how much was left out.
+
 ## Confirm that skills have loaded
 
 After you save the agent's configuration and return to the session, iCode reloads its skills. If you add skill directories or change their files directly on disk, iCode does not monitor those changes in real time. The next time you send a message, iCode rescans the current agent's enabled skills directories before processing the message.
@@ -62,7 +64,7 @@ Use either of the following methods to confirm that a skill has loaded:
 
 If the skill does not appear, check the following in order:
 
-* For the Agent Skills shared directory or working directory skills directory, confirm that the corresponding option is enabled. For a custom directory, confirm that it has been added to the current agent.
+* For the Agent Skills shared directory or working directory skills directory, confirm that the corresponding option is enabled (the working directory skills directory also needs “Load project skills”). For a custom directory, confirm that it has been added to the current agent.
 * Confirm that the skill directory is at the selected location or within at most two levels of subdirectories.
 * Confirm that the skill meets the [basic requirements for creating skills](#basic-requirements-for-creating-skills).
 
@@ -127,15 +129,15 @@ description: Draft user-facing release notes from commit history
 
 | Content | Loading requirements |
 | --- | --- |
-| frontmatter | Required; the top-level content must be a YAML mapping |
+| frontmatter | Required; the top-level content must be a YAML mapping, without anchors (`&`) or aliases (`*`), at most 16,384 characters long and nested at most 64 levels deep |
 | `name` | Required; must exactly match the skill directory name; 1-64 characters long; may contain only lowercase letters, digits, and hyphens (`-`). Uppercase letters, underscores (`_`), and other characters are not allowed. Must not start or end with a hyphen or contain consecutive hyphens |
-| `description` | Required; at most 1,024 characters. Describe both the skill's purpose and when to use it to help the agent decide when to load it |
-| `compatibility` | Optional; at most 500 characters |
-| `license`, `allowed-tools` | Optional; iCode reads their values without further validation |
-| `metadata` | Optional; must be a YAML mapping, otherwise iCode does not retain this field |
+| `description` | Required; text of at most 1,024 characters. Describe both the skill's purpose and when to use it to help the agent decide when to load it |
+| `compatibility` | Optional; text of at most 500 characters |
+| `license`, `allowed-tools` | Optional; iCode reads their text without further validation |
+| `metadata` | Optional; must be a YAML mapping whose values are plain text or numbers, otherwise iCode does not retain this field |
 | Body | iCode imposes no additional length or structure restrictions |
 
-Use valid YAML for the frontmatter to ensure that the skill loads reliably. iCode does not load a skill if its frontmatter, `name`, or `description` is missing, or if field values fail the validation rules above.
+Use valid YAML for the frontmatter to ensure that the skill loads reliably. iCode does not load a skill if its frontmatter, `name`, or `description` is missing, or if field values fail the validation rules above. An optional field given as a list or mapping is ignored.
 
 The optional fields serve the following purposes:
 

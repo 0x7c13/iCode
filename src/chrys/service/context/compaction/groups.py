@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Message content signatures and compaction group walkers."""
 
@@ -71,8 +73,29 @@ def _render_tool_result_value(value: Any) -> str:
             return f"[{media_type} artifact]"
         return json.dumps(value.to_dict(exclude={"raw_representation"}), ensure_ascii=False, default=str)
     if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return json.dumps(_without_inline_binary(value), ensure_ascii=False, sort_keys=True, default=str)
     return str(value)
+
+
+def _without_inline_binary(value: Any) -> Any:
+    """Return *value* with inline base64 payloads replaced by a short placeholder.
+
+    Provider payloads kept as plain data (an Anthropic ``{"type": "base64"}``
+    source, such as a fetched PDF) would otherwise put their encoded bytes
+    into summaries.
+    """
+    if isinstance(value, dict):
+        if value.get("type") == "base64" and isinstance(value.get("data"), str):
+            return _inline_binary_placeholder(value.get("media_type"))
+        return {key: _without_inline_binary(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_without_inline_binary(item) for item in value]
+    return value
+
+
+def _inline_binary_placeholder(media_type: object) -> str:
+    kind = media_type if isinstance(media_type, str) and media_type else "binary"
+    return f"[{kind} image]" if kind.startswith("image/") else f"[{kind} artifact]"
 
 
 def _tool_result_text(content: Content) -> str:

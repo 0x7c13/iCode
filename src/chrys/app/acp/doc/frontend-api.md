@@ -62,6 +62,11 @@ Implemented standard methods:
   unconditionally (empty entries = clear) on `session/new`, `session/load`, and
   after `session/rollback` — both to a turn and to welcome.
 
+`session/prompt` takes text, resource links and embedded text resources (sent as
+text), and, when the model profile has vision, images. An image needs an `image/*`
+`mimeType`, but its bytes name its type; anything but PNG, JPEG, GIF or WebP fails
+the whole prompt with `invalid_params`. Audio and embedded blob resources fail the same way.
+
 `session/new` and `session/load` accept `additionalDirectories` (advertised via
 `SessionCapabilities.additionalDirectories` in `initialize` so clients surface the
 option); the manager builds a multi-dir `Workspace` and passes it to
@@ -160,7 +165,7 @@ Approval mode and model switching are **not** here — they use standard ACP
 | `profiles/agents/reset` | `name` | Reset a built-in profile while retaining Skills, MCP, and Memory settings. Returns `changed: false` when no shadow or resettable changes exist. |
 | `profiles/models/list` | — | Model profile summaries (no secrets). |
 | `profiles/models/read` | `id` | Full model profile. **`api_key` masked as `"***"`.** |
-| `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. |
+| `profiles/models/write` | `profile` | Persist. `api_key` of `""`/`"***"` preserves the stored key. Omitting `stream` or sending `null` streams for a new profile and keeps the stored value on an update; `false` (or another false spelling such as `0` or `""`) turns streaming off. |
 | `profiles/models/delete` | `id` | Delete a model profile. |
 | `settings/reload` | `sessionId` | Reload registries + soft-restart. Awaits the rebuild: a failed reload returns an error, success pushes `chrys/runtime_update`. |
 | `mcp/test` | `server` | One-shot HTTP MCP connection test. Client-supplied stdio is rejected. |

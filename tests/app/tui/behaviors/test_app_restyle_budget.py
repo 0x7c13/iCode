@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from rich.cells import cell_len
 from textual.screen import Screen
 from textual.widgets import Static, TextArea
 
@@ -16,7 +17,7 @@ from chrys.foundation.config.settings import Settings
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
-from tests.support.waiting import wait_for, wait_until_quiet
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, wait_until_quiet, with_wait_deadline
 
 
 @pytest.mark.parametrize("hidden_by", ["self", "ancestor", "overlay"])
@@ -535,3 +536,119 @@ async def test_chat_sidebar_tab_clicks_do_not_bounce_focus_over_a_populated_tran
         assert focus_changes == []
         assert main.focused is chat_input
         assert not tabs.query_one(Tabs).can_focus
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_calls_under_auto_review_never_relayout_restyle_or_recompose_the_main_screen(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every judged call of a turn and every spinner frame changes the header: only it may be remapped."""
+    from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
+    from chrys.app.tui.widgets.chat.panel import ChatPanel
+    from chrys.app.tui.widgets.chrome.app_header import AppHeader
+    from chrys.app.tui.widgets.chrome.footer import ChrysFooter
+    from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.events.types import ApprovalCancelled, ApprovalRequest, ApprovalReviewed
+    from chrys.service.approval.policy import ApprovalMode
+
+    def judged_call(request_id: str) -> ApprovalRequest:
+        return ApprovalRequest(
+            request_id=request_id,
+            call_id=f"call-{request_id}",
+            tool_name="run_command",
+            tool_kind="shell",
+            args={"command": "icode --version"},
+            judging=True,
+        )
+
+    bus = EventBus()
+    app = make_chrys_app(tmp_path, event_bus=bus)
+    async with app.run_test(size=(120, 36)) as pilot:
+        main = app._main_screen
+        assert main is not None
+        chat = main.query_one(ChatPanel)
+        await chat.mount(*(Static(f"Transcript row {index}") for index in range(256)))
+        header = main.query_one(AppHeader)
+        header.approval_mode = ApprovalMode.AUTO
+        badge = header.query_one("#approval-badge", Static)
+        reviewing = header.query_one("#approval-reviewing", Static)
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled main screen")
+        badge_region = badge.region
+        badge_text = badge.render().plain
+        chat_region = chat.region
+        layout_refreshes: list[None] = []
+        style_updates: list[str] = []
+        footer_recomposes: list[None] = []
+        monkeypatch.setattr(main, "_refresh_layout", lambda *_args, **_kwargs: layout_refreshes.append(None))
+        for name, widget in (("main", main), ("chat", chat)):
+            monkeypatch.setattr(
+                widget,
+                "update_node_styles",
+                lambda animate=True, widget_name=name: style_updates.append(widget_name),
+            )
+
+        async def record_footer_recompose() -> None:
+            footer_recomposes.append(None)
+
+        monkeypatch.setattr(main.query_one(ChrysFooter), "recompose", record_footer_recompose)
+
+        def reviewing_shows(count: int) -> bool:
+            if not count:
+                return not reviewing.visible
+            text = reviewing.render().plain
+            return (
+                reviewing.visible
+                and text.rstrip().endswith(" Reviewing")
+                and reviewing.region.width == cell_len(text)
+                and reviewing.region.right == badge.region.x
+            )
+
+        async def wait_spinner_turn() -> None:
+            frame = reviewing.render().plain[1]
+            await wait_for(
+                lambda: reviewing.render().plain[1] != frame,
+                pilot=pilot,
+                description="the review spinner turning",
+            )
+
+        steps = (
+            (judged_call("first"), 1),
+            (judged_call("second"), 2),
+            (ApprovalReviewed(request_id="first", approved=True, reason="in scope"), 1),
+            (ApprovalCancelled(request_id="second"), 0),
+        )
+        for event, count in steps:
+            await bus.publish(event, raise_handler_errors=True)
+            await wait_for(
+                lambda count=count: reviewing_shows(count),
+                pilot=pilot,
+                description=f"the review label for {count} calls left of the badge",
+            )
+            if count:
+                await wait_spinner_turn()
+            assert badge.region == badge_region
+            assert badge.render().plain == badge_text
+
+        # A mode switch mid-review resizes the badge: the review label moves with it.
+        await bus.publish(judged_call("third"), raise_handler_errors=True)
+        await wait_for(lambda: reviewing_shows(1), pilot=pilot, description="a call under review again")
+        header.approval_mode = ApprovalMode.MANUAL
+        await wait_for(
+            lambda: (
+                badge.render().plain == " APPROVAL MODE: MANUAL "
+                and badge.region.width == cell_len(badge.render().plain)
+                and reviewing_shows(1)
+            ),
+            pilot=pilot,
+            description="the review label left of the resized badge",
+        )
+        await wait_spinner_turn()
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled main screen")
+
+        assert app.screen is main
+        assert not any(isinstance(screen, ApprovalDialog) for screen in app.screen_stack)
+        assert chat.region == chat_region
+        assert layout_refreshes == []
+        assert style_updates == []
+        assert footer_recomposes == []

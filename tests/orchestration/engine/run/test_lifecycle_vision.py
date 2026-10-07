@@ -54,10 +54,13 @@ from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationTrace
 from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
 from tests.support.components import make_current, make_turn_state
+from tests.support.images import image_bytes
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
 from tests.support.reminder_calls import establish_request
 from tests.support.turn_services import make_turn_coordinator, make_turn_runner
 from tests.support.waiting import wait_for
+
+_PNG = image_bytes()
 
 _IMAGE_COMPRESSION_TIMEOUT_SECONDS = 30.0
 
@@ -601,7 +604,7 @@ async def test_turn_preamble_start_ack_cancellation_leaves_no_open_interval(
 async def test_run_and_save_rejects_image_when_model_profile_is_text_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=False)
 
     await run_and_save(host, "describe @shot.png")
@@ -634,7 +637,7 @@ async def test_run_and_save_does_not_read_image_bytes_before_text_only_rejection
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=False)
 
     def fail_read_bytes(_path: Path) -> bytes:
@@ -705,7 +708,7 @@ async def test_run_and_save_text_only_rejects_existing_image_history(
 async def test_run_and_save_sends_image_content_when_model_profile_supports_vision(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     created_at = SimpleNamespace(marker="timestamp")
 
@@ -995,7 +998,7 @@ async def test_run_and_save_loads_small_image_attachments_off_event_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     loop_progress_before_executor: list[bool] = []
     progress_marked = threading.Event()
@@ -1043,7 +1046,7 @@ async def test_run_and_save_loads_small_image_attachments_off_event_loop(
 async def test_on_user_message_exposes_prepared_contents_for_tui_preview(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     host._turn_state.lease.run_task = None
     host._history = _MutableHistory([])
@@ -1063,7 +1066,7 @@ async def test_on_user_message_exposes_prepared_contents_for_tui_preview(
 async def test_user_message_publish_returns_after_prepared_contents_is_set(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     bus = EventBus()
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     host._bus = bus
@@ -1265,7 +1268,7 @@ async def test_run_and_save_times_out_slow_image_compression(
 async def test_run_and_save_failure_fallback_preserves_image_contents(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     host._history = _CapturingHistory()
     host.current.loaded.bindings.fail_run = True
@@ -1354,7 +1357,7 @@ async def test_fresh_image_load_error_publishes_legacy_and_localized_messages(
 async def test_running_image_attachment_rejection_is_warning_not_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=True)
     host._fsm = EngineStateMachine()
     host._fsm._state = EngineState.RUNNING
@@ -1411,7 +1414,7 @@ async def test_running_invalid_image_attachment_publishes_legacy_and_localized_w
 async def test_rejected_image_does_not_mutate_failed_run_markers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=False)
     host._fsm = EngineStateMachine()
     host._fsm._state = EngineState.FAILED
@@ -1463,7 +1466,7 @@ async def test_text_only_follow_up_ignores_failed_orphan_image_turn(
 async def test_user_prompt_submit_hook_sees_unsupported_image_prompt_before_rejection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    (tmp_path / "shot.png").write_bytes(b"abc")
+    (tmp_path / "shot.png").write_bytes(_PNG)
     host = _Host(tmp_path, monkeypatch=monkeypatch, vision=False)
     host._fsm = EngineStateMachine()
     host._turn_state.lease.run_task = None

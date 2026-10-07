@@ -1,4 +1,6 @@
+# Copyright (c) 2021 Will McGugan
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Textual (MIT License; see NOTICE).
 
 """Patch: use empty style for block border outer when parent bg is terminal default.
 

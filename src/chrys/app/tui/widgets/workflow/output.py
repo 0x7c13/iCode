@@ -156,7 +156,7 @@ def status_output(run: ObservedRun | None, locale: LocaleController | None, *, w
     if run is None:
         content.append(text.state_label("idle", locale), style="dim")
         return content
-    content.append(run.started.title + "\n", style="")
+    content.append(text.shown(run.started.title) + "\n", style="")
     for notice in run.notices.values():
         content.append(notice.message + "\n", style=warning)
     for event in run.facts:

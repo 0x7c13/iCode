@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Reminder lifecycles the golden scenarios cannot show: delivery, consumption, rollback and restore.
+"""Reminder lifecycles: delivery, consumption, rollback and restore.
 
 Each test drives the reminder stack through its roles
 (``tests/support/reminder_stack.py``), so a refactor that moves an owner
@@ -29,7 +29,7 @@ from tests.service.context.compaction._compaction_helpers import (
 )
 from tests.support.phase4_stubs import StubLastWordsGenerator
 from tests.support.reminder_calls import establish_request
-from tests.support.reminder_goldens import (
+from tests.support.reminder_inputs import (
     ARCHIVED,
     MAX_CONTEXT_TOKENS,
     MCP,
@@ -38,8 +38,8 @@ from tests.support.reminder_goldens import (
     SKILLS_REFRESHED,
     TODO_A,
     TODO_B,
-    GoldenInputs,
     LoggingSpillQuota,
+    ReminderProviders,
     assistant,
     manifest_entry,
     pin_reminder_inputs,
@@ -84,7 +84,7 @@ def _texts(message: Message) -> list[str]:
 
 
 def _stack(
-    inputs: GoldenInputs | None = None,
+    inputs: ReminderProviders | None = None,
     *,
     runtime: SessionEnvironment | None = None,
     shell_tool_enabled: bool = False,
@@ -92,7 +92,7 @@ def _stack(
     spill_quota: SpillQuota | None = None,
     file_read_available: bool = False,
 ) -> ReminderStack:
-    inputs = inputs if inputs is not None else GoldenInputs()
+    inputs = inputs if inputs is not None else ReminderProviders()
     return make_reminder_stack(
         runtime,
         max_context_tokens=MAX_CONTEXT_TOKENS,
@@ -143,7 +143,7 @@ async def _call(
 
 
 async def test_file_change_notice_is_handed_back_until_a_request_carries_it() -> None:
-    inputs = GoldenInputs(file_change="src/a.py changed")
+    inputs = ReminderProviders(file_change="src/a.py changed")
     stack = _stack(inputs)
     stack.middleware.prepare_turn()
 
@@ -161,7 +161,7 @@ async def test_file_change_notice_is_handed_back_until_a_request_carries_it() ->
 
 
 async def test_file_change_delivery_marks_the_turn_the_call_was_enriched_from() -> None:
-    inputs = GoldenInputs(file_change="src/a.py changed")
+    inputs = ReminderProviders(file_change="src/a.py changed")
     stack = _stack(inputs)
     stack.middleware.prepare_turn()
 
@@ -175,7 +175,7 @@ async def test_file_change_delivery_marks_the_turn_the_call_was_enriched_from() 
 
 
 async def test_repeated_request_observers_record_once_and_deliver_once() -> None:
-    stack = _stack(GoldenInputs(todo=TODO_A, file_change="src/a.py changed"))
+    stack = _stack(ReminderProviders(todo=TODO_A, file_change="src/a.py changed"))
     stack.middleware.prepare_turn()
     u1 = user("go")
 
@@ -262,7 +262,7 @@ async def test_context_warning_recorded_before_a_restart_is_not_resent() -> None
 
 
 def test_phase4_retry_rollback_restores_content_and_keeps_turn_accounting() -> None:
-    inputs = GoldenInputs(todo=TODO_A)
+    inputs = ReminderProviders(todo=TODO_A)
     stack = _stack(inputs)
     stack.middleware.prepare_turn()
     first = manifest_entry(2, 1, "read_file", "src/a.py")
@@ -290,7 +290,7 @@ def test_phase4_retry_rollback_restores_content_and_keeps_turn_accounting() -> N
 
 
 async def test_preserving_retry_resends_the_failed_calls_phase4_state() -> None:
-    inputs = GoldenInputs(todo=TODO_A)
+    inputs = ReminderProviders(todo=TODO_A)
     stack = _stack(inputs)
     stack.middleware.prepare_turn()
     lw = stack.last_words
@@ -321,7 +321,7 @@ async def test_preserving_retry_resends_the_failed_calls_phase4_state() -> None:
 
 
 async def test_expired_scope_target_cannot_touch_the_next_turn() -> None:
-    inputs = GoldenInputs(skills=SKILLS)
+    inputs = ReminderProviders(skills=SKILLS)
     stack = _stack(inputs)
     mw = stack.middleware
     old_scope = mw.create_current_run_scope()
@@ -405,7 +405,7 @@ async def test_profile_switch_changed_during_the_call_stays_pending() -> None:
 
 
 async def test_held_catalogs_clear_for_the_call_and_survive_only_a_poll() -> None:
-    stack = _stack(GoldenInputs(skills=SKILLS))
+    stack = _stack(ReminderProviders(skills=SKILLS))
     stack.middleware.prepare_turn()
     u1 = user("one")
     seen: list[object] = []
@@ -461,7 +461,7 @@ async def test_lazy_call_leaves_the_pending_switch_and_hooks_for_the_next_prepar
 
 
 async def test_last_words_before_the_first_prepare_open_an_empty_turn() -> None:
-    inputs = GoldenInputs(todo=TODO_A, skills=SKILLS)
+    inputs = ReminderProviders(todo=TODO_A, skills=SKILLS)
     stack = _stack(inputs, runtime=RUNTIME)
     stack.last_words.set_last_words("note")
 
@@ -476,7 +476,7 @@ async def test_last_words_before_the_first_prepare_open_an_empty_turn() -> None:
 
 
 async def test_drained_injection_reminders_before_the_first_prepare_open_an_empty_turn() -> None:
-    stack = _stack(GoldenInputs(todo=TODO_A, skills=SKILLS), runtime=RUNTIME)
+    stack = _stack(ReminderProviders(todo=TODO_A, skills=SKILLS), runtime=RUNTIME)
     stack.middleware.queue_drained_injection_reminders(["drained"])
 
     sent = await _call(stack, [user("go")])
@@ -494,7 +494,7 @@ async def test_providers_are_read_in_order_for_fresh_preserving_and_lazy_turns(
 ) -> None:
     log: list[str] = []
     pin_reminder_inputs(monkeypatch, log=log)
-    inputs = GoldenInputs(todo=TODO_A, skills=SKILLS, mcp=MCP, file_change="src/a.py changed", log=log)
+    inputs = ReminderProviders(todo=TODO_A, skills=SKILLS, mcp=MCP, file_change="src/a.py changed", log=log)
     quota = LoggingSpillQuota(log)
     quota.initialize(0, [], live_relative_paths=list(ARCHIVED[:2]))
     plant_catalog(tmp_path)
@@ -536,7 +536,7 @@ def _saved_phase4() -> dict[str, Any]:
 
 
 def test_restored_phase4_stash_is_read_before_prepare_and_consumed_by_a_preserving_one() -> None:
-    inputs = GoldenInputs(todo=TODO_A)
+    inputs = ReminderProviders(todo=TODO_A)
     saved = _saved_phase4()
     entry_path = saved["last_words_manifest"][0]["relative_path"]
     stack = _stack(inputs)
@@ -559,7 +559,7 @@ def test_restored_phase4_stash_is_read_before_prepare_and_consumed_by_a_preservi
 
 
 def test_fresh_prepare_discards_the_restored_phase4_stash() -> None:
-    stack = _stack(GoldenInputs(todo=TODO_A))
+    stack = _stack(ReminderProviders(todo=TODO_A))
     lw = stack.last_words
     restore_phase4(stack, _saved_phase4())
 
@@ -572,7 +572,7 @@ def test_fresh_prepare_discards_the_restored_phase4_stash() -> None:
 
 
 def test_empty_turn_falls_back_to_the_restored_note_but_not_the_manifest_or_breaker() -> None:
-    stack = _stack(GoldenInputs(todo=TODO_A))
+    stack = _stack(ReminderProviders(todo=TODO_A))
     lw = stack.last_words
     saved = _saved_phase4()
     restore_phase4(stack, saved, available_relative_paths={saved["last_words_manifest"][0]["relative_path"]})

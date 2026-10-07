@@ -19,21 +19,25 @@ from chrys.service.tools.builtins.filesystem import view_image
 from chrys.service.vision import filter_image_tools, image_stub_middleware_for_model
 
 
-def test_common_and_kernel_image_media_type_predicates_agree() -> None:
-    media_types = [
-        "image/png",
-        "image/jpeg; charset=binary",
-        " IMAGE/webp ",
-        "text/plain",
-        "application/json",
-        "",
-        None,
-        123,
-    ]
-
-    assert [kernel_is_image_media_type(item) for item in media_types] == [
-        common_is_image_media_type(item) for item in media_types
-    ]
+@pytest.mark.parametrize(
+    ("media_type", "expected"),
+    [
+        ("image/png", True),
+        ("image/jpeg; charset=binary", True),
+        (" IMAGE/webp ", True),
+        ("image/svg+xml", True),
+        ("image", True),
+        ("image/", True),
+        ("text/plain", False),
+        ("application/json", False),
+        ("", False),
+        (None, False),
+        (123, False),
+    ],
+)
+def test_image_media_type_predicates_take_any_image_type(media_type: object, expected: bool) -> None:
+    assert kernel_is_image_media_type(media_type) is expected
+    assert common_is_image_media_type(media_type) is expected
 
 
 def test_filter_image_tools_removes_view_image_for_text_only_models() -> None:

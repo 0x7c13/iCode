@@ -9,7 +9,7 @@ import contextlib
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -297,7 +297,7 @@ async def test_sub_agent_partial_register_cleanup_releases_mcp_adapter() -> None
 
     with (
         patch("chrys.service.mcp._connection._create_mcp_tool", return_value=fake),
-        patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock()),
+        patch("chrys.orchestration.sub_agents.tools.create_client", return_value=MagicMock(aclose=AsyncMock())),
         patch("chrys.orchestration.invoker.runtime.ContextManager", side_effect=fail_context),
         pytest.raises(RuntimeError, match="ctx failed"),
     ):

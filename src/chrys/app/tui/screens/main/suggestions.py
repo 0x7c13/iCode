@@ -16,7 +16,7 @@ from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.main.buddy_command import BuddyCommandController
 from chrys.app.tui.screens.main.commands import MainSlashCommandRegistry, SlashCommandActionPort
 from chrys.app.tui.screens.main.model_indicator import is_model_selection_locked
-from chrys.app.tui.screens.main.ports import BuddyCommandView, SuggestionPopupView
+from chrys.app.tui.screens.main.ports import BuddyCommandView, StartWorker, SuggestionPopupView
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
 from chrys.app.tui.widgets.chrome.commands import (
@@ -70,7 +70,7 @@ class SuggestionCallbacks:
     """Screen-owned effects required by suggestions."""
 
     notify_warning: Callable[[MessageRef | str, MessageRef | str, float | None], None]
-    show_file_suggestions: Callable[[], object]
+    start_worker: StartWorker
     submit_user_text: Callable[[str], object]
     start_agent_profile_switch: Callable[[str], object]
     start_model_profile_switch: Callable[[str], object]
@@ -364,7 +364,7 @@ class SuggestionHandler:
         self._file_latest_query = ""
         self._invalidate_file_query_results()
         self._show_suggestions_loading("files")
-        self._callbacks.show_file_suggestions()
+        self._callbacks.start_worker(self.show_file_suggestions_async)
 
     def on_agent_triggered(self) -> None:
         """Show agent profile suggestions."""
@@ -498,7 +498,7 @@ class SuggestionHandler:
         return any(match not in disabled for match in matches)
 
     async def show_file_suggestions_async(self) -> None:
-        """Async implementation for file suggestions — called from MainScreen @work wrapper."""
+        """Show file suggestions; ``on_file_triggered`` runs this in a screen worker."""
         if self._suggestion_mode != "files" or not self._view.is_attached:
             return
         root = self._current_file_root()

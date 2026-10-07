@@ -33,9 +33,18 @@ if ($UseUv -and $Offline) {
 }
 
 $PyAppVersion = if ($env:PYAPP_VERSION) { $env:PYAPP_VERSION } else { "0.29.0" }
-$PythonVersion = "3.14"
+# The binary ships the CPython version .python-version pins (the one CI tests
+# on), built by this python-build-standalone release; bump it together with
+# PYTHON_BUILD_STANDALONE_RELEASE in .github/workflows/cd.yml.
+$PythonBuildStandaloneRelease = "20261003"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
+$CPythonVersion = (Get-Content (Join-Path $ProjectRoot ".python-version") -Raw).Trim()
+if ($CPythonVersion -notmatch '^3\.\d+\.\d+$') {
+    throw ".python-version must pin a full CPython version, got '$CPythonVersion'"
+}
+$PythonVersion = $CPythonVersion -replace '\.\d+$', ''
+$DistUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/$PythonBuildStandaloneRelease/cpython-$CPythonVersion+$PythonBuildStandaloneRelease-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
 
 # Env-var paths may be relative to the caller's directory; resolve them before
 # any Set-Location so they survive the working-directory changes below.
@@ -114,7 +123,7 @@ try {
     $env:PYAPP_EXEC_SPEC = "chrys.app.cli.app:pyapp_main"
     $env:PYAPP_SELF_COMMAND = "self"
     $env:PYAPP_PASS_LOCATION = "true"
-    # Never set by this script; a stale session value alongside
+    # Set below for installer builds only; a stale session value alongside
     # PYAPP_DISTRIBUTION_PATH would make PyApp's build.rs panic.
     $env:PYAPP_DISTRIBUTION_SOURCE = $null
 
@@ -132,19 +141,8 @@ try {
                 -Wheel (Join-Path $PyAppDir $Wheel) `
                 -Output (Join-Path $PyAppDir $OfflineArchive)
         } else {
-            # PyApp's build.rs pins one python-build-standalone URL per
-            # platform; read it back out so the offline distribution is built
-            # on exactly the interpreter this binary will ship.
-            $BuildRsText = Get-Content (Join-Path $PyAppDir "build.rs") -Raw
-            $DistMatch = [regex]::Matches(
-                $BuildRsText,
-                "https://[^`"]*cpython-$PythonVersion[^`"]*-x86_64-pc-windows-msvc-install_only_stripped[^`"]*"
-            )
-            if ($DistMatch.Count -eq 0) {
-                throw "No python-build-standalone URL for x86_64-pc-windows-msvc in build.rs"
-            }
             & "$ScriptDir\build_offline_dist.ps1" `
-                -DistUrl $DistMatch[0].Value `
+                -DistUrl $DistUrl `
                 -Wheel (Join-Path $PyAppDir $Wheel) `
                 -Output (Join-Path $PyAppDir $OfflineArchive)
         }
@@ -196,6 +194,8 @@ try {
             $env:PYAPP_DISTRIBUTION_PATH = Split-Path -Leaf $env:PYTHON_DIST
             $env:PYAPP_DISTRIBUTION_PYTHON_PATH = "python/python.exe"
         } else {
+            # The pinned distribution, rather than the one PyApp's build.rs names.
+            $env:PYAPP_DISTRIBUTION_SOURCE = $DistUrl
             $env:PYAPP_DISTRIBUTION_PATH = $null
             $env:PYAPP_DISTRIBUTION_PYTHON_PATH = $null
         }

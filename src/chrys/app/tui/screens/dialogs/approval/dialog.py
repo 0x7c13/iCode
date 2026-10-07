@@ -171,6 +171,10 @@ class ApprovalDialog(
     to deliver the result: approved verdicts auto-dismiss; flagged verdicts
     display the reason and let the user decide.  The user can always click
     Approve/Decline at any time, even while the judge is still running.
+
+    A flagged ``verdict`` given at construction (or delivered before mount)
+    opens the dialog flagged with the reason input focused: it may pop up
+    while the user is typing, and a stray ``y`` must not approve it.
     """
 
     BINDINGS: ClassVar[list] = [
@@ -194,6 +198,7 @@ class ApprovalDialog(
         approval_body: ApprovalBody | None = None,
         presentation_kind: str = "",
         reuse_offer: ApprovalReuseOffer | None = None,
+        verdict: JudgeVerdict | None = None,
     ) -> None:
         self._reuse_offer = reuse_offer
         self.remember_choice: ReuseChoice = ""
@@ -224,7 +229,12 @@ class ApprovalDialog(
         self._dismiss_result: tuple[bool, str, dict[str, Any] | None] | None = None
         self._user_decision_submitted = False
         self._dismiss_on_resume = False
+        # A flag that lands before ``on_mount`` waits here; its widgets exist only then.
+        self._flagged: JudgeVerdict | None = None
+        self._verdict_widgets_ready = False
         super().__init__()
+        if verdict is not None:
+            self.receive_verdict(verdict)
 
     def compose(self) -> ComposeResult:
         localizer = widget_localizer(self)
@@ -350,10 +360,20 @@ class ApprovalDialog(
         return title
 
     def on_mount(self) -> None:
-        self.query_one("#approval-yes", Button).focus()
+        self._verdict_widgets_ready = True
+        if self._flagged is not None:
+            self._show_flagged(self._flagged)
+            self.query_one("#approval-reason", _ApprovalReasonTextArea).focus()
+        else:
+            self.query_one("#approval-yes", Button).focus()
         if self._dismissed:
             # The dialog counts as mounted only once its mount handlers have returned.
             self.call_later(self._dismiss_if_top)
+
+    @property
+    def tool_name(self) -> str:
+        """The tool name this dialog asks about, as it was given."""
+        return self._tool_name
 
     @property
     def is_dismissed(self) -> bool:
@@ -422,7 +442,8 @@ class ApprovalDialog(
 
         Called by the event handler once the judge finishes.  If the verdict
         approves the tool call, the dialog auto-dismisses.  Otherwise it
-        shows the concern and lets the user decide.
+        shows the concern and lets the user decide; before mount it keeps
+        the verdict and opens flagged.
 
         If the user already clicked Approve/Decline, this is a no-op.
         """
@@ -433,7 +454,12 @@ class ApprovalDialog(
             self._safe_dismiss((True, "", None))
             return
 
-        # Flagged — hide spinner, show concern, switch border to error
+        self._flagged = verdict
+        if self._verdict_widgets_ready:
+            self._show_flagged(verdict)
+
+    def _show_flagged(self, verdict: JudgeVerdict) -> None:
+        """Hide the spinner, show the concern and switch the border to error."""
         judge_area = self.query_one("#approval-judge", VerticalGroup)
         judge_area.border_title = Text(render_str(widget_localizer(self), _FLAGGED.bind()))
         judge_area.add_class("judge-flagged")

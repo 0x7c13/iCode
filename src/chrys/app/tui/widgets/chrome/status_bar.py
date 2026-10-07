@@ -140,10 +140,17 @@ class StatusBar(Widget):
         """Posted when the profile tag is clicked."""
 
     class ModelTagClicked(Message):
-        """Posted when the model tag is clicked."""
+        """Posted when the model tag is clicked, a locked tag included."""
 
         def __init__(self, mode: Literal["configure", "select", "locked"]) -> None:
             self.mode = mode
+            super().__init__()
+
+    class SelectorBusy(Message):
+        """Posted when a selector is clicked while a run keeps it read-only."""
+
+        def __init__(self, selector: Literal["profile", "model"]) -> None:
+            self.selector = selector
             super().__init__()
 
     class DetailsClicked(Message):
@@ -479,15 +486,13 @@ class StatusBar(Widget):
         )
         self._refresh_tag_interaction_state()
 
+    def _tags_busy(self) -> bool:
+        """Return whether a run, from loading through its queued input, holds the selectors."""
+        return self._execution_busy or self.agent_running or self.agent_loading or self.input_locked
+
     def _tags_interactive(self) -> bool:
         """Return whether transient screen state permits selector interaction."""
-        return (
-            not self._execution_busy
-            and not self.agent_running
-            and not self.agent_loading
-            and not self.input_locked
-            and not self.shell_mode
-        )
+        return not self._tags_busy() and not self.shell_mode
 
     def _refresh_tag_interaction_state(self) -> None:
         """Keep both selector pointers and locked styling in sync with guards."""
@@ -611,6 +616,10 @@ class StatusBar(Widget):
         self._refresh_flash_text()
         self._set_flash_trail(self._flash_display_trail())
         self._refresh_details_pointer()
+
+    def flash_completed(self) -> None:
+        """Flash how long the run took; the elapsed time follows later locale switches."""
+        self.flash(STATUS_COMPLETED.bind(elapsed=self._format_elapsed()))
 
     def hide(self) -> None:
         """Hide the status bar."""
@@ -866,14 +875,21 @@ class StatusBar(Widget):
             event.stop()
             if self._tags_interactive():
                 self.post_message(self.ProfileTagClicked())
+            elif self._tags_busy():
+                self.post_message(self.SelectorBusy("profile"))
             return
 
         model_tag = self.query_one("#model-tag", Static)
         if model_tag.display and model_tag.region.contains(event.screen_x, event.screen_y):
             event.prevent_default()
             event.stop()
-            if self._tags_interactive() and self._current_model_mode != "locked":
+            # A lock outlasts the run, so its reason wins over the busy notice.
+            if self._current_model_mode == "locked" and not self.shell_mode:
+                self.post_message(self.ModelTagClicked("locked"))
+            elif self._tags_interactive():
                 self.post_message(self.ModelTagClicked(self._current_model_mode))
+            elif self._tags_busy():
+                self.post_message(self.SelectorBusy("model"))
             return
 
         if not self._tool_trail:

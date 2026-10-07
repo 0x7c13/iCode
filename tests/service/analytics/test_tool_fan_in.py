@@ -17,8 +17,8 @@ from chrys.service.analytics import (
     TrajectoryAnalyzer,
     analyze_trajectory,
 )
+from chrys.service.analytics._context_evidence import _replay_delta
 from chrys.service.analytics._facts import _RevisionEntry
-from chrys.service.analytics._turns import _replay_delta
 from tests.service.analytics._events import NS, EventLog, caused_by, operation_index
 
 
@@ -209,7 +209,8 @@ def test_event_carrier_item_id_proves_chat_style_tool_fan_in_without_session_sto
     assert turn.response_cp_ns.precision is Precision.EXACT
 
 
-def test_two_validation_retries_keep_exchange_references_family_exact(tmp_path) -> None:
+@pytest.mark.parametrize("retry_mode", ["validation", "context_overflow"])
+def test_two_exchange_retries_keep_exchange_references_family_exact(tmp_path, retry_mode: str) -> None:
     call_item_id = "1" * 32
     result_item_id = "2" * 32
     revision_id = "3" * 32
@@ -232,7 +233,7 @@ def test_two_validation_retries_keep_exchange_references_family_exact(tmp_path) 
         ("e" * 32, "f" * 32, 5 * NS),
     ):
         payload = {
-            "retry_mode": "validation",
+            "retry_mode": retry_mode,
             "previous_operation_id": previous,
             "next_operation_id": following,
         }
@@ -347,7 +348,7 @@ def test_two_validation_retries_keep_exchange_references_family_exact(tmp_path) 
         start_payload={"context_revision_id": revision_id},
     )
     log.add(EventType.TURN_FINISHED, 20 * NS, payload={"end_reason": "cancelled", "duration_ms": 0})
-    path = tmp_path / "double-validation-retry.jsonl"
+    path = tmp_path / f"double-{retry_mode}-retry.jsonl"
     log.write(path)
 
     turn = analyze_trajectory(path).turns[0]

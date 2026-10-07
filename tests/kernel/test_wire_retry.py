@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,23 +19,28 @@ from chrys.kernel import (
     ChatClientException,
     ChatResponse,
     ChatResponseUpdate,
+    ConsumedInjectionMessageProbe,
     Content,
     FunctionTool,
+    LoopRecorder,
     Message,
     ResponseStream,
     StallExhaustedAction,
     is_retry_boundary_update,
     report_wire_progress,
     tool,
+    wire_progress_scope,
 )
 from chrys.kernel import loop as loop_module
-from chrys.kernel.loop import ConsumedInjectionMessageProbe, LoopRecorder
 from chrys.kernel.middleware import ChatMiddleware, ChatMiddlewareLayer
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
 from chrys.service.agent_middleware.system_reminder import wrap_system_reminder as _wrap
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +79,7 @@ class _Policy:
     stall_timeout_seconds: float | None = None
     stall_max_retries: int = 0
     stall_exhausted_action: StallExhaustedAction = StallExhaustedAction.BLOCKING_FALLBACK
+    hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None = None
     events: list[tuple[str, int, int, int, BaseException]] = field(default_factory=list)
     before_retry_calls: int = 0
     before_retry_hook: Any = None
@@ -161,9 +167,7 @@ def _wrapped_network_error() -> ChatClientException:
     cause = ConnectionError("peer closed connection")
     try:
         raise ChatClientException(
-            "<class 'chrys.service.llm.instrumented.DynamicClient'> "
-            "service failed to complete the prompt: peer closed connection",
-            inner_exception=cause,
+            "Chat Completions request failed: peer closed connection", inner_exception=cause
         ) from cause
     except ChatClientException as exc:
         return exc
@@ -689,6 +693,166 @@ async def test_hosted_commit_evidence_vetoes_mid_stream_wire_replay() -> None:
     assert policy.events == []
 
 
+class _ProviderRetryPolicy(_Policy):
+    def is_retryable(self, exc: BaseException) -> bool:
+        return isinstance(exc, ProviderResponseError) and exc.retryable
+
+
+def _failed_after_hosted_work(*, invalidates: bool, hosted: bool = True) -> ProviderResponseError:
+    # What an adapter raises when the response failed after the provider ran
+    # hosted work it never yielded.
+    observed = (
+        Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
+        Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
+    )
+    return ProviderResponseError(
+        "stream_truncated",
+        "the response failed",
+        retryable=True,
+        invalidates_continuation_token=invalidates,
+        observed_contents=observed if hosted else (),
+    )
+
+
+def _validated_layer(wire: _ScriptedWire) -> tuple[InvariantCheckedToolLoopLayer, _ProviderRetryPolicy]:
+    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    policy = _ProviderRetryPolicy()
+    policy.hosted_commits_in_flight = validation.hosted_commits_in_flight
+    return InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[validation])), policy
+
+
+async def _drive(layer: InvariantCheckedToolLoopLayer, policy: _Policy, *, stream: bool) -> ChatResponse:
+    result = layer.get_response([_user()], stream=stream, client_kwargs={"wire_retry_policy": policy})
+    if stream:
+        assert isinstance(result, ResponseStream)
+        _ = [update async for update in result]
+        return await result.get_final_response()
+    return await result
+
+
+@pytest.mark.parametrize("hosted", [True, False], ids=["hosted_work", "no_hosted_work"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_on_a_provider_failure_vetoes_wire_retry(stream: bool, hosted: bool) -> None:
+    success: Any = [_text_update("recovered")] if stream else _text_response("recovered")
+    wire = _ScriptedWire([_failed_after_hosted_work(invalidates=False, hosted=hosted), success])
+    layer, policy = _validated_layer(wire)
+
+    if hosted:
+        with pytest.raises(ProviderResponseError, match="the response failed"):
+            await _drive(layer, policy, stream=stream)
+        assert len(wire.calls) == 1
+        assert policy.events == []
+    else:
+        response = await _drive(layer, policy, stream=stream)
+        assert response.text == "recovered"
+        assert len(wire.calls) == 2
+        assert len(policy.events) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_on_a_provider_failure_still_polls_a_live_token(stream: bool) -> None:
+    token = {"response_id": "pending-hosted"}
+    if stream:
+        pending: Any = [_text_update("not-terminal", continuation_token=token)]
+        terminal: Any = [_text_update("terminal")]
+    else:
+        pending = _text_response("not-terminal", continuation_token=token)
+        terminal = _text_response("terminal")
+    wire = _ScriptedWire([pending, _failed_after_hosted_work(invalidates=False), terminal])
+    layer, policy = _validated_layer(wire)
+
+    response = await _drive(layer, policy, stream=stream)
+
+    # Polling resumes the response that ran the work; it never re-creates it.
+    assert response.text == "terminal"
+    assert [call["options"].get("continuation_token") for call in wire.calls] == [None, token, token]
+    assert len(policy.events) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_an_invalidated_token_with_hosted_work_never_re_creates_the_request(stream: bool) -> None:
+    token = {"response_id": "pending-hosted"}
+    pending: Any = (
+        [_text_update("not-terminal", continuation_token=token)]
+        if stream
+        else _text_response("not-terminal", continuation_token=token)
+    )
+    unused: Any = [_text_update("must stay unused")] if stream else _text_response("must stay unused")
+    wire = _ScriptedWire([pending, _failed_after_hosted_work(invalidates=True), unused])
+    layer, policy = _validated_layer(wire)
+
+    with pytest.raises(ProviderResponseError, match="the response failed"):
+        await _drive(layer, policy, stream=stream)
+
+    assert len(wire.calls) == 2
+    assert policy.events == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_a_poll_showed_still_vetoes_a_later_poll_that_ends_the_response(stream: bool) -> None:
+    # One poll reports the hosted work and keeps the token; the next poll
+    # ends the response without repeating it. The work belongs to the
+    # response, not to the poll that reported it.
+    token = {"response_id": "pending-hosted"}
+    pending: Any = (
+        [_text_update("not-terminal", continuation_token=token)]
+        if stream
+        else _text_response("not-terminal", continuation_token=token)
+    )
+    ended = ProviderResponseError(
+        "server_error", "the response ended", retryable=True, invalidates_continuation_token=True
+    )
+    unused: Any = [_text_update("must stay unused")] if stream else _text_response("must stay unused")
+    wire = _ScriptedWire([pending, _failed_after_hosted_work(invalidates=False), ended, unused])
+    layer, policy = _validated_layer(wire)
+
+    with pytest.raises(ProviderResponseError, match="the response ended"):
+        await _drive(layer, policy, stream=stream)
+
+    assert [call["options"].get("continuation_token") for call in wire.calls] == [None, token, token]
+    assert len(policy.events) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.asyncio
+async def test_hosted_work_of_an_earlier_response_does_not_veto_a_new_request(stream: bool) -> None:
+    # The first response ran hosted work and finished; the tool loop's next
+    # request starts another response, whose failure may be retried.
+    hosted = [
+        Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
+        Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
+    ]
+    call = Content.from_function_call("c1", "echo", arguments={"text": "x"})
+    first: Any = (
+        [ChatResponseUpdate(role="assistant", contents=[*hosted, call])]
+        if stream
+        else ChatResponse(messages=[Message("assistant", [*hosted, call])])
+    )
+    final: Any = [_text_update("done")] if stream else _text_response("done")
+    failure = ProviderResponseError("server_error", "dropped", retryable=True)
+    wire = _ScriptedWire([first, failure, final])
+    layer, policy = _validated_layer(wire)
+
+    runs: list[str] = []
+    result = layer.get_response(
+        [_user()], stream=stream, options={"tools": [_echo_tool(runs)]}, client_kwargs={"wire_retry_policy": policy}
+    )
+    if stream:
+        assert isinstance(result, ResponseStream)
+        response = await result.get_final_response()
+    else:
+        response = await result
+
+    assert response.text == "done"
+    assert runs == ["x"]
+    assert len(wire.calls) == 3
+    assert len(policy.events) == 1
+
+
 @pytest.mark.asyncio
 async def test_response_stream_close_is_recursive_idempotent_and_skips_finalization() -> None:
     cleanups = 0
@@ -1139,7 +1303,7 @@ async def test_abandoned_close_never_finalizes_partial_updates_via_cleanup_hooks
     stream.with_result_hook(_after)
 
     async def _telemetry_shaped_cleanup() -> None:
-        # Mirrors the instrumented cleanup hook: on a non-errored stream it
+        # Mirrors the wire client's cleanup hook: on a non-errored stream it
         # requests the final response, which must refuse on abandonment.
         try:
             await stream.get_final_response()
@@ -1389,6 +1553,19 @@ async def test_stall_watchdog_still_fires_once_preparation_goes_idle() -> None:
     assert len(wire.calls) == 1
 
 
+def test_a_report_reaches_every_enclosing_progress_scope() -> None:
+    """A side call's own read timeout, nested in the watchdog of the pull
+    waiting on it, never hides its progress from that watchdog."""
+    reports: list[str] = []
+    with wire_progress_scope(lambda: reports.append("watchdog")):
+        with wire_progress_scope(lambda: reports.append("read timeout")):
+            report_wire_progress()
+        report_wire_progress()
+    report_wire_progress()
+
+    assert reports == ["read timeout", "watchdog", "watchdog"]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.asyncio
 async def test_learned_continuation_token_survives_failed_poll_for_the_retry_owner(stream: bool) -> None:
@@ -1472,7 +1649,7 @@ async def test_wrapped_invalidating_error_clears_token_before_retry(stream: bool
         "stream_truncated", "stream ended early", retryable=True, invalidates_continuation_token=True
     )
     try:
-        raise ChatClientException("service failed to complete the prompt", inner_exception=inner) from inner
+        raise ChatClientException("Chat Completions request failed", inner_exception=inner) from inner
     except ChatClientException as exc:
         wrapped = exc
     wire = _ScriptedWire([pending, wrapped])

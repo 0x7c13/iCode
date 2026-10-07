@@ -13,12 +13,14 @@ can never 400 a request Chrys itself constructs.
 from __future__ import annotations
 
 import gzip
+import json
 from collections.abc import AsyncIterator
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
+from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk, ChoiceDelta
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
@@ -26,20 +28,27 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.completion_usage import CompletionUsage, PromptTokensDetails
 from pydantic import BaseModel
 
+from chrys.foundation.errors import ErrorKind
+from chrys.foundation.errors.display import describe_error
 from chrys.kernel import ChatResponse, Content, Message
-from chrys.kernel.exceptions import ChatClientException
-from chrys.service.llm._chat_stream_validation import (
+from chrys.kernel.exceptions import (
+    ChatClientException,
+    ChatClientInvalidRequestException,
+    ChatClientInvalidResponseException,
+)
+from chrys.service.llm.chat_completions import ChatCompletionsClient
+from chrys.service.llm.chat_completions.client import DEEPSEEK, GLM, OPENAI, ChatCompletionsVariant
+from chrys.service.llm.chat_completions.decode import decode_completion, decode_usage, ensure_choices, text_contents
+from chrys.service.llm.chat_completions.history import encode_message, sanitize_author_name
+from chrys.service.llm.chat_completions.validation import (
     _INVALID_STREAM_BODY_CAPTURE_LIMIT,
     _strip_leading_bom_from_decoded_bytes,
+    bounded_body_preview,
+    validate_stream_response,
+    zero_event_message,
 )
-from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
-from chrys.service.llm.openai_chat_completion import (
-    RawOpenAIChatCompletionClient,
-    _bounded_response_body_preview,
-    _sanitize_author_name,
-    _validate_chat_completion_stream_response,
-    _zero_event_stream_message,
-)
+from tests.service.llm._wire_stacks import assemble_openai_stack
+from tests.support.openai_chat_wire import parse_stream_chunks
 
 
 class _UnusedCompletions:
@@ -59,12 +68,8 @@ class _UnusedAsyncOpenAI:
         self.chat = _UnusedChat()
 
 
-def _client() -> RawOpenAIChatCompletionClient:
-    return RawOpenAIChatCompletionClient(model="glm-5.2", async_client=_UnusedAsyncOpenAI())
-
-
-def _deepseek() -> DeepSeekChatCompletionClient:
-    return DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_UnusedAsyncOpenAI())
+def _client() -> ChatCompletionsClient:
+    return ChatCompletionsClient(model="glm-5.2", sdk_client=_UnusedAsyncOpenAI())
 
 
 def _user(text: str = "hi", **kwargs: Any) -> Message:
@@ -72,15 +77,15 @@ def _user(text: str = "hi", **kwargs: Any) -> Message:
 
 
 def test_response_body_preview_marks_empty_and_has_a_hard_limit() -> None:
-    assert _bounded_response_body_preview("") == "<empty>"
+    assert bounded_body_preview("") == "<empty>"
 
-    preview = _bounded_response_body_preview("x" * 3000)
+    preview = bounded_body_preview("x" * 3000)
 
     assert len(preview) == 2000
     assert preview.endswith("...[truncated]")
 
-    assert _bounded_response_body_preview("abc", truncated=True) == "'abc'...[truncated]"
-    assert len(_bounded_response_body_preview("x" * 3000, truncated=True)) == 2000
+    assert bounded_body_preview("abc", truncated=True) == "'abc'...[truncated]"
+    assert len(bounded_body_preview("x" * 3000, truncated=True)) == 2000
 
 
 class _ChunkedByteStream(httpx.AsyncByteStream):
@@ -154,7 +159,7 @@ async def test_stream_sniff_replays_padded_prefix_and_delegates_close() -> None:
     chunks = [b"\r\n", b"\xef\xbb\xbf", b": keepalive\n\ndata: [DONE]\n\n"]
     raw, stream = _streaming_raw_response(chunks, content_type="application/json")
 
-    await _validate_chat_completion_stream_response(raw)
+    await validate_stream_response(raw)
 
     replayed = b"".join([chunk async for chunk in raw.http_response.aiter_raw()])
     assert replayed == b"".join(chunks)
@@ -164,7 +169,7 @@ async def test_stream_sniff_replays_padded_prefix_and_delegates_close() -> None:
 async def test_stream_sniff_leaves_padding_beyond_window_to_the_decoder() -> None:
     raw, stream = _streaming_raw_response([b"\n" * 600, b'{"error":"late"}'])
 
-    await _validate_chat_completion_stream_response(raw)
+    await validate_stream_response(raw)
 
     assert not stream.closed
 
@@ -173,7 +178,7 @@ async def test_stream_sniff_rejects_blank_body_and_releases_the_connection() -> 
     raw, stream = _streaming_raw_response([b"\r\n", b"  "], content_type=None)
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     message = str(exc_info.value)
     assert "Content-Type '<missing>'" in message
@@ -185,7 +190,7 @@ async def test_stream_sniff_rejects_json_first_chunk_with_full_body() -> None:
     raw, stream = _streaming_raw_response([b"{", b'"error":"gateway broke"}'])
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     # The outer wrapper carries (message, inner_exception) as args, so its str()
     # is a repr-escaped tuple; the user-facing text is the cause's own message.
@@ -204,7 +209,7 @@ async def test_stream_sniff_caps_capture_of_an_endless_non_sse_body() -> None:
     )
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     detail = str(exc_info.value.__cause__)
     assert "starts with '<'; expected an SSE event stream" in detail
@@ -217,7 +222,7 @@ async def test_stream_sniff_keeps_verdict_when_capture_read_fails() -> None:
     raw, stream = _streaming_raw_response([b"{", httpx.ReadTimeout("stalled")])
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     detail = str(exc_info.value.__cause__)
     assert "starts with '{'; expected an SSE event stream" in detail
@@ -230,7 +235,7 @@ async def test_stream_sniff_classifies_decoded_bytes_under_content_encoding() ->
     raw, stream = _streaming_raw_response([error], content_type="application/json", content_encoding="gzip")
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     detail = str(exc_info.value.__cause__)
     assert "starts with '{'; expected an SSE event stream" in detail
@@ -240,7 +245,7 @@ async def test_stream_sniff_classifies_decoded_bytes_under_content_encoding() ->
     sse = b"data: [DONE]\n\n"
     raw, _ = _streaming_raw_response([gzip.compress(sse)], content_encoding="gzip")
 
-    await _validate_chat_completion_stream_response(raw)
+    await validate_stream_response(raw)
 
     # The replay carries raw bytes; httpx still decodes them for the SDK.
     assert b"".join([chunk async for chunk in raw.http_response.aiter_bytes()]) == sse
@@ -255,7 +260,7 @@ async def test_stream_sniff_rejects_bodies_without_sse_framing(body: bytes) -> N
     raw, stream = _streaming_raw_response([body])
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     assert "expected an SSE event stream" in str(exc_info.value.__cause__)
     assert stream.closed
@@ -289,7 +294,7 @@ async def test_stream_sniff_rejects_bodies_without_sse_framing(body: bytes) -> N
 async def test_stream_sniff_accepts_sse_framing(items: list[bytes]) -> None:
     raw, _ = _streaming_raw_response(list(items))
 
-    await _validate_chat_completion_stream_response(raw)
+    await validate_stream_response(raw)
 
     assert b"".join([chunk async for chunk in raw.http_response.aiter_raw()]) == b"".join(items)
 
@@ -300,7 +305,7 @@ async def test_stream_sniff_strips_a_leading_bom_from_the_decoded_stream(content
     body = sse if content_encoding is None else gzip.compress(sse)
     raw, _ = _streaming_raw_response([body], content_encoding=content_encoding)
 
-    await _validate_chat_completion_stream_response(raw)
+    await validate_stream_response(raw)
 
     # The SDK reads decoded bytes; that is where the BOM must be gone.
     assert b"".join([chunk async for chunk in raw.http_response.aiter_bytes()]) == b"data: [DONE]\n\n"
@@ -322,7 +327,7 @@ async def test_stream_sniff_falls_back_to_utf8_for_an_unknown_charset() -> None:
     raw, stream = _streaming_raw_response([b"<html>bad gateway</html>"], content_type="text/html; charset=madeup")
 
     with pytest.raises(ChatClientException) as exc_info:
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     assert str(exc_info.value.__cause__).endswith("Response body: '<html>bad gateway</html>'")
     assert stream.closed
@@ -331,15 +336,15 @@ async def test_stream_sniff_falls_back_to_utf8_for_an_unknown_charset() -> None:
 async def test_stream_replay_records_what_the_decoder_saw_for_the_zero_event_guard() -> None:
     raw, _ = _streaming_raw_response([b": keep", b"alive\n\n", b": still nothing\n\n"])
 
-    replay = await _validate_chat_completion_stream_response(raw)
+    replay = await validate_stream_response(raw)
 
     # Before the decoder drains the body only the sniffed prefix is known.
-    assert _zero_event_stream_message(replay).endswith("Response body: ': keep'...[truncated]")
+    assert zero_event_message(replay).endswith("Response body: ': keep'...[truncated]")
 
     async for _ in raw.http_response.aiter_bytes():
         pass
 
-    assert _zero_event_stream_message(replay) == (
+    assert zero_event_message(replay) == (
         "Chat Completions API returned an invalid response (HTTP 200, Content-Type 'text/event-stream'): "
         "stream ended without any events. Response body: ': keepalive\\n\\n: still nothing\\n\\n'"
     )
@@ -349,7 +354,7 @@ async def test_stream_sniff_propagates_transport_failure_before_a_verdict() -> N
     raw, stream = _streaming_raw_response([httpx.ReadTimeout("stalled")])
 
     with pytest.raises(httpx.ReadTimeout):
-        await _validate_chat_completion_stream_response(raw)
+        await validate_stream_response(raw)
 
     assert stream.closed
 
@@ -358,14 +363,14 @@ async def test_stream_sniff_propagates_transport_failure_before_a_verdict() -> N
 
 
 def test_sanitize_author_name_value_rules() -> None:
-    assert _sanitize_author_name("my agent") == "myagent"
-    assert _sanitize_author_name("小助手") == "小助手", "CJK is valid for the wire name field"
-    assert _sanitize_author_name("my-agent_2") == "my-agent_2"
-    assert _sanitize_author_name("a<b|c\\d/e>f") == "abcdef"
-    assert _sanitize_author_name("< | / >") is None, "empty after sanitize omits the key"
-    assert _sanitize_author_name(None) is None
-    assert _sanitize_author_name("") is None
-    truncated = _sanitize_author_name("a b" + "c" * 80)
+    assert sanitize_author_name("my agent") == "myagent"
+    assert sanitize_author_name("小助手") == "小助手", "CJK is valid for the wire name field"
+    assert sanitize_author_name("my-agent_2") == "my-agent_2"
+    assert sanitize_author_name("a<b|c\\d/e>f") == "abcdef"
+    assert sanitize_author_name("< | / >") is None, "empty after sanitize omits the key"
+    assert sanitize_author_name(None) is None
+    assert sanitize_author_name("") is None
+    truncated = sanitize_author_name("a b" + "c" * 80)
     assert truncated is not None
     assert len(truncated) == 64
     assert truncated == ("ab" + "c" * 80)[:64]
@@ -373,17 +378,17 @@ def test_sanitize_author_name_value_rules() -> None:
 
 def test_system_message_author_name_sanitized() -> None:
     message = Message(role="system", contents=["be nice"], author_name="sys helper")
-    (prepared,) = _client()._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
     assert prepared["name"] == "syshelper"
 
 
 def test_user_message_author_name_sanitized() -> None:
-    (prepared,) = _client()._prepare_message_for_openai(_user(author_name="user one"))
+    (prepared,) = encode_message(_user(author_name="user one"), variant=OPENAI)
     assert prepared["name"] == "userone"
 
 
 def test_unsanitizable_author_name_omits_the_key() -> None:
-    (prepared,) = _client()._prepare_message_for_openai(_user(author_name="< / >"))
+    (prepared,) = encode_message(_user(author_name="< / >"), variant=OPENAI)
     assert "name" not in prepared
 
 
@@ -393,12 +398,37 @@ def test_tool_result_message_never_carries_a_name() -> None:
         contents=[Content.from_function_result(call_id="c1", result="ok")],
         author_name="tool helper",
     )
-    (prepared,) = _client()._prepare_message_for_openai(message)
+    (prepared,) = encode_message(message, variant=OPENAI)
     assert "name" not in prepared
 
 
+@pytest.mark.parametrize(
+    ("uri", "media_type"),
+    [
+        ("data:video/mp4;base64,AAAA", "video/mp4"),
+        ("data:audio/ogg;base64,AAAA", "audio/ogg"),
+        ("https://example.com/speech.wav", "audio/wav"),
+        ("https://example.com/report.pdf", "application/pdf"),
+    ],
+    ids=["video", "unknown-audio-format", "audio-link", "application-link"],
+)
+def test_media_without_a_wire_part_goes_out_as_placeholder_text(
+    uri: str, media_type: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    message = Message(role="user", contents=[Content.from_uri(uri=uri, media_type=media_type)])
+    with caplog.at_level("DEBUG", logger="chrys.service.llm.chat_completions.history"):
+        (prepared,) = encode_message(message, variant=OPENAI)
+    assert prepared == {
+        "role": "user",
+        "content": f"[{media_type} content omitted: the Chat Completions API does not accept it.]",
+    }
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Chat Completions has no content part for {media_type}; a placeholder text goes out instead."
+    ]
+
+
 def test_reasoning_coalescer_aggregate_sanitizes_name_and_keeps_reasoning() -> None:
-    # The run-coalescer aggregate path builds its own wire message; the
+    # The reasoning-bearing encoder builds its own aggregate message; the
     # sanitize must touch only ``name``, never the reasoning keys.
     reasoning = Content.from_text_reasoning(
         text="thinking",
@@ -409,7 +439,7 @@ def test_reasoning_coalescer_aggregate_sanitizes_name_and_keeps_reasoning() -> N
         contents=[reasoning, Content.from_text("answer")],
         author_name="agent one",
     )
-    (aggregate,) = _client()._prepare_message_for_openai(message)
+    (aggregate,) = encode_message(message, variant=OPENAI)
     assert aggregate["name"] == "agentone"
     assert aggregate["reasoning_content"] == "thinking"
     assert aggregate["content"] == "answer"
@@ -432,7 +462,7 @@ def test_reasoning_coalescer_standalone_non_text_content_sanitizes_name() -> Non
         ],
         author_name="agent one",
     )
-    standalone, aggregate = _client()._prepare_message_for_openai(message)
+    standalone, aggregate = encode_message(message, variant=OPENAI)
     assert standalone["content"][0]["type"] == "image_url"
     assert standalone["name"] == "agentone"
     assert aggregate["name"] == "agentone"
@@ -448,7 +478,7 @@ def test_reasoning_props_carrier_message_sanitizes_name() -> None:
         additional_properties={"reasoning_content": "props chain", "openai_reasoning_format": "reasoning_content"},
         author_name="agent one",
     )
-    (carrier,) = _client()._prepare_message_for_openai(message)
+    (carrier,) = encode_message(message, variant=OPENAI)
     assert carrier == {
         "role": "assistant",
         "content": "",
@@ -462,17 +492,14 @@ def test_restored_history_author_name_sanitized_on_wire() -> None:
     # still serialize to the wire sanitized.
     restored = Message.from_dict(_user(author_name="restored user").to_dict())
     assert restored.author_name == "restored user"
-    (prepared,) = _client()._prepare_message_for_openai(restored)
+    (prepared,) = encode_message(restored, variant=OPENAI)
     assert prepared["name"] == "restoreduser"
 
 
 def test_deepseek_sites_sanitize_author_name() -> None:
-    deepseek = _deepseek()
-    (sys_prepared,) = deepseek._prepare_message_for_openai(
-        Message(role="system", contents=["s"], author_name="sys helper")
-    )
+    (sys_prepared,) = encode_message(Message(role="system", contents=["s"], author_name="sys helper"), variant=DEEPSEEK)
     assert sys_prepared["name"] == "syshelper"
-    (user_prepared,) = deepseek._prepare_message_for_openai(_user(author_name="user one"))
+    (user_prepared,) = encode_message(_user(author_name="user one"), variant=DEEPSEEK)
     assert user_prepared["name"] == "userone"
 
 
@@ -480,7 +507,7 @@ def test_deepseek_sites_sanitize_author_name() -> None:
 
 
 def _prepared_response_format(response_format: Any) -> Any:
-    run_options = _client()._prepare_options([_user()], {"response_format": response_format})
+    run_options = _client()._build_request([_user()], {"response_format": response_format})
     return run_options["response_format"]
 
 
@@ -695,7 +722,7 @@ _CONSTRAINED_RAW_SCHEMA = {
 
 
 def _prepared_response_format_for_model(model: str, response_format: Any) -> Any:
-    run_options = _client()._prepare_options([_user()], {"model": model, "response_format": response_format})
+    run_options = _client()._build_request([_user()], {"model": model, "response_format": response_format})
     return run_options["response_format"]
 
 
@@ -802,6 +829,9 @@ def test_model_class_name_is_sanitized() -> None:
     _Digest.__name__ = "天气 Digest"
     prepared = _prepared_response_format(_Digest)
     assert prepared["json_schema"]["name"] == "Digest"
+    assert prepared["json_schema"]["strict"] is True
+    assert prepared["json_schema"]["schema"]["additionalProperties"] is False
+    assert prepared["json_schema"]["schema"]["required"] == ["answer"]
 
 
 # ───────────────────────── cache_write_tokens extraction ─────────────────────────
@@ -817,22 +847,217 @@ def _usage(**detail_kwargs: Any) -> CompletionUsage:
 
 
 def test_cache_write_tokens_extracted() -> None:
-    details = _client()._parse_usage_from_openai(_usage(cache_write_tokens=7))
+    details = decode_usage(_usage(cache_write_tokens=7), variant=OPENAI)
     assert details["prompt/cache_write_tokens"] == 7
     assert details["cache_creation_input_token_count"] == 7
 
 
 def test_cache_write_tokens_zero_preserved() -> None:
-    details = _client()._parse_usage_from_openai(_usage(cache_write_tokens=0))
+    details = decode_usage(_usage(cache_write_tokens=0), variant=OPENAI)
     assert details["prompt/cache_write_tokens"] == 0
     assert details["cache_creation_input_token_count"] == 0
 
 
 def test_cache_write_tokens_absent_omits_both_keys() -> None:
-    details = _client()._parse_usage_from_openai(_usage())
+    details = decode_usage(_usage(), variant=OPENAI)
     assert "prompt/cache_write_tokens" not in details
     assert "cache_creation_input_token_count" not in details
     assert details["cache_read_input_token_count"] == 3
+
+
+# ─────────────── Kimi: choice-level stream usage, top-level cached_tokens ───────────────
+
+
+def _kimi_usage(**extra: Any) -> dict[str, Any]:
+    return {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, **extra}
+
+
+def _kimi_chunk(*, choice_usage: Any = None, chunk_usage: Any = None) -> ChatCompletionChunk:
+    choice: dict[str, Any] = {"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}
+    if choice_usage is not None:
+        choice["usage"] = choice_usage
+    return ChatCompletionChunk.model_validate(
+        {
+            "id": "chunk-kimi",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "kimi-k2",
+            "choices": [choice],
+            "usage": chunk_usage,
+        }
+    )
+
+
+def _usage_contents(update: Any) -> list[Content]:
+    return [content for content in update.contents if content.type == "usage"]
+
+
+def test_choice_level_stream_usage_is_reported() -> None:
+    (update,) = parse_stream_chunks(_client(), _kimi_chunk(choice_usage=_kimi_usage(cached_tokens=64)))
+
+    [usage] = _usage_contents(update)
+    assert usage.usage_details == {
+        "input_token_count": 100,
+        "output_token_count": 20,
+        "total_token_count": 120,
+        "prompt/cached_tokens": 64,
+        "cache_read_input_token_count": 64,
+    }
+    assert update.text == "done"
+
+
+def test_chunk_level_stream_usage_wins_over_the_choice_level_copy() -> None:
+    chunk = _kimi_chunk(
+        choice_usage=_kimi_usage(),
+        chunk_usage={"prompt_tokens": 7, "completion_tokens": 1, "total_tokens": 8},
+    )
+
+    [usage] = _usage_contents(parse_stream_chunks(_client(), chunk)[0])
+
+    assert usage.usage_details is not None
+    assert usage.usage_details["input_token_count"] == 7
+
+
+@pytest.mark.parametrize("choice_usage", ["n/a", {"prompt_tokens": "many"}, {"prompt_tokens": 1}])
+def test_malformed_choice_level_usage_is_ignored(choice_usage: Any) -> None:
+    (update,) = parse_stream_chunks(_client(), _kimi_chunk(choice_usage=choice_usage))
+
+    assert _usage_contents(update) == []
+    assert update.text == "done"
+
+
+@pytest.mark.parametrize("cached_tokens", [64, 0])
+def test_top_level_cached_tokens_is_the_cache_read_count(cached_tokens: int) -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(cached_tokens=cached_tokens))
+
+    details = decode_usage(usage, variant=OPENAI)
+
+    assert details["prompt/cached_tokens"] == cached_tokens
+    assert details["cache_read_input_token_count"] == cached_tokens
+
+
+def test_prompt_tokens_details_cached_tokens_win_over_the_top_level_field() -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(cached_tokens=64, prompt_tokens_details={"cached_tokens": 3}))
+
+    details = decode_usage(usage, variant=OPENAI)
+
+    assert details["prompt/cached_tokens"] == 3
+    assert details["cache_read_input_token_count"] == 3
+
+
+@pytest.mark.parametrize("cached_tokens", ["64", True, None])
+def test_non_integer_top_level_cached_tokens_is_not_reported(cached_tokens: Any) -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(cached_tokens=cached_tokens))
+
+    details = decode_usage(usage, variant=OPENAI)
+
+    assert "prompt/cached_tokens" not in details
+    assert "cache_read_input_token_count" not in details
+
+
+def test_deepseek_cache_usage_is_unchanged() -> None:
+    usage = CompletionUsage.model_validate(
+        _kimi_usage(
+            prompt_cache_hit_tokens=40,
+            prompt_cache_miss_tokens=60,
+            prompt_tokens_details={"cached_tokens": 40},
+        )
+    )
+
+    assert decode_usage(usage, variant=DEEPSEEK) == {
+        "input_token_count": 100,
+        "output_token_count": 20,
+        "total_token_count": 120,
+        "prompt/cached_tokens": 40,
+        "cache_read_input_token_count": 40,
+        "deepseek.prompt_cache_hit_tokens": 40,
+    }
+
+
+@pytest.mark.parametrize("variant", [OPENAI, GLM], ids=["openai", "glm"])
+def test_only_deepseek_reports_prompt_cache_hits(variant: ChatCompletionsVariant) -> None:
+    usage = CompletionUsage.model_validate(_kimi_usage(prompt_cache_hit_tokens=40))
+
+    assert "deepseek.prompt_cache_hit_tokens" not in decode_usage(usage, variant=variant)
+
+
+@pytest.mark.parametrize("group", ["prompt_tokens_details", "completion_tokens_details"])
+async def test_a_usage_breakdown_of_the_wrong_shape_fails_the_completion(group: str) -> None:
+    """The SDK keeps a non-object breakdown as is; decoding it fails the call, never drops it silently."""
+    body = {
+        "id": "cmpl-1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gpt-test",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12, group: "unavailable"},
+    }
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/json"}, content=json.dumps(body).encode())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle_request)) as http_client:
+        client = ChatCompletionsClient(
+            model="gpt-test",
+            sdk_client=AsyncOpenAI(api_key="sk-test", base_url="https://api.test/v1", http_client=http_client),
+        )
+        with pytest.raises(ChatClientException) as exc_info:
+            await client.get_response([_user()], options={})
+
+    assert isinstance(exc_info.value.__cause__, AttributeError)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+def test_a_request_that_cannot_be_built_fails_the_call_itself(stream: bool) -> None:
+    # Raised by the call, before anything is awaited or iterated.
+    with pytest.raises(ChatClientInvalidRequestException, match="only n=1"):
+        _client().get_response([_user()], stream=stream, options={"n": 2})
+
+
+@pytest.mark.parametrize(
+    "trailing_frames",
+    [
+        pytest.param([], id="choice-level-only"),
+        # Kimi K3 (api.kimi.com) also honors ``include_usage``: after the finish
+        # chunk it sends a ``choices: []`` chunk repeating the same usage.
+        pytest.param([{"choices": [], "usage": _kimi_usage(cached_tokens=64)}], id="then-top-level-repeat"),
+    ],
+)
+async def test_kimi_stream_usage_reaches_the_final_response(trailing_frames: list[dict[str, Any]]) -> None:
+    """The SDK keeps the choice-level ``usage`` in ``model_extra``; the client stack reports it once."""
+    frames = [
+        {"choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hi"}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop", "usage": _kimi_usage(cached_tokens=64)}]},
+        *trailing_frames,
+    ]
+    body = "".join(
+        f"data: {json.dumps({'id': 'kimi-1', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'kimi-k2', **frame})}\n\n"
+        for frame in frames
+    )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=(body + "data: [DONE]\n\n").encode()
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle_request)) as http_client:
+        client: Any = assemble_openai_stack(
+            ChatCompletionsClient,
+            AsyncOpenAI(api_key="sk-test", base_url="https://kimi.test/v1", http_client=http_client),
+            model_id="kimi-k2",
+        )
+        stream = client.get_response([Message("user", ["hi"])], stream=True, options={})
+        updates = [update async for update in stream]
+        response = await stream.get_final_response()
+
+    # Each usage-carrying chunk is streamed as its own snapshot of the one call.
+    assert sum(len(_usage_contents(update)) for update in updates) == 1 + len(trailing_frames)
+    assert response.text == "Hi"
+    assert response.usage_details is not None
+    assert response.usage_details["input_token_count"] == 100
+    assert response.usage_details["output_token_count"] == 20
+    assert response.usage_details["total_token_count"] == 120
+    assert response.usage_details["cache_read_input_token_count"] == 64
 
 
 def _completion_choice(*, content: Any, refusal: Any = None) -> Choice:
@@ -867,7 +1092,7 @@ def test_non_string_blocking_content_is_not_stored_as_text() -> None:
         object="chat.completion",
     )
 
-    parsed = _client()._parse_response_from_openai(response, {})
+    parsed = decode_completion(response, {}, variant=OPENAI)
 
     assert parsed.messages[0].contents == []
     assert parsed.messages[0].text == ""
@@ -883,7 +1108,7 @@ def test_non_string_stream_content_is_not_stored_as_text() -> None:
         usage=None,
     )
 
-    parsed = _client()._parse_response_update_from_openai(chunk)
+    (parsed,) = parse_stream_chunks(_client(), chunk)
 
     assert parsed.contents == []
     assert parsed.text == ""
@@ -892,8 +1117,7 @@ def test_non_string_stream_content_is_not_stored_as_text() -> None:
 def test_non_string_stream_content_does_not_hide_string_refusal() -> None:
     choice = _chunk_choice(content=[{"type": "thinking", "text": "private"}], refusal="blocked")
 
-    assert _client()._parse_text_from_openai(choice) is None
-    assert [content.text for content in _client()._parse_text_contents_from_openai(choice)] == ["blocked"]
+    assert [content.text for content in text_contents(choice)] == ["blocked"]
 
 
 def test_non_string_stream_reasoning_delta_is_not_stored_as_reasoning_text() -> None:
@@ -906,7 +1130,7 @@ def test_non_string_stream_reasoning_delta_is_not_stored_as_reasoning_text() -> 
         usage=None,
     )
 
-    update = _client()._parse_response_update_from_openai(chunk)
+    (update,) = parse_stream_chunks(_client(), chunk)
     response = ChatResponse.from_updates([update])
 
     assert update.contents == []
@@ -919,6 +1143,78 @@ def test_anthropic_redacted_reasoning_is_not_replayed_as_chat_completions_reason
         additional_properties={"anthropic_redacted_thinking": True},
     )
 
-    prepared = _client()._prepare_message_for_openai(Message("assistant", [redacted, Content.from_text("answer")]))
+    prepared = encode_message(Message("assistant", [redacted, Content.from_text("answer")]), variant=OPENAI)
 
     assert prepared == [{"role": "assistant", "content": "answer"}]
+
+
+# ── a decoded completion without a choices array ──
+
+
+def test_ensure_choices_passes_with_populated_choices() -> None:
+    resp = SimpleNamespace(choices=[SimpleNamespace()])
+    ensure_choices(resp)
+
+
+def test_ensure_choices_passes_with_empty_list() -> None:
+    """Empty choices is a valid (no-completion) response and must not raise."""
+    resp = SimpleNamespace(choices=[])
+    ensure_choices(resp)
+
+
+def _invalid_response_text(exc_info: pytest.ExceptionInfo[ChatClientException]) -> str:
+    """The raw boundary's shape: the typed invalid-response error is the cause, and carries the text."""
+    cause = exc_info.value.__cause__
+    assert isinstance(cause, ChatClientInvalidResponseException)
+    return str(cause)
+
+
+def test_ensure_choices_raises_when_none_and_includes_body() -> None:
+    body = '{"error": "rate limit exceeded"}'
+    resp = SimpleNamespace(choices=None, model_dump_json=lambda: body)
+    with pytest.raises(ChatClientException) as exc_info:
+        ensure_choices(resp)
+    msg = _invalid_response_text(exc_info)
+    assert "missing the required 'choices' array" in msg
+    assert "rate limit exceeded" in msg
+
+
+def test_ensure_choices_raises_when_not_a_list() -> None:
+    """Non-strict SDK construction can leave a str/dict in ``choices``; reject it too."""
+    body = '{"choices": "oops"}'
+    resp = SimpleNamespace(choices="oops", model_dump_json=lambda: body)
+    with pytest.raises(ChatClientException) as exc_info:
+        ensure_choices(resp)
+    msg = _invalid_response_text(exc_info)
+    assert "'choices' is str; expected an array" in msg
+    assert body in msg
+
+
+def test_ensure_choices_truncates_long_body() -> None:
+    big = '{"error": "' + ("x" * 5000) + '"}'
+    resp = SimpleNamespace(choices=None, model_dump_json=lambda: big)
+    with pytest.raises(ChatClientException) as exc_info:
+        ensure_choices(resp)
+    assert "[truncated]" in _invalid_response_text(exc_info)
+
+
+def test_ensure_choices_failure_speaks_for_the_model_service() -> None:
+    """No route reaches this failure: the typed cause alone says the model service answered."""
+    body = '{"error": {"message": "This model\'s maximum context length is 128000 tokens."}}'
+    resp = SimpleNamespace(choices=None, model_dump_json=lambda: body)
+    with pytest.raises(ChatClientException) as exc_info:
+        ensure_choices(resp)
+
+    description = describe_error(exc_info.value, route_probe=lambda: None)
+
+    assert description is not None
+    assert description.kind is ErrorKind.CONTEXT_OVERFLOW
+
+
+def test_ensure_choices_falls_back_to_repr_on_dump_failure() -> None:
+    def _bad_dump() -> str:
+        raise RuntimeError("pydantic broken")
+
+    resp = SimpleNamespace(choices=None, model_dump_json=_bad_dump)
+    with pytest.raises(ChatClientException):
+        ensure_choices(resp)

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""App mode stays fixed from pending submission through execution cleanup."""
+"""App mode stays fixed, and says why, from pending submission through execution cleanup."""
 
 from __future__ import annotations
 
@@ -45,11 +45,31 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
         composer.replace_draft("Keep this draft")
         badge = main.query_one("#mode-badge", Static)
         expected_badge = " APP MODE: Workflow " if workflow else " APP MODE: Chat "
+        expected_notice = (
+            "Cannot switch app mode while a workflow is running"
+            if workflow
+            else "Cannot switch app mode while the agent is busy"
+        )
+        notices: list[tuple[str, str, str]] = []
+
+        def notify(
+            message: str,
+            *,
+            title: str = "",
+            severity: str = "information",
+            timeout: float | None = None,
+            markup: bool = True,
+        ) -> None:
+            notices.append((message, title, severity))
+
+        monkeypatch.setattr(main, "notify", notify)
 
         async def assert_mode_locked() -> None:
             draft = composer.snapshot_draft().text
+            notices.clear()
             await click_when_settled(pilot, badge)
             assert app.screen is main
+            assert notices == [(expected_notice, "Busy", "warning")]
             # Stale picker callbacks and direct /workflow dispatch use the same gate.
             main._set_workflow_mode(not workflow)
             if not workflow:
@@ -64,7 +84,7 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
             await wait_for(lambda: bool(requests), pilot=pilot)
             assert main._workflow.awaiting_engine and engine.snapshot.kind == "idle"
         else:
-            main._begin_pending_submit(composer.value)
+            main._state.submit.begin(composer.value)
         await assert_mode_locked()
 
         if workflow:
@@ -78,7 +98,7 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
             )
             await bus.publish(events.WorkflowRunStarted(run_id="run", manifest=preview.manifest))
         else:
-            main._clear_pending_submit()
+            main._state.submit.clear()
             main._set_agent_running(True)
             # Presentation may become busy before the backend acquires its lease.
             await assert_mode_locked()
@@ -98,8 +118,10 @@ async def test_app_mode_is_locked_until_pending_and_execution_work_finishes(
         # Terminal UI state precedes final saving and lease release.
         await assert_mode_locked()
         await engine.set_execution(ExecutionSnapshot("idle"), main._services.bus)
+        notices.clear()
         await switch_mode(main, pilot)
         assert main._workflow.workflow_mode is not workflow
+        assert notices == []
 
 
 @pytest.mark.parametrize("workflow", [False, True], ids=["chat", "workflow"])

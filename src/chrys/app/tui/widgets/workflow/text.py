@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.util.formatting import elapsed_parts
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
+from chrys.foundation.platform.files import surrogate_safe_text
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
@@ -35,6 +36,12 @@ MODE_CHAT = msg("tui.workflow.mode.chat", fallback="Chat")
 MODE_WORKFLOW = msg("tui.workflow.mode.workflow", fallback="Workflow")
 APP_MODE = msg("tui.workflow.mode.title", fallback="App Mode")
 MODE_BADGE = msg("tui.workflow.mode.badge", fallback=" APP MODE: {mode} ")
+MODE_BUSY_TITLE = msg("tui.workflow.mode.busy_title", fallback="Busy")
+MODE_AGENT_BUSY = msg("tui.workflow.mode.agent_busy", fallback="Cannot switch app mode while the agent is busy")
+MODE_WORKFLOW_BUSY = msg(
+    "tui.workflow.mode.workflow_busy",
+    fallback="Cannot switch app mode while a workflow is running",
+)
 CHAT_DESCRIPTION = msg("tui.workflow.mode.chat_description", fallback="Chat with an agent")
 WORKFLOW_DESCRIPTION = msg("tui.workflow.mode.workflow_description", fallback="Select and run a workflow")
 SESSION_TITLE = msg("tui.workflow.session_title", fallback="{name} · Session: {session_id}")
@@ -97,6 +104,9 @@ DELETE_PROJECT = msg(
     "tui.workflow.delete_project", fallback="Project files may be recoverable in Git. Run history stays."
 )
 DELETE_GLOBAL = msg("tui.workflow.delete_global", fallback="Global files cannot be recovered. Run history stays.")
+DELETE_PACKAGE_NOTE = msg(
+    "tui.workflow.delete_package_note", fallback="Only {entry} is deleted. The other files in {folder} are kept."
+)
 DELETE_ACTIVE = msg("tui.workflow.delete_active", fallback="Stop this workflow before deleting its source.")
 INPUT = msg("tui.workflow.node.input", fallback="Input")
 COPY_RUN_INPUT = msg("tui.workflow.copy_run_input_tooltip", fallback="Copy raw run input")
@@ -189,6 +199,12 @@ SELECT_MODEL = msg("tui.workflow.select_model", fallback="Select Model")
 WORKING_DIRECTORY = msg("tui.workflow.working_directory", fallback="Working Directory")
 CHANGE_DIRECTORY = msg("tui.workflow.change_directory", fallback="Browse")
 INVALID_DIRECTORY = msg("tui.workflow.invalid_directory", fallback="Not a valid directory: {path}")
+
+
+def shown(value: str, *, block: bool = False) -> str:
+    """A file name, path or workflow-supplied text made safe to display: no controls, no lone surrogates."""
+    safe = surrogate_safe_text(value)
+    return sanitize_legacy_block(safe) if block else sanitize_legacy_scalar(safe)
 
 
 def render(message: MessageRef, controller: LocaleController | None = None) -> str:

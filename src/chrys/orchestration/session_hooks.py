@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from chrys.foundation.events.types import Warning
-from chrys.foundation.i18n import DisplayBlock, msg
+from chrys.foundation.i18n import DisplayBlock, DisplayPath, msg
 from chrys.foundation.platform import get_platform
 
 if TYPE_CHECKING:
@@ -23,6 +23,12 @@ _CONSTRUCTION_GLOBAL_HOOKS_INVALID = msg(
 _CONSTRUCTION_PROJECT_HOOKS_INVALID = msg(
     "construction.project_hooks_invalid",
     fallback="Project hooks config could not be loaded: {detail}. Project hooks disabled; global hooks unaffected.",
+    multiline=True,
+)
+
+_CONSTRUCTION_HOOK_SKIPPED = msg(
+    "construction.hook_skipped",
+    fallback="Hook '{hook_id}' in {path} was skipped: {detail}. The other hooks in this file still run.",
     multiline=True,
 )
 
@@ -85,6 +91,24 @@ class SessionHookFactory:
             project_hooks = None
 
         merged = merge_hooks_files(project=project_hooks, global_=global_hooks)
+        for loaded in (merged.project, merged.global_):
+            if loaded is None:
+                continue
+            for skipped in loaded.skipped_hooks:
+                await self._bus.publish(
+                    Warning(
+                        code="hook_skipped",
+                        message=(
+                            f"Hook '{skipped.id}' in {loaded.source} was skipped: {skipped.reason}. "
+                            "The other hooks in this file still run."
+                        ),
+                        display_message=_CONSTRUCTION_HOOK_SKIPPED.bind(
+                            hook_id=skipped.id, path=DisplayPath(loaded.source), detail=DisplayBlock(skipped.reason)
+                        ),
+                        session_id=session_id,
+                        request_id=request_id,
+                    )
+                )
         if not merged.sources:
             return None
         return HookManager(

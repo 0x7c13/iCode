@@ -23,7 +23,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
 )
 from chrys.app.tui.screens.main.navigation import MainNavigationController
 from chrys.app.tui.screens.main.session_handlers import _FINISH_SESSION_RESTORED
-from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
@@ -68,11 +68,8 @@ def _view_adapter(app: _StatusHostApp, controller: LocaleController) -> MainScre
     screen = SimpleNamespace(
         app=app,
         query_one=query_one,
-        _state_store=None,
-        _shell_mode=False,
-        _fullscreen_terminal=False,
     )
-    return MainScreenViewAdapter(cast(Any, screen), locale_controller=controller)
+    return MainScreenViewAdapter(cast(Any, screen), state=MainScreenState(), locale_controller=controller)
 
 
 @pytest.mark.asyncio
@@ -278,7 +275,7 @@ async def test_exit_confirmation_path_renders_chinese_title_and_labels() -> None
         delete_current_and_new=cast(Any, lambda _session_id: None),
         restore_session=cast(Any, lambda _session_id: None),
         flush_notifications=cast(Any, lambda: None),
-        start_worker=lambda _awaitable: None,
+        start_worker=lambda _work: None,
         debug=lambda _key, _message: None,
         locale_controller=controller,
     )

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
@@ -127,3 +128,15 @@ def normalize_hosted_tool_status(status: str | None) -> HostedToolStatus:
     if status is None:
         return HostedToolStatus.UNKNOWN
     return _STATUS_ALIASES.get(status.strip().lower(), HostedToolStatus.UNKNOWN)
+
+
+@dataclass(frozen=True, slots=True)
+class HeldHostedEvidence:
+    """Hosted work a stream received but holds back to keep its place behind an unfinished call.
+
+    It rides a contentless update as its ``raw_representation``, so the retry
+    gates count the work as soon as it arrives. The contents themselves are
+    sent, presented and replayed only when the adapter releases them in order.
+    """
+
+    contents: tuple[object, ...]

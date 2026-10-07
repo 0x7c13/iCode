@@ -9,13 +9,16 @@ and config files almost always have the right extension).
 Validation is fail-fast: a malformed file raises
 :class:`HooksConfigError` with a path and a line-pointer-ish message
 ("``hooks[0].execution.mode``").  Tests rely on the exact path strings,
-so don't reformat them casually.
+so don't reformat them casually.  The one exception is a well-formed hook
+whose ``match`` regex does not compile: that hook alone is left out and
+recorded in :attr:`HooksFile.skipped_hooks`, and the rest of the file loads.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, fields, replace
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +29,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.tool_kinds import strip_legacy_kind_prefix
 from chrys.foundation.trajectory.ids import OPAQUE_ID_MAX_LENGTH, is_valid_opaque_id
 from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.matcher import REGEX_COMPILE_ERRORS
 from chrys.service.hooks.schema import (
     HookArgMatch,
     HookConfig,
@@ -35,6 +39,7 @@ from chrys.service.hooks.schema import (
     HookSettings,
     HooksFile,
     MergedHooksFile,
+    SkippedHook,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,7 +167,11 @@ def _same_source_file(project: HooksFile | None, global_: HooksFile | None) -> b
     """Return True when project/global inputs came from the same hooks file."""
     if project is None or global_ is None or not project.source or not global_.source:
         return False
-    return Path(project.source).resolve() == Path(global_.source).resolve()
+    try:
+        # By identity: on a caseless disk two spellings of one file differ in case.
+        return Path(project.source).samefile(global_.source)
+    except OSError:
+        return Path(project.source).resolve() == Path(global_.source).resolve()
 
 
 def _merge_settings(project: HooksFile | None, global_: HooksFile | None) -> HookSettings:
@@ -257,9 +266,15 @@ def parse_hooks_dict(raw: Any) -> HooksFile:
 
     raw_settings = raw.get("settings")
     settings = _parse_settings(raw_settings)
-    hooks = _parse_hooks_list(raw.get("hooks", []))
+    hooks, skipped_hooks = _parse_hooks_list(raw.get("hooks", []))
     settings_overrides = set() if raw_settings is None else set(raw_settings)
-    return HooksFile(version=version, settings=settings, settings_overrides=settings_overrides, hooks=hooks)
+    return HooksFile(
+        version=version,
+        settings=settings,
+        settings_overrides=settings_overrides,
+        hooks=hooks,
+        skipped_hooks=skipped_hooks,
+    )
 
 
 def _parse_settings(raw: Any) -> HookSettings:
@@ -308,11 +323,12 @@ def _parse_settings(raw: Any) -> HookSettings:
     )
 
 
-def _parse_hooks_list(raw: Any) -> list[HookConfig]:
+def _parse_hooks_list(raw: Any) -> tuple[list[HookConfig], list[SkippedHook]]:
     if not isinstance(raw, list):
         msg = f"'hooks' must be a list, got {type(raw).__name__}"
         raise HooksConfigError(msg)
     out: list[HookConfig] = []
+    skipped: list[SkippedHook] = []
     seen_ids: set[str] = set()
     for i, item in enumerate(raw):
         try:
@@ -324,8 +340,29 @@ def _parse_hooks_list(raw: Any) -> list[HookConfig]:
             msg = f"hooks[{i}]: duplicate id '{cfg.id}'"
             raise HooksConfigError(msg)
         seen_ids.add(cfg.id)
+        reason = _invalid_match_regex(cfg.match) if cfg.enabled else None
+        if reason is not None:
+            skipped.append(SkippedHook(id=cfg.id, reason=reason))
+            continue
         out.append(cfg)
-    return out
+    return out, skipped
+
+
+def _invalid_match_regex(match: HookMatch) -> str | None:
+    """Why *match* can never match: a regex that does not compile, or None.
+
+    The matcher treats such a condition as a miss, which would silently
+    switch off a blocking hook; the loader skips the hook and reports it
+    instead.
+    """
+    for name, arg in match.args.items():
+        if arg.regex is None:
+            continue
+        try:
+            re.compile(arg.regex)
+        except REGEX_COMPILE_ERRORS as exc:
+            return f"match.args.{name}.regex is not a valid regular expression: {exc}"
+    return None
 
 
 def _parse_one_hook(raw: Any) -> HookConfig:

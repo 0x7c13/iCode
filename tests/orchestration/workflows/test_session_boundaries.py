@@ -10,6 +10,7 @@ from unittest.mock import create_autospec
 import pytest
 
 import chrys.orchestration.workflows.coordinator as coordinator_module
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import Warning
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import atomic_write_owner_only_bytes
@@ -122,7 +123,9 @@ async def test_admission_warning_is_delivered_before_acceptance_with_request_ide
     hooks = project / ".chrys" / "hooks"
     hooks.mkdir()
     (hooks / "hooks.yaml").write_text("hooks: [invalid")
-    host = make_host(tmp_path, project=project)
+    host = make_host(
+        tmp_path, project=project, settings=Settings(model_profile="mock-profile", project_hooks_enabled=True)
+    )
     try:
         await confirm(host, "review")
         result, events = await run(host, "review")

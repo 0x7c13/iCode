@@ -71,6 +71,21 @@ async def openai_status(status: int, body: Any) -> BaseException:
     raise AssertionError(f"HTTP {status} did not raise")
 
 
+OPENAI_CONTEXT_OVERFLOW_BODY = {
+    "error": {
+        "type": "invalid_request_error",
+        "code": "context_length_exceeded",
+        "message": "This model's maximum context length is 131072 tokens. "
+        "However, your messages resulted in 140000 tokens.",
+    }
+}
+
+
+async def openai_context_overflow() -> BaseException:
+    """Return the 400 an OpenAI-compatible service answers when the input exceeds the model's window."""
+    return await openai_status(400, OPENAI_CONTEXT_OVERFLOW_BODY)
+
+
 async def anthropic_status(status: int, body: Any) -> BaseException:
     """Return the real Anthropic SDK error for one HTTP error response."""
 
@@ -86,6 +101,26 @@ async def anthropic_status(status: int, body: Any) -> BaseException:
         except anthropic.APIError as exc:
             return exc
     raise AssertionError(f"HTTP {status} did not raise")
+
+
+ANTHROPIC_THINKING_BINDING_MESSAGE = (
+    "messages.1.content.2: Invalid `signature` in `thinking` block. The block is bound to a different "
+    "conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to `drop_block`."
+)
+"""What Anthropic says when replayed thinking no longer matches the conversation before it."""
+
+
+def anthropic_thinking_binding_body(*, names_the_window: bool = False) -> dict[str, Any]:
+    """The 400 body refusing replayed thinking; *names_the_window* adds text an overflow matches too."""
+    message = ANTHROPIC_THINKING_BINDING_MESSAGE
+    if names_the_window:
+        message += " The context window the block was signed in has changed."
+    return {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+
+
+async def anthropic_thinking_binding_rejection(*, names_the_window: bool = False) -> BaseException:
+    """Return the real Anthropic SDK error refusing replayed thinking as bound to a different conversation."""
+    return await anthropic_status(400, anthropic_thinking_binding_body(names_the_window=names_the_window))
 
 
 async def openai_stream_error(error: dict[str, Any]) -> BaseException:

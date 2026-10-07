@@ -9,11 +9,25 @@ approval-gated tools in one turn) and S10 (compression plus approval).
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
+
 import pytest
 
-from chrys.foundation.events.types import ApprovalRequest, UserMessage
+from chrys.app.tui.screens.main.dialog_controllers import ApprovalQueueController
+from chrys.foundation.events.types import (
+    ApprovalCancelled,
+    ApprovalRequest,
+    ApprovalReviewed,
+    SetApprovalMode,
+    UserMessage,
+)
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_SKILL
+from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 from chrys.service.llm.mock import MockResponse
 from chrys.service.profiles.agents.schema import SkillConfig, SkillsConfig
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
@@ -28,6 +42,13 @@ from tests.support.pipeline_helpers import (
     wait_for_event,
     wait_for_idle,
 )
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from pathlib import Path
+
+    from chrys.app.tui.screens.main.dialog_controllers import ApprovalBypassDecision, ApprovalDialogHandle
 
 # ---------------------------------------------------------------------------
 # S4: Approval auto-approve with rollback
@@ -255,6 +276,146 @@ class TestInterruptDuringApproval:
 
         finals = extract_final_messages(ctx.events)
         assert len(finals) >= 1
+
+
+class _DeferringApprovalPort:
+    """The TUI side of the approval queue with ``ui.approval.defer_while_judging`` on.
+
+    Records the header's review count and anything that would reach the user.
+    """
+
+    def __init__(self) -> None:
+        self.review_counts: list[int] = []
+        self.surfaced: list[str] = []
+
+    async def build_approval_body(self, event: ApprovalRequest) -> object | None:
+        return None
+
+    def approval_body_bypass(self, body: object | None) -> ApprovalBypassDecision | None:
+        return None
+
+    def show_approval_dialog(
+        self,
+        event: ApprovalRequest,
+        approval_body: object | None,
+        on_result: Callable[[tuple[bool, str, dict[str, Any] | None] | None], None],
+        *,
+        verdict: ApprovalReviewed | None,
+    ) -> ApprovalDialogHandle:
+        self.surfaced.append(f"dialog {event.request_id}")
+        return SimpleNamespace(user_decision_submitted=False, is_dismissed=False)
+
+    def deliver_approval_verdict(self, dialog: ApprovalDialogHandle, event: ApprovalReviewed) -> None:
+        self.surfaced.append(f"verdict {event.request_id}")
+
+    def dismiss_approval_dialog(self, dialog: ApprovalDialogHandle) -> None:
+        self.surfaced.append("dismiss")
+
+    def approval_dialog_tool_name(self, dialog: ApprovalDialogHandle) -> str:
+        return ""
+
+    def approval_defer_while_judging(self) -> bool:
+        return True
+
+    def set_auto_review_count(self, count: int) -> None:
+        self.review_counts.append(count)
+
+    def debug(self, key: str, message: str = "") -> None:
+        return None
+
+    def notify_approval_required(self) -> None:
+        self.surfaced.append("notify")
+
+    def update_tool_args(self, call_id: str, args: dict[str, Any]) -> None:
+        self.surfaced.append(f"args {call_id}")
+
+    def handle_approval_response(
+        self,
+        request_id: str,
+        approved: bool,
+        reason: str,
+        modified_args: dict[str, Any] | None = None,
+    ) -> None:
+        self.surfaced.append(f"response {request_id}")
+
+    def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
+        self.surfaced.append(f"worker {group}")
+        if isinstance(awaitable, Coroutine):
+            awaitable.close()
+
+    async def publish_auto_fulfill_blocked(self, event: ApprovalReviewed) -> None:
+        self.surfaced.append(f"blocked {event.request_id}")
+
+
+class TestInterruptWhileTheJudgeReviews:
+    """An interrupt during review retracts the request the TUI is hiding."""
+
+    async def test_the_tui_keeps_nothing_hidden_or_counted_after_the_interrupt(
+        self, make_pipeline_ctx, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        cancelled: list[str] = []
+
+        async def held_evaluate(
+            _judge: ApprovalJudge,
+            user_message: str,
+            tool_name: str,
+            tool_kind: str,
+            args: dict[str, Any],
+            workspace_roots: list[str],
+            request_id: str = "",
+            log_dir: Path | None = None,
+            user_messages: list[str] | None = None,
+        ) -> JudgeVerdict:
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.append(request_id)
+                raise
+            raise AssertionError("the judge was released instead of cancelled")
+
+        monkeypatch.setattr(
+            ApprovalJudge, "evaluate", create_autospec(ApprovalJudge.evaluate, side_effect=held_evaluate)
+        )
+        responses = [
+            MockResponse(tool_calls=[("guarded_echo", "g1", {"message": "judged"})]),
+            MockResponse(text="never reached"),
+        ]
+        ctx = await make_pipeline_ctx(responses, approval_overrides={"guarded_echo": "require"})
+        await ctx.bus.publish(SetApprovalMode(mode="auto", persist=False), raise_handler_errors=True)
+        port = _DeferringApprovalPort()
+        controller = ApprovalQueueController(port)
+        await ctx.bus.subscribe(ApprovalRequest, controller.on_request)
+        await ctx.bus.subscribe(ApprovalReviewed, controller.on_reviewed)
+        await ctx.bus.subscribe(ApprovalCancelled, controller.on_cancelled)
+
+        def turn_ended() -> bool:
+            task = ctx.engine.turns.turn_state.lease.run_task
+            return task is not None and task.done()
+
+        try:
+            await ctx.bus.publish(UserMessage(text="Run the guarded call"))
+            await wait_for(
+                lambda: entered.is_set() or turn_ended(),
+                timeout=ENGINE_TURN_TIMEOUT,
+                description="the judge reviewing the guarded call",
+            )
+            assert entered.is_set(), "the turn ended before its call reached the judge"
+            requested = [request["request_id"] for request in extract_approval_requests(ctx.events)]
+            assert list(controller.deferred) == requested
+            assert port.review_counts == [1]
+
+            await ctx.send_interrupt()
+            await wait_for_idle(ctx)
+        finally:
+            release.set()
+
+        assert cancelled == requested
+        assert controller.deferred == {}
+        assert port.review_counts == [1, 0]
+        assert port.surfaced == []
 
 
 # ---------------------------------------------------------------------------

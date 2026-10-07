@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Chrys-owned chat client base.
 
@@ -22,6 +24,7 @@ from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, TypeGuard, TypeIs, cast, overload
 
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace, side_call_scope
 from chrys.foundation.trajectory.envelope import ActorRole
 
@@ -38,12 +41,13 @@ _log = logging.getLogger(__name__)
 # the provider's first byte: compaction and its LAST_WORDS side call.  That
 # work reports liveness through this callback, which the watchdog installs in
 # the context it times, so the watchdog times idle gaps instead of the whole
-# pull.  Outside a watchdog it is None.
+# pull.  A timer nested inside (a side call's own read timeout) chains to it.
+# Outside a watchdog it is None.
 _WIRE_PROGRESS: ContextVar[Callable[[], None] | None] = ContextVar("chrys_wire_progress", default=None)
 
 
 def report_wire_progress() -> None:
-    """Restart the enclosing stall watchdog's idle timer, if one is running."""
+    """Restart the idle timers of the enclosing stall watchdogs, if any are running."""
     callback = _WIRE_PROGRESS.get()
     if callback is not None:
         callback()
@@ -53,10 +57,19 @@ def report_wire_progress() -> None:
 def wire_progress_scope(on_progress: Callable[[], None]) -> Iterator[None]:
     """Report progress from the block, and every task it spawns, to *on_progress*.
 
-    Spawned tasks copy the context, so they can report after the block
-    exits: the callback must tolerate a report once its timer is gone.
+    A report also reaches the scopes this one is nested in: an inner timer
+    never hides progress from the watchdog waiting on its work. Spawned tasks
+    copy the context, so they can report after the block exits: every
+    callback must tolerate a report once its timer is gone.
     """
-    token = _WIRE_PROGRESS.set(on_progress)
+    enclosing = _WIRE_PROGRESS.get()
+
+    def _report() -> None:
+        on_progress()
+        if enclosing is not None:
+            enclosing()
+
+    token = _WIRE_PROGRESS.set(_report)
     try:
         yield
     finally:
@@ -593,7 +606,12 @@ class _ClientLastWordsCompleter:
         max_output_tokens: int,
         on_usage: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> str:
-        from .compaction import LastWordsToolCallError, internal_side_call_scope, messages_contain_tool_calls
+        from .compaction import (
+            LastWordsToolCallError,
+            internal_side_call_scope,
+            messages_contain_tool_calls,
+            raise_if_context_window_filled,
+        )
 
         # Shallow copy with top-level-key overrides only: nested values (the
         # tools list in particular) stay shared by reference and are never
@@ -644,28 +662,35 @@ class _ClientLastWordsCompleter:
         # attempt's dispatch) restarts the live call's stall watchdog, which
         # still cancels a side call that goes idle.
         report_wire_progress()
-        with internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
-            result = self._client._inner_get_response(
-                messages=side_messages,
-                stream=self._stream,
-                options=side_options,
-                **forwarded_kwargs,
-            )
-            response: ChatResponse[Any]
-            if _is_chat_response_stream(result):
-                response = await result.with_transform_hook(_report_side_call_update).get_final_response()
-            else:
-                awaited = await result
-                response = (
-                    await awaited.with_transform_hook(_report_side_call_update).get_final_response()
-                    if isinstance(awaited, ResponseStream)
-                    else awaited
+        try:
+            with internal_side_call_scope(), side_call_scope(ActorRole.COMPLETER):
+                result = self._client._inner_get_response(
+                    messages=side_messages,
+                    stream=self._stream,
+                    options=side_options,
+                    **forwarded_kwargs,
                 )
+                response: ChatResponse[Any]
+                if _is_chat_response_stream(result):
+                    response = await result.with_transform_hook(_report_side_call_update).get_final_response()
+                else:
+                    awaited = await result
+                    response = (
+                        await awaited.with_transform_hook(_report_side_call_update).get_final_response()
+                        if isinstance(awaited, ResponseStream)
+                        else awaited
+                    )
+        except ProviderResponseError as err:
+            # A response the adapter failed consumed provider tokens too.
+            if on_usage is not None and err.usage_details:
+                on_usage(err.usage_details)
+            raise
         report_wire_progress()
         # Report spend before any acceptance decision: a response the guard
         # rejects below still consumed real provider tokens.
         if on_usage is not None and response.usage_details:
             on_usage(response.usage_details)
+        raise_if_context_window_filled(response)
         if messages_contain_tool_calls(response.messages):
             raise LastWordsToolCallError(
                 "last-words side call returned tool-call content despite the no-tools instruction"
@@ -804,8 +829,9 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
 
         Single construction point for the LAST_WORDS completer — every stack
         that routes compaction through ``_prepare_messages_for_model_call``
-        (``get_response`` here, ``MockChatClient``'s loop adapter) must build
-        the context through this method so gating stays uniform.
+        (``get_response`` here, which ``MockChatClient`` also calls beneath its
+        tool loop) must build the context through this method so gating stays
+        uniform.
 
         Side-call behavior under OpenAI Responses server-side storage still
         needs live smoke validation. Until then, store-mode profiles get no

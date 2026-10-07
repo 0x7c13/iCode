@@ -28,7 +28,7 @@ from chrys.service.profiles.agents.schema import (
     ToolsConfig,
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.profiles.models.schema import API_STYLE_CHAT_COMPLETIONS, ApiStyle, ModelProfile
 from tests.support.engines import AgentEngineFactory
 from tests.support.event_capture import capture_events
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -43,17 +43,26 @@ class ProviderTurn:
     terminal: Error | InvocationMessage
 
 
-def mock_provider_profile(provider: str, *, stream: bool, http_max_retries: int = 0) -> ModelProfile:
+def mock_provider_profile(
+    provider: str,
+    *,
+    stream: bool,
+    http_max_retries: int = 0,
+    api_style: ApiStyle = API_STYLE_CHAT_COMPLETIONS,
+    chat_options: str = "",
+) -> ModelProfile:
     """Return a model profile for *provider* pointing at a fake host."""
     return ModelProfile(
         id=f"mock-{provider}",
         name=f"mock-{provider}",
         provider=provider,
+        api_style=api_style,
         model_id="test-model",
         base_url="https://provider.example/v1" if provider != "anthropic" else "https://provider.example",
         api_key="test-key",
         http_max_retries=http_max_retries,
         stream=stream,
+        chat_options=chat_options,
     )
 
 
@@ -62,8 +71,13 @@ async def run_mock_provider_turn(
     monkeypatch: pytest.MonkeyPatch,
     model_profile: ModelProfile,
     respond: Callable[[httpx.Request], httpx.Response],
+    *,
+    user_message: UserMessage | None = None,
 ) -> ProviderTurn:
-    """Run one turn whose provider HTTP traffic *respond* answers; retries back off 0 s."""
+    """Run one turn of *user_message* (default ``hello``) whose provider HTTP traffic *respond* answers.
+
+    Retries back off 0 s.
+    """
     requests: list[httpx.Request] = []
 
     def record(request: httpx.Request) -> httpx.Response:
@@ -102,7 +116,7 @@ async def run_mock_provider_turn(
     )
     try:
         await engine.start(profile)
-        await bus.publish(UserMessage(text="hello"))
+        await bus.publish(user_message or UserMessage(text="hello"))
         await wait_for(terminal.done, timeout=ENGINE_TURN_TIMEOUT, description="terminal engine event")
     finally:
         await engine.shutdown()

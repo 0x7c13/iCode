@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Pinned message ids for what provider and network errors mean to the user."""
+"""Pinned message ids for what provider and network errors, and the retries they start, mean to the user."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ ERROR_MESSAGE_IDS = frozenset(
         "error.kind.connection_refused",
         "error.kind.content_filtered",
         "error.kind.context_overflow",
+        "error.kind.context_overflow_config_mismatch",
         "error.kind.dns_failed",
         "error.kind.host_unreachable",
         "error.kind.invalid_endpoint",
@@ -33,5 +34,7 @@ ERROR_MESSAGE_IDS = frozenset(
         "error.kind.tls_failed",
         "error.kind.via_proxy_failed",
         "error.kind.write_timeout",
+        "retry.context_overflow",
+        "retry.stream_stalled",
     }
 )

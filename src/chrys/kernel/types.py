@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """Public kernel type façade.
 
@@ -17,8 +19,8 @@ Deliberately NOT re-exported:
 - ``MCPStdioTool`` / ``MCPStreamableHTTPTool`` — consumed only inside the
   MCP red-line domain (``service/mcp/adapter.py``); keeping them out of the
   façade keeps MCP coupling visibly confined to that domain.
-- Raw wire clients (``chrys.service.llm.openai_chat_completion``,
-  ``chrys.service.llm.openai_responses``, ``chrys.service.llm.anthropic_chat``) — permanent
+- Raw wire clients (``chrys.service.llm.chat_completions``,
+  ``chrys.service.llm.openai_responses``, ``chrys.service.llm.anthropic_messages``) — permanent
   red line, never façade material.
 
 HARD RULE: kernel modules may import only the stdlib, intra-package modules,

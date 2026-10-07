@@ -381,10 +381,10 @@ def _disable_prompt_history(monkeypatch: pytest.MonkeyPatch) -> None:
     """Block tests from writing to the real ``~/.chrys/prompt_history.jsonl``.
 
     TUI integration tests that drive a full ``ChrysApp`` through ``pilot``
-    will reach ``append_history`` via ``_send_user_message``; without this
-    guard they would persist test prompts into the developer's real history
-    file. Tests that exercise the history layer itself opt back in by
-    deleting the env var inside their own fixture (see
+    will reach ``append_history`` when the input bar records a submitted
+    prompt; without this guard they would persist test prompts into the
+    developer's real history file. Tests that exercise the history layer
+    itself opt back in by deleting the env var inside their own fixture (see
     ``tests/app/tui/support/test_prompt_history.py::history_dir``).
     """
     monkeypatch.setenv("CHRYS_HISTORY_DISABLE", "1")

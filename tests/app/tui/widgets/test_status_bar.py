@@ -15,7 +15,6 @@ from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
 from chrys.app.tui.widgets import ChrysLoadingIndicator
 from chrys.app.tui.widgets.chrome.status_bar import (
-    STATUS_COMPLETED,
     STATUS_INTERRUPTED,
     STATUS_SESSION_RESTORED,
     STATUS_THINKING,
@@ -127,7 +126,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
         assert status_bar.query_one("#status-text", Static).render().plain == "正在思考"
         assert status_bar.query_one("#status-trail", Static).render().plain == "  (1分 1秒 · 1 次工具调用)"
         tool_info = status_bar.query_one("#status-tool-info", Static)
-        assert tool_info.render().plain == "2 个工具 · 1 项技能 · 2 个钩子 · 1 个文件"
+        assert tool_info.render().plain == "2 个工具 · 1 个 Skill · 2 个钩子 · 1 个文件"
         assert tool_info.tooltip is not None
         assert tool_info.tooltip.plain == "点击查看详情"
 
@@ -177,7 +176,7 @@ async def test_status_bar_completed_flash_restores_localized_elapsed_from_snapsh
         status_bar = pilot.app.query_one(StatusBar)
         status_bar.start_run()
         now[0] = 161.0
-        status_bar.flash(STATUS_COMPLETED.bind(elapsed=status_bar._format_elapsed()))
+        status_bar.flash_completed()
         snapshot = status_bar.snapshot()
         assert status_bar.query_one("#status-flash", Static).render().plain == "Completed in 1m 1s"
 

@@ -51,7 +51,6 @@ _EXCHANGE_WALKER_ALLOWLIST = {
     (Path("src/chrys/service/context/compaction/scoped.py"), "_tool_group_integrity"),
     (Path("src/chrys/service/context/compaction/last_words.py"), "_format_tool_group"),
     (Path("src/chrys/service/context/compaction/summaries.py"), "_build_summary"),
-    (Path("src/chrys/service/llm/openai_responses.py"), "RawOpenAIChatClient._classify_reasoning_replay_groups"),
     # Display-metadata fold-range scan; renders summary chrome, pairs nothing.
     (Path("src/chrys/service/context/providers/history.py"), "_auto_summary"),
     # Positional current-turn slot bucketing for batch-id stamping — a
@@ -72,13 +71,10 @@ _EXCHANGE_WALKER_ALLOWLIST = {
     # Bounded fallback-timeline renderer over already-scoped groups; the
     # sibling group formatter it dispatches to is display-only pairing.
     (Path("src/chrys/service/context/compaction/last_words.py"), "_format_dropped"),
-    # Wire serializers: map each message to provider payload and flatten;
-    # ids are echoed verbatim, pairing rides the transcript unchanged.
-    (Path("src/chrys/service/llm/deepseek.py"), "DeepSeekChatCompletionClient._prepare_messages_for_openai"),
-    (
-        Path("src/chrys/service/llm/openai_chat_completion.py"),
-        "RawOpenAIChatCompletionClient._prepare_messages_for_openai",
-    ),
+    # Group-level replay planner: classifies the calls and results WITHIN one
+    # group partition_groups already cut from iter_exchanges output; which
+    # group's call a result answers comes from pair_results (_result_owners).
+    (Path("src/chrys/service/llm/openai_responses/replay.py"), "_plan_group"),
 }
 
 

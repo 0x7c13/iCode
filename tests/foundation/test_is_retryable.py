@@ -125,7 +125,7 @@ class TestRetryableByType:
             tls_error,
         )
         sdk_error = _make_named_chained("APIConnectionError", "Connection error.", transport_error)
-        wrapped = _make_chained(sdk_error, "service failed to complete the prompt: Connection error.")
+        wrapped = _make_chained(sdk_error, "Chat Completions request failed: Connection error.")
 
         assert not is_retryable(wrapped)
 
@@ -460,16 +460,12 @@ class TestRealWorldErrors:
     def test_client_wrapped_rate_limit(self) -> None:
         """Chrys chat clients wrap OpenAI errors as ChatClientException."""
         cause = _make_sdk_exception("RateLimitError", "Error code: 429", status_code=429)
-        wrapper = _make_chained(
-            cause,
-            "<class 'chrys.service.llm.openai_chat_completion.RawOpenAIChatCompletionClient'> "
-            "service failed to complete the prompt: Error code: 429",
-        )
+        wrapper = _make_chained(cause, "Chat Completions request failed: Error code: 429")
         assert is_retryable(wrapper)
 
     def test_client_wrapped_connection_error(self) -> None:
         cause = _make_sdk_exception("APIConnectionError", "Connection error.")
-        wrapper = _make_chained(cause, "service failed to complete the prompt: Connection error.")
+        wrapper = _make_chained(cause, "Chat Completions request failed: Connection error.")
         assert is_retryable(wrapper)
 
     def test_openai_streaming_sse_error(self) -> None:

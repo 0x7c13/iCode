@@ -12,7 +12,7 @@ from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.kernel import OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY, AgentResponse, ChatResponse, Content, Message
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.service.agent_middleware.events.hosted_tools import ResponsePresentationPlan
-from chrys.service.llm.instrumented import _extract_intermediate_text
+from chrys.service.llm.observer import intermediate_text_signal
 from tests.support.tui_helpers import ChatPanelApp
 
 
@@ -39,7 +39,7 @@ async def test_old_fragmented_history_matches_live_and_suppresses_sidecar(
     result = Message("tool", [Content.from_function_result(call_id="call_1", result="ok")])
     expected = "".join(parts)
 
-    assert _extract_intermediate_text(ChatResponse(messages=[before_tool])) == expected
+    assert intermediate_text_signal(ChatResponse(messages=[before_tool])) == expected
     final_message = Message("assistant", contents)
     assert TurnBindings._extract_final_text(AgentResponse(messages=[final_message])) == expected
     assert ResponsePresentationPlan.from_messages([final_message]).final_text == expected

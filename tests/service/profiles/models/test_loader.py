@@ -45,8 +45,47 @@ def test_load_minimal_profile(tmp_path: Path) -> None:
     assert profile.bypass_proxy is False
     assert profile.http_headers == ""
     assert profile.chat_options == ""
-    assert profile.stream is False
+    assert profile.stream is True
     assert profile.vision is False
+    assert profile.stream_requires_finish_reason is False
+    assert profile.thinking_block_binding == "auto"
+    assert profile.auto_interleaved_thinking is True
+
+
+@pytest.mark.parametrize(
+    ("value", "loaded"),
+    [
+        ("auto", "auto"),
+        ("drop_block", "drop_block"),
+        ("error", "error"),
+        ("'off'", "off"),
+        # YAML reads these as false.
+        ("off", "off"),
+        ("false", "off"),
+    ],
+)
+def test_thinking_block_binding_loads_each_choice(tmp_path: Path, value: str, loaded: str) -> None:
+    path = _write(tmp_path / "binding.yaml", f"name: Binding\nthinking_block_binding: {value}\n")
+
+    assert load_profile_from_yaml(path).thinking_block_binding == loaded
+
+
+@pytest.mark.parametrize("value", ["drop", "Error", "''", "true", "on", "1", "null", "[error]"])
+def test_an_unknown_thinking_block_binding_fails_the_profile(tmp_path: Path, value: str) -> None:
+    path = _write(tmp_path / "binding.yaml", f"name: Binding\nthinking_block_binding: {value}\n")
+
+    with pytest.raises(ModelProfileLoadError, match="thinking_block_binding"):
+        load_profile_from_yaml(path)
+
+
+@pytest.mark.parametrize(
+    ("value", "loaded"),
+    [("false", False), ("true", True), ("'no'", False), ("'yes'", True), ("0", False), ("null", True)],
+)
+def test_auto_interleaved_thinking_reads_like_other_switches(tmp_path: Path, value: str, loaded: bool) -> None:
+    path = _write(tmp_path / "interleaved.yaml", f"name: Interleaved\nauto_interleaved_thinking: {value}\n")
+
+    assert load_profile_from_yaml(path).auto_interleaved_thinking is loaded
 
 
 @pytest.mark.parametrize("value", [1, 2, 99, 0, -1])
@@ -179,6 +218,28 @@ vision: 1
     assert profile.bypass_proxy is True
     assert profile.stream is True
     assert profile.vision is True
+
+
+@pytest.mark.parametrize(
+    ("yaml_value", "verify_ssl", "stream", "vision"),
+    [
+        (None, True, True, False),
+        ("null", True, True, False),
+        ('" FaLsE "', False, False, False),
+        ('"on"', True, True, True),
+        ('""', False, False, False),
+        ('"sometimes"', True, True, True),
+        ("0", False, False, False),
+    ],
+    ids=["missing", "null", "spaced-false", "on", "empty", "unknown-string", "zero"],
+)
+def test_bool_fields_read_yaml_spellings_and_keep_their_defaults(
+    tmp_path: Path, yaml_value: str | None, verify_ssl: bool, stream: bool, vision: bool
+) -> None:
+    fields = "" if yaml_value is None else f"verify_ssl: {yaml_value}\nstream: {yaml_value}\nvision: {yaml_value}\n"
+    profile = load_profile_from_yaml(_write(tmp_path / "x.yaml", f"name: B\n{fields}"))
+
+    assert (profile.verify_ssl, profile.stream, profile.vision) == (verify_ssl, stream, vision)
 
 
 def test_invalid_numeric_field_raises_load_error(tmp_path: Path) -> None:

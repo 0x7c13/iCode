@@ -51,9 +51,9 @@ iCode 通过 `CHRYS_HOOK_PAYLOAD_FILE` 环境变量提供本次事件的 JSON �
 
 ### 3. 加载并验证
 
-切换会话或重启 iCode，使磁盘上的配置生效。
+项目钩子默认不加载。在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全”-“项目信任”区域勾选“加载项目钩子”。如果已经勾选，切换会话或重启 iCode，使磁盘上的配置生效。
 
-在终端用户界面（Terminal User Interface，TUI）中输入 `/runtime`，打开“钩子”标签页，应能看到 `record-turn`。提交一条消息并等待当前轮结束后，检查工作目录中的 `hook-events.log`。文件应出现类似内容：
+在 TUI 中输入 `/runtime`，打开“钩子”标签页，应能看到 `record-turn`。提交一条消息并等待当前轮结束后，检查工作目录中的 `hook-events.log`。文件应出现类似内容：
 
 ```text
 turn=1 status=ok
@@ -98,7 +98,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
     )
 ```
 
-脚本通过 `CHRYS_HOOK_RESULT` 指定的结果文件返回 `action: block` 和拒绝原因。
+脚本通过 `CHRYS_HOOK_RESULT` 指定的结果文件返回 `action: block` 和拒绝原因。脚本打印到标准输出或标准错误的内容不作为操作决定读取，iCode 对两者各最多保留 256 KiB（开头和结尾）。
 
 `on_error: block` 表示脚本无法启动、超时或返回非零退出码时也拒绝工具调用，适合需要失败时保持限制的检查。这个钩子只会阻止匹配的 `filesystem.write` 调用；Shell 命令不受影响。
 

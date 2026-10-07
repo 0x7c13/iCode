@@ -251,7 +251,7 @@ class WorkspaceChangeTracker:
                 kept baseline then. Safety notices are rebased regardless:
                 they are delivered whether or not the notice is enabled.
         """
-        self.apply_retarget(workspace, self.resolve_retarget(workspace, resolve_scope=resolve_scope))
+        self.apply_retarget(self.resolve_retarget(workspace, resolve_scope=resolve_scope))
 
     def resolve_retarget(self, workspace: Workspace | None, *, resolve_scope: bool = True) -> WorkspaceRetarget:
         """Resolve candidate scope and directory identity without writing live state."""
@@ -264,7 +264,7 @@ class WorkspaceChangeTracker:
             canonical_new_cwd=canonical_path(new_cwd) if new_cwd is not None else None,
         )
 
-    def apply_retarget(self, workspace: Workspace | None, retarget: WorkspaceRetarget) -> None:
+    def apply_retarget(self, retarget: WorkspaceRetarget) -> None:
         """Install the resolved workspace values and rebase queued notices in memory."""
         with self._lock:
             old_baseline = self._baseline

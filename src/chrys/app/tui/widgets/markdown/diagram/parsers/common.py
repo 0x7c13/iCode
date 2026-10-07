@@ -8,6 +8,7 @@ import html
 import re
 from dataclasses import replace
 from decimal import Decimal
+from html.entities import html5
 
 from chrys.app.tui.widgets.markdown.diagram.model import (
     ChartData,
@@ -204,15 +205,60 @@ def _strip_inline_comment(line: str) -> str:
     return line
 
 
-def _source_lines(source: str, *, preserve_indent: bool = False) -> list[tuple[int, str]]:
+def _flow_line(raw: str, quote: str = "", metadata: bool = False) -> tuple[str, str, bool]:
+    """Keep label continuation state, including YAML single-quoted metadata."""
+    escaped = False
+    previous = ""
+    for index, char in enumerate(raw):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote == '"':
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif raw.startswith("%%", index):
+            return raw[:index], quote, metadata
+        elif raw.startswith("@{", index):
+            metadata = True
+        elif char == "}" and metadata:
+            metadata = False
+        elif (char == '"' and not metadata) or (char in "\"'" and metadata and previous in {"", "{", ":", ",", "'"}):
+            quote = char
+        if not char.isspace():
+            previous = char
+    return raw, quote, metadata
+
+
+def _source_lines(source: str, *, preserve_indent: bool = False, join_labels: bool = False) -> list[tuple[int, str]]:
     lines: list[tuple[int, str]] = []
     first_content = True
     in_frontmatter = False
     in_accessibility_description = False
+    in_directive = False
+    pending_label: list[str] = []
+    label_line = 0
+    flow_labels = False
+    header_seen = False
+    label_quote = ""
+    label_metadata = False
     for number, line in enumerate(source.splitlines(), 1):
+        if pending_label:
+            line, label_quote, label_metadata = _flow_line(line, label_quote, label_metadata)
+            pending_label.append(line)
+            if label_quote:
+                continue
+            number, line = label_line, "\\n".join(pending_label)
+            pending_label = []
         stripped = line.strip()
         if not stripped:
             continue
+        if in_directive:
+            if "}%%" in stripped:
+                in_directive = False
+            continue
+        if stripped.startswith("%%{") and "}%%" not in stripped:
+            in_directive = True
         if first_content and stripped == "---":
             first_content = False
             in_frontmatter = True
@@ -231,11 +277,28 @@ def _source_lines(source: str, *, preserve_indent: bool = False) -> list[tuple[i
             continue
         if re.match(r"acc(?:title|descr)\s*:", stripped, re.IGNORECASE):
             continue
-        cleaned = line.rstrip() if stripped.startswith("%%") else _strip_inline_comment(line).rstrip()
+        if not header_seen and not stripped.startswith("%%"):
+            header_seen = True
+            flow_labels = (
+                join_labels and re.match(r"(?:flowchart|graph)(?:\s|;|$)", stripped, re.IGNORECASE) is not None
+            )
+        if flow_labels and not stripped.startswith("%%"):
+            cleaned, label_quote, label_metadata = _flow_line(line)
+            if label_quote:
+                label_line, pending_label = number, [cleaned]
+                continue
+            cleaned = cleaned.rstrip()
+        else:
+            cleaned = line.rstrip() if stripped.startswith("%%") else _strip_inline_comment(line).rstrip()
         if not preserve_indent:
             cleaned = cleaned.strip()
         if cleaned.strip():
             lines.append((number, cleaned))
+    if in_directive:
+        # A truncated directive must not hide subsequent graph statements.
+        lines.append((len(source.splitlines()), "@unclosed-directive"))
+    if pending_label:
+        lines.append((label_line, "\\n".join(pending_label)))
     return lines
 
 
@@ -243,21 +306,28 @@ def _clean_label(label: str, *, quote_chars: str = "\"'") -> str:
     label = label.strip()
     if len(label) >= 2 and label[0] == label[-1] and label[0] in quote_chars:
         label = label[1:-1]
-    label = label.replace("<br/>", " ").replace("<br>", " ").replace("\\n", " ")
+    label = re.sub(r"<br\s*/?>", " ", label, flags=re.IGNORECASE).replace("\\n", " ")
+    if label.startswith("`") and label.endswith("`"):
+        label = label[1:-1]
 
-    def decode_numeric_entity(match: re.Match[str]) -> str:
+    def decode_entity(match: re.Match[str]) -> str:
+        if name := match.group("named"):
+            return html5.get(name + ";", match[0])
         digits = match.group("html") or match.group("mermaid")
+        if digits is None:
+            return html.unescape(match[0])
         if len(digits) > 7:
             return " "
         value = int(digits)
         return chr(value) if 0x20 <= value <= 0x10FFFF and not 0xD800 <= value <= 0xDFFF else " "
 
     decoded = re.sub(
-        r"&#(?P<html>\d+);?|(?<!&)#(?P<mermaid>\d+);",
-        decode_numeric_entity,
+        r"&#(?P<html>\d+);?|(?<!&)#(?P<mermaid>\d+);|(?<!&)#(?P<named>[A-Za-z][A-Za-z0-9]+);|"
+        r"&(?:#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);?",
+        decode_entity,
         label,
     )
-    return html.unescape(decoded).replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return decoded.replace("\r", " ").replace("\n", " ").replace("\t", " ")
 
 
 def _parse_list_items(raw: str, *, quote_chars: str = "\"'") -> tuple[str, ...] | None:
@@ -299,22 +369,32 @@ def _parse_list_items(raw: str, *, quote_chars: str = "\"'") -> tuple[str, ...] 
     return tuple(values)
 
 
-def _find_unquoted_delimiter(raw: str, delimiters: tuple[str, ...], *, quote_chars: str = "\"'") -> int | None:
+def _find_unquoted_delimiter(
+    raw: str,
+    delimiters: tuple[str, ...],
+    *,
+    quote_chars: str = "\"'",
+    literal_single_quotes: bool = False,
+    scalar_quotes: bool = False,
+) -> int | None:
     """Find syntax outside quotes; -1 means absent, None means unclosed quotes."""
     quote = ""
     escaped = False
+    previous = ""
     for index, char in enumerate(raw):
         if escaped:
             escaped = False
-        elif char == "\\" and quote:
+        elif char == "\\" and quote and not (literal_single_quotes and quote == "'"):
             escaped = True
         elif char in quote_chars:
-            if not quote:
+            if not quote and (not scalar_quotes or previous in {"", "{", ":", ",", "'"}):
                 quote = char
             elif quote == char:
                 quote = ""
         elif not quote and raw.startswith(delimiters, index):
             return index
+        if not char.isspace():
+            previous = char
     return None if quote or escaped else -1
 
 

@@ -648,7 +648,9 @@ class TestChatLayerNonStreaming:
         assert span.attributes[OtelAttr.ERROR_TYPE] == "RuntimeError"
         assert span.exceptions == [error]
         assert span.status is not None and span.status[1] == repr(error)
-        assert client.duration_histogram.records == [], "error path records no duration"
+        ((duration, duration_attrs),) = client.duration_histogram.records
+        assert duration >= 0
+        assert duration_attrs[OtelAttr.ERROR_TYPE] == "RuntimeError"
         assert client.token_usage_histogram.records == []
 
     @pytest.mark.asyncio
@@ -756,6 +758,20 @@ class TestChatLayerNonStreaming:
         assert events[1].__dict__[OtelAttr.EVENT_NAME] == OtelAttr.CHOICE
         assert events[0].__dict__[MessageListTimestampFilter.INDEX_KEY] == 0
 
+    @pytest.mark.asyncio
+    async def test_sensitive_non_streaming_keeps_unmapped_finish_reason(
+        self, fake_otel: _FakeOtel, gate_sensitive: None
+    ) -> None:
+        # Streaming and non-streaming report the same provider reason: one no map
+        # entry covers is emitted verbatim on both paths, never dropped.
+        client = _TelChat(turns=[_chat_response(finish_reason="max_tokens")])
+        await client.get_response([Message(role="user", contents=["hi"])])
+        (span,) = fake_otel.spans
+        output_messages = json.loads(span.attributes[OtelAttr.OUTPUT_MESSAGES])
+        assert output_messages[-1]["finish_reason"] == "max_tokens"
+        assert span.exceptions == []
+        assert span.status is None
+
 
 # ---------------------------------------------------------------------------
 # D. ChatTelemetryLayer — streaming, gate on
@@ -835,6 +851,48 @@ class TestChatLayerStreaming:
         assert span.attributes[OtelAttr.ERROR_TYPE] == "RuntimeError"
         assert span.exceptions == [error]
         assert client.token_usage_histogram.records == [], "get_final_response skipped on stream error"
+        ((duration, duration_attrs),) = client.duration_histogram.records
+        assert duration >= 0
+        assert duration_attrs[OtelAttr.ERROR_TYPE] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_failing_result_hook_fails_the_stream_once(self, fake_otel: _FakeOtel, gate_on: None) -> None:
+        client = _TelChat()
+        stream = client.get_response([Message(role="user", contents=["hi"])], stream=True)
+        hook_calls: list[str] = []
+
+        def first(response: ChatResponse) -> None:
+            hook_calls.append("first")
+
+        def failing(response: ChatResponse) -> None:
+            hook_calls.append("failing")
+            raise RuntimeError("hook failed")
+
+        stream.with_result_hook(first).with_result_hook(failing)
+        with pytest.raises(RuntimeError, match="hook failed"):
+            _ = [update async for update in stream]
+
+        assert hook_calls == ["first", "failing"], "no hook runs a second time"
+        (span,) = fake_otel.spans
+        assert span.end_count == 1
+        assert span.attributes[OtelAttr.ERROR_TYPE] == "RuntimeError"
+        ((_, duration_attrs),) = client.duration_histogram.records
+        assert duration_attrs[OtelAttr.ERROR_TYPE] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_telemetry_capture_failure_never_fails_the_stream(
+        self, fake_otel: _FakeOtel, gate_on: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken_capture(**_kwargs: Any) -> None:
+            raise ValueError("telemetry bug")
+
+        monkeypatch.setattr(instrumentation, "_capture_response", broken_capture)
+        client = _TelChat()
+        stream = client.get_response([Message(role="user", contents=["hi"])], stream=True)
+        _ = [update async for update in stream]
+
+        assert (await stream.get_final_response()).text == "done"
+        assert fake_otel.spans[0].end_count == 1
 
     def test_sync_raise_closes_span_and_propagates(self, fake_otel: _FakeOtel, gate_on: None) -> None:
         error = RuntimeError("sync boom")
@@ -885,9 +943,9 @@ class TestChatLayerStreaming:
     async def test_sensitive_streaming_survives_unmapped_finish_reason(
         self, fake_otel: _FakeOtel, gate_sensitive: None
     ) -> None:
-        # Streaming is the only _capture_messages caller that forwards the provider's
-        # raw finish_reason, and the capture runs inside the span's own except/finally,
-        # so a failed lookup would mark an otherwise successful chat span as errored.
+        # The streaming capture runs inside the span's own except/finally, so a failed
+        # lookup of the provider's raw finish_reason would mark an otherwise successful
+        # chat span as errored.
         client = _TelChat(turns=[[_text_update("a", finish_reason="max_tokens")]])
         stream = client.get_response([Message(role="user", contents=["hi"])], stream=True)
         _ = [update async for update in stream]

@@ -10,14 +10,16 @@ from typing import Any
 import pytest
 
 from chrys.kernel import CompactionCallContext, Message, ResponseStream
-from chrys.service.llm.anthropic_chat import RawAnthropicClient
-from chrys.service.llm.deepseek import DeepSeekChatCompletionClient
-from chrys.service.llm.defaults import FALLBACK_MAX_OUTPUT_TOKENS
-from chrys.service.llm.glm import GLMChatCompletionClient
+from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
+from chrys.service.llm.anthropic_messages.request import FALLBACK_MAX_OUTPUT_TOKENS, build_request
+from chrys.service.llm.chat_completions import (
+    ChatCompletionsClient,
+    DeepSeekChatCompletionsClient,
+    GlmChatCompletionsClient,
+)
 from chrys.service.llm.mock import MockChatClient
-from chrys.service.llm.openai_chat_completion import RawOpenAIChatCompletionClient
-from chrys.service.llm.openai_responses import RawOpenAIChatClient
-from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
+from chrys.service.llm.openai_responses import ResponsesApiClient
+from chrys.service.llm.providers import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
 
 
 class _UnusedCompletions:
@@ -64,56 +66,60 @@ async def _admitted_options(client: Any, options: dict[str, Any]) -> dict[str, A
     return wire_options
 
 
-def test_anthropic_defaults_max_tokens_and_preserves_explicit_value() -> None:
-    client = RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
+def _anthropic_request(options: dict[str, Any]) -> dict[str, Any]:
+    return build_request(
+        _messages(), options, {}, model="claude-test", base_url="https://api.anthropic.com", default_headers={}
+    ).request
 
-    assert client._prepare_options(_messages(), {})["max_tokens"] == FALLBACK_MAX_OUTPUT_TOKENS
-    assert client._prepare_options(_messages(), {"max_tokens": 0})["max_tokens"] == FALLBACK_MAX_OUTPUT_TOKENS
-    assert client._prepare_options(_messages(), {"max_tokens": 4096})["max_tokens"] == 4096
+
+def test_anthropic_defaults_max_tokens_and_preserves_explicit_value() -> None:
+    assert _anthropic_request({})["max_tokens"] == FALLBACK_MAX_OUTPUT_TOKENS
+    assert _anthropic_request({"max_tokens": 0})["max_tokens"] == FALLBACK_MAX_OUTPUT_TOKENS
+    assert _anthropic_request({"max_tokens": 4096})["max_tokens"] == 4096
 
 
 def test_openai_chat_omits_default_max_tokens_and_preserves_explicit_values() -> None:
-    client = RawOpenAIChatCompletionClient(model="gpt-test", async_client=_UnusedAsyncOpenAI())
+    client = ChatCompletionsClient(model="gpt-test", sdk_client=_UnusedAsyncOpenAI())
 
-    default_options = client._prepare_options(_messages(), {})
+    default_options = client._build_request(_messages(), {})
     assert "max_tokens" not in default_options
     assert "max_completion_tokens" not in default_options
 
-    standard_options = client._prepare_options(_messages(), {"max_tokens": 4096})
+    standard_options = client._build_request(_messages(), {"max_tokens": 4096})
     assert standard_options["max_completion_tokens"] == 4096
 
-    native_options = client._prepare_options(_messages(), {"max_completion_tokens": 8192})
+    native_options = client._build_request(_messages(), {"max_completion_tokens": 8192})
     assert native_options["max_completion_tokens"] == 8192
 
 
 def test_deepseek_omits_default_max_tokens_and_uses_deepseek_request_field() -> None:
-    client = DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_UnusedAsyncOpenAI())
+    client = DeepSeekChatCompletionsClient(model="deepseek-reasoner", sdk_client=_UnusedAsyncOpenAI())
 
-    default_options = client._prepare_options(_messages(), {})
+    default_options = client._build_request(_messages(), {})
     assert "max_tokens" not in default_options
     assert "max_completion_tokens" not in default_options
 
-    standard_options = client._prepare_options(_messages(), {"max_tokens": 4096})
+    standard_options = client._build_request(_messages(), {"max_tokens": 4096})
     assert standard_options["max_tokens"] == 4096
     assert "max_completion_tokens" not in standard_options
 
-    openai_native_options = client._prepare_options(_messages(), {"max_completion_tokens": 8192})
+    openai_native_options = client._build_request(_messages(), {"max_completion_tokens": 8192})
     assert openai_native_options["max_tokens"] == 8192
     assert "max_completion_tokens" not in openai_native_options
 
 
 def test_glm_omits_default_max_tokens_and_uses_glm_request_field() -> None:
-    client = GLMChatCompletionClient(model="glm-5.2", async_client=_UnusedAsyncOpenAI())
+    client = GlmChatCompletionsClient(model="glm-5.2", sdk_client=_UnusedAsyncOpenAI())
 
-    default_options = client._prepare_options(_messages(), {})
+    default_options = client._build_request(_messages(), {})
     assert "max_tokens" not in default_options
     assert "max_completion_tokens" not in default_options
 
-    standard_options = client._prepare_options(_messages(), {"max_tokens": 4096})
+    standard_options = client._build_request(_messages(), {"max_tokens": 4096})
     assert standard_options["max_tokens"] == 4096
     assert "max_completion_tokens" not in standard_options
 
-    openai_native_options = client._prepare_options(_messages(), {"max_completion_tokens": 8192})
+    openai_native_options = client._build_request(_messages(), {"max_completion_tokens": 8192})
     assert openai_native_options["max_tokens"] == 8192
     assert "max_completion_tokens" not in openai_native_options
 
@@ -121,77 +127,89 @@ def test_glm_omits_default_max_tokens_and_uses_glm_request_field() -> None:
 @pytest.mark.parametrize(
     ("provider", "client_type"),
     [
-        ("openai", RawOpenAIChatCompletionClient),
-        ("deepseek-openai", DeepSeekChatCompletionClient),
-        ("glm-openai", GLMChatCompletionClient),
+        ("openai", ChatCompletionsClient),
+        ("deepseek-openai", DeepSeekChatCompletionsClient),
+        ("glm-openai", GlmChatCompletionsClient),
     ],
 )
 def test_chat_completions_clients_send_the_token_limit_param_of_their_provider(
-    provider: str, client_type: type[RawOpenAIChatCompletionClient]
+    provider: str, client_type: type[ChatCompletionsClient]
 ) -> None:
     """Each client sends the output cap under the parameter the Models screen names in its label."""
-    client = client_type(model="model-test", async_client=_UnusedAsyncOpenAI())
+    client = client_type(model="model-test", sdk_client=_UnusedAsyncOpenAI())
 
-    options = client._prepare_options(_messages(), {"max_tokens": 4096})
+    options = client._build_request(_messages(), {"max_tokens": 4096})
 
     assert {key: value for key, value in options.items() if value == 4096} == {
         CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS[provider]: 4096
     }
 
 
-def test_instrumented_subclass_preserves_provider_token_limit_param() -> None:
-    """The instrumented dynamic subclass must keep the provider's output-cap field."""
-    from chrys.service.llm.instrumented import create_instrumented_openai_client
+def test_assembled_stack_preserves_provider_token_limit_param() -> None:
+    """The wire client in the assembled stack keeps the provider's output-cap field."""
+    from chrys.service.llm.clients import _assemble_stack
 
-    stack = create_instrumented_openai_client(
+    stack = _assemble_stack(
+        GlmChatCompletionsClient,
+        _UnusedAsyncOpenAI(),  # type: ignore[arg-type]
         model_id="glm-5.2",
-        client=_UnusedAsyncOpenAI(),
-        chat_client_cls=GLMChatCompletionClient,
+        session_id=None,
+        parent_session_id=None,
+        use_route_session_context=False,
+        on_intermediate_text_async=None,
+        on_intermediate_text_sync=None,
+        max_iterations=7777,
+        max_consecutive_errors=10,
+        tool_result_ceiling_tokens=None,
     )
-    instrumented_client = stack.inner.inner
+    wire_client = stack.inner.inner
+    assert type(wire_client) is GlmChatCompletionsClient
 
-    options = instrumented_client._prepare_options(_messages(), {"max_tokens": 4096})
+    options = wire_client._build_request(_messages(), {"max_tokens": 4096})
     assert options["max_tokens"] == 4096
     assert "max_completion_tokens" not in options
 
 
-@pytest.mark.asyncio
-async def test_openai_responses_omits_default_max_tokens_and_preserves_explicit_values() -> None:
-    client = RawOpenAIChatClient(model="gpt-test", async_client=_UnusedAsyncOpenAI())
+def test_openai_responses_omits_default_max_tokens_and_preserves_explicit_values() -> None:
+    client = ResponsesApiClient(model="gpt-test", sdk_client=_UnusedAsyncOpenAI())
 
-    default_options = await client._prepare_options(_messages(), {})
+    default_options = client._build_request(_messages(), {})
     assert "max_tokens" not in default_options
     assert "max_output_tokens" not in default_options
 
-    standard_options = await client._prepare_options(_messages(), {"max_tokens": 4096})
+    standard_options = client._build_request(_messages(), {"max_tokens": 4096})
     assert standard_options["max_output_tokens"] == 4096
 
-    native_options = await client._prepare_options(_messages(), {"max_output_tokens": 8192})
+    native_options = client._build_request(_messages(), {"max_output_tokens": 8192})
     assert native_options["max_output_tokens"] == 8192
 
 
 @pytest.mark.asyncio
 async def test_provider_preparation_receives_admitted_output_caps() -> None:
-    anthropic = RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
+    anthropic = AnthropicMessagesClient(
+        model="claude-test", sdk_client=SimpleNamespace(base_url="https://api.anthropic.com", default_headers={})
+    )  # type: ignore[arg-type]
     anthropic_options = await _admitted_options(anthropic, {"max_tokens": 4096})
-    assert anthropic._prepare_options(_messages(), anthropic_options)["max_tokens"] == 1
+    assert _anthropic_request(anthropic_options)["max_tokens"] == 1
 
-    openai = RawOpenAIChatCompletionClient(model="gpt-test", async_client=_UnusedAsyncOpenAI())
+    openai = ChatCompletionsClient(model="gpt-test", sdk_client=_UnusedAsyncOpenAI())
     openai_options = await _admitted_options(openai, {"max_tokens": 4096})
-    assert openai._prepare_options(_messages(), openai_options)["max_completion_tokens"] == 1
+    assert openai._build_request(_messages(), openai_options)["max_completion_tokens"] == 1
 
-    deepseek = DeepSeekChatCompletionClient(model="deepseek-reasoner", async_client=_UnusedAsyncOpenAI())
+    deepseek = DeepSeekChatCompletionsClient(model="deepseek-reasoner", sdk_client=_UnusedAsyncOpenAI())
     deepseek_options = await _admitted_options(deepseek, {"max_completion_tokens": 4096})
-    assert deepseek._prepare_options(_messages(), deepseek_options)["max_tokens"] == 1
+    assert deepseek._build_request(_messages(), deepseek_options)["max_tokens"] == 1
 
-    responses = RawOpenAIChatClient(model="gpt-test", async_client=_UnusedAsyncOpenAI())
+    responses = ResponsesApiClient(model="gpt-test", sdk_client=_UnusedAsyncOpenAI())
     responses_options = await _admitted_options(responses, {"max_tokens": 4096, "store": False})
-    assert (await responses._prepare_options(_messages(), responses_options))["max_output_tokens"] == 16
+    assert responses._build_request(_messages(), responses_options)["max_output_tokens"] == 16
 
 
 @pytest.mark.asyncio
 async def test_anthropic_admission_respects_thinking_budget() -> None:
-    client = RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
+    client = AnthropicMessagesClient(
+        model="claude-test", sdk_client=SimpleNamespace(base_url="https://api.anthropic.com", default_headers={})
+    )  # type: ignore[arg-type]
     strategy = _AdmissionStrategy(last_included_tokens=99)
     options = {"max_tokens": 4096, "thinking": {"type": "enabled", "budget_tokens": 20}}
 
@@ -203,7 +221,7 @@ async def test_anthropic_admission_respects_thinking_budget() -> None:
         compaction_overrides={"compaction_strategy": strategy},
     )
 
-    assert client._prepare_options(_messages(), admitted)["max_tokens"] == 21
+    assert _anthropic_request(admitted)["max_tokens"] == 21
 
 
 @pytest.mark.asyncio

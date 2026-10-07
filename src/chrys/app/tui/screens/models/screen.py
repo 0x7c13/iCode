@@ -43,7 +43,7 @@ from chrys.foundation.util.header_charset import (
     model_id_charset_error,
 )
 from chrys.service.context.compaction.budgets import MIN_DERIVABLE_CONTEXT_TOKENS
-from chrys.service.llm.token_limit_params import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS
+from chrys.service.llm.providers import CHAT_COMPLETIONS_TOKEN_LIMIT_PARAMS, PROVIDERS
 from chrys.service.profiles.models.options import (
     OUTPUT_CAP_OPTION_ALIASES,
     PROTECTED_EXTRA_BODY_CHAT_OPTION_KEYS,
@@ -387,19 +387,14 @@ _PROVIDER_LABELS: dict[str, str] = {
     "glm-openai": "GLM (OpenAI)",
 }
 
-_PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {
-    "openai": "https://api.openai.com/v1",
-    "anthropic": "https://api.anthropic.com",
-    "deepseek-openai": "https://api.deepseek.com",
-    "glm-openai": "https://open.bigmodel.cn/api/paas/v4",
-}
+_PROVIDER_DEFAULT_BASE_URLS: dict[str, str] = {name: spec.default_base_url for name, spec in PROVIDERS.items()}
 
 
 def _token_limit_param_name(provider: str, api_style: str) -> str:
     """Wire parameter that carries the Max Output Tokens value for this selection.
 
-    Chat-completions values come from the table the client classes take their
-    ``TOKEN_LIMIT_PARAM`` from, so the label names what the client sends without
+    Chat-completions values come from the table the client variants take their
+    ``max_output_param`` from, so the label names what the client sends without
     importing the SDK-backed client modules while the form renders.
     """
     if provider == "anthropic":
@@ -869,7 +864,7 @@ class ModelConfigScreen(BaseDialog[str]):
 
                         yield Checkbox(
                             render_str(localizer, _STREAMING.bind()),
-                            value=False,
+                            value=True,
                             id="mc-stream",
                             classes="mc-checkbox",
                         )
@@ -1897,6 +1892,8 @@ class ModelConfigScreen(BaseDialog[str]):
         api_style = (
             API_STYLE_RESPONSES if is_responses_wire_dialect(provider, api_style_value) else API_STYLE_CHAT_COMPLETIONS
         )
+        # Fields the form has no control for keep their stored value.
+        stored = self._registry.get(self._selected_profile_id)
 
         return ModelProfile(
             id=self._selected_profile_id,
@@ -1917,6 +1914,9 @@ class ModelConfigScreen(BaseDialog[str]):
             chat_options=_kv_to_json(options),
             stream=self.query_one("#mc-stream", Checkbox).value,
             vision=self.query_one("#mc-vision", Checkbox).value,
+            stream_requires_finish_reason=stored is not None and stored.stream_requires_finish_reason,
+            thinking_block_binding=stored.thinking_block_binding if stored is not None else "auto",
+            auto_interleaved_thinking=stored.auto_interleaved_thinking if stored is not None else True,
         )
 
     async def _save_only(self) -> ModelProfile | None:

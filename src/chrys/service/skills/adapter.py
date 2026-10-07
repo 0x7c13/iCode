@@ -240,7 +240,9 @@ def _is_absolute_config_path(raw: str) -> bool:
     return Path(expanded).is_absolute() or is_absolute_path(expanded)
 
 
-def _collect_skill_paths(config: SkillsConfig, runtime: SessionEnvironment | None = None) -> list[str]:
+def _collect_skill_paths(
+    config: SkillsConfig, runtime: SessionEnvironment | None = None, *, project_skills_enabled: bool = False
+) -> list[str]:
     """Merge profile skill paths with the default user/project skills directories.
 
     Three auto-loaded locations:
@@ -250,8 +252,9 @@ def _collect_skill_paths(config: SkillsConfig, runtime: SessionEnvironment | Non
     * ``~/.agents/skills/`` — included when ``config.auto_load_user_agents_skills``
       is True.  This is a shared cross-tool skills directory opt-in per
       profile (default: True).
-    * ``<runtime.cwd>/.agents/skills/`` — included when ``runtime`` is provided
-      AND ``config.auto_load_cwd_agents_skills`` is True.  Reloaded
+    * ``<runtime.cwd>/.agents/skills/`` — included when ``runtime`` is provided,
+      the user's ``project.skills_enabled`` setting (*project_skills_enabled*)
+      is on AND ``config.auto_load_cwd_agents_skills`` is True.  Reloaded
       automatically when the workspace cwd changes because the agent is rebuilt
       with a fresh ``SessionEnvironment``.
     """
@@ -281,10 +284,11 @@ def _collect_skill_paths(config: SkillsConfig, runtime: SessionEnvironment | Non
         shared_dir = user_agents_dir() / "skills"
         append_unique(str(shared_dir.expanduser().resolve()))
 
-    # Opt-in (default on): <cwd>/.agents/skills/.
-    # Tied to the agent's SessionEnvironment (not os.getcwd()) so it follows the
-    # workspace through soft-restarts triggered by /chdir or the file picker.
-    if runtime is not None and config.auto_load_cwd_agents_skills and runtime.cwd:
+    # Project trust (default off), then the profile opt-in (default on):
+    # <cwd>/.agents/skills/.  Tied to the agent's SessionEnvironment (not
+    # os.getcwd()) so it follows the workspace through soft-restarts triggered
+    # by /chdir or the file picker.
+    if runtime is not None and project_skills_enabled and config.auto_load_cwd_agents_skills and runtime.cwd:
         cwd_dir = Path(runtime.cwd) / ".agents" / "skills"
         append_unique(str(cwd_dir.expanduser().resolve()))
 
@@ -295,6 +299,8 @@ async def create_skills_provider(
     config: SkillsConfig,
     runtime: SessionEnvironment | None = None,
     session_dir: Path | None = None,
+    *,
+    project_skills_enabled: bool = False,
 ) -> tuple[ChrysSkillsProvider | None, list[SkillProviderWarning]]:
     """Create a ChrysSkillsProvider from chrys SkillsConfig.
 
@@ -303,6 +309,8 @@ async def create_skills_provider(
         runtime: Optional ``SessionEnvironment`` used by the script runner as the
             default subprocess cwd when the agent does not supply ``cwd``.
         session_dir: Current session directory for recoverable script-output spills.
+        project_skills_enabled: The user's ``project.skills_enabled`` setting;
+            the working folder's ``.agents/skills`` loads only when it is on.
 
     Returns ``(provider, warnings)`` where *warnings* collects any non-fatal
     errors (e.g. a single invalid skill that was skipped).  Empty
@@ -314,7 +322,7 @@ async def create_skills_provider(
     ``asyncio.to_thread``) so callers can query ``skill_names`` /
     ``skill_sources`` / ``skill_details`` synchronously during startup.
     """
-    paths = _collect_skill_paths(config, runtime)
+    paths = _collect_skill_paths(config, runtime, project_skills_enabled=project_skills_enabled)
     warnings: list[SkillProviderWarning] = []
     missing_seen: set[str] = set()
     for raw in config.paths:

@@ -14,10 +14,11 @@ from chrys.foundation.trajectory.event_types import ToolOutcome
 from chrys.foundation.trajectory.metadata import (
     OPERATION_ID_KEY,
 )
-from chrys.kernel import AgentSession
+from chrys.kernel import AgentSession, FunctionTool, LoopRecorder, tool
 from chrys.kernel.loop import (
+    _CONSECUTIVE_ERRORS_FALLBACK_TEXT,
+    _MAX_FUNCTION_CALLS_FALLBACK_TEXT,
     _MAX_ITERATIONS_FALLBACK_TEXT,
-    LoopRecorder,
     _strip_unexecutable_calls_from_update,
 )
 from chrys.kernel.middleware import (
@@ -489,6 +490,38 @@ class TestExhaustionTailStrip:
         assert response.messages[-1].text == _MAX_ITERATIONS_FALLBACK_TEXT
 
     @pytest.mark.asyncio
+    async def test_stream_stopped_at_the_fallback_has_already_recorded_the_withheld_handles(self) -> None:
+        # The fallback update is a suspension point: a consumer that stops
+        # there never resumes the tail, so the handles the strip withholds
+        # must already be recorded on the session by then.
+        session = AgentSession()
+        final_update = ChatResponseUpdate(
+            contents=[Content.from_function_call(call_id="c2", name="echo", arguments={"text": "b"})],
+            role="assistant",
+            conversation_id="conv-svc",
+            response_id="resp-svc",
+        )
+        layer, _wire = _stack(
+            [[_call_update("c1", "echo", {"text": "a"})], [final_update]],
+            max_iterations=1,
+        )
+        stream = layer.get_response(
+            [_user()],
+            stream=True,
+            options={"tools": [_make_tool()], "store": True},
+            client_kwargs={"session": session},
+        )
+        stopped_at_fallback = False
+        async for update in stream:
+            if update.text == _MAX_ITERATIONS_FALLBACK_TEXT:
+                stopped_at_fallback = True
+                break
+        await stream.aclose()
+        assert stopped_at_fallback
+        assert {"conv-svc", "resp-svc"} <= session.invalidated_service_session_ids
+        assert session.service_session_id is None
+
+    @pytest.mark.asyncio
     async def test_service_tail_restores_fresh_handle_after_finalization(self) -> None:
         # Entering the service-stored tail clears the consumed handle; a
         # successfully finalized, non-invalidated tail restores the fresh one.
@@ -521,7 +554,7 @@ class TestExhaustionTailStrip:
         # calls unanswered — the early return must carry the same invalidation
         # verdict as the exhaustion strip.
         # Streaming: termination on a NON-last iteration — the verdict must not
-        # lean on the last-iteration pre-clear, and ``_finalize`` must withhold
+        # lean on the last-iteration pre-clear, and ``finalize_stream`` must withhold
         # the handles ``from_updates`` would restore from the raw updates.
         class _Terminate(FunctionMiddleware):
             async def process(
@@ -585,3 +618,65 @@ class TestExhaustionTailStrip:
         assert response._chrys_service_state_invalidated is True
         assert session.service_session_id is None
         assert "conv-old" in session.invalidated_service_session_ids
+
+
+# ---------------------------------------------------------------------------
+# A tool limit ends the loop through the same final turn
+# ---------------------------------------------------------------------------
+
+
+def _failing_tool(runs: list[str]) -> FunctionTool:
+    @tool(name="boom")
+    async def boom(text: str) -> str:
+        runs.append(text)
+        raise RuntimeError("kaput")
+
+    return boom
+
+
+class TestToolLimitEndsTheLoop:
+    """Once a tool limit is hit, a provider ignoring ``tool_choice="none"`` gets no further call run."""
+
+    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+    @pytest.mark.parametrize("limit", ["consecutive-errors", "max-function-calls"])
+    async def test_calls_after_the_limit_are_stripped_not_run(self, stream: bool, limit: str) -> None:
+        runs: list[str] = []
+        if limit == "consecutive-errors":
+            tool_name, tools, limits = "boom", [_failing_tool(runs)], {"max_consecutive_errors": 1}
+            expected_text = _CONSECUTIVE_ERRORS_FALLBACK_TEXT
+        else:
+            tool_name, limits = "echo", {"max_function_calls": 1}
+            tools = [_make_tool(runs)]
+            expected_text = _MAX_FUNCTION_CALLS_FALLBACK_TEXT
+        if stream:
+            turns: list[Any] = [
+                [_call_update("c1", tool_name, {"text": "a"})],
+                [_call_update("c2", tool_name, {"text": "tool_choice ignored"})],
+            ]
+        else:
+            turns = [
+                _call_response(("c1", tool_name, {"text": "a"})),
+                _call_response(("c2", tool_name, {"text": "tool_choice ignored"})),
+            ]
+        layer, wire = _stack(turns, max_iterations=5, **limits)
+        sink = FakeSink()
+
+        response = await _final_response(
+            layer,
+            [_user()],
+            stream=stream,
+            options={"tools": tools},
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+
+        assert len(runs) == 1, "the call returned after the limit must not run"
+        assert len(wire.calls) == 2
+        assert wire.calls[1]["options"].get("tool_choice") == "none"
+        assert [m.role for m in response.messages] == ["assistant", "tool", "assistant"]
+        assert response.messages[-1].text == expected_text
+        call_ids = [c.call_id for m in response.messages for c in m.contents if c.type == "function_call"]
+        assert call_ids == ["c1"]
+        cycle_indexes = [
+            event.payload["cycle_index"] for event in sink.of_type(TrajectoryEventType.MODEL_CYCLE_STARTED)
+        ]
+        assert cycle_indexes == [0, 1]

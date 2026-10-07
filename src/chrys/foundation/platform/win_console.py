@@ -25,6 +25,8 @@ import sys
 from collections.abc import Iterator
 from typing import Any
 
+from chrys.foundation.platform.c_api import declare_functions
+
 _STD_INPUT_HANDLE = -10
 _STD_OUTPUT_HANDLE = -11
 
@@ -44,12 +46,14 @@ def _load_kernel32() -> Any:
         from ctypes import wintypes
 
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
-        kernel32.GetStdHandle.restype = wintypes.HANDLE
-        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel32.GetConsoleMode.restype = wintypes.BOOL
-        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel32.SetConsoleMode.restype = wintypes.BOOL
+        declare_functions(
+            kernel32,
+            {
+                "GetStdHandle": (wintypes.HANDLE, [wintypes.DWORD]),
+                "GetConsoleMode": (wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
+                "SetConsoleMode": (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD]),
+            },
+        )
         return kernel32
     except OSError, AttributeError:
         return None

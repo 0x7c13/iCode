@@ -110,6 +110,16 @@ class DormantProjectConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DormantProjectSource:
+    """Project hooks or skills found on disk while their own setting was off."""
+
+    key: str
+    """The setting that loads them: ``project.hooks_enabled`` or ``project.skills_enabled``."""
+
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
 class LoadedSettings:
     """Settings plus the two things a caller must not silently drop."""
 
@@ -140,6 +150,9 @@ class LoadedSettings:
     shipped configuration, the user never authorised it, and silence would
     leave them believing it is in force. The caller says so once per file.
     """
+
+    dormant_project_sources: tuple[DormantProjectSource, ...] = ()
+    """Project hooks and skills discovered while their setting is off, reported the same way."""
 
     def overlay(self, layer: Source, **values: Any) -> LoadedSettings:
         """Return a copy carrying *values*, credited to *layer*.
@@ -381,14 +394,74 @@ def load_settings(
     # an unknown name falls out of ``Settings(**values)`` as a ``TypeError``.
     values.update({name: value for name, value in pins.items() if name not in specs})
 
+    settings = Settings(**values)
     return LoadedSettings(
-        settings=Settings(**values),
+        settings=settings,
         provenance=provenance,
         warnings=tuple(warnings),
         sealed_keys=frozenset(sealed),
         unknown_keys=file_layers.unknown_keys if file_layers is not None else (),
         dormant_project=project.dormant,
+        dormant_project_sources=(
+            _dormant_project_sources(settings, project_root)
+            if file_layers is not None and project_root is not None
+            else ()
+        ),
     )
+
+
+_PROJECT_HOOKS_FILE_NAMES: Final = ("hooks.yaml", "hooks.yml", "hooks.json")
+
+
+def _holds_skill(directory: Path, depth: int = 0) -> bool:
+    """Whether *directory* has a ``SKILL.md`` as deep as skill discovery looks.
+
+    Mirrors ``service/skills/loader.py::discover_skill_directories``: the
+    folder itself and two levels below it.
+    """
+    if (directory / "SKILL.md").is_file():
+        return True
+    if depth >= 2 or not directory.is_dir():
+        return False
+    try:
+        children = [child for child in directory.iterdir() if child.is_dir()]
+    except OSError:
+        return False  # Discovery skips a folder it cannot list, and goes on with the rest.
+    return any(_holds_skill(child, depth + 1) for child in children)
+
+
+def _is_same_entry(left: Path, right: Path) -> bool:
+    """Whether two spellings name one file or folder; on a caseless disk they may differ in case."""
+    try:
+        return left.samefile(right)
+    except OSError:
+        return same_path(left, right)
+
+
+def _dormant_project_sources(settings: Settings, project_root: Path) -> tuple[DormantProjectSource, ...]:
+    """The project hooks and skills *project_root* holds that their setting keeps unloaded.
+
+    A workspace rooted at the user's home names the user's own hooks and skills
+    folders again; those load as the user's and are never reported.
+    """
+    found: list[DormantProjectSource] = []
+    try:
+        if not settings.project_hooks_enabled:
+            hooks_dir = project_root / ".chrys" / "hooks"
+            if not _is_same_entry(hooks_dir, user_settings_path().parent / "hooks"):
+                hooks_file = next(
+                    (hooks_dir / name for name in _PROJECT_HOOKS_FILE_NAMES if (hooks_dir / name).is_file()), None
+                )
+                if hooks_file is not None:
+                    found.append(DormantProjectSource(key="project.hooks_enabled", path=hooks_file))
+        if not settings.project_skills_enabled:
+            skills_dir = project_root / ".agents" / "skills"
+            if not _is_same_entry(skills_dir, Path.home() / ".agents" / "skills") and _holds_skill(skills_dir):
+                found.append(DormantProjectSource(key="project.skills_enabled", path=skills_dir))
+    except OSError:
+        # A notice, never a reason to fail a settings load.
+        logger.debug("Could not check %s for project hooks or skills", project_root, exc_info=True)
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,7 +543,7 @@ def _read_file_layers(specs: Mapping[str, SettingSpec], project_root: Path | Non
         # It remains the trusted USER layer; reading it a second time as an
         # untrusted PROJECT layer would reject preferences and, with the gate
         # off, report the user's own settings as dormant project configuration.
-        if not same_path(candidate, yaml_path):
+        if not _is_same_entry(candidate, yaml_path):
             project_yaml_path = candidate
             # Same empty-on-unparseable rule as the user document, read without
             # lock, backup or repair — the file lives in someone's working tree.

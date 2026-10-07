@@ -13,12 +13,15 @@ from unittest.mock import patch
 
 import pytest
 
+from chrys.foundation.tool_result_metadata import TOOL_ERROR_KIND_METADATA_KEY
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel import AgentSession, Content, Message, SessionContext
 from chrys.service.context.compaction import UnifiedContextStrategy
 from chrys.service.context.providers.context_management import ContextManagementProvider, _format_messages_as_text
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.profiles.models.resolver import default_profile
+from chrys.service.tools.result_metadata import tool_result_metadata
+from tests.support.provider_errors import openai_context_overflow
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -356,6 +359,43 @@ class TestRecallContext:
 
         assert (result == "remembered") is answers
         assert client.closes == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("overflow", [True, False])
+    async def test_recall_failure_keeps_the_exception_text_from_the_model(self, overflow: bool) -> None:
+        error = (
+            await openai_context_overflow()
+            if overflow
+            else ConnectionError("connect to https://gateway.internal/v1 failed; sk-test-secret; /Users/me/.chrys")
+        )
+
+        class _Client:
+            async def get_response(self, _messages: list[Any], *, stream: bool, options: Any) -> Any:
+                raise error
+
+            async def aclose(self) -> None:
+                pass
+
+        provider = ContextManagementProvider(default_profile(), strategy=UnifiedContextStrategy())
+        state = _build_state(2)
+        _bind_session(provider, state)
+        CompressibleHistoryProvider.compress(state, "turn_1", "Summary")
+        ctx_id = state["compressed_msgs"][0].compressed_context_id
+        metadata: dict[str, object] = {}
+        token = tool_result_metadata.set(metadata)
+        try:
+            with patch("chrys.service.llm.clients.create_client", return_value=_Client()):
+                result = await provider._recall_context(compressed_context_id=ctx_id, question="what happened?")
+        finally:
+            tool_result_metadata.reset(token)
+
+        expected = "too large for this model's context window" if overflow else "did not complete"
+        assert result.startswith("Error: recall failed — ")
+        assert expected in result
+        assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "context_recall_failed"
+        for leaked in ("131072", "gateway.internal", "sk-test-secret", "/Users/me"):
+            assert leaked not in result
+            assert leaked not in str(metadata)
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from textual.geometry import Region, Size
 
 from chrys.app.tui.widgets.trajectory import DashboardTab, ResponsiveTier
 from chrys.app.tui.widgets.trajectory import panel as trajectory_panel
-from chrys.app.tui.widgets.trajectory.panel import TrajectoryTextView
+from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
 from chrys.service.analytics import TrajectoryAnalyzer
 from tests.app.tui.widgets._trajectory_fixtures import (
     _NS,
@@ -27,7 +27,7 @@ from tests.app.tui.widgets._trajectory_fixtures import (
     page_text,
 )
 from tests.service.analytics._events import EventLog
-from tests.support.tui_helpers import resize_when_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 
 
@@ -152,7 +152,7 @@ async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store
 
         opened: list[Path] = []
         monkeypatch.setattr(trajectory_panel, "open_in_file_manager", opened.append)
-        dashboard.open_session_folder()
+        view.action_open_session_folder()
         assert opened == [session_dir]
 
         monkeypatch.setattr(
@@ -431,7 +431,6 @@ async def test_verify_command_change_has_distinct_presentation_identity_and_reag
                 DashboardTab.OVERVIEW,
                 False,
                 None,
-                None,
                 analysis.generation if analysis is not None else -1,
                 dashboard._available_width(),
                 dashboard._available_height(),
@@ -527,3 +526,62 @@ async def test_breakpoints_produce_wide_mid_narrow_and_floor_shapes(tmp_path: Pa
         assert "Failure recovery" not in rendered[ResponsiveTier.FLOOR]
         assert "Change verification" not in rendered[ResponsiveTier.FLOOR]
         assert "Submission wait" not in rendered[ResponsiveTier.FLOOR]
+
+
+async def test_settled_scrollbar_narrows_the_content_but_not_the_breakpoint_tier(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+
+    # The dashboard's border and padding take 4 columns, leaving exactly the
+    # MID breakpoint; the Overview overflows 30 rows, so its vertical
+    # scrollbar takes one more column from the content.
+    async with open_dashboard(path, size=(84, 30)) as (dashboard, pilot):
+        view = dashboard.query_one(TrajectoryTextView)
+        await wait_for(
+            lambda: (
+                view.show_vertical_scrollbar
+                and bool(view._lines)
+                and max(cell_len(line.plain) for line in view._lines) <= view.scrollable_content_region.width
+            ),
+            timeout=5,
+            pilot=pilot,
+            description="overview settled under its vertical scrollbar",
+        )
+        assert dashboard._available_width() == 80
+        assert view.scrollable_content_region.width == 79
+
+        # The tier follows the dashboard's width, so the 79-cell content
+        # still lays the KPI sections out side by side.
+        assert dashboard.responsive_tier is ResponsiveTier.MID
+        assert any("Time & usage" in line.plain and "Where time went" in line.plain for line in view._lines)
+        assert view.max_scroll_x == 0
+
+
+async def test_settled_rerender_keeps_the_dashboard_tier(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+
+    async with open_dashboard(path, size=(84, 30)) as (dashboard, pilot):
+        view = dashboard.query_one(TrajectoryTextView)
+        await click_when_settled(pilot, "#timeline")
+        await wait_for(
+            lambda: (
+                dashboard.active_tab is DashboardTab.TIMELINE
+                and not view.show_vertical_scrollbar
+                and view.scrollable_content_region.width == 80
+            ),
+            timeout=5,
+            pilot=pilot,
+            description="timeline settled without a vertical scrollbar",
+        )
+
+        # Render the Overview before the view can grow its scrollbar: the
+        # first build fills the scrollbar-free 80 cells and overflows, so
+        # only the settled re-render can bring every line within 79 cells.
+        dashboard.active_tab = DashboardTab.OVERVIEW
+        dashboard._render_active_view()
+
+        assert max(cell_len(line.plain) for line in view._lines) <= 79
+        assert any("Time & usage" in line.plain and "Where time went" in line.plain for line in view._lines)

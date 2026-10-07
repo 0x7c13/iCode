@@ -7,11 +7,13 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
 
 import chrys.kernel as kernel
+from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY, ReasoningOrigin
 from chrys.kernel import _types as kernel_private_types
 from chrys.kernel import types as kernel_types
 from chrys.kernel._tool_expansion import _get_tool_expander, _set_tool_expander
@@ -660,6 +662,52 @@ def test_function_call_merge_uses_name_from_later_delta() -> None:
     assert merged.arguments == '{"text":"hi"}'
 
 
+def _streamed_calls(*parts: tuple[str, dict[str, Any]]) -> list[tuple[str | None, Any]]:
+    """The calls one streamed message assembles from function-call contents sharing call id ``same``."""
+    updates = [
+        kernel_types.ChatResponseUpdate(
+            contents=[
+                kernel_types.Content.from_function_call(
+                    "same", "lookup", arguments=arguments, additional_properties=properties
+                )
+            ]
+        )
+        for arguments, properties in parts
+    ]
+    response = kernel_types.ChatResponse.from_updates(updates)
+    return [(content.call_id, content.arguments) for content in response.messages[0].contents]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param({"output_index": 0, "fc_id": "fc_1"}, {"output_index": 1, "fc_id": "fc_2"}, id="two_items"),
+        pytest.param({"output_index": 0}, {"output_index": 1}, id="two_positions"),
+        pytest.param({"fc_id": "fc_1"}, {"fc_id": "fc_2"}, id="two_item_ids"),
+    ],
+)
+def test_calls_from_two_responses_output_items_stay_two_under_one_call_id(
+    first: dict[str, Any], second: dict[str, Any]
+) -> None:
+    assert _streamed_calls(('{"city": "Paris"}', first), ('{"city": "Rome"}', second)) == [
+        ("same", '{"city": "Paris"}'),
+        ("same", '{"city": "Rome"}'),
+    ]
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        pytest.param({"output_index": 0, "fc_id": "fc_1"}, id="the_same_item"),
+        pytest.param({}, id="a_fragment_naming_no_item"),
+    ],
+)
+def test_fragments_of_one_call_still_merge(second: dict[str, Any]) -> None:
+    first = {"output_index": 0, "fc_id": "fc_1"}
+
+    assert _streamed_calls(('{"city": ', first), ('"Paris"}', second)) == [("same", '{"city": "Paris"}')]
+
+
 def test_reasoning_text_and_summary_contents_do_not_merge() -> None:
     summary = kernel_types.Content.from_text_reasoning(id="rs_1", text="Visible summary")
     reasoning_text = kernel_types.Content.from_text_reasoning(
@@ -762,6 +810,29 @@ def test_redacted_and_ordinary_anthropic_reasoning_do_not_coalesce(redacted_firs
     )
 
 
+def test_reasoning_contents_from_different_endpoints_do_not_merge() -> None:
+    """Each side replays only to its own endpoint; an unstamped side came from none in particular."""
+    here = ReasoningOrigin("anthropic_messages", "https://api.anthropic.com:443")
+    there = ReasoningOrigin("anthropic_messages", "https://gateway.example:443")
+
+    def thinking(origin: ReasoningOrigin | None, text: str) -> kernel_types.Content:
+        content = kernel_types.Content.from_text_reasoning(text=text)
+        if origin is not None:
+            origin.stamp(content.additional_properties)
+        return content
+
+    with pytest.raises(kernel_types.AdditionItemMismatch, match="different endpoints"):
+        thinking(here, "a") + thinking(there, "b")
+    with pytest.raises(kernel_types.AdditionItemMismatch, match="different endpoints"):
+        thinking(here, "a") + thinking(None, "b")
+    with pytest.raises(kernel_types.AdditionItemMismatch, match="different endpoints"):
+        thinking(None, "a") + thinking(here, "b")
+
+    merged = thinking(here, "a") + thinking(here, "b")
+    assert merged.text == "ab"
+    assert merged.additional_properties[REASONING_ORIGIN_KEY] == here.stamp_value()
+
+
 def test_reasoning_contents_with_distinct_protected_payloads_do_not_merge() -> None:
     """Id-less blocks that both carry opaque payloads would lose the earlier one."""
     first = kernel_types.Content.from_text_reasoning(protected_data='["D1"]')
@@ -819,6 +890,19 @@ def test_message_roundtrip_preserves_reasoning_format_marker_and_raw_fields() ->
     assert restored.contents[0].text == "GLM thinking"
     assert restored.additional_properties["reasoning_content"] == "GLM thinking"
     assert restored.additional_properties["openai_reasoning_format"] == "reasoning_content"
+
+
+def test_message_roundtrip_preserves_reasoning_origin_stamps() -> None:
+    origin = ReasoningOrigin("chat_completions", "https://openrouter.ai:443")
+    content = kernel_types.Content.from_text_reasoning(protected_data='[{"type": "reasoning.encrypted"}]')
+    origin.stamp(content.additional_properties)
+    message = kernel_types.Message(role="assistant", contents=[content], additional_properties={})
+    origin.stamp(message.additional_properties)
+
+    restored = kernel_types.Message.from_dict(json.loads(json.dumps(message.to_dict())))
+
+    assert restored.contents[0].additional_properties[REASONING_ORIGIN_KEY] == origin.stamp_value()
+    assert restored.additional_properties[REASONING_ORIGIN_KEY] == origin.stamp_value()
 
 
 @pytest.mark.parametrize(

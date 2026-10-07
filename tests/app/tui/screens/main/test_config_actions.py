@@ -44,6 +44,7 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
 from tests.app.tui.screens._model_config_support import _model_config_result_events
 from tests.support.event_capture import capture_event_sequence
+from tests.support.tui_helpers import discard_worker
 
 
 @pytest.fixture(autouse=True)
@@ -111,12 +112,9 @@ def _settings_coordinator() -> object:
 
 def _callbacks() -> RuntimeConfigCallbacks:
     return RuntimeConfigCallbacks(
-        set_approval_mode=lambda _arg: None,
-        start_agent_profile_switch=lambda _profile: None,
-        start_model_config_result=lambda _result: None,
+        start_worker=discard_worker,
         set_profile_display=lambda _profile: None,
         update_subtitle=lambda: None,
-        start_agent_config_result=lambda _result: None,
         debug=lambda _key, _message="": None,
         notification_service=_notification_service,
         settings_coordinator=_settings_coordinator,
@@ -466,7 +464,6 @@ def test_canonical_model_profile_id_does_not_fall_back_to_process_env(
 
 
 def test_tui_canonical_active_model_profile_id_resolves_explicit_profile_name() -> None:
-    from chrys.app.tui.screens.main.screen import _canonical_active_model_profile_id
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
 
@@ -479,7 +476,6 @@ def test_tui_canonical_active_model_profile_id_resolves_explicit_profile_name() 
 def test_tui_canonical_active_model_profile_id_prefers_explicit_active_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from chrys.app.tui.screens.main.screen import _canonical_active_model_profile_id
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
 
@@ -511,6 +507,100 @@ def test_select_model_tag_ignores_unconfirmed_runtime_profile() -> None:
     assert picker._current_profile_id == ""
 
 
+class _BusyEngine:
+    def execution_busy(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "agent",
+            (
+                "Code [Agent] is bound to the model Bound [模型], so the model cannot be switched here. "
+                "To change it, press F2 and edit the agent's model on its Basic tab."
+            ),
+        ),
+        ("override", "This session is pinned to this model."),
+        ("inherited", "Model selection is locked."),
+    ],
+)
+def test_locked_model_tag_explains_its_lock_even_while_a_run_is_busy(source: str, expected: str) -> None:
+    state = MainScreenState()
+    state.runtime.profile = "Code [Agent]"
+    state.runtime.details_confirmed = True
+    state.runtime.details.model = RuntimeModelDetails(
+        profile_id="bound", name="Bound [模型]", selection_source=cast(Any, source)
+    )
+    view = _View()
+    controller = RuntimeConfigController(
+        state=state,
+        services=MainScreenServices(bus=EventBus(), engine_provider=cast(Any, _BusyEngine)),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.on_model_tag_clicked("locked")
+
+    assert view.pushed == []
+    assert len(view.notifications) == 1
+    message, title, severity, timeout = view.notifications[0]
+    assert Localizer("en").render(cast(Any, message)) == expected
+    assert title.definition.key == "tui.config.title.model_locked"
+    assert severity == "warning"
+    assert timeout == 6
+
+
+def test_agent_model_lock_notice_is_translated() -> None:
+    state = MainScreenState()
+    state.runtime.profile = "Code"
+    state.runtime.details_confirmed = True
+    state.runtime.details.model = RuntimeModelDetails(profile_id="bound", name="Bound", selection_source="agent")
+    view = _View()
+    controller = RuntimeConfigController(
+        state=state,
+        services=MainScreenServices(bus=EventBus()),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.on_model_tag_clicked("locked")
+
+    message = view.notifications[0][0]
+    expected = (
+        "智能体“Code”绑定了模型“Bound”，无法在此切换模型。"  # noqa: RUF001
+        "如需更改，请按 F2，在该智能体的“基本”标签页中修改模型配置。"  # noqa: RUF001
+    )
+    assert Localizer("zh-Hans").render(cast(Any, message)) == expected
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        ("profile", "Cannot switch agents while the agent is busy"),
+        ("model", "Cannot switch models while the agent is busy"),
+    ],
+)
+def test_busy_selector_click_names_the_selector_it_blocked(selector: str, expected: str) -> None:
+    view = _View()
+    controller = RuntimeConfigController(
+        state=MainScreenState(),
+        services=MainScreenServices(bus=EventBus()),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.on_selector_busy(cast(Any, selector))
+
+    assert view.pushed == []
+    assert len(view.notifications) == 1
+    message, title, severity, _timeout = view.notifications[0]
+    assert Localizer("en").render(cast(Any, message)) == expected
+    assert Localizer("en").render(cast(Any, title)) == "Busy"
+    assert severity == "warning"
+
+
 def test_view_adapter_open_runtime_details_pushes_runtime_details_dialog() -> None:
     pushed: list[object] = []
 
@@ -520,7 +610,7 @@ def test_view_adapter_open_runtime_details_pushes_runtime_details_dialog() -> No
     screen = SimpleNamespace(app=SimpleNamespace(push_screen=push_screen))
     details = AgentRuntimeDetails()
 
-    MainScreenViewAdapter(cast(Any, screen)).open_runtime_details(details)
+    MainScreenViewAdapter(cast(Any, screen), state=MainScreenState()).open_runtime_details(details)
 
     assert len(pushed) == 1
     assert isinstance(pushed[0], RuntimeDetailsDialog)
@@ -614,11 +704,10 @@ def _confirmation_session_handler(state: MainScreenState, services: MainScreenSe
             set_profile_display=_noop,
             set_active_model_profile_id=_set_active_model_profile_id,
             set_workspace_cwd=_noop,
-            set_workspace_original_cwd=_noop,
             update_subtitle=_noop,
             update_toc=_noop,
             clear_suggestion_file_cache=_noop,
-            start_session_restore=_noop,
+            start_worker=discard_worker,
             post_gc_message=_noop,
             debug=_noop,
             refresh_model_indicator=_noop,

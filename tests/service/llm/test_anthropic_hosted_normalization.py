@@ -9,18 +9,19 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from anthropic.types.beta import BetaMessage
+from anthropic.types.beta import BetaMessage, BetaThinkingBlock
 
+from chrys.foundation.hosted_tools import ANTHROPIC_HOSTED_WIRE_BLOCK_KEY, HostedToolPhase
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message
-from chrys.service.llm.anthropic_chat import (
-    RawAnthropicClient,
-    _AnthropicStreamState,
-    _drain_deferred_content_update,
-)
+from chrys.service.llm.anthropic_messages.decode import blocking_context_estimate, decode_blocks, decode_message
+from chrys.service.llm.anthropic_messages.history import encode_messages
+from chrys.service.llm.anthropic_messages.stream import StreamState
 
 
-def _client() -> RawAnthropicClient:
-    return RawAnthropicClient(model="claude-test", anthropic_client=SimpleNamespace())
+def _replayed_blocks(message: Message) -> list[dict[str, Any]]:
+    """The wire blocks *message* encodes to, as one wire message."""
+    (wire_message,) = encode_messages([message])
+    return wire_message["content"]
 
 
 def _blocks(fixtures: list[dict[str, Any]]) -> list[Any]:
@@ -40,10 +41,9 @@ def _blocks(fixtures: list[dict[str, Any]]) -> list[Any]:
 
 
 def test_redacted_thinking_parse_and_round_trip() -> None:
-    client = _client()
     (block,) = _blocks([{"type": "redacted_thinking", "data": "opaque-redacted"}])
 
-    contents = client._parse_contents_from_anthropic([block])
+    contents = decode_blocks([block])
 
     assert len(contents) == 1
     reasoning = contents[0]
@@ -53,45 +53,23 @@ def test_redacted_thinking_parse_and_round_trip() -> None:
     assert reasoning.additional_properties["anthropic_redacted_thinking"] is True
     message = Message("assistant", contents)
     assert message.text == ""
-    assert client._prepare_message_for_anthropic(message)["content"] == [
-        {"type": "redacted_thinking", "data": "opaque-redacted"}
-    ]
+    assert _replayed_blocks(message) == [{"type": "redacted_thinking", "data": "opaque-redacted"}]
 
 
 def test_streamed_redacted_thinking_start_emits_reasoning_content() -> None:
-    client = _client()
     (block,) = _blocks([{"type": "redacted_thinking", "data": "opaque-redacted"}])
-    state = _AnthropicStreamState(
-        pending_function_calls={},
-        hosted_tool_indices=set(),
-        hosted_tool_calls={},
-        hosted_argument_deltas={},
-        deferred_updates={},
-        defer_from_index=None,
-    )
+    state = StreamState()
 
-    update = client._process_stream_event(
-        SimpleNamespace(type="content_block_start", index=0, content_block=block),
-        state,
-    )
+    (update,) = state.updates_for(SimpleNamespace(type="content_block_start", index=0, content_block=block))
 
-    assert update is not None
     assert len(update.contents) == 1
     assert update.contents[0].protected_data == "opaque-redacted"
 
 
 @pytest.mark.parametrize("redacted_first", [True, False])
 def test_streamed_redacted_and_ordinary_thinking_round_trip_separately(redacted_first: bool) -> None:
-    client = _client()
     (redacted_block,) = _blocks([{"type": "redacted_thinking", "data": "opaque-redacted"}])
-    state = _AnthropicStreamState(
-        pending_function_calls={},
-        hosted_tool_indices=set(),
-        hosted_tool_calls={},
-        hosted_argument_deltas={},
-        deferred_updates={},
-        defer_from_index=None,
-    )
+    state = StreamState()
     redacted_event = SimpleNamespace(type="content_block_start", index=0, content_block=redacted_block)
     thinking_event = SimpleNamespace(
         type="content_block_delta",
@@ -108,10 +86,10 @@ def test_streamed_redacted_and_ordinary_thinking_round_trip_separately(redacted_
         if redacted_first
         else [thinking_event, signature_event, redacted_event]
     )
-    updates = [update for event in events if (update := client._process_stream_event(event, state)) is not None]
+    updates = [update for event in events for update in state.updates_for(event)]
 
     response = ChatResponse.from_updates(updates)
-    prepared = client._prepare_message_for_anthropic(response.messages[0])["content"]
+    prepared = _replayed_blocks(response.messages[0])
 
     expected_types = ["redacted_thinking", "thinking"] if redacted_first else ["thinking", "redacted_thinking"]
     assert [block["type"] for block in prepared] == expected_types
@@ -125,55 +103,96 @@ def test_streamed_redacted_and_ordinary_thinking_round_trip_separately(redacted_
     assert redacted == {"type": "redacted_thinking", "data": "opaque-redacted"}
 
 
-def _stream_parse(client: RawAnthropicClient, blocks: list[Any]) -> ChatResponse:
-    state = _AnthropicStreamState(
-        pending_function_calls={},
-        hosted_tool_indices=set(),
-        hosted_tool_calls={},
-        hosted_argument_deltas={},
-        deferred_updates={},
-        defer_from_index=None,
-    )
+@pytest.mark.parametrize("start_signature", [None, ""], ids=["start-without-signature", "start-with-empty-signature"])
+@pytest.mark.parametrize(
+    "texts", [("A", "B"), ("", ""), (None, None)], ids=["thinking", "omitted", "omitted-without-delta"]
+)
+def test_streamed_adjacent_thinking_blocks_keep_their_own_signatures(
+    start_signature: str | None, texts: tuple[str | None, str | None]
+) -> None:
+    """Each block keeps its own signature: omitted thinking, with an empty delta or none, and a start without one."""
+    state = StreamState()
+    start_fields = {} if start_signature is None else {"signature": start_signature}
+    events: list[Any] = []
+    for index, (text, signature) in enumerate(zip(texts, ("S1", "S2"), strict=True)):
+        block = BetaThinkingBlock.model_construct(type="thinking", thinking="", **start_fields)
+        events.append(SimpleNamespace(type="content_block_start", index=index, content_block=block))
+        if text is not None:
+            events.append(
+                SimpleNamespace(
+                    type="content_block_delta", index=index, delta=SimpleNamespace(type="thinking_delta", thinking=text)
+                )
+            )
+        events.append(
+            SimpleNamespace(
+                type="content_block_delta",
+                index=index,
+                delta=SimpleNamespace(type="signature_delta", signature=signature),
+            )
+        )
+    updates = [update for event in events for update in state.updates_for(event)]
+
+    response = ChatResponse.from_updates(updates)
+    prepared = _replayed_blocks(response.messages[0])
+
+    assert prepared == [
+        {"type": "thinking", "thinking": texts[0] or "", "signature": "S1"},
+        {"type": "thinking", "thinking": texts[1] or "", "signature": "S2"},
+    ]
+
+
+def _stream_parse(blocks: list[Any]) -> ChatResponse:
+    state = StreamState()
     updates: list[ChatResponseUpdate] = []
     for index, block in enumerate(blocks):
-        block_type = block.type
-        if block_type in {"server_tool_use", "mcp_tool_use"}:
+        if block.type in {"server_tool_use", "mcp_tool_use"}:
             initial = block.model_copy(update={"input": {}})
-            start = client._process_stream_event(
-                SimpleNamespace(type="content_block_start", index=index, content_block=initial),
-                state,
+            updates.extend(
+                state.updates_for(SimpleNamespace(type="content_block_start", index=index, content_block=initial))
             )
-            if start is not None:
-                updates.append(start)
-            delta = client._process_stream_event(
-                SimpleNamespace(
-                    type="content_block_delta",
-                    index=index,
-                    delta=SimpleNamespace(type="input_json_delta", partial_json=json.dumps(block.input)),
-                ),
-                state,
+            input_delta = SimpleNamespace(type="input_json_delta", partial_json=json.dumps(block.input))
+            updates.extend(
+                state.updates_for(SimpleNamespace(type="content_block_delta", index=index, delta=input_delta))
             )
-            if delta is not None:
-                updates.append(delta)
-            client._process_stream_event(SimpleNamespace(type="content_block_stop", index=index), state)
-        elif block_type == "tool_use":
-            start = client._process_stream_event(
-                SimpleNamespace(type="content_block_start", index=index, content_block=block),
-                state,
-            )
-            if start is not None:
-                updates.append(start)
-            client._process_stream_event(SimpleNamespace(type="content_block_stop", index=index), state)
         else:
-            start = client._process_stream_event(
-                SimpleNamespace(type="content_block_start", index=index, content_block=block),
-                state,
+            updates.extend(
+                state.updates_for(SimpleNamespace(type="content_block_start", index=index, content_block=block))
             )
-            if start is not None:
-                updates.append(start)
-    if deferred := _drain_deferred_content_update(state):
-        updates.append(deferred)
+        if block.type in {"server_tool_use", "mcp_tool_use", "tool_use"}:
+            list(state.updates_for(SimpleNamespace(type="content_block_stop", index=index)))
+    updates.extend(state.updates_for(SimpleNamespace(type="message_stop")))
+    state.finish()
     return ChatResponse.from_updates(updates)
+
+
+def test_streamed_hosted_call_is_refreshed_in_place_after_it_is_emitted() -> None:
+    """The block start's call object is re-emitted and mutated as its input streams.
+
+    Response assembly skips a content object it has already seen, so the
+    assembled message keeps that one object; a fresh copy per fragment would
+    add a call per fragment instead.
+    """
+    (block,) = _blocks([{"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {}}])
+    state = StreamState()
+
+    (start,) = state.updates_for(SimpleNamespace(type="content_block_start", index=0, content_block=block))
+    (call,) = start.contents
+    assert (call.provider_phase, call.arguments) == (HostedToolPhase.START, {})
+
+    seen_arguments: list[Any] = []
+    for fragment in ('{"query": ', '"Chrys"}'):
+        delta = SimpleNamespace(type="input_json_delta", partial_json=fragment)
+        (update,) = state.updates_for(SimpleNamespace(type="content_block_delta", index=0, delta=delta))
+        (refreshed,) = update.contents
+        assert refreshed is call
+        assert call.provider_phase == HostedToolPhase.DELTA
+        seen_arguments.append(call.arguments)
+    assert seen_arguments == ['{"query": ', {"query": "Chrys"}]
+    assert call.additional_properties[ANTHROPIC_HOSTED_WIRE_BLOCK_KEY]["input"] == {"query": "Chrys"}
+
+    assert list(state.updates_for(SimpleNamespace(type="content_block_stop", index=0))) == []
+    assert call.provider_phase == HostedToolPhase.START
+    assert ChatResponse.from_updates([start, update]).messages[0].contents == [call]
 
 
 def _content_dicts(contents: list[Content]) -> list[dict[str, Any]]:
@@ -215,7 +234,7 @@ def test_blocking_hosted_context_estimate_handles_cache_hits_and_misses(
         cache_read_input_tokens=cache_read,
     )
 
-    estimate = _client()._anthropic_blocking_context_input_estimate(usage, _blocking_code_search_content())
+    estimate = blocking_context_estimate(usage, _blocking_code_search_content())
 
     assert estimate == expected
 
@@ -253,7 +272,7 @@ def test_blocking_message_publishes_context_estimate() -> None:
         }
     )
 
-    response = _client()._process_message(message, {})
+    response = decode_message(message, response_format=None)
 
     assert response.usage_details is not None
     assert response.usage_details["context_input_token_floor"] == 5_010
@@ -261,10 +280,9 @@ def test_blocking_message_publishes_context_estimate() -> None:
 
 
 def _assert_parity(fixtures: list[dict[str, Any]]) -> tuple[list[Any], list[Content]]:
-    client = _client()
     blocks = _blocks(fixtures)
-    blocking = client._parse_contents_from_anthropic(blocks)
-    streaming = _stream_parse(client, blocks)
+    blocking = decode_blocks(blocks)
+    streaming = _stream_parse(blocks)
     assert _content_dicts(streaming.messages[0].contents) == _content_dicts(blocking)
     return blocks, blocking
 
@@ -529,7 +547,7 @@ def test_tool_search_pair_uses_exact_official_name_and_round_trips() -> None:
     ]
 
     blocks, contents = _assert_parity(fixtures)
-    replayed = _client()._prepare_messages_for_anthropic([Message("assistant", contents)])
+    replayed = encode_messages([Message("assistant", contents)])
 
     assert [content.type for content in contents] == ["hosted_tool_call", "hosted_tool_result"]
     assert all(content.hosted_family == "tool_discovery" for content in contents)
@@ -630,9 +648,9 @@ def test_anthropic_all_hosted_pairs_same_provider_round_trip() -> None:
         },
     ]
     blocks = _blocks(fixtures)
-    contents = _client()._parse_contents_from_anthropic(blocks)
+    contents = decode_blocks(blocks)
 
-    replayed = _client()._prepare_messages_for_anthropic([Message("assistant", contents)])
+    replayed = encode_messages([Message("assistant", contents)])
 
     assert replayed == [
         {
@@ -685,9 +703,7 @@ def test_anthropic_cross_provider_hosted_history_degrades_to_assistant_context(
         )
 
     with caplog.at_level("DEBUG", logger="chrys.service.agent_middleware.events.hosted_tools"):
-        replayed = _client()._prepare_messages_for_anthropic(
-            [Message("assistant", [call]), Message("assistant", [result])]
-        )
+        replayed = encode_messages([Message("assistant", [call]), Message("assistant", [result])])
 
     assert len(replayed) == 1
     assert replayed[0]["role"] == "assistant"
@@ -697,3 +713,23 @@ def test_anthropic_cross_provider_hosted_history_degrades_to_assistant_context(
     assert "Status: completed" in summary
     assert 'Result: "found"' in summary
     assert "Degrading provider-hosted history to assistant context" in caplog.text
+
+
+def test_foreign_hosted_summary_in_a_user_message_goes_out_as_assistant_context() -> None:
+    result = Content.from_hosted_tool_result(
+        "foreign-1",
+        tool_name="remote_task",
+        result="found",
+        status="completed",
+        hosted_provider="openai",
+        provider_phase="terminal",
+    )
+
+    replayed = encode_messages([Message("user", ["before", result, "after"])])
+
+    assert [(message["role"], [block["type"] for block in message["content"]]) for message in replayed] == [
+        ("user", ["text"]),
+        ("assistant", ["text"]),
+        ("user", ["text"]),
+    ]
+    assert replayed[1]["content"][0]["text"].startswith("[Provider-hosted tool context]")

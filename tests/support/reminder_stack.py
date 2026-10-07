@@ -1,13 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Build the reminder stack by role, and read its state, for characterization tests.
+"""Build the reminder stack by role, and read its state, for the reminder lifecycle tests.
 
-The golden and lifecycle reminder tests drive LAST_WORDS, profile-switch and
-archive-pointer calls through the role that owns them (``stack.last_words``,
-``stack.switch``, ``stack.pointer``), restore persisted state through
-``restore_phase4`` and read middleware-private state only through the
-observers below.  When an owner moves, only this module changes:
-the tests and their golden files stay byte-identical.
+The tests drive LAST_WORDS, profile-switch and archive-pointer calls through
+the role that owns them (``stack.last_words``, ``stack.switch``,
+``stack.pointer``), restore persisted state through ``restore_phase4`` and
+read middleware-private state only through the observers below.  When an
+owner moves, only this module changes, never the tests.
 """
 
 from __future__ import annotations
@@ -43,14 +42,10 @@ def make_reminder_stack(
     runtime: SessionEnvironment | None = None,
     *,
     max_context_tokens: int,
-    warn_threshold_pct: float = 0.50,
-    sub_agent_names: list[str] | None = None,
     shell_tool_enabled: bool = False,
-    tool_names: list[str] | None = None,
     session_root: Path | None = None,
     file_read_available: bool = False,
     spill_quota: SpillQuota | None = None,
-    catalog_pointer_enabled: bool = True,
     skill_catalog_provider: Callable[[], str | None] | None = None,
     todo_state_provider: Callable[[], str | None] | None = None,
     mcp_instructions_provider: Callable[[], str | None] | None = None,
@@ -60,14 +55,14 @@ def make_reminder_stack(
     middleware, last_words = reminder_pair(
         runtime=runtime,
         max_context_tokens=max_context_tokens,
-        warn_threshold_pct=warn_threshold_pct,
-        sub_agent_names=sub_agent_names,
+        warn_threshold_pct=0.50,
+        sub_agent_names=None,
         shell_tool_enabled=shell_tool_enabled,
-        tool_names=tool_names,
+        tool_names=None,
         session_root=session_root,
         file_read_available=file_read_available,
         spill_quota=spill_quota,
-        catalog_pointer_enabled=catalog_pointer_enabled,
+        catalog_pointer_enabled=True,
         skill_catalog_provider=skill_catalog_provider,
         todo_state_provider=todo_state_provider,
         mcp_instructions_provider=mcp_instructions_provider,
@@ -112,7 +107,7 @@ def reminder_generation(stack: ReminderStack) -> int:
 
 
 def observe(stack: ReminderStack) -> dict[str, Any]:
-    """The stack's observable state after a step, in a JSON-ready shape."""
+    """The stack's observable state after a step, for comparing it across steps."""
     held = held_catalogs(stack)
     return {
         "pending_switch": stack.switch.snapshot_pending_switch(),

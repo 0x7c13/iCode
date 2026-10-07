@@ -1,4 +1,6 @@
+# Copyright (c) Microsoft. All rights reserved.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Contains code adapted from Microsoft Agent Framework (MIT License; see NOTICE).
 
 """OpenAI wire exceptions owned by Chrys."""
 
@@ -20,6 +22,12 @@ class ContentFilterResultSeverity(Enum):
     MEDIUM = "medium"
     SAFE = "safe"
     LOW = "low"
+    # A severity this client does not know, or a null one.
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> ContentFilterResultSeverity:
+        return cls.UNKNOWN
 
 
 @dataclass
@@ -46,11 +54,19 @@ class ContentFilterCodes(Enum):
     """Content filter codes."""
 
     RESPONSIBLE_AI_POLICY_VIOLATION = "ResponsibleAIPolicyViolation"
+    CONTENT_FILTERED = "ContentFiltered"
+    # A code this client does not know, or a null one: the error is still a
+    # content-filter error.
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> ContentFilterCodes:
+        return cls.UNKNOWN
 
 
 @dataclass
 class OpenAIContentFilterException(ChatClientContentFilterException):
-    """Exception for OpenAI/Azure OpenAI content-filter errors."""
+    """Exception for OpenAI-compatible content-filter errors."""
 
     param: str | None
     content_filter_code: ContentFilterCodes
