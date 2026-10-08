@@ -48,6 +48,7 @@ HELP_COMMANDS = (
     ("trajectory",),
     ("workflow",),
     ("install",),
+    ("uninstall",),
 )
 
 # Runs inside the installed tool environment.

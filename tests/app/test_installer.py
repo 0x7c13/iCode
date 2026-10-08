@@ -7,11 +7,15 @@ import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
 from chrys.app import installer
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class _FakeProcess:
@@ -103,6 +107,27 @@ def test_find_running_chrys_processes_ignores_non_python_marker_false_positives(
     assert found.complete is True
 
 
+def test_find_running_chrys_processes_reads_only_the_program_and_its_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes = [
+        # A uv or pipx install: its entry point is a Python script named after the command.
+        _FakeProcess(pid=10, name="python3.14", cmdline=["/venv/bin/python3.14", f"/home/u/.local/bin/{APP_COMMAND}"]),
+        _FakeProcess(pid=11, name="python3", cmdline=["python3", "-I", f"/opt/bin/{APP_COMMAND}", "run", "x"]),
+        _FakeProcess(pid=12, name="zsh", cmdline=["-zsh"]),
+        # Arguments after the program are data: a folder named iCode, or the child `uv run` starts.
+        _FakeProcess(pid=13, name="node", cmdline=["node", "worker.js", "/Users/u/Repos/iCode"]),
+        _FakeProcess(pid=14, name="vim", cmdline=["vim", f"/home/u/{APP_COMMAND}"]),
+        _FakeProcess(pid=15, name="uv", cmdline=["uv", "run", APP_COMMAND, "uninstall"]),
+        _FakeProcess(pid=16, name="python3", cmdline=["python3", "tool.py", f"/home/u/{APP_COMMAND}"]),
+    ]
+    monkeypatch.setattr(installer.psutil, "process_iter", lambda _attrs, *, ad_value: iter(processes))
+
+    found = installer._find_running_chrys_processes()
+
+    assert [process.pid for process in found.processes] == [10, 11]
+
+
 def test_find_running_chrys_processes_reports_incomplete_when_scan_fails(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -113,9 +138,8 @@ def test_find_running_chrys_processes_reports_incomplete_when_scan_fails(
     monkeypatch.setattr(installer.psutil, "process_iter", fail_scan)
 
     assert installer._find_running_chrys_processes() == _scan(complete=False)
-    assert (
-        f"Warning: Could not check for running {APP_DISPLAY_NAME} processes: permission denied. Continuing install."
-        in (capsys.readouterr().out)
+    assert f"Warning: Could not check for running {APP_DISPLAY_NAME} processes: permission denied." in (
+        capsys.readouterr().out
     )
 
 
@@ -197,6 +221,31 @@ def test_require_no_running_chrys_instances_aborts_when_non_interactive(
     assert f"Error: {APP_DISPLAY_NAME} is already running." in out
     assert "PID 22: chrys" in out
     assert f"Rerun '{APP_COMMAND} install' after those processes have exited" in out
+
+
+def test_require_no_running_chrys_instances_names_the_command_it_guards(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: list[set[int]] = []
+
+    def scan(*, ignored_pids: set[int]) -> installer._ChrysProcessScan:
+        seen.append(ignored_pids)
+        return _scan(installer._RunningChrysProcess(pid=22, name="chrys", command="chrys"))
+
+    monkeypatch.setattr(installer, "_current_install_process_ids", lambda: pytest.fail("ignored_pids was given"))
+    monkeypatch.setattr(installer, "_find_running_chrys_processes", scan)
+    monkeypatch.setattr(installer.sys, "stdin", _FakeStdin(tty=False))
+
+    with pytest.raises(SystemExit):
+        installer._require_no_running_chrys_instances(
+            ignored_pids={7}, action="uninstall", rerun=f"{APP_COMMAND} uninstall --purge"
+        )
+
+    out = capsys.readouterr().out
+    assert seen == [{7}]
+    assert "before continuing with uninstall:" in out
+    assert f"Rerun '{APP_COMMAND} uninstall --purge' after those processes have exited" in out
 
 
 def test_require_no_running_chrys_instances_rechecks_after_user_quits_processes(
@@ -585,6 +634,36 @@ def test_install_to_path_keeps_windows_running_instance_block(monkeypatch: pytes
         installer.install_to_path()
 
 
+def test_install_to_path_on_windows_says_to_quit_a_copy_that_holds_the_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = tmp_path / "download" / "icode.exe"
+    src.parent.mkdir()
+    src.write_text("new binary", encoding="utf-8")
+    dest = tmp_path / "chrys" / "bin" / "chrys.exe"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("running binary", encoding="utf-8")
+
+    def locked(_source: str, _destination: str) -> None:
+        raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setenv("PYAPP", str(src))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(installer, "get_platform", lambda: SimpleNamespace(is_windows=True, config_dir=tmp_path))
+    # The iCode whose terminal runs this install is one of its ancestors, so the check passes.
+    monkeypatch.setattr(installer, "_require_no_running_chrys_instances", lambda: True)
+    monkeypatch.setattr(installer.shutil, "copy2", locked)
+
+    with pytest.raises(SystemExit) as exit_info:
+        installer.install_to_path()
+
+    assert exit_info.value.code == 1
+    out = capsys.readouterr().out
+    assert f"Could not replace {dest}" in out
+    assert f"Quit every running {APP_DISPLAY_NAME}, then install again." in out
+    assert dest.read_text(encoding="utf-8") == "running binary"
+
+
 # Minimal ELF headers (class + data + e_type + e_machine) — just enough for the
 # prune's cross-distribution platform gate to classify the interpreter.
 _FAKE_ELF_X86_64 = b"\x7fELF\x02\x01" + b"\x00" * 10 + b"\x02\x00\x3e\x00"
@@ -831,8 +910,17 @@ def test_prune_old_pyapp_versions_skips_install_dir_override(monkeypatch: pytest
     assert older.is_dir()
 
 
-def test_prune_old_pyapp_versions_reports_retry_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("failed", "retried"),
+    [(os.rmdir, True), (os.open, False)],
+    ids=["delete-is-retried", "read-is-not-retried"],
+)
+def test_prune_old_pyapp_versions_reports_a_removal_that_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failed: Callable[..., object],
+    retried: bool,
 ) -> None:
     siblings_dir = tmp_path / "pyapp" / "chrys" / "dist-id"
     _current, exe = _make_pyapp_version(siblings_dir, "0.6.11")
@@ -840,10 +928,8 @@ def test_prune_old_pyapp_versions_reports_retry_failure(
     _to_remove, _ = _make_pyapp_version(siblings_dir, "0.6.9")
 
     def fake_rmtree(path: str, *, onexc) -> None:
-        def still_fails(_path: str) -> None:
-            raise OSError("retry failed")
-
-        onexc(still_fails, path, OSError("first failure"))
+        # The retried rmdir fails on its own: the folder still has content.
+        onexc(failed, path, OSError("first failure"))
 
     _isolate_pyapp_cache(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "executable", str(exe))
@@ -854,5 +940,7 @@ def test_prune_old_pyapp_versions_reports_retry_failure(
     installer._prune_old_pyapp_versions()
 
     out = capsys.readouterr().out
-    assert "Warning: Could not remove old version 0.6.9: retry failed" in out
+    assert "Warning: Could not remove old version 0.6.9: " in out
+    # Only a failed delete is worth another try; retrying a failed open would call it wrongly.
+    assert ("first failure" not in out) is retried
     assert "Removed 1 old version" not in out

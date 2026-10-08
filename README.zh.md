@@ -103,7 +103,19 @@ Windows（x64）和 Linux（x86-64 或 ARM64，glibc 2.27 或更高版本）无�
 
 ### 离线安装包
 
-Intel 芯片的 Mac、Arm 版 Windows、较旧的 Linux 或无法联网的设备，请从 [Releases](https://github.com/openJiuwen-ai/iCode/releases) 下载对应平台的安装包。安装包已包含 Python 和全部依赖。解压后安装并运行：
+Intel 芯片的 Mac、Arm 版 Windows 或较旧的 Linux，请使用离线安装包，它已包含 Python 和全部依赖。安装脚本会下载适合你平台的安装包，校验后完成安装；再运行一次即可升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.ps1 | iex   # Windows
+```
+
+访问 GitHub 较慢时，把地址换成 GitCode 上的 `https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.sh`（或 `install.ps1`），并让脚本直接从 GitCode 下载（`sh -s -- --source gitcode`；Windows 上先运行 `$env:ICODE_SOURCE = "gitcode"`），具体用法见[开始使用](docs/zh-Hans/start/getting-started.md#离线安装包)。
+
+无法联网的设备，请在其他电脑上从 [Releases](https://github.com/openJiuwen-ai/iCode/releases) 下载对应平台的安装包，解压后安装并运行：
 
 ```bash
 chmod +x ./icode            # Windows 跳过这一步
@@ -119,7 +131,7 @@ icode                       # 在新开的终端中运行
 
 ## 隐私
 
-iCode 不收集你的数据。它没有遥测、分析或崩溃报告功能，默认情况下也不会向我们或任何其他第三方发送任何内容，包括使用数据。iCode 自身发送的数据只会发往你自己配置的目标：你添加的模型提供商、智能体使用的 MCP 服务器，以及你设置的钩子或 OpenTelemetry 导出。网络工具默认关闭；如果你为某个智能体开启了网络工具，它的搜索请求会发往你配置的搜索服务，未配置时发往 Exa 的公开搜索服务（`mcp.exa.ai`），读取的网页则直接向对应网站请求。你或智能体运行的 Shell 命令、Skill 脚本和工作流本身就是程序，拥有你的网络访问权限，它们发送什么由它们自己决定。你的数据只属于你，我们尊重你的隐私。
+iCode 不收集你的数据。它没有遥测、分析或崩溃报告功能，也不会向我们或任何其他第三方发送任何关于你或你工作的内容，包括使用数据。iCode 自身发送的数据只会发往你自己配置的目标：你添加的模型提供商、智能体使用的 MCP 服务器，以及你设置的钩子或 OpenTelemetry 导出。唯一的例外是检查更新：iCode 每天启动时最多一次向 PyPI 或 GitHub 查询最新版本号，以便提示你更新。这个请求不包含你的任何个人信息或数据，你可以在设置中关闭“检查更新”。网络工具默认关闭；如果你为某个智能体开启了网络工具，它的搜索请求会发往你配置的搜索服务，未配置时发往 Exa 的公开搜索服务（`mcp.exa.ai`），读取的网页则直接向对应网站请求。你或智能体运行的 Shell 命令、Skill 脚本和工作流本身就是程序，拥有你的网络访问权限，它们发送什么由它们自己决定。你的数据只属于你，我们尊重你的隐私。
 
 ## 监管合规
 

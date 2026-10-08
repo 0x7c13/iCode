@@ -20,7 +20,7 @@ You can also open a tab directly with `/settings <tab>`:
 
 | Tab | `<tab>` | Main settings |
 | --- | --- | --- |
-| General | `general` | Appearance and input |
+| General | `general` | Appearance, input and updates |
 | Models & Agents | `models` | Default agent, model roles, and request retries |
 | Security | `security` | Approval, project trust, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback |
@@ -60,6 +60,12 @@ The "Takes effect" column in the following tables describes each setting's usual
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Save prompt history | Saves submitted input across sessions for reuse. When no other dialog covers the main screen, press **Ctrl+R** to open the prompt history list above the input field. Click an entry, or select it with the up and down arrow keys and press **Enter**, to copy the prompt into the input field. The history file, `prompt_history.jsonl`, is stored in `~/.chrys/` on macOS and Linux, or `%APPDATA%\chrys\` on Windows. Turning this setting off does not delete the file; iCode stops reading it, and **Ctrl+R** shows "No results". Re-enable the setting and restart iCode to read the file's entries again. To clear the history, delete the history file; deletion cannot be undone. | After restart |
+
+#### Updates
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Check for updates | Once a day, when iCode starts, looks up the newest version. When a newer one is out, the welcome screen shows it with the command that upgrades iCode; click the command to copy it. The check sends none of your personal information or data. | After restart |
 
 ### Models & Agents
 

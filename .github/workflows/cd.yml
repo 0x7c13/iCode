@@ -197,27 +197,6 @@ jobs:
             s/reader\.read_to_string\(\&mut output\)\?;/reader.read_to_end(\&mut raw)?;/;
             s/Ok\(\(result\?, output\)\)/let output = String::from_utf8_lossy(\&raw).into_owned();\n    Ok((result?, output))/;
           ' src/process.rs
-          # Disable PyApp's self-update command. Its default update path runs
-          # `pip install --upgrade <project name>`, and the public PyPI name
-          # `chrys` belongs to a different project.
-          # Verified against PyApp 0.29.0; re-verify these source patches when bumping PYAPP_VERSION.
-          perl -0pi -e '
-            s/\n    Update\(super::update::Cli\),//;
-            s/\n            Commands::Update\(cli\) => cli\.exec\(\),//;
-          ' src/commands/self_cmd/cli.rs
-          perl -0pi -e 's/\npub mod update;//' src/commands/self_cmd/mod.rs
-          perl -0pi -e 's/\npub fn allow_updates\(\) -> bool \{/\n#[allow(dead_code)]\npub fn allow_updates() -> bool {/' src/app.rs
-          if grep -R -E 'Update\(super::update::Cli\)|Commands::Update|pub mod update' src/commands/self_cmd/cli.rs src/commands/self_cmd/mod.rs >/dev/null; then
-            echo "::error::failed to disable PyApp self update"
-            exit 1
-          fi
-          perl -0pi -e '
-            s/\n            Err\(err\) => \{\n                if !err\.use_stderr\(\) \{\n                    err\.exit\(\);\n                \}\n            \}/\n            Err(err) => err.exit(),/;
-          ' src/main.rs
-          if grep -F 'if !err.use_stderr()' src/main.rs >/dev/null; then
-            echo "::error::failed to harden PyApp self command parsing"
-            exit 1
-          fi
           if [[ "${{ matrix.platform }}" == "windows" || "${{ matrix.platform }}" == "macos" || "${{ matrix.platform }}" == "linux" ]]; then
             # PyApp launches Chrys by spawning the unpacked Python executable.
             # On Windows, macOS, and Linux, process-name cleanup tools can
@@ -378,7 +357,10 @@ jobs:
           PYAPP_PROJECT_NAME: chrys
           PYAPP_PROJECT_VERSION: ${{ env.PROJECT_VERSION }}
           PYAPP_EXEC_SPEC: "chrys.app.cli.app:pyapp_main"
-          PYAPP_SELF_COMMAND: "self"
+          # iCode has its own upgrade and uninstall paths, so PyApp's `self` commands
+          # (update, remove, restore, ...) stay hidden: `none` names them with a random
+          # string nobody types.
+          PYAPP_SELF_COMMAND: "none"
           PYAPP_PASS_LOCATION: "true"
           # FULL_ISOLATION runs the unpacked interpreter directly instead of
           # building a virtualenv around it — required for the offline flavor,
@@ -492,3 +474,48 @@ jobs:
           tag_name: ${{ inputs.ref || github.ref_name }}
           generate_release_notes: true
           files: release/*
+
+  # ── Install the release the way users do ────────────────────────────
+  # The install scripts at the release tag download the packages just published, check them
+  # against SHA256SUMS.txt and run `icode install`. GitCode gets its copy by hand later, so only
+  # GitHub is tried here.
+  install-scripts:
+    name: Install script (${{ matrix.os }})
+    needs: release
+    # The scripts download from openJiuwen-ai/iCode, whose release a fork's run did not make.
+    if: github.repository == 'openJiuwen-ai/iCode' && (inputs.platform || 'all') == 'all'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ inputs.ref || github.ref_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          sparse-checkout: scripts
+
+      - name: Install with install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sh scripts/install.sh --version "$TAG" --source github
+          installed=$("$HOME/.local/bin/icode" --version)
+          echo "installed: $installed"
+          test "$installed" = "${TAG#v}"
+
+      - name: Install with install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ICODE_VERSION: ${{ env.TAG }}
+          ICODE_SOURCE: github
+        run: |
+          # As `irm | iex` runs it: in Windows PowerShell 5.1, under its default policy.
+          powershell -NoProfile -ExecutionPolicy Restricted -Command "Get-Content -Raw scripts/install.ps1 | Invoke-Expression"
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed (exit code $LASTEXITCODE)." }
+          $installed = & (Join-Path $env:LOCALAPPDATA 'chrys\bin\icode.exe') --version
+          Write-Host "installed: $installed"
+          if ($installed -ne $env:TAG.TrimStart('v')) { throw "Expected $env:TAG." }

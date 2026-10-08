@@ -136,7 +136,10 @@ try {
     $env:PYAPP_PROJECT_VERSION = $Version
     $env:PYAPP_PYTHON_VERSION = $PythonVersion
     $env:PYAPP_EXEC_SPEC = "chrys.app.cli.app:pyapp_main"
-    $env:PYAPP_SELF_COMMAND = "self"
+    # iCode has its own upgrade and uninstall paths, so PyApp's `self` commands
+    # (update, remove, restore, ...) stay hidden: `none` names them with a random
+    # string nobody types.
+    $env:PYAPP_SELF_COMMAND = "none"
     $env:PYAPP_PASS_LOCATION = "true"
     # Set below for installer builds only; a stale session value alongside
     # PYAPP_DISTRIBUTION_PATH would make PyApp's build.rs panic.
@@ -231,47 +234,11 @@ try {
         -replace 'reqwest::blocking::get\(([^)]+)\)', 'reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap().get($1).send()' |
         Set-Content $BuildRs -NoNewline
 
-    # 3. Disable PyApp's self-update command.
-    #
-    # PyApp's default update path runs `pip install --upgrade <project name>`.
-    # The public PyPI name `chrys` belongs to a different project, so leaving
-    # `self update` enabled can replace this app's installed package with that one.
-    # Verified against PyApp 0.29.0; re-verify these source patches when bumping PYAPP_VERSION.
-    Write-Host "==> Patching PyApp to disable self update..."
-    $SelfCliRs = Join-Path $PyAppDir "src\commands\self_cmd\cli.rs"
-    (Get-Content $SelfCliRs -Raw) `
-        -replace "`r?`n    Update\(super::update::Cli\),", "" `
-        -replace "`r?`n            Commands::Update\(cli\) => cli\.exec\(\),", "" |
-        Set-Content $SelfCliRs -NoNewline
-    $SelfModRs = Join-Path $PyAppDir "src\commands\self_cmd\mod.rs"
-    (Get-Content $SelfModRs -Raw) `
-        -replace "`r?`npub mod update;", "" |
-        Set-Content $SelfModRs -NoNewline
-    $AppRs = Join-Path $PyAppDir "src\app.rs"
-    (Get-Content $AppRs -Raw) `
-        -replace "`r?`npub fn allow_updates\(\) -> bool \{", "`n#[allow(dead_code)]`npub fn allow_updates() -> bool {" |
-        Set-Content $AppRs -NoNewline
-    $RemainingUpdateCommand = Select-String `
-        -Path $SelfCliRs, $SelfModRs `
-        -Pattern 'Update\(super::update::Cli\)|Commands::Update|pub mod update'
-    if ($RemainingUpdateCommand) {
-        throw "failed to disable PyApp self update"
-    }
-    $PyAppMainRs = Join-Path $PyAppDir "src\main.rs"
-    (Get-Content $PyAppMainRs -Raw) `
-        -replace "`r?`n            Err\(err\) => \{`r?`n                if !err\.use_stderr\(\) \{`r?`n                    err\.exit\(\);`r?`n                \}`r?`n            \}", "`n            Err(err) => err.exit()," |
-        Set-Content $PyAppMainRs -NoNewline
-    $FallbackSelfParse = Select-String `
-        -Path $PyAppMainRs `
-        -Pattern 'if !err\.use_stderr\(\)'
-    if ($FallbackSelfParse) {
-        throw "failed to harden PyApp self command parsing"
-    }
-
-    # 4. On Windows, PyApp launches Chrys by spawning the unpacked Python
+    # 3. On Windows, PyApp launches Chrys by spawning the unpacked Python
     # executable.  Run through a sibling alias so broad `taskkill /IM python.exe`
     # cleanup scripts do not kill the live Chrys process.
     Write-Host "==> Patching PyApp to run Chrys through renamed Python..."
+    $AppRs = Join-Path $PyAppDir "src\app.rs"
     $AppSource = Get-Content $AppRs -Raw
     $OldPythonPath = @'
 pub fn python_path() -> PathBuf {

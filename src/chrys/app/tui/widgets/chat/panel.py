@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.widgets import PromptDraft
+    from chrys.app.update_check import UpdateNotice
     from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.foundation.models.ask_user import AskUserQuestion
     from chrys.service.context.providers.history import CompressedBlock
@@ -1055,6 +1056,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if cwd:
             self.workspace_cwd = cwd
         self._chrome.update_welcome(profile=self.profile_name, cwd=self.workspace_cwd)
+
+    def set_update_notice(self, notice: UpdateNotice | None) -> None:
+        """Show a newer release on the welcome screen, now and after every transcript clear."""
+        self._chrome.set_update_notice(notice)
 
     def toggle_fold_all(self) -> bool:
         """Collapse or expand all tool groups.

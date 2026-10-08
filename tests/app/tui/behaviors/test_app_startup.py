@@ -375,6 +375,7 @@ async def test_unmount_drains_title_updater_after_engine_shutdown() -> None:
 
     host = SimpleNamespace(
         _startup_task=None,
+        _update_check_task=None,
         _session_title_updater=_Updater(),
         _engine=_Engine(),
         _gc_freeze=_Freeze(),

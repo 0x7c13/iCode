@@ -835,6 +835,12 @@ msgstr ""
 msgid "settings.app.dev_mode.label"
 msgstr ""
 
+#. English: Check for updates
+#. chrys-meta={"fingerprint":"a3df792dfa220924b680541cbe2d5ddd393f0f5f35c0c3220509b08220158a3b","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.app.update_check.label"
+msgstr ""
+
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4495,6 +4501,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"d88314825eae958e626da4118def6dcca22c908e6aa352343aafcf501ac71d05","multiline":true,"placeholders":["body"]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.think_prefix"
+msgstr ""
+
+#. English: New version found: {version} Run: {command} to upgrade
+#. chrys-meta={"fingerprint":"90536f5c417bc9fa28c317d37799b2f2f652d50ea96f7d2aa2dccc898e3aee61","multiline":true,"placeholders":["command","version"]}
+#: src/chrys/app/tui/widgets/chat/chrome.py
+msgid "tui.chat.update_available"
 msgstr ""
 
 #. English: AUTO
@@ -9375,6 +9387,13 @@ msgstr ""
 msgid "tui.settings.hint.agent.default_profile"
 msgstr ""
 
+#. English: Once a day at startup, look up the newest version and show it on
+#. the welcome screen. Sends no personal data.
+#. chrys-meta={"fingerprint":"4664a03299f05cf4eba84a768e8af328d4ac74381e485614890aa575faa295ce","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.app.update_check"
+msgstr ""
+
 #. English: Approval mode at the next launch; /approval changes both the
 #. current session and this default. /approval bypass applies to the current
 #. launch only and saves auto.
@@ -9835,6 +9854,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"e5da5a75398deb5ff6637eb6b1289ae0a25d7504916b533656f4582a13b97eb8","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.telemetry"
+msgstr ""
+
+#. English: Updates
+#. chrys-meta={"fingerprint":"6154451a57c7aac91096405786e5f5156b23369f52d50a93df4012e622eeba3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.updates"
 msgstr ""
 
 #. English: Web search

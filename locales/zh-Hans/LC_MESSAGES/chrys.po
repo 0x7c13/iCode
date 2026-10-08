@@ -860,6 +860,12 @@ msgstr "默认智能体"
 msgid "settings.app.dev_mode.label"
 msgstr "开发者模式"
 
+#. English: Check for updates
+#. chrys-meta={"fingerprint":"a3df792dfa220924b680541cbe2d5ddd393f0f5f35c0c3220509b08220158a3b","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.app.update_check.label"
+msgstr "检查更新"
+
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4543,6 +4549,14 @@ msgstr "会话：{session_id}"
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.think_prefix"
 msgstr "思考：{body}"
+
+#. English: New version found: {version} Run: {command} to upgrade
+#. chrys-meta={"fingerprint":"90536f5c417bc9fa28c317d37799b2f2f652d50ea96f7d2aa2dccc898e3aee61","multiline":true,"placeholders":["command","version"]}
+#: src/chrys/app/tui/widgets/chat/chrome.py
+msgid "tui.chat.update_available"
+msgstr ""
+"发现新版本：{version}\n"
+"运行：{command} 指令升级"
 
 #. English: AUTO
 #. chrys-meta={"fingerprint":"438f1bf515a3888c94add7743ab6101648ee4ba7e00fa227a5e474509f57f797","multiline":false,"placeholders":[]}
@@ -9561,6 +9575,13 @@ msgstr "必须填写。"
 msgid "tui.settings.hint.agent.default_profile"
 msgstr "下次启动时默认使用的智能体。"
 
+#. English: Once a day at startup, look up the newest version and show it on
+#. the welcome screen. Sends no personal data.
+#. chrys-meta={"fingerprint":"4664a03299f05cf4eba84a768e8af328d4ac74381e485614890aa575faa295ce","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.app.update_check"
+msgstr "每天启动时最多查询一次最新版本，并显示在欢迎页上。不会发送任何个人数据。"
+
 #. English: Approval mode at the next launch; /approval changes both the
 #. current session and this default. /approval bypass applies to the current
 #. launch only and saves auto.
@@ -10021,6 +10042,12 @@ msgstr "标题"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.telemetry"
 msgstr "遥测"
+
+#. English: Updates
+#. chrys-meta={"fingerprint":"6154451a57c7aac91096405786e5f5156b23369f52d50a93df4012e622eeba3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.updates"
+msgstr "更新"
 
 #. English: Web search
 #. chrys-meta={"fingerprint":"f986ea0da9e92ca438eededc408c5cfbc8f9d79120703eddd46a4874b6bdd8fa","multiline":false,"placeholders":[]}

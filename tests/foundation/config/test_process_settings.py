@@ -70,6 +70,7 @@ _RESTART_FIELDS_OUTSIDE_THE_SNAPSHOT = {
     "otel_endpoint": "read once by setup_otel at bootstrap",
     "mutation_snapshot_max_file_mb": "policy captured when the snapshot store is first built",
     "mutation_snapshot_skip_binary": "policy captured when the snapshot store is first built",
+    "update_check": "read once when the TUI starts, to decide whether it checks for a newer release",
 }
 
 
