@@ -4710,7 +4710,7 @@
         ["awaitable", "await progress_cb(pending.take())", "unresolved"]
       ],
       "ShellTools.execute": [
-        ["thread_pool", "await asyncio.to_thread(physical_dir, cwd)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(resolve_pinned_dir, cwd, pinned_cwd)", "unresolved"],
         ["wrapper", "await self._execute_pipe(command, shell, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pipe"],
         ["wrapper", "await self._bound_result('\\n'.join(parts), budget, (stdout, stderr))", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
         ["wrapper", "await self._execute_pty(command, shell, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pty"],

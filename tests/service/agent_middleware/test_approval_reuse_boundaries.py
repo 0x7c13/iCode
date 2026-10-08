@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import replace
 from datetime import date
+from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -25,6 +27,7 @@ from chrys.service.approval.policy import ApprovalPolicy
 from chrys.service.approval.reuse import FileCandidate, FileKey, ReuseContext, project_path
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
+from chrys.service.tools import approval_targets
 from chrys.service.tools.approval_targets import file_write_target
 from chrys.service.tools.builtins import shell as shell_module
 from chrys.service.tools.builtins.filesystem import FilesystemTools
@@ -183,27 +186,43 @@ async def test_shell_call_does_not_follow_a_retargeted_working_directory(runtime
 
 
 async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_path, monkeypatch):
-    first, second, link = tmp_path / "first", tmp_path / "second", tmp_path / "work"
+    first, second, link = tmp_path / "First", tmp_path / "Second", tmp_path / "work"
     first.mkdir()
     second.mkdir()
     symlink_or_skip(link, first, target_is_directory=True)
+    # Compare directories the way Windows does: normcase lowercases them.
+    windows_like = ModuleType("os")
+    windows_like.__dict__.update(vars(os))
+    windows_like.path = ModuleType("os.path")
+    windows_like.path.__dict__.update(vars(os.path))
+    windows_like.path.normcase = str.lower
+    monkeypatch.setattr(approval_targets, "os", windows_like)
     runtime = replace(runtime, cwd=str(link))
     tools = ShellTools(runtime).tools()
     context = FunctionInvocationContext(tools[0], {"command": "echo ran > ran.txt", "reason": "test"})
-    bus = EventBus()
-    checked = shell_module.physical_dir
+    bus, started_in = EventBus(), []
+    checked = shell_module.resolve_pinned_dir
 
-    def check_then_retarget(path):
+    def check_then_retarget(path, pinned):
         # The link changes right after the final check, before the command starts.
-        result = checked(path)
+        result = checked(path, pinned)
         retarget(link, second)
         return result
+
+    for name in ("_execute_pipe", "_execute_pty"):
+        backend = getattr(ShellTools, name)
+
+        async def record(self, command, shell, cwd, timeout, backend=backend):
+            started_in.append(cwd)
+            return await backend(self, command, shell, cwd, timeout)
+
+        monkeypatch.setattr(ShellTools, name, record)
 
     async def approve(event):
         await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True))
 
     async def execute():
-        monkeypatch.setattr(shell_module, "physical_dir", check_then_retarget)
+        monkeypatch.setattr(shell_module, "resolve_pinned_dir", check_then_retarget)
         context.result = await context.function.invoke(context=context, skip_parsing=True)
 
     middleware = ApprovalMiddleware(
@@ -213,6 +232,8 @@ async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_pat
     try:
         await middleware.process(context, execute)
         assert "[exit_code: 0]" in str(context.result)
+        # The real directory, in its own casing rather than the comparison key's.
+        assert started_in == [os.path.realpath(first)]
         assert (first / "ran.txt").exists()
         assert not (second / "ran.txt").exists()
     finally:

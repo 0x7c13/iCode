@@ -46,6 +46,12 @@ def physical_dir(path: str) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
+def resolve_pinned_dir(path: str, pinned: str) -> str | None:
+    """The real path of *path*, in its own casing, if it is still the *pinned* directory."""
+    real = os.path.realpath(path)
+    return real if os.path.normcase(real) == pinned else None
+
+
 def file_write_target(path: str, *, base_cwd: str | None = None) -> FileWriteTarget:
     """Resolve the entry a write replaces, independently of whether it is reusable."""
     lexical = resolve_workspace_path(path, base_cwd=base_cwd)

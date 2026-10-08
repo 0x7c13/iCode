@@ -68,6 +68,7 @@ from chrys.service.tools.approval_targets import (
     ApprovedTargets,
     approved_cwd,
     physical_dir,
+    resolve_pinned_dir,
 )
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import tool_error
@@ -602,7 +603,8 @@ class ShellTools:
             cwd = self._runtime.cwd
         pinned_cwd = approved_cwd()
         if pinned_cwd is not None:
-            if await asyncio.to_thread(physical_dir, cwd) != pinned_cwd:
+            checked_cwd = await asyncio.to_thread(resolve_pinned_dir, cwd, pinned_cwd)
+            if checked_cwd is None:
                 _record_shell_error()
                 return tool_error(
                     "working_dir_changed",
@@ -611,7 +613,7 @@ class ShellTools:
                 )
             # Start in the checked directory itself: a link in the path given
             # could still be retargeted between this check and the spawn.
-            cwd = pinned_cwd
+            cwd = checked_cwd
 
         try:
             if sys.platform == "win32":
