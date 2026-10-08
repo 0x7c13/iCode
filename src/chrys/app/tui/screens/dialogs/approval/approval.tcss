@@ -4,7 +4,7 @@ ApprovalDialog {
 }
 
 #approval-container {
-    width: 120;
+    width: 96;
     max-width: 95%;
     height: auto;
     max-height: 85%;
@@ -12,6 +12,10 @@ ApprovalDialog {
     border: round $tui-border-warning $border-opacity;
     border-title-color: $warning;
     border-title-style: bold;
+}
+
+#approval-container.-with-preview {
+    width: 120;
 }
 
 #approval-inner {
@@ -174,7 +178,125 @@ App:ansi #approval-separator {
     min-height: 3;
     max-height: 7;
     border: round $tui-border-accent $border-opacity;
+    margin: 0;
+}
+
+#approval-reuse {
+    height: auto;
+    margin: 0 1;
+    padding: 0 1;
+    border: round $tui-border-warning 50%;
+    border-title-align: left;
+    border-title-color: $warning;
+    border-title-style: none;
+}
+
+#approval-reuse Checkbox {
+    width: auto;
+    max-width: 100%;
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+    background-tint: transparent;
+}
+
+#reuse-options {
+    height: auto;
+    margin: 1 0 0 3;
+}
+
+#reuse-scope {
+    layout: horizontal;
+    width: auto;
+    max-width: 100%;
+    height: 1;
+    border: none;
+    padding: 0;
+    background: transparent;
+    background-tint: transparent;
+    overflow: hidden hidden;
+}
+
+#reuse-scope > RadioButton {
+    width: auto;
+    margin-right: 3;
+}
+
+#reuse-scope > RadioButton .toggle--button {
+    color: $text-muted;
+    background: transparent;
+    text-style: none;
+}
+
+#approval-reuse Checkbox .toggle--button {
+    color: $foreground 35%;
+    background: $foreground 6%;
+    text-style: none;
+}
+
+#reuse-scope > RadioButton.-on .toggle--button,
+#approval-reuse Checkbox.-on .toggle--button {
+    color: $success;
+}
+
+#approval-reuse Checkbox .toggle--label,
+#reuse-scope > RadioButton .toggle--label {
+    color: $text;
+    background: transparent;
+    text-style: none;
+}
+
+#approval-reuse Checkbox:focus .toggle--button,
+#reuse-scope:focus > RadioButton.-selected .toggle--button {
+    text-style: none;
+}
+
+#reuse-advanced,
+#approval-reason-section {
+    height: auto;
+    border: none;
+    padding: 0;
+    background: transparent;
+    background-tint: transparent;
+}
+
+#reuse-advanced {
+    margin-top: 1;
+}
+
+#approval-reason-section {
     margin: 1 1 0 1;
+}
+
+#reuse-advanced > CollapsibleTitle,
+#approval-reason-section > CollapsibleTitle {
+    padding: 0;
+    color: $text-muted;
+    background: transparent;
+    text-style: none;
+}
+
+#reuse-advanced > CollapsibleTitle:focus,
+#approval-reason-section > CollapsibleTitle:focus {
+    text-style: none;
+}
+
+#approval-reason-section > CollapsibleTitle {
+    padding-left: 1;
+}
+
+#reuse-advanced > Contents,
+#approval-reason-section > Contents {
+    padding: 1 0 0 0;
+}
+
+#reuse-warning {
+    height: auto;
+    color: $warning;
+    margin: 1 0 0 0;
+    text-align: left;
+    content-align: left top;
 }
 
 #approval-buttons {

@@ -22,6 +22,7 @@ from chrys.foundation.events.types import (
     ApprovalReviewed,
     InvocationToolCallArgsUpdated,
 )
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, KIND_MCP
 from tests.support.tui_helpers import (
@@ -63,6 +64,7 @@ class _FakeApprovalDialog:
         judging: bool = False,
         approval_body=None,
         presentation_kind: str = "",
+        reuse_offer=None,
         verdict=None,
     ) -> None:
         self.caller_name = caller_name
@@ -72,6 +74,8 @@ class _FakeApprovalDialog:
         self.judging = judging
         self.approval_body = approval_body
         self.presentation_kind = presentation_kind
+        self.reuse_offer = reuse_offer
+        self.remember_choice = ""
         self._dismissed = False
         self._user_decision_submitted = False
         self.constructed_verdict = verdict
@@ -155,6 +159,7 @@ def _make_approval_handler(
         approved: bool,
         reason: str = "",
         _modified_args: dict[str, object] | None = None,
+        _remember_choice: ReuseChoice = "",
     ) -> None:
         response_log.append((request_id, approved, reason))
 
@@ -473,6 +478,7 @@ def test_auto_user_decision_marker_clears_when_response_worker_finishes(monkeypa
             approved: bool,
             reason: str = "",
             _modified_args: dict[str, object] | None = None,
+            _remember_choice: ReuseChoice = "",
         ) -> _Worker:
             response_log.append((request_id, approved, reason))
             return response_worker

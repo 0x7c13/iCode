@@ -1213,6 +1213,7 @@ class MainScreenViewAdapter:
             judging=event.judging,
             approval_body=body,
             presentation_kind=event.presentation_kind,
+            reuse_offer=event.reuse_offer,
             verdict=_judge_verdict(verdict) if verdict is not None else None,
         )
         self._screen.app.push_screen(dialog, on_result)

@@ -37,6 +37,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import Localizer, MessageRef
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
 
 
@@ -89,6 +90,7 @@ class _ApprovalPort:
         self.debug_calls: list[tuple[str, str]] = []
         self.notifications = 0
         self.responses: list[tuple[str, bool, str, dict[str, Any] | None]] = []
+        self.remember_choices: list[ReuseChoice] = []
         self.updated_args: list[tuple[str, dict[str, Any]]] = []
         self.auto_fulfill_blocked: list[str] = []
         self.cancelled_dialogs: list[str] = []
@@ -115,6 +117,7 @@ class _ApprovalPort:
             request_id=event.request_id,
             tool_name=event.tool_name,
             user_decision_submitted=False,
+            remember_choice="",
             is_dismissed=False,
             callback=on_result,
             body=approval_body,
@@ -150,8 +153,10 @@ class _ApprovalPort:
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
+        remember_choice: ReuseChoice = "",
     ) -> None:
         self.responses.append((request_id, approved, reason, modified_args))
+        self.remember_choices.append(remember_choice)
 
     def run_worker(self, _awaitable: object, *, group: str) -> None:
         assert group == "approval-cleanup"
@@ -185,6 +190,18 @@ def test_approval_controller_skips_cached_auto_approved_request_and_shows_flagge
     assert port.dialogs[1].verdicts == []
     assert controller.pending_verdicts == {}
     assert controller.dialog_open is True
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_approval_controller_forwards_the_dialog_remember_choice_only_with_approval(approved: bool) -> None:
+    port = _ApprovalPort()
+    controller = ApprovalQueueController(port)
+    asyncio.run(controller.on_request(_approval_request("req-1", judging=False)))
+    port.dialogs[0].remember_choice = "EXACT_SESSION"
+
+    port.dialogs[0].callback((approved, "", None))
+
+    assert port.remember_choices == ["EXACT_SESSION" if approved else ""]
 
 
 def test_approval_controller_bypass_does_not_open_dialog() -> None:

@@ -25,6 +25,7 @@ from chrys.foundation.events.types import (
     SetApprovalMode,
     UserMessage,
 )
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_SKILL
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
@@ -303,7 +304,7 @@ class _DeferringApprovalPort:
         verdict: ApprovalReviewed | None,
     ) -> ApprovalDialogHandle:
         self.surfaced.append(f"dialog {event.request_id}")
-        return SimpleNamespace(user_decision_submitted=False, is_dismissed=False)
+        return SimpleNamespace(user_decision_submitted=False, remember_choice="", is_dismissed=False)
 
     def deliver_approval_verdict(self, dialog: ApprovalDialogHandle, event: ApprovalReviewed) -> None:
         self.surfaced.append(f"verdict {event.request_id}")
@@ -335,6 +336,7 @@ class _DeferringApprovalPort:
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
+        remember_choice: ReuseChoice = "",
     ) -> None:
         self.surfaced.append(f"response {request_id}")
 

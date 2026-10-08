@@ -25,6 +25,7 @@ from chrys.foundation.platform.paths import resolve_existing_path, resolve_works
 from chrys.foundation.text.images import ImageProcessingError, load_image_file
 from chrys.foundation.text.lines import normalize_line_endings, split_lines
 from chrys.kernel import Content
+from chrys.service.tools.approval_targets import ApprovedTargets, approved_write_path, file_write_target
 from chrys.service.tools.kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, tool
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.session_artifacts import (
@@ -127,6 +128,7 @@ def _atomic_write(path: str, content: str, encoding: str = "utf-8", errors: str 
     If the write or flush fails, the temp file is removed and the original
     file is left untouched.
     """
+    path = approved_write_path(path)
     parent = os.path.dirname(path) or "."
     platform = get_platform()
     target_mode: int | None = None
@@ -616,6 +618,7 @@ def _write_file_impl(
     if missing_base is not None:
         return missing_base
     try:
+        path = approved_write_path(path, base_cwd=base_cwd)
         with _fs_write_lock(path, base_cwd):
             plan = plan_write_file(path, content, overwrite=overwrite, base_cwd=base_cwd)
             if isinstance(plan, FileToolPreviewError):
@@ -876,6 +879,7 @@ def _edit_file_impl(
     if missing_base is not None:
         return missing_base
     try:
+        path = approved_write_path(path, base_cwd=base_cwd)
         with _fs_write_lock(path, base_cwd):
             plan = plan_edit_file(path, old_string, new_string, replace_all=replace_all, base_cwd=base_cwd)
             if isinstance(plan, FileToolPreviewError):
@@ -950,6 +954,19 @@ class FilesystemTools:
     def tools(self) -> list:
         """Return filesystem tools for this runtime context."""
         return [self.read_file, self.view_image, self.write_file, self.edit_file]
+
+    def approval_targets(self, arguments: dict[str, object]) -> ApprovedTargets:
+        """The entries a write/edit replaces; an unresolved path authorizes no write."""
+        path = arguments.get("path")
+        if isinstance(path, str) and is_document_artifact_handle(path):
+            # The tool refuses to write a session document; nothing to pin.
+            return ApprovedTargets()
+        if not isinstance(path, str) or not path or "\0" in path:
+            return ApprovedTargets(files=())
+        try:
+            return ApprovedTargets(files=(file_write_target(path, base_cwd=self._runtime.cwd),))
+        except OSError, ValueError:
+            return ApprovedTargets(files=())
 
     @tool(kind=KIND_FILESYSTEM_READ)
     def read_file(

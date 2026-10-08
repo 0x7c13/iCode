@@ -46,6 +46,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.service.approval.policy import ApprovalMode
 from tests.support.waiting import wait_for
 
@@ -339,8 +340,11 @@ def make_backend_handler(
         approved: bool,
         reason: str,
         modified_args: dict[str, object] | None,
+        remember_choice: ReuseChoice,
     ) -> object | None:
-        return _call_screen_hook(screen, "_handle_approval_response", request_id, approved, reason, modified_args)
+        return _call_screen_hook(
+            screen, "_handle_approval_response", request_id, approved, reason, modified_args, remember_choice
+        )
 
     def post_gc_message(message: object) -> None:
         messages = getattr(screen, "_gc_messages", None)

@@ -14,6 +14,13 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Generated-By: Babel 2.18.0\n"
 
+#. English: Allowed once, but the approval could not be remembered. Check
+#. storage permissions or manage grants with icode approvals.
+#. chrys-meta={"fingerprint":"c91616456df496f2e172de04a6f110be536221689f8ab1922238c4949e6e2d3d","multiline":false,"placeholders":[]}
+#: src/chrys/service/agent_middleware/control/approval.py
+msgid "approval.reuse.save_failed"
+msgstr ""
+
 #. English: We couldn't attach this image.  {items}
 #. English-plural: We couldn't attach these images.  {items}
 #. chrys-meta={"fingerprint":"216dc5eacba54d010a0f7c93ce47777fab09b4133cc2254cc187ec69719dbaa7","multiline":true,"placeholders":["items"]}
@@ -3788,10 +3795,77 @@ msgstr ""
 msgid "tui.approval.reason_placeholder"
 msgstr ""
 
+#. English: Add a decline reason
+#. chrys-meta={"fingerprint":"2431c9cffa643a737cc8edd84040391b979484148a6fb436d341e5fc0e3687ef","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reason_title"
+msgstr ""
+
 #. English: Approval Required
 #. chrys-meta={"fingerprint":"0fc469826ee204a435e6f777ddbfb07ae65da2a03bc37518d9ef17a6f8305f13","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.required_title"
+msgstr ""
+
+#. English: Advanced options
+#. chrys-meta={"fingerprint":"0dfa9c2a934f767cb9e06e77a8f7d0dfb7cd89ba005745ca98397a8d848c8ae0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.advanced"
+msgstr ""
+
+#. English: Don't ask again for this command
+#. chrys-meta={"fingerprint":"9c44840004950504dd407877f8173b928c1d8c3ac4895968ecb2432fdd1bc63c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.command"
+msgstr ""
+
+#. English: Allow arguments added to the end of this command
+#. chrys-meta={"fingerprint":"f317c4f0d322cafe710f4409ed41a0c1a3b316c831346c45b11c704418cb4ab7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.extra_args"
+msgstr ""
+
+#. English: Don't ask again to modify these files
+#. chrys-meta={"fingerprint":"4a1572130065adc6f7e39ca756d9840caf6b256d40eceb6990d4193d7de165cd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.files"
+msgstr ""
+
+#. English: Dangerous extra flags (such as --force) will also run without
+#. asking.
+#. chrys-meta={"fingerprint":"2ad4ebd0721e33da1220e6dfcdb2401222780695c16b4145a020abc891b5ebaf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.prefix_warning"
+msgstr ""
+
+#. English: This project
+#. chrys-meta={"fingerprint":"7637c4c84143125b13e6f8e527c5ff9128977bfeb8384623411a3439fcad7511","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.project"
+msgstr ""
+
+#. English: Also applies in other sessions in this project.
+#. chrys-meta={"fingerprint":"37794bc95bdcd98ec09e232ecacf9d6be3f1634327f8b6ac30bb1696a5ee4b01","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.project_hint"
+msgstr ""
+
+#. English: This session
+#. chrys-meta={"fingerprint":"12b3b02a90d375bfcac56fa2e2e2480dfaa6d8b3403623740039d86b07fad1d9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.session"
+msgstr ""
+
+#. English: Also applies when you restore this session.
+#. chrys-meta={"fingerprint":"952801184e1d2105d00103bb4a8a410dc05a6e54ac9c818d11a6e198c92f06cf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.session_hint"
+msgstr ""
+
+#. English: Remember Approval
+#. chrys-meta={"fingerprint":"6e37e71d02e38f81ecec007c76eb522161280b8332d539d606163234756f1eae","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/dialog.py
+msgid "tui.approval.reuse.title"
 msgstr ""
 
 #. English: Review sub-agent delegation

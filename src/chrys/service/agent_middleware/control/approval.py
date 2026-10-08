@@ -18,7 +18,9 @@ from chrys.foundation.events.types import (
     ApprovalResponse,
     Event,
     InvocationToolCallArgsUpdated,
+    Warning,
 )
+from chrys.foundation.i18n import msg
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.tool_kinds import (
@@ -48,14 +50,21 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
+from chrys.service.tools.approval_targets import approved_targets
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
+
+_REMEMBER_FAILED = msg(
+    "approval.reuse.save_failed",
+    fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with icode approvals.",
+)
 
 _GITDIR_POINTER_PREFIX = "gitdir:"
 
@@ -64,9 +73,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.approval_reuse import ReuseChoice
     from chrys.kernel.middleware import FunctionInvocationContext
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalPolicy
+    from chrys.service.approval.reuse import Candidate
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.hooks.manager import HookManager
 
@@ -231,10 +242,12 @@ class ApprovalMiddleware(FunctionMiddleware):
         profile_name: str = "",
         session_archive_read_roots: list[Path] | None = None,
         turn_context: TurnContextHolder | None = None,
+        reuse: ApprovalReuseBinding | None = None,
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
         self._policy = approval_policy
+        self._reuse = reuse
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
         self._session_id = session_id
@@ -450,6 +463,25 @@ class ApprovalMiddleware(FunctionMiddleware):
         # branches above without copying or coercing their result.
         parsed_args = cast("dict[str, Any]", parsed_args)
 
+        binding = self._reuse if self._reuse is not None and self._reuse.supports(context) else None
+        reuse: PreparedReuse | None = None
+        if binding is not None:
+            sensitive = sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write
+            reuse = await asyncio.to_thread(binding.prepare, context, reusable=not sensitive)
+            if reuse.grant_ids:
+                decision = _decision(
+                    request_id="",
+                    tool_name=tool_name,
+                    status="reuse_approved",
+                    call_id=call_id,
+                    tool_order=tool_order,
+                )
+                decision["grant_ids"] = json.dumps(reuse.grant_ids)
+                self._decisions.append(decision)
+                with approved_targets(reuse.targets):
+                    await call_next()
+                return
+
         request_id = uuid4().hex[:_SHORT_ID_LEN]
         decision = _decision(
             request_id=request_id,
@@ -507,6 +539,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                             workspace_roots=list(self._workspace_roots),
                             workspace_cwd=self._workspace_cwd or "",
                             judging=judging,
+                            reuse_offer=reuse.candidate.offer() if reuse is not None and reuse.candidate else None,
                         )
                     )
 
@@ -577,6 +610,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                             await judge_task
 
             approved = response.approved
+            # Only a person's own answer can remember an approval, never the judge's.
+            remember_choice = response.remember_choice if approved and correlation.resolved_by_event else ""
             reason = response.reason.strip()
             modified_args = response.modified_args
             status = "user_approved" if approved else "user_rejected"
@@ -605,6 +640,7 @@ class ApprovalMiddleware(FunctionMiddleware):
             raise
 
         if approved:
+            targets = reuse.targets if reuse is not None else None
             if modified_args:
                 context.arguments = {**parsed_args, **modified_args}
                 # Re-dispatch ``before_tool_call`` hooks with the edited args.
@@ -653,7 +689,13 @@ class ApprovalMiddleware(FunctionMiddleware):
                     # already set ``context.result`` and ``_APPROVAL_REJECTED_KEY``;
                     # skip ``call_next`` so the tool doesn't run.
                     return
-            await call_next()
+                if binding is not None:
+                    # An edit is approved once, for where the edited call acts now.
+                    targets = await asyncio.to_thread(binding.targets, context)
+            elif remember_choice and binding is not None and reuse is not None and reuse.candidate is not None:
+                await self._remember(binding, reuse.candidate, remember_choice)
+            with approved_targets(targets):
+                await call_next()
         else:
             # Return error result — LLM sees rejection and can respond naturally.
             # Set metadata flag so ToolEventMiddleware can detect rejection
@@ -667,6 +709,19 @@ class ApprovalMiddleware(FunctionMiddleware):
             context.result = "Error: Tool execution was rejected by user."
             if reason:
                 context.result = f"{context.result}\nUser reason: {reason}"
+
+    async def _remember(self, binding: ApprovalReuseBinding, candidate: Candidate, choice: ReuseChoice) -> None:
+        """Save the grant for the request the person saw; a failure still allows this call."""
+        if await asyncio.to_thread(binding.service.remember, candidate, choice):
+            return
+        await self._bus.publish(
+            Warning(
+                session_id=self._session_id,
+                code="approval_reuse_save_failed",
+                message=_REMEMBER_FAILED.fallback,
+                display_message=_REMEMBER_FAILED.bind(),
+            )
+        )
 
     async def _publish_abandoned(self, request_id: str, *, ended_by: BaseException) -> None:
         """Retract an unanswered request, even when another cancel lands meanwhile.

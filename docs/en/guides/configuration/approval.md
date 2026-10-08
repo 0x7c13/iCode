@@ -44,6 +44,43 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 - In automatic mode, no dialog opens while the approval judge model evaluates a call; **Reviewing** appears, after a spinning icon, to the left of the approval mode label in the upper-right corner. Calls the model judges safe run without a dialog. If the model judges a call suspicious, the dialog opens with the title **Flagged by Auto-Review**, shows the reason, and waits for a person to decide. The cursor starts in the reason field so that a stray key press does not approve the call: type a reason and decline, or press **Tab** to move to the buttons. If the approval judge model is unavailable, or evaluation fails or times out, the dialog opens for a person to decide instead of approving the tool call automatically.
 - To see each call while it is evaluated, press **F10** to open **Settings** and turn off **Show the approval dialog only when Auto-Review flags a call** on the **Security** tab. The dialog then opens at once and shows **Evaluating**: it closes by itself if the model judges the call safe, and you can approve or decline before evaluation finishes.
 
+## Remember approvals
+
+You can let iCode remember a Shell command or a file change you approve, so the same request does not ask you again. The approval dialog for a Shell command or a file write or edit shows a **Remember Approval** box:
+
+1. Check **Don't ask again for this command** (for files: **Don't ask again to modify these files**).
+2. Choose **This session** or **This project**. **This session** also applies after you restore the session; **This project** also applies in your other sessions in the same project.
+3. Select **Approve**.
+
+The next time the agent makes the same request, it runs without a dialog. Only that command, or those files, are remembered; other operations still ask. Approving without checking the box approves this one call only. A few cases are never remembered:
+
+- A call that the approval judge model approves in automatic mode. A call that Auto-Review flags still offers the box, and you can remember it when you approve it.
+- A request you edit in the dialog: the edited call runs once.
+- A command for which the agent names the folder to run in, and requests that touch sensitive files such as credentials or SSH keys.
+- Sub-agents, workflows, MCP tools and other tools.
+
+If a folder or file link changes between your approval and the run, so that the call would act on a different place, the call stops with an error instead of running there.
+
+For a simple command, **Advanced options** offers **Allow arguments added to the end of this command**. Then the remembered command also runs without asking when the agent adds more arguments to its end. Remembering `git push origin main` this way also allows `git push origin main --force`, so the dialog shows a warning. Leave this unchecked unless you trust every argument that could be added.
+
+If iCode cannot save your choice, the call still runs once and a notice says that the approval was not remembered.
+
+### Manage remembered approvals
+
+Use the `icode approvals` command to see and remove what you have remembered:
+
+```bash
+icode approvals list                         # everything you have remembered
+icode approvals list --project /work/demo    # only one project
+icode approvals list --session SESSION_ID --json
+icode approvals revoke GRANT_ID              # remove one approval by its ID from the list
+icode approvals clear --project /work/demo   # remove all approvals for one project
+icode approvals clear --session SESSION_ID   # remove all approvals for one session
+icode approvals clear --all                  # remove everything
+```
+
+Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a project stay until you remove them.
+
 ## Understand automatic approval and safety protections
 
 The following operations usually run without an approval dialog:

@@ -124,6 +124,7 @@ from chrys.foundation.events.types import (
     SessionRestored,
 )
 from chrys.foundation.i18n import DisplaySequence, Localizer, MessageRef, msg
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
@@ -2072,8 +2073,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         approved: bool,
         reason: str = "",
         modified_args: dict[str, Any] | None = None,
+        remember_choice: ReuseChoice = "",
     ) -> None:
-        await self._tool_actions.publish_approval_response(request_id, approved, reason, modified_args)
+        await self._tool_actions.publish_approval_response(request_id, approved, reason, modified_args, remember_choice)
 
     @work(thread=False)
     async def _handle_ask_user_response(self, request_id: str, answers: tuple[AskUserAnswer, ...]) -> None:

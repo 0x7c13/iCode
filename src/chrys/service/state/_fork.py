@@ -294,6 +294,10 @@ class SessionForkMixin:
                 # fork opens its own (see service.trajectory.fork), and the
                 # parent's writer may hold this one open right now.
                 excluded.update(name for name in names if name.casefold() == "trajectory")
+                # Remembered session permissions belong only to the original session.
+                excluded.update(
+                    name for name in names if name.casefold() in {"approval-grants.json", "approval-grants.json.lock"}
+                )
             return excluded
 
         return _ignore

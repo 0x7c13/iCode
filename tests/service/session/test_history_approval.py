@@ -68,6 +68,23 @@ def test_persist_approval_decisions_updates_modified_arguments() -> None:
     }
 
 
+def test_reused_grant_ids_survive_history_persistence() -> None:
+    call = Content.from_function_call(call_id="call-reuse", name="bash", arguments={"command": "npm run test"})
+    assistant = Message("assistant", [call])
+    history = SessionHistoryManager()
+    history.bind({"messages": [assistant]})
+    decision = {
+        "request_id": "",
+        "tool_name": "bash",
+        "status": "reuse_approved",
+        "call_id": "call-reuse",
+        "grant_ids": '["0123456789abcdef0123456789abcdef"]',
+    }
+    history.persist_approval_decisions([decision])
+    assert call.additional_properties["_approval"] == decision
+    assert assistant.additional_properties["_approval"] == decision
+
+
 def test_persist_approval_decisions_tags_each_function_call() -> None:
     """Multiple same-name tool calls in one message keep distinct decisions."""
     first_call = Content.from_function_call(call_id="call_1", name="zsh", arguments={"command": "wc -l a.py"})

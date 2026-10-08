@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from chrys.service.agent_middleware.injection import InjectionMiddleware
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
+    from chrys.service.approval.reuse_binding import ApprovalReuseBinding
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.context.compaction import CompactionInfo, CompressInfo, PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
@@ -108,6 +109,7 @@ class LastWordsInputs(TypedDict):
 class ApprovalInputs(TypedDict):
     """Explicit inputs to the conversation-owned ApprovalMiddleware."""
 
+    reuse: NotRequired[ApprovalReuseBinding | None]
     approval_policy: ApprovalPolicy
     event_bus: EventBus
     session_id: NotRequired[str | None]

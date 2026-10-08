@@ -106,6 +106,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.hosted_tools import HostedToolStatus, normalize_hosted_tool_status
 from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
@@ -201,7 +202,9 @@ class BackendEventCallbacks:
     update_toc: Callable[[], None]
     on_session_fork_error: Callable[[Error, str, NotificationSeverity], None]
     on_session_clear_error: Callable[[Error, str], None]
-    handle_approval_response: Callable[[str, bool, str, dict[str, object] | None], ApprovalResponseWorker | None]
+    handle_approval_response: Callable[
+        [str, bool, str, dict[str, object] | None, ReuseChoice], ApprovalResponseWorker | None
+    ]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
     approval_defer_while_judging: Callable[[], bool]

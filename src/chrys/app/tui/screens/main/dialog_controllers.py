@@ -31,6 +31,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
 
 _LOAD_TITLE_INITIALIZING = msg("tui.agent_load.title.initializing", fallback="Initializing Agent")
@@ -106,6 +107,8 @@ class ApprovalDialogHandle(Protocol):
     @property
     def user_decision_submitted(self) -> bool: ...
 
+    remember_choice: ReuseChoice
+
     @property
     def is_dismissed(self) -> bool: ...
 
@@ -148,6 +151,7 @@ class ApprovalDialogPort(Protocol):
         approved: bool,
         reason: str,
         modified_args: dict[str, Any] | None = None,
+        remember_choice: ReuseChoice = "",
     ) -> ApprovalResponseWorker | None: ...
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None: ...
@@ -246,7 +250,10 @@ class ApprovalQueueController:
                 approved, reason, modified_args = result
                 if approved and modified_args and _call_id:
                     self._port.update_tool_args(_call_id, {**_args, **modified_args})
-                response_worker = self._port.handle_approval_response(_req, approved, reason, modified_args)
+                remember_choice = dialog.remember_choice if approved and dialog is not None else ""
+                response_worker = self._port.handle_approval_response(
+                    _req, approved, reason, modified_args, remember_choice
+                )
                 if track_user_decision:
 
                     async def _drain_marker(
