@@ -26,6 +26,7 @@ from chrys.service.approval.reuse import FileCandidate, FileKey, ReuseContext, p
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.approval_targets import file_write_target
+from chrys.service.tools.builtins import shell as shell_module
 from chrys.service.tools.builtins.filesystem import FilesystemTools
 from chrys.service.tools.builtins.shell import ShellTools
 from tests.kernel._fakes import _call_response, _result_contents, _stack, _text_response, _user
@@ -175,6 +176,44 @@ async def test_shell_call_does_not_follow_a_retargeted_working_directory(runtime
         assert len(requests) == (approved_by == "person")
         assert "Working directory changed after approval" in str(context.result)
         assert not (first / "ran.txt").exists()
+        assert not (second / "ran.txt").exists()
+    finally:
+        await middleware.close()
+        await bus.unsubscribe(ApprovalRequest, approve)
+
+
+async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_path, monkeypatch):
+    first, second, link = tmp_path / "first", tmp_path / "second", tmp_path / "work"
+    first.mkdir()
+    second.mkdir()
+    symlink_or_skip(link, first, target_is_directory=True)
+    runtime = replace(runtime, cwd=str(link))
+    tools = ShellTools(runtime).tools()
+    context = FunctionInvocationContext(tools[0], {"command": "echo ran > ran.txt", "reason": "test"})
+    bus = EventBus()
+    checked = shell_module.physical_dir
+
+    def check_then_retarget(path):
+        # The link changes right after the final check, before the command starts.
+        result = checked(path)
+        retarget(link, second)
+        return result
+
+    async def approve(event):
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True))
+
+    async def execute():
+        monkeypatch.setattr(shell_module, "physical_dir", check_then_retarget)
+        context.result = await context.function.invoke(context=context, skip_parsing=True)
+
+    middleware = ApprovalMiddleware(
+        ApprovalPolicy(ApprovalConfig(default="require")), bus, reuse=ApprovalReuseBinding(runtime, tools)
+    )
+    await bus.subscribe(ApprovalRequest, approve)
+    try:
+        await middleware.process(context, execute)
+        assert "[exit_code: 0]" in str(context.result)
+        assert (first / "ran.txt").exists()
         assert not (second / "ran.txt").exists()
     finally:
         await middleware.close()
