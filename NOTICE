@@ -214,9 +214,8 @@ Microsoft Visual C++ runtime (Windows only)
 2.3 Python packages
 ------------------------------------------------------------------------------
 Installing the iCode wheel installs these packages from their own
-distributions; the standalone executables bundle them. Packages needed only
-by the tui, doc_converter or observability extras are included. Each package
-ships its full license text in its *.dist-info directory.
+distributions; the standalone executables bundle them. Each package ships its
+full license text in its *.dist-info directory.
 
 Several packages contain further third-party code, mostly libraries that
 their compiled extensions link statically. Pillow ships the notices of the

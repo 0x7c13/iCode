@@ -300,6 +300,32 @@ def test_install_to_path_reports_success_for_unix(
     )
 
 
+@pytest.mark.parametrize(
+    ("pyapp", "expected"),
+    [
+        (None, "'uv tool upgrade iCode-TUI' to upgrade"),
+        ("1", "PYAPP_PASS_LOCATION must be enabled at build time."),
+    ],
+    ids=["uv-install", "pyapp-without-location"],
+)
+def test_install_to_path_refuses_without_a_pyapp_binary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    pyapp: str | None,
+    expected: str,
+) -> None:
+    if pyapp is None:
+        monkeypatch.delenv("PYAPP", raising=False)
+    else:
+        monkeypatch.setenv("PYAPP", pyapp)
+
+    with pytest.raises(SystemExit) as exc_info:
+        installer.install_to_path()
+
+    assert exc_info.value.code == 1
+    assert expected in capsys.readouterr().out
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="Exercises the POSIX install branch (~/.local/bin, ':' PATH separator); Path.home() ignores HOME on Windows.",
@@ -600,6 +626,28 @@ def test_prune_old_pyapp_versions_keeps_current_and_latest_fallback(
     assert fallback.is_dir()
     assert not older_patch.exists()
     assert not older_minor.exists()
+
+
+def test_prune_old_pyapp_versions_covers_the_wheel_named_flavors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The pip and uv flavors embed the wheel, and PyApp names their project
+    # directory after its metadata rather than PYAPP_PROJECT_NAME.
+    siblings_dir = tmp_path / "pyapp" / "icode-tui" / "dist-id"
+    current, exe = _make_pyapp_version(siblings_dir, "0.6.11")
+    fallback, _ = _make_pyapp_version(siblings_dir, "0.6.10")
+    older, _ = _make_pyapp_version(siblings_dir, "0.6.9")
+
+    _isolate_pyapp_cache(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.delenv("PYAPP_INSTALL_DIR_CHRYS", raising=False)
+    monkeypatch.delenv("PYAPP_INSTALL_DIR_ICODE-TUI", raising=False)
+
+    installer._prune_old_pyapp_versions()
+
+    assert current.is_dir()
+    assert fallback.is_dir()
+    assert not older.exists()
 
 
 def test_prune_old_pyapp_versions_reclaims_obsolete_distribution_ids(

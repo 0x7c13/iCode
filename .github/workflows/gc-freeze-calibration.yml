@@ -42,7 +42,7 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
-      - run: uv sync --extra all
+      - run: uv sync
       # Calibration must run serially and alone: concurrent suites contend for
       # CPU and skew the frozen_collect_ratio / latency gates.
       - name: Run gc_calibration test probes

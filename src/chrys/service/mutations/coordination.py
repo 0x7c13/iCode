@@ -59,7 +59,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.platform import get_platform
@@ -149,88 +149,18 @@ def repo_key_for_root(tree_root: str) -> str:
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """Cross-platform liveness probe (psutil, else a native fallback).
+    """Cross-platform liveness probe.
 
     A peer whose recorded pid is no longer alive counts as closed —
-    crash leftovers must not warn until GC.  psutil ships only with the
-    ``tui`` extra, but coordination is service-level and default-on, so
-    headless installs fall back to ``kill(pid, 0)`` on POSIX and a
-    ctypes ``OpenProcess`` probe on Windows.
+    crash leftovers must not warn until GC.
     """
     if pid <= 0:
         return False
-    try:
-        import psutil
-    except ImportError:
-        if get_platform().is_windows:
-            return _windows_pid_alive(pid)
-        return _posix_pid_alive(pid)
+    import psutil
+
     try:
         return psutil.pid_exists(pid)
     except Exception:  # pragma: no cover - psutil failure → assume alive (conservative)
-        return True
-
-
-def _posix_pid_alive(pid: int) -> bool:
-    """psutil-free liveness probe for POSIX.
-
-    ``os.kill(pid, 0)`` is a pure existence probe on POSIX only — on
-    Windows any signal outside the CTRL_*_EVENT pair TERMINATES the
-    target process, so this must never run there (the platform guard
-    is defense in depth on top of the caller's dispatch).
-    """
-    if get_platform().is_windows:
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:  # PermissionError et al.: pid exists (or unknowable)
-        return True
-    return True
-
-
-def _windows_pid_alive(pid: int) -> bool:  # pragma: no cover - exercised on Windows CI only
-    """psutil-free liveness probe for Windows (ctypes, no signals).
-
-    ``OpenProcess`` failing with ERROR_ACCESS_DENIED means the pid
-    exists under another user; any other open failure means no such
-    process.  An open handle can still name an already-exited process,
-    so the exit code must read STILL_ACTIVE.  Unexpected ctypes
-    failures stay conservative (alive) — a false "peer crashed"
-    demotion is worse than a lingering warning.
-    """
-    if not get_platform().is_windows:
-        return True
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        ctypes_module = cast(Any, ctypes)
-
-        process_query_limited_information = 0x1000
-        still_active = 259
-        error_access_denied = 5
-
-        kernel32 = ctypes_module.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-        if not handle:
-            return ctypes_module.get_last_error() == error_access_denied
-        try:
-            exit_code = wintypes.DWORD()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return True
-            return exit_code.value == still_active
-        finally:
-            kernel32.CloseHandle(handle)
-    except Exception:
         return True
 
 

@@ -16,7 +16,6 @@
 # Options:
 #   -Output PATH   where to write the archive (default: dist\chrys-offline-dist.tar.gz)
 #   -Wheel PATH    install this prebuilt chrys wheel instead of building from the checkout
-#   -Extras LIST   comma-separated extras (default: tui,doc_converter,observability)
 #   -NoPrune       keep pip/idlelib/tkinter and duplicate ripgrep binaries
 #
 # The archive's layout mirrors python-build-standalone's install_only archives —
@@ -28,7 +27,6 @@ param(
     [string]$DistArchive,
     [string]$Output,
     [string]$Wheel,
-    [string]$Extras = "tui,doc_converter,observability",
     [switch]$NoPrune
 )
 
@@ -99,11 +97,8 @@ try {
     $Requirements = Join-Path $WorkDir "requirements.txt"
     $ExportArgs = @("export", "--locked", "--no-dev", "--no-emit-project",
                     "--format", "requirements-txt", "-o", $Requirements, "--quiet")
-    foreach ($extra in $Extras.Split(",")) {
-        if ($extra) { $ExportArgs += @("--extra", $extra) }
-    }
 
-    Write-Host "==> Exporting locked dependencies (extras: $Extras)..."
+    Write-Host "==> Exporting locked dependencies..."
     & uv @ExportArgs
     if ($LASTEXITCODE -ne 0) { throw "uv export failed" }
     $DepCount = (Select-String -Path $Requirements -Pattern '^[A-Za-z0-9]').Count
@@ -112,9 +107,12 @@ try {
     # ── Install into the distribution ─────────────────────────────────
     # --compile-bytecode moves the byte-compilation of all packages to build
     # time: complete, deterministic pyc coverage instead of whatever the first
-    # import graph happens to touch on the user's machine.
+    # import graph happens to touch on the user's machine. Any sdist built here
+    # gets the build requirements offline_build_constraints.txt pins by hash.
     Write-Host "==> Installing dependencies..."
-    & uv pip install --python $Py --require-hashes --compile-bytecode -r $Requirements --quiet
+    $BuildConstraints = Join-Path $ScriptDir "offline_build_constraints.txt"
+    & uv pip install --python $Py --require-hashes --compile-bytecode --build-constraints $BuildConstraints `
+        -r $Requirements --quiet
     if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
 
     Write-Host "==> Installing chrys..."
@@ -174,21 +172,15 @@ print(names[0] if names else "")
 
     # ── Verify ────────────────────────────────────────────────────────
     # Runs after pruning so a prune mistake fails the build here instead of on
-    # a user's machine.  Core probes always run (PIL.Image loads C extensions);
-    # per-extra probes match the selected extras: the TUI subtree for tui,
-    # lxml.etree (C extension via python-docx/pptx) for doc_converter,
-    # opentelemetry.sdk for observability.
+    # a user's machine.  The probes cover C extensions (PIL.Image; lxml.etree
+    # via python-docx/pptx), the TUI subtree and the OpenTelemetry SDK.
     Write-Host "==> Verifying the bundled installation..."
     $VerifyScript = Join-Path $WorkDir "verify.py"
     Set-Content -Path $VerifyScript -Encoding utf8 -Value @'
-import importlib.metadata
-import os
 import subprocess
 import sys
 
-version = importlib.metadata.version("chrys")
-extras = {e.strip() for e in os.environ.get("CHRYS_VERIFY_EXTRAS", "").split(",") if e.strip()}
-
+from chrys import __version__
 from chrys.foundation.vendor import find_rg
 
 rg = find_rg()
@@ -199,26 +191,20 @@ subprocess.run([rg, "--version"], check=True, capture_output=True)
 import chrys.app.cli.app  # noqa: F401  - the entry point every flavor boots through
 import anthropic, certifi, mcp, openai  # noqa: F401,E401
 import PIL.Image  # noqa: F401
+import chrys.app.tui.app  # noqa: F401  - heaviest import subtree
+import lxml.etree  # noqa: F401
+import opentelemetry.sdk  # noqa: F401
+# The C extensions some platforms build from source because PyPI has no
+# wheel for them: cryptography (static OpenSSL), grpc and setproctitle on
+# Windows on Arm, watchdog's on macOS.
+import cryptography.hazmat.bindings._rust, grpc, setproctitle, watchdog.observers  # noqa: F401,E401
 
-if "tui" in extras:
-    import chrys.app.tui.app  # noqa: F401  - heaviest import subtree
-    import textual  # noqa: F401
-if "doc_converter" in extras:
-    import lxml.etree  # noqa: F401
-if "observability" in extras:
-    import opentelemetry.sdk  # noqa: F401
-
-print(f"    chrys {version}")
+print(f"    chrys {__version__}")
 print(f"    rg     {rg}")
 print(f"    ca     {certifi.where()}")
 '@
-    $env:CHRYS_VERIFY_EXTRAS = $Extras
-    try {
-        & $Py $VerifyScript
-        if ($LASTEXITCODE -ne 0) { throw "the bundled installation is not usable" }
-    } finally {
-        $env:CHRYS_VERIFY_EXTRAS = $null
-    }
+    & $Py $VerifyScript
+    if ($LASTEXITCODE -ne 0) { throw "the bundled installation is not usable" }
     Remove-Item $VerifyScript
 
     # ── Pack ──────────────────────────────────────────────────────────

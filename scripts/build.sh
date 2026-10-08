@@ -15,7 +15,7 @@
 #   PYTHON_DIST    — path to local python-build-standalone tarball (skips GitHub download)
 #   OFFLINE_DIST   — path to a prebuilt offline distribution (skips building one)
 #
-# By default the binary embeds Python plus the chrys wheel, and the chosen
+# By default the binary embeds Python plus the iCode wheel, and the chosen
 # installer fetches the dependencies from PyPI on first run.  With --offline
 # the embedded distribution already contains chrys and every dependency, so
 # the first run only unpacks it — no installer, no PyPI, no network.
@@ -66,8 +66,9 @@ done
 
 cd "$PROJECT_ROOT"
 
-# Extract version from pyproject.toml
-VERSION=$(uv run python -c "
+# Extract version from pyproject.toml. --no-project: syncing the project here
+# would build its source-only dependencies without the offline build's pins.
+VERSION=$(uv run --no-project python -c "
 import tomllib, pathlib
 data = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
 print(data['project']['version'])
@@ -101,9 +102,9 @@ else
 fi
 
 PYAPP_DIR="$BUILD_DIR/pyapp-v${PYAPP_VERSION}"
-WHEEL_SOURCE="dist/chrys-${VERSION}-py3-none-any.whl"
+WHEEL_SOURCE="dist/icode_tui-${VERSION}-py3-none-any.whl"
 if [ ! -f "$WHEEL_SOURCE" ]; then
-    WHEEL_SOURCE="$(ls -t dist/chrys-*.whl | head -1)"
+    WHEEL_SOURCE="$(ls -t dist/icode_tui-*.whl | head -1)"
 fi
 cp "$WHEEL_SOURCE" "$PYAPP_DIR/"
 cd "$PYAPP_DIR"
@@ -198,7 +199,6 @@ if [ "$OFFLINE" = "true" ]; then
     fi
 else
     export PYAPP_PROJECT_PATH="$WHEEL"
-    export PYAPP_PROJECT_FEATURES=tui,observability,doc_converter
     export PYAPP_PIP_ALLOW_CONFIG=true
     export PYAPP_DISTRIBUTION_EMBED=true
 

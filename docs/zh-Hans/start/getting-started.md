@@ -4,13 +4,27 @@
 
 ## 1. 安装 iCode
 
-iCode 为 macOS、Linux 和 Windows 提供预构建的离线安装包。安装包已包含 Python 和运行依赖，无需另行安装 Python。
+使用 [uv](https://docs.astral.sh/uv/getting-started/installation/) 安装 iCode。如果系统中没有 Python 3.14，uv 会自动下载：
 
-请从 [iCode Releases](https://github.com/0x7c13/chrys/releases) 下载最新版本。当前不要运行 `pip install chrys`：PyPI 上的这个名称属于另一个项目。
+```shell
+uv tool install iCode-TUI
+```
+
+以后升级请运行 `uv tool upgrade iCode-TUI`，卸载请运行 `uv tool uninstall iCode-TUI`。
+
+Windows（x64）和 Linux（x86-64 或 ARM64，glibc 2.27 或更高版本）无需其他准备。Apple 芯片的 Mac 需要先运行 `xcode-select --install` 安装 Xcode 命令行工具，uv 安装时要用它编译一个依赖。
+
+如果以前用过 iCode 离线安装包，请先删除它。删除它解压到的文件夹：macOS 上是 `~/Library/Application Support/pyapp/chrys`；Linux 上是 `~/.local/share/pyapp/chrys`，设置了 `XDG_DATA_HOME` 时是 `$XDG_DATA_HOME/pyapp/chrys`；Windows 上是 `%LOCALAPPDATA%\pyapp\data\chrys`。然后在 macOS 或 Linux 上删除 `~/.local/bin/chrys`，在 Windows 上删除 `%LOCALAPPDATA%\chrys\bin` 文件夹。
+
+如果 uv 提示 `icode` 已存在，说明已经有同名命令：可能是之前用离线安装包安装的 iCode，也可能是其他同名程序。确认是 iCode 后，运行 `uv tool install --force iCode-TUI` 覆盖它。
+
+### 离线安装包
+
+Intel 芯片的 Mac、Arm 版 Windows、较旧的 Linux 或无法联网的设备，请改用 [iCode Releases](https://github.com/openJiuwen-ai/iCode/releases) 上的预构建离线安装包。安装包已包含 Python 和全部依赖，无需另行安装 Python。
 
 以下命令中的 `<version>` 和 `<architecture>` 是占位符，请替换为下载文件名中的实际值。
 
-### macOS
+#### macOS
 
 根据处理器选择 `icode-macos-aarch64-v<version>-offline.tar.gz`（Apple 芯片）或 `icode-macos-x86_64-v<version>-offline.tar.gz`（Intel），然后在下载目录运行：
 
@@ -20,7 +34,7 @@ chmod +x ./icode
 ./icode install
 ```
 
-### Linux
+#### Linux
 
 根据处理器选择 `icode-linux-x86_64-v<version>-offline.tar.gz` 或 `icode-linux-aarch64-v<version>-offline.tar.gz`，然后在下载目录运行：
 
@@ -32,9 +46,9 @@ chmod +x ./icode
 
 Linux x86-64 安装包要求 glibc 2.17 或更高版本，ARM64 安装包要求 glibc 2.18 或更高版本。Alpine Linux 等只提供 musl 的发行版不在预构建包的支持范围内。
 
-### Windows
+#### Windows
 
-下载 `icode-windows-x86_64-v<version>-offline.zip` 并解压，在 PowerShell 中进入解压目录，然后运行：
+下载 `icode-windows-x86_64-v<version>-offline.zip`（Arm 版 Windows 请下载 `icode-windows-aarch64-v<version>-offline.zip`）并解压，在 PowerShell 中进入解压目录，然后运行：
 
 ```powershell
 .\icode.exe install
@@ -48,7 +62,9 @@ Linux x86-64 安装包要求 glibc 2.17 或更高版本，ARM64 安装包要求 
 icode --version
 ```
 
-命令应输出 iCode 的版本号。在 macOS 或 Linux 上，如果系统找不到 `icode`，请按安装器的提示将 `~/.local/bin` 加入 `PATH`；如果安装器提示 `~/.local/bin/icode` 已存在，该命令会启动其他程序，请改用 `chrys` 命令。在 Windows 上请打开新的终端；如果安装器提示更新用户 PATH 失败，请手动将 `%LOCALAPPDATA%\chrys\bin` 加入用户 `PATH`。
+命令应输出 iCode 的版本号。如果用 uv 安装后终端找不到 `icode`，请运行 `uv tool update-shell`，然后打开新终端。
+
+使用离线安装包时，在 macOS 或 Linux 上，如果系统找不到 `icode`，请按安装器的提示将 `~/.local/bin` 加入 `PATH`；如果安装器提示 `~/.local/bin/icode` 已存在，该命令会启动其他程序，请改用 `chrys` 命令。在 Windows 上请打开新的终端；如果安装器提示更新用户 PATH 失败，请手动将 `%LOCALAPPDATA%\chrys\bin` 加入用户 `PATH`。
 
 ## 2. 在项目中启动 iCode
 

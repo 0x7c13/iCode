@@ -78,7 +78,7 @@ def read_git_branch_snapshot(cwd: str) -> GitBranchSnapshot:
 class GitBranchMonitor:
     """Watch the git HEAD file for a workspace cwd.
 
-    The monitor uses watchdog when available. Callers should still refresh on
+    The monitor uses watchdog file notifications. Callers should still refresh on
     semantic UI events such as tool completion because those updates are cheap
     and cover environments where native file notifications are unavailable.
     """
@@ -137,12 +137,8 @@ class GitBranchMonitor:
         self._start_observer(target)
 
     def _start_observer(self, target: _WatchTarget) -> None:
-        try:
-            from watchdog.events import FileSystemEventHandler
-            from watchdog.observers import Observer
-        except ImportError:
-            logger.debug("watchdog is unavailable; git branch monitor will use polling fallback")
-            return
+        from watchdog.events import FileSystemEventHandler
+        from watchdog.observers import Observer
 
         on_change = self._on_change
 

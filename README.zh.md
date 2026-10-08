@@ -11,11 +11,12 @@
 
 > **开发中。** 接口、文件格式和默认设置在不同版本之间仍会变化。
 
+> **请使用现代终端。** iCode 在现代终端模拟器中效果最佳，例如 Windows 上的 [Windows Terminal](https://github.com/microsoft/terminal)，或 macOS 和 Linux 上的 [Ghostty](https://ghostty.org)。
+
 ## 什么是 iCode？
 
 让截图来说明一切。
 
-> **请使用现代终端。** iCode 在现代终端模拟器中效果最佳，例如 Windows 上的 [Windows Terminal](https://github.com/microsoft/terminal)，或 macOS 和 Linux 上的 [Ghostty](https://ghostty.org)。
 
 ### 首页
 
@@ -77,15 +78,40 @@ Shell（`!`）是一个真正的终端，因此全屏程序可以原地运行，
 
 ## 如何运行
 
+任选下面三种方式之一。iCode 不附带任何模型配置，因此首次启动时请按 **F4** 添加一个。
+
+### 从源码运行
+
 [uv](https://github.com/astral-sh/uv) 是唯一的前置条件，它会自动准备 Python 3.14。在代码检出目录中执行：
 
 ```bash
-uv sync --extra all        # 不要用裸 `uv sync`，也不要用 `--all-extras`
+uv sync                    # 把 iCode 及其开发工具装进 .venv
 ./scripts/fetch_rg.sh      # 下载随附的 ripgrep；Windows：.\scripts\fetch_rg.ps1
-uv run icode               # `uv run chrys` 启动的是同一个程序（`Chrys` 是我们的代号）
+uv run icode               # 启动 iCode；包名沿用我们的代号 `chrys`
 ```
 
-iCode 不附带任何模型配置，因此首次启动时请按 **F4** 添加一个。
+### 用 uv 安装
+
+[uv](https://docs.astral.sh/uv/getting-started/installation/) 会从 PyPI 安装 iCode，并自动准备 Python 3.14：
+
+```bash
+uv tool install iCode-TUI   # 以后用 `uv tool upgrade iCode-TUI` 升级
+icode
+```
+
+Windows（x64）和 Linux（x86-64 或 ARM64，glibc 2.27 或更高版本）无需其他准备。Apple 芯片的 Mac 需要先运行 `xcode-select --install`。
+
+### 离线安装包
+
+Intel 芯片的 Mac、Arm 版 Windows、较旧的 Linux 或无法联网的设备，请从 [Releases](https://github.com/openJiuwen-ai/iCode/releases) 下载对应平台的安装包。安装包已包含 Python 和全部依赖。解压后安装并运行：
+
+```bash
+chmod +x ./icode            # Windows 跳过这一步
+./icode install             # Windows：.\icode.exe install
+icode                       # 在新开的终端中运行
+```
+
+各平台对应的安装包和系统要求见[开始使用](docs/zh-Hans/start/getting-started.md#离线安装包)。
 
 ## 用户指南
 

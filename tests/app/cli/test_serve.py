@@ -11,13 +11,14 @@ import io
 import json
 import subprocess
 import sys
-from typing import Any, ClassVar, NoReturn
+from typing import Any, ClassVar
 
 import pytest
 from aiohttp import ClientPayloadError, web
 from aiohttp.test_utils import TestClient, TestServer
 from rich.console import Console
 
+from chrys import __version__
 from chrys.app.cli import serve as serve_cli
 from chrys.foundation.branding import APP_DISPLAY_NAME
 
@@ -315,7 +316,6 @@ def test_inject_browser_serve_branding_logo_preserves_logo_spacing() -> None:
 
 
 def test_textual_serve_clipboard_bridge_contract() -> None:
-    pytest.importorskip("textual_serve")
     from textual_serve.app_service import AppService
     from textual_serve.server import Server
 
@@ -974,20 +974,6 @@ def test_write_warning_styles_terminal_output_yellow(monkeypatch: pytest.MonkeyP
     assert "Warning: colored" in text
 
 
-def test_write_warning_falls_back_without_rich(monkeypatch: pytest.MonkeyPatch) -> None:
-    output = io.StringIO()
-
-    def raise_missing_rich() -> Console:
-        raise ModuleNotFoundError("No module named 'rich'")
-
-    monkeypatch.setattr(serve_cli.sys, "stderr", output)
-    monkeypatch.setattr(serve_cli, "_make_warning_console", raise_missing_rich)
-
-    serve_cli._write_warning("Warning: plain")
-
-    assert output.getvalue() == "Warning: plain\n"
-
-
 def test_main_styles_runtime_error_red(monkeypatch: pytest.MonkeyPatch) -> None:
     output = io.StringIO()
 
@@ -1222,7 +1208,6 @@ async def test_textual_serve_page_injects_browser_clipboard_support() -> None:
 
 @pytest.mark.asyncio
 async def test_real_textual_serve_page_injects_browser_clipboard_support() -> None:
-    pytest.importorskip("textual_serve")
     server_class = serve_cli._load_server_class()
     server = server_class(
         "chrys __tui_subprocess__",
@@ -1255,7 +1240,6 @@ async def test_real_textual_serve_page_injects_browser_clipboard_support() -> No
 
 @pytest.mark.asyncio
 async def test_real_textual_serve_streamed_html_download_has_security_headers() -> None:
-    pytest.importorskip("textual_serve")
 
     class StreamingDownloadManager:
         async def get_download_metadata(self, key: str) -> argparse.Namespace:
@@ -1303,7 +1287,6 @@ async def test_real_textual_serve_streamed_html_download_has_security_headers() 
 async def test_real_textual_serve_stream_failure_does_not_append_a_second_response(
     raise_http_exception: bool,
 ) -> None:
-    pytest.importorskip("textual_serve")
 
     class FailingStreamingDownloadManager:
         async def get_download_metadata(self, key: str) -> argparse.Namespace:
@@ -1363,7 +1346,6 @@ async def test_real_textual_serve_uses_normalized_public_url(
     public_url: str,
     expected_websocket_url: str,
 ) -> None:
-    pytest.importorskip("textual_serve")
     server_class = serve_cli._load_server_class()
     server = server_class(
         "chrys __tui_subprocess__",
@@ -1392,7 +1374,6 @@ async def test_real_textual_serve_uses_normalized_public_url(
 async def test_real_textual_serve_rejects_unicode_capability_without_logging_exception(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    pytest.importorskip("textual_serve")
     server_class = serve_cli._load_server_class()
     server = server_class(
         "chrys __tui_subprocess__",
@@ -1422,7 +1403,6 @@ async def test_real_textual_serve_rejects_unicode_capability_without_logging_exc
 
 @pytest.mark.asyncio
 async def test_real_textual_serve_starts_app_after_valid_capability(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("textual_serve")
     from textual_serve import app_service
 
     started = asyncio.Event()
@@ -1835,21 +1815,6 @@ def _csrf_token(html: str) -> str:
     return html.split(marker, 1)[1].split('"', 1)[0]
 
 
-def test_main_reports_missing_textual_serve(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    def _raise_missing() -> type[FakeServer]:
-        msg = "chrys serve requires textual-serve"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr(serve_cli, "_load_server_class", _raise_missing)
-
-    with pytest.raises(SystemExit) as exc_info:
-        serve_cli.main([])
-
-    out = capsys.readouterr()
-    assert exc_info.value.code == 1
-    assert "chrys serve requires textual-serve" in out.err
-
-
 def test_main_sets_process_title(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
     monkeypatch.setattr("chrys.orchestration.startup.set_process_title", lambda: calls.append(True))
@@ -1860,7 +1825,6 @@ def test_main_sets_process_title(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_textual_serve_banner_is_icode_branded() -> None:
-    pytest.importorskip("textual_serve")
     server_class = serve_cli._load_server_class()
     server = server_class(
         "chrys __tui_subprocess__",
@@ -1876,7 +1840,7 @@ def test_textual_serve_banner_is_icode_branded() -> None:
 
     text = output.getvalue()
     assert "░▀█▀░█▀▀░█▀█░█▀▄░█▀▀" in text
-    assert f"v{serve_cli.metadata.version('chrys')}" in text
+    assert f"v{__version__}" in text
     assert "TEXTUAL-SERVE" not in text
     assert f"Serving {APP_DISPLAY_NAME} TUI on http://localhost:7777" in text
 
@@ -1907,7 +1871,7 @@ def test_chrys_server_rejects_malformed_public_url_without_auth() -> None:
         )
 
 
-def test_chrys_server_banner_uses_unknown_version_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chrys_server_banner_shows_version_without_the_subprocess_command() -> None:
     class FakeBaseServer:
         def __init__(
             self,
@@ -1928,11 +1892,6 @@ def test_chrys_server_banner_uses_unknown_version_fallback(monkeypatch: pytest.M
         def serve(self, *, debug: bool = False) -> None:
             self.debug = debug
 
-    def _raise_package_not_found(_package: str) -> NoReturn:
-        raise serve_cli.metadata.PackageNotFoundError
-
-    monkeypatch.setattr(serve_cli.metadata, "version", _raise_package_not_found)
-
     server_class = serve_cli._make_chrys_server_class(FakeBaseServer)
     server = server_class(
         "chrys __tui_subprocess__",
@@ -1945,7 +1904,7 @@ def test_chrys_server_banner_uses_unknown_version_fallback(monkeypatch: pytest.M
     asyncio.run(server.on_startup(object()))
 
     text = server.console.file.getvalue()
-    assert "vunknown" in text
+    assert f"v{__version__}" in text
     assert f"Serving {APP_DISPLAY_NAME} TUI on http://localhost:7777" in text
     assert "chrys __tui_subprocess__" not in text
     assert "[cyan]" not in text

@@ -88,6 +88,7 @@ if [ "$FETCH_ALL" = "true" ]; then
     fetch_one "x86_64-unknown-linux-musl"   "rg-x86_64-unknown-linux-musl"   false
     fetch_one "aarch64-unknown-linux-gnu"   "rg-aarch64-unknown-linux-gnu"   false
     fetch_one "x86_64-pc-windows-msvc"      "rg-x86_64-pc-windows-msvc.exe"  true
+    fetch_one "aarch64-pc-windows-msvc"     "rg-aarch64-pc-windows-msvc.exe" true
     echo "==> All platforms fetched."
     exit 0
 fi

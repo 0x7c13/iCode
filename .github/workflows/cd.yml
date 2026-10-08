@@ -1,10 +1,10 @@
 name: CD
-run-name: "CD — ${{ github.event_name == 'push' && github.ref_name || inputs.ref || 'main' }} (${{ inputs.platform || 'all' }})"
+run-name: "CD — ${{ inputs.ref || 'main' }} (${{ inputs.platform || 'all' }})"
 
+# Only dispatched: tag-release dispatches each release on the tag it creates.
+# The GitCode→GitHub mirror pushes that tag again once it is also created on
+# GitCode, and a tag-push trigger would rebuild the whole release from that.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       ref:
@@ -59,6 +59,27 @@ jobs:
       - name: Fetch ripgrep binaries (all platforms)
         run: ./scripts/fetch_rg.sh --all
       - run: uv build --wheel
+      - name: Check the release tag names the wheel's version
+        # A release uploads this wheel to PyPI under the version it carries and
+        # creates the GitHub release under the tag, so the two must agree
+        # before either happens.
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.ref, 'v')
+        env:
+          TAG: ${{ inputs.ref || github.ref_name }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* && "$TAG" != "$GITHUB_REF_NAME" ]]; then
+            echo "::error::this run is on the tag ${GITHUB_REF_NAME} but builds ${TAG}"
+            exit 1
+          fi
+          wheel=$(basename dist/icode_tui-*.whl)
+          version="${wheel#icode_tui-}"
+          version="${version%%-*}"
+          if [ "$TAG" != "v${version}" ]; then
+            echo "::error::this release builds ${TAG}, but the wheel's version is ${version}: release the tag v${version}"
+            exit 1
+          fi
+      - name: Install and run the wheel as a PyPI user would
+        run: python scripts/check_wheel.py --all-ripgrep dist/icode_tui-*.whl
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel
@@ -79,12 +100,14 @@ jobs:
           # The macOS x86_64 leg runs on a native Intel runner rather than
           # cross-compiling from arm64: the offline flavor has to pip-install
           # (and occasionally compile) x86_64 wheels for the bundled interpreter.
+          # Windows on Arm builds natively on windows-11-arm for the same reason.
           all_targets='[
             {"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","artifact":"icode-linux-x86_64","platform":"linux"},
             {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","artifact":"icode-linux-aarch64","platform":"linux","glibc_floor":"2.18"},
             {"target":"aarch64-apple-darwin","os":"macos-latest","artifact":"icode-macos-aarch64","platform":"macos"},
             {"target":"x86_64-apple-darwin","os":"macos-15-intel","artifact":"icode-macos-x86_64","platform":"macos"},
-            {"target":"x86_64-pc-windows-msvc","os":"windows-latest","artifact":"icode-windows-x86_64.exe","platform":"windows"}
+            {"target":"x86_64-pc-windows-msvc","os":"windows-latest","artifact":"icode-windows-x86_64.exe","platform":"windows"},
+            {"target":"aarch64-pc-windows-msvc","os":"windows-11-arm","artifact":"icode-windows-aarch64.exe","platform":"windows"}
           ]'
           if [ "$platform" = "all" ]; then
             filtered="$all_targets"
@@ -99,7 +122,7 @@ jobs:
             '{"installer":["offline"],"target":$targets,"include":$include}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-  # ── Build PyApp binaries (5 platforms × 1 flavor = 5 jobs) ──────────
+  # ── Build PyApp binaries (6 platforms × 1 flavor = 6 jobs) ──────────
   build-binaries:
     name: ${{ matrix.artifact }}-${{ matrix.installer }}
     needs: compute-matrix
@@ -131,10 +154,10 @@ jobs:
             echo "PROJECT_VERSION=${ref#v}" >> "$GITHUB_ENV"
           else
             # Dev build: derive base version from the wheel filename
-            # (e.g. chrys-0.6.6-py3-none-any.whl -> 0.6.6) so dev artifacts
+            # (e.g. icode_tui-0.6.6-py3-none-any.whl -> 0.6.6) so dev artifacts
             # carry a meaningful version like v0.6.6-dev-abc1234. We use '-'
             # instead of PEP 440's '+' so the version is URL/filename-safe.
-            base=$(ls wheel/*.whl | head -1 | sed -E 's|.*/chrys-([^-]+)-.*|\1|')
+            base=$(ls wheel/*.whl | head -1 | sed -E 's|.*/icode_tui-([^-]+)-.*|\1|')
             base="${base:-0.0.0}"
             echo "PROJECT_VERSION=${base}-dev-$(echo $GITHUB_SHA | cut -c1-7)" >> "$GITHUB_ENV"
           fi
@@ -273,6 +296,38 @@ jobs:
         shell: bash
         run: echo "filename=$(ls *.whl)" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare source builds (Windows on Arm)
+        # PyPI has no Windows Arm64 wheels for cryptography, grpcio,
+        # setproctitle and watchdog, so the offline distribution builds them
+        # from their locked sdists; all but cryptography need nothing beyond the
+        # image's MSVC. cryptography links OpenSSL statically, as its own wheels
+        # do, from a build vcpkg makes here out of a pinned vcpkg commit's port,
+        # not the image's vcpkg, whose ports move with every runner update.
+        # uv builds each sdist inside its cache, and cl.exe cannot write a path
+        # longer than 260 characters: under setup-uv's cache in RUNNER_TEMP the
+        # deepest grpcio object file takes 263, so the cache moves to the drive
+        # root, where it takes 243.
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        env:
+          VCPKG_COMMIT: e182cb4dd2df2ab02f66a1aabd5f35bbdc9522c7 # OpenSSL 3.6.5
+        run: |
+          $vcpkg = Join-Path $env:RUNNER_TEMP "vcpkg"
+          git init --quiet $vcpkg
+          git -C $vcpkg fetch --quiet --depth 1 https://github.com/microsoft/vcpkg.git $env:VCPKG_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "could not fetch vcpkg $env:VCPKG_COMMIT" }
+          git -C $vcpkg checkout --quiet FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "could not check out vcpkg $env:VCPKG_COMMIT" }
+          & "$vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw "could not bootstrap vcpkg" }
+          & "$vcpkg\vcpkg.exe" install "--vcpkg-root=$vcpkg" openssl:arm64-windows-static-md
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg could not build OpenSSL" }
+          $openssl = Join-Path $vcpkg "installed\arm64-windows-static-md"
+          "OPENSSL_DIR=$openssl" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OPENSSL_STATIC=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $uvCache = Join-Path (Split-Path $env:RUNNER_TEMP -Qualifier) "\uv"
+          "UV_CACHE_DIR=$uvCache" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build offline distribution
         if: matrix.installer == 'offline'
         shell: bash
@@ -332,7 +387,6 @@ jobs:
           # The offline flavor gets its distribution options from the step above.
           # These embed the wheel and install its dependencies on first run.
           PYAPP_PROJECT_PATH: ${{ matrix.installer != 'offline' && steps.wheel.outputs.filename || '' }}
-          PYAPP_PROJECT_FEATURES: ${{ matrix.installer != 'offline' && 'tui,observability,doc_converter' || '' }}
           PYAPP_PIP_ALLOW_CONFIG: ${{ matrix.installer != 'offline' && 'true' || '' }}
           PYAPP_DISTRIBUTION_EMBED: ${{ matrix.installer != 'offline' && 'true' || '' }}
           PYAPP_UV_ENABLED: ${{ matrix.installer == 'uv' && 'true' || '' }}
@@ -375,7 +429,33 @@ jobs:
           name: ${{ steps.name.outputs.artifact }}
           path: ${{ steps.name.outputs.binary }}
 
-  # ── Create GitHub Release (tag pushes only) ─────────────────────────
+  # ── Publish the wheel to PyPI (release tags, main repository only) ──
+  # Trusted Publishing: PyPI accepts this job's OIDC token because the
+  # iCode-TUI publisher names this repository, cd.yml and the `pypi`
+  # environment, so no password or API token is stored anywhere. That
+  # environment admits only runs on a v* tag, as tag-release dispatches them;
+  # a release dispatched from a branch builds everything else but skips this.
+  # Uploading a version PyPI already has fails instead of being skipped. The
+  # binaries are not waited for: a failed one holds back only the GitHub
+  # release.
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.repository == 'openJiuwen-ai/iCode' && startsWith(github.ref, 'refs/tags/v')
+    needs: build-wheel
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/iCode-TUI/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  # ── Create GitHub Release (release tags only) ───────────────────────
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.ref, 'v')

@@ -1094,8 +1094,11 @@ def test_a_builtin_workflow_change_selects_the_tests_that_discover_it(path: str)
         "scripts/build_offline_dist.sh",
         "scripts/build_offline_dist.ps1",
         "scripts/offline_wheel_overrides.txt",
+        "scripts/offline_build_constraints.txt",
+        "scripts/check_wheel.py",
         ".github/workflows/ci.yml",
         ".github/workflows/cd.yml",
+        ".github/workflows/tag-release.yml",
     ],
 )
 def test_build_contract_files_select_the_cli_contract_tests(changed_path: str) -> None:
@@ -1139,7 +1142,7 @@ def test_runtime_asset_without_a_subsystem_scope_reports_the_gap() -> None:
         ("README.md", "tests/architecture/test_chrys_test.py"),
         ("src/chrys/app/tui/app.py", "tests/architecture/test_entrypoint_bootstrap.py"),
         ("src/chrys/app/cli/run.py", "tests/architecture/test_tui_structure.py"),
-        ("src/chrys/app/cli/run.py", "tests/architecture/test_hygiene_optional_imports.py"),
+        ("src/chrys/app/cli/run.py", "tests/architecture/test_hygiene_lazy_imports.py"),
         (
             "src/chrys/app/features/session_title/generator.py",
             "tests/architecture/test_trajectory_wait_inventory.py::test_pending_retry_clear_calls_declare_a_terminal_reason",

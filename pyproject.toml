@@ -1,10 +1,26 @@
 [project]
-name = "chrys"
-version = "0.29.0"
+# The PyPI distribution name; the import package, the commands' code name and
+# ~/.chrys keep "chrys" (src/chrys/__init__.py::DISTRIBUTION_NAME).
+name = "iCode-TUI"
+version = "0.29.1"
 description = "A general-purpose extensible agent platform for rapidly building and evolving custom agents."
+readme = "README.pypi.md"
 requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
+keywords = ["agent", "ai", "llm", "tui", "terminal", "coding-agent", "mcp", "acp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
 dependencies = [
     "anthropic==0.125.0",
     "openai==2.54.0",
@@ -35,37 +51,35 @@ dependencies = [
     "idna==3.20",
     "markdownify==1.2.3",
     "beautifulsoup4==4.15.0",
-]
-
-[project.optional-dependencies]
-tui = [
+    # TUI. PyPI has no macOS wheel of watchdog for this Python, so a macOS
+    # install from PyPI builds it (Xcode Command Line Tools); the release
+    # binaries bundle a build.
     "textual==8.2.7",
     "textual-serve==1.1.3",
     "psutil==7.2.2",
     "watchdog==6.0.0",
     "pywinpty==3.0.5; sys_platform == 'win32'",
-]
-dev = [
-    "babel==2.18.0",
-    "pytest==9.1.1",
-    "pytest-asyncio==1.4.0",
-    "pytest-xdist==3.8.0",
-    "pytest-timeout==2.4.0",
-    "ruff==0.16.8",
-    "ty==0.0.77",
-]
-doc_converter = ["pypdf==6.19.0", "python-docx==1.2.0", "python-pptx==1.0.2", "openpyxl==3.1.5", "xlrd==2.0.2"]
-observability = [
-    # Same release train as opentelemetry-api above — bump all four together.
+    # Document conversion (read_document).
+    "pypdf==6.19.0",
+    "python-docx==1.2.0",
+    "python-pptx==1.0.2",
+    "openpyxl==3.1.5",
+    "xlrd==2.0.2",
+    # OpenTelemetry export. Same release train as opentelemetry-api above —
+    # bump all four together.
     "opentelemetry-sdk>=1.39.0,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.39.0,<2",
     "opentelemetry-instrumentation-logging>=0.65b0,<1",
 ]
-all = ["chrys[tui,dev,doc_converter,observability]"]
+
+[project.urls]
+Homepage = "https://github.com/openJiuwen-ai/iCode"
+Repository = "https://github.com/openJiuwen-ai/iCode"
+Issues = "https://github.com/openJiuwen-ai/iCode/issues"
+Releases = "https://github.com/openJiuwen-ai/iCode/releases"
 
 [project.scripts]
 icode = "chrys.app.cli.app:main"
-chrys = "chrys.app.cli.app:main"
 
 [tool.uv.sources]
 #rich = { path = "../rich", editable = true }
@@ -78,7 +92,15 @@ build-backend = "hatchling.build"
 [dependency-groups]
 # Dev-only, and never published: dependency groups do not reach Requires-Dist,
 # so a range here cannot affect a downstream install. uv.lock still pins them.
+# `uv sync` installs this group by default.
 dev = [
+    "babel==2.18.0",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-xdist==3.8.0",
+    "pytest-timeout==2.4.0",
+    "ruff==0.16.8",
+    "ty==0.0.77",
     "pre-commit>=4.6.0",
     "pytest-cov>=7.1.0",
 ]
@@ -174,6 +196,8 @@ ignore = [
 "src/chrys/foundation/platform/__init__.py" = ["S603", "S607", "PLW1510"]
 # Installer CLI — print is correct output, subprocess calls are platform setup
 "src/chrys/app/installer.py" = ["T20", "S603", "S607", "PLW1510"]
+# Wheel check — prints its progress and runs uv, git and the installed commands
+"scripts/check_wheel.py" = ["T20", "S603", "S607"]
 # Shell tool — its entire purpose is running subprocess commands
 "src/chrys/service/tools/builtins/shell.py" = ["S603", "S607"]
 # Workflow SDK and worker host run inside any Python >= 3.9 interpreter: 3.9 syntax only

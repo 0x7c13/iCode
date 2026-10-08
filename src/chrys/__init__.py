@@ -10,4 +10,7 @@ combinations of prompts, tools, skills, and hooks.
 
 from importlib.metadata import version as _version
 
-__version__ = _version("chrys")
+DISTRIBUTION_NAME = "iCode-TUI"
+"""The name the package is published and installed under; the import package stays ``chrys``."""
+
+__version__ = _version(DISTRIBUTION_NAME)

@@ -127,8 +127,8 @@ ARCHITECTURE_RULES = (
         "tests/architecture/test_hygiene_i18n_messages.py",
         ("src/chrys/app/tui/**", "src/chrys/foundation/i18n/**"),
     ),
+    TestRule("tests/architecture/test_hygiene_lazy_imports.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_llm_client_owners.py", ("src/chrys/**",)),
-    TestRule("tests/architecture/test_hygiene_optional_imports.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_pillow_formats.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_reminder_sources.py", ("src/chrys/**",)),
     TestRule("tests/architecture/test_hygiene_session_surface.py"),
@@ -1597,7 +1597,10 @@ def _add_runtime_asset_targets(selection: Selection, changes: tuple[Change, ...]
         if path in {
             ".github/workflows/ci.yml",
             ".github/workflows/cd.yml",
+            ".github/workflows/tag-release.yml",
+            "scripts/check_wheel.py",
             "scripts/offline_wheel_overrides.txt",
+            "scripts/offline_build_constraints.txt",
         } or any(_matches(path, pattern) for pattern in ("scripts/build*.sh", "scripts/build*.ps1")):
             selection.add("tests/app/cli/test_app.py", f"build contract file changed: {path}")
         elif path.endswith(".tcss"):

@@ -28,11 +28,11 @@ def _patch(old: str, new: str, description: str) -> FilePatch:
 
 
 def test_absent_package_is_skipped_not_errored(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An install without the ``tui`` extra has no textual, and that is normal.
+    """A package that is not installed has nothing to patch.
 
-    Every headless entrypoint runs ``apply_all()``, so classifying "package is
-    not installed" as an error made ``chrys run``/``chrys acp`` log a warning
-    per registered patch on every single invocation.
+    Every entrypoint runs ``apply_all()``, so classifying "package is not
+    installed" as an error would make ``chrys run``/``chrys acp`` log a
+    warning per registered patch on every single invocation.
     """
 
     def _absent(package: str) -> Path:

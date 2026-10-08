@@ -28,14 +28,13 @@ metric schema must update their selectors.
 The tool loop emits function spans and duration metrics around its single
 invoke boundary. Direct ``FunctionTool.invoke`` remains telemetry-free.
 Kernel dependencies stay within this package, allowed third-party packages
-and foundation; the scope version is resolved through ``importlib.metadata``.
+and foundation; the scope version is the package's ``__version__``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
-import importlib.metadata
 import json
 import logging
 import weakref
@@ -47,6 +46,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, Protocol, TypeG
 from opentelemetry import context as otel_context
 from opentelemetry import metrics, trace
 
+from chrys import __version__
 from chrys.foundation.observability.gate import TELEMETRY_GATE
 
 from ._content import add_usage_details
@@ -131,11 +131,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _SCOPE_NAME: Final[str] = "chrys"
-try:
-    _scope_version = importlib.metadata.version("chrys")
-except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable installs always have metadata
-    _scope_version = "0.0.0"
-_SCOPE_VERSION: Final[str] = _scope_version
+_SCOPE_VERSION: Final[str] = __version__
 
 
 # Dedup channel between the agent and inner chat layers so usage and

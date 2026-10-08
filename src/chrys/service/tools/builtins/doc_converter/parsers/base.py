@@ -79,7 +79,6 @@ class DocParser(Protocol):
 
     - Lazy-import their dependencies inside ``parse()`` to avoid startup cost.
     - Produce Markdown with headings so TOC extraction works.
-    - Raise ``ImportError`` with a clear install hint if dependencies are missing.
     """
 
     @property
@@ -97,7 +96,6 @@ class DocParser(Protocol):
             Parsed Markdown, visual occurrences, and bounded warnings.
 
         Raises:
-            ImportError: If required libraries are not installed.
             Exception: On conversion failure.
         """
         ...

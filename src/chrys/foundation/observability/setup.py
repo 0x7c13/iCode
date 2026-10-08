@@ -58,14 +58,13 @@ threading the sink through constructors.
 
 from __future__ import annotations
 
-import importlib.metadata
 import logging
 import os
 from collections.abc import Mapping, Sequence
-from importlib import import_module
 from types import NoneType
 from typing import TYPE_CHECKING, Any
 
+from chrys import __version__
 from chrys.foundation.observability.gate import configure_telemetry
 from chrys.foundation.observability.sink import OtelSessionSink, get_otel_sink, set_otel_sink
 
@@ -85,10 +84,7 @@ _OTLP_ENDPOINT_VARS = (
 )
 
 _SERVICE_NAME_DEFAULT = "chrys"
-try:
-    _SERVICE_VERSION_DEFAULT = importlib.metadata.version("chrys")
-except importlib.metadata.PackageNotFoundError:  # pragma: no cover - editable installs always have metadata
-    _SERVICE_VERSION_DEFAULT = "0.0.0"
+_SERVICE_VERSION_DEFAULT = __version__
 
 
 # Revocable state installed by a successful setup_otel run, tracked so a
@@ -140,8 +136,9 @@ def _create_otlp_exporters(
 ) -> list[Any]:
     """Build exporters for the configured signals and selected transport.
 
-    Endpoints and headers are already resolved per signal. A missing exporter
-    package raises ``ImportError`` with an installation hint.
+    Endpoints and headers are already resolved per signal. The OTLP HTTP
+    exporter package is not a dependency: without it, the HTTP transport
+    raises ``ImportError`` with an installation hint.
     """
     exporters: list[Any] = []
 
@@ -149,21 +146,15 @@ def _create_otlp_exporters(
         return exporters
 
     if protocol == "grpc":
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
-                OTLPLogExporter as GRPCLogExporter,
-            )
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
-                OTLPMetricExporter as GRPCMetricExporter,
-            )
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter as GRPCSpanExporter,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                "opentelemetry-exporter-otlp-proto-grpc is required for OTLP gRPC exporters. "
-                "Install it with: pip install opentelemetry-exporter-otlp-proto-grpc"
-            ) from exc
+        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+            OTLPLogExporter as GRPCLogExporter,
+        )
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+            OTLPMetricExporter as GRPCMetricExporter,
+        )
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter as GRPCSpanExporter,
+        )
 
         if logs_endpoint:
             exporters.append(GRPCLogExporter(endpoint=logs_endpoint, headers=logs_headers or None))
@@ -186,8 +177,8 @@ def _create_otlp_exporters(
             )
         except ImportError as exc:
             raise ImportError(
-                "opentelemetry-exporter-otlp-proto-http is required for OTLP HTTP exporters. "
-                "Install it with: pip install opentelemetry-exporter-otlp-proto-http"
+                "OTLP over HTTP needs opentelemetry-exporter-otlp-proto-http, which iCode does not include; "
+                "use OTLP/gRPC instead (leave OTEL_EXPORTER_OTLP_PROTOCOL unset or set it to grpc)"
             ) from exc
 
         if logs_endpoint:
@@ -418,42 +409,29 @@ def setup_otel(settings: Settings) -> OtelSessionSink | None:
     if not settings.otel_enabled:
         return None
 
-    # Exporter/processor classes live in a separate module that imports
-    # from opentelemetry.sdk — loading them here raises ImportError
-    # cleanly if the SDK extra wasn't installed.
+    # Choose exporter strategy: OTLP if the user set any endpoint env var or
+    # the endpoint setting, else fall back to session-scoped JSONL files
+    # under {session_dir}/otel/.
+    use_file_fallback = not _otlp_endpoint_configured(settings.otel_endpoint)
+    sink = OtelSessionSink(write_files=use_file_fallback)
+
     try:
+        # Exporter/processor classes live in a separate module that imports
+        # from opentelemetry.sdk, which loads only once telemetry is enabled.
         from chrys.foundation.observability.exporters import (
             SessionContextSpanProcessor,
             SessionJsonlLogExporter,
             SessionJsonlSpanExporter,
         )
 
-        import_module("opentelemetry.instrumentation.logging.handler")
-    except ImportError:
-        logger.exception(
-            "OpenTelemetry setup failed: required observability packages are not installed. "
-            "Install with `uv sync --extra observability`."
+        file_exporters: list[Any] = (
+            [SessionJsonlSpanExporter(sink), SessionJsonlLogExporter(sink)] if use_file_fallback else []
         )
-        return None
-
-    # Choose exporter strategy: OTLP if the user set any endpoint env var or
-    # the endpoint setting, else fall back to session-scoped JSONL files
-    # under {session_dir}/otel/.
-    use_file_fallback = not _otlp_endpoint_configured(settings.otel_endpoint)
-    sink = OtelSessionSink(write_files=use_file_fallback)
-    file_exporters: list[Any] = (
-        [SessionJsonlSpanExporter(sink), SessionJsonlLogExporter(sink)] if use_file_fallback else []
-    )
-
-    try:
         # Configure env-derived OTLP exporters before session file exporters.
         exporters = [*_get_exporters_from_env(settings.otel_endpoint), *file_exporters]
         _configure_providers(exporters)
     except Exception:
-        logger.exception(
-            "OpenTelemetry setup failed. Install with `uv sync --extra observability` "
-            "and check OTEL_EXPORTER_OTLP_* env vars."
-        )
+        logger.exception("OpenTelemetry setup failed. Check the OTEL_EXPORTER_OTLP_* env vars.")
         # _configure_providers may have partially succeeded before a later
         # step raised (e.g. the root LoggingHandler already installed) —
         # revoke the state freshly tracked by THIS call, not just the entry

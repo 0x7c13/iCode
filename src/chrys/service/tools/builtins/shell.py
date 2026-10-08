@@ -616,7 +616,7 @@ class ShellTools:
         try:
             if sys.platform == "win32":
                 # Windows: snapshot outer TUI's console mode so a child TUI
-                # (e.g. the agent running ``uv run chrys``) cannot leave the
+                # (e.g. the agent running ``uv run icode``) cannot leave the
                 # outer chrys without mouse/keyboard input after it exits.
                 # See ``preserve_console_mode`` for the full rationale.
                 with preserve_console_mode():
@@ -838,7 +838,7 @@ class ShellTools:
                             *argv,
                             # stdin=DEVNULL so the child's STD_INPUT_HANDLE is not the
                             # outer chrys's console input handle on Windows.  Without this,
-                            # a grandchild TUI (e.g. ``uv run chrys`` inside PowerShell)
+                            # a grandchild TUI (e.g. ``uv run icode`` inside PowerShell)
                             # can call ``SetConsoleMode`` on the inherited handle and wipe
                             # the outer TUI's mouse/keyboard flags.  Harmless on Unix.
                             stdin=asyncio.subprocess.DEVNULL,

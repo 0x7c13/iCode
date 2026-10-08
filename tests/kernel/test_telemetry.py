@@ -1121,7 +1121,7 @@ class TestDriftPins:
 
     def test_scope_version_resolves_installed_chrys_version(self) -> None:
         assert instrumentation._SCOPE_NAME == "chrys"
-        assert importlib.metadata.version("chrys") == instrumentation._SCOPE_VERSION
+        assert importlib.metadata.version("iCode-TUI") == instrumentation._SCOPE_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -1881,7 +1881,7 @@ class TestHelpers:
         monkeypatch.setattr(instrumentation.trace, "get_tracer", fake_get_tracer)
         assert instrumentation.get_tracer() == "tracer"
         assert captured["instrumenting_module_name"] == "chrys"
-        assert captured["instrumenting_library_version"] == importlib.metadata.version("chrys")
+        assert captured["instrumenting_library_version"] == instrumentation._SCOPE_VERSION
 
         meter_calls: list[dict[str, Any]] = []
 
