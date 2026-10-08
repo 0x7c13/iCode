@@ -962,7 +962,7 @@ async def build_agent(
             conversation,
             ApprovalInputs(
                 reuse=ApprovalReuseBinding(runtime, tools, session_id=session_id)
-                if settings.reuse_enabled and (session_id or runtime.session_id)
+                if session_id or runtime.session_id
                 else None,
                 approval_policy=approval_policy,
                 event_bus=bus,

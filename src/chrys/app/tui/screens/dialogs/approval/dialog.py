@@ -5,20 +5,21 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.markup import escape
 from rich.text import Text
 from textual import events, on
 from textual.binding import Binding
 from textual.containers import HorizontalGroup, VerticalGroup
+from textual.content import Content
 from textual.screen import ModalScreen
-from textual.widgets import Button, Select, Static, TextArea
+from textual.widgets import Button, Collapsible, RadioButton, RadioSet, Static, TextArea
 
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.widgets import ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
+from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.foundation.i18n import MessageDef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
@@ -61,30 +62,25 @@ _REASON_PLACEHOLDER = msg(
 )
 _APPROVE = msg("tui.approval.button.approve", fallback="Approve (Y)")
 _DECLINE = msg("tui.approval.button.decline", fallback="Decline (N)")
-_REUSE_ONCE = msg("tui.approval.reuse.once", fallback="Allow once")
-_REUSE_EXACT_SESSION = msg("tui.approval.reuse.exact_session", fallback="Remember — this session")
-_REUSE_EXACT_PROJECT = msg("tui.approval.reuse.exact_project", fallback="Remember — this project")
-_REUSE_PREFIX_SESSION = msg(
-    "tui.approval.reuse.prefix_session", fallback="Remember with extra arguments — this session"
-)
-_REUSE_PREFIX_PROJECT = msg(
-    "tui.approval.reuse.prefix_project", fallback="Remember with extra arguments — this project"
-)
-_REUSE_DESCRIPTION = msg(
-    "tui.approval.reuse.description",
-    fallback="Session grants survive restoring this session; project grants apply across sessions. Manage or revoke grants with icode approvals. Edits here apply once only.",
-)
+_REASON_TITLE = msg("tui.approval.reason_title", fallback="Add a decline reason")
+_REUSE_TITLE = msg("tui.approval.reuse.title", fallback="Remember Approval")
+_REUSE_SESSION = msg("tui.approval.reuse.session", fallback="This session")
+_REUSE_PROJECT = msg("tui.approval.reuse.project", fallback="This project")
+_REUSE_SESSION_HINT = msg("tui.approval.reuse.session_hint", fallback="Also applies when you restore this session.")
+_REUSE_PROJECT_HINT = msg("tui.approval.reuse.project_hint", fallback="Also applies in other sessions in this project.")
 _REUSE_FILES = msg(
     "tui.approval.reuse.files",
-    fallback="Remember permission to modify these files in {project}. File contents may change.",
+    fallback="Don't ask again to modify these files",
 )
 _REUSE_COMMAND = msg(
     "tui.approval.reuse.command",
-    fallback="Remember this command in {project}. Command arguments, working directory and shell configuration must match. Environment variables, reason, timeout and output limit are not bound.",
+    fallback="Don't ask again for this command",
 )
-_REUSE_PREFIX = msg(
-    "tui.approval.reuse.prefix",
-    fallback="Allowing extra arguments also allows flags that can make this command destructive.",
+_REUSE_ADVANCED = msg("tui.approval.reuse.advanced", fallback="Advanced options")
+_REUSE_EXTRA_ARGS = msg("tui.approval.reuse.extra_args", fallback="Allow arguments added to the end of this command")
+_REUSE_PREFIX_WARNING = msg(
+    "tui.approval.reuse.prefix_warning",
+    fallback="Dangerous extra flags (such as --force) will also run without asking.",
 )
 _FLAGGED = msg("tui.approval.flagged", fallback="Flagged by Auto-Review")
 
@@ -154,6 +150,16 @@ class _ApprovalButton(Button, inherit_bindings=False):
     """Approval dialog button without Enter-to-press behavior."""
 
     BINDINGS: ClassVar[list] = []
+
+
+class _ApprovalRadioButton(RadioButton):
+    """Distinguish the selected scope by its mark as well as its color."""
+
+    def render(self) -> Content:
+        return Content.assemble(
+            ("(*)" if self.value else "( )", self.get_visual_style("toggle--button")),
+            self.label.pad(1, 1).stylize_before(self.get_visual_style("toggle--label")),
+        )
 
 
 class ApprovalDialog(
@@ -239,6 +245,7 @@ class ApprovalDialog(
     def compose(self) -> ComposeResult:
         localizer = widget_localizer(self)
         with VerticalGroup(id="approval-container") as container:
+            container.set_class(self._approval_body is not None, "-with-preview")
             container.border_title = Text(render_str(localizer, _APPROVAL_REQUIRED.bind()))
             if self._caller_name:
                 container.border_subtitle = Text(self._caller_name)
@@ -272,18 +279,20 @@ class ApprovalDialog(
                             arg_box.border_title = Text(label)
                             yield arg_box
                 if self._reuse_offer is not None:
-                    offer = self._reuse_offer
-                    description = _REUSE_FILES if offer.kind == "files" else _REUSE_COMMAND
-                    yield Static(
-                        Text(render_str(localizer, description.bind(project=sanitize_legacy_block(offer.project))))
+                    yield from self._compose_reuse_controls()
+                with Collapsible(
+                    title=render_str(localizer, _REASON_TITLE.bind()),
+                    collapsed=self._flagged is None,
+                    id="approval-reason-section",
+                ):
+                    reason_input = _ApprovalReasonTextArea(
+                        id="approval-reason",
+                        compact=True,
+                        soft_wrap=True,
+                        show_line_numbers=False,
                     )
-                    yield Static(
-                        Text(sanitize_legacy_block("\n".join((*offer.targets, offer.shell)).strip())),
-                        id="reuse-targets",
-                    )
-                    yield Static(Text(render_str(localizer, _REUSE_DESCRIPTION.bind())))
-                    if offer.prefix:
-                        yield Static(Text(render_str(localizer, _REUSE_PREFIX.bind())), id="reuse-prefix")
+                    reason_input.placeholder = render_str(localizer, _REASON_PLACEHOLDER.bind())
+                    yield reason_input
             # Docked footer — separator + judge + buttons always pinned to bottom.
             with VerticalGroup(id="approval-footer"):
                 separator = Static("\u2500" * 200, id="approval-separator", markup=False)
@@ -294,29 +303,6 @@ class ApprovalDialog(
                     yield ChrysLoadingIndicator(id="approval-judge-loading")
                     yield Static(id="approval-concern")
                 judge_area.display = self._judging
-                reason_input = _ApprovalReasonTextArea(
-                    id="approval-reason",
-                    compact=True,
-                    soft_wrap=True,
-                    show_line_numbers=False,
-                )
-                reason_input.placeholder = render_str(localizer, _REASON_PLACEHOLDER.bind())
-                yield reason_input
-                if self._reuse_offer:
-                    choices = [
-                        (Text(render_str(localizer, _REUSE_ONCE.bind())), ""),
-                    ]
-                    if self._reuse_offer.session:
-                        choices.append((Text(render_str(localizer, _REUSE_EXACT_SESSION.bind())), "EXACT_SESSION"))
-                    choices.append((Text(render_str(localizer, _REUSE_EXACT_PROJECT.bind())), "EXACT_PROJECT"))
-                    if self._reuse_offer.prefix:
-                        choices.extend(
-                            [
-                                (Text(render_str(localizer, _REUSE_PREFIX_SESSION.bind())), "PREFIX_SESSION"),
-                                (Text(render_str(localizer, _REUSE_PREFIX_PROJECT.bind())), "PREFIX_PROJECT"),
-                            ]
-                        )
-                    yield Select(choices, value="", allow_blank=False, id="reuse-choice")
                 with HorizontalGroup(id="approval-buttons"):
                     yield _ApprovalButton(
                         Text(render_str(localizer, _APPROVE.bind())),
@@ -330,6 +316,67 @@ class ApprovalDialog(
                         variant="error",
                         flat=True,
                     )
+
+    def _compose_reuse_controls(self) -> ComposeResult:
+        offer = self._reuse_offer
+        if offer is None:
+            return
+        localizer = widget_localizer(self)
+        with VerticalGroup(id="approval-reuse") as reuse_group:
+            reuse_group.border_title = Text(render_str(localizer, _REUSE_TITLE.bind()))
+            description = _REUSE_FILES if offer.kind == "files" else _REUSE_COMMAND
+            yield Checkbox(
+                Text(render_str(localizer, description.bind())),
+                id="reuse-remember",
+                compact=True,
+                tooltip=Text(sanitize_legacy_block("\n".join(offer.targets))),
+            )
+            with VerticalGroup(id="reuse-options") as options:
+                options.display = False
+                with RadioSet(id="reuse-scope", compact=True):
+                    yield _ApprovalRadioButton(
+                        Text(render_str(localizer, _REUSE_SESSION.bind())),
+                        value=True,
+                        id="reuse-session",
+                        tooltip=render_str(localizer, _REUSE_SESSION_HINT.bind()),
+                    )
+                    yield _ApprovalRadioButton(
+                        Text(render_str(localizer, _REUSE_PROJECT.bind())),
+                        id="reuse-project",
+                        tooltip=render_str(localizer, _REUSE_PROJECT_HINT.bind()),
+                    )
+                if offer.prefix:
+                    with Collapsible(title=render_str(localizer, _REUSE_ADVANCED.bind()), id="reuse-advanced"):
+                        yield Checkbox(
+                            Text(render_str(localizer, _REUSE_EXTRA_ARGS.bind())),
+                            id="reuse-extra-args",
+                            compact=True,
+                        )
+                        warning = Static(Text(render_str(localizer, _REUSE_PREFIX_WARNING.bind())), id="reuse-warning")
+                        warning.display = False
+                        yield warning
+
+    @on(Checkbox.Changed, "#reuse-remember")
+    def _on_reuse_remember_changed(self, event: Checkbox.Changed) -> None:
+        self.query_one("#reuse-options").display = event.value
+        if not event.value and self._reuse_offer is not None and self._reuse_offer.prefix:
+            # Opting out must not leave a broader hidden permission selected.
+            self.query_one("#reuse-extra-args", Checkbox).value = False
+            self.query_one("#reuse-advanced", Collapsible).collapsed = True
+
+    @on(Checkbox.Changed, "#reuse-extra-args")
+    def _on_reuse_extra_args_changed(self, event: Checkbox.Changed) -> None:
+        self.query_one("#reuse-warning").display = event.value
+
+    def _selected_reuse_choice(self) -> ReuseChoice:
+        offer = self._reuse_offer
+        if offer is None or not self.query_one("#reuse-remember", Checkbox).value:
+            return ""
+        session = self.query_one("#reuse-session", RadioButton).value
+        prefix = offer.prefix and self.query_one("#reuse-extra-args", Checkbox).value
+        if prefix:
+            return "PREFIX_SESSION" if session else "PREFIX_PROJECT"
+        return "EXACT_SESSION" if session else "EXACT_PROJECT"
 
     def _novel_remote_title(self) -> str:
         """Remote-chosen title, only when it adds information beyond the body.
@@ -461,12 +508,14 @@ class ApprovalDialog(
     def _show_flagged(self, verdict: JudgeVerdict) -> None:
         """Hide the spinner, show the concern and switch the border to error."""
         judge_area = self.query_one("#approval-judge", VerticalGroup)
+        judge_area.display = True
         judge_area.border_title = Text(render_str(widget_localizer(self), _FLAGGED.bind()))
         judge_area.add_class("judge-flagged")
         self.query_one("#approval-judge-loading").display = False
         concern_widget = self.query_one("#approval-concern", Static)
         concern_widget.update(Text(verdict.reason))
         concern_widget.display = True
+        self.query_one("#approval-reason-section", Collapsible).collapsed = False
 
     @on(TextArea.Changed, "#approval-reason")
     def _on_reason_changed(self, event: TextArea.Changed) -> None:
@@ -487,13 +536,8 @@ class ApprovalDialog(
         modified_args_fn = self._approval_body.modified_args if self._approval_body is not None else None
         modified_args = modified_args_fn() if modified_args_fn is not None else None
         reason = self.query_one("#approval-reason", _ApprovalReasonTextArea).text.strip()
-        if self._reuse_offer and not modified_args:
-            selected = self.query_one("#reuse-choice", Select).value
-            self.remember_choice = (
-                cast("ReuseChoice", selected)
-                if selected in {"EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "PREFIX_PROJECT"}
-                else ""
-            )
+        if not modified_args:
+            self.remember_choice = self._selected_reuse_choice()
         self._safe_dismiss((True, reason, modified_args), user_decision=True)
 
     @on(Button.Pressed, "#approval-no")

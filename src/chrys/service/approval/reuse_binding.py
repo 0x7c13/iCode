@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from chrys.kernel import FunctionTool
@@ -21,20 +22,40 @@ from chrys.service.approval.reuse import (
     project_path,
     simple_argv,
 )
+from chrys.service.approval.safety_classifier import target_may_access_sensitive_data
+from chrys.service.tools.approval_targets import ApprovedTargets
 from chrys.service.tools.builtins.filesystem import FilesystemTools
 from chrys.service.tools.builtins.shell import ShellTools
 
 if TYPE_CHECKING:
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.kernel.middleware import FunctionInvocationContext
-    from chrys.service.tools.file_approval import FileWriteTarget
+
+# Arguments that change neither what a command does nor where it runs. A
+# remembered call never names a working_dir (an empty one means the session's).
+_UNBOUND_SHELL_ARGS = frozenset({"command", "reason", "timeout", "max_tokens", "working_dir"})
+
+
+@dataclass(frozen=True)
+class PreparedReuse:
+    """One request's confirmed targets, its grant candidate and the grants covering it."""
+
+    targets: ApprovedTargets
+    candidate: Candidate | None = None
+    grant_ids: tuple[str, ...] = ()
 
 
 class ApprovalReuseBinding:
+    """Derive grant identities from the agent's own shell and file tools.
+
+    ``prepare`` and ``targets`` resolve paths and read grant files: run them
+    off the event loop.
+    """
+
     def __init__(self, runtime: SessionEnvironment, tools: list, *, session_id: str | None = None) -> None:
         self.runtime = runtime
-        self.session_id = session_id if session_id is not None else runtime.session_id
-        self.tools = {tool.name: tool for tool in tools if isinstance(tool, FunctionTool)}
+        self.session_id = session_id or runtime.session_id
+        self._tools = {tool.name: tool for tool in tools if isinstance(tool, FunctionTool)}
         config_dir = runtime.platform.config_dir
         self.service = ApprovalReuseService(
             ApprovalGrantStore(config_dir / GRANTS_FILE),
@@ -42,11 +63,11 @@ class ApprovalReuseBinding:
         )
 
     def supports(self, context: FunctionInvocationContext) -> bool:
+        """Only this agent's built-in shell, write and edit tools take part."""
         tool = context.function
         owner = tool.bound_instance
         return (
-            self.tools.get(tool.name) is tool
-            and context.kwargs.get("session", context.session) is context.session
+            self._tools.get(tool.name) is tool
             and isinstance(context.arguments, dict)
             and (
                 (isinstance(owner, ShellTools) and tool.func is ShellTools.execute.func)
@@ -57,35 +78,50 @@ class ApprovalReuseBinding:
             )
         )
 
-    def file_targets(self, context: FunctionInvocationContext) -> tuple[FileWriteTarget, ...] | None:
+    def targets(self, context: FunctionInvocationContext) -> ApprovedTargets:
+        """Where a supported call will act, as it resolves right now."""
         owner = context.function.bound_instance
-        if self.supports(context) and isinstance(owner, FilesystemTools) and isinstance(context.arguments, dict):
-            return owner.approval_targets(context.arguments)
-        return None
+        if not isinstance(owner, ShellTools | FilesystemTools) or not isinstance(context.arguments, dict):
+            return ApprovedTargets()
+        return owner.approval_targets(context.arguments)
 
-    def candidate(self, context: FunctionInvocationContext, *, non_reusable: bool = False) -> Candidate | None:
-        if non_reusable or not self.supports(context):
-            return None
+    def prepare(self, context: FunctionInvocationContext, *, reusable: bool) -> PreparedReuse:
+        """Resolve a supported call's targets and, when *reusable*, its covering grants."""
+        targets = self.targets(context)
+        candidate = self._candidate(context, targets) if reusable else None
+        if candidate is None:
+            return PreparedReuse(targets)
+        return PreparedReuse(targets, candidate, self.service.match(candidate))
+
+    def _candidate(self, context: FunctionInvocationContext, targets: ApprovedTargets) -> Candidate | None:
         args = context.arguments
-        if not isinstance(args, dict):
-            return None
         reuse = ReuseContext(self.session_id, project_path(self.runtime.cwd))
-        if not reuse.eligible:
+        if not isinstance(args, dict) or not reuse.eligible:
             return None
+        if targets.files is not None:
+            # A final-component symlink both reads its referent and replaces
+            # itself, and a credential file must always be confirmed by a person.
+            if not targets.files or any(
+                target.link_target is not None or target_may_access_sensitive_data(target.path)
+                for target in targets.files
+            ):
+                return None
+            return FileCandidate(reuse, frozenset(FileKey(path=target.path) for target in targets.files))
         owner = context.function.bound_instance
-        if isinstance(owner, FilesystemTools):
-            paths = owner.affected_paths(args)
-            return FileCandidate(reuse, frozenset(FileKey(path=path) for path in paths)) if paths else None
-        if not isinstance(owner, ShellTools) or "working_dir" in args or not isinstance(args.get("command"), str):
+        command = args.get("command")
+        if (
+            not isinstance(owner, ShellTools)
+            or targets.cwd is None
+            or args.get("working_dir")
+            or not isinstance(command, str)
+        ):
             return None
-        shell, command = owner.shell, args["command"]
+        shell = owner.shell
         try:
-            options = canonical(
-                {key: value for key, value in args.items() if key not in {"command", "reason", "timeout", "max_tokens"}}
-            )
+            options = canonical({key: value for key, value in args.items() if key not in _UNBOUND_SHELL_ARGS})
             tokens = normalize_simple_command(command, shell.name)
             key = CommandKey(
-                cwd=reuse.project_id,
+                cwd=targets.cwd,
                 shell=shell.name,
                 executable=shell.path,
                 shell_args=tuple(shell.args),

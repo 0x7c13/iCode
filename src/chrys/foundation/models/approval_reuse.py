@@ -12,9 +12,12 @@ ReuseChoice = Literal["", "EXACT_SESSION", "EXACT_PROJECT", "PREFIX_SESSION", "P
 
 @dataclass(frozen=True)
 class ApprovalReuseOffer:
+    """What a dialog may offer to remember.
+
+    ``targets`` are the command or files shown; ``prefix`` says whether appended
+    arguments can also be allowed (literal simple commands only).
+    """
+
     kind: Literal["command", "files"]
-    project: str
     targets: tuple[str, ...]
-    shell: str = ""
-    session: bool = True
     prefix: bool = False

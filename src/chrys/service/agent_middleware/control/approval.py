@@ -8,9 +8,8 @@ import asyncio
 import contextlib
 import json
 import os
-from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
 from chrys.foundation.events.types import (
@@ -49,18 +48,16 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     get_tool_invocation_order,
 )
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
-from chrys.service.approval.argument_snapshot import argument_snapshot
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
-from chrys.service.approval.reuse import canonical
-from chrys.service.approval.reuse_binding import ApprovalReuseBinding
+from chrys.service.approval.reuse_binding import ApprovalReuseBinding, PreparedReuse
 from chrys.service.approval.safety_classifier import (
     path_arg_may_access_sensitive_data,
     shell_arg_may_access_sensitive_data,
     shell_command_may_access_sensitive_data,
     target_may_access_sensitive_data,
 )
-from chrys.service.tools.file_approval import approved_file_targets
+from chrys.service.tools.approval_targets import approved_targets
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.tools import tool_operation_id
 
@@ -76,19 +73,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.approval_reuse import ReuseChoice
     from chrys.kernel.middleware import FunctionInvocationContext
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.approval.policy import ApprovalPolicy
+    from chrys.service.approval.reuse import Candidate
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.hooks.manager import HookManager
-
-
-def _reuse_argument_snapshot(arguments: object) -> str | None:
-    """Unsupported identities use ordinary approval and cannot reuse a grant."""
-    try:
-        return canonical(arguments)
-    except ValueError, TypeError, RecursionError:
-        return None
 
 
 def _unanswered(future: asyncio.Future[ApprovalResponse]) -> bool:
@@ -98,16 +89,6 @@ def _unanswered(future: asyncio.Future[ApprovalResponse]) -> bool:
 
 def _path_is_at_or_under(path: str, parent: str) -> bool:
     return path == parent or path.startswith(parent + os.sep)
-
-
-def _resolved_read_may_access_sensitive_data(file_path: str, *, base_cwd: str) -> bool:
-    if not base_cwd:
-        return True
-    try:
-        target = os.path.realpath(resolve_workspace_path(file_path, base_cwd=base_cwd))
-        return target_may_access_sensitive_data(target)
-    except OSError, ValueError:
-        return True
 
 
 def _is_session_archive_read_path(file_path: str, resolved_roots: list[str], *, base_cwd: str | None = None) -> bool:
@@ -265,8 +246,8 @@ class ApprovalMiddleware(FunctionMiddleware):
     ) -> None:
         from chrys.service.approval.turn_context import TurnContextHolder
 
-        self._reuse = reuse
         self._policy = approval_policy
+        self._reuse = reuse
         self._publisher: InvocationPublisher | None = None
         self._bus = event_bus
         self._session_id = session_id
@@ -348,36 +329,6 @@ class ApprovalMiddleware(FunctionMiddleware):
         context: FunctionInvocationContext,
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
-        reapprove = False
-        while retry := await self._process(context, call_next, reapprove=reapprove):
-            reapprove = True
-            if retry == "reapprove":
-                # The UI-edit path already ran hooks on this request. A hook
-                # rewrite needs confirmation, not a second transformation.
-                continue
-            # The upstream hook saw the old request. Check the changed request
-            # before presenting it again, just as for an explicit UI edit.
-            if await apply_before_tool_hooks(
-                manager=self._hook_manager,
-                context=context,
-                session_id=self._session_id,
-                profile_name=self._profile_name,
-                tool_name=context.function.name,
-                kind=get_tool_kind(context.function) or self._tool_kinds.get(context.function.name, ""),
-                call_id=get_call_id(context),
-                args=cast("dict[str, Any]", context.arguments),
-                workspace_cwd=self._workspace_cwd or "",
-                target_operation_id=tool_operation_id(context.metadata),
-            ):
-                return
-
-    async def _process(
-        self,
-        context: FunctionInvocationContext,
-        call_next: Callable[[], Awaitable[None]],
-        *,
-        reapprove: bool,
-    ) -> Literal[False, "rehook", "reapprove"]:
         publisher = self._publisher
         tool_name = context.function.name
         call_id = get_call_id(context)
@@ -394,34 +345,23 @@ class ApprovalMiddleware(FunctionMiddleware):
         sensitive_filesystem_read = tool_kind == KIND_FILESYSTEM_READ and path_arg_may_access_sensitive_data(
             context.arguments
         )
-        # Resolved-target hardening is opt-in with reuse; preserve ordinary
-        # read approval behavior when the feature is disabled.
-        if self._reuse is not None and tool_kind == KIND_FILESYSTEM_READ and isinstance(context.arguments, dict):
-            path = context.arguments.get("path")
-            if isinstance(path, str) and path:
-                sensitive_filesystem_read |= await asyncio.to_thread(
-                    _resolved_read_may_access_sensitive_data,
-                    path,
-                    base_cwd=self._workspace_cwd or self._reuse.runtime.cwd,
-                )
         sensitive_filesystem_write = tool_kind == KIND_FILESYSTEM_WRITE and path_arg_may_access_sensitive_data(
             context.arguments
         )
         policy_requires_approval = self._policy.should_require_approval(tool_name, tool_kind)
         if (
-            not reapprove
-            and not policy_requires_approval
+            not policy_requires_approval
             and not dev_sub_agent_review
             and not sensitive_shell
             and not sensitive_filesystem_read
             and not sensitive_filesystem_write
         ):
             await call_next()
-            return False
+            return
 
         # Auto-approve safe read-only shell commands (e.g. ls, cat, grep)
         # without showing the approval dialog.
-        if tool_kind == KIND_SHELL and not reapprove:
+        if tool_kind == KIND_SHELL:
             raw = context.arguments
             cmd = raw.get("command", "") if isinstance(raw, dict) else ""
             if cmd:
@@ -440,10 +380,10 @@ class ApprovalMiddleware(FunctionMiddleware):
                         )
                     )
                     await call_next()
-                    return False
+                    return
 
         # Auto-approve file writes inside workspace git repos.
-        if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots and not reapprove:
+        if tool_kind == KIND_FILESYSTEM_WRITE and self._workspace_roots:
             raw = context.arguments
             file_path = raw.get("path", "") if isinstance(raw, dict) else ""
             if (
@@ -461,14 +401,14 @@ class ApprovalMiddleware(FunctionMiddleware):
                     )
                 )
                 await call_next()
-                return False
+                return
 
         # Auto-approve reads of session-owned compaction archives (spilled
         # tool records, superseded LAST_WORDS notes): the agent is reading
         # back content chrys itself archived from the conversation, so the
         # dialog would gate nothing — even under a ``require`` rule or a
         # sensitive-looking archived tool name in the filename.
-        if tool_kind == KIND_FILESYSTEM_READ and self._session_archive_read_roots and not reapprove:
+        if tool_kind == KIND_FILESYSTEM_READ and self._session_archive_read_roots:
             raw = context.arguments
             file_path = raw.get("path", "") if isinstance(raw, dict) else ""
             if (
@@ -490,10 +430,10 @@ class ApprovalMiddleware(FunctionMiddleware):
                     )
                 )
                 await call_next()
-                return False
+                return
 
         # BYPASS — silently auto-approve without ever publishing a request.
-        if self._approval_mode == ApprovalMode.BYPASS and not reapprove:
+        if self._approval_mode == ApprovalMode.BYPASS:
             self._decisions.append(
                 _decision(
                     request_id="",
@@ -504,7 +444,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                 )
             )
             await call_next()
-            return False
+            return
 
         # Tool needs approval — parse args and publish request.
         raw_args = context.arguments
@@ -523,75 +463,24 @@ class ApprovalMiddleware(FunctionMiddleware):
         # branches above without copying or coercing their result.
         parsed_args = cast("dict[str, Any]", parsed_args)
 
-        reuse = self._reuse if self._reuse is not None and self._reuse.supports(context) else None
-        if reuse is not None:
-            # Reuse-only confirmation snapshot, never a future grant key. Keep
-            # ordinary approval free of serialization and tool identity checks.
-            confirmed_arguments = argument_snapshot(context.arguments)
-            file_targets = reuse.file_targets
-            confirmed_file_targets = file_targets(context)
-            parsed_args = deepcopy(parsed_args)
-            confirmed_function = (context.function, context.function.name, context.function.func)
-
-            # Copy structured values, keeping opaque host handles (including the
-            # kernel session) by identity instead of manufacturing unequal clones.
-            def snapshot_kwargs(value: Any) -> Any:
-                if isinstance(value, dict):
-                    return {key: snapshot_kwargs(item) for key, item in value.items()}
-                if isinstance(value, list):
-                    return [snapshot_kwargs(item) for item in value]
-                if isinstance(value, tuple):
-                    return tuple(snapshot_kwargs(item) for item in value)
-                return value
-
-            confirmed_kwargs = snapshot_kwargs(context.kwargs)
-
-            def request_identity_changed() -> bool:
-                return (
-                    context.function,
-                    context.function.name,
-                    context.function.func,
-                ) != confirmed_function or context.kwargs != confirmed_kwargs
-
-            def request_changed() -> bool:
-                return (
-                    argument_snapshot(context.arguments) != confirmed_arguments
-                    or file_targets(context) != confirmed_file_targets
-                    or request_identity_changed()
+        binding = self._reuse if self._reuse is not None and self._reuse.supports(context) else None
+        reuse: PreparedReuse | None = None
+        if binding is not None:
+            sensitive = sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write
+            reuse = await asyncio.to_thread(binding.prepare, context, reusable=not sensitive)
+            if reuse.grant_ids:
+                decision = _decision(
+                    request_id="",
+                    tool_name=tool_name,
+                    status="reuse_approved",
+                    call_id=call_id,
+                    tool_order=tool_order,
                 )
-
-        reuse_candidate = None
-        if reuse is not None and _reuse_argument_snapshot(context.arguments) is not None:
-            reuse_candidate = reuse.candidate(
-                context,
-                non_reusable=dev_sub_agent_review
-                or sensitive_shell
-                or sensitive_filesystem_read
-                or sensitive_filesystem_write,
-            )
-            if not reapprove and reuse_candidate is not None:
-                matched = await asyncio.to_thread(reuse.service.match, reuse_candidate)
-                # A worker lookup yields the event loop. The grant must still
-                # describe the live request when execution resumes.
-                if request_changed():
-                    return "rehook"
-            else:
-                matched = ()
-            if matched:
-                self._decisions.append(
-                    _decision(
-                        request_id="",
-                        tool_name=tool_name,
-                        status="reuse_approved",
-                        call_id=call_id,
-                        tool_order=tool_order,
-                    )
-                )
-                self._decisions[-1]["grant_ids"] = json.dumps(matched)
-                context.metadata["approval_grant_ids"] = list(matched)
-                with approved_file_targets(confirmed_file_targets):
+                decision["grant_ids"] = json.dumps(reuse.grant_ids)
+                self._decisions.append(decision)
+                with approved_targets(reuse.targets):
                     await call_next()
-                return False
+                return
 
         request_id = uuid4().hex[:_SHORT_ID_LEN]
         decision = _decision(
@@ -616,19 +505,13 @@ class ApprovalMiddleware(FunctionMiddleware):
             # Subscribe BEFORE publishing (a frontend may answer synchronously)
             # and hold the subscription until the decision is in, whatever
             # interrupts the wait.
-            async with OneShotCorrelation(
-                self._bus,
-                ApprovalResponse,
-                request_id=request_id,
-                snapshot=deepcopy if reuse is not None else None,
-            ) as correlation:
+            async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id) as correlation:
                 future = correlation.future
                 try:
                     judging = (
                         self._approval_mode == ApprovalMode.AUTO
                         and self._approval_judge is not None
                         and not dev_sub_agent_review
-                        and not reapprove
                     )
                     if judging:
                         # Frontends may synchronously block auto-fulfilment while handling
@@ -645,7 +528,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                             call_id=call_id,
                             tool_name=tool_name,
                             tool_kind=tool_kind,
-                            args=deepcopy(parsed_args) if reuse is not None else parsed_args,
+                            args=parsed_args,
                             # intent_summary stays empty: the middleware has no real intent
                             # to report, and a fabricated "Execute {tool_name}" placeholder
                             # would win over the informative title fallbacks downstream
@@ -656,7 +539,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                             workspace_roots=list(self._workspace_roots),
                             workspace_cwd=self._workspace_cwd or "",
                             judging=judging,
-                            reuse_offer=reuse_candidate.offer() if reuse_candidate is not None else None,
+                            reuse_offer=reuse.candidate.offer() if reuse is not None and reuse.candidate else None,
                         )
                     )
 
@@ -726,9 +609,9 @@ class ApprovalMiddleware(FunctionMiddleware):
                         with contextlib.suppress(asyncio.CancelledError, Exception):
                             await judge_task
 
-            user_decided = correlation.resolved_by_event
             approved = response.approved
-            remember_choice = response.remember_choice if approved else ""
+            # Only a person's own answer can remember an approval, never the judge's.
+            remember_choice = response.remember_choice if approved and correlation.resolved_by_event else ""
             reason = response.reason.strip()
             modified_args = response.modified_args
             status = "user_approved" if approved else "user_rejected"
@@ -757,16 +640,9 @@ class ApprovalMiddleware(FunctionMiddleware):
             raise
 
         if approved:
-            if reuse is not None and request_changed():
-                # Only the confirmation of the actual request belongs in the
-                # persisted tool decision; a stale approval must not win by ID.
-                self._decisions.remove(decision)
-                return "rehook"
+            targets = reuse.targets if reuse is not None else None
             if modified_args:
                 context.arguments = {**parsed_args, **modified_args}
-                if reuse is not None:
-                    confirmed_arguments = argument_snapshot(context.arguments)
-                    confirmed_file_targets = reuse.file_targets(context)
                 # Re-dispatch ``before_tool_call`` hooks with the edited args.
                 # ``ToolEventMiddleware`` already fired hooks once with the
                 # original args before approval ran; without this second pass,
@@ -788,8 +664,6 @@ class ApprovalMiddleware(FunctionMiddleware):
                     target_operation_id=tool_operation_id(context.metadata),
                 )
                 # Hooks may have rewritten args further — capture the final form.
-                hooked_arguments = argument_snapshot(context.arguments) if reuse is not None else None
-                hooked_file_targets = reuse.file_targets(context) if reuse is not None else None
                 final_args = context.arguments if isinstance(context.arguments, dict) else modified_args
                 context.metadata[_APPROVAL_MODIFIED_ARGS_KEY] = final_args
                 if call_id and isinstance(final_args, dict):
@@ -814,41 +688,13 @@ class ApprovalMiddleware(FunctionMiddleware):
                     # Hook intercepted the edited args. ``apply_before_tool_hooks``
                     # already set ``context.result`` and ``_APPROVAL_REJECTED_KEY``;
                     # skip ``call_next`` so the tool doesn't run.
-                    return False
-                if reuse is not None and request_changed():
-                    self._decisions.remove(decision)
-                    if (
-                        request_identity_changed()
-                        or argument_snapshot(context.arguments) != hooked_arguments
-                        or reuse.file_targets(context) != hooked_file_targets
-                    ):
-                        # A later event handler changed the request again; that
-                        # new request has not passed before_tool_call hooks.
-                        return "rehook"
-                    return "reapprove"
-            if (
-                user_decided
-                and remember_choice
-                and reuse_candidate is not None
-                and reuse is not None
-                and not modified_args
-            ):
-                # UI edits are explicit one-time approvals; they never save the
-                # original candidate selected before editing.
-                remembered = await asyncio.to_thread(reuse.service.remember, reuse_candidate, remember_choice)
-                if not remembered:
-                    await self._bus.publish(
-                        Warning(
-                            session_id=self._session_id,
-                            code="approval_reuse_save_failed",
-                            message=_REMEMBER_FAILED.fallback,
-                            display_message=_REMEMBER_FAILED.bind(),
-                        )
-                    )
-                if request_changed():
-                    self._decisions.remove(decision)
-                    return "rehook"
-            with approved_file_targets(confirmed_file_targets if reuse is not None else None):
+                    return
+                if binding is not None:
+                    # An edit is approved once, for where the edited call acts now.
+                    targets = await asyncio.to_thread(binding.targets, context)
+            elif remember_choice and binding is not None and reuse is not None and reuse.candidate is not None:
+                await self._remember(binding, reuse.candidate, remember_choice)
+            with approved_targets(targets):
                 await call_next()
         else:
             # Return error result — LLM sees rejection and can respond naturally.
@@ -863,7 +709,19 @@ class ApprovalMiddleware(FunctionMiddleware):
             context.result = "Error: Tool execution was rejected by user."
             if reason:
                 context.result = f"{context.result}\nUser reason: {reason}"
-        return False
+
+    async def _remember(self, binding: ApprovalReuseBinding, candidate: Candidate, choice: ReuseChoice) -> None:
+        """Save the grant for the request the person saw; a failure still allows this call."""
+        if await asyncio.to_thread(binding.service.remember, candidate, choice):
+            return
+        await self._bus.publish(
+            Warning(
+                session_id=self._session_id,
+                code="approval_reuse_save_failed",
+                message=_REMEMBER_FAILED.fallback,
+                display_message=_REMEMBER_FAILED.bind(),
+            )
+        )
 
     async def _publish_abandoned(self, request_id: str, *, ended_by: BaseException) -> None:
         """Retract an unanswered request, even when another cancel lands meanwhile.

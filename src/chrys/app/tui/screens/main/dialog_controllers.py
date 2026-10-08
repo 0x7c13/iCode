@@ -101,19 +101,6 @@ class ApprovalResponseWorker(Protocol):
     async def wait(self) -> object: ...
 
 
-class ApprovalResponseCallback(Protocol):
-    """Existing frontend callback with an optional explicit reuse selection."""
-
-    def __call__(
-        self,
-        request_id: str,
-        approved: bool,
-        reason: str,
-        modified_args: dict[str, Any] | None = None,
-        remember_choice: ReuseChoice = "",
-    ) -> ApprovalResponseWorker | None: ...
-
-
 class ApprovalDialogHandle(Protocol):
     """Small approval-dialog surface used by the controller."""
 
@@ -246,7 +233,6 @@ class ApprovalQueueController:
                 _call_id: str = event.call_id,
                 _args: dict[str, Any] = event.args,
                 _judging: bool = event.judging,
-                _reuse_enabled: bool = bool(event.reuse_offer),
             ) -> None:
                 dialog = self.open_dialogs.pop(_req, None)
                 if _req in self.cancelled_requests:
@@ -264,18 +250,10 @@ class ApprovalQueueController:
                 approved, reason, modified_args = result
                 if approved and modified_args and _call_id:
                     self._port.update_tool_args(_call_id, {**_args, **modified_args})
-                if (
-                    _reuse_enabled
-                    and approved
-                    and dialog is not None
-                    and dialog.user_decision_submitted
-                    and dialog.remember_choice
-                ):
-                    response_worker = self._port.handle_approval_response(
-                        _req, approved, reason, modified_args, dialog.remember_choice
-                    )
-                else:
-                    response_worker = self._port.handle_approval_response(_req, approved, reason, modified_args)
+                remember_choice = dialog.remember_choice if approved and dialog is not None else ""
+                response_worker = self._port.handle_approval_response(
+                    _req, approved, reason, modified_args, remember_choice
+                )
                 if track_user_decision:
 
                     async def _drain_marker(

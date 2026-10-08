@@ -120,9 +120,17 @@ def test_files_need_complete_coverage_in_one_scope(service):
         "echo {a,b}",
     ],
 )
-def test_complex_commands_cannot_create_session_grants(service, shell, text):
+def test_complex_commands_are_remembered_only_exactly(service, shell, text):
     assert normalize_simple_command(text, shell) is None
-    assert not service.remember(command(text, shell=shell), "EXACT_SESSION")
+    assert not service.remember(command(text, shell=shell), "PREFIX_SESSION")
+    assert service.remember(command(text, shell=shell), "EXACT_SESSION")
+    assert service.match(command(text, shell=shell))
+
+
+@pytest.mark.parametrize("text", ["rm =deploy", "rm ''=deploy", 'rm ""=deploy', "rm '=deploy'"])
+def test_zsh_equals_words_keep_their_raw_text(text):
+    # zsh turns =deploy into the path of the deploy command, also after empty quotes.
+    assert normalize_simple_command(text, "zsh") is None
 
 
 @pytest.mark.parametrize("shell", ["bash", "sh", "zsh", "git_bash", "cmd", "powershell", "pwsh"])
@@ -135,9 +143,9 @@ def test_revocation_and_clear_are_visible_without_rebuild(service):
     assert service.remember(candidate, "EXACT_PROJECT")
     other = ApprovalReuseService(service.store, service.session_store)
     (grant_id,) = other.match(candidate)
-    assert service.revoke(grant_id)
+    assert service.store.revoke(grant_id)
     assert not other.match(candidate)
-    assert not service.revoke("unknown")
+    assert not service.store.revoke("unknown")
     assert service.remember(candidate, "EXACT_SESSION")
     assert service.session_store.clear()
     assert not other.match(candidate)

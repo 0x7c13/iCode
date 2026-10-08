@@ -29,16 +29,17 @@ def grants(tmp_path, monkeypatch):
     monkeypatch.setattr(approvals, "bootstrap_runtime", create_autospec(approvals.bootstrap_runtime))
     tools = ShellTools(runtime).tools()
     binding = ApprovalReuseBinding(runtime, tools)
-    candidate = binding.candidate(FunctionInvocationContext(tools[0], {"command": "npm run test"}))
+    candidate = binding.prepare(
+        FunctionInvocationContext(tools[0], {"command": "npm run test"}), reusable=True
+    ).candidate
     assert candidate is not None
     assert binding.service.remember(candidate, "EXACT_SESSION")
     assert binding.service.remember(candidate, "EXACT_PROJECT")
     return binding, candidate
 
 
-def test_cli_lists_and_revokes_grants_while_reuse_is_disabled(grants, capsys, monkeypatch):
+def test_cli_lists_and_revokes_grants(grants, capsys, monkeypatch):
     binding, candidate = grants
-    monkeypatch.setenv("CHRYS_APPROVAL_REUSE", "false")
     monkeypatch.setattr(sys, "argv", ["icode", "approvals", "list", "--json"])
     assert app.main() == 0
     rows = json.loads(capsys.readouterr().out)
@@ -47,6 +48,13 @@ def test_cli_lists_and_revokes_grants_while_reuse_is_disabled(grants, capsys, mo
         assert approvals.main(["revoke", row["id"]]) == 0
     assert not binding.service.match(candidate)
     assert approvals.main(["revoke", rows[0]["id"]]) == 1
+
+
+def test_cli_lists_commands_as_shell_text(grants, capsys):
+    assert approvals.main(["list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2
+    assert all(line.endswith("  exact npm run test") for line in lines)
 
 
 @pytest.mark.parametrize("filter_args", [["--session", "session-a"], ["--project"], ["--all"]])
@@ -84,7 +92,7 @@ async def test_session_restore_fork_and_delete_grant_lifecycle(grants):
     session_path = binding.service.session_store.path
     store = JsonFileStateStore(session_path.parent.parent)
     await store.save_session(binding.session_id, {"messages": [], "compressed_msgs": []})
-    rebuilt = ApprovalReuseBinding(binding.runtime, list(binding.tools.values()))
+    rebuilt = ApprovalReuseBinding(binding.runtime, [])
     assert {rule.scope for rule in rebuilt.service.rules()} == {"SESSION", "PROJECT"}
     fork_id = store.fork_session(binding.session_id)
     assert not (store.session_dir(fork_id) / session_path.name).exists()

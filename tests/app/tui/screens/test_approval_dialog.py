@@ -30,6 +30,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, KIND_MCP, KIND_SUB_AGENT
 from chrys.service.approval.judge import JudgeVerdict
 from tests.support.paths import SRC_ROOT
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
 _CHRYS_CSS = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
@@ -282,6 +283,7 @@ async def test_approval_dialog_reason_allows_five_content_lines() -> None:
         await app.push_screen(dialog)
         await pilot.pause()
 
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
         assert str(input_area.styles.max_height) == "7"
 
@@ -349,6 +351,7 @@ async def test_approval_dialog_y_n_in_reason_inserts_text() -> None:
         await app.push_screen(dialog, callback=results.append)
         await pilot.pause()
 
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
         input_area.focus()
         await wait_for(lambda: input_area.has_focus, pilot=pilot, description="control focus before interaction")
@@ -419,6 +422,7 @@ async def test_approval_dialog_decline_returns_optional_reason() -> None:
 
         assert dialog.query_one("#approval-yes", Button).has_focus
 
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
         input_area.insert("Use a narrower command")
         input_area.focus()
@@ -449,6 +453,7 @@ async def test_approval_dialog_reason_placeholder_is_dim_in_chrys_ansi() -> None
         await app.push_screen(dialog)
         await pilot.pause()
 
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
         assert input_area.placeholder == "Reason (optional, sent to agent on Decline)"
         placeholder_style = input_area.get_visual_style("text-area--placeholder").rich_style
@@ -828,7 +833,10 @@ async def test_approval_dialog_manual_reason_disables_approve_until_empty() -> N
         await pilot.pause()
 
         approve = dialog.query_one("#approval-yes", Button)
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
+        approve.focus()
+        await wait_for(lambda: approve.has_focus, pilot=pilot, description="approve focused before inserting reason")
 
         assert approve.has_focus
         input_area.insert("Use decline instead")
@@ -1115,6 +1123,7 @@ async def test_approval_dialog_reason_supports_shift_enter_newline() -> None:
         await app.push_screen(dialog, callback=results.append)
         await pilot.pause()
 
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
         input_area.insert("Line one")
         input_area.focus()
@@ -1139,6 +1148,7 @@ async def test_approval_dialog_reason_newline_keeps_cursor_visible_after_height_
         await app.push_screen(dialog)
         await pilot.pause()
 
+        await click_when_settled(pilot, "#approval-reason-section CollapsibleTitle")
         input_area = dialog.query_one("#approval-reason", EnhancedTextArea)
         input_area.focus()
         await wait_for(lambda: input_area.has_focus, pilot=pilot, description="control focus before interaction")

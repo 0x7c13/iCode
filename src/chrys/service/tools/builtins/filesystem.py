@@ -25,7 +25,7 @@ from chrys.foundation.platform.paths import resolve_existing_path, resolve_works
 from chrys.foundation.text.images import ImageProcessingError, load_image_file
 from chrys.foundation.text.lines import normalize_line_endings, split_lines
 from chrys.kernel import Content
-from chrys.service.tools.file_approval import FileWriteTarget, approved_write_path, file_write_target
+from chrys.service.tools.approval_targets import ApprovedTargets, approved_write_path, file_write_target
 from chrys.service.tools.kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, tool
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.session_artifacts import (
@@ -939,22 +939,18 @@ class FilesystemTools:
         """Return filesystem tools for this runtime context."""
         return [self.read_file, self.view_image, self.write_file, self.edit_file]
 
-    def approval_targets(self, arguments: dict[str, object]) -> tuple[FileWriteTarget, ...]:
-        """One-time targets, including final symlinks; unresolved paths authorize nothing."""
+    def approval_targets(self, arguments: dict[str, object]) -> ApprovedTargets:
+        """The entries a write/edit replaces; an unresolved path authorizes no write."""
         path = arguments.get("path")
+        if isinstance(path, str) and is_document_artifact_handle(path):
+            # The tool refuses to write a session document; nothing to pin.
+            return ApprovedTargets()
         if not isinstance(path, str) or not path or "\0" in path:
-            return ()
+            return ApprovedTargets(files=())
         try:
-            return (file_write_target(path, base_cwd=self._runtime.cwd),)
+            return ApprovedTargets(files=(file_write_target(path, base_cwd=self._runtime.cwd),))
         except OSError, ValueError:
-            return ()
-
-    def affected_paths(self, arguments: dict[str, object]) -> tuple[str, ...] | None:
-        """Reusable physical destinations exclude mixed read/replace symlink operations."""
-        targets = self.approval_targets(arguments)
-        if not targets or any(target.link_target is not None for target in targets):
-            return None
-        return tuple(target.path for target in targets)
+            return ApprovedTargets(files=())
 
     @tool(kind=KIND_FILESYSTEM_READ)
     def read_file(

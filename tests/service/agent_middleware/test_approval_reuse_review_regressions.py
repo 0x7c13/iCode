@@ -82,7 +82,7 @@ async def test_ui_edit_runs_its_before_hook_once(approval_setup, rewrite):
         await middleware.process(context, called)
         final = "timeout 10 npm run build" if rewrite else "npm run build"
         assert seen == ["npm run build"]
-        assert requests == (["npm run test", final] if rewrite else ["npm run test"])
+        assert requests == ["npm run test"]
         assert context.arguments == {"command": final}
         called.assert_awaited_once()
         assert binding.service.rules() == []
@@ -91,39 +91,8 @@ async def test_ui_edit_runs_its_before_hook_once(approval_setup, rewrite):
         await bus.unsubscribe(ApprovalRequest, approve)
 
 
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), (1, 2), {1, 2}, Path("relative")])
-@pytest.mark.parametrize("phase", ["initial", "changed", "edited"])
-async def test_non_json_arguments_fall_back_to_ordinary_approval(approval_setup, value, phase):
-    _, binding, bus, policy = approval_setup
-    tool = FunctionTool(name="custom_tool")
-    context = FunctionInvocationContext(tool, {"value": value if phase == "initial" else "original"})
-    requests = []
-
-    async def approve(event):
-        requests.append(event)
-        if phase == "changed" and len(requests) == 1:
-            context.arguments["value"] = value
-        await bus.publish(
-            ApprovalResponse(
-                request_id=event.request_id,
-                approved=True,
-                modified_args={"value": value} if phase == "edited" else None,
-                remember_choice="EXACT_PROJECT",
-            )
-        )
-
-    called = AsyncMock(spec=lambda: None)
-    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
-    await bus.subscribe(ApprovalRequest, approve)
-    try:
-        await middleware.process(context, called)
-        assert len(requests) == 1
-        assert all(not request.reuse_offer for request in requests)
-        called.assert_awaited_once()
-        assert binding.service.rules() == []
-    finally:
-        await middleware.close()
-        await bus.unsubscribe(ApprovalRequest, approve)
+def reuse_candidate(binding, context):
+    return binding.prepare(context, reusable=True).candidate
 
 
 def _hold_writer_lock(store):
@@ -136,7 +105,7 @@ def _hold_writer_lock(store):
 async def test_writer_contention_does_not_block_approval_event_loop(approval_setup, operation):
     tool, binding, bus, policy = approval_setup
     context = FunctionInvocationContext(tool, {"command": "npm run test"})
-    candidate = binding.candidate(context)
+    candidate = reuse_candidate(binding, context)
     assert candidate is not None
     if operation == "match":
         assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
@@ -178,7 +147,7 @@ async def test_writer_contention_does_not_block_approval_event_loop(approval_set
 
 async def test_reserved_writer_lock_does_not_block_existing_rule_reads(approval_setup):
     tool, binding, _, _ = approval_setup
-    candidate = binding.candidate(FunctionInvocationContext(tool, {"command": "npm run test"}))
+    candidate = reuse_candidate(binding, FunctionInvocationContext(tool, {"command": "npm run test"}))
     assert candidate is not None
     assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
     lock = await asyncio.to_thread(_hold_writer_lock, binding.service.store)
@@ -191,15 +160,16 @@ async def test_reserved_writer_lock_does_not_block_existing_rule_reads(approval_
 async def test_session_grants_survive_rebuild_but_not_a_different_session(approval_setup):
     tool, binding, bus, policy = approval_setup
     context = FunctionInvocationContext(tool, {"command": "npm run test"})
-    candidate = binding.candidate(context)
+    candidate = reuse_candidate(binding, context)
     assert candidate is not None
     assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_SESSION")
     middleware = ApprovalMiddleware(policy, bus, reuse=binding)
     await middleware.close()
-    rebuilt = ApprovalReuseBinding(binding.runtime, [tool])
+    # An empty session id means the runtime's own session.
+    rebuilt = ApprovalReuseBinding(binding.runtime, [tool], session_id="")
     other_session = ApprovalReuseBinding(binding.runtime, [tool], session_id="session-b")
-    assert await asyncio.to_thread(rebuilt.service.match, rebuilt.candidate(context))
-    assert not await asyncio.to_thread(other_session.service.match, other_session.candidate(context))
+    assert await asyncio.to_thread(rebuilt.service.match, reuse_candidate(rebuilt, context))
+    assert not await asyncio.to_thread(other_session.service.match, reuse_candidate(other_session, context))
     assert await asyncio.to_thread(other_session.service.rules) == []
 
 
@@ -242,56 +212,3 @@ async def test_typed_values_reach_ordinary_approval_through_real_tool_loop(
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
-
-
-@pytest.mark.parametrize("operation", ["match", "remember"])
-async def test_changed_request_during_store_operation_requires_new_human_approval(
-    approval_setup, monkeypatch, operation
-):
-    tool, binding, bus, policy = approval_setup
-    context = FunctionInvocationContext(tool, {"command": "npm run test"})
-    candidate = binding.candidate(context)
-    assert candidate is not None
-    if operation == "match":
-        assert await asyncio.to_thread(binding.service.remember, candidate, "EXACT_PROJECT")
-    original_match = binding.service.match
-    original_remember = binding.service.remember
-
-    def changed_match(current):
-        result = original_match(current)
-        context.arguments["command"] = "npm run build"
-        return result
-
-    def changed_remember(current, choice):
-        result = original_remember(current, choice)
-        context.arguments["command"] = "npm run build"
-        return result
-
-    if operation == "match":
-        monkeypatch.setattr(binding.service, "match", changed_match)
-    else:
-        monkeypatch.setattr(binding.service, "remember", changed_remember)
-    requests = []
-
-    async def respond(event):
-        requests.append(event.args["command"])
-        await bus.publish(
-            ApprovalResponse(
-                request_id=event.request_id,
-                approved=event.args["command"] == "npm run test",
-                remember_choice="EXACT_PROJECT",
-            )
-        )
-
-    middleware = ApprovalMiddleware(policy, bus, reuse=binding)
-    called = AsyncMock(spec=lambda: None)
-    await bus.subscribe(ApprovalRequest, respond)
-    try:
-        await middleware.process(context, called)
-        assert requests == (["npm run build"] if operation == "match" else ["npm run test", "npm run build"])
-        called.assert_not_awaited()
-        assert context.result == "Error: Tool execution was rejected by user."
-        assert not original_match(binding.candidate(context))
-    finally:
-        await middleware.close()
-        await bus.unsubscribe(ApprovalRequest, respond)

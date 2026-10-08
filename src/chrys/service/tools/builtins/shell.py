@@ -61,6 +61,12 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERRORED_METADATA_KEY,
 )
 from chrys.service.mutations.trace import shell_trace_argv
+from chrys.service.tools.approval_targets import (
+    CHANGED_AFTER_APPROVAL,
+    ApprovedTargets,
+    approved_cwd,
+    physical_dir,
+)
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import tool_error
 from chrys.service.tools.spill import bound_process_output
@@ -359,6 +365,19 @@ class ShellTools:
         """Return the shell configuration used by this tool instance."""
         return self._shell
 
+    def approval_targets(self, arguments: dict[str, object]) -> ApprovedTargets:
+        """The directory a command will run in; an unresolvable one is left to ``execute``."""
+        working_dir = arguments.get("working_dir")
+        if working_dir is not None and not isinstance(working_dir, str):
+            return ApprovedTargets()
+        try:
+            return ApprovedTargets(cwd=physical_dir(self._command_cwd(working_dir)))
+        except OSError, ValueError:
+            return ApprovedTargets()
+
+    def _command_cwd(self, working_dir: str | None) -> str:
+        return resolve_workspace_path(working_dir, base_cwd=self._runtime.cwd) if working_dir else self._runtime.cwd
+
     async def _bound_result(
         self, canonical: str, budget: int, captures: Sequence[CapturedOutput] = (), *, lead: str = ""
     ) -> str:
@@ -559,7 +578,15 @@ class ShellTools:
                 )
 
         shell = self._shell
-        cwd = resolve_workspace_path(working_dir, base_cwd=self._runtime.cwd) if working_dir else self._runtime.cwd
+        cwd = self._command_cwd(working_dir)
+        pinned_cwd = approved_cwd()
+        if pinned_cwd is not None and await asyncio.to_thread(physical_dir, cwd) != pinned_cwd:
+            _record_shell_error()
+            return tool_error(
+                "working_dir_changed",
+                CHANGED_AFTER_APPROVAL.format(target="Working directory"),
+                details={"working_dir": cwd},
+            )
 
         try:
             if sys.platform == "win32":

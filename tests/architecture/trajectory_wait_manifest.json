@@ -583,7 +583,7 @@
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_AGENT, 'Finalizing agent', status=AGENT_LOAD_STATUS_RUNNING)", "unresolved"],
         ["awaitable", "await agent.__aenter__()", "unresolved"],
         ["awaitable", "await prepared.own_or_release(partial(agent.__aexit__, None, None, None))", "unresolved"],
-        ["wrapper", "await create_approval(conversation, ApprovalInputs(reuse=ApprovalReuseBinding(runtime, tools, session_id=session_id) if settings.reuse_enabled and (session_id or runtime.session_id) else None, approval_policy=approval_policy, event_bus=bus, session_id=session_id, tool_kinds=tool_kinds, caller_name=profile.display_name or profile.name, workspace_roots=workspace_roots, approval_mode=approval_mode, approval_judge=approval_judge, approval_log_dir=approval_log_dir, workspace_cwd=runtime.cwd, dev_mode=settings.dev_mode, hook_manager=hook_manager, profile_name=profile.name, session_archive_read_roots=[effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None, turn_context=turn_context))", "unresolved", "chrys.orchestration.invoker.runtime.create_approval"]
+        ["wrapper", "await create_approval(conversation, ApprovalInputs(reuse=ApprovalReuseBinding(runtime, tools, session_id=session_id) if session_id or runtime.session_id else None, approval_policy=approval_policy, event_bus=bus, session_id=session_id, tool_kinds=tool_kinds, caller_name=profile.display_name or profile.name, workspace_roots=workspace_roots, approval_mode=approval_mode, approval_judge=approval_judge, approval_log_dir=approval_log_dir, workspace_cwd=runtime.cwd, dev_mode=settings.dev_mode, hook_manager=hook_manager, profile_name=profile.name, session_archive_read_roots=[effective_session_dir / COMPACTIONS_DIR_NAME] if effective_session_dir else None, turn_context=turn_context))", "unresolved", "chrys.orchestration.invoker.runtime.create_approval"]
       ],
       "build_agent._acquire._mcp_progress": [
         ["awaitable", "await _progress(AGENT_LOAD_PHASE_MCP, f'{action} MCP server {config.name}', server_name=config.name, current=current, total=total, failed=failed, status=status, subject=config.name)", "unresolved"]
@@ -3303,18 +3303,27 @@
       "ApprovalMiddleware._ensure_auto_fulfill_block_subscription": [
         ["awaitable", "await self._approval_arbiter.ensure_subscription()", "unresolved"]
       ],
-      "ApprovalMiddleware._process": [
-        ["thread_pool", "await asyncio.to_thread(_resolved_read_may_access_sensitive_data, path, base_cwd=self._workspace_cwd or self._reuse.runtime.cwd)", "unresolved"],
+      "ApprovalMiddleware._publish_abandoned": [
+        ["wrapper", "await finish_close(retract)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "ApprovalMiddleware._remember": [
+        ["thread_pool", "await asyncio.to_thread(binding.service.remember, candidate, choice)", "unresolved"],
+        ["awaitable", "await self._bus.publish(Warning(session_id=self._session_id, code='approval_reuse_save_failed', message=_REMEMBER_FAILED.fallback, display_message=_REMEMBER_FAILED.bind()))", "unresolved"]
+      ],
+      "ApprovalMiddleware.close": [
+        ["awaitable", "await self._approval_arbiter.close()", "unresolved"]
+      ],
+      "ApprovalMiddleware.process": [
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(reuse.service.match, reuse_candidate)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(binding.prepare, context, reusable=not sensitive)", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
-        ["async_context", "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id, snapshot=deepcopy if reuse is not None else None)", "unresolved"],
+        ["async_context", "async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id)", "unresolved"],
         ["wrapper", "await self._ensure_auto_fulfill_block_subscription()", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._ensure_auto_fulfill_block_subscription"],
-        ["awaitable", "await self._bus.publish(ApprovalRequest(request_id=request_id, call_id=call_id, tool_name=tool_name, tool_kind=tool_kind, args=deepcopy(parsed_args) if reuse is not None else parsed_args, session_id=self._session_id, caller_name=self._caller_name, user_message=self._user_message, workspace_roots=list(self._workspace_roots), workspace_cwd=self._workspace_cwd or '', judging=judging, reuse_offer=reuse_candidate.offer() if reuse_candidate is not None else None))", "unresolved"],
+        ["awaitable", "await self._bus.publish(ApprovalRequest(request_id=request_id, call_id=call_id, tool_name=tool_name, tool_kind=tool_kind, args=parsed_args, session_id=self._session_id, caller_name=self._caller_name, user_message=self._user_message, workspace_roots=list(self._workspace_roots), workspace_cwd=self._workspace_cwd or '', judging=judging, reuse_offer=reuse.candidate.offer() if reuse is not None and reuse.candidate else None))", "unresolved"],
         ["awaitable", "await approval_trace.requested(tool_name=tool_name, approval_mode=self._approval_mode.value, approval_level=_approval_level(policy=policy_requires_approval, dev_sub_agent_review=dev_sub_agent_review, sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write))", "unresolved"],
         ["wrapper", "await await_approval_with_hooks(future=future, judge_task=judge_task, manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, workspace_cwd=self._workspace_cwd or '', caller_name=self._caller_name, request_id=request_id, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=parsed_args, target_operation_id=approval_trace.request_id if approval_trace is not None else None)", "unresolved", "chrys.service.agent_middleware.control.approval_hooks.await_approval_with_hooks"],
         ["future", "await judge_task", "unresolved"],
@@ -3322,19 +3331,9 @@
         ["wrapper", "await self._publish_abandoned(request_id, ended_by=exc)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._publish_abandoned"],
         ["wrapper", "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=context.arguments, workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"],
         ["awaitable", "await publisher.publish(InvocationToolCallArgsUpdated(origin=publisher.origin, agent_name=self._caller_name, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=final_args, session_id=self._session_id))", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(reuse.service.remember, reuse_candidate, remember_choice)", "unresolved"],
-        ["awaitable", "await self._bus.publish(Warning(session_id=self._session_id, code='approval_reuse_save_failed', message=_REMEMBER_FAILED.fallback, display_message=_REMEMBER_FAILED.bind()))", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(binding.targets, context)", "unresolved"],
+        ["wrapper", "await self._remember(binding, reuse.candidate, remember_choice)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._remember"],
         ["awaitable", "await call_next()", "unresolved"]
-      ],
-      "ApprovalMiddleware._publish_abandoned": [
-        ["wrapper", "await finish_close(retract)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
-      ],
-      "ApprovalMiddleware.close": [
-        ["awaitable", "await self._approval_arbiter.close()", "unresolved"]
-      ],
-      "ApprovalMiddleware.process": [
-        ["wrapper", "await self._process(context, call_next, reapprove=reapprove)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._process"],
-        ["wrapper", "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=context.function.name, kind=get_tool_kind(context.function) or self._tool_kinds.get(context.function.name, ''), call_id=get_call_id(context), args=cast('dict[str, Any]', context.arguments), workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"]
       ]
     },
     "chrys.service.agent_middleware.control.approval_hooks": {
@@ -4691,6 +4690,7 @@
         ["awaitable", "await progress_cb(pending.take())", "unresolved"]
       ],
       "ShellTools.execute": [
+        ["thread_pool", "await asyncio.to_thread(physical_dir, cwd)", "unresolved"],
         ["wrapper", "await self._execute_pipe(command, shell, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pipe"],
         ["wrapper", "await self._bound_result('\\n'.join(parts), budget, (stdout, stderr))", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._bound_result"],
         ["wrapper", "await self._execute_pty(command, shell, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._execute_pty"],

@@ -40,6 +40,10 @@ def setup(tmp_path):
     return runtime, tool, binding, bus, policy
 
 
+def reuse_candidate(binding, context):
+    return binding.prepare(context, reusable=True).candidate
+
+
 def invocation(tool, command="npm run dev"):
     return FunctionInvocationContext(tool, {"command": command, "reason": "test"})
 
@@ -114,13 +118,23 @@ async def test_explicit_working_dir_approval_never_mints_reuse(setup, choice):
 def test_working_dir_cannot_bypass_reuse_guard_with_opaque_arguments(setup, opaque_context):
     runtime, tool, binding, _, _ = setup
     ctx = FunctionInvocationContext(tool, {"command": "git reset --hard"})
-    first = binding.candidate(ctx)
+    first = reuse_candidate(binding, ctx)
     assert first and binding.service.remember(first, "EXACT_SESSION")
     ctx.arguments["working_dir"] = runtime.cwd + "/other"
     if opaque_context == "kwargs":
         ctx.kwargs["host_context"] = object()
     elif opaque_context == "arguments":
         ctx.arguments["reason"] = object()
-    current = binding.candidate(ctx)
+    current = reuse_candidate(binding, ctx)
     assert not binding.service.match(current)
     assert current is None
+
+
+@pytest.mark.parametrize("working_dir", [None, ""])
+def test_empty_working_dir_is_the_session_folder(setup, working_dir):
+    _, tool, binding, _, _ = setup
+    remembered = reuse_candidate(binding, invocation(tool, "git status"))
+    assert remembered and binding.service.remember(remembered, "EXACT_SESSION")
+    ctx = invocation(tool, "git status")
+    ctx.arguments["working_dir"] = working_dir
+    assert binding.service.match(reuse_candidate(binding, ctx))

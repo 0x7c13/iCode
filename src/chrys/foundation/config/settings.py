@@ -666,7 +666,6 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
-_LABEL_APPROVAL_REUSE = msg("settings.approval.reuse_enabled.label", fallback="Remember explicit user approvals")
 _LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
     "settings.ui.approval.defer_while_judging.label",
     fallback="Show the approval dialog only when Auto-Review flags a call",
@@ -1095,19 +1094,6 @@ class Settings:
             risk=Risk.DANGEROUS,
             # Falling through could land on a persisted ``bypass``.
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
-        ),
-    )
-
-    reuse_enabled: bool = field(
-        default=False,
-        metadata=spec(
-            key="approval.reuse_enabled",
-            label=_LABEL_APPROVAL_REUSE,
-            env="CHRYS_APPROVAL_REUSE",
-            coerce=bool_coercer(),
-            apply=Apply.RELOAD,
-            group="approval",
-            kind=Kind.BOOL,
         ),
     )
 

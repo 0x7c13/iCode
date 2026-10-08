@@ -80,7 +80,7 @@ def normalize_simple_command(command: object, shell: str) -> tuple[str, ...] | N
             return None
     else:
         quote = ""
-        for index, char in enumerate(command):
+        for char in command:
             if char in "\r\n\0" or char == "\\":
                 return None
             if quote:
@@ -92,12 +92,13 @@ def normalize_simple_command(command: object, shell: str) -> tuple[str, ...] | N
                 quote = char
             elif char not in _BARE | {"@", "%", ","}:
                 return None
-            elif shell == "zsh" and char == "=" and (index == 0 or command[index - 1] in " \t"):
-                # zsh expands an unquoted =command word via its command table.
-                return None
         if quote:
             return None
         tokens = tuple(shlex.split(command, posix=True))
+        # zsh expands a word starting with an unquoted "=" (even after empty
+        # quotes, as in ''=cmd) to a command path; quoting is gone from tokens.
+        if shell == "zsh" and any(token.startswith("=") for token in tokens):
+            return None
     if (
         not tokens
         or not tokens[0]

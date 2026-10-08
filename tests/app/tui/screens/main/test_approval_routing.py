@@ -22,6 +22,7 @@ from chrys.foundation.events.types import (
     ApprovalReviewed,
     InvocationToolCallArgsUpdated,
 )
+from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE, KIND_MCP
 from tests.support.tui_helpers import (
@@ -158,6 +159,7 @@ def _make_approval_handler(
         approved: bool,
         reason: str = "",
         _modified_args: dict[str, object] | None = None,
+        _remember_choice: ReuseChoice = "",
     ) -> None:
         response_log.append((request_id, approved, reason))
 
@@ -476,6 +478,7 @@ def test_auto_user_decision_marker_clears_when_response_worker_finishes(monkeypa
             approved: bool,
             reason: str = "",
             _modified_args: dict[str, object] | None = None,
+            _remember_choice: ReuseChoice = "",
         ) -> _Worker:
             response_log.append((request_id, approved, reason))
             return response_worker

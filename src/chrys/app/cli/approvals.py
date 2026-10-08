@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -84,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         for _, grant in rows:
-            target = grant.key.command if isinstance(grant.key, CommandKey) else grant.key.path
+            if isinstance(grant.key, CommandKey):
+                command = grant.key.command
+                target = shlex.join(command) if isinstance(command, tuple) else command
+            else:
+                target = grant.key.path
             sys.stdout.write(
                 sanitize_legacy_scalar(
                     f"{grant.id}  {grant.scope} {grant.scope_id}  project={grant.project}  {'prefix' if grant.prefix else 'exact'} {target}"

@@ -12,7 +12,6 @@ from chrys.app.tui.screens.main.dialog_controllers import (
     AgentLoadDialogHandle,
     ApprovalBypassDecision,
     ApprovalDialogHandle,
-    ApprovalResponseCallback,
     ApprovalResponseWorker,
     ImageCompressionDialogHandle,
     QuestionDialogHandle,
@@ -30,7 +29,9 @@ class UiGatewayCallbacks:
     """Non-UI dialog effects supplied by the screen owner."""
 
     debug: Callable[[str, str], None]
-    handle_approval_response: ApprovalResponseCallback
+    handle_approval_response: Callable[
+        [str, bool, str, dict[str, Any] | None, ReuseChoice], ApprovalResponseWorker | None
+    ]
     publish_auto_fulfill_blocked: Callable[[ApprovalReviewed], Awaitable[None]]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
     question_inline_preferred: Callable[[], bool]
@@ -93,11 +94,7 @@ class UiGateway:
         modified_args: dict[str, Any] | None = None,
         remember_choice: ReuseChoice = "",
     ) -> ApprovalResponseWorker | None:
-        if remember_choice:
-            return self._callbacks.handle_approval_response(
-                request_id, approved, reason, modified_args, remember_choice
-            )
-        return self._callbacks.handle_approval_response(request_id, approved, reason, modified_args)
+        return self._callbacks.handle_approval_response(request_id, approved, reason, modified_args, remember_choice)
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._view.run_worker(awaitable, group=group)

@@ -28,7 +28,6 @@ SETTINGS_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "settings.agent.default_profile.label",
         "settings.app.dev_mode.label",
         "settings.approval.default_mode.label",
-        "settings.approval.reuse_enabled.label",
         "settings.context.warn_threshold_pct.label",
         "settings.history.prompt.enabled.label",
         "settings.llm.retry.max_transient.label",

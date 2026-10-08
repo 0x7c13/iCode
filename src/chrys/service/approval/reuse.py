@@ -104,10 +104,7 @@ class CommandCandidate:
         command = self.key.command
         return ApprovalReuseOffer(
             "command",
-            self.key.cwd,
             (shlex.join(command) if isinstance(command, tuple) else command,),
-            shell=f"{self.key.executable} {shlex.join(self.key.shell_args)}".strip(),
-            session=isinstance(command, tuple),
             prefix=self.prefix is not None,
         )
 
@@ -118,7 +115,7 @@ class FileCandidate:
     keys: frozenset[FileKey]
 
     def offer(self) -> ApprovalReuseOffer:
-        return ApprovalReuseOffer("files", self.context.project_id, tuple(sorted(key.path for key in self.keys)))
+        return ApprovalReuseOffer("files", tuple(sorted(key.path for key in self.keys)))
 
 
 Candidate = CommandCandidate | FileCandidate
@@ -202,8 +199,6 @@ class ApprovalReuseService:
                 return False
             keys = sorted(candidate.keys, key=lambda key: key.path)
         else:
-            if scope == "SESSION" and not isinstance(candidate.key.command, tuple):
-                return False
             if mode == "PREFIX" and candidate.prefix is None:
                 return False
             keys = [
@@ -225,8 +220,3 @@ class ApprovalReuseService:
             for key in keys
         ]
         return (self.session_store if scope == "SESSION" else self.store).add_many(payloads)
-
-    def revoke(self, rule_id: str) -> bool:
-        project = self.store.revoke(rule_id)
-        session = self.session_store.revoke(rule_id)
-        return project or session

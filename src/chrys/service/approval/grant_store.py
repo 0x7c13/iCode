@@ -8,12 +8,15 @@ import errno
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.config.settings import resolve_sessions_dir
 from chrys.foundation.platform.files import atomic_write_owner_only_text, secure_open_owner_only_binary
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 GRANTS_FILE = "approval-grants.json"
@@ -61,33 +64,18 @@ class ApprovalGrantStore:
             logger.warning("Approval grants could not be read; no grants reused")
             return []
 
-    def _update(
-        self, additions: list[dict[str, Any]], *, remove: str = "", clear: bool = False, project: str | None = None
-    ) -> bool:
+    def _update(self, edit: Callable[[list[dict[str, Any]]], list[dict[str, Any]] | None]) -> bool:
+        """Rewrite the locked, re-read rules with *edit*; None from *edit* writes nothing."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(self.lock_path, timeout=1):
-                rules = self._read()
-                kept = [
-                    rule
-                    for rule in rules
-                    if not (
-                        (clear and (project is None or rule.get("project") == project))
-                        or (remove and rule.get("id") == remove)
-                    )
-                ]
-                if remove and len(kept) == len(rules):
+                rules = edit(self._read())
+                if rules is None:
                     return False
-                # Identical grants replace themselves rather than consuming the bound.
-                for new in additions:
-                    kept = [
-                        old
-                        for old in kept
-                        if any(old.get(key) != new.get(key) for key in ("scope", "scope_id", "prefix", "key"))
-                    ]
-                    kept.append(new)
-                payload = json.dumps({"version": 1, "rules": kept}, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
-                if len(kept) > MAX_GRANTS or len(payload.encode("utf-8")) > MAX_BYTES:
+                payload = (
+                    json.dumps({"version": 1, "rules": rules}, ensure_ascii=True, allow_nan=False, indent=2) + "\n"
+                )
+                if len(rules) > MAX_GRANTS or len(payload.encode("utf-8")) > MAX_BYTES:
                     return False
                 atomic_write_owner_only_text(self.path, payload)
             return True
@@ -95,11 +83,26 @@ class ApprovalGrantStore:
             logger.warning("Approval grants could not be updated")
             return False
 
-    def add_many(self, rules: list[dict[str, Any]]) -> bool:
-        return self._update(rules)
+    def add_many(self, additions: list[dict[str, Any]]) -> bool:
+        def edit(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            # Identical grants replace themselves rather than consuming the bound.
+            added = [_identity(rule) for rule in additions]
+            return [rule for rule in rules if _identity(rule) not in added] + additions
+
+        return self._update(edit)
 
     def revoke(self, rule_id: str) -> bool:
-        return bool(rule_id) and self._update([], remove=rule_id)
+        def edit(rules: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+            kept = [rule for rule in rules if rule.get("id") != rule_id]
+            return kept if len(kept) < len(rules) else None
+
+        return bool(rule_id) and self._update(edit)
 
     def clear(self, *, project: str | None = None) -> bool:
-        return self._update([], clear=True, project=project)
+        return self._update(
+            lambda rules: [] if project is None else [rule for rule in rules if rule.get("project") != project]
+        )
+
+
+def _identity(rule: dict[str, Any]) -> list[object]:
+    return [rule.get(field) for field in ("scope", "scope_id", "prefix", "key")]

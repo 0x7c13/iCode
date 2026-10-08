@@ -11,6 +11,7 @@ import pytest
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse, ApprovalReviewed
+from chrys.foundation.models.approval_reuse import ApprovalReuseOffer
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.models.workspace import Workspace
 from chrys.kernel.middleware import FunctionInvocationContext
@@ -32,6 +33,10 @@ def runtime(tmp_path):
             runtime.platform, config_dir=tmp_path / "config", shell=replace(runtime.platform.shell, name="bash")
         ),
     )
+
+
+def reuse_candidate(binding, context):
+    return binding.prepare(context, reusable=True).candidate
 
 
 def shell_binding(runtime, *, shell=None):
@@ -99,7 +104,7 @@ def test_command_grant_binds_active_shell_and_cwd(runtime, choice, change):
     active_shell = replace(runtime.platform.shell, path=runtime.platform.shell.path + ".extra", args=["-c"])
     tool, binding = shell_binding(runtime, shell=active_shell)
     args = {"command": "npm run test", "reason": "first"}
-    approved = binding.candidate(FunctionInvocationContext(tool, args))
+    approved = reuse_candidate(binding, FunctionInvocationContext(tool, args))
     assert approved and binding.service.remember(approved, choice)
     if change == "cwd":
         runtime = replace(runtime, cwd=runtime.cwd + "/other")
@@ -109,37 +114,9 @@ def test_command_grant_binds_active_shell_and_cwd(runtime, choice, change):
             **{change: {"name": "zsh", "path": active_shell.path + ".other", "args": ["-l", "-c"]}[change]},
         )
     changed_tool, changed_binding = shell_binding(runtime, shell=active_shell)
-    assert not changed_binding.service.match(changed_binding.candidate(FunctionInvocationContext(changed_tool, args)))
-
-
-@pytest.mark.parametrize("approved", [False, True])
-async def test_reuse_response_cannot_be_changed_after_publication(runtime, approved):
-    tool, binding = shell_binding(runtime)
-    bus = EventBus()
-    middleware = ApprovalMiddleware(
-        ApprovalPolicy(ApprovalConfig(default="require", overrides={})),
-        bus,
-        session_id=runtime.session_id,
-        reuse=binding,
+    assert not changed_binding.service.match(
+        reuse_candidate(changed_binding, FunctionInvocationContext(changed_tool, args))
     )
-    called = AsyncMock(spec=lambda: None)
-
-    async def answer(event: ApprovalRequest):
-        response = ApprovalResponse(request_id=event.request_id, approved=approved)
-        await bus.publish(response)
-        # The request handler still owns this object while the middleware's
-        # response future has settled but its execution has not resumed.
-        response.approved = True
-        response.remember_choice = "EXACT_PROJECT"
-
-    await bus.subscribe(ApprovalRequest, answer)
-    try:
-        await middleware.process(FunctionInvocationContext(tool, {"command": "npm run test"}), called)
-        assert called.await_count == int(approved)
-        assert binding.service.rules() == []
-    finally:
-        await middleware.close()
-        await bus.unsubscribe(ApprovalRequest, answer)
 
 
 @pytest.mark.parametrize(("source", "target"), [("cmd", "pwsh"), ("bash", "pwsh"), ("pwsh", "cmd")])
@@ -149,10 +126,10 @@ def test_session_command_grant_cannot_cross_registered_shells(runtime, source, t
     ]
     binding = ApprovalReuseBinding(runtime, tools)
     args = {"command": "sc query foo", "reason": "test"}
-    approved = binding.candidate(FunctionInvocationContext(tools[0], args))
+    approved = reuse_candidate(binding, FunctionInvocationContext(tools[0], args))
     assert approved and binding.service.remember(approved, "EXACT_SESSION")
-    assert binding.service.match(binding.candidate(FunctionInvocationContext(tools[0], args)))
-    assert not binding.service.match(binding.candidate(FunctionInvocationContext(tools[1], args)))
+    assert binding.service.match(reuse_candidate(binding, FunctionInvocationContext(tools[0], args)))
+    assert not binding.service.match(reuse_candidate(binding, FunctionInvocationContext(tools[1], args)))
 
 
 @pytest.mark.parametrize("human_remembers", [False, True])
@@ -191,39 +168,31 @@ async def test_judge_review_preserves_explicit_human_remember_choice(runtime, mo
             reason_code="",
             arguments_modified=False,
         )
-        assert bool(binding.service.match(binding.candidate(context))) is human_remembers
+        assert bool(binding.service.match(reuse_candidate(binding, context))) is human_remembers
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalReviewed, remember)
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-async def test_live_request_changes_require_reapproval_only_with_reuse(runtime, enabled):
+async def test_compound_command_can_be_remembered_for_the_session(runtime):
     tool, binding = shell_binding(runtime)
-    bus = EventBus()
-    middleware = ApprovalMiddleware(
-        ApprovalPolicy(ApprovalConfig(default="require", overrides={})),
-        bus,
-        session_id=runtime.session_id,
-        reuse=binding if enabled else None,
-    )
-    context = FunctionInvocationContext(tool, {"command": "npm run test", "reason": "test"})
-    requested_commands = []
+    bus, requests = EventBus(), []
+    command = "npm test && npm run lint"
 
     async def approve(event: ApprovalRequest):
-        requested_commands.append(event.args["command"])
-        context.arguments["command"] = "npm run build"
-        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT"))
+        requests.append(event)
+        await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_SESSION"))
 
     await bus.subscribe(ApprovalRequest, approve)
     called = AsyncMock(spec=lambda: None)
+    middleware = ApprovalMiddleware(
+        ApprovalPolicy(ApprovalConfig(default="require")), bus, session_id=runtime.session_id, reuse=binding
+    )
     try:
-        await middleware.process(context, called)
-        called.assert_awaited_once()
-        assert requested_commands == (["npm run test", "npm run build"] if enabled else ["npm run test"])
-        assert bool(binding.service.match(binding.candidate(context))) is enabled
-        original = FunctionInvocationContext(tool, {"command": "npm run test", "reason": "test"})
-        assert not binding.service.match(binding.candidate(original))
+        for _ in range(2):
+            await middleware.process(FunctionInvocationContext(tool, {"command": command}), called)
+        assert called.await_count == 2
+        assert [event.reuse_offer for event in requests] == [ApprovalReuseOffer("command", (command,))]
     finally:
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)
