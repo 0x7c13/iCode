@@ -12,8 +12,8 @@ from tests.architecture import (
     test_hygiene_exchange_walker_shapes,
     test_hygiene_exchange_walkers,
     test_hygiene_i18n_messages,
+    test_hygiene_lazy_imports,
     test_hygiene_llm_client_owners,
-    test_hygiene_optional_imports,
     test_hygiene_pillow_formats,
     test_hygiene_reminder_sources,
     test_hygiene_session_surface,
@@ -40,8 +40,8 @@ from tests.architecture.test_hygiene_exchange_walkers import (
     _assert_result_only_classifier_imports_are_allowlisted,
 )
 from tests.architecture.test_hygiene_i18n_messages import _assert_i18n_message_construction_is_canonical
+from tests.architecture.test_hygiene_lazy_imports import _assert_lazy_dependency_imports_are_function_scoped
 from tests.architecture.test_hygiene_llm_client_owners import _assert_llm_clients_have_reviewed_owners
-from tests.architecture.test_hygiene_optional_imports import _assert_optional_extra_imports_are_function_scoped
 from tests.architecture.test_hygiene_pillow_formats import _assert_pillow_decodes_only_named_formats
 from tests.architecture.test_hygiene_reminder_sources import _assert_reminder_source_members_are_reviewed
 from tests.architecture.test_hygiene_session_surface import _assert_launches_state_their_surface
@@ -85,8 +85,8 @@ _RULE_MODULES = (
     test_hygiene_exchange_walker_shapes,
     test_hygiene_exchange_walkers,
     test_hygiene_i18n_messages,
+    test_hygiene_lazy_imports,
     test_hygiene_llm_client_owners,
-    test_hygiene_optional_imports,
     test_hygiene_pillow_formats,
     test_hygiene_reminder_sources,
     test_hygiene_session_surface,
@@ -113,7 +113,7 @@ _HYGIENE_RULES = (
 _SRC_HYGIENE_RULES = (
     _assert_no_source_asserts,
     _assert_subprocess_stdin_is_explicit,
-    _assert_optional_extra_imports_are_function_scoped,
+    _assert_lazy_dependency_imports_are_function_scoped,
     _assert_pillow_decodes_only_named_formats,
     _assert_no_hand_rolled_exchange_walkers,
     _assert_result_only_classifier_imports_are_allowlisted,

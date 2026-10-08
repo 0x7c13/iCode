@@ -825,22 +825,6 @@ async def test_convert_unsupported_format(tmp_path: Path) -> None:
     assert "unsupported" in result.lower()
 
 
-async def test_convert_import_error(tmp_path: Path) -> None:
-    """When parser deps are not installed, returns a clear error."""
-    doc = tmp_path / "doc.pdf"
-    doc.write_bytes(b"%PDF-fake")
-
-    fake_parser = _FakeParser(side_effect=ImportError("No module named 'pypdf'"))
-
-    with patch(f"{_PATCH_REGISTRY}.get_parser", return_value=fake_parser):
-        runtime = _make_runtime(tmp_path)
-        tools = DocConverterTools(runtime)
-        result = await tools.convert_document(str(doc))
-
-    assert result.startswith("Error:")
-    assert "missing dependencies" in result.lower()
-
-
 async def test_convert_empty_result(tmp_path: Path) -> None:
     """Document that converts to empty text returns informative message."""
     doc = tmp_path / "empty.pdf"

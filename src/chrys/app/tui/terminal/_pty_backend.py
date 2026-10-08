@@ -98,17 +98,14 @@ def _missing_winpty(cols: int, rows: int) -> WinPTYProtocol:
 
 
 def _load_winpty() -> tuple[WinPTYFactory, tuple[type[BaseException], ...]]:
-    try:
-        module = cast(Any, importlib.import_module("winpty"))
-        error_type: type[BaseException] | None = None
-        with suppress(AttributeError):
-            error_type = module.WinptyError
-        errors: tuple[type[BaseException], ...] = ()
-        if error_type is not None:
-            errors = (error_type,)
-        return cast("WinPTYFactory", module.PTY), errors
-    except ImportError:
-        return _missing_winpty, ()
+    module = cast(Any, importlib.import_module("winpty"))
+    error_type: type[BaseException] | None = None
+    with suppress(AttributeError):
+        error_type = module.WinptyError
+    errors: tuple[type[BaseException], ...] = ()
+    if error_type is not None:
+        errors = (error_type,)
+    return cast("WinPTYFactory", module.PTY), errors
 
 
 WINPTY_FACTORY: WinPTYFactory = _missing_winpty

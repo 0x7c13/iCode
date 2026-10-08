@@ -1,0 +1,10 @@
+# Build requirements for the locked sdists the offline distribution compiles
+# where PyPI has no wheel (watchdog on macOS; cryptography, grpcio and
+# setproctitle on Windows on Arm). build_offline_dist.sh and .ps1 pass this
+# file to uv, which verifies each hash; build requirements not listed here
+# resolve to their newest release.
+#
+# setuptools: 84 runs MSVC through call() instead of spawn(), skipping the
+# spawn patch grpcio uses to drop /std:c++17 from C files and /std:c11 from
+# C++ files, and cl.exe refuses the two together (D8016).
+setuptools==83.0.0 --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3

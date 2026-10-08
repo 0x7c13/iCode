@@ -48,7 +48,7 @@ TIER_ORDER = {
     APP: 4,
 }
 
-ROOT_METADATA_EXPORTS = {"__version__"}
+ROOT_METADATA_EXPORTS = {"__version__", "DISTRIBUTION_NAME"}
 
 _KERNEL_PRIVATE_PROMOTION_REASON = (
     "preview shaping / provider-specific key shared with service tier; promote to a public kernel module"

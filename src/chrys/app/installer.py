@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
 
+from chrys import DISTRIBUTION_NAME
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.platform import get_platform
 
@@ -161,9 +162,15 @@ def _pyapp_cache_dir() -> Path | None:
     return (Path(xdg) if xdg else Path.home() / ".cache") / "pyapp"
 
 
+# PyApp's project directory name: the offline binaries are built with
+# PYAPP_PROJECT_NAME=chrys, while the pip and uv flavors embed the wheel and
+# PyApp names them after its metadata instead (iCode-TUI, normalized).
+_PYAPP_PROJECT_NAMES = frozenset({"chrys", "icode-tui"})
+
+
 def _is_default_pyapp_version_dir(exe_path: Path, version_dir: Path) -> bool:
     """Return whether ``version_dir`` matches PyApp's default Chrys layout."""
-    if os.environ.get("PYAPP_INSTALL_DIR_CHRYS"):
+    if any(os.environ.get(f"PYAPP_INSTALL_DIR_{name.upper()}") for name in _PYAPP_PROJECT_NAMES):
         return False
 
     try:
@@ -175,7 +182,7 @@ def _is_default_pyapp_version_dir(exe_path: Path, version_dir: Path) -> bool:
     project_dir = distribution_dir.parent
     if distribution_dir == version_dir or project_dir == distribution_dir:
         return False
-    if project_dir.name != "chrys":
+    if project_dir.name not in _PYAPP_PROJECT_NAMES:
         return False
 
     data_dir = project_dir.parent
@@ -538,7 +545,15 @@ def _installed_commands(alias: Path | None) -> str:
 def install_to_path() -> None:
     """Copy the running PyApp binary to a PATH-friendly location."""
     binary = os.environ.get("PYAPP", "")
-    if not binary or binary == "1" or not Path(binary).is_file():
+    if not binary:
+        # Installed with uv (or pip), whose own commands put iCode on PATH and upgrade it.
+        _print_error(f"{APP_COMMAND} install is only for the offline packages.")
+        _print_line(
+            f"If you installed {APP_DISPLAY_NAME} with uv, it is already set up: run 'uv tool update-shell' if your "
+            f"terminal cannot find '{APP_COMMAND}', and 'uv tool upgrade {DISTRIBUTION_NAME}' to upgrade."
+        )
+        sys.exit(1)
+    if binary == "1" or not Path(binary).is_file():
         _print_error(f"{APP_COMMAND} install only works when running from a PyApp binary.")
         _print_line("PYAPP_PASS_LOCATION must be enabled at build time.")
         sys.exit(1)

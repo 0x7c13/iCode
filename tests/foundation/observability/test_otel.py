@@ -12,7 +12,6 @@ same switch. Each test restores the production revocation path via
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import logging
 from collections.abc import Iterator
@@ -22,6 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from chrys import __version__
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.observability import setup as otel_module
 from chrys.foundation.observability.exporters import (
@@ -215,18 +215,6 @@ def test_setup_otel_disables_everything_when_exporter_import_fails(monkeypatch) 
 
     assert setup_otel(_settings(otel_enabled=True)) is None
     assert TELEMETRY_GATE.enabled is False, "gate stays closed on failure"
-
-
-def test_setup_otel_disables_everything_when_logging_handler_import_fails(monkeypatch) -> None:
-    _clear_otlp_env(monkeypatch)
-    monkeypatch.setattr(otel_module, "set_otel_sink", lambda s: None)
-    monkeypatch.setattr(otel_module, "import_module", MagicMock(side_effect=ImportError("handler missing")))
-
-    with patch.object(otel_module, "_configure_providers") as mock_configure:
-        assert setup_otel(_settings(otel_enabled=True)) is None
-
-    mock_configure.assert_not_called()
-    assert TELEMETRY_GATE.enabled is False
 
 
 def test_setup_otel_handles_configure_failure(monkeypatch) -> None:
@@ -499,7 +487,7 @@ def test_create_resource_chrys_defaults_and_env_overrides(monkeypatch) -> None:
         monkeypatch.delenv(var, raising=False)
     resource = otel_module._create_resource()
     assert resource.attributes["service.name"] == "chrys"
-    assert resource.attributes["service.version"] == importlib.metadata.version("chrys")
+    assert resource.attributes["service.version"] == __version__
 
     monkeypatch.setenv("OTEL_SERVICE_NAME", "my-svc")
     monkeypatch.setenv("OTEL_SERVICE_VERSION", "9.9.9")

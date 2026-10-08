@@ -45,8 +45,11 @@ jobs:
           git push origin "$tag"
           echo "Created tag: $tag"
 
+      # CD runs only when dispatched, so dispatch it on the tag pushed above: a run
+      # on a release tag is the only kind the `pypi` environment lets publish to
+      # PyPI, and `ref` makes it build that tag.
       - name: Trigger CD pipeline
         if: steps.version.outputs.changed == 'true'
-        run: gh workflow run cd.yml -f ref="v${{ steps.version.outputs.current }}"
+        run: gh workflow run cd.yml --ref "v${{ steps.version.outputs.current }}" -f ref="v${{ steps.version.outputs.current }}"
         env:
           GH_TOKEN: ${{ github.token }}

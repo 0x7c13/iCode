@@ -12,13 +12,14 @@ English | [简体中文](README.zh.md)
 > **Work in progress.** Interfaces, file formats, and defaults still change between
 > releases.
 
+> **Use a modern terminal.** iCode works best in one such as
+> [Windows Terminal](https://github.com/microsoft/terminal) on Windows or
+> [Ghostty](https://ghostty.org) on macOS and Linux.
+
 ## What is iCode?
 
 Let the screenshots speak for themselves.
 
-> **Use a modern terminal.** iCode works best in one such as
-> [Windows Terminal](https://github.com/microsoft/terminal) on Windows or
-> [Ghostty](https://ghostty.org) on macOS and Linux.
 
 ### Home
 
@@ -85,16 +86,48 @@ forwarded to them: here `htop`, inside iCode, inside iCode, inside iCode.
 
 ## How to run
 
+Use one of the three ways below. iCode ships no model profiles, so press **F4** on
+first launch to add one.
+
+### From source
+
 [uv](https://github.com/astral-sh/uv) is the only prerequisite; it provisions Python 3.14
 for you. From a checkout:
 
 ```bash
-uv sync --extra all        # not bare `uv sync`, not `--all-extras`
+uv sync                    # installs iCode and its dev tools into .venv
 ./scripts/fetch_rg.sh      # downloads the vendored ripgrep; Windows: .\scripts\fetch_rg.ps1
-uv run icode               # `uv run chrys` starts the same thing (`Chrys` is our code name)
+uv run icode               # starts iCode; the package keeps our code name, `chrys`
 ```
 
-iCode ships no model profiles, so press **F4** on first launch to add one.
+### Install with uv
+
+[uv](https://docs.astral.sh/uv/getting-started/installation/) installs iCode from PyPI and
+provisions Python 3.14 for you:
+
+```bash
+uv tool install iCode-TUI   # upgrade later with `uv tool upgrade iCode-TUI`
+icode
+```
+
+Windows (x64) and Linux (x86-64 or ARM64, glibc 2.27 or later) need nothing else. On a Mac
+with Apple silicon, run `xcode-select --install` first.
+
+### Offline package
+
+On an Intel Mac, Windows on Arm, an older Linux, or a machine without internet access,
+download the package for your platform from
+[Releases](https://github.com/openJiuwen-ai/iCode/releases). It bundles Python and every
+dependency. Unpack it, then install and run iCode:
+
+```bash
+chmod +x ./icode            # Windows: skip this step
+./icode install             # Windows: .\icode.exe install
+icode                       # in a new terminal
+```
+
+[Getting started](docs/en/start/getting-started.md#offline-packages) lists the package for
+each platform and its requirements.
 
 ## User guide
 

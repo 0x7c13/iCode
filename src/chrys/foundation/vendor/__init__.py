@@ -19,6 +19,7 @@ _TRIPLE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("Linux", "x86_64"): ("rg-x86_64-unknown-linux-musl", "rg"),
     ("Linux", "aarch64"): ("rg-aarch64-unknown-linux-gnu", "rg"),
     ("Windows", "AMD64"): ("rg-x86_64-pc-windows-msvc.exe", "rg.exe"),
+    ("Windows", "ARM64"): ("rg-aarch64-pc-windows-msvc.exe", "rg.exe"),
 }
 
 

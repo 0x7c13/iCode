@@ -1050,49 +1050,21 @@ class TestCancellationWindowAbort:
 
 
 # ---------------------------------------------------------------------------
-# Pid liveness without psutil (service-level installs)
+# Pid liveness
 # ---------------------------------------------------------------------------
 
 
-class TestPidLivenessFallback:
-    """psutil ships only with the ``tui`` extra; coordination is
-    service-level and default-on.  Headless installs must still detect
-    crashed peers on BOTH platforms — treating every pid as alive keeps
-    crash leftovers warning until the 7-day GC.
-    """
+class TestPidLiveness:
+    """A crashed peer must read dead, or its leftovers warn until the 7-day GC."""
 
-    def test_missing_psutil_falls_back_to_native_probe(self, monkeypatch):
-        import sys
-
+    def test_live_and_dead_pids(self):
         from chrys.service.mutations.coordination import _is_pid_alive
 
-        monkeypatch.setitem(sys.modules, "psutil", None)  # import psutil → ImportError
         assert _is_pid_alive(os.getpid()) is True
-        # POSIX probes via kill-0; Windows via OpenProcess — a dead pid
-        # must read dead on both.  (DEAD_PID is odd, and real Windows
-        # pids are multiples of 4, so it can never exist there.)
+        # DEAD_PID is odd, and real Windows pids are multiples of 4, so it
+        # can never exist there.
         assert _is_pid_alive(DEAD_PID) is False
-
-    def test_windows_probe_semantics(self):
-        from chrys.service.mutations.coordination import _windows_pid_alive
-
-        if os.name == "posix":
-            # Dispatch guard only — the ctypes body needs Windows.
-            assert _windows_pid_alive(DEAD_PID) is True
-        else:
-            assert _windows_pid_alive(os.getpid()) is True
-            assert _windows_pid_alive(DEAD_PID) is False
-
-    def test_posix_probe_semantics(self):
-        from chrys.service.mutations.coordination import _posix_pid_alive
-
-        if os.name != "posix":
-            # No safe probe on Windows (os.kill TERMINATES there) —
-            # conservative alive.
-            assert _posix_pid_alive(DEAD_PID) is True
-        else:
-            assert _posix_pid_alive(os.getpid()) is True
-            assert _posix_pid_alive(DEAD_PID) is False
+        assert _is_pid_alive(0) is False
 
 
 class TestCanonicalKeyCaseFolding:

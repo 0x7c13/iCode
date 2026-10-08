@@ -32,9 +32,9 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
-      - run: uv sync --extra all
-      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
-      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
+      - run: uv sync
+      - run: uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
+      - run: uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
 
   test_linux:
     name: Unix shard (${{ matrix.label }})
@@ -78,7 +78,7 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
-      - run: uv sync --extra all
+      - run: uv sync
       - name: Prewarm src bytecode
         run: uv run python -m compileall -q src
       - name: Prewarm test collection
@@ -137,7 +137,7 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
-      - run: uv sync --extra all
+      - run: uv sync
       - name: Prewarm src bytecode
         run: uv run python -m compileall -q src
       - name: Prewarm test collection
@@ -232,7 +232,7 @@ jobs:
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ hashFiles('.python-version', 'uv.lock', 'pyproject.toml') }}
-      - run: uv sync --extra all
+      - run: uv sync
       - name: Prewarm src bytecode
         run: uv run python -m compileall -q src
       - name: Prewarm test collection
@@ -275,7 +275,7 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
-      - run: uv sync --extra all
+      - run: uv sync
       - name: Run architecture tests
         timeout-minutes: 15
         run: uv run pytest -q --tb=short --durations=20 --junitxml=test-results-architecture.xml -n 0 -m "not integration and not gc_calibration" tests/architecture
@@ -342,27 +342,46 @@ jobs:
         with:
           python-version-file: .python-version
           allow-prereleases: true
+      # Built as CD builds the released wheel, with every platform's ripgrep.
+      - name: Fetch ripgrep binaries (all platforms)
+        run: ./scripts/fetch_rg.sh --all
       - run: uv build
-      - name: Check the wheel bundles the user guide
-        # /help reads docs/ from inside the installed package; a wheel without it opens an empty guide.
-        run: |
-          python - <<'EOF'
-          import glob
-          import subprocess
-          import zipfile
-
-          prefix = "chrys/app/tui/screens/guides/_docs/"
-          (wheel,) = glob.glob("dist/*.whl")
-          bundled = {name[len(prefix):] for name in zipfile.ZipFile(wheel).namelist() if name.startswith(prefix)}
-          listed = subprocess.run(["git", "ls-files", "-z", "docs"], check=True, capture_output=True, text=True)
-          tracked = {path[len("docs/"):] for path in listed.stdout.split("\0") if path}
-          missing = sorted(tracked - bundled)
-          if missing:
-              raise SystemExit(f"{wheel} is missing user-guide files: {missing}")
-          print(f"{wheel} bundles all {len(tracked)} user-guide files")
-          EOF
+      - name: Install and run the wheel as a PyPI user would
+        run: python scripts/check_wheel.py --all-ripgrep dist/icode_tui-*.whl
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/
           retention-days: 7
+
+  wheel_install:
+    name: Install wheel (${{ matrix.label }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS builds one dependency from source during the install.
+          - label: macos
+            os: macos-latest
+          - label: windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version-file: .python-version
+          allow-prereleases: true
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist
+          path: dist
+      - name: Install and run the wheel as a PyPI user would
+        shell: bash
+        run: python scripts/check_wheel.py dist/icode_tui-*.whl

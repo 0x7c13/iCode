@@ -118,9 +118,8 @@ def apply_patch(patch: FilePatch) -> PatchResult:
     try:
         target = _patch_target(patch)
     except ImportError as exc:
-        # The package simply is not installed. On an install without the
-        # ``tui`` extra that is the normal state, not a fault: every headless
-        # entrypoint runs apply_all(), and "error" would log a warning per
+        # A package that is not installed has nothing to patch. Every
+        # entrypoint runs apply_all(), so "error" would log a warning per
         # patch on every invocation. A missing file inside an INSTALLED
         # package stays an error below — that one really is broken.
         return PatchResult(patch, "skipped", str(exc))
@@ -159,7 +158,7 @@ def apply_patch_group(patches: list[FilePatch]) -> list[PatchResult]:
     try:
         target = _patch_target(first)
     except ImportError as exc:
-        # Not installed is the normal state without the extra — see apply_patch.
+        # A package that is not installed has nothing to patch — see apply_patch.
         return [PatchResult(patch, "skipped", str(exc)) for patch in patches]
 
     if not target.is_file():

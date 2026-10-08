@@ -307,18 +307,6 @@ class DocConverterTools:
                     warnings=(*parsed.warnings, *sink_warnings),
                 )
             parsed = _normalize_parsed_document(parsed)
-        except ImportError as exc:
-            if sink is not None:
-                sink.abort()
-            return tool_error(
-                "missing_dependency",
-                (
-                    f"missing dependencies for {display_ext} conversion. "
-                    f"Install with: pip install 'chrys[doc_converter]'\n"
-                    f"Detail: {surrogate_safe_text(str(exc))}"
-                ),
-                details={"path": original_path, "resolved_path": resolved, "extension": extension},
-            )
         except Exception as exc:
             if sink is not None:
                 sink.abort()

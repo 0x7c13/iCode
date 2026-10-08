@@ -9,39 +9,6 @@ import pytest
 from tests.support.paths import REPO_ROOT
 
 
-def test_dispatch_isolation_allows_a_non_tui_install(pytester: pytest.Pytester) -> None:
-    """The global fixture must remain inert when the optional Textual extra is absent."""
-    pytester.makeconftest(
-        f"""
-import sys
-from importlib.abc import MetaPathFinder
-sys.path.insert(0, {str(REPO_ROOT)!r})
-
-
-class WithoutTextual(MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == "textual" or fullname.startswith("textual."):
-            raise ModuleNotFoundError("optional tui extra is absent", name=fullname)
-
-
-sys.meta_path.insert(0, WithoutTextual())
-from tests.conftest import _isolated_textual_dispatch_plans, notification_driver
-"""
-    )
-    pytester.makepyfile(
-        """
-def test_headless(notification_driver):
-    import sys
-    from chrys.foundation.patches import textual_dispatch_cache
-    textual_dispatch_cache.apply_runtime_patch()
-    assert notification_driver is None
-    assert not any(name == "textual" or name.startswith("textual.") for name in sys.modules)
-"""
-    )
-    result = pytester.runpytest_subprocess("-n0", "-q")
-    result.assert_outcomes(passed=1)
-
-
 @pytest.mark.parametrize("fail_body", [False, True])
 def test_dispatch_plans_are_cleared_around_tests(pytester: pytest.Pytester, fail_body: bool) -> None:
     pytester.makeconftest(

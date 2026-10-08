@@ -23,13 +23,14 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from importlib import metadata
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import idna
+from rich.console import Console
 
+from chrys import __version__
 from chrys.app.cli.app import _TUI_SUBPROCESS_COMMAND
 from chrys.app.tui.clipboard import BROWSER_CLIPBOARD_META_TYPE
 from chrys.app.tui.util.logo import TUI_LOGO
@@ -355,19 +356,9 @@ def _shell_join(argv: Sequence[str]) -> str:
 
 
 def _load_server_class() -> _TextualServeServerFactory:
-    return _make_chrys_server_class(_resolve_textual_serve_server_class())
+    from textual_serve.server import Server
 
-
-def _resolve_textual_serve_server_class() -> type[Any]:
-    try:
-        from textual_serve.server import Server
-    except ModuleNotFoundError as exc:
-        msg = (
-            f"{APP_COMMAND} serve requires textual-serve. Install {APP_DISPLAY_NAME} with the tui extra "
-            "(for example: pip install 'chrys[tui]' or uv sync --extra tui)."
-        )
-        raise RuntimeError(msg) from exc
-    return Server
+    return _make_chrys_server_class(Server)
 
 
 def _uses_textual_serve_base(base_server_class: type[Any]) -> bool:
@@ -1121,13 +1112,9 @@ def _make_chrys_server_class(base_server_class: type[Any]) -> _TextualServeServe
 
 def _icode_serve_logo() -> str:
     """Return the iCode-branded serve startup banner."""
-    try:
-        version = metadata.version("chrys")
-    except metadata.PackageNotFoundError:
-        version = "unknown"
     return f"""[bold magenta]░▀█▀░█▀▀░█▀█░█▀▄░█▀▀░░░░░█▀▀░█▀▀░█▀▄░█░█░█▀▀
 ░░█░░█░░░█░█░█░█░█▀▀░▄▄▄░▀▀█░█▀▀░█▀▄░▀▄▀░█▀▀
-░▀▀▀░▀▀▀░▀▀▀░▀▀░░▀▀▀░░░░░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀ v{version}[/bold magenta]\n"""
+░▀▀▀░▀▀▀░▀▀▀░▀▀░░▀▀▀░░░░░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀ v{__version__}[/bold magenta]\n"""
 
 
 def run_command(args: argparse.Namespace) -> None:
@@ -1575,19 +1562,12 @@ def _write_error(message: str) -> None:
 
 
 def _write_styled_stderr(message: str, *, style: str) -> None:
-    """Write a styled stderr message with a plain fallback."""
-    try:
-        console = _make_warning_console()
-    except ModuleNotFoundError:
-        sys.stderr.write(f"{message}\n")
-        return
-    console.print(message, style=style, markup=False, soft_wrap=True)
+    """Write a styled stderr message."""
+    _make_warning_console().print(message, style=style, markup=False, soft_wrap=True)
 
 
-def _make_warning_console() -> Any:
+def _make_warning_console() -> Console:
     """Create the Rich console used for terminal warnings."""
-    from rich.console import Console
-
     return Console(file=sys.stderr, highlight=False)
 
 

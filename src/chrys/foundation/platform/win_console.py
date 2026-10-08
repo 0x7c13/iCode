@@ -3,7 +3,7 @@
 """Windows console-mode preservation.
 
 When the chrys TUI spawns a child process on Windows (e.g. the agent
-runs ``uv run chrys`` via PowerShell through ``ShellTools``), the child
+runs ``uv run icode`` via PowerShell through ``ShellTools``), the child
 can mutate the mode flags of any console input/output handle it has
 access to.  Even after PR #146 (``CREATE_NEW_CONSOLE + SW_HIDE``), the
 child still inherits the parent's standard handles unless ``stdin`` /

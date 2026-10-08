@@ -9,6 +9,7 @@ import sys
 import tomllib
 
 import pytest
+import yaml
 
 from chrys import __version__
 from chrys.app.cli import app as cli_app
@@ -349,7 +350,7 @@ def test_pyapp_build_renames_runtime_python_on_process_name_sensitive_platforms(
     build_ps1 = (root / "scripts" / "build.ps1").read_text(encoding="utf-8")
     cd_workflow = (root / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
 
-    assert 'WHEEL_SOURCE="dist/chrys-${VERSION}-py3-none-any.whl"' in build_sh
+    assert 'WHEEL_SOURCE="dist/icode_tui-${VERSION}-py3-none-any.whl"' in build_sh
     assert 'WHEEL="$(basename "$WHEEL_SOURCE")"' in build_sh
     assert "BUILD_USES_RUNTIME_ALIAS=true" in build_sh
     assert "Linux|Darwin|MINGW*|MSYS*|CYGWIN*" in build_sh
@@ -367,7 +368,7 @@ def test_pyapp_build_renames_runtime_python_on_process_name_sensitive_platforms(
     assert "install_project\\(\\)\\?;.*ensure_runtime_aliases" in build_sh
 
     assert "Patching PyApp to run Chrys through renamed Python" in build_ps1
-    assert '$WheelSource = Join-Path "dist" "chrys-$Version-py3-none-any.whl"' in build_ps1
+    assert '$WheelSource = Join-Path "dist" "icode_tui-$Version-py3-none-any.whl"' in build_ps1
     assert "$Wheel = $WheelFile.Name" in build_ps1
     assert "chrys-runtime.exe" in build_ps1
     assert 'pub const CHRYS_RUNTIME_EXE: &str = "chrys-runtime";' in build_ps1
@@ -401,35 +402,59 @@ def test_pyapp_build_renames_runtime_python_on_process_name_sensitive_platforms(
     assert "install_project\\(\\)\\?;.*ensure_runtime_aliases" in cd_workflow
 
 
-def test_ci_and_build_paths_include_serve_dependencies() -> None:
+def test_icode_is_the_only_command() -> None:
+    """Every install, the dev environment included, starts iCode as ``icode`` alone."""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["project"]["scripts"] == {APP_COMMAND: "chrys.app.cli.app:main"}
+
+
+def test_every_install_carries_the_whole_runtime() -> None:
+    """PyPI, PyApp and offline installs all get the TUI, document and telemetry stacks, with no extras to pick."""
     root = REPO_ROOT
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    extras = pyproject["project"]["optional-dependencies"]
+    project = pyproject["project"]
 
-    assert "setproctitle==1.3.7" in pyproject["project"]["dependencies"]
-    assert "textual-serve==1.1.3" in extras["tui"]
-    assert "server" not in extras
-    assert "chrys[tui,dev,doc_converter,observability]" in extras["all"]
+    def names(requirements: list[str]) -> set[str]:
+        return {
+            re.sub(r"[-_.]+", "-", re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", item)[0]).lower() for item in requirements
+        }
 
-    ci_workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "uv sync --extra all" in ci_workflow
+    assert project["name"] == "iCode-TUI"
+    assert "optional-dependencies" not in project
+    runtime = names(project["dependencies"])
+    assert {
+        "setproctitle",
+        "textual",
+        "textual-serve",
+        "psutil",
+        "watchdog",
+        "pywinpty",
+        "pypdf",
+        "python-docx",
+        "python-pptx",
+        "openpyxl",
+        "xlrd",
+        "opentelemetry-sdk",
+        "opentelemetry-exporter-otlp-proto-grpc",
+        "opentelemetry-instrumentation-logging",
+    } <= runtime
+    # Test and lint tools stay in the dev group, which never reaches the published metadata.
+    dev = names([item for item in pyproject["dependency-groups"]["dev"] if isinstance(item, str)])
+    assert {"pytest", "ruff", "ty", "babel"} <= dev
+    assert not dev & runtime
 
-    build_sh = (root / "scripts" / "build.sh").read_text(encoding="utf-8")
-    build_ps1 = (root / "scripts" / "build.ps1").read_text(encoding="utf-8")
-    cd_workflow = (root / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
-
-    assert "PYAPP_PROJECT_FEATURES=tui,observability,doc_converter" in build_sh
-    assert '$env:PYAPP_PROJECT_FEATURES = "tui,observability,doc_converter"' in build_ps1
-    # In CD the features are gated per matrix flavor: the offline flavor bundles
-    # the extras into its distribution instead of pip-installing them.
-    assert "'tui,observability,doc_converter'" in cd_workflow
-
-    # The offline distribution must bundle the same extras the pip flavor
-    # would have installed, or `chrys serve` breaks only in offline builds.
-    offline_sh = (root / "scripts" / "build_offline_dist.sh").read_text(encoding="utf-8")
-    offline_ps1 = (root / "scripts" / "build_offline_dist.ps1").read_text(encoding="utf-8")
-    assert 'EXTRAS="tui,doc_converter,observability"' in offline_sh
-    assert '[string]$Extras = "tui,doc_converter,observability"' in offline_ps1
+    for relative in (
+        ".github/workflows/ci.yml",
+        ".github/workflows/cd.yml",
+        "scripts/build.sh",
+        "scripts/build.ps1",
+        "scripts/build_offline_dist.sh",
+        "scripts/build_offline_dist.ps1",
+    ):
+        text = (root / relative).read_text(encoding="utf-8")
+        assert "PYAPP_PROJECT_FEATURES" not in text, relative
+        assert "--extra" not in text, relative
+        assert "Extras" not in text, relative
 
 
 def test_offline_wheel_overrides_match_the_lock() -> None:
@@ -465,3 +490,86 @@ def test_offline_wheel_overrides_match_the_lock() -> None:
     # PyPI has no glibc 2.17 Pillow wheel for either machine CD builds the
     # Linux offline binaries on.
     assert machines.get("pillow") == {"x86_64", "aarch64"}
+
+
+def test_offline_source_builds_use_the_build_requirements_pinned_by_hash() -> None:
+    """Both offline scripts build sdists with the build requirements offline_build_constraints.txt pins."""
+    scripts = REPO_ROOT / "scripts"
+    pins: dict[str, str] = {}
+    for raw in (scripts / "offline_build_constraints.txt").read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        # uv verifies a build requirement's hash only when it is listed with one.
+        match = re.fullmatch(r"([A-Za-z0-9._-]+)==(\S+) --hash=sha256:[0-9a-f]{64}", line)
+        assert match is not None, line
+        pins[match.group(1)] = match.group(2)
+    # setuptools 84 bypasses grpcio's filter of MSVC's C and C++ standard flags,
+    # so its Windows on Arm source build fails.
+    assert int(pins["setuptools"].split(".")[0]) < 84
+    for script in ("build_offline_dist.sh", "build_offline_dist.ps1"):
+        text = (scripts / script).read_text(encoding="utf-8")
+        assert "--build-constraints" in text and "offline_build_constraints.txt" in text, script
+
+
+def test_released_wheels_are_installed_and_run_as_pypi_users_get_them() -> None:
+    """CD's release wheel and CI's identical build pass scripts/check_wheel.py, CI's on Linux, macOS and Windows."""
+    workflows = REPO_ROOT / ".github" / "workflows"
+    ci_jobs = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))["jobs"]
+    cd_jobs = yaml.safe_load((workflows / "cd.yml").read_text(encoding="utf-8"))["jobs"]
+
+    def commands(job: dict) -> list[str]:
+        return [step["run"] for step in job["steps"] if "run" in step]
+
+    check_all = "python scripts/check_wheel.py --all-ripgrep dist/icode_tui-*.whl"
+    for job in (ci_jobs["build"], cd_jobs["build-wheel"]):
+        steps = commands(job)
+        build = next(i for i, command in enumerate(steps) if command.startswith("uv build"))
+        # Every platform's ripgrep goes into the wheel before it is built, and the check follows the build.
+        assert steps.index("./scripts/fetch_rg.sh --all") < build < steps.index(check_all)
+
+    install = ci_jobs["wheel_install"]
+    assert install["needs"] == "build"
+    assert {row["os"] for row in install["strategy"]["matrix"]["include"]} == {"macos-latest", "windows-latest"}
+    assert "python scripts/check_wheel.py dist/icode_tui-*.whl" in commands(install)
+
+
+def test_releases_upload_the_checked_wheel_to_pypi_without_a_stored_secret() -> None:
+    """Only the main repository's release-tag runs upload, by Trusted Publishing, the wheel whose version the tag names."""
+    workflows = REPO_ROOT / ".github" / "workflows"
+    cd = yaml.safe_load((workflows / "cd.yml").read_text(encoding="utf-8"))
+    # Only dispatched (PyYAML reads the `on` key as YAML 1.1's true): the mirror's later push of each
+    # release tag must not rebuild the release.
+    assert list(cd[True]) == ["workflow_dispatch"]
+    cd_jobs = cd["jobs"]
+    release_runs = cd_jobs["release"]["if"]
+
+    build = cd_jobs["build-wheel"]["steps"]
+    names = [step.get("name") or step.get("run") or step["uses"] for step in build]
+    check = names.index("Check the release tag names the wheel's version")
+    # The tag is checked on every run that releases, after the build and before the wheel is handed on.
+    assert build[check]["if"] == release_runs
+    # A run on a tag builds that very tag: the environment admits the run's ref, not the `ref` input.
+    assert '"$TAG" != "$GITHUB_REF_NAME"' in build[check]["run"]
+    handed_on = next(i for i, name in enumerate(names) if "upload-artifact" in name)
+    assert names.index("uv build --wheel") < check < handed_on
+
+    publish = cd_jobs["publish-pypi"]
+    # A release run on a tag, never one dispatched from a branch: the run's ref is what the environment admits.
+    assert publish["if"] == "github.repository == 'openJiuwen-ai/iCode' && startsWith(github.ref, 'refs/tags/v')"
+    assert publish["needs"] == "build-wheel"
+    # The publisher registered on PyPI names this environment; its OIDC token is the only credential.
+    assert publish["environment"]["name"] == "pypi"
+    assert publish["permissions"] == {"id-token": "write"}
+    download, upload = publish["steps"]
+    assert download["uses"].startswith("actions/download-artifact@")
+    assert download["with"] == {"name": "wheel", "path": "dist"}
+    assert upload["uses"].startswith("pypa/gh-action-pypi-publish@")
+    # No password, no other index and no skip-existing: a version PyPI already has fails the upload.
+    assert "with" not in upload
+
+    # tag-release dispatches the release run on the tag it pushed, building that same tag.
+    tag_release = yaml.safe_load((workflows / "tag-release.yml").read_text(encoding="utf-8"))
+    trigger = next(step for step in tag_release["jobs"]["tag"]["steps"] if step.get("name") == "Trigger CD pipeline")
+    tag = '"v${{ steps.version.outputs.current }}"'
+    assert trigger["run"] == f"gh workflow run cd.yml --ref {tag} -f ref={tag}"
