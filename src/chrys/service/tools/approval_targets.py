@@ -42,14 +42,13 @@ _approved: ContextVar[ApprovedTargets | None] = ContextVar("approved_targets", d
 
 
 def physical_dir(path: str) -> str:
-    """The case-normalized real path a directory currently resolves to."""
-    return os.path.normcase(os.path.realpath(path))
+    """The real path a directory currently resolves to.
 
-
-def resolve_pinned_dir(path: str, pinned: str) -> str | None:
-    """The real path of *path*, in its own casing, if it is still the *pinned* directory."""
-    real = os.path.realpath(path)
-    return real if os.path.normcase(real) == pinned else None
+    Never case-folded: a case-sensitive directory can hold names that differ
+    only in case, and on Windows ``realpath`` already returns the casing
+    stored on disk.
+    """
+    return os.path.realpath(path)
 
 
 def file_write_target(path: str, *, base_cwd: str | None = None) -> FileWriteTarget:

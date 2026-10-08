@@ -23,6 +23,7 @@ from chrys.foundation.models.workspace import Workspace
 from chrys.kernel import FunctionTool
 from chrys.kernel.middleware import FunctionInvocationContext
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
+from chrys.service.approval import reuse as reuse_module
 from chrys.service.approval.policy import ApprovalPolicy
 from chrys.service.approval.reuse import FileCandidate, FileKey, ReuseContext, project_path
 from chrys.service.approval.reuse_binding import ApprovalReuseBinding
@@ -51,8 +52,22 @@ def retarget(link, destination):
     symlink_or_skip(link, destination, target_is_directory=True)
 
 
-@pytest.mark.parametrize("change", ["cwd", "path", "args"])
-def test_session_grant_binds_execution_context(runtime, change):
+def fold_case_like_windows(monkeypatch):
+    """Let path identities see the case folding Windows' normcase applies."""
+    windows_like = ModuleType("os")
+    windows_like.__dict__.update(vars(os))
+    windows_like.path = ModuleType("os.path")
+    windows_like.path.__dict__.update(vars(os.path))
+    windows_like.path.normcase = str.lower
+    for module in (approval_targets, reuse_module):
+        monkeypatch.setattr(module, "os", windows_like)
+
+
+@pytest.mark.parametrize("change", ["cwd", "case", "path", "args"])
+def test_session_grant_binds_execution_context(runtime, monkeypatch, change):
+    fold_case_like_windows(monkeypatch)
+    if change == "case":
+        runtime = replace(runtime, cwd=os.path.join(runtime.cwd, "Project"))
     tools = ShellTools(runtime).tools()
     binding = ApprovalReuseBinding(runtime, tools)
     args = {"command": "git reset --hard"}
@@ -61,6 +76,9 @@ def test_session_grant_binds_execution_context(runtime, change):
     assert binding.service.remember(candidate, "EXACT_SESSION")
     if change == "cwd":
         runtime = replace(runtime, cwd=runtime.cwd + "/other")
+    elif change == "case":
+        # A case-sensitive directory can hold both as different projects.
+        runtime = replace(runtime, cwd=os.path.join(os.path.dirname(runtime.cwd), "project"))
     else:
         shell = replace(runtime.platform.shell, **{change: "/other/shell" if change == "path" else ["-l", "-c"]})
         runtime = replace(runtime, platform=replace(runtime.platform, shell=shell))
@@ -139,11 +157,17 @@ async def test_write_through_an_alias_to_credentials_is_never_remembered(runtime
 
 
 @pytest.mark.parametrize("approved_by", ["grant", "person"])
-async def test_shell_call_does_not_follow_a_retargeted_working_directory(runtime, tmp_path, monkeypatch, approved_by):
-    first, second, link = tmp_path / "first", tmp_path / "second", tmp_path / "work"
+@pytest.mark.parametrize("names", [("first", "second"), ("Project", "project")], ids=["other", "case"])
+async def test_shell_call_does_not_follow_a_retargeted_working_directory(
+    runtime, tmp_path, monkeypatch, approved_by, names
+):
+    first, second, link = tmp_path / names[0], tmp_path / names[1], tmp_path / "work"
     first.mkdir()
+    if second.exists():
+        pytest.skip("Directories differing only in case need a case-sensitive filesystem")
     second.mkdir()
     symlink_or_skip(link, first, target_is_directory=True)
+    fold_case_like_windows(monkeypatch)
     args = {"command": "echo ran > ran.txt", "reason": "test"}
     if approved_by == "grant":
         runtime = replace(runtime, cwd=str(link))
@@ -190,22 +214,16 @@ async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_pat
     first.mkdir()
     second.mkdir()
     symlink_or_skip(link, first, target_is_directory=True)
-    # Compare directories the way Windows does: normcase lowercases them.
-    windows_like = ModuleType("os")
-    windows_like.__dict__.update(vars(os))
-    windows_like.path = ModuleType("os.path")
-    windows_like.path.__dict__.update(vars(os.path))
-    windows_like.path.normcase = str.lower
-    monkeypatch.setattr(approval_targets, "os", windows_like)
+    fold_case_like_windows(monkeypatch)
     runtime = replace(runtime, cwd=str(link))
     tools = ShellTools(runtime).tools()
     context = FunctionInvocationContext(tools[0], {"command": "echo ran > ran.txt", "reason": "test"})
     bus, started_in = EventBus(), []
-    checked = shell_module.resolve_pinned_dir
+    checked = shell_module.physical_dir
 
-    def check_then_retarget(path, pinned):
+    def check_then_retarget(path):
         # The link changes right after the final check, before the command starts.
-        result = checked(path, pinned)
+        result = checked(path)
         retarget(link, second)
         return result
 
@@ -222,7 +240,7 @@ async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_pat
         await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True))
 
     async def execute():
-        monkeypatch.setattr(shell_module, "resolve_pinned_dir", check_then_retarget)
+        monkeypatch.setattr(shell_module, "physical_dir", check_then_retarget)
         context.result = await context.function.invoke(context=context, skip_parsing=True)
 
     middleware = ApprovalMiddleware(
@@ -232,7 +250,7 @@ async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_pat
     try:
         await middleware.process(context, execute)
         assert "[exit_code: 0]" in str(context.result)
-        # The real directory, in its own casing rather than the comparison key's.
+        # The real directory, in its own casing.
         assert started_in == [os.path.realpath(first)]
         assert (first / "ran.txt").exists()
         assert not (second / "ran.txt").exists()

@@ -39,7 +39,8 @@ def canonical(value: object) -> str:
 
 
 def project_path(path: str) -> str:
-    return os.path.normcase(os.path.realpath(path))
+    """A project's real path, never case-folded, like the command directories it scopes."""
+    return os.path.realpath(path)
 
 
 def simple_argv(command: str, shell: str) -> tuple[str, ...] | None:
