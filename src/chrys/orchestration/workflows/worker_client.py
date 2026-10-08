@@ -35,7 +35,11 @@ from typing import Any, Final, cast
 
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.platform import get_platform
-from chrys.foundation.platform.process import ManagedStdioProcess, spawn_managed_stdio_process
+from chrys.foundation.platform.process import (
+    ManagedStdioProcess,
+    MissingWorkingDirectoryError,
+    spawn_managed_stdio_process,
+)
 from chrys.foundation.trajectory.keys import ensure_owner_only_directory
 from chrys.service.workflows import protocol
 from chrys.service.workflows.asks import answers_to_wire, questions_from_wire
@@ -420,6 +424,8 @@ class WorkflowWorkerClient:
                 limit=_STDIO_LIMIT,
                 parent_env=dict(os.environ),
             )
+        except MissingWorkingDirectoryError as exc:
+            raise WorkerStartError(f"Cannot start the workflow worker: {exc}") from exc
         except OSError as exc:
             raise WorkerStartError(f"Cannot start the workflow worker with {environment.executable!r}: {exc}") from exc
         client = cls(process, bytecode_cache=bytecode_cache, ask_handler=ask_handler, emit_handler=emit_handler)

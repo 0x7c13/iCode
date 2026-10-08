@@ -16,6 +16,7 @@ import enum
 import logging
 import os
 import string
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
@@ -27,10 +28,12 @@ from textual.message import Message
 from textual.widgets import Button, DirectoryTree, OptionList, Static, TabbedContent, TabPane
 from textual.widgets._directory_tree import DirEntry
 from textual.widgets.option_list import Option
+from textual.widgets.tree import UnknownNodeID
 
 from chrys.app.tui.binding_display import CLOSE_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.screens.dialogs.new_folder import NewFolderDialog
 from chrys.app.tui.support.path_shortcuts import get_default_favorites
 from chrys.foundation.i18n import MessageRef, msg
 
@@ -49,6 +52,7 @@ _FAVORITES = msg("tui.file_picker.tab.favorites", fallback="Favorites")
 _DRIVES = msg("tui.file_picker.tab.drives", fallback="Drives")
 _SELECT = msg("tui.file_picker.button.select", fallback="Select")
 _CANCEL = msg("tui.file_picker.button.cancel", fallback="Cancel")
+_NEW_FOLDER = msg("tui.file_picker.button.new_folder", fallback="New Folder")
 _RECENT = msg("tui.file_picker.recent", fallback="─ Recent ─")
 
 
@@ -233,6 +237,24 @@ class _FilteredDirectoryTree(DirectoryTree):
 # ---------------------------------------------------------------------------
 
 
+def _nearest_existing_dir(path: str) -> str | None:
+    """Return *path* as an absolute directory, or its nearest existing ancestor.
+
+    ``None`` when nothing on the way up exists, or when a relative *path*
+    can't be made absolute because the process working directory is gone.
+    """
+    try:
+        current = os.path.abspath(os.path.expanduser(path))
+    except OSError:
+        return None
+    while not os.path.isdir(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+    return current
+
+
 class FilePicker(BaseDialog[str | None]):
     """Generic file/folder selection dialog.
 
@@ -255,11 +277,17 @@ class FilePicker(BaseDialog[str | None]):
     recent_paths:
         Optional :class:`RecentPaths` provider.  When supplied, recently
         used paths are appended below a separator in the Favorites tab.
+
+    In FOLDER mode a New Folder button creates a folder inside the
+    highlighted one and selects it.
     """
 
     BINDINGS: ClassVar[list] = [
         localized_binding("escape", "dismiss_dialog", CLOSE_BINDING, show=False, priority=True),
     ]
+
+    # Below this width, full-size buttons leave the path bar almost no room.
+    HORIZONTAL_BREAKPOINTS: list[tuple[int, str]] | None = [(0, "-narrow"), (100, "-regular")]  # noqa: RUF012 - Textual declares the base as an instance attribute.
 
     CSS_PATH = "file_picker.tcss"
 
@@ -280,9 +308,10 @@ class FilePicker(BaseDialog[str | None]):
         self._recent_paths = recent_paths
         self._recent_paths_task: asyncio.Task[None] | None = None
 
-        # Resolve initial path
-        if initial_path and os.path.isdir(initial_path):
-            self._initial_path = os.path.abspath(initial_path)
+        # Resolve initial path: a deleted folder opens at its nearest existing parent.
+        nearest = _nearest_existing_dir(initial_path) if initial_path else None
+        if nearest is not None:
+            self._initial_path = nearest
         else:
             from chrys.foundation.platform import safe_getcwd
 
@@ -319,6 +348,13 @@ class FilePicker(BaseDialog[str | None]):
                 )
             with Horizontal(id="fsd-buttons"):
                 yield Static("", id="fsd-path-bar")
+                if self._mode == FilePickerMode.FOLDER:
+                    yield Button(
+                        Text(render_str(localizer, _NEW_FOLDER.bind())),
+                        id="fsd-new-folder",
+                        variant="success",
+                        flat=True,
+                    )
                 yield Button(
                     Text(render_str(localizer, _SELECT.bind())),
                     id="fsd-select",
@@ -412,6 +448,53 @@ class FilePicker(BaseDialog[str | None]):
     def action_dismiss_dialog(self) -> None:
         self.dismiss(None)
 
+    # -- new folder -----------------------------------------------------
+
+    @on(Button.Pressed, "#fsd-new-folder")
+    def _on_new_folder(self, event: Button.Pressed) -> None:
+        event.stop()
+        if self.dismiss_requested or self.app.screen is not self:
+            return
+        tree = self.query_one("#fsd-tree", _FilteredDirectoryTree)
+        parent_node = self._new_folder_parent(tree)
+        parent = parent_node.data.path if parent_node.data is not None else tree.PATH(tree.path)
+
+        def created(path: Path | None) -> None:
+            if path is not None:
+                self.run_worker(
+                    self._reveal_created_folder(parent_node, path),
+                    group="fsd-new-folder",
+                    exit_on_error=False,
+                )
+
+        self.app.push_screen(NewFolderDialog(parent), created)
+
+    @staticmethod
+    def _new_folder_parent(tree: _FilteredDirectoryTree) -> TreeNode[DirEntry]:
+        """Return the folder a new folder goes into: the highlighted one, else the tree root.
+
+        Read from the cursor itself; ``_selected_path`` follows it through a
+        queued message and can lag behind a fast click.
+        """
+        node = tree.cursor_node
+        if node is None or node.data is None or tree.is_parent_navigation_node(node):
+            return tree.root
+        if node.allow_expand:
+            return node
+        return node.parent or tree.root
+
+    async def _reveal_created_folder(self, parent_node: TreeNode[DirEntry], created: Path) -> None:
+        """Reload *parent_node*, then move the cursor onto the folder just created."""
+        tree = self.query_one("#fsd-tree", _FilteredDirectoryTree)
+        # If that level was rebuilt or the picker moved elsewhere meanwhile, the
+        # folder is still created; it just isn't highlighted.
+        if _still_lists(tree, parent_node, created.parent):
+            await tree.reload_node(parent_node)
+        # Select from the tree's own queue: an expansion still handled there may
+        # list this level again and then put back the cursor it saw when that
+        # listing started. Queued behind it, the selection lands last.
+        tree.call_later(_select_created_folder, tree, parent_node, created)
+
     # -- helpers --------------------------------------------------------
 
     async def _load_recent_paths(self) -> None:
@@ -453,3 +536,47 @@ class FilePicker(BaseDialog[str | None]):
                 btn.disabled = True
             else:
                 btn.disabled = False
+
+
+def _still_lists(tree: _FilteredDirectoryTree, node: TreeNode[DirEntry], path: Path) -> bool:
+    """Return whether *node* is still in the tree and still lists *path*.
+
+    Moving the picker to another location reuses the root node for it.
+    """
+    try:
+        in_tree = tree.get_node_by_id(node.id) is node
+    except UnknownNodeID:
+        return False
+    return in_tree and node.data is not None and node.data.path == path
+
+
+def _select_created_folder(tree: _FilteredDirectoryTree, parent_node: TreeNode[DirEntry], created: Path) -> None:
+    child = _find_child(tree, parent_node, created.name) if _still_lists(tree, parent_node, created.parent) else None
+    if child is not None:
+        # Nodes added by the reload get their line numbers when the tree lines
+        # are rebuilt; move_cursor reads that number.
+        _ = tree.last_line
+        # NodeHighlighted then selects the folder like any other highlight.
+        tree.move_cursor(child)
+    tree.focus()
+
+
+def _find_child(tree: _FilteredDirectoryTree, node: TreeNode[DirEntry], name: str) -> TreeNode[DirEntry] | None:
+    """Return the child of *node* listing the entry called *name*.
+
+    Matched by name, not path: the tree lists a folder under its resolved path,
+    so the children of a symlinked folder carry the link target's path. Some
+    file systems (HFS+, SMB shares) list a name in a different Unicode
+    normalization than it was created with, so a name that matches in NFC also counts.
+    """
+    wanted = unicodedata.normalize("NFC", name)
+    renormalized: TreeNode[DirEntry] | None = None
+    for child in node.children:
+        if child.data is None or tree.is_parent_navigation_node(child):
+            continue
+        listed = child.data.path.name
+        if listed == name:
+            return child
+        if renormalized is None and unicodedata.normalize("NFC", listed) == wanted:
+            renormalized = child
+    return renormalized

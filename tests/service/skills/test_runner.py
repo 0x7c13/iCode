@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -21,14 +22,21 @@ import pytest
 
 from chrys.foundation.platform import output_capture, runtime_paths
 from chrys.foundation.platform.output_capture import BoundedCapture
+from chrys.foundation.platform.process import MissingWorkingDirectoryError
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
-from chrys.foundation.tool_result_metadata import tool_payload_observation
+from chrys.foundation.tool_result_metadata import (
+    TOOL_ERROR_DETAILS_METADATA_KEY,
+    TOOL_ERROR_KIND_METADATA_KEY,
+    tool_payload_observation,
+)
 from chrys.kernel.tools import SyncToolCancelledAfterCompletion
 from chrys.service.skills import runner as runner_mod
 from chrys.service.skills.loader import load_file_skill
 from chrys.service.skills.model import Skill, SkillScript
 from chrys.service.skills.runner import SubprocessScriptRunner
+from chrys.service.tools.result_metadata import tool_result_metadata
 from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME
+from chrys.service.tools.workspace_paths import WORKING_DIR_MISSING_KIND, working_dir_missing_error
 from tests.support.processes import ExitedProcess
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -740,3 +748,93 @@ async def test_cwd_falls_back_to_script_parent_without_runtime(
     skill, script = _make_skill(tmp_path, "cwd.py", _cwd_script())
     result = await runner(skill, script)
     assert str(tmp_path / "test-skill") in result
+
+
+def _runtime_at(cwd: Path) -> Any:
+    import dataclasses
+
+    from chrys.foundation.models.session_env import SessionEnvironment
+
+    return dataclasses.replace(SessionEnvironment.capture(), cwd=str(cwd))
+
+
+async def _run_with_metadata(
+    runner: SubprocessScriptRunner, skill: Skill, script: SkillScript, *, cwd: str | None = None
+) -> tuple[str, dict[str, object]]:
+    metadata: dict[str, object] = {}
+    token = tool_result_metadata.set(metadata)
+    try:
+        return await runner(skill, script, cwd=cwd), metadata
+    finally:
+        tool_result_metadata.reset(token)
+
+
+@pytest.mark.parametrize("skill_inside_workspace", [True, False])
+async def test_deleted_working_directory_is_reported_before_the_script_is_looked_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill_inside_workspace: bool
+) -> None:
+    """A project skill lives inside the working directory: report the directory, not its missing script."""
+    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    workspace = tmp_path / "workspace"
+    skills_root = workspace / ".agents" / "skills" if skill_inside_workspace else tmp_path / "user-skills"
+    skills_root.mkdir(parents=True)
+    workspace.mkdir(exist_ok=True)
+    skill, script = _make_skill(skills_root, "cwd.py", _cwd_script())
+    runner = SubprocessScriptRunner(timeout=30, runtime=_runtime_at(workspace))
+    shutil.rmtree(workspace)
+
+    result, metadata = await _run_with_metadata(runner, skill, script)
+
+    assert result == working_dir_missing_error(str(workspace))
+    assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == WORKING_DIR_MISSING_KIND
+    assert metadata[TOOL_ERROR_DETAILS_METADATA_KEY] == {"cwd": str(workspace)}
+
+
+async def test_explicit_cwd_still_runs_after_the_working_directory_is_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    alt_dir = tmp_path / "elsewhere"
+    alt_dir.mkdir()
+    skill, script = _make_skill(tmp_path, "cwd.py", _cwd_script())
+    runner = SubprocessScriptRunner(timeout=30, runtime=_runtime_at(workspace))
+    workspace.rmdir()
+
+    result = await runner(skill, script, cwd=str(alt_dir))
+
+    assert str(alt_dir) in result
+    assert not result.startswith("Error:")
+
+
+@pytest.mark.parametrize("explicit_cwd", [False, True])
+async def test_directory_deleted_just_before_the_spawn_is_reported_as_that_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_cwd: bool
+) -> None:
+    """The check before the spawn can race a deletion; the spawn's own failure names the same directory."""
+    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill, script = _make_skill(tmp_path, "cwd.py", _cwd_script())
+    runner = SubprocessScriptRunner(timeout=30, runtime=_runtime_at(workspace))
+    spawned_in: list[object] = []
+
+    @contextlib.asynccontextmanager
+    async def deleted_before_spawn(*_cmd: object, **kwargs: object) -> AsyncIterator[ExitedProcess]:
+        spawned_in.append(kwargs["cwd"])
+        if spawned_in:
+            raise MissingWorkingDirectoryError(str(workspace))
+        yield ExitedProcess(b"")
+
+    monkeypatch.setattr(runner_mod, "managed_subprocess", deleted_before_spawn)
+
+    result, metadata = await _run_with_metadata(runner, skill, script, cwd=str(workspace) if explicit_cwd else None)
+
+    assert spawned_in == [str(workspace)]
+    if explicit_cwd:
+        assert result == f"Error: 'cwd' is not an existing directory: {workspace}"
+        assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == "invalid_cwd"
+    else:
+        assert result == working_dir_missing_error(str(workspace))
+        assert metadata[TOOL_ERROR_KIND_METADATA_KEY] == WORKING_DIR_MISSING_KIND

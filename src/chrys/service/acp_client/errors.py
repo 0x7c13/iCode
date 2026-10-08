@@ -11,6 +11,9 @@ from typing import Any
 
 from acp.exceptions import RequestError
 
+from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.process import MissingWorkingDirectoryError
+
 _DETERMINISTIC_REQUEST_CODES = frozenset({-32700, -32600, -32601, -32602, -32002})
 _AUTH_REQUIRED_CODE = -32000
 _INTERNAL_ERROR_CODE = -32603
@@ -152,6 +155,10 @@ def classify_spawn_error(error: BaseException) -> AcpSpawnError | AcpConnectErro
     """Classify every subprocess-boundary failure as deterministic or transient."""
     if isinstance(error, TypeError | ValueError):
         return AcpSpawnError("The ACP process launch configuration is invalid.", cause=error)
+    if isinstance(error, MissingWorkingDirectoryError):
+        return AcpSpawnError(
+            f"The ACP agent's working directory no longer exists: {surrogate_safe_text(error.path)}", cause=error
+        )
     if isinstance(error, OSError):
         winerror = getattr(error, "winerror", None)
         if error.errno in _DETERMINISTIC_ERRNOS or winerror in _DETERMINISTIC_WINERRORS:

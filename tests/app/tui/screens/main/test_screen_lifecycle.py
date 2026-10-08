@@ -83,6 +83,12 @@ def _make_screen_for_running_toggle() -> SimpleNamespace:
     )
     chat_panel = SimpleNamespace(agent_running=False)
     engine = SimpleNamespace(session_generation=1)
+    workspace_actions = SimpleNamespace(after_turn_checks=0)
+
+    def check_after_turn() -> None:
+        workspace_actions.after_turn_checks += 1
+
+    workspace_actions.check_after_turn = check_after_turn
 
     def query_one(cls):
         if cls is InputBar:
@@ -97,6 +103,7 @@ def _make_screen_for_running_toggle() -> SimpleNamespace:
         _live_diff=LiveDiffTracker(),
         _suggestions=SimpleNamespace(file_cache=None),
         _workflow=SimpleNamespace(workflow_mode=False),
+        _workspace_actions=workspace_actions,
         _navigation=SimpleNamespace(dismiss_interrupt_confirm=lambda: None),
         _services=MainScreenServices(bus=EventBus(), engine_provider=lambda: engine),
         _view_adapter=SimpleNamespace(current_chat_session_id=lambda: "session-1"),
@@ -124,6 +131,24 @@ def test_set_agent_running_false_invalidates_file_cache() -> None:
 
     assert screen._suggestions.file_cache is None
     assert screen._state.run.agent_running is False
+
+
+@pytest.mark.parametrize("stopped_by", ["screen", "backend_handler"])
+def test_a_stopped_run_checks_the_working_folder_once(stopped_by: str) -> None:
+    from chrys.app.tui.screens.main.screen import MainScreen
+
+    screen = _make_screen_for_running_toggle()
+    MainScreen._set_agent_running(screen, True)
+    assert screen._workspace_actions.after_turn_checks == 0
+    if stopped_by == "backend_handler":
+        # ``BackendEventHandler.set_agent_running`` clears the shared flag before it calls the screen.
+        screen._state.run.agent_running = False
+
+    MainScreen._set_agent_running(screen, False)
+    assert screen._workspace_actions.after_turn_checks == 1
+
+    MainScreen._set_agent_running(screen, False)
+    assert screen._workspace_actions.after_turn_checks == 1
 
 
 def test_set_agent_running_true_preserves_file_cache() -> None:

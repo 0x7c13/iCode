@@ -42,6 +42,7 @@ _MAX_RENDERED_REASONS = 3
 _PYTEST_NO_TESTS_COLLECTED = 5
 _PYTEST_FILE_PATTERNS = ("test_*.py", "*_test.py")
 _MAX_SOURCE_IMPORT_HOPS = 2
+_BELOW_NORMAL_NICENESS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +425,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --smart, analyze only the files changed by the current task",
     )
     return parser
+
+
+def _lower_priority() -> None:
+    """Run this process, and every child it starts, below normal CPU priority.
+
+    Tests still use every idle core, but whatever else the user runs comes
+    first, so there is no opt-out. Children inherit the priority: the pytest
+    workers and the processes tests start run lower too. A process already
+    running lower keeps its priority.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetPriorityClass.argtypes = (wintypes.HANDLE,)
+        kernel32.GetPriorityClass.restype = wintypes.DWORD
+        kernel32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.SetPriorityClass.restype = wintypes.BOOL
+        process = kernel32.GetCurrentProcess()
+        current = kernel32.GetPriorityClass(process)
+        if current in (subprocess.IDLE_PRIORITY_CLASS, subprocess.BELOW_NORMAL_PRIORITY_CLASS):
+            lowered = True
+        else:
+            # A failed query (0) leaves the priority alone rather than risk raising it.
+            lowered = current != 0 and bool(kernel32.SetPriorityClass(process, subprocess.BELOW_NORMAL_PRIORITY_CLASS))
+    else:
+        try:
+            if os.getpriority(os.PRIO_PROCESS, 0) < _BELOW_NORMAL_NICENESS:
+                os.setpriority(os.PRIO_PROCESS, 0, _BELOW_NORMAL_NICENESS)
+            lowered = True
+        except OSError:
+            lowered = False
+    if not lowered:
+        _write("Could not lower the CPU priority; tests run at normal priority.")
 
 
 def _run_process(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[bytes]:
@@ -1887,6 +1924,7 @@ def main(argv: list[str] | None = None) -> int:
     options = parser.parse_args(argv)
     if options.paths and options.full:
         parser.error("--paths can only be used with --smart")
+    _lower_priority()
     if options.full:
         return _run_full()
     try:

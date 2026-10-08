@@ -44,6 +44,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.workflow_session import WorkflowSessionSelection
 from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.execution import WorkflowExecution
@@ -109,6 +110,7 @@ REJECT_ENVIRONMENT_CHANGED: Final = "environment_changed"
 REJECT_STORAGE_FAILED: Final = "storage_failed"
 REJECT_INTERNAL_ERROR: Final = "internal_error"
 REJECT_WORKSPACE_LOCKED: Final = "workspace_locked"
+REJECT_WORKING_DIR_MISSING: Final = "working_dir_missing"
 
 MAX_REMEMBERED_REPLIES: Final = 256
 MAX_REMEMBERED_RESULTS: Final = 16
@@ -581,6 +583,11 @@ class WorkflowCoordinator:
         ):
             raise _Rejection(REJECT_SPEC_CHANGED, "This session belongs to another workflow. Start a new session.")
         workspace = owner.require_workspace()
+        if (missing := workspace.missing_primary()) is not None:
+            raise _Rejection(
+                REJECT_WORKING_DIR_MISSING,
+                f"The working directory no longer exists: {surrogate_safe_text(missing)}.",
+            )
         config_dir = self._config_dir()
         project_cwd = Path(workspace.primary_cwd)
         settings = await self._load_run_settings(project_cwd, request_id=event.request_id)

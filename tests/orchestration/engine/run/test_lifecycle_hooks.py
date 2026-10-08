@@ -27,7 +27,7 @@ from chrys.foundation.events.types import (
     UserRetry,
     Warning,
 )
-from chrys.foundation.i18n import DisplayBlock
+from chrys.foundation.i18n import DisplayBlock, DisplayPath
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.trajectory.context import TrajectoryContext
@@ -49,8 +49,10 @@ from chrys.service.trajectory.preparation import PreparationOutcome
 from chrys.service.trajectory.waits import WaitOutcome
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support.components import make_current, make_hooks, make_turn_state
+from tests.support.event_capture import assert_display_message
 from tests.support.loaded_agents import SkillRefreshLoader, install_loaded_agent, make_manifest
 from tests.support.turn_services import make_turn_coordinator, make_turn_retry
+from tests.support.waiting import wait_for
 
 
 async def on_user_message(host: object, event: UserMessage) -> None:
@@ -1776,3 +1778,110 @@ async def test_active_retry_stale_shutdown_after_hook_does_not_queue_pending_ret
         await _cancel_active_run(host)
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_fresh_user_message_refused_before_prompt_hook_while_working_dir_missing(tmp_path: Path) -> None:
+    host = _Host(decision=HookDecision())
+    host._fsm.state = EngineState.IDLE
+    gone = tmp_path / "gone"
+    host.session.workspace = Workspace.from_cwd(str(gone))
+    sink = FakeSink()
+    host._trajectory_recorder = _TrajectoryRecorder(make_context(sink))
+    errors = await _collect_errors(host._bus)
+
+    await on_user_message(host, UserMessage(text="ls"))
+
+    assert [(error.code, error.session_id) for error in errors] == [("working_dir_missing", "s1")]
+    assert errors[0].message == f"Working directory no longer exists: {gone}"
+    assert_display_message(errors[0], "engine.working_dir_missing", {"path": DisplayPath(str(gone))})
+    assert host.session.hook_manager.payloads == []
+    assert host.run_texts == []
+    assert host._fsm.transitions == []
+    assert host._turn_state.lease.active_admission_count() == 0
+    assert host._turn_state.lease.run_task is None
+    assert sink.only(EventType.PREPARATION_FINISHED).payload["outcome"] == PreparationOutcome.REJECTED
+    sink.assert_operations_settled()
+
+
+@pytest.mark.asyncio
+async def test_mid_run_user_message_still_injects_while_working_dir_missing(tmp_path: Path) -> None:
+    """The running turn decides for itself; only new work is refused."""
+    host = _Host(decision=HookDecision(), executor_running=True)
+    host.session.workspace = Workspace.from_cwd(str(tmp_path / "gone"))
+    _install_active_run(host)
+    errors = await _collect_errors(host._bus)
+
+    try:
+        await on_user_message(host, UserMessage(text="stop and wait"))
+    finally:
+        await _cancel_active_run(host)
+
+    assert errors == []
+    assert host.current.loaded.bindings.injected == ["stop and wait"]
+
+
+@pytest.mark.asyncio
+async def test_user_retry_refused_before_prompt_hook_while_working_dir_missing(tmp_path: Path) -> None:
+    host = _Host(decision=HookDecision())
+    host.session.workspace = Workspace.from_cwd(str(tmp_path / "gone"))
+    sink = FakeSink()
+    host._trajectory_recorder = _TrajectoryRecorder(make_context(sink))
+    errors = await _collect_errors(host._bus)
+
+    await on_user_retry(host, UserRetry(text="try again"))
+
+    assert [(error.code, error.session_id) for error in errors] == [("working_dir_missing", "s1")]
+    assert host.session.hook_manager.payloads == []
+    assert host.retry_texts == []
+    assert host._history.removed_trailing_markers == 0
+    assert host._fsm.state is EngineState.INTERRUPTED
+    assert host._fsm.transitions == []
+    assert host._turn_state.lease.active_admission_count() == 0
+    assert host._turn_state.lease.run_task is None
+    assert sink.only(EventType.PREPARATION_FINISHED).payload["outcome"] == PreparationOutcome.REJECTED
+    sink.assert_operations_settled()
+
+
+@pytest.mark.asyncio
+async def test_user_retry_rechecks_working_dir_after_waiting_for_the_previous_run(tmp_path: Path) -> None:
+    """The directory can go while the retry waits for the old run's cleanup; nothing starts then."""
+    host = _Host(decision=HookDecision())
+    work = tmp_path / "work"
+    work.mkdir()
+    host.session.workspace = Workspace.from_cwd(str(work))
+    sink = FakeSink()
+    host._trajectory_recorder = _TrajectoryRecorder(make_context(sink))
+    errors = await _collect_errors(host._bus)
+    finish_cleanup = asyncio.Event()
+    cleanup = asyncio.create_task(finish_cleanup.wait())
+    host._turn_state.lease.run_task = cleanup
+    lease = host._turn_state.lease
+
+    retry = asyncio.create_task(on_user_retry(host, UserRetry(text="try again")))
+    try:
+        await wait_for(
+            lambda: retry.done() or (lease.active_admission_count() == 1 and lease.pre_admission_preparations),
+            description="retry admitted and waiting for the previous run's cleanup",
+        )
+        assert not retry.done()
+        assert [payload["text"] for payload in host.session.hook_manager.payloads] == ["try again"]
+
+        work.rmdir()
+        finish_cleanup.set()
+        await asyncio.wait_for(retry, timeout=5.0)
+    finally:
+        finish_cleanup.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await retry
+        await cleanup
+
+    assert [(error.code, error.session_id) for error in errors] == [("working_dir_missing", "s1")]
+    assert host.retry_texts == []
+    assert host._history.removed_trailing_markers == 0
+    assert Trigger.RETRY_STARTED not in host._fsm.transitions
+    assert host._fsm.state is EngineState.INTERRUPTED
+    assert lease.active_admission_count() == 0
+    assert lease.run_task is cleanup
+    assert sink.only(EventType.PREPARATION_FINISHED).payload["outcome"] == PreparationOutcome.REJECTED
+    sink.assert_operations_settled()

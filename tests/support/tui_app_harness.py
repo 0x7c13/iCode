@@ -14,6 +14,7 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.state.store import JsonFileStateStore
 
 if TYPE_CHECKING:
+    import asyncio
     from pathlib import Path
 
 
@@ -26,11 +27,13 @@ class ShutdownOnlyEngine:
     instead of silently reading a value the fake was never asked to supply.
     Use :class:`SessionGenerationEngine` only where the test's own path
     genuinely reaches ``engine_provider().session_generation``.
-    ``approval_mode`` is the one exception: every MainScreen build seeds its
-    header badge from the engine's launch mode.
+    ``approval_mode`` and ``turn_lifecycle_task`` are the exceptions: every
+    MainScreen build seeds its header badge from the engine's launch mode, and
+    every turn end checks the working folder once that task is done.
     """
 
     approval_mode = ApprovalMode.MANUAL
+    turn_lifecycle_task: asyncio.Task[None] | None = None
 
     def execution(self) -> ExecutionSnapshot:
         return ExecutionSnapshot("idle")

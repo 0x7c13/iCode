@@ -777,6 +777,7 @@ async def test_convert_file_not_found(tmp_path: Path) -> None:
 async def test_convert_file_not_found_escapes_display_path_but_keeps_raw_metadata(tmp_path: Path) -> None:
     resolved = "/work/missing-\udcff.pdf"
     runtime = _make_runtime(tmp_path)
+    runtime.cwd = str(tmp_path / "workspace")
     tools = DocConverterTools(runtime)
     metadata: dict[str, object] = {}
     token = tool_result_metadata.set(metadata)
@@ -787,7 +788,9 @@ async def test_convert_file_not_found_escapes_display_path_but_keeps_raw_metadat
             patch(f"{_PATCH_TOOL}.resolve_workspace_path", return_value=resolved),
             patch(f"{_PATCH_TOOL}.os.path.isdir", return_value=False),
         ):
-            result = await tools.convert_document("missing.pdf")
+            # Absolute and outside the working directory, so the patched isdir()
+            # decides only about the resolved path, not a missing working directory.
+            result = await tools.convert_document(str(tmp_path / "missing.pdf"))
     finally:
         tool_result_metadata.reset(token)
 

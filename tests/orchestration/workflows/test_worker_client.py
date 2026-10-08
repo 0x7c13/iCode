@@ -397,6 +397,18 @@ async def test_launch_rejects_an_interpreter_that_vanished_after_preparation(
         )
 
 
+async def test_launch_names_a_deleted_workspace_rather_than_the_interpreter(
+    sdk: SdkArtifact, workspace: Path, bytecode_cache: Path
+) -> None:
+    environment = await prepared_environment(sys.executable, sdk)
+    workspace.rmdir()
+    with pytest.raises(WorkerStartError, match="working directory no longer exists") as caught:
+        await WorkflowWorkerClient.launch(
+            environment=environment, sdk=sdk, workspace=workspace, bytecode_cache=bytecode_cache
+        )
+    assert environment.executable not in str(caught.value)
+
+
 async def test_launch_refuses_an_environment_prepared_for_another_sdk_build(
     sdk: SdkArtifact, workspace: Path, bytecode_cache: Path
 ) -> None:
