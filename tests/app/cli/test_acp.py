@@ -155,7 +155,7 @@ def test_prepare_runtime_uses_interactive_transient_retry_default(monkeypatch: p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("approval_timeout", [600, 45])
+@pytest.mark.parametrize("approval_timeout", [0, 600, 45])
 async def test_run_command_wires_buddy_callback_and_approval_timeout(
     monkeypatch: pytest.MonkeyPatch, approval_timeout: int
 ) -> None:

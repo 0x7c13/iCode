@@ -63,7 +63,8 @@ stay reserved: a user theme taking one would be renamed away on the next start.
 DEFAULT_LOCALE = "system"
 """Fallback locale selector when ``CHRYS_LOCALE`` is empty or missing."""
 
-DEFAULT_APPROVAL_TIMEOUT_SECONDS = 600
+DEFAULT_APPROVAL_TIMEOUT_SECONDS = 0
+"""Zero disables the human approval deadline in both TUI and ACP."""
 
 DEFAULT_APPROVAL_MODE = "manual"
 """Fallback approval mode when ``CHRYS_DEFAULT_APPROVAL_MODE`` is empty, missing, or invalid.
@@ -1109,7 +1110,7 @@ class Settings:
             key="approval.timeout_seconds",
             label=_LABEL_APPROVAL_TIMEOUT_SECONDS,
             env="CHRYS_APPROVAL_TIMEOUT_SECONDS",
-            coerce=int_coercer(minimum=1),
+            coerce=int_coercer(minimum=0),
             apply=Apply.RESTART,
             group="approval",
             kind=Kind.INT,

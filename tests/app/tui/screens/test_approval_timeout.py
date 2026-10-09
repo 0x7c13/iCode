@@ -158,3 +158,27 @@ async def test_screen_teardown_cancels_pending_timers(approval_wait) -> None:
     scheduler.timers[0].fire()
     assert port.responses == []
     assert controller._timeouts == {}
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_zero_disables_timer_but_allows_user_response(approval_wait, approved: bool) -> None:
+    controller, port, scheduler = approval_wait
+    controller._timeout_seconds = lambda: 0
+    await controller.on_request(_approval_request("unlimited", judging=False))
+    assert scheduler.timers == []
+    assert port.responses == []
+    port.dialogs[0].user_decision_submitted = True
+    port.dialogs[0].callback((approved, "human choice", None))
+    assert port.responses == [("unlimited", approved, "human choice", None)]
+
+
+async def test_default_unlimited_wait_can_be_cancelled(approval_wait) -> None:
+    _, port, scheduler = approval_wait
+    controller = ApprovalQueueController(port)
+    await controller.on_request(_approval_request("unlimited", judging=False))
+    assert scheduler.timers == []
+    await controller.on_cancelled(ApprovalCancelled(request_id="unlimited"))
+    assert port.cancelled_dialogs == ["unlimited"]
+    assert port.responses == []
+    assert not controller.open_dialogs
+    controller.close()

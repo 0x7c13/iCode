@@ -180,8 +180,8 @@ class ChrysAcpServer:
         initial_vision: bool,
         permission_timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
-        if not isfinite(permission_timeout_seconds) or permission_timeout_seconds <= 0:
-            raise ValueError("permission_timeout_seconds must be finite and greater than zero.")
+        if not isfinite(permission_timeout_seconds) or permission_timeout_seconds < 0:
+            raise ValueError("permission_timeout_seconds must be finite and non-negative.")
         self._manager = manager
         self._initial_vision = initial_vision
         self._permission_timeout_seconds = permission_timeout_seconds
@@ -1530,7 +1530,8 @@ class ChrysAcpServer:
         try:
             done, _pending = await asyncio.wait(
                 {request_task, cancel_future},
-                timeout=self._permission_timeout_seconds,
+                # asyncio.wait uses None for an unlimited, still-cancellable wait.
+                timeout=self._permission_timeout_seconds or None,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if cancel_future in done:

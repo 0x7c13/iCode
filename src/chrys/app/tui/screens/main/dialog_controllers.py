@@ -207,9 +207,11 @@ class ApprovalQueueController:
     def _start_timeout(self, request_id: str) -> None:
         if self._closed or request_id in self._timeouts:
             return
-        self._timeouts[request_id] = asyncio.get_running_loop().call_later(
-            self._timeout_seconds(), self._on_timeout, request_id
-        )
+        seconds = self._timeout_seconds()
+        # Zero disables the deadline; user responses and cancellation still work.
+        if seconds == 0:
+            return
+        self._timeouts[request_id] = asyncio.get_running_loop().call_later(seconds, self._on_timeout, request_id)
 
     def _on_timeout(self, request_id: str) -> None:
         self._cancel_timeout(request_id)

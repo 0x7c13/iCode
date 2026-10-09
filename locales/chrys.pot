@@ -9454,9 +9454,9 @@ msgid "tui.settings.hint.approval.defer_while_judging"
 msgstr ""
 
 #. English: Seconds to wait for human approval in TUI and ACP; timeout rejects
-#. the call. Minimum 1. Restart to apply. Queueing and judge model evaluation
-#. do not count toward this timeout.
-#. chrys-meta={"fingerprint":"a807374327a9325ffe999fce335da1bc40b8bb540aa39d2acfdbf3f4590d1f38","multiline":false,"placeholders":[]}
+#. the call. Default 0 means no timeout. Restart to apply. Queueing and judge
+#. model evaluation do not count toward this timeout.
+#. chrys-meta={"fingerprint":"8c2bc26c9e1171660fe66540c30f6007164f6cd99b5b2d84bdcd2c0b5770cf2b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.timeout_seconds"
 msgstr ""
