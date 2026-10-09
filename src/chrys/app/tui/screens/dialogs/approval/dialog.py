@@ -24,11 +24,11 @@ from textual.widgets import Button, Collapsible, RadioButton, RadioSet, Static, 
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.util.source_text import sanitize_source_text
+from chrys.app.tui.util.source_text import mark_hidden_format, sanitize_source_text
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import MessageDef, msg
-from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, KIND_SHELL
 
@@ -107,8 +107,11 @@ _MAX_VALUE_DISPLAY_CHARS = 64 * 1024
 # selector next to it still pairs the way rich pairs it.
 _ASCII_STRETCH = re.compile(r"[\x20-\x7e]{64,}")
 
-# The long box shows each line break as one LF and each tab as spaces up to the
-# next stop this many columns apart. A copy hands back the value as given.
+# A value's box replaces its control characters, bidi controls and zero-width
+# characters, one for one, so a remote agent's text cannot hide, reorder or
+# restyle what is approved; it shows each line break as one LF and each tab as
+# spaces up to the next stop this many columns apart. A copy hands back the
+# value as given.
 _TAB_SIZE = 8
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
@@ -181,6 +184,16 @@ def _fold_line(line: str, width: int) -> list[str]:
     return pieces
 
 
+def _shown_text(value: str) -> str:
+    """Return *value* as a value's box shows it."""
+    return mark_hidden_format(sanitize_source_text(value, tab_size=_TAB_SIZE))
+
+
+def _shown_line(value: str) -> str:
+    """Return remote text shown on one line, such as a title, as the boxes would."""
+    return mark_hidden_format(sanitize_legacy_scalar(value))
+
+
 def _value_index(value: str, index: int, *, end: bool) -> int:
     """Return where in *value* the box's text at *index* falls.
 
@@ -240,7 +253,7 @@ class _LongValueView(ScrollView):
     def __init__(self, value: str, *, id: str | None = None, classes: str | None = None) -> None:
         super().__init__(id=id, classes=classes)
         self._value = value
-        self._text = sanitize_source_text(value, tab_size=_TAB_SIZE)
+        self._text = _shown_text(value)
         self._rows: list[str] = []
         self._row_starts: list[int] = []
         self._fold_width = 0
@@ -290,13 +303,37 @@ class _LongValueView(ScrollView):
         return self._row_starts[row] + min(max(offset.x, 0), len(self._rows[row]))
 
 
+class _ValueText(Static):
+    """A value short enough to lay out at once, shown and copied as the long box does."""
+
+    def __init__(self, value: str, *, id: str | None = None, classes: str | None = None) -> None:
+        self._value = value
+        self._text = _shown_text(value)
+        super().__init__(Text(self._text), id=id, classes=classes)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        # A selection offset names a line of the text and a character in it.
+        line_starts = [0, *(line_break.end() for line_break in re.finditer("\n", self._text))]
+        line_ends = [start - 1 for start in line_starts[1:]] + [len(self._text)]
+
+        def text_index(offset: Offset) -> int:
+            if offset.y >= len(line_starts):
+                return len(self._text)
+            line = max(offset.y, 0)
+            return min(line_starts[line] + max(offset.x, 0), line_ends[line])
+
+        start = 0 if selection.start is None else text_index(selection.start)
+        end = len(self._text) if selection.end is None else text_index(selection.end)
+        return _value_slice(self._value, start, end), "\n"
+
+
 def _value_box(value: str, label: str, *, whole: bool) -> Widget:
     """Return the bordered box that shows one argument *value* under *label*, laid out *whole* or scrolling."""
     if whole:
-        box: Widget = Static(Text(value), classes="approval-arg-box")
+        box: Widget = _ValueText(value, classes="approval-arg-box")
     else:
         box = _LongValueView(value, classes="approval-arg-box approval-long-value")
-    box.border_title = Text(label)
+    box.border_title = Text(_shown_line(label))
     return box
 
 
@@ -444,7 +481,7 @@ class ApprovalDialog(
                         markup=True,
                     )
                     if remote_title := self._novel_remote_title():
-                        yield Static(Text(remote_title), id="approval-remote-title")
+                        yield Static(Text(_shown_line(remote_title)), id="approval-remote-title")
                 else:
                     yield Static(
                         f"[reverse] {escape(self._tool_name)} [/reverse]",
@@ -457,7 +494,7 @@ class ApprovalDialog(
                     detail = self._detail if isinstance(self._detail, str) else render_str(localizer, self._detail)
                     if len(detail) <= room:
                         room -= len(detail)
-                        yield Static(Text(detail), id="approval-detail")
+                        yield _ValueText(detail, id="approval-detail")
                     else:
                         detail_box = _value_box(detail, self._detail_key, whole=False)
                         detail_box.add_class("approval-detail-box")
@@ -522,7 +559,7 @@ class ApprovalDialog(
                 Text(render_str(localizer, description.bind())),
                 id="reuse-remember",
                 compact=True,
-                tooltip=Text(sanitize_legacy_block("\n".join(offer.targets))),
+                tooltip=Text(mark_hidden_format(sanitize_legacy_block("\n".join(offer.targets)))),
             )
             with VerticalGroup(id="reuse-options") as options:
                 options.display = False
@@ -706,7 +743,7 @@ class ApprovalDialog(
         judge_area.add_class("judge-flagged")
         self.query_one("#approval-judge-loading").display = False
         concern_widget = self.query_one("#approval-concern", Static)
-        concern_widget.update(Text(verdict.reason))
+        concern_widget.update(Text(mark_hidden_format(sanitize_legacy_block(verdict.reason))))
         concern_widget.display = True
         self.query_one("#approval-reason-section", Collapsible).collapsed = False
 
