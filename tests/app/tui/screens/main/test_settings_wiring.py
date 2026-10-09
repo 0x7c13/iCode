@@ -226,3 +226,50 @@ async def test_human_approval_timeout_from_settings_rejects_and_closes_the_real_
         assert main._events._approval()._timeouts == {}
         assert main._events._approval().open_dialogs == {}
     await bus.unsubscribe(ApprovalResponse, collect)
+
+
+async def test_after_a_timeout_the_next_approval_still_delivers_the_users_answer(tmp_path: Path) -> None:
+    from chrys.foundation.config.settings import Settings
+    from chrys.foundation.events.types import ApprovalResponse
+
+    bus = EventBus()
+    responses: list[ApprovalResponse] = []
+
+    async def collect(event: ApprovalResponse) -> None:
+        responses.append(event)
+
+    await bus.subscribe(ApprovalResponse, collect)
+    app = make_chrys_app(tmp_path, event_bus=bus, settings=Settings(approval_timeout_seconds=1))
+    try:
+        async with app.run_test(size=(120, 36)) as pilot:
+            main = app._main_screen
+            assert main is not None
+            controller = main._events._approval()
+            # Only the first request expires: the user must not race a deadline.
+            controller._timeout_seconds = lambda: 1 if "expires" in controller.open_dialogs else 3600
+            for request_id in ("expires", "answered", "next"):
+                await bus.publish(
+                    ApprovalRequest(request_id=request_id, tool_name="shell", args={"command": "pwd"}),
+                    raise_handler_errors=True,
+                )
+
+            def showing(request_id: str) -> bool:
+                screen = app.screen
+                return (
+                    isinstance(screen, ApprovalDialog)
+                    and screen.is_mounted
+                    and screen is controller.open_dialogs.get(request_id)
+                )
+
+            await wait_for(lambda: bool(responses), pilot=pilot, description="first approval times out")
+            assert [(event.request_id, event.approved) for event in responses] == [("expires", False)]
+            await wait_for(lambda: showing("answered"), pilot=pilot, description="second approval is shown")
+            await pilot.press("y")
+            await wait_for(lambda: len(responses) == 2, pilot=pilot, description="answer to the second approval")
+            assert [(event.request_id, event.approved) for event in responses] == [
+                ("expires", False),
+                ("answered", True),
+            ]
+            await wait_for(lambda: showing("next"), pilot=pilot, description="third approval is shown")
+    finally:
+        await bus.unsubscribe(ApprovalResponse, collect)

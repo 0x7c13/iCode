@@ -18,6 +18,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest
 from chrys.orchestration.session_host import EndTurn
 from tests.app.acp._server_fakes import _FakeHost, _FakeManager, _FakeSession
+from tests.support.waiting import wait_for
 
 
 @pytest.mark.parametrize("stop", ["cancel", "eof"])
@@ -83,8 +84,7 @@ async def test_sdk_shutdown_drains_unlimited_approval_before_manager_shutdown(mo
             task.cancel()
         else:
             peer_writer.write_eof()
-        # Shield prevents the test deadline from unblocking a broken shutdown.
-        await asyncio.wait_for(closed.wait(), timeout=3)
+        await wait_for(closed.is_set, description="session shut down after the transport closed")
         result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=3)
         # The pinned SDK receive loop consumes its cancellation.
         assert result == [None]

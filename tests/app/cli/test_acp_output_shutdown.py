@@ -118,7 +118,7 @@ async def test_shutdown_releases_approval_without_readable_output(monkeypatch, o
         else:
             task.cancel()
         # No output reads or transport aborts until shutdown has completed.
-        await asyncio.wait_for(closed.wait(), timeout=3)
+        await wait_for(closed.is_set, description="session shut down after the transport closed")
         result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=3)
         assert result == [None]
         assert not session.prompt_lock.locked()

@@ -84,9 +84,25 @@ def _approval_request(request_id: str, *, tool_name: str = "zsh", judging: bool 
     )
 
 
+class _ApprovalTimer:
+    def __init__(self, delay: float, callback: Callable[[], None]) -> None:
+        self.delay = delay
+        self.callback = callback
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def fire(self) -> None:
+        # A stopped timer never calls back.
+        if not self.stopped:
+            self.callback()
+
+
 class _ApprovalPort:
     def __init__(self) -> None:
         self.dialogs: list[SimpleNamespace] = []
+        self.timers: list[_ApprovalTimer] = []
         self.debug_calls: list[tuple[str, str]] = []
         self.notifications = 0
         self.responses: list[tuple[str, bool, str, dict[str, Any] | None]] = []
@@ -161,6 +177,11 @@ class _ApprovalPort:
 
     def run_worker(self, _awaitable: object, *, group: str) -> None:
         assert group == "approval-cleanup"
+
+    def set_timer(self, delay: float, callback: Callable[[], None]) -> _ApprovalTimer:
+        timer = _ApprovalTimer(delay, callback)
+        self.timers.append(timer)
+        return timer
 
     async def publish_auto_fulfill_blocked(self, event: ApprovalReviewed) -> None:
         self.auto_fulfill_blocked.append(event.request_id)

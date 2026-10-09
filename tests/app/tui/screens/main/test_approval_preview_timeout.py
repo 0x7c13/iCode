@@ -16,7 +16,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalCancelled, ApprovalRequest, ApprovalResponse
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE
 from tests.support.tui_app_harness import make_chrys_app
-from tests.support.waiting import wait_for
+from tests.support.waiting import wait_for, wait_until
 
 
 @pytest.mark.parametrize("outcome", ["ready", "error", "cancel"])
@@ -56,16 +56,18 @@ async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: P
                 ),
                 raise_handler_errors=True,
             )
-            await asyncio.wait_for(started.wait(), timeout=3)
+            await wait_for(started.is_set, pilot=pilot, description="diff preview preparation started")
             await wait_for(
                 lambda: isinstance(app.screen, ApprovalDialog) and app.screen.is_mounted,
                 pilot=pilot,
                 description="approval dialog mounted while preparing preview",
             )
-            # Exceed the configured deadline while the actual DiffView is blocked.
-            await asyncio.sleep(1.1)
-            assert not responses
-            assert not main._events._approval()._timeouts
+            # Outlast the configured deadline while the actual DiffView is blocked.
+            assert not await wait_until(
+                lambda: bool(responses) or bool(main._events._approval()._timeouts),
+                pilot=pilot,
+                timeout=1.5,
+            )
             if outcome == "cancel":
                 await bus.publish(ApprovalCancelled(request_id="preview"), raise_handler_errors=True)
                 release.set()

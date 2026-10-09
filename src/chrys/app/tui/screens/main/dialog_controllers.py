@@ -9,6 +9,7 @@ import contextlib
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, ClassVar, Protocol
 
 from chrys.app.tui.screens.dialogs.agent_load import load_count_failed_message, map_load_progress_prose
@@ -102,6 +103,12 @@ class ApprovalResponseWorker(Protocol):
     async def wait(self) -> object: ...
 
 
+class ApprovalTimer(Protocol):
+    """A pending human approval deadline."""
+
+    def stop(self) -> None: ...
+
+
 class ApprovalDialogHandle(Protocol):
     """Small approval-dialog surface used by the controller."""
 
@@ -159,6 +166,8 @@ class ApprovalDialogPort(Protocol):
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None: ...
 
+    def set_timer(self, delay: float, callback: Callable[[], None]) -> ApprovalTimer: ...
+
     async def publish_auto_fulfill_blocked(self, event: ApprovalReviewed) -> None: ...
 
 
@@ -179,7 +188,7 @@ class ApprovalQueueController:
         timeout_seconds: Callable[[], float] = lambda: DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
         self._timeout_seconds = timeout_seconds
-        self._timeouts: dict[str, asyncio.TimerHandle] = {}
+        self._timeouts: dict[str, ApprovalTimer] = {}
         self._closed = False
         self._port = port
         self._render_message = render_message
@@ -198,13 +207,13 @@ class ApprovalQueueController:
         """Stop UI-owned timers when the main screen is removed."""
         self._closed = True
         for timer in self._timeouts.values():
-            timer.cancel()
+            timer.stop()
         self._timeouts.clear()
 
     def _cancel_timeout(self, request_id: str) -> None:
         timer = self._timeouts.pop(request_id, None)
         if timer is not None:
-            timer.cancel()
+            timer.stop()
 
     def _start_timeout(self, request_id: str) -> None:
         if self._closed or self._timeout_seconds() == 0:
@@ -223,7 +232,12 @@ class ApprovalQueueController:
         # Zero disables the deadline; user responses and cancellation still work.
         if seconds == 0:
             return
-        self._timeouts[request_id] = asyncio.get_running_loop().call_later(seconds, self._on_timeout, request_id)
+        # The screen owns the timer so the expiry runs as the screen. This runs
+        # in the dialog's ready callback: an event-loop timer would keep the
+        # dialog as Textual's active pump, show_next() would push the next
+        # dialog on its behalf, and that dialog's answer would go to this
+        # closed dialog and be lost.
+        self._timeouts[request_id] = self._port.set_timer(seconds, partial(self._on_timeout, request_id))
 
     def _on_timeout(self, request_id: str) -> None:
         self._cancel_timeout(request_id)

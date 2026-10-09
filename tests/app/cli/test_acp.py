@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from chrys.app.acp.transport import AbortableMessageSender
 from chrys.app.cli import acp as acp_cli
 from chrys.foundation.config.env_layers import freeze_process_env
 from chrys.foundation.config.settings import Settings
@@ -204,6 +205,67 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
     assert captured["permission_timeout_seconds"] == approval_timeout
     assert captured["initial_vision"] is False
     assert captured["shutdown"] is True
+
+
+@pytest.mark.parametrize("listen_fails", [False, True])
+async def test_serve_agent_speaks_the_unstable_protocol_and_always_closes(
+    monkeypatch: pytest.MonkeyPatch, listen_fails: bool
+) -> None:
+    reader, writer, server = object(), object(), object()
+    calls: list[str] = []
+    captured: dict[str, Any] = {}
+
+    async def _streams(*, limit: int) -> tuple[object, object]:
+        captured["limit"] = limit
+        return reader, writer
+
+    class _Connection:
+        def __init__(
+            self,
+            to_agent: object,
+            input_stream: object,
+            output_stream: object,
+            listening: bool = True,
+            *,
+            use_unstable_protocol: bool = False,
+            sender_factory: object = None,
+        ) -> None:
+            captured.update(
+                agent=to_agent,
+                input_stream=input_stream,
+                output_stream=output_stream,
+                listening=listening,
+                use_unstable_protocol=use_unstable_protocol,
+                sender_factory=sender_factory,
+            )
+
+        async def listen(self) -> None:
+            calls.append("listen")
+            if listen_fails:
+                raise RuntimeError("receive loop failed")
+
+        async def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(acp_cli, "stdio_streams", _streams)
+    monkeypatch.setattr(acp_cli, "AgentSideConnection", _Connection)
+
+    if listen_fails:
+        with pytest.raises(RuntimeError, match="receive loop failed"):
+            await acp_cli._serve_agent(server)
+    else:
+        await acp_cli._serve_agent(server)
+
+    assert calls == ["listen", "close"]
+    assert captured == {
+        "limit": acp_cli.DEFAULT_STDIO_BUFFER_LIMIT_BYTES,
+        "agent": server,
+        "input_stream": writer,
+        "output_stream": reader,
+        "listening": False,
+        "use_unstable_protocol": True,
+        "sender_factory": AbortableMessageSender,
+    }
 
 
 @pytest.mark.parametrize("old_option", ["-p", "--profile"])
