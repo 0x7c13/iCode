@@ -26,6 +26,7 @@ from chrys.app.tui.i18n import render_str, render_text, widget_localizer
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets import EnhancedTextArea
 from chrys.app.tui.widgets.checkbox import CHECKED_MARKER, UNCHECKED_MARKER
+from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import msg
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption
 
@@ -124,7 +125,7 @@ class AskUserContentResized(Message):
 
 
 class _AskUserTextArea(EnhancedTextArea):
-    """Free-text response input: Enter/Ctrl+J inserts a newline."""
+    """Free-text response input: Enter and explicit newline shortcuts add a line."""
 
     def __init__(self, *args: Any, defer_layout_to_parent: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -143,7 +144,7 @@ class _AskUserTextArea(EnhancedTextArea):
         self.resize_to_content(rewrap=True)
 
     async def _on_key(self, event: events.Key) -> None:
-        if event.key in ("enter", "ctrl+j", "shift+enter"):
+        if event.key == "enter" or event.key in NEWLINE_SHORTCUT_KEYS:
             event.stop()
             event.prevent_default()
             start, end = self.selection

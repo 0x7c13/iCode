@@ -147,6 +147,8 @@ _TERMINAL_MODE_RESET = (
     "\x1b[?1007l"  # Disable alternate-scroll mouse mode
     "\x1b[?25h"  # Show cursor
     "\x1b[?2004l"  # Disable bracketed paste
+    "\x1b[>4;0m"  # Disable xterm modifyOtherKeys
+    "\x1b[?9001l"  # Disable win32-input-mode
     "\x1b[<u"  # Disable Kitty keyboard protocol
     "\x1b[=0;1u"  # Hard-reset Kitty keyboard flags
 )

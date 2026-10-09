@@ -189,6 +189,12 @@ Q&A Agent 给出实现方案后，可以在同一会话中切换到 **Code Agent
 
 也可以输入 `/help` 或按 **F8** 自己查看用户指南。
 
+### 输入多行消息
+
+按 **Enter** 发送消息，按 **Shift+Enter**、**Ctrl+Enter** 或 **Ctrl+J** 换行。按 **Ctrl+O** 可在更大的编辑器中输入。
+
+有些终端（包括 macOS 自带的“终端”和部分 tmux 配置）无法区分 Shift+Enter 或 Ctrl+Enter 与 Enter，这时按相应的组合键会直接发送消息，请改用 Ctrl+J。
+
 ### 阅读和复制回复
 
 所有智能体的回复都支持 Markdown、数学公式和 Mermaid 图表。你自己发送的消息中的公式不作数学渲染。

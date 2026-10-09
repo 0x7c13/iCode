@@ -20,6 +20,7 @@ from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, 
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
+from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import MessageDef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
@@ -133,10 +134,10 @@ def _build_args_lines(
 
 
 class _ApprovalReasonTextArea(EnhancedTextArea):
-    """Optional decline reason input; Enter/Ctrl+J/Shift+Enter inserts a newline."""
+    """Decline reason input: Enter and explicit newline shortcuts add a line."""
 
     async def _on_key(self, event: events.Key) -> None:
-        if event.key in ("enter", "ctrl+j", "shift+enter"):
+        if event.key == "enter" or event.key in NEWLINE_SHORTCUT_KEYS:
             event.stop()
             event.prevent_default()
             start, end = self.selection

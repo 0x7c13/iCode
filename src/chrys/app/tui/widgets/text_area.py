@@ -57,6 +57,9 @@ _PASTE_TOKENIZER: MixedLanguageTokenizer | None = None
 MESSAGE_EDITOR_PASTE_MAX_TOKENS = 30_000
 """Maximum tokens accepted by chat and modal message-editor paste events."""
 
+NEWLINE_SHORTCUT_KEYS = frozenset({"ctrl+j", "shift+enter", "ctrl+enter"})
+"""Explicit newline shortcuts; each input decides what bare Enter does."""
+
 _PASTE_TRUNCATED_TITLE = msg("tui.editor.title.paste_truncated", fallback="Paste truncated")
 _PASTE_TRUNCATED = msg(
     "tui.editor.paste_truncated",

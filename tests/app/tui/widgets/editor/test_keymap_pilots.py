@@ -5,14 +5,20 @@
 from __future__ import annotations
 
 from typing import Literal
+from unittest.mock import Mock
 
 import pytest
+from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
 from textual.events import Paste
 
 from chrys.app.tui.widgets.editor import EditorMode, EditorStatus, EmacsKeymap, MessageEditor, VimKeymap, VimState
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.patches import textual_extended_keys, textual_windows_keys
+from chrys.foundation.patches.textual_kitty_keyboard import apply_runtime_patch as apply_kitty_patch
+from tests.support.keyboard_patches import isolated_keyboard_patches as isolated_keyboard_patches
+from tests.support.waiting import wait_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,6 +43,51 @@ class _EditorApp(App[None]):
         yield self.editor
 
 
+@pytest.fixture(params=["xterm", "windows"])
+def keyboard_protocol(request: pytest.FixtureRequest, isolated_keyboard_patches: None) -> tuple[str, XTermParser]:
+    apply_kitty_patch()
+    textual_extended_keys.apply_runtime_patch()
+    parser = textual_windows_keys.get_parser_class()() if request.param == "windows" else XTermParser()
+    return request.param, parser
+
+
+async def test_shift_backspace_deletes_after_a_capital(keyboard_protocol: tuple[str, XTermParser]) -> None:
+    protocol, parser = keyboard_protocol
+    app = _EditorApp("A", (0, 1), EditorMode.STANDARD)
+    async with app.run_test() as pilot:
+        sequence = "\x1b[8;14;8;1;16;1_" if protocol == "windows" else "\x1b[27;2;127~"
+        for event in parser.feed(sequence):
+            app.post_message(event)
+        await wait_for(lambda: app.editor.text == "", pilot=pilot, description="Shift+Backspace deletes the capital")
+
+
+async def test_ctrl_bracket_leaves_vim_insert_mode(keyboard_protocol: tuple[str, XTermParser]) -> None:
+    protocol, parser = keyboard_protocol
+    app = _EditorApp("text", (0, 0), EditorMode.VIM)
+    async with app.run_test() as pilot:
+        await pilot.press("i")
+        keymap = app.editor.active_keymap
+        assert isinstance(keymap, VimKeymap)
+        assert keymap.state is VimState.INSERT
+        sequence = "\x1b[219;26;27;1;8;1_" if protocol == "windows" else "\x1b[27;5;91~"
+        for event in parser.feed(sequence):
+            app.post_message(event)
+        await wait_for(lambda: keymap.state is VimState.NORMAL, pilot=pilot, description="Ctrl+[ leaves Insert mode")
+        assert app.editor.text == "text"
+
+
+async def test_ctrl_underscore_undo_reaches_emacs_editor(keyboard_protocol: tuple[str, XTermParser]) -> None:
+    protocol, parser = keyboard_protocol
+    app = _EditorApp("one two", (0, 0), EditorMode.EMACS)
+    async with app.run_test() as pilot:
+        await pilot.press("alt+d")
+        assert app.editor.text == " two"
+        sequence = "\x1b[189;12;31;1;24;1_" if protocol == "windows" else "\x1b[27;6;95~"
+        for event in parser.feed(sequence):
+            app.post_message(event)
+        await wait_for(lambda: app.editor.text == "one two", pilot=pilot, description="Ctrl+_ undoes deletion")
+
+
 @pytest.mark.parametrize("undo_key", ["ctrl+/", "ctrl+underscore", "ctrl+slash"])
 async def test_emacs_kill_yank_undo_redo_are_isolated_real_history_units(undo_key: str) -> None:
     app = _EditorApp("one two", (0, 0), EditorMode.EMACS)
@@ -50,6 +101,25 @@ async def test_emacs_kill_yank_undo_redo_are_isolated_real_history_units(undo_ke
         assert app.editor.text == "one two"
         await pilot.press("ctrl+y")
         assert app.editor.text == "oneone two"
+
+
+async def test_native_windows_ctrl_slash_undo_reaches_emacs_editor(
+    isolated_keyboard_patches: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    apply_kitty_patch()
+    textual_extended_keys.apply_runtime_patch()
+    mapper = Mock(return_value=ord("/"))
+    monkeypatch.setattr(textual_windows_keys, "_load_virtual_key_mapper", lambda: mapper)
+    app = _EditorApp("one two", (0, 0), EditorMode.EMACS)
+    async with app.run_test() as pilot:
+        await pilot.press("alt+d")
+        assert app.editor.text == " two"
+
+        parser = textual_windows_keys.get_parser_class()()
+        for event in parser.feed("\x1b[191;53;0;1;8;1_\x1b[191;53;0;0;8;1_"):
+            app.post_message(event)
+        await wait_for(lambda: app.editor.text == "one two", pilot=pilot, description="native Ctrl+/ undoes deletion")
+        mapper.assert_called_once_with(191, 2)
 
 
 async def test_emacs_delegated_edit_deactivates_stale_mark_before_later_kill() -> None:
