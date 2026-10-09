@@ -98,7 +98,7 @@ _HINT_APPROVAL_TIMEOUT_SECONDS = msg(
     "tui.settings.hint.approval.timeout_seconds",
     fallback=(
         "Seconds to wait for human approval in TUI and ACP; timeout rejects the call. "
-        "Default 0 means no timeout. Restart to apply. Queueing and judge model evaluation do not count toward this timeout."
+        "Default 0 means no timeout. Restart to apply."
     ),
 )
 _HINT_APPROVAL_DEFER_WHILE_JUDGING = msg(
