@@ -189,8 +189,9 @@ async def test_ask_user_dialog_focused_submit_button_enter_submits_custom_respon
 
 
 @pytest.mark.asyncio
-async def test_ask_user_dialog_shift_enter_inserts_newline() -> None:
-    """Shift+Enter should expand the custom response instead of submitting."""
+@pytest.mark.parametrize("newline_key", ["enter", "ctrl+j", "shift+enter", "ctrl+enter"])
+async def test_ask_user_dialog_newline_keys_do_not_submit(newline_key: str) -> None:
+    """Newline keys expand the custom response instead of submitting."""
     dialog = _dialog(request_id="ask-3", question="Explain?")
     results: list[object] = []
 
@@ -203,7 +204,7 @@ async def test_ask_user_dialog_shift_enter_inserts_newline() -> None:
         # Focus lands via call_after_refresh; poll it instead of counting pauses.
         await wait_for(lambda: input_area.has_focus, pilot=pilot, description="custom response input focus")
         input_area.insert("Line one")
-        await pilot.press("shift+enter")
+        await pilot.press(newline_key)
         await pilot.pause()
 
         assert input_area.text == "Line one\n"

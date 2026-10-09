@@ -8,6 +8,7 @@ from typing import ClassVar
 
 import pytest
 from textual import events
+from textual._xterm_parser import XTermParser
 from textual.binding import Binding, BindingType
 from textual.geometry import Offset
 
@@ -15,7 +16,10 @@ from chrys.app.tui.clipboard import ClipboardApp, ClipboardReadApp
 from chrys.app.tui.terminal import widget as widget_module
 from chrys.app.tui.terminal.leaked_reports import MAX_HELD_LENGTH
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.foundation.patches import textual_extended_keys, textual_windows_keys
+from chrys.foundation.patches.textual_kitty_keyboard import apply_runtime_patch as apply_kitty_patch
 from tests.app.tui.terminal._widget_harness import TerminalApp, connect_stdin, select_text
+from tests.support.keyboard_patches import isolated_keyboard_patches as isolated_keyboard_patches
 from tests.support.waiting import wait_for
 
 # Long enough that a held Escape stays held for the whole of a test.
@@ -74,6 +78,39 @@ async def test_typed_keys_reach_the_program() -> None:
         await pilot.press("l", "s", "space", "minus", "A", "enter", "backspace", "tab", "ctrl+d")
 
         assert stdin.writes == ["l", "s", " ", "-", "A", "\r", "\x7f", "\t", "\x04"]
+
+
+@pytest.mark.parametrize("windows", [False, True])
+async def test_extended_legacy_chords_keep_the_same_bytes_for_the_program(
+    isolated_keyboard_patches: None, windows: bool
+) -> None:
+    apply_kitty_patch()
+    textual_extended_keys.apply_runtime_patch()
+    parser = textual_windows_keys.get_parser_class()() if windows else XTermParser()
+    sequences = (
+        [
+            "8;14;8;1;2;1",
+            "72;35;8;1;8;1",
+            "73;23;9;1;8;1",
+            "77;50;13;1;8;1",
+            "219;26;27;1;8;1",
+            "66;48;98;1;2;1",
+            "70;33;102;1;2;1",
+        ]
+        if windows
+        else ["27;3;127", "27;5;104", "27;5;105", "27;5;109", "27;5;91", "27;3;98", "27;3;102"]
+    )
+    app = TerminalApp()
+    async with app.run_test(size=(40, 11)) as pilot:
+        stdin = connect_stdin(app.terminal)
+        # A full-screen child receives Escape immediately instead of holding it
+        # for the shell's double-Escape shortcut.
+        await app.terminal.write("\x1b[?1049h")
+        for sequence in sequences:
+            for event in parser.feed(f"\x1b[{sequence}{'_' if windows else '~'}"):
+                app.post_message(event)
+        await pilot.pause()
+        assert stdin.writes == ["\x17", "\x7f", "\t", "\r", "\x1b", "\x1b[1;5D", "\x1b[1;5C"]
 
 
 async def test_key_with_nobody_to_send_it_to_is_dropped() -> None:

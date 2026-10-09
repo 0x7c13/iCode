@@ -7,6 +7,7 @@ handful of paper-cuts encountered when running inside real terminals:
 
 * ``Ctrl+A`` selects all (Textual's default ``cursor_line_start`` is
   rarely what users want when ``Home`` already does the same job).
+* ``Shift+Enter`` inserts a newline through Textual's normal editing path.
 * ``Ctrl+Insert`` copies; ``Shift+Insert``, ``Ctrl+Shift+V``, and ``Super+V``
   paste where terminals forward those keys. VSCode Terminal on Windows
   intercepts ``Ctrl+V`` before it reaches the child process, and most Linux
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from textual import events
 from textual.actions import SkipAction
 from textual.strip import Strip
 from textual.widgets import TextArea
@@ -47,7 +49,6 @@ from chrys.foundation.i18n import msg
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 
 if TYPE_CHECKING:
-    from textual import events
     from textual.css.styles import RenderStyles
 
 
@@ -56,6 +57,9 @@ _PASTE_TOKENIZER: MixedLanguageTokenizer | None = None
 
 MESSAGE_EDITOR_PASTE_MAX_TOKENS = 30_000
 """Maximum tokens accepted by chat and modal message-editor paste events."""
+
+NEWLINE_SHORTCUT_KEYS = frozenset({"ctrl+j", "shift+enter", "ctrl+enter"})
+"""Explicit newline shortcuts; each input decides what bare Enter does."""
 
 _PASTE_TRUNCATED_TITLE = msg("tui.editor.title.paste_truncated", fallback="Paste truncated")
 _PASTE_TRUNCATED = msg(
@@ -154,6 +158,13 @@ class EnhancedTextArea(TextArea):
         return super().check_action(action, parameters)
 
     async def _on_key(self, event: events.Key) -> None:
+        if event.key == "shift+enter":
+            event.stop()
+            event.prevent_default()
+            # Delegate read-only, selection, undo and subclass edit limits to
+            # the same path as Enter, without redispatching to modal keymaps.
+            await super()._on_key(events.Key("enter", "\r"))
+            return
         if event.key == "ctrl+a":
             event.stop()
             event.prevent_default()

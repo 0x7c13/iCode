@@ -14,10 +14,11 @@ from textual.events import Key
 from chrys.foundation.patches import patcher, textual_kitty_keyboard
 from chrys.foundation.patches.patcher import apply_patch_group
 from chrys.foundation.patches.textual_kitty_keyboard import apply_runtime_patch
+from tests.support.keyboard_patches import isolated_keyboard_patches as isolated_keyboard_patches
 
 
 @pytest.fixture(autouse=True)
-def _isolate_terminal_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_terminal_identity(monkeypatch: pytest.MonkeyPatch, isolated_keyboard_patches: None) -> None:
     """Keep runtime-patch tests independent of the developer's terminal."""
     monkeypatch.delenv("TERM_PROGRAM", raising=False)
     monkeypatch.delenv("TERM_PROGRAM_VERSION", raising=False)

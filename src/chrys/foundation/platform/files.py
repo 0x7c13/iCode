@@ -1162,7 +1162,13 @@ def _open_owner_only_append_existing(path: Path) -> int:
 
 def secure_open_owner_only_binary(path: Path) -> BinaryIO:
     """Open an existing owner-only file for binary reading."""
-    return os.fdopen(secure_open_owner_only(path, read=True), "rb")
+    try:
+        fd = secure_open_owner_only(path, read=True)
+    except SecureFileError as exc:
+        if _is_windows() and exc.errno == 3:  # ERROR_PATH_NOT_FOUND: a missing parent reads as ENOENT, as on POSIX
+            raise SecureFileError(errno.ENOENT, "Unable to open owner-only file.") from exc
+        raise
+    return os.fdopen(fd, "rb")
 
 
 def secure_open_owner_verified_binary(path: Path) -> BinaryIO:

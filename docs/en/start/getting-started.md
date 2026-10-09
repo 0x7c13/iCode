@@ -189,6 +189,14 @@ The agent looks up the answer in the user guide that comes with your installed v
 
 To read the guide yourself, type `/help` or press **F8**.
 
+### Write multi-line messages
+
+Press **Enter** to send a message, and **Shift+Enter**, **Ctrl+Enter** or **Ctrl+J** to start a new line. Press **Ctrl+O** to write in a larger editor.
+
+Some terminals, including macOS's built-in Terminal and some tmux setups, can't tell Shift+Enter or Ctrl+Enter apart from Enter and send the message instead. Use Ctrl+J there.
+
+In other multi-line fields, **Enter** and **Shift+Enter** start a new line. In the Ctrl+O editor, press **Ctrl+O** or **Ctrl+Enter** to commit.
+
 ### Read and copy replies
 
 All agents' replies support Markdown, formulas and Mermaid diagrams. Formulas in your own messages are not rendered as math.

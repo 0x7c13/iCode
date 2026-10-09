@@ -98,12 +98,13 @@ def test_terminal_restore_skips_textual_web_driver(monkeypatch: pytest.MonkeyPat
     assert capsys.readouterr().err == ""
 
 
-def test_terminal_restore_writes_native_reset(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+@pytest.mark.parametrize("return_code", [0, 1])
+def test_terminal_restore_writes_native_reset(monkeypatch: pytest.MonkeyPatch, capsys, return_code: int) -> None:
     """Native TUI runs keep the terminal reset safety net."""
     from chrys.app.tui import app as tui_app
 
     class _App:
-        _return_code = 0
+        _return_code = return_code
 
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
 
@@ -111,9 +112,11 @@ def test_terminal_restore_writes_native_reset(monkeypatch: pytest.MonkeyPatch, c
 
     reset = capsys.readouterr().err
 
-    assert "\x1b[?1049l" in reset
+    assert ("\x1b[?1049l" in reset) is (return_code == 0)
     assert "\x1b[?1002l" in reset
     assert "\x1b[?1004l" in reset
+    assert "\x1b[>4;0m" in reset
+    assert "\x1b[?9001l" in reset
     assert "\x1b[<u" in reset
     assert "\x1b[=0;1u" in reset
 

@@ -1109,7 +1109,8 @@ async def test_approval_dialog_cancellation_rechecks_top_screen_on_stale_resume(
 
 
 @pytest.mark.asyncio
-async def test_approval_dialog_reason_supports_shift_enter_newline() -> None:
+@pytest.mark.parametrize("newline_key", ["enter", "ctrl+j", "shift+enter", "ctrl+enter"])
+async def test_approval_dialog_reason_newline_keys_do_not_submit(newline_key: str) -> None:
     """The reason field supports explicit multiline input without submitting."""
     dialog = ApprovalDialog(caller_name="", tool_name="zsh")
     results: list[tuple[bool, str, dict[str, object] | None]] = []
@@ -1128,7 +1129,7 @@ async def test_approval_dialog_reason_supports_shift_enter_newline() -> None:
         input_area.insert("Line one")
         input_area.focus()
         await wait_for(lambda: input_area.has_focus, pilot=pilot, description="control focus before interaction")
-        await pilot.press("shift+enter")
+        await pilot.press(newline_key)
         await pilot.pause()
 
         assert input_area.text == "Line one\n"

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from chrys.service.hooks.schema import HookDecision
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.tools.builtins.shell import ShellTools
 from tests.kernel._fakes import _call_response, _result_contents, _stack, _text_response, _user
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 
 @pytest.fixture
@@ -101,8 +103,27 @@ def _hold_writer_lock(store):
     return lock
 
 
+def _record_calls(monkeypatch, owner, name, threads, gate=None):
+    """Record the thread of each ``owner.<name>`` call; off the loop, wait for *gate* first.
+
+    A worker held at the gate cannot finish before the loop runs the callback
+    that opens it, so the ``to_thread`` awaiting it must yield to the loop.
+    (A worker that finishes before its future is awaited returns without one.)
+    """
+    real = getattr(owner, name)
+    loop_thread = threading.get_ident()
+
+    def call(*args):
+        threads.append(threading.get_ident())
+        if gate is not None and threads[-1] != loop_thread:
+            gate.wait(DEFAULT_WAIT_TIMEOUT)
+        return real(*args)
+
+    monkeypatch.setattr(owner, name, call)
+
+
 @pytest.mark.parametrize("operation", ["match", "remember"])
-async def test_writer_contention_does_not_block_approval_event_loop(approval_setup, operation):
+async def test_writer_contention_does_not_block_approval_event_loop(approval_setup, monkeypatch, operation):
     tool, binding, bus, policy = approval_setup
     context = FunctionInvocationContext(tool, {"command": "npm run test"})
     candidate = reuse_candidate(binding, context)
@@ -112,18 +133,27 @@ async def test_writer_contention_does_not_block_approval_event_loop(approval_set
     else:
         assert await asyncio.to_thread(binding.service.store.add_many, [])
     lock = await asyncio.to_thread(_hold_writer_lock, binding.service.store)
+    heartbeat = threading.Event()
+    read_threads = []
+    write_threads = []
+    for store in (binding.service.store, binding.service.session_store):
+        _record_calls(monkeypatch, store, "load", read_threads, heartbeat if operation == "match" else None)
+    _record_calls(monkeypatch, binding.service.store, "add_many", write_threads, heartbeat)
     order = []
     requests = []
 
-    def release():
+    def beat():
         order.append("heartbeat")
-        lock.release()
+        # A grant read never waits for the writer lock, so the match case keeps it held.
+        if operation == "remember":
+            lock.release()
+        heartbeat.set()
 
     async def approve(event):
         requests.append(event)
         await bus.publish(ApprovalResponse(request_id=event.request_id, approved=True, remember_choice="EXACT_PROJECT"))
         if operation == "remember":
-            asyncio.get_running_loop().call_soon(release)
+            asyncio.get_running_loop().call_soon(beat)
 
     async def execute():
         order.append("execute")
@@ -132,14 +162,18 @@ async def test_writer_contention_does_not_block_approval_event_loop(approval_set
     await bus.subscribe(ApprovalRequest, approve)
     try:
         if operation == "match":
-            asyncio.get_running_loop().call_soon(release)
+            asyncio.get_running_loop().call_soon(beat)
         await middleware.process(context, execute)
         assert order == ["heartbeat", "execute"]
+        assert read_threads
+        assert threading.get_ident() not in read_threads + write_threads
+        assert len(write_threads) == (0 if operation == "match" else 1)
         assert len(requests) == (0 if operation == "match" else 1)
         assert await asyncio.to_thread(binding.service.match, candidate)
     finally:
-        # Drain a queued release even when a synchronous regression failed above.
-        await asyncio.to_thread(lambda: None)
+        # Free a gated worker and run a queued heartbeat when a regression failed above.
+        heartbeat.set()
+        await asyncio.sleep(0)
         lock.release()
         await middleware.close()
         await bus.unsubscribe(ApprovalRequest, approve)

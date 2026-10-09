@@ -215,6 +215,7 @@ def apply_all() -> list[PatchResult]:
     import chrys.foundation.patches.textual_callback_dispatch as textual_callback_dispatch
     import chrys.foundation.patches.textual_compositor_cjk as textual_compositor_cjk
     import chrys.foundation.patches.textual_dispatch_cache as textual_dispatch_cache
+    import chrys.foundation.patches.textual_extended_keys as textual_extended_keys
     import chrys.foundation.patches.textual_ime_cursor_anchor as textual_ime_cursor_anchor
     import chrys.foundation.patches.textual_kitty_keyboard as textual_kitty_keyboard
     import chrys.foundation.patches.textual_lru_acyclic as textual_lru_acyclic
@@ -281,6 +282,7 @@ def apply_all() -> list[PatchResult]:
             ("textual_tab_selection", textual_tab_selection.apply_runtime_patch),
             ("textual_ime_cursor_anchor", textual_ime_cursor_anchor.apply_runtime_patch),
             ("textual_kitty_keyboard", textual_kitty_keyboard.apply_runtime_patch),
+            ("textual_extended_keys", textual_extended_keys.apply_runtime_patch),
             ("textual_utf8_decoder", textual_utf8_decoder.apply_runtime_patch),
         )
     )
