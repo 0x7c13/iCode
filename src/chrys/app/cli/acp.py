@@ -18,6 +18,7 @@ from acp.stdio import stdio_streams
 
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.app.acp.session_manager import AcpSessionManager
+from chrys.app.acp.transport import AbortableMessageSender
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
@@ -161,7 +162,12 @@ async def _serve_agent(server: ChrysAcpServer) -> None:
     reader, writer = await stdio_streams(limit=DEFAULT_STDIO_BUFFER_LIMIT_BYTES)
     # The SDK dispatches structurally; unadvertised optional handlers are absent.
     connection = AgentSideConnection(
-        cast(acp_sdk.Agent, server), writer, reader, listening=False, use_unstable_protocol=True
+        cast(acp_sdk.Agent, server),
+        writer,
+        reader,
+        listening=False,
+        use_unstable_protocol=True,
+        sender_factory=AbortableMessageSender,
     )
     try:
         await connection.listen()

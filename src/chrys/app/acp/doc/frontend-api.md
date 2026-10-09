@@ -246,7 +246,9 @@ Standard `session/request_permission` callbacks use `approval.timeout_seconds`
 `0` means no timeout; positive values set a deadline in seconds, after which the
 server rejects the tool call. Restart the server after changing this setting.
 Transport shutdown cancels and drains outstanding SDK requests before closing
-sessions, so unanswered callbacks do not block exit. `session/cancel`, `session/close`, and
+sessions, so unanswered callbacks do not block exit. Unsent output is discarded
+on shutdown; cleanup does not wait for the client to read stdout and continues
+after a broken pipe. `session/cancel`, `session/close`, and
 `session/delete` interrupt the engine first and then release pending input and
 permission callbacks; close and delete additionally stop prompt admission
 before releasing waits, so a prompt already queued on the session is rejected

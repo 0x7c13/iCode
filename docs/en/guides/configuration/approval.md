@@ -122,4 +122,4 @@ Press **F10** → **Settings** → **Security**, then set **Human approval timeo
 
 With a positive timeout configured, the TUI timer starts when the approval dialog is shown and the call is ready for a human decision. Waiting behind another approval dialog and preparing its content (including file diffs) do not use up the timeout. In ACP, timing starts when the server sends the human approval request. If no response arrives before the timeout, iCode rejects that tool call.
 
-An unlimited human approval wait still ends when you approve, decline, cancel the request, or close the session.
+An unlimited human approval wait still ends when you approve, decline, cancel the request, or close the session. ACP shutdown also releases pending approvals if the client stops reading output or disconnects; unsent output is discarded during shutdown.
