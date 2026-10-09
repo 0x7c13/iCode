@@ -114,6 +114,7 @@ class _ApprovalPort:
         verdict: ApprovalReviewed | None,
     ) -> SimpleNamespace:
         dialog = SimpleNamespace(
+            when_ready=lambda callback: callback(),
             request_id=event.request_id,
             tool_name=event.tool_name,
             user_decision_submitted=False,

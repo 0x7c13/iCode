@@ -110,6 +110,8 @@ class ApprovalDialogHandle(Protocol):
 
     remember_choice: ReuseChoice
 
+    def when_ready(self, callback: Callable[[], None]) -> None: ...
+
     @property
     def is_dismissed(self) -> bool: ...
 
@@ -205,6 +207,16 @@ class ApprovalQueueController:
             timer.cancel()
 
     def _start_timeout(self, request_id: str) -> None:
+        if self._closed or self._timeout_seconds() == 0:
+            return
+        dialog = self.open_dialogs.get(request_id)
+        if dialog is not None:
+            dialog.when_ready(lambda: self._arm_timeout(request_id))
+
+    def _arm_timeout(self, request_id: str) -> None:
+        dialog = self.open_dialogs.get(request_id)
+        if dialog is None or dialog.is_dismissed or dialog.user_decision_submitted:
+            return
         if self._closed or request_id in self._timeouts:
             return
         seconds = self._timeout_seconds()

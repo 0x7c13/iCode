@@ -182,9 +182,8 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
             captured["initial_vision"] = initial_vision
             captured["permission_timeout_seconds"] = permission_timeout_seconds
 
-    async def _run_agent(server: _Server, *, use_unstable_protocol: bool) -> None:
+    async def _run_agent(server: _Server) -> None:
         captured["server"] = server
-        captured["use_unstable_protocol"] = use_unstable_protocol
 
     monkeypatch.setattr(
         acp_cli,
@@ -196,7 +195,7 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
     monkeypatch.setattr(acp_cli, "AcpSessionManager", _Manager)
     monkeypatch.setattr(acp_cli, "ChrysAcpServer", _Server)
     monkeypatch.setattr(acp_cli, "_initial_vision", lambda **_kwargs: False)
-    monkeypatch.setattr(acp_cli.acp_sdk, "run_agent", _run_agent)
+    monkeypatch.setattr(acp_cli, "_serve_agent", _run_agent)
 
     args = acp_cli.build_parser().parse_args(["--agent", "Code"])
 
@@ -204,7 +203,6 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
     assert captured["manager_kwargs"]["on_successful_turn"] is acp_cli.on_buddy_successful_turn
     assert captured["permission_timeout_seconds"] == approval_timeout
     assert captured["initial_vision"] is False
-    assert captured["use_unstable_protocol"] is True
     assert captured["shutdown"] is True
 
 

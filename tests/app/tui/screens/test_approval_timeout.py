@@ -182,3 +182,29 @@ async def test_default_unlimited_wait_can_be_cancelled(approval_wait) -> None:
     assert port.responses == []
     assert not controller.open_dialogs
     controller.close()
+
+
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_deadline_waits_for_dialog_readiness(approval_wait, monkeypatch, cancel_first: bool) -> None:
+    controller, port, scheduler = approval_wait
+    callbacks = []
+    original = port.show_approval_dialog
+
+    def delayed_dialog(*args, **kwargs):
+        dialog = original(*args, **kwargs)
+        dialog.when_ready = callbacks.append
+        return dialog
+
+    monkeypatch.setattr(port, "show_approval_dialog", delayed_dialog)
+    await controller.on_request(_approval_request("mounting", judging=False))
+    assert not scheduler.timers
+    assert len(callbacks) == 1
+    if cancel_first:
+        await controller.on_cancelled(ApprovalCancelled(request_id="mounting"))
+    callbacks[0]()
+    if cancel_first:
+        assert not scheduler.timers
+    else:
+        assert [(timer.request_id, timer.delay) for timer in scheduler.timers] == [("mounting", 45)]
+        callbacks[0]()
+        assert len(scheduler.timers) == 1

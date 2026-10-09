@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.cells import split_graphemes
@@ -24,6 +25,7 @@ from textual.widgets import Button, Collapsible, RadioButton, RadioSet, Static, 
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
 from chrys.app.tui.util.source_text import mark_hidden_format, sanitize_source_text
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
@@ -427,6 +429,7 @@ class ApprovalDialog(
         reuse_offer: ApprovalReuseOffer | None = None,
         verdict: JudgeVerdict | None = None,
     ) -> None:
+        self._ready_callbacks: list[Callable[[], None]] = []
         self._reuse_offer = reuse_offer
         self.remember_choice: ReuseChoice = ""
         self._tool_name = tool_name
@@ -637,6 +640,7 @@ class ApprovalDialog(
         return title
 
     def on_mount(self) -> None:
+        self.call_after_refresh(self._notify_ready)
         self._verdict_widgets_ready = True
         if self._flagged is not None:
             self._show_flagged(self._flagged)
@@ -646,6 +650,28 @@ class ApprovalDialog(
         if self._dismissed:
             # The dialog counts as mounted only once its mount handlers have returned.
             self.call_later(self._dismiss_if_top)
+
+    def when_ready(self, callback: Callable[[], None]) -> None:
+        """Run after mount and asynchronous preview content have been painted."""
+        if self._dismissed:
+            return
+        self._ready_callbacks.append(callback)
+        if self.is_mounted:
+            self.call_after_refresh(self._notify_ready)
+
+    @on(ApprovalDiffPreview.Ready)
+    def _on_preview_ready(self, event: ApprovalDiffPreview.Ready) -> None:
+        event.stop()
+        self.call_after_refresh(self._notify_ready)
+
+    def _notify_ready(self) -> None:
+        if not self.is_mounted or self._dismissed or self.app.screen is not self:
+            return
+        if any(not preview.is_ready for preview in self.query(ApprovalDiffPreview)):
+            return
+        callbacks, self._ready_callbacks = self._ready_callbacks, []
+        for callback in callbacks:
+            callback()
 
     @property
     def tool_name(self) -> str:
@@ -682,6 +708,7 @@ class ApprovalDialog(
         if self._dismissed:
             return
         self._dismissed = True
+        self._ready_callbacks.clear()
         self._dismiss_result = result
         self._user_decision_submitted = user_decision
         with contextlib.suppress(Exception):
@@ -709,6 +736,7 @@ class ApprovalDialog(
         self._safe_dismiss(None)
 
     def on_screen_resume(self, _event: events.ScreenResume) -> None:
+        self.call_after_refresh(self._notify_ready)
         if self._dismiss_on_resume:
             self._dismiss_on_resume = False
             # Resume is queued; another modal may already cover us again.

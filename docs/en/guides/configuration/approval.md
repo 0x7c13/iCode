@@ -120,6 +120,6 @@ Other ways of running iCode use the following approval modes and switching metho
 
 Press **F10** → **Settings** → **Security**, then set **Human approval timeout (seconds)** in the **Approval** section. This setting applies to both the TUI and ACP clients. The default is **0 (no timeout)**; positive values set a deadline in seconds. Negative values are adjusted to **0**. An explicitly saved value, such as **600**, is preserved. Restart iCode (the TUI or ACP server) after saving.
 
-With a positive timeout configured, the TUI timer starts when the approval dialog is shown and the call is ready for a human decision. Waiting behind another approval dialog does not use up the timeout. In ACP, timing starts when the server sends the human approval request. If no response arrives before the timeout, iCode rejects that tool call.
+With a positive timeout configured, the TUI timer starts when the approval dialog is shown and the call is ready for a human decision. Waiting behind another approval dialog and preparing its content (including file diffs) do not use up the timeout. In ACP, timing starts when the server sends the human approval request. If no response arrives before the timeout, iCode rejects that tool call.
 
 An unlimited human approval wait still ends when you approve, decline, cancel the request, or close the session.
