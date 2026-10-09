@@ -88,9 +88,17 @@ async def test_extended_legacy_chords_keep_the_same_bytes_for_the_program(
     textual_extended_keys.apply_runtime_patch()
     parser = textual_windows_keys.get_parser_class()() if windows else XTermParser()
     sequences = (
-        ["8;14;8;1;2;1", "72;35;8;1;8;1", "73;23;9;1;8;1", "77;50;13;1;8;1", "219;26;27;1;8;1"]
+        [
+            "8;14;8;1;2;1",
+            "72;35;8;1;8;1",
+            "73;23;9;1;8;1",
+            "77;50;13;1;8;1",
+            "219;26;27;1;8;1",
+            "66;48;98;1;2;1",
+            "70;33;102;1;2;1",
+        ]
         if windows
-        else ["27;3;127", "27;5;104", "27;5;105", "27;5;109", "27;5;91"]
+        else ["27;3;127", "27;5;104", "27;5;105", "27;5;109", "27;5;91", "27;3;98", "27;3;102"]
     )
     app = TerminalApp()
     async with app.run_test(size=(40, 11)) as pilot:
@@ -102,7 +110,7 @@ async def test_extended_legacy_chords_keep_the_same_bytes_for_the_program(
             for event in parser.feed(f"\x1b[{sequence}{'_' if windows else '~'}"):
                 app.post_message(event)
         await pilot.pause()
-        assert stdin.writes == ["\x17", "\x7f", "\t", "\r", "\x1b"]
+        assert stdin.writes == ["\x17", "\x7f", "\t", "\r", "\x1b", "\x1b[1;5D", "\x1b[1;5C"]
 
 
 async def test_key_with_nobody_to_send_it_to_is_dropped() -> None:

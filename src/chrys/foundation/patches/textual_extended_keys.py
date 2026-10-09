@@ -50,6 +50,8 @@ _LEGACY_CTRL_KEYS = {
     "m": ("enter", "\r"),
     "[": ("escape", "\x1b"),
 }
+# Legacy Alt+B/Alt+F (ESC b/ESC f) are Textual's word movement keys.
+_LEGACY_ALT_KEYS = {"b": "ctrl+left", "f": "ctrl+right"}
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +70,10 @@ def _decode_key(modifier: int, codepoint: int) -> Key:
     # Preserve established editing aliases and their legacy character payloads.
     if bits == 2 and codepoint in (8, 127):
         return Key("ctrl+w", None)
+    # Case is ignored: Windows reports Alt+letter by its upper-case virtual key,
+    # and with Caps Lock on these keys still move by word instead of typing.
+    if bits == 2 and (legacy_name := _LEGACY_ALT_KEYS.get(character.lower())):
+        return Key(legacy_name, None)
     if bits == 4 and (legacy_key := _LEGACY_CTRL_KEYS.get(character.lower())):
         return Key(*legacy_key)
     text = character if character.isprintable() and not bits & 0b1110 else None

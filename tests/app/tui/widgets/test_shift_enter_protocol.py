@@ -157,3 +157,21 @@ async def test_legacy_editing_chords_reach_input_bar(windows: bool) -> None:
             app.post_message(event)
         await pilot.pause()
         assert app.submitted == ["a"]
+
+
+@pytest.mark.parametrize("windows", [False, True])
+async def test_alt_b_and_alt_f_move_the_input_bar_cursor_by_word(windows: bool) -> None:
+    app = _InputApp()
+    async with app.run_test() as pilot:
+        area = app.query_one(InputBar).query_one(TextArea)
+        area.focus()
+        area.insert("alpha beta gamma")
+        parser = get_parser_class()() if windows else XTermParser()
+        alt_b, alt_f = (
+            ("\x1b[66;48;98;1;2;1_", "\x1b[70;33;102;1;2;1_") if windows else ("\x1b[27;3;98~", "\x1b[27;3;102~")
+        )
+        for sequence, column in ((alt_b, 11), (alt_b, 6), (alt_f, 10)):
+            for event in parser.feed(sequence):
+                app.post_message(event)
+            await pilot.pause()
+            assert area.cursor_location == (0, column)

@@ -90,8 +90,10 @@ def _keys(parser, data: str) -> list[tuple[str, str | None]]:
         ("73;23;9;1;8;1", [("tab", "\t")]),
         ("77;50;13;1;8;1", [("enter", "\r")]),
         ("72;35;8;1;24;1", [("ctrl+shift+h", None)]),
-        ("66;48;98;1;2;1", [("alt+b", None)]),
-        ("70;33;102;1;2;1", [("alt+f", None)]),
+        ("66;48;98;1;2;1", [("ctrl+left", None)]),
+        ("70;33;102;1;2;1", [("ctrl+right", None)]),
+        ("66;48;66;1;18;1", [("alt+shift+b", None)]),
+        ("66;48;66;1;130;1", [("ctrl+left", None)]),  # Caps Lock
         ("189;12;31;1;24;1", [("ctrl+underscore", None)]),
         ("13;28;13;1;16", [("shift+enter", None)]),  # Omitted repeat
         ("13;28;13;1;16;", [("shift+enter", None)]),
