@@ -46,6 +46,33 @@ def _run_install(argv: list[str]) -> int:
     return 0
 
 
+def _run_uninstall(argv: list[str]) -> int:
+    """Run the uninstall command."""
+    parser = argparse.ArgumentParser(
+        prog=f"{APP_COMMAND} uninstall",
+        description=(
+            f"Remove {APP_DISPLAY_NAME} installed from an offline package. For an install made with uv, "
+            f"pipx or pip, print the command that removes it. {APP_DISPLAY_NAME}'s data folder, with your "
+            "settings, API keys, model profiles, agents, skills and sessions, is kept unless --purge is given."
+        ),
+        add_help=False,
+    )
+    parser.add_argument(
+        "-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit"
+    )
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help=f"Also delete {APP_DISPLAY_NAME}'s data folder and everything in it, such as your settings and API keys",
+    )
+    parser.add_argument("-y", "--yes", action="store_true", help="Remove without asking first")
+    args = parser.parse_args(argv)
+
+    from chrys.app.uninstaller import uninstall
+
+    return uninstall(purge=args.purge, assume_yes=args.yes)
+
+
 def _run_serve(argv: list[str]) -> int:
     """Run the browser-hosted Chrys TUI command."""
     from chrys.app.cli.serve import main as serve_main
@@ -75,7 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
             "  workflow    List, validate and run workflows headlessly\n"
-            f"  install     Install {APP_DISPLAY_NAME} to PATH\n\n"
+            f"  install     Install {APP_DISPLAY_NAME} to PATH\n"
+            f"  uninstall   Remove {APP_DISPLAY_NAME} (--purge also deletes your data)\n\n"
             f"Default: '{APP_COMMAND}' launches the TUI. Run '{APP_COMMAND} <command> --help' for command options."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -141,6 +169,8 @@ def main() -> int:
         return approvals_main(argv[1:])
     if argv and argv[0] == "install":
         return _run_install(argv[1:])
+    if argv and argv[0] == "uninstall":
+        return _run_uninstall(argv[1:])
     if argv and argv[0] == "serve":
         return _run_serve(argv[1:])
     if argv and argv[0] == "acp":

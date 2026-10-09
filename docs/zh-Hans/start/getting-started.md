@@ -10,19 +10,43 @@
 uv tool install iCode-TUI
 ```
 
-以后升级请运行 `uv tool upgrade iCode-TUI`，卸载请运行 `uv tool uninstall iCode-TUI`。
+以后升级请运行 `uv tool upgrade iCode-TUI`；有新版本时，iCode 的欢迎页会提示你。卸载请运行 `uv tool uninstall iCode-TUI`。
 
 Windows（x64）和 Linux（x86-64 或 ARM64，glibc 2.27 或更高版本）无需其他准备。Apple 芯片的 Mac 需要先运行 `xcode-select --install` 安装 Xcode 命令行工具，uv 安装时要用它编译一个依赖。
 
-如果以前用过 iCode 离线安装包，请先删除它。删除它解压到的文件夹：macOS 上是 `~/Library/Application Support/pyapp/chrys`；Linux 上是 `~/.local/share/pyapp/chrys`，设置了 `XDG_DATA_HOME` 时是 `$XDG_DATA_HOME/pyapp/chrys`；Windows 上是 `%LOCALAPPDATA%\pyapp\data\chrys`。然后在 macOS 或 Linux 上删除 `~/.local/bin/chrys`，在 Windows 上删除 `%LOCALAPPDATA%\chrys\bin` 文件夹。
+如果以前用过 iCode 离线安装包，请先用 `icode uninstall` 卸载它（见[卸载 iCode](#卸载-icode)）。如果你的版本没有这个命令，请删除它解压到的文件夹：macOS 上是 `~/Library/Application Support/pyapp/chrys`；Linux 上是 `~/.local/share/pyapp/chrys`，设置了 `XDG_DATA_HOME` 时是 `$XDG_DATA_HOME/pyapp/chrys`；Windows 上是 `%LOCALAPPDATA%\pyapp\data\chrys`。然后在 macOS 或 Linux 上删除 `~/.local/bin/chrys`，在 Windows 上删除 `%LOCALAPPDATA%\chrys\bin` 文件夹。
 
-如果 uv 提示 `icode` 已存在，说明已经有同名命令：可能是之前用离线安装包安装的 iCode，也可能是其他同名程序。确认是 iCode 后，运行 `uv tool install --force iCode-TUI` 覆盖它。
+如果 uv 提示 `icode` 已存在，说明已经有同名命令：可能是之前用离线安装包安装的 iCode，也可能是其他同名程序。如果是离线安装包安装的 iCode，请按上文先卸载它，再重新运行安装命令。
 
 ### 离线安装包
 
 Intel 芯片的 Mac、Arm 版 Windows、较旧的 Linux 或无法联网的设备，请改用 [iCode Releases](https://github.com/openJiuwen-ai/iCode/releases) 上的预构建离线安装包。安装包已包含 Python 和全部依赖，无需另行安装 Python。
 
-以下命令中的 `<version>` 和 `<architecture>` 是占位符，请替换为下载文件名中的实际值。
+安装脚本会选好适合你电脑的安装包，校验下载的文件并完成安装。以后再运行同一条命令即可升级。在 macOS 或 Linux 上运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.sh | sh
+```
+
+在 Windows 上，在 PowerShell 中运行：
+
+```powershell
+irm https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.ps1 | iex
+```
+
+脚本从 GitHub 下载，GitHub 下载失败时改从 GitCode 下载。如果你所在的网络访问 GitHub 很慢或无法访问，可以从 GitCode 获取脚本，并直接从 GitCode 下载：
+
+```bash
+curl -fsSL https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.sh | sh -s -- --source gitcode
+```
+
+```powershell
+$env:ICODE_SOURCE = "gitcode"; irm https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.ps1 | iex
+```
+
+要安装指定版本，把命令末尾的 `| sh` 换成 `| sh -s -- --version 0.29.1`。在 Windows 上，先运行 `$env:ICODE_VERSION = "0.29.1"`。用 `$env:` 做的设置在关闭这个 PowerShell 窗口前一直有效。
+
+如果想手动安装，请下载对应平台的安装包，然后按下面的步骤操作。以下命令中的 `<version>` 和 `<architecture>` 是占位符，请替换为下载文件名中的实际值。
 
 #### macOS
 
@@ -65,6 +89,20 @@ icode --version
 命令应输出 iCode 的版本号。如果用 uv 安装后终端找不到 `icode`，请运行 `uv tool update-shell`，然后打开新终端。
 
 使用离线安装包时，在 macOS 或 Linux 上，如果系统找不到 `icode`，请按安装器的提示将 `~/.local/bin` 加入 `PATH`；如果安装器提示 `~/.local/bin/icode` 已存在，该命令会启动其他程序，请改用 `chrys` 命令。在 Windows 上请打开新的终端；如果安装器提示更新用户 PATH 失败，请手动将 `%LOCALAPPDATA%\chrys\bin` 加入用户 `PATH`。
+
+### 卸载 iCode
+
+运行：
+
+```shell
+icode uninstall
+```
+
+如果安装的是离线安装包，该命令会列出要删除的内容：`icode` 和 `chrys` 命令，以及安装包解压出的文件。确认后即删除。在 Windows 上，它还会把 iCode 从用户 `PATH` 中移除，最后一部分文件会在命令退出后稍等片刻删除。下载的安装包本身仍保留在原处。
+
+如果是用 uv 安装的，该命令只会提示应运行的命令：`uv tool uninstall iCode-TUI`。
+
+iCode 的数据保存在 `~/.chrys`（Windows 上是 `%APPDATA%\chrys`），包括设置、API 密钥、模型配置、智能体、Skill 和会话等。卸载时会保留这个文件夹。如需连同其中的全部内容一并删除，请运行 `icode uninstall --purge`；如果把会话保存在了其他文件夹，那里的 `sessions` 文件夹也会删除。用 uv 安装的，请在运行 `uv tool uninstall` 之前执行，那时 `icode` 命令还在。加上 `--yes` 可跳过确认。
 
 ## 2. 在项目中启动 iCode
 

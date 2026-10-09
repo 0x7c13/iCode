@@ -154,6 +154,7 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
     from chrys.app.tui.widgets.markdown.diagram.messages import DiagramOpenRequested
+    from chrys.app.update_check import UpdateCheck
     from chrys.service.profiles.agents.schema import AgentProfile
 
 
@@ -270,6 +271,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         settings_handle: SettingsHandle | None = None,
         gc_freeze_enabled: bool | None = None,
         gc_freeze_measure_counts: bool = False,
+        update_check: UpdateCheck | None = None,
     ) -> None:
         self._bus = event_bus
         self._engine = engine
@@ -325,6 +327,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         # subsequent crashes append (so cascading teardown errors survive).
         self._crash_log_initialized = False
         self._startup_task: asyncio.Task[None] | None = None
+        self._update_check = update_check
+        self._update_check_task: asyncio.Task[None] | None = None
         self._main_screen: MainScreen | None = None
         self._gc_freeze_watchdog: Timer | None = None
         self._gc_pointer_buttons_down: set[int] = set()
@@ -919,6 +923,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         screen = self._build_main_screen()
         await self.push_screen(screen)
         self._main_screen = screen
+        if self._update_check is not None:
+            self._update_check_task = asyncio.create_task(self._run_update_check(self._update_check, screen))
         self._gc_freeze.start()
         if self._gc_freeze.startup_warning is not None:
             self._startup_warnings.append(
@@ -946,6 +952,15 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             # No engine start means no restore either: the bootstrap settings
             # stay in force, so their warnings are due after all.
             await self._flush_deferred_settings_warnings()
+
+    async def _run_update_check(self, check: UpdateCheck, screen: MainScreen) -> None:
+        # A check that fails in any way just leaves the welcome screen as it is.
+        try:
+            await check.run(screen.show_update_notice)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Update check failed", exc_info=True)
 
     async def _flush_deferred_settings_warnings(self) -> None:
         for w in self._deferred_settings_warnings:
@@ -1075,6 +1090,11 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._startup_task
         self._startup_task = None
+        if self._update_check_task is not None and not self._update_check_task.done():
+            self._update_check_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._update_check_task
+        self._update_check_task = None
         await self._engine.shutdown()
         # After the engine: its shutdown drains a still-finalizing run
         # whose success callback can schedule one last title task; the
@@ -1182,6 +1202,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     """
     import logging
 
+    from chrys.app.update_check import for_this_copy
     from chrys.foundation.config.warnings import settings_warning_events
     from chrys.orchestration.startup import bootstrap_runtime, configure_utf8_stdio
 
@@ -1266,6 +1287,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             startup_session_id=args.session,
             apply_saved_model_on_restore=not bool(args.model.strip()),
             session_title_updater=session_title_updater,
+            update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
         )
         try:
             # On Windows, the ProactorEventLoop shutdown can raise KeyboardInterrupt

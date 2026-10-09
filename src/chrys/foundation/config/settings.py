@@ -671,6 +671,7 @@ _LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
     fallback="Show the approval dialog only when Auto-Review flags a call",
 )
 _LABEL_APP_DEV_MODE = msg("settings.app.dev_mode.label", fallback="Developer mode")
+_LABEL_APP_UPDATE_CHECK = msg("settings.app.update_check.label", fallback="Check for updates")
 _LABEL_MUTATIONS_PARALLEL_IMPLICIT_TOOLS = msg(
     "settings.mutations.parallel_implicit_tools.label", fallback="Parallel implicit tools"
 )
@@ -1125,6 +1126,21 @@ class Settings:
             # reload performs, so a reload genuinely applies it — RESTART would
             # promise a stability this process never had.
             apply=Apply.RELOAD,
+            group="app",
+            kind=Kind.BOOL,
+        ),
+    )
+
+    # ── Update check ───────────────────────────────────────────────
+    # Once a day at TUI startup, look up the newest release for the welcome screen's hint.
+    update_check: bool = field(
+        default=True,
+        metadata=spec(
+            key="app.update_check",
+            label=_LABEL_APP_UPDATE_CHECK,
+            env="CHRYS_UPDATE_CHECK",
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
             group="app",
             kind=Kind.BOOL,
         ),

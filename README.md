@@ -115,10 +115,21 @@ with Apple silicon, run `xcode-select --install` first.
 
 ### Offline package
 
-On an Intel Mac, Windows on Arm, an older Linux, or a machine without internet access,
-download the package for your platform from
-[Releases](https://github.com/openJiuwen-ai/iCode/releases). It bundles Python and every
-dependency. Unpack it, then install and run iCode:
+On an Intel Mac, Windows on Arm or an older Linux, use the offline package, which bundles
+Python and every dependency. The install script downloads the one for your platform, checks
+it and installs it; run it again to upgrade:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.ps1 | iex   # Windows
+```
+
+On a machine without internet access, download the package from
+[Releases](https://github.com/openJiuwen-ai/iCode/releases) elsewhere, unpack it, then install
+and run iCode:
 
 ```bash
 chmod +x ./icode            # Windows: skip this step
@@ -137,15 +148,19 @@ The same pages live in [`docs/`](docs/), in [English](docs/en/start/what-is-icod
 
 ## Privacy
 
-iCode does not collect your data. It has no telemetry, analytics or crash reporting, and by
-default it sends nothing, usage data included, to us or to any other third party. What iCode
-itself sends goes only to destinations you configure: the model providers you add, the MCP
-servers your agents use, and any hooks or OpenTelemetry export you set up. The web tools are
-off by default. If you turn them on for an agent, its search queries go to the search provider
-you configure, or to Exa's public search service (`mcp.exa.ai`) if you configure none, and the
-pages it reads are requested directly from their websites. Shell commands, skill scripts and
-workflows that you or your agents run are programs in their own right, with your network
-access, so what they send is up to them. Your data is yours alone, and we respect your privacy.
+iCode does not collect your data. It has no telemetry, analytics or crash reporting, and it
+sends nothing about you or your work, usage data included, to us or to any other third party.
+What iCode itself sends goes only to destinations you configure: the model providers you add,
+the MCP servers your agents use, and any hooks or OpenTelemetry export you set up. The one
+exception is the update check: once a day, when it starts, iCode asks PyPI or GitHub for its
+newest version number so it can tell you about an update. That request carries none of your
+personal information or data, and you can turn it off with **Check for updates** in Settings.
+The web tools are off by default. If you turn them on for an agent, its search queries go to
+the search provider you configure, or to Exa's public search service (`mcp.exa.ai`) if you
+configure none, and the pages it reads are requested directly from their websites. Shell
+commands, skill scripts and workflows that you or your agents run are programs in their own
+right, with your network access, so what they send is up to them. Your data is yours alone, and
+we respect your privacy.
 
 ## Regulatory compliance
 

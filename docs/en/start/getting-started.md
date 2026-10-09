@@ -10,19 +10,43 @@ Install iCode with [uv](https://docs.astral.sh/uv/getting-started/installation/)
 uv tool install iCode-TUI
 ```
 
-To upgrade later, run `uv tool upgrade iCode-TUI`; to remove iCode, run `uv tool uninstall iCode-TUI`.
+To upgrade later, run `uv tool upgrade iCode-TUI`; when a newer version is out, the iCode welcome screen tells you so. To remove iCode, run `uv tool uninstall iCode-TUI`.
 
 Windows (x64) and Linux (x86-64 or ARM64, glibc 2.27 or later) need nothing else. On a Mac with Apple silicon, first install the Xcode Command Line Tools with `xcode-select --install`; uv uses them to build one dependency during installation.
 
-If you used an iCode offline package before, remove it first. Delete the folder it unpacked into: `~/Library/Application Support/pyapp/chrys` on macOS, `~/.local/share/pyapp/chrys` on Linux (or `$XDG_DATA_HOME/pyapp/chrys` if you set `XDG_DATA_HOME`), or `%LOCALAPPDATA%\pyapp\data\chrys` on Windows. Then delete `~/.local/bin/chrys` on macOS or Linux, or the `%LOCALAPPDATA%\chrys\bin` folder on Windows.
+If you used an iCode offline package before, remove it first with `icode uninstall` (see [Uninstall iCode](#uninstall-icode)). If your version does not have that command, delete the folder it unpacked into: `~/Library/Application Support/pyapp/chrys` on macOS, `~/.local/share/pyapp/chrys` on Linux (or `$XDG_DATA_HOME/pyapp/chrys` if you set `XDG_DATA_HOME`), or `%LOCALAPPDATA%\pyapp\data\chrys` on Windows. Then delete `~/.local/bin/chrys` on macOS or Linux, or the `%LOCALAPPDATA%\chrys\bin` folder on Windows.
 
-If uv reports that `icode` already exists, an earlier iCode offline install or another program with the same name is in the way. If it is iCode, run `uv tool install --force iCode-TUI` to replace it.
+If uv reports that `icode` already exists, an earlier iCode offline install or another program with the same name is in the way. If it is an iCode offline install, remove it as described above, then run the install command again.
 
 ### Offline packages
 
 On an Intel Mac, Windows on Arm, an older Linux, or a device without internet access, use the prebuilt offline packages from [iCode Releases](https://github.com/openJiuwen-ai/iCode/releases) instead. The packages include Python and every dependency, so you do not need to install Python separately.
 
-In the commands below, `<version>` and `<architecture>` are placeholders. Replace them with the actual values in the downloaded filename.
+The install script picks the package for your computer, checks the download and installs it. Run the same command again later to upgrade. On macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/openJiuwen-ai/iCode/main/scripts/install.ps1 | iex
+```
+
+The script downloads from GitHub, and from GitCode if GitHub fails. If GitHub is slow or unreachable where you are, get the script from GitCode and download from there:
+
+```bash
+curl -fsSL https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.sh | sh -s -- --source gitcode
+```
+
+```powershell
+$env:ICODE_SOURCE = "gitcode"; irm https://raw.gitcode.com/openJiuwen/iCode/raw/main/scripts/install.ps1 | iex
+```
+
+To install a particular version, end the command with `| sh -s -- --version 0.29.1` instead of `| sh`. On Windows, run `$env:ICODE_VERSION = "0.29.1"` first. A setting made with `$env:` lasts until you close that PowerShell window.
+
+To install by hand instead, download the package for your platform and follow the steps below. In the commands, `<version>` and `<architecture>` are placeholders. Replace them with the actual values in the downloaded filename.
 
 #### macOS
 
@@ -65,6 +89,20 @@ icode --version
 The command should print the iCode version number. If you installed with uv and your terminal cannot find `icode`, run `uv tool update-shell` and open a new terminal.
 
 With an offline package, if your system cannot find `icode` on macOS or Linux, add `~/.local/bin` to `PATH` as the installer instructs. If the installer reported that `~/.local/bin/icode` already exists, that command starts another program; use `chrys` instead. On Windows, open a new terminal; if the installer reported that updating the user PATH failed, add `%LOCALAPPDATA%\chrys\bin` to your user `PATH` manually.
+
+### Uninstall iCode
+
+Run:
+
+```shell
+icode uninstall
+```
+
+If you installed an offline package, the command lists what it will remove: the `icode` and `chrys` commands and the files the package unpacked. It removes them once you confirm. On Windows, it also removes iCode from your user `PATH`, and the last files go a moment after the command exits. The package you downloaded stays where you saved it.
+
+If you installed with uv, the command only shows what to run: `uv tool uninstall iCode-TUI`.
+
+iCode keeps its data in `~/.chrys` (`%APPDATA%\chrys` on Windows): your settings, API keys, model profiles, agents, skills, sessions and more. Uninstalling keeps this folder. To delete it and everything in it as well, run `icode uninstall --purge`; if you save sessions in another folder, the `sessions` folder there is deleted too. If you installed with uv, do this before `uv tool uninstall`, while the `icode` command still exists. Add `--yes` to skip the confirmation.
 
 ## 2. Start iCode in a project
 

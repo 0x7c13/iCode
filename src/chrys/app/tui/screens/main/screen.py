@@ -142,6 +142,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.sessions import WorkflowSessionPick
     from chrys.app.tui.screens.themes.picker import ThemesScreen
     from chrys.app.tui.themes.store import ThemeFileRevision, UserThemeStore
+    from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.orchestration.engine.engine import AgentEngine
@@ -863,6 +864,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
         name, description = _describe_work(work)
         return self.run_worker(run, name=name, description=description, thread=False)
+
+    def show_update_notice(self, notice: UpdateNotice | None) -> None:
+        """Startup-facing facade: tell about a newer release on the welcome screen, or stop telling."""
+        self.query_one(ChatPanel).set_update_notice(notice)
 
     def set_startup_agent_loading(self, active: bool) -> None:
         """Startup-facing facade for setting agent loading state."""

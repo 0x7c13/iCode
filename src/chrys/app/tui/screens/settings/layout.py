@@ -27,6 +27,7 @@ _TAB_NOTIFICATIONS = msg("tui.settings.tab.notifications", fallback="Notificatio
 # ── Section titles ─────────────────────────────────────────────────────
 _SECTION_APPEARANCE = msg("tui.settings.section.appearance", fallback="Appearance")
 _SECTION_INPUT = msg("tui.settings.section.input", fallback="Input")
+_SECTION_UPDATES = msg("tui.settings.section.updates", fallback="Updates")
 _SECTION_SESSION_TITLES = msg("tui.settings.section.session_titles", fallback="Titles")
 _SECTION_AGENT = msg("tui.settings.section.agent", fallback="Agent")
 _SECTION_MODEL_ROLES = msg("tui.settings.section.model_roles", fallback="Model roles")
@@ -53,6 +54,10 @@ _HINT_UI_LOCALE = msg(
 _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
     "tui.settings.hint.ui.chat.tool_groups_expanded",
     fallback="Expand new tool groups by default. When off, click the tool status at any time to view details.",
+)
+_HINT_APP_UPDATE_CHECK = msg(
+    "tui.settings.hint.app.update_check",
+    fallback="Once a day at startup, look up the newest version and show it on the welcome screen. Sends no personal data.",
 )
 _HINT_HISTORY_PROMPT_ENABLED = msg(
     "tui.settings.hint.history.prompt.enabled",
@@ -282,6 +287,10 @@ TABS: tuple[SettingsTab, ...] = (
             SettingsSection(
                 _SECTION_INPUT,
                 (SettingRowSpec("history.prompt.enabled", hint=_HINT_HISTORY_PROMPT_ENABLED),),
+            ),
+            SettingsSection(
+                _SECTION_UPDATES,
+                (SettingRowSpec("app.update_check", hint=_HINT_APP_UPDATE_CHECK),),
             ),
         ),
     ),
