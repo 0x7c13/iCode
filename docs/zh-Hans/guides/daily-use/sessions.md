@@ -77,3 +77,14 @@
 5. 关闭所有 iCode 实例并重新启动，再按 **F1** 打开“聊天会话”窗口，确认重要会话已经出现并可以恢复。
 
 迁移完成后，源目录会保留原数据，不会自动删除。确认迁移完整后，如需释放空间，关闭 iCode，再归档或删除迁移窗口中“从”所显示的旧 `sessions` 目录。手工删除无法撤销。
+
+## 在导出的会话数据中关联请求与文件编辑
+
+进行数据上报时，在选定会话内使用明确的 ID 关联，不要按时间或工具顺序猜测：
+
+- 新记录的文件 mutation 可以包含 `tool_operation_id`，它对应工具调用的 `additional_properties._chrys_operation_id`（工具结果也包含相同值）。一次工具执行可能对应多条文件 mutation。原有短 `tool_call_id` 保持不变，它不是服务商 `call_id` 的计算结果。
+- 新收到的模型消息及内容包含 `additional_properties._chrys_request_attempt_id`，可关联到 `trajectory/events.jsonl` 中的 `request_attempt_id`。请求记录的 `operation_id` 指向所属的模型 exchange。
+- `model.request.prepared` 标识一次 HTTP 发送尝试；SDK 重试和重定向每次都生成新 ID，并通过 `Chrys-Request-Attempt-Id` 请求头发送。`model.request.headers_received` 记录 HTTP 状态码，以及服务商提供时的 `provider_request_id`。收到响应头不代表流式模型响应已成功完成，还需检查 exchange 的结束记录。只有 prepared 而没有响应头的尝试，可能在到达服务商前就已失败。
+- 开启原始 HTTP 日志时，其中的 `exchange_id` 使用同一个请求尝试 ID；它与模型 exchange 的轨迹 operation ID 是不同的标识。
+
+旧记录以及无法归因到某个工具的 mutation 可以缺少这些字段。缺少关联时应标记为未知，不要依据相同的会话 ID 推断。这些字段只标识操作，不改变 shell 文件变更检测的归因可信度，也不计算改动行数。行数仍需通过已有 before/after blob 的差异计算，“修改行”的统计规则需另行约定。

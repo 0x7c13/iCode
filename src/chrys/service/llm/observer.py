@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.trajectory.context import ExchangeTrace, current_trajectory
+from chrys.foundation.trajectory.context import ExchangeTrace, TrajectoryContext, current_trajectory
 from chrys.foundation.trajectory.envelope import ActorKind
 from chrys.foundation.trajectory.event_types import ContinuationMode, ExchangeOutcome
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -46,6 +46,7 @@ from chrys.kernel import in_internal_side_call
 from chrys.kernel.instrumentation import _stream_abandoned, _stream_error_of
 from chrys.kernel.types import ChatResponse, Message, ResponseStream
 from chrys.service.agent_middleware.events.intermediate_text import intermediate_text_contents
+from chrys.service.llm.request_tracking import REQUEST_ATTEMPT_ID_METADATA, RequestTracking
 from chrys.service.session.message_metadata import stamp_message_response_timing
 from chrys.service.trajectory.revisions import record_context_revision
 
@@ -197,7 +198,11 @@ def exchange_request_facts(options: Mapping[str, Any], *, stream: bool) -> dict[
 
 def exchange_response_facts(response: ChatResponse[Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """``model.exchange.finished`` facts and measurements taken from a landed response."""
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = {
+        key: response.additional_properties[key]
+        for key in ("request_attempt_id", "provider_request_id")
+        if key in response.additional_properties
+    }
     response_id = _bounded_opaque_id(response.response_id)
     if response_id is not None:
         payload["response_id"] = response_id
@@ -240,6 +245,10 @@ class ExchangeRecorder:
     def __init__(self, trace: ExchangeTrace, *, owned: bool) -> None:
         self._trace = trace
         self._owned = owned
+
+    @property
+    def context(self) -> TrajectoryContext:
+        return self._trace.context
 
     def started(self, options: Mapping[str, Any], *, stream: bool) -> None:
         self._trace.started(payload=exchange_request_facts(options, stream=stream))
@@ -384,7 +393,7 @@ class WireCallObserver:
 class WireCall:
     """One acquisition's reporting; *timing* is None for an internal side call."""
 
-    __slots__ = ("_on_async", "_on_sync", "_recorder", "_stream", "_timing")
+    __slots__ = ("_on_async", "_on_sync", "_recorder", "_requests", "_stream", "_timing")
 
     def __init__(
         self,
@@ -396,6 +405,7 @@ class WireCall:
         on_intermediate_text_sync: Callable[[str], None] | None = None,
     ) -> None:
         self._recorder = recorder
+        self._requests = RequestTracking(recorder.context if recorder is not None else None)
         self._stream = stream
         self._timing = timing
         self._on_async = on_intermediate_text_async
@@ -417,12 +427,15 @@ class WireCall:
             if isinstance(result, ResponseStream):
                 self._observe_stream(result)
             return result
-        observed = self._recorder.wrap_awaitable(result) if self._recorder is not None else result
+        observed = self._track_request(result)
+        observed = self._recorder.wrap_awaitable(observed) if self._recorder is not None else observed
         if self._timing is None:
             return observed
         return self._land(observed, self._timing)
 
     def _observe_stream(self, stream: ResponseStream[ChatResponseUpdate, ChatResponse[Any]]) -> None:
+        stream.with_pull_context_manager(self._requests.scope)
+        stream.with_result_hook(self._stamp_request)
         if self._recorder is not None:
             self._recorder.attach_stream(stream)
         timing = self._timing
@@ -443,4 +456,25 @@ class WireCall:
         timing.stamp(response)
         if self._on_async is not None and (signal := intermediate_text_signal(response)) is not None:
             await self._on_async(signal)
+        return response
+
+    async def _track_request(self, result: Awaitable[ChatResponse[Any]]) -> ChatResponse[Any]:
+        with self._requests.scope():
+            response = await result
+        return self._stamp_request(response)
+
+    def _stamp_request(self, response: ChatResponse[Any]) -> ChatResponse[Any]:
+        response.additional_properties.update(self._requests.response_facts())
+        attempt_id = self._requests.request_attempt_id
+        if attempt_id is not None and self._timing is not None:
+            anchors = self._timing.echo_anchors
+            for message in response.messages:
+                if id(message.additional_properties) not in anchors.message_metadata_ids:
+                    message.additional_properties[REQUEST_ATTEMPT_ID_METADATA] = attempt_id
+                for content in message.contents:
+                    if (
+                        id(content) not in anchors.content_ids
+                        and id(content.additional_properties) not in anchors.content_metadata_ids
+                    ):
+                        content.additional_properties[REQUEST_ATTEMPT_ID_METADATA] = attempt_id
         return response

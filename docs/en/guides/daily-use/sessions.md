@@ -77,3 +77,14 @@ Before starting, finish the current task and close other iCode instances, then f
 5. Close all iCode instances and restart, then press **F1** to open the "Chat Sessions" window and confirm that important sessions appear and can be resumed.
 
 Migration keeps the original data in the source directory; it is not deleted automatically. After confirming that migration is complete, if you need to free up space, close iCode and archive or delete the old `sessions` directory shown under "From" in the migration window. Manual deletion cannot be undone.
+
+## Correlate requests and file edits in exported session data
+
+For reporting, use IDs within the selected session rather than matching timestamps or tool order:
+
+- Each newly recorded file mutation has an optional `tool_operation_id`. Match it to the tool call's `additional_properties._chrys_operation_id` (also present on its result). One tool operation can have several file mutations. The existing short `tool_call_id` remains unchanged; it is not derived from the provider's `call_id`.
+- Newly received model messages and contents carry `additional_properties._chrys_request_attempt_id`. Match it to `request_attempt_id` in `trajectory/events.jsonl`. Request records use the enclosing model exchange's `operation_id`.
+- `model.request.prepared` identifies an HTTP send attempt; SDK retries and redirects each get a new ID, also sent as `Chrys-Request-Attempt-Id`. `model.request.headers_received` records its HTTP status and, when available, `provider_request_id`. Receiving headers does not mean the streamed model response completed successfully: check the exchange's completion record. A prepared attempt without headers may have failed before reaching the provider.
+- If raw HTTP logging is enabled, its `exchange_id` uses the same request attempt ID. This is distinct from the model exchange's trajectory operation ID.
+
+Older records and mutations with no attributable tool can omit these fields. Treat a missing association as unknown; do not infer it from a shared session ID. These fields identify operations; they do not change the confidence of shell mutation detection or calculate changed-line counts. Compute file differences from the existing before/after blobs and define your reporting rule for replacement lines separately.
