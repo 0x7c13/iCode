@@ -37,7 +37,7 @@ To change only the default for the next launch without changing the current appr
 
 ## Handle approval requests in the TUI
 
-Tool calls that require approval open an **Approval Required** dialog showing the tool name and call arguments. For file edits, it also shows the planned diff so you can review changes before they are made.
+Tool calls that require approval open an **Approval Required** dialog showing the tool name and call arguments. For file edits, it also shows the planned diff so you can review changes before they are made. An argument too long to show at once, such as the whole content of a file, appears in a box with a scroll bar: scroll it with the mouse wheel, or click it and use the arrow keys, **Page Up**, **Page Down**, **Home** and **End** to read it to the end.
 
 - Press **Y** to approve or **N** to decline, or click the corresponding button. You cannot close the dialog with **Esc**; you must explicitly approve or decline.
 - When declining, you can provide a reason. The reason is sent to the agent to help it adjust its next steps. Once a reason is entered, the approve button is disabled.
