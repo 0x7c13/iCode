@@ -109,8 +109,8 @@ dev = [
 packages = ["src/chrys"]
 
 [tool.hatch.build.targets.wheel.force-include]
-# The /help user guide reads docs/ at runtime; installed builds carry it here
-# (src/chrys/app/tui/screens/guides/index.py::resolve_docs_root).
+# The /help user guide and agent runtime read docs/; installed builds carry it here
+# (src/chrys/foundation/documentation.py::resolve_docs_root).
 "docs" = "chrys/app/tui/screens/guides/_docs"
 
 [tool.hatch.build]

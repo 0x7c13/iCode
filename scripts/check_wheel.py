@@ -57,7 +57,7 @@ import sys
 from pathlib import Path
 
 import chrys
-from chrys.app.tui.screens.guides.index import resolve_docs_root
+from chrys.foundation.documentation import resolve_docs_root
 from chrys.foundation.vendor import _TRIPLE_MAP, VENDOR_RIPGREP, find_rg
 
 # What a bare install must import: the TUI's whole subtree, the document

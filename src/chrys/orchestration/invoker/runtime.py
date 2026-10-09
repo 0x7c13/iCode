@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, get_tool_kind
 from chrys.kernel import Agent, AgentSession
 from chrys.service.agent_middleware import ApprovalMiddleware, AskUserMiddleware
 from chrys.service.agent_middleware.reminders.archive_pointer import CATALOG_POINTER_RECORD_COUNT_STATE_KEY
@@ -21,6 +22,7 @@ from chrys.service.agent_middleware.system_reminder import ReminderTurns, System
 from chrys.service.context.compaction.last_words import LastWordsGenerator
 from chrys.service.context.compaction.last_words_state import LastWordsState
 from chrys.service.context.manager import ContextManager
+from chrys.service.context.providers.documentation import DocumentationProvider
 from chrys.service.vision import image_stub_middleware_for_model
 
 from .resources import Conversation
@@ -262,12 +264,22 @@ def create_runtime(
         if validation is None:
             raise RuntimeError("The main agent recipe requires response validation middleware.")
         chain.append(validation)
+    providers = [*ctx.providers, *shared.providers]
+    if isinstance(recipe, MainRecipe):
+        providers.append(
+            DocumentationProvider(
+                file_read_available=recipe.reminder.get("file_read_available", False)
+                and any(
+                    tool.name == "read_file" and get_tool_kind(tool) == KIND_FILESYSTEM_READ for tool in shared.tools
+                )
+            )
+        )
     agent = Agent(
         client=shared.client,
         name=shared.name,
         instructions=shared.instructions,
         tools=list(shared.tools),
-        context_providers=[*ctx.providers, *shared.providers],
+        context_providers=providers,
         middleware=chain,
     )
     return owner.retain(
