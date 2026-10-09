@@ -36,7 +36,6 @@ from chrys.app.tui.screens.guides.index import (
     iter_leaf_topics,
     language_cycle,
     load_guide_index,
-    resolve_docs_root,
 )
 from chrys.app.tui.screens.guides.reader import (
     branch_display_name,
@@ -48,6 +47,7 @@ from chrys.app.tui.screens.guides.reader import (
 from chrys.app.tui.widgets import HatchedEmptyState
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.documentation import resolve_docs_root
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.locale import ENGLISH_LOCALE
 

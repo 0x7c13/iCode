@@ -177,6 +177,18 @@ If an approval dialog appears, review the tool call before approving it. Pay par
 
 When the task is complete, review the agent's final response and use `/diff` to browse the file changes recorded in the current session. Then use Git or another version control tool to inspect the complete working directory changes. Confirm that the feature works correctly, the necessary tests pass, and there are no unrelated changes. Once you have verified the changes, you can commit them.
 
+### Ask about iCode itself
+
+You can ask the agent about iCode in the input field, for example:
+
+- "What features does iCode offer?"
+- "How do I configure an MCP server in iCode?"
+- "How does iCode's context compaction work?"
+
+The agent looks up the answer in the user guide that comes with your installed version and tells you which pages it used. If a feature described in the guide is not turned on for the current agent, the answer says so. If the agent cannot read files, it tells you that it could not check the guide.
+
+To read the guide yourself, type `/help` or press **F8**.
+
 ### Read and copy replies
 
 All agents' replies support Markdown, formulas and Mermaid diagrams. Formulas in your own messages are not rendered as math.

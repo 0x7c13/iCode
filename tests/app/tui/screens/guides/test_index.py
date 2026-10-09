@@ -4,20 +4,16 @@
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import pytest
 
-from chrys.app.tui.screens.guides import index as index_module
 from chrys.app.tui.screens.guides.index import (
-    BUNDLED_DOCS_DIRNAME,
     GuideIndexError,
     default_topic_id,
     iter_leaf_topics,
     language_cycle,
     load_guide_index,
-    resolve_docs_root,
 )
 
 _VALID_INDEX = """\
@@ -33,9 +29,6 @@ topics:
       - id: mcp
         path: guides/configuration/mcp.md
 """
-
-
-_REPO_ROOT = Path(__file__).resolve().parents[5]
 
 
 def _write(docs_root: Path, content: str) -> Path:
@@ -118,61 +111,3 @@ def test_index_that_is_not_utf8_raises(tmp_path: Path) -> None:
 def test_missing_index_raises(tmp_path: Path) -> None:
     with pytest.raises(GuideIndexError, match="Guide index missing"):
         load_guide_index(tmp_path)
-
-
-def test_resolve_docs_root_prefers_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    docs = _write(tmp_path / "docs", _VALID_INDEX)
-    monkeypatch.setenv("CHRYS_DOCS_ROOT", str(docs))
-
-    assert resolve_docs_root() == docs
-
-
-def test_resolve_docs_root_reports_an_override_without_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A wrong override shows the guide's missing-docs state, not another copy."""
-    monkeypatch.setenv("CHRYS_DOCS_ROOT", str(tmp_path / "does-not-exist"))
-
-    assert resolve_docs_root() is None
-
-
-def test_resolve_docs_root_finds_repository_docs(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CHRYS_DOCS_ROOT", raising=False)
-
-    assert resolve_docs_root() == _REPO_ROOT / "docs"
-
-
-def _installed_module(site_packages: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the resolver at an ``index.py`` inside a fake installed package."""
-    module_dir = site_packages / "chrys" / "app" / "tui" / "screens" / "guides"
-    module_dir.mkdir(parents=True)
-    monkeypatch.setattr(index_module, "__file__", str(module_dir / "index.py"))
-    monkeypatch.delenv("CHRYS_DOCS_ROOT", raising=False)
-    return module_dir
-
-
-def test_resolve_docs_root_prefers_the_copy_bundled_in_the_wheel(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module_dir = _installed_module(tmp_path / "site-packages", monkeypatch)
-    # A checkout-shaped docs tree around the install loses to the bundled copy.
-    _write(tmp_path / "docs", _VALID_INDEX)
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
-    assert resolve_docs_root() == tmp_path / "docs"
-
-    bundled = _write(module_dir / BUNDLED_DOCS_DIRNAME, _VALID_INDEX)
-
-    assert resolve_docs_root() == bundled
-
-
-def test_resolve_docs_root_ignores_docs_outside_a_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _installed_module(tmp_path / "site-packages", monkeypatch)
-    _write(tmp_path / "docs", _VALID_INDEX)
-
-    assert resolve_docs_root() is None
-
-
-def test_wheel_bundles_docs_where_the_resolver_looks() -> None:
-    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    module_dir = Path(index_module.__file__).resolve().parent.relative_to(_REPO_ROOT / "src")
-
-    assert force_include["docs"] == (module_dir / BUNDLED_DOCS_DIRNAME).as_posix()
