@@ -16,6 +16,7 @@ from acp.helpers import text_block
 
 from chrys.app.acp.bridge import AcpEventBridge
 from chrys.app.acp.server import ChrysAcpServer
+from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalCancelled,
@@ -301,7 +302,7 @@ async def test_late_permission_allow_after_cancel_is_ignored() -> None:
 
 
 @pytest.mark.anyio
-async def test_wedged_permission_client_times_out_server_side() -> None:
+async def test_wedged_permission_client_times_out_with_configured_seconds() -> None:
     async def _never_reply(_session_id: str, _tool_call: Any) -> acp_schema.RequestPermissionResponse:
         await asyncio.Future()
         raise AssertionError("unreachable after timeout")
@@ -314,7 +315,9 @@ async def test_wedged_permission_client_times_out_server_side() -> None:
     server = ChrysAcpServer(  # type: ignore[arg-type]
         _FakeManager(host),
         initial_vision=False,
-        permission_timeout_seconds=0.01,
+        permission_timeout_seconds=load_settings(
+            env={"CHRYS_ACP_APPROVAL_TIMEOUT_SECONDS": "1"}
+        ).settings.acp_approval_timeout_seconds,
     )
     server.on_connect(_FakeClient(permission_responder=_never_reply))
     responses: list[ApprovalResponse] = []
@@ -324,7 +327,7 @@ async def test_wedged_permission_client_times_out_server_side() -> None:
 
     await host.event_bus.subscribe(ApprovalResponse, _collect)
 
-    response = await asyncio.wait_for(server.prompt([text_block("run")], session_id="s1"), timeout=1)
+    response = await asyncio.wait_for(server.prompt([text_block("run")], session_id="s1"), timeout=3)
 
     assert response.stop_reason == "end_turn"
     assert len(responses) == 1

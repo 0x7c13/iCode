@@ -11,8 +11,9 @@ from typing import Any
 import pytest
 
 from chrys.app.cli import acp as acp_cli
+from chrys.foundation.config.env_layers import freeze_process_env
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.config.settings_store import LoadedSettings, load_settings
+from chrys.foundation.config.settings_store import LoadedSettings, load_settings, persist
 from chrys.orchestration.startup import RuntimeBootstrap
 
 
@@ -154,7 +155,14 @@ def test_prepare_runtime_uses_interactive_transient_retry_default(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_run_command_wires_buddy_successful_turn_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("approval_timeout", [600, 45])
+async def test_run_command_wires_buddy_callback_and_approval_timeout(
+    monkeypatch: pytest.MonkeyPatch, approval_timeout: int
+) -> None:
+    freeze_process_env()
+    assert persist({"approval.acp_timeout_seconds": approval_timeout}).written == {
+        "approval.acp_timeout_seconds": approval_timeout
+    }
     captured: dict[str, Any] = {}
 
     class _Registry:
@@ -169,9 +177,10 @@ async def test_run_command_wires_buddy_successful_turn_callback(monkeypatch: pyt
             captured["shutdown"] = True
 
     class _Server:
-        def __init__(self, manager: _Manager, *, initial_vision: bool) -> None:
+        def __init__(self, manager: _Manager, *, initial_vision: bool, permission_timeout_seconds: float) -> None:
             captured["server_manager"] = manager
             captured["initial_vision"] = initial_vision
+            captured["permission_timeout_seconds"] = permission_timeout_seconds
 
     async def _run_agent(server: _Server, *, use_unstable_protocol: bool) -> None:
         captured["server"] = server
@@ -180,7 +189,7 @@ async def test_run_command_wires_buddy_successful_turn_callback(monkeypatch: pyt
     monkeypatch.setattr(
         acp_cli,
         "_prepare_runtime",
-        lambda _process_cwd=None: LoadedSettings(settings=Settings(), provenance={}),
+        lambda _process_cwd=None: load_settings(),
     )
     monkeypatch.setattr(acp_cli, "AgentProfileRegistry", _Registry)
     monkeypatch.setattr(acp_cli, "ModelProfileRegistry", _Registry)
@@ -193,6 +202,7 @@ async def test_run_command_wires_buddy_successful_turn_callback(monkeypatch: pyt
 
     assert await acp_cli.run_command(args) == 0
     assert captured["manager_kwargs"]["on_successful_turn"] is acp_cli.on_buddy_successful_turn
+    assert captured["permission_timeout_seconds"] == approval_timeout
     assert captured["initial_vision"] is False
     assert captured["use_unstable_protocol"] is True
     assert captured["shutdown"] is True

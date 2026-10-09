@@ -29,6 +29,7 @@ from chrys.app.acp.history import replay_session_history
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
 from chrys.foundation.branding import APP_DISPLAY_NAME
+from chrys.foundation.config.settings import DEFAULT_ACP_APPROVAL_TIMEOUT_SECONDS
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     AgentLoadFinished,
@@ -84,7 +85,6 @@ if TYPE_CHECKING:
 
 _ALLOW_OPTION_ID = "allow"
 _REJECT_OPTION_ID = "reject"
-_PERMISSION_REQUEST_TIMEOUT_SECONDS = 600.0
 
 # Approval modes surfaced as standard ACP session modes (id, name, description).
 _APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
@@ -178,7 +178,7 @@ class ChrysAcpServer:
         manager: AcpSessionManager,
         *,
         initial_vision: bool,
-        permission_timeout_seconds: float = _PERMISSION_REQUEST_TIMEOUT_SECONDS,
+        permission_timeout_seconds: float = DEFAULT_ACP_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
         if not isfinite(permission_timeout_seconds) or permission_timeout_seconds <= 0:
             raise ValueError("permission_timeout_seconds must be finite and greater than zero.")

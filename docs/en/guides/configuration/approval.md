@@ -115,3 +115,9 @@ Other ways of running iCode use the following approval modes and switching metho
 - **Headless CLI (`icode run`)**: Always bypasses approval and provides no approval-related options.
 - **iCode ACP server**: Defaults to manual mode. Use `icode acp --approval manual|auto|bypass` to set the initial mode. ACP clients that support this capability can also switch the current session's mode.
 - **Browser-hosted TUI (`icode serve`)**: Use the TUI operations described earlier to switch approval modes and handle approval requests.
+
+## Set the ACP human approval timeout
+
+Press **F10** → **Settings** → **Security**, then set **ACP human approval timeout (seconds)** in the **Approval** section. The default is **600 seconds**; values below **1** are adjusted to **1**. Restart the ACP server after saving.
+
+The timer starts when ACP requests human approval. If no response arrives before the timeout, iCode rejects that tool call. This setting does not limit TUI human approvals or the time the approval judge model spends evaluating a call; the judge uses its model request timeout.

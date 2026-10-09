@@ -140,7 +140,11 @@ async def run_command(args: argparse.Namespace) -> int:
         agent_registry=agent_registry,
         model_registry=model_registry,
     )
-    server = ChrysAcpServer(manager, initial_vision=initial_vision)
+    server = ChrysAcpServer(
+        manager,
+        initial_vision=initial_vision,
+        permission_timeout_seconds=settings.acp_approval_timeout_seconds,
+    )
     try:
         # Runtime guarantee: the SDK dispatches structurally to the handlers
         # advertised by Chrys; its Agent protocol also requires optional

@@ -841,6 +841,12 @@ msgstr ""
 msgid "settings.app.update_check.label"
 msgstr ""
 
+#. English: ACP human approval timeout (seconds)
+#. chrys-meta={"fingerprint":"817238be597ef33d42ad3d2849ea30f576b162a10ac715e7d9b2254623f22e2c","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.acp_timeout_seconds.label"
+msgstr ""
+
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -9429,6 +9435,14 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4664a03299f05cf4eba84a768e8af328d4ac74381e485614890aa575faa295ce","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.app.update_check"
+msgstr ""
+
+#. English: Seconds to wait after requesting human approval in ACP; timeout
+#. rejects the call. Minimum 1. Restart ACP to apply. Does not affect TUI
+#. approvals or the judge model's request timeout.
+#. chrys-meta={"fingerprint":"e36116e550286863d16201825787816770d48018c05d089d3e04997674b18b63","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.acp_timeout_seconds"
 msgstr ""
 
 #. English: Approval mode at the next launch; /approval changes both the
