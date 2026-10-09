@@ -101,3 +101,54 @@ async def test_sdk_shutdown_drains_unlimited_approval_before_manager_shutdown(mo
         peer_writer.close()
         writer.close()
         await asyncio.gather(peer_writer.wait_closed(), writer.wait_closed(), return_exceptions=True)
+
+
+@pytest.mark.parametrize("stop", ["cancel", "eof"])
+async def test_shutdown_drops_a_response_sent_after_close(monkeypatch, stop: str) -> None:
+    entered = asyncio.Event()
+
+    class Server(ChrysAcpServer):
+        async def ext_method(self, method, params):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Like turn cleanup that consumes the shutdown cancellation:
+                # the handler returns and the SDK sends its response.
+                return {"late": True}
+            return {}
+
+    server = Server(_FakeManager(_FakeHost(event_bus=EventBus(), outcome=EndTurn())), initial_vision=False)
+    agent_socket, client_socket = socket.socketpair()
+    reader, writer = await asyncio.open_connection(sock=agent_socket)
+    _peer_reader, peer_writer = await asyncio.open_connection(sock=client_socket)
+
+    async def streams(*, limit):
+        return reader, writer
+
+    monkeypatch.setattr(acp_cli, "stdio_streams", streams)
+    task = asyncio.create_task(acp_cli._serve_agent(server))
+    try:
+        peer_writer.write(b'{"jsonrpc":"2.0","id":1,"method":"_late","params":{}}\n')
+        await peer_writer.drain()
+        await wait_for(entered.is_set, description="request handler started")
+        if stop == "cancel":
+            task.cancel()
+        else:
+            peer_writer.write_eof()
+        await wait_for(task.done, description="ACP server stopped after a late response")
+        assert task.result() is None
+    finally:
+        # On a regression the late send never resolves: cancel the SDK
+        # handlers so the connection close, and this test, can finish.
+        if isinstance(server._client, AgentSideConnection):
+            owned_tasks = list(server._client._conn._tasks._tasks)
+            for owned in owned_tasks:
+                owned.cancel()
+            await asyncio.gather(*owned_tasks, return_exceptions=True)
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        peer_writer.close()
+        writer.close()
+        await asyncio.gather(peer_writer.wait_closed(), writer.wait_closed(), return_exceptions=True)

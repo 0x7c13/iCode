@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from acp.task.sender import MessageSender
 
@@ -17,6 +18,14 @@ class AbortableMessageSender(MessageSender):
     failure, either of which can prevent requests from releasing session locks.
     ``_closed`` and ``_task`` are SDK internals covered by transport regressions.
     """
+
+    async def send(self, payload: dict[str, Any]) -> None:
+        # A request handler that consumes the shutdown cancellation still
+        # returns, and the SDK then sends its response. The stopped loop would
+        # never resolve that send, and SDK shutdown waits for the handler.
+        if self._closed:
+            return
+        await super().send(payload)
 
     async def close(self) -> None:
         self._closed = True
