@@ -126,3 +126,34 @@ async def test_windows_paste_with_native_control_records_reaches_input_bar(nativ
             app.post_message(event)
         await wait_for(lambda: bool(app.submitted), pilot=pilot, description="Enter submits the complete pasted draft")
         assert app.submitted == ["a\n\tb"]
+
+
+@pytest.mark.parametrize("windows", [False, True])
+async def test_legacy_editing_chords_reach_input_bar(windows: bool) -> None:
+    app = _InputApp()
+    async with app.run_test() as pilot:
+        input_bar = app.query_one(InputBar)
+        area = input_bar.query_one(TextArea)
+        area.focus()
+        await pilot.press("a", "space", "t", "w", "o")
+        parser = get_parser_class()() if windows else XTermParser()
+        for sequence, expected in (
+            ("\x1b[8;14;8;1;2;1_" if windows else "\x1b[27;3;127~", "a "),
+            ("\x1b[72;35;8;1;8;1_" if windows else "\x1b[27;5;104~", "a"),
+        ):
+            for event in parser.feed(sequence):
+                app.post_message(event)
+            await pilot.pause()
+            assert input_bar.value == expected
+
+        for event in parser.feed("\x1b[73;23;9;1;8;1_" if windows else "\x1b[27;5;105~"):
+            app.post_message(event)
+        await pilot.pause()
+        assert not area.has_focus
+        assert not app.submitted
+        area.focus()
+        await pilot.pause()
+        for event in parser.feed("\x1b[77;50;13;1;8;1_" if windows else "\x1b[27;5;109~"):
+            app.post_message(event)
+        await pilot.pause()
+        assert app.submitted == ["a"]

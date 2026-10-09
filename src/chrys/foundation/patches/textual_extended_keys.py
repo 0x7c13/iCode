@@ -44,6 +44,12 @@ _KITTY_PUSH = re.compile(r"\x1b\[>[0-9]+u")
 _ENABLE = "\x1b[>4;2m"
 _RESET = "\x1b[>4;0m"
 _KITTY_POP = "\x1b[<u"
+_LEGACY_CTRL_KEYS = {
+    "h": ("backspace", "\x08"),
+    "i": ("tab", "\t"),
+    "m": ("enter", "\r"),
+    "[": ("escape", "\x1b"),
+}
 logger = logging.getLogger(__name__)
 
 
@@ -59,8 +65,11 @@ def _decode_key(modifier: int, codepoint: int) -> Key:
     if bits == 1 and codepoint in (8, 27, 127):
         # Retain the legacy correction/cancel keys while Shift is held.
         bits = 0
-    if bits == 4 and character == "[":
-        return Key("escape", None)
+    # Preserve established editing aliases and their legacy character payloads.
+    if bits == 2 and codepoint in (8, 127):
+        return Key("ctrl+w", None)
+    if bits == 4 and (legacy_key := _LEGACY_CTRL_KEYS.get(character.lower())):
+        return Key(*legacy_key)
     text = character if character.isprintable() and not bits & 0b1110 else None
     # xterm reports the shifted character; shortcut bindings use lower-case
     # letters plus explicit modifiers (for example ctrl+shift+v).

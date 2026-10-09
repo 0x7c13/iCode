@@ -179,7 +179,7 @@ class _HistoryBrowser:
 
 
 class _ChatTextArea(EnhancedTextArea):
-    """EnhancedTextArea subclass: Enter = submit, Ctrl+J = newline, input history."""
+    """Chat input with Enter-submit, explicit newline shortcuts and input history."""
 
     _history: _HistoryBrowser
     _history_browsing: bool
@@ -495,7 +495,7 @@ class InputBar(Widget):
     """Multi-line input bar with Send/Stop button.
 
     - Enter or clicking Send submits the message.
-    - Ctrl+J inserts a newline for multi-line input.
+    - Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline for multi-line input.
     - When agent is running, button becomes Stop (fires ``InterruptRequested``).
     """
 

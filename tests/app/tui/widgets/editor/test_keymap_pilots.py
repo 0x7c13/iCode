@@ -13,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.events import Paste
 
 from chrys.app.tui.widgets.editor import EditorMode, EditorStatus, EmacsKeymap, MessageEditor, VimKeymap, VimState
+from chrys.app.tui.widgets.editor.types import EditorIntent
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.patches import textual_extended_keys, textual_windows_keys
@@ -38,9 +39,51 @@ class _EditorApp(App[None]):
     ) -> None:
         super().__init__()
         self.editor = MessageEditor(text=text, cursor_location=cursor, mode=mode, tab_behavior=tab_behavior)
+        self.intents: list[EditorIntent] = []
 
     def compose(self) -> ComposeResult:
         yield self.editor
+
+    def on_message_editor_intent_requested(self, event: MessageEditor.IntentRequested) -> None:
+        self.intents.append(event.intent)
+
+
+@pytest.mark.parametrize("mode", [EditorMode.STANDARD, EditorMode.EMACS, EditorMode.VIM])
+@pytest.mark.parametrize(
+    ("windows", "newline", "accept"),
+    [
+        (False, "\x1b[13;2u", "\x1b[13;5u"),
+        (False, "\x1b[27;2;13~", "\x1b[27;5;13~"),
+        (True, "\x1b[13;28;13;1;16;1_", "\x1b[13;28;10;1;8;1_"),
+    ],
+    ids=["kitty", "xterm", "windows"],
+)
+async def test_shift_enter_inserts_newline_and_ctrl_enter_accepts_editor(
+    isolated_keyboard_patches: None, mode: EditorMode, windows: bool, newline: str, accept: str
+) -> None:
+    apply_kitty_patch()
+    textual_extended_keys.apply_runtime_patch()
+    parser = textual_windows_keys.get_parser_class()() if windows else XTermParser()
+    app = _EditorApp("hix", (0, 2), mode)
+    async with app.run_test() as pilot:
+        if mode is EditorMode.VIM:
+            for event in parser.feed(newline):
+                app.post_message(event)
+            await pilot.pause()
+            assert app.editor.text == "hix"
+            await pilot.press("i")
+        for event in parser.feed(newline):
+            app.post_message(event)
+        await pilot.pause()
+        assert app.editor.text == "hi\nx"
+        assert app.editor.cursor_location == (1, 0)
+        assert app.intents == []
+
+        for event in parser.feed(accept):
+            app.post_message(event)
+        await pilot.pause()
+        assert app.intents == [EditorIntent.ACCEPT]
+        assert app.editor.text == "hi\nx"
 
 
 @pytest.fixture(params=["xterm", "windows"])
