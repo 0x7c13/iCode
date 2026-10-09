@@ -290,6 +290,28 @@ Notes:
 - Sub-agent events are dual-path too: each `chrys/sub_agent_*` notification is
   emitted *and* the bridge projects standard `session/update` tool-call progress
   onto the parent sub-agent tool call, so standard-only clients still see progress.
+- Free-form values are sent as plain JSON: tool arguments (`rawInput` on tool
+  calls and permission requests, `args` on `chrys/sub_agent_tool_call_start`),
+  `metadata` on `chrys/sub_agent_tool_call_result`, and the profile returned by
+  `profiles/agents/read`. Structured values become objects: iCode's own
+  records are keyed by their snake_case field names (e.g.
+  `metadata.file_mutation_hashes` is
+  `{ before, after, before_skip, after_skip, contested, inferred }`), and a
+  structured tool argument keeps the keys of the tool's argument schema. Enum
+  members become their value, dates ISO 8601 strings, sets and tuples arrays,
+  and non-finite numbers `null`. Their text never carries an unpaired
+  surrogate: an undecodable byte in a path (e.g. in
+  `metadata.tool_error_details`) reads as its `\udcXX` escape.
+- `metadata` on `chrys/sub_agent_tool_call_result` never carries file contents,
+  so a large edit or a command that changes many files stays within a client's
+  message limits. The edited file's before/after text (`file_snapshot`) is
+  left out, and `shell_file_snapshots` lists the files a command changed as
+  `{ path, operation, bytes_changed, source, before_hash, after_hash,
+  before_skip, after_skip, provenance, contested }`. `path` is display text
+  (an undecodable byte reads as its `\udcXX` escape), so two entries can
+  share it. The list stops at 100 files or 256 KiB of JSON, whichever comes
+  first; `shell_file_snapshots_omitted` counts the rest. Read the text through
+  `session/diff`.
 - `chrys/compaction_finished` and `chrys/sub_agent_compaction_finished`
   payloads include `formatViolation`. It is empty unless a malformed
   LAST_WORDS note was accepted, in which case it carries the bounded,
