@@ -316,8 +316,8 @@ async def test_wedged_permission_client_times_out_with_configured_seconds() -> N
         _FakeManager(host),
         initial_vision=False,
         permission_timeout_seconds=load_settings(
-            env={"CHRYS_ACP_APPROVAL_TIMEOUT_SECONDS": "1"}
-        ).settings.acp_approval_timeout_seconds,
+            env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": "1"}
+        ).settings.approval_timeout_seconds,
     )
     server.on_connect(_FakeClient(permission_responder=_never_reply))
     responses: list[ApprovalResponse] = []

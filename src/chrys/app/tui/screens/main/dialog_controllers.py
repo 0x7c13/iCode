@@ -14,6 +14,7 @@ from typing import Any, ClassVar, Protocol
 from chrys.app.tui.screens.dialogs.agent_load import load_count_failed_message, map_load_progress_prose
 from chrys.app.tui.screens.main.ports import StatusMessage
 from chrys.app.tui.widgets import PromptDraft
+from chrys.foundation.config.settings import DEFAULT_APPROVAL_TIMEOUT_SECONDS
 from chrys.foundation.events.types import (
     AGENT_LOAD_PHASE_SESSION,
     AGENT_LOAD_STATUS_DONE,
@@ -173,7 +174,11 @@ class ApprovalQueueController:
         port: ApprovalDialogPort,
         *,
         render_message: Callable[[MessageRef], str] = format_message,
+        timeout_seconds: Callable[[], float] = lambda: DEFAULT_APPROVAL_TIMEOUT_SECONDS,
     ) -> None:
+        self._timeout_seconds = timeout_seconds
+        self._timeouts: dict[str, asyncio.TimerHandle] = {}
+        self._closed = False
         self._port = port
         self._render_message = render_message
         self.queue: deque[ApprovalRequest] = deque()
@@ -186,6 +191,39 @@ class ApprovalQueueController:
         self.reviewed_dismissed_requests: set[str] = set()
         self.cancelled_requests: set[str] = set()
         self.deferred: dict[str, ApprovalRequest] = {}
+
+    def close(self) -> None:
+        """Stop UI-owned timers when the main screen is removed."""
+        self._closed = True
+        for timer in self._timeouts.values():
+            timer.cancel()
+        self._timeouts.clear()
+
+    def _cancel_timeout(self, request_id: str) -> None:
+        timer = self._timeouts.pop(request_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _start_timeout(self, request_id: str) -> None:
+        if self._closed or request_id in self._timeouts:
+            return
+        self._timeouts[request_id] = asyncio.get_running_loop().call_later(
+            self._timeout_seconds(), self._on_timeout, request_id
+        )
+
+    def _on_timeout(self, request_id: str) -> None:
+        self._cancel_timeout(request_id)
+        dialog = self.open_dialogs.get(request_id)
+        if self._closed or dialog is None or dialog.is_dismissed or dialog.user_decision_submitted:
+            return
+        self.open_dialogs.pop(request_id)
+        # Publish the rejection even if another modal covers this one. Its
+        # eventual dismissal callback must not publish a second response.
+        self.cancelled_requests.add(request_id)
+        self._port.dismiss_approval_dialog(dialog)
+        self._port.handle_approval_response(request_id, False, "Human approval request timed out.")
+        self.dialog_open = False
+        self.show_next()
 
     async def on_request(self, event: ApprovalRequest) -> None:
         """Queue an approval request and show it when the queue is idle."""
@@ -234,6 +272,7 @@ class ApprovalQueueController:
                 _args: dict[str, Any] = event.args,
                 _judging: bool = event.judging,
             ) -> None:
+                self._cancel_timeout(_req)
                 dialog = self.open_dialogs.pop(_req, None)
                 if _req in self.cancelled_requests:
                     self.cancelled_requests.discard(_req)
@@ -271,6 +310,8 @@ class ApprovalQueueController:
             # A flagged verdict that arrived first opens the dialog flagged.
             dialog = self._port.show_approval_dialog(event, approval_body, _on_result, verdict=cached)
             self.open_dialogs[event.request_id] = dialog
+            if not event.judging or cached is not None:
+                self._start_timeout(event.request_id)
             if not event.judging:
                 self._port.notify_approval_required()
 
@@ -291,6 +332,7 @@ class ApprovalQueueController:
 
     async def on_cancelled(self, event: ApprovalCancelled) -> None:
         """Dismiss or dequeue an abandoned request without publishing a response."""
+        self._cancel_timeout(event.request_id)
         async with self.request_lock:
             if self.deferred.pop(event.request_id, None) is not None:
                 self.bodies.pop(event.request_id, None)
@@ -357,6 +399,10 @@ class ApprovalQueueController:
 
         if dialog is not None and not dialog.is_dismissed:
             self._port.deliver_approval_verdict(dialog, event)
+            if event.approved:
+                self._cancel_timeout(event.request_id)
+            else:
+                self._start_timeout(event.request_id)
             self._port.debug("ApprovalJudge", f"{self._port.approval_dialog_tool_name(dialog)} ({label})")
             if not event.approved:
                 self._port.notify_approval_required()

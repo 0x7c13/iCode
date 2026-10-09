@@ -368,21 +368,21 @@ def test_the_model_pointer_is_still_read_live_after_bootstrap(
     assert loaded.source_for("model.profile.active").layer is Source.PROCESS_RUNTIME
 
 
-def test_acp_approval_timeout_defaults_and_round_trips(config_dir: Path) -> None:
-    key = "approval.acp_timeout_seconds"
-    entry = specs_by_field(Settings)["acp_approval_timeout_seconds"]
+def test_approval_timeout_defaults_and_round_trips(config_dir: Path) -> None:
+    key = "approval.timeout_seconds"
+    entry = specs_by_field(Settings)["approval_timeout_seconds"]
     assert (entry.key, entry.apply, entry.kind) == (key, Apply.RESTART, Kind.INT)
     freeze_process_env()
-    assert load_settings(env={}).settings.acp_approval_timeout_seconds == 600
+    assert load_settings(env={}).settings.approval_timeout_seconds == 600
     assert persist({key: 45}).written == {key: 45}
     loaded = load_settings()
-    assert loaded.settings.acp_approval_timeout_seconds == 45
+    assert loaded.settings.approval_timeout_seconds == 45
     assert loaded.source_for(key).layer is Source.USER
-    assert load_settings(env={"CHRYS_ACP_APPROVAL_TIMEOUT_SECONDS": "90"}).settings.acp_approval_timeout_seconds == 90
+    assert load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": "90"}).settings.approval_timeout_seconds == 90
 
 
 @pytest.mark.parametrize("raw, expected", [("0", 1), ("-1", 1), ("bad", 600), ("1.5", 600)])
-def test_acp_approval_timeout_validates_seconds(raw: str, expected: int) -> None:
-    loaded = load_settings(env={"CHRYS_ACP_APPROVAL_TIMEOUT_SECONDS": raw})
-    assert loaded.settings.acp_approval_timeout_seconds == expected
+def test_approval_timeout_validates_seconds(raw: str, expected: int) -> None:
+    loaded = load_settings(env={"CHRYS_APPROVAL_TIMEOUT_SECONDS": raw})
+    assert loaded.settings.approval_timeout_seconds == expected
     assert loaded.warnings

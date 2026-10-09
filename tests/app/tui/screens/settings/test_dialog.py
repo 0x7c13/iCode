@@ -362,7 +362,7 @@ async def test_dangerous_bool_confirms_when_enabling_and_reverts_when_declined()
             ],
         ),
         (
-            "approval.acp_timeout_seconds",
+            "approval.timeout_seconds",
             "security",
             [
                 ("45", 45, None, "45"),

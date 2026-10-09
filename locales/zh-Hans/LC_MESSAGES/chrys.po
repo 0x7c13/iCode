@@ -866,17 +866,17 @@ msgstr "开发者模式"
 msgid "settings.app.update_check.label"
 msgstr "检查更新"
 
-#. English: ACP human approval timeout (seconds)
-#. chrys-meta={"fingerprint":"817238be597ef33d42ad3d2849ea30f576b162a10ac715e7d9b2254623f22e2c","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.approval.acp_timeout_seconds.label"
-msgstr "ACP 人工审批超时（秒）"
-
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.approval.default_mode.label"
 msgstr "默认审批模式"
+
+#. English: Human approval timeout (seconds)
+#. chrys-meta={"fingerprint":"441876029e5dbb9db98094b59a808e0675f515d4b4680e3f1d42a308dbe8218e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.timeout_seconds.label"
+msgstr "人工审批超时（秒）"
 
 #. English: Lowering {source}={raw} to the maximum of {limit}.
 #. chrys-meta={"fingerprint":"08856704e9743293e879aa58af94ee553170e14dd68beec58672b1ea4550f24a","multiline":false,"placeholders":["limit","raw","source"]}
@@ -9625,14 +9625,6 @@ msgstr "下次启动时默认使用的智能体。"
 msgid "tui.settings.hint.app.update_check"
 msgstr "每天启动时最多查询一次最新版本，并显示在欢迎页上。不会发送任何个人数据。"
 
-#. English: Seconds to wait after requesting human approval in ACP; timeout
-#. rejects the call. Minimum 1. Restart ACP to apply. Does not affect TUI
-#. approvals or the judge model's request timeout.
-#. chrys-meta={"fingerprint":"e36116e550286863d16201825787816770d48018c05d089d3e04997674b18b63","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.hint.approval.acp_timeout_seconds"
-msgstr "ACP 发出人工审批请求后的等待秒数，超时后拒绝本次调用。最少为 1 秒，重启 ACP 后生效。不影响 TUI 人工审批或裁判模型的请求超时。"
-
 #. English: Approval mode at the next launch; /approval changes both the
 #. current session and this default. /approval bypass applies to the current
 #. launch only and saves auto.
@@ -9648,6 +9640,14 @@ msgstr "下次启动时的审批模式；/approval 会同时更改当前会话�
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.defer_while_judging"
 msgstr "自动模式下，自动审查批准的调用直接运行，不弹对话框；只有调用被标记或无法评估时才弹出。关闭后，每个调用在评估期间就会显示，可以先行决定。"
+
+#. English: Seconds to wait for human approval in TUI and ACP; timeout rejects
+#. the call. Minimum 1. Restart to apply. Queueing and judge model evaluation
+#. do not count toward this timeout.
+#. chrys-meta={"fingerprint":"a807374327a9325ffe999fce335da1bc40b8bb540aa39d2acfdbf3f4590d1f38","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.timeout_seconds"
+msgstr "TUI 和 ACP 等待人工审批的秒数，超时后拒绝本次调用。最少为 1 秒，重启后生效。排队和裁判模型的审查时间不计入超时。"
 
 #. English: Remember what you type so you can bring it back later with Ctrl+R.
 #. chrys-meta={"fingerprint":"5f63c61f7c1984a99d21d4bdc5ca7f6576efe3b8d5f814995cb362565c606618","multiline":false,"placeholders":[]}
@@ -14234,6 +14234,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "run.unexpected_error"
 #~ msgstr "发生意外错误。"
 
+#~ msgid "settings.approval.acp_timeout_seconds.label"
+#~ msgstr "ACP 人工审批超时（秒）"
+
 #~ msgid "settings.value_clamped"
 #~ msgstr "{source}={raw}：{detail}，已改用 {adjusted}。"
 
@@ -14328,6 +14331,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.sessions.run_count"
 #~ msgstr "{count_text} 次运行"
+
+#~ msgid "tui.settings.hint.approval.acp_timeout_seconds"
+#~ msgstr "ACP 发出人工审批请求后的等待秒数，超时后拒绝本次调用。最少为 1 秒，重启 ACP 后生效。不影响 TUI 人工审批或裁判模型的请求超时。"
 
 #~ msgid "tui.settings.hint.trajectory.verify_commands"
 #~ msgstr "以逗号分隔、视为测试、构建或代码检查验证的命令词或短语。"

@@ -411,6 +411,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 handle_ask_user_response=self._handle_ask_user_response,
                 question_inline_preferred=self._question_inline_preferred,
                 approval_defer_while_judging=self._approval_defer_while_judging,
+                approval_timeout_seconds=self._approval_timeout_seconds,
                 post_gc_message=self.post_message,
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
@@ -562,6 +563,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _apply_approval_defer_while_judging(self, value: bool) -> None:
         """Put the choice in force; requests already waiting keep the choice they arrived under."""
         cast("ChrysApp", self.app).settings_handle.override(approval_defer_while_judging=value)
+
+    def _approval_timeout_seconds(self) -> int:
+        return cast("ChrysApp", self.app).settings_handle.settings.approval_timeout_seconds
 
     def _approval_defer_while_judging(self) -> bool:
         return cast("ChrysApp", self.app).settings_handle.settings.approval_defer_while_judging
@@ -1260,6 +1264,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     async def on_unmount(self) -> None:
         """Flush pending UI-owned settings before the screen is torn down."""
+        self._events.close_approval_waits()
         if self._locale_controller is not None:
             self._locale_controller.unregister_surface(self)
         if self._workflow_timer is not None:

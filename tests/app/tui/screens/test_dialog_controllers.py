@@ -171,17 +171,17 @@ class _ApprovalPort:
         self.review_counts.append(count)
 
 
-def test_approval_controller_skips_cached_auto_approved_request_and_shows_flagged() -> None:
+async def test_approval_controller_skips_cached_auto_approved_request_and_shows_flagged() -> None:
     port = _ApprovalPort()
     controller = ApprovalQueueController(port)
 
-    asyncio.run(controller.on_request(_approval_request("req-1", tool_name="read")))
-    asyncio.run(controller.on_request(_approval_request("req-2", tool_name="write")))
-    asyncio.run(controller.on_request(_approval_request("req-3", tool_name="rm")))
+    await controller.on_request(_approval_request("req-1", tool_name="read"))
+    await controller.on_request(_approval_request("req-2", tool_name="write"))
+    await controller.on_request(_approval_request("req-3", tool_name="rm"))
 
     assert [dialog.request_id for dialog in port.dialogs] == ["req-1"]
-    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="req-2", approved=True, reason="safe")))
-    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="req-3", approved=False, reason="danger")))
+    await controller.on_reviewed(ApprovalReviewed(request_id="req-2", approved=True, reason="safe"))
+    await controller.on_reviewed(ApprovalReviewed(request_id="req-3", approved=False, reason="danger"))
 
     port.dialogs[0].callback((True, "", None))
 
@@ -378,13 +378,13 @@ def test_cancelling_a_request_out_of_sight_drops_it_and_its_late_verdict() -> No
     assert port.review_counts == [1, 0]
 
 
-def test_flags_open_in_verdict_order_one_dialog_at_a_time() -> None:
+async def test_flags_open_in_verdict_order_one_dialog_at_a_time() -> None:
     port, controller = _deferring_controller()
-    asyncio.run(controller.on_request(_approval_request("first", tool_name="rm")))
-    asyncio.run(controller.on_request(_approval_request("second", tool_name="mv")))
+    await controller.on_request(_approval_request("first", tool_name="rm"))
+    await controller.on_request(_approval_request("second", tool_name="mv"))
 
-    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="second", approved=False, reason="b")))
-    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="first", approved=False, reason="a")))
+    await controller.on_reviewed(ApprovalReviewed(request_id="second", approved=False, reason="b"))
+    await controller.on_reviewed(ApprovalReviewed(request_id="first", approved=False, reason="a"))
 
     assert [(dialog.request_id, dialog.opened_with) for dialog in port.dialogs] == [("second", (False, "b"))]
     assert port.review_counts == [1, 2, 1, 0]
@@ -398,12 +398,12 @@ def test_flags_open_in_verdict_order_one_dialog_at_a_time() -> None:
     assert port.notifications == 2
 
 
-def test_a_flag_waits_behind_the_open_dialog() -> None:
+async def test_a_flag_waits_behind_the_open_dialog() -> None:
     port, controller = _deferring_controller()
-    asyncio.run(controller.on_request(_approval_request("asked", judging=False)))
-    asyncio.run(controller.on_request(_approval_request("judged")))
+    await controller.on_request(_approval_request("asked", judging=False))
+    await controller.on_request(_approval_request("judged"))
 
-    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="judged", approved=False, reason="danger")))
+    await controller.on_reviewed(ApprovalReviewed(request_id="judged", approved=False, reason="danger"))
 
     assert [dialog.request_id for dialog in port.dialogs] == ["asked"]
 

@@ -143,7 +143,7 @@ async def run_command(args: argparse.Namespace) -> int:
     server = ChrysAcpServer(
         manager,
         initial_vision=initial_vision,
-        permission_timeout_seconds=settings.acp_approval_timeout_seconds,
+        permission_timeout_seconds=settings.approval_timeout_seconds,
     )
     try:
         # Runtime guarantee: the SDK dispatches structurally to the handlers

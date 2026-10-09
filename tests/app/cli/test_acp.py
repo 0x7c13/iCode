@@ -160,8 +160,8 @@ async def test_run_command_wires_buddy_callback_and_approval_timeout(
     monkeypatch: pytest.MonkeyPatch, approval_timeout: int
 ) -> None:
     freeze_process_env()
-    assert persist({"approval.acp_timeout_seconds": approval_timeout}).written == {
-        "approval.acp_timeout_seconds": approval_timeout
+    assert persist({"approval.timeout_seconds": approval_timeout}).written == {
+        "approval.timeout_seconds": approval_timeout
     }
     captured: dict[str, Any] = {}
 
