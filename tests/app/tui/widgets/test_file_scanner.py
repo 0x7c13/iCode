@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
-import time
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -29,6 +29,7 @@ from chrys.app.tui.widgets.chrome.file_scanner import (
     scan_project_paths,
 )
 from chrys.foundation.platform import get_platform
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 GIT = shutil.which("git")
 
@@ -635,6 +636,7 @@ class TestScanProjectPaths:
     ) -> None:
         """CPU-heavy suggestion construction runs off the event loop."""
         original_project_path_suggestions = file_scanner_module._project_path_suggestions
+        loop_turned = threading.Event()
 
         async def fake_scan_rg_files(_root: str, _max_files: int):
             paths = [f"src/path_{index:03d}/file.py" for index in range(20)]
@@ -655,7 +657,7 @@ class TestScanProjectPaths:
             suggestion_budget: int | None = None,
             max_paths: int | None = None,
         ):
-            time.sleep(0.05)
+            loop_turned.wait(DEFAULT_WAIT_TIMEOUT)
             return original_project_path_suggestions(
                 paths,
                 suggestion_budget=suggestion_budget,
@@ -670,13 +672,15 @@ class TestScanProjectPaths:
 
         scan_task = asyncio.create_task(scan_project_paths(str(tmp_path), file_budget=20, suggestion_budget=100))
         ticks = 0
-        # Poll with a bare yield (sleep(0)) rather than a fixed delay: a real
-        # sleep is floored to the OS timer granularity (~15.6ms on Windows), so
-        # counting wall-clock slices is flaky. Counting event-loop iterations is
-        # timer-independent — it stays high while the heavy work runs off-thread
-        # and collapses to ~1 if that work ever blocks the loop.
+        # Count event-loop iterations (bare yields), not wall-clock slices, which
+        # Windows floors to ~15.6ms. The work waits for the loop's fourth turn, so
+        # it cannot finish before ``to_thread`` awaits it (``to_thread`` would then
+        # return without yielding); work that blocks the loop waits out the gate
+        # while the count stays low.
         while not scan_task.done():
             ticks += 1
+            if ticks > 3:
+                loop_turned.set()
             await asyncio.sleep(0)
         scan = await scan_task
 
@@ -690,6 +694,7 @@ class TestScanProjectPaths:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Dot-entry fallback walking runs off the event loop when git is unavailable."""
+        loop_turned = threading.Event()
         (tmp_path / ".cache").mkdir()
 
         async def fake_scan_rg_files(_root: str, _max_files: int):
@@ -712,7 +717,7 @@ class TestScanProjectPaths:
             *,
             file_budget: int,
         ) -> bool:
-            time.sleep(0.05)
+            loop_turned.wait(DEFAULT_WAIT_TIMEOUT)
             path = ".cache/data.txt"
             if path not in seen and len(paths) < file_budget:
                 seen.add(path)
@@ -727,13 +732,15 @@ class TestScanProjectPaths:
 
         scan_task = asyncio.create_task(scan_project_paths(str(tmp_path), file_budget=5, suggestion_budget=10))
         ticks = 0
-        # Poll with a bare yield (sleep(0)) rather than a fixed delay: a real
-        # sleep is floored to the OS timer granularity (~15.6ms on Windows), so
-        # counting wall-clock slices is flaky. Counting event-loop iterations is
-        # timer-independent — it stays high while the heavy work runs off-thread
-        # and collapses to ~1 if that work ever blocks the loop.
+        # Count event-loop iterations (bare yields), not wall-clock slices, which
+        # Windows floors to ~15.6ms. The work waits for the loop's fourth turn, so
+        # it cannot finish before ``to_thread`` awaits it (``to_thread`` would then
+        # return without yielding); work that blocks the loop waits out the gate
+        # while the count stays low.
         while not scan_task.done():
             ticks += 1
+            if ticks > 3:
+                loop_turned.set()
             await asyncio.sleep(0)
         scan = await scan_task
 
