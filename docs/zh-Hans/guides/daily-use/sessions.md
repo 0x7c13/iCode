@@ -82,9 +82,9 @@
 
 如果要根据会话文件统计数据，请用下面的 ID 关联记录，不要按时间或工具调用顺序推测。旧版本 iCode 写入的记录没有这些 ID，有些记录也始终不会有；缺少 ID 时，应把关联视为未知。
 
-**哪次工具调用改动了文件。** `session.json` 中记录的每条文件变更都有 `tool_operation_id`。在 `trajectory/events.jsonl` 中，该工具调用的 `tool.operation.started` 和 `tool.operation.finished` 事件的 `operation_id` 与它相同，子智能体运行的工具也是如此。对于主智能体的工具调用，`session.json` 中的调用及其结果还以 `_chrys_operation_id` 记录同一个值。一次工具调用可能改动多个文件。
+**哪次工具调用改动了文件。** `session.json` 中记录的每条文件变更都有 `tool_operation_id`。在 `trajectory/events.jsonl` 中，该工具调用的 `tool.operation.started` 和 `tool.operation.finished` 事件的 `operation_id` 与它相同，子智能体运行的工具也是如此。对于主智能体的工具调用，回复消息 `contents` 中的工具调用条目，以及其后工具消息中对应的结果条目，也以 `_chrys_operation_id` 记录同一个值。回复消息本身的 `_chrys_operation_id` 是另一个值，用于标识模型请求（见下文）。一次工具调用可能改动多个文件。
 
-**哪次请求返回了模型回复。** `session.json` 中每条模型回复消息都带有 `_chrys_request_attempt_id`，即返回这条回复的 HTTP 请求的 ID。在 `trajectory/events.jsonl` 中：
+**哪次请求返回了模型回复。** `session.json` 中每条模型回复消息都带有 `_chrys_request_attempt_id`，即返回这条回复的 HTTP 请求的 ID；消息的 `_chrys_operation_id` 与这条回复的 `model.request.*` 和 `model.exchange.finished` 事件的 `operation_id` 相同。在 `trajectory/events.jsonl` 中：
 
 - `model.request.prepared` 表示 iCode 即将发送的一次请求，`model.request.headers_received` 表示提供商对该请求的响应。两者带有相同的 `request_attempt_id`。后者还记录 HTTP 状态码，以及提供商返回的请求 ID（`provider_request_id`，提供商未返回时没有）。
 - 每次自动重试或重定向都是一次单独的请求，各有自己的 ID。没有 `model.request.headers_received` 事件的请求，可能在到达提供商之前就失败了。
@@ -92,4 +92,4 @@
 
 iCode 还会通过 `Chrys-Request-Attempt-Id` 请求头把这个 ID 发给提供商，便于在网关或代理日志中查找对应请求。如果开启了原始 HTTP 日志，日志中每次请求的 `exchange_id` 也是这个 ID。
 
-这些 ID 只用于关联记录。shell 命令执行后检测到的文件变更保留原有的可信度，这个 ID 并不能证明变更一定由该命令造成。这些 ID 也不统计改动行数。
+这些 ID 只用于关联记录。Shell 命令执行后检测到的文件变更保留原有的可信度，这个 ID 并不能证明变更一定由该命令造成。这些 ID 也不统计改动行数。

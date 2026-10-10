@@ -13,6 +13,10 @@ that client sends (one *acquisition*). For each acquisition it:
   or content the provider echoed from the request untouched; a continued or
   polled background response therefore records the latency of its last poll
   alone;
+- scopes the request's HTTP attempts (``request_tracking.py``): records the
+  last attempt's id and the provider's request id on the response, and stamps
+  that attempt id on the messages the provider newly returned (never on
+  contents, and never on echoed messages);
 - hands the text the model wrote beside its tool calls to the intermediate-text
   callback before the tool loop sees the response, so the UI can show it ahead
   of the tool calls. Non-streaming responses go to the async callback, awaited

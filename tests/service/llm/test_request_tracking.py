@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import pytest
@@ -195,6 +196,7 @@ async def test_sdk_retry_and_stream_keep_request_scope(stream: bool) -> None:
         await client.aclose()
     assert len(sent) == len(set(sent)) == 2
     assert response.additional_properties["request_attempt_id"] == sent[-1]
+    assert response.messages[0].additional_properties[REQUEST_ATTEMPT_ID_METADATA] == sent[-1]
     assert response.additional_properties["provider_request_id"] == "req_ok"
     assert [
         d.payload["provider_request_id"]
@@ -228,7 +230,13 @@ class _OneAttemptWireClient(WireClient):
         self.response = response
         self.sent: list[str] = []
 
-    def _send(self, *, messages: Any, options: Any, **kwargs: Any) -> Any:
+    def _send(
+        self,
+        *,
+        messages: Sequence[Message],
+        options: Mapping[str, Any],
+        **kwargs: Any,
+    ) -> Awaitable[ChatResponse[Any]]:
         async def _response() -> ChatResponse[Any]:
             request = httpx.Request("POST", "https://example.test/")
             for hook in build_request_tracking_hooks()["request"]:
@@ -238,7 +246,13 @@ class _OneAttemptWireClient(WireClient):
 
         return _response()
 
-    def _open_stream(self, *, messages: Any, options: Any, **kwargs: Any) -> Any:
+    def _open_stream(
+        self,
+        *,
+        messages: Sequence[Message],
+        options: Mapping[str, Any],
+        **kwargs: Any,
+    ) -> NoReturn:
         raise AssertionError("this double answers non-streaming requests only")
 
 
