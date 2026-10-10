@@ -19,6 +19,8 @@ You can change the current session's title in any of these ways:
 - Enter `/rename` in the input field to open the "Session Title" dialog, enter a title, and click "Save".
 - Enter a title directly after `/rename`, for example, `/rename Fix the login issue`.
 
+The top of the "Session Title" dialog also shows the session ID. Click "Copy ID" to copy it, for example to resume the session later with `icode -s <session-id>`. Click "Open folder" to open the folder that holds the session's data in your file manager. "Open folder" is not shown where iCode cannot open a file manager, for example over SSH.
+
 After you set a title manually, the new title appears in the session list and on the main screen, and iCode stops updating that session's title automatically. If [automatic session titles](../configuration/settings.md#sessions) are enabled, clearing the "Session Title" dialog and saving restores the existing automatic title and lets iCode continue updating it automatically during subsequent tasks.
 
 ## Resume an existing session
@@ -47,7 +49,7 @@ Deleting the current session also starts a new session, like `/clear`. A session
 
 ## Find the session ID and storage location
 
-The current session ID appears in the "Session: ..." area in the upper-left corner of the main screen. IDs for past sessions appear in the list in the "Chat Sessions" window.
+The current session ID appears in the "Session: ..." area in the upper-left corner of the main screen. IDs for past sessions appear in the list in the "Chat Sessions" window. Click the "Session: ..." area to open the "Session Title" dialog, where you can [copy the session ID or open its folder](#change-the-session-title).
 
 Enter `/settings sessions`, or press **F10** and select the "Sessions" tab. The "In use" text below "Session storage root" shows the actual `sessions` directory currently in use. Each session is saved in a subdirectory named after its session ID.
 

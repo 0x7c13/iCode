@@ -132,6 +132,8 @@ from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.app import ComposeResult
     from textual.theme import Theme
 
@@ -329,6 +331,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             start_custom_title_save=lambda title, session_id: self._start_worker(
                 partial(self._sessions.apply_custom_session_title, title, session_id)
             ),
+            session_dir=self._session_dir_for,
             locale_controller=self._locale_controller,
         )
         self._workspace_branch = WorkspaceBranchController(
@@ -634,6 +637,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _workspace_cwd(self) -> str:
         """Return the TUI-tracked workspace cwd."""
         return self._state.workspace_marker.current_cwd or safe_getcwd()
+
+    def _session_dir_for(self, session_id: str) -> Path | None:
+        """Return *session_id*'s folder in the session store, or ``None`` without a store."""
+        store = self._services.state_store
+        return store.session_dir(session_id) if session_id and store is not None else None
 
     def _notification_service(self) -> NotificationService:
         return cast("ChrysApp", self.app).notification_service
