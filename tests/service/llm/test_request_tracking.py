@@ -222,22 +222,53 @@ async def test_connection_failure_still_records_prepared_attempt() -> None:
     assert sink.drafts[0].payload["request_attempt_id"] == tracker.request_attempt_id
 
 
-@pytest.mark.parametrize("header", ["x-request-id", "request-id", "x-oai-request-id", "x-ds-trace-id"])
-async def test_provider_request_id_is_read_from_each_provider_header(header: str) -> None:
+async def _provider_request_id_from(headers: dict[str, str]) -> str | None:
     sink = FakeSink()
     tracker = RequestTracking(make_context(sink).with_exchange(new_analytics_id()))
 
     def handle(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={}, headers={header: "req_provider"})
+        return httpx.Response(200, json={}, headers=headers)
 
     async with _build_profile_http_client(
         _profile(), httpx.Timeout(5), transport=httpx.MockTransport(handle)
     ) as client:
         with tracker.scope():
             await client.get("https://example.test/")
-    assert tracker.provider_request_id == "req_provider"
     [received] = [d for d in sink.drafts if d.event_type == EventType.MODEL_REQUEST_HEADERS_RECEIVED]
-    assert received.payload["provider_request_id"] == "req_provider"
+    assert received.payload.get("provider_request_id") == tracker.provider_request_id
+    return tracker.provider_request_id
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "x-request-id",
+        "request-id",
+        "x-oai-request-id",
+        "x-ds-trace-id",
+        "msh-request-id",
+        "x-trace-id",
+        "x-log-id",
+        "minimax-request-id",
+        "trace-id",
+        "mistral-correlation-id",
+        "x-generation-id",
+        "x-oneapi-request-id",
+        "x-litellm-call-id",
+    ],
+)
+async def test_provider_request_id_is_read_from_each_provider_header(header: str) -> None:
+    assert await _provider_request_id_from({header: "req_provider"}) == "req_provider"
+
+
+async def test_provider_request_id_prefers_the_generic_header() -> None:
+    # Z.ai sends x-log-id beside x-request-id; api.minimax.io sends trace-id beside minimax-request-id.
+    assert await _provider_request_id_from({"x-log-id": "log", "x-request-id": "req"}) == "req"
+    assert await _provider_request_id_from({"trace-id": "trace", "minimax-request-id": "mm"}) == "mm"
+
+
+async def test_provider_request_id_is_absent_without_a_known_header() -> None:
+    assert await _provider_request_id_from({"cf-ray": "edge", "eo-log-uuid": "cdn"}) is None
 
 
 class _OneAttemptWireClient(WireClient):

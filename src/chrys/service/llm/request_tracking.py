@@ -31,6 +31,25 @@ REQUEST_ATTEMPT_ID_METADATA = "_chrys_request_attempt_id"
 _PROVIDER_REQUEST_ID_METADATA = "provider_request_id"
 _CONTEXT_EXTENSION = "chrys_request_trajectory_context"
 _CURRENT: ContextVar[RequestTracking | None] = ContextVar("chrys_wire_request_tracking", default=None)
+# Response headers that carry the provider's own request id, first present wins:
+# a provider that sends several sends the generic one too.
+_PROVIDER_REQUEST_ID_HEADERS = (
+    # OpenAI, Azure OpenAI, Groq, Together, Fireworks, Volcengine Ark, DashScope,
+    # Qianfan, Hunyuan, Z.ai, Bedrock, vLLM (--enable-request-id-headers), SGLang router.
+    "x-request-id",
+    "request-id",  # Anthropic
+    "x-oai-request-id",
+    "x-ds-trace-id",  # DeepSeek
+    "msh-request-id",  # Moonshot (api.moonshot.cn / api.moonshot.ai)
+    "x-trace-id",  # Kimi (api.kimi.com)
+    "x-log-id",  # Zhipu (open.bigmodel.cn)
+    "minimax-request-id",  # MiniMax (api.minimax.io)
+    "trace-id",  # MiniMax (api.minimaxi.com sends only this)
+    "mistral-correlation-id",  # Mistral
+    "x-generation-id",  # OpenRouter (errors; a success's id is the response body's)
+    "x-oneapi-request-id",  # one-api / new-api gateways
+    "x-litellm-call-id",  # LiteLLM proxy
+)
 
 
 @dataclass
@@ -59,8 +78,7 @@ class RequestTracking:
 
 
 def _provider_request_id(response: httpx.Response) -> str | None:
-    # DeepSeek sends its request id only as x-ds-trace-id.
-    for name in ("x-request-id", "request-id", "x-oai-request-id", "x-ds-trace-id"):
+    for name in _PROVIDER_REQUEST_ID_HEADERS:
         value = response.headers.get(name)
         if value:
             cleaned = "".join(ch for ch in value if ch.isprintable())[:256]
