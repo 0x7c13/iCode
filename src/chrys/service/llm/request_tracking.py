@@ -59,7 +59,8 @@ class RequestTracking:
 
 
 def _provider_request_id(response: httpx.Response) -> str | None:
-    for name in ("x-request-id", "request-id", "x-oai-request-id"):
+    # DeepSeek sends its request id only as x-ds-trace-id.
+    for name in ("x-request-id", "request-id", "x-oai-request-id", "x-ds-trace-id"):
         value = response.headers.get(name)
         if value:
             cleaned = "".join(ch for ch in value if ch.isprintable())[:256]

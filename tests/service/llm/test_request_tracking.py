@@ -222,6 +222,24 @@ async def test_connection_failure_still_records_prepared_attempt() -> None:
     assert sink.drafts[0].payload["request_attempt_id"] == tracker.request_attempt_id
 
 
+@pytest.mark.parametrize("header", ["x-request-id", "request-id", "x-oai-request-id", "x-ds-trace-id"])
+async def test_provider_request_id_is_read_from_each_provider_header(header: str) -> None:
+    sink = FakeSink()
+    tracker = RequestTracking(make_context(sink).with_exchange(new_analytics_id()))
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={}, headers={header: "req_provider"})
+
+    async with _build_profile_http_client(
+        _profile(), httpx.Timeout(5), transport=httpx.MockTransport(handle)
+    ) as client:
+        with tracker.scope():
+            await client.get("https://example.test/")
+    assert tracker.provider_request_id == "req_provider"
+    [received] = [d for d in sink.drafts if d.event_type == EventType.MODEL_REQUEST_HEADERS_RECEIVED]
+    assert received.payload["provider_request_id"] == "req_provider"
+
+
 class _OneAttemptWireClient(WireClient):
     """Answers with *response* after one HTTP attempt passes the real request hook."""
 
