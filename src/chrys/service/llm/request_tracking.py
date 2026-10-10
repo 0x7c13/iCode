@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
 
     from chrys.foundation.trajectory.context import TrajectoryContext
 
-REQUEST_ATTEMPT_ID_HEADER = "Chrys-Request-Attempt-Id"
 REQUEST_ATTEMPT_ID_EXTENSION = "chrys_request_attempt_id"
 REQUEST_ATTEMPT_ID_METADATA = "_chrys_request_attempt_id"
 _PROVIDER_REQUEST_ID_METADATA = "provider_request_id"

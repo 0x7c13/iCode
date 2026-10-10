@@ -467,14 +467,11 @@ class WireCall:
         response.additional_properties.update(self._requests.response_facts())
         attempt_id = self._requests.request_attempt_id
         if attempt_id is not None and self._timing is not None:
+            # Messages only, like the exchange's operation id: a tool result
+            # inherits its call content's properties, and some encoders send
+            # a content's properties on the wire.
             anchors = self._timing.echo_anchors
             for message in response.messages:
                 if id(message.additional_properties) not in anchors.message_metadata_ids:
                     message.additional_properties[REQUEST_ATTEMPT_ID_METADATA] = attempt_id
-                for content in message.contents:
-                    if (
-                        id(content) not in anchors.content_ids
-                        and id(content.additional_properties) not in anchors.content_metadata_ids
-                    ):
-                        content.additional_properties[REQUEST_ATTEMPT_ID_METADATA] = attempt_id
         return response

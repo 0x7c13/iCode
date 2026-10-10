@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -16,17 +17,20 @@ from openai import AsyncOpenAI
 from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
-from chrys.kernel.types import Message
+from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
+from chrys.kernel import Content
+from chrys.kernel.types import ChatResponse, Message
 from chrys.service.llm.anthropic_messages.client import AnthropicMessagesClient
 from chrys.service.llm.chat_completions.client import ChatCompletionsClient
 from chrys.service.llm.clients import _build_profile_http_client
 from chrys.service.llm.observer import WireCallObserver
 from chrys.service.llm.openai_responses.client import ResponsesApiClient
 from chrys.service.llm.request_tracking import (
-    REQUEST_ATTEMPT_ID_HEADER,
     REQUEST_ATTEMPT_ID_METADATA,
     RequestTracking,
+    build_request_tracking_hooks,
 )
+from chrys.service.llm.wire_client import WireClient
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.service.llm.test_route_extension_wire import _ANTHROPIC_REPLY, _OPENAI_REPLY
 from tests.service.trajectory._fakes import FakeSink, make_context
@@ -214,3 +218,52 @@ async def test_connection_failure_still_records_prepared_attempt() -> None:
     assert len(sink.drafts) == 1
     assert sink.drafts[0].event_type == EventType.MODEL_REQUEST_PREPARED
     assert sink.drafts[0].payload["request_attempt_id"] == tracker.request_attempt_id
+
+
+class _OneAttemptWireClient(WireClient):
+    """Answers with *response* after one HTTP attempt passes the real request hook."""
+
+    def __init__(self, response: ChatResponse[Any]) -> None:
+        super().__init__(observer=WireCallObserver())
+        self.response = response
+        self.sent: list[str] = []
+
+    def _send(self, *, messages: Any, options: Any, **kwargs: Any) -> Any:
+        async def _response() -> ChatResponse[Any]:
+            request = httpx.Request("POST", "https://example.test/")
+            for hook in build_request_tracking_hooks()["request"]:
+                await hook(request)
+            self.sent.append(request.headers[REQUEST_ATTEMPT_ID_HEADER])
+            return self.response
+
+        return _response()
+
+    def _open_stream(self, *, messages: Any, options: Any, **kwargs: Any) -> Any:
+        raise AssertionError("this double answers non-streaming requests only")
+
+
+async def test_attempt_id_marks_only_the_messages_this_request_returned() -> None:
+    """Echoed request messages keep their own attempt; contents never carry one.
+
+    A tool result inherits its call content's properties, so an attempt id on
+    the call would make local tool output look like provider output.
+    """
+    earlier_attempt = new_analytics_id()
+    echoed = Message("assistant", ["earlier"])
+    echoed.additional_properties[REQUEST_ATTEMPT_ID_METADATA] = earlier_attempt
+    fresh = Message(
+        "assistant",
+        [Content.from_text("now"), Content.from_function_call(call_id="call_1", name="lookup", arguments={})],
+    )
+    client = _OneAttemptWireClient(ChatResponse(messages=[echoed, fresh]))
+
+    response = await client._inner_get_response(messages=[Message("user", ["hi"]), echoed], options={})
+
+    assert response.messages == [echoed, fresh]
+    assert len(client.sent) == 1
+    assert echoed.additional_properties[REQUEST_ATTEMPT_ID_METADATA] == earlier_attempt
+    assert fresh.additional_properties[REQUEST_ATTEMPT_ID_METADATA] == client.sent[0]
+    assert [REQUEST_ATTEMPT_ID_METADATA in content.additional_properties for content in fresh.contents] == [
+        False,
+        False,
+    ]

@@ -78,13 +78,18 @@
 
 迁移完成后，源目录会保留原数据，不会自动删除。确认迁移完整后，如需释放空间，关闭 iCode，再归档或删除迁移窗口中“从”所显示的旧 `sessions` 目录。手工删除无法撤销。
 
-## 在导出的会话数据中关联请求与文件编辑
+## 在会话数据中关联文件变更与模型请求
 
-进行数据上报时，在选定会话内使用明确的 ID 关联，不要按时间或工具顺序猜测：
+如果要根据会话文件统计数据，请用下面的 ID 关联记录，不要按时间或工具调用顺序推测。旧版本 iCode 写入的记录没有这些 ID，有些记录也始终不会有；缺少 ID 时，应把关联视为未知。
 
-- 新记录的文件 mutation 可以包含 `tool_operation_id`，它对应工具调用的 `additional_properties._chrys_operation_id`（工具结果也包含相同值）。一次工具执行可能对应多条文件 mutation。原有短 `tool_call_id` 保持不变，它不是服务商 `call_id` 的计算结果。
-- 新收到的模型消息及内容包含 `additional_properties._chrys_request_attempt_id`，可关联到 `trajectory/events.jsonl` 中的 `request_attempt_id`。请求记录的 `operation_id` 指向所属的模型 exchange。
-- `model.request.prepared` 标识一次 HTTP 发送尝试；SDK 重试和重定向每次都生成新 ID，并通过 `Chrys-Request-Attempt-Id` 请求头发送。`model.request.headers_received` 记录 HTTP 状态码，以及服务商提供时的 `provider_request_id`。收到响应头不代表流式模型响应已成功完成，还需检查 exchange 的结束记录。只有 prepared 而没有响应头的尝试，可能在到达服务商前就已失败。
-- 开启原始 HTTP 日志时，其中的 `exchange_id` 使用同一个请求尝试 ID；它与模型 exchange 的轨迹 operation ID 是不同的标识。
+**哪次工具调用改动了文件。** `session.json` 中记录的每条文件变更都有 `tool_operation_id`。在 `trajectory/events.jsonl` 中，该工具调用的 `tool.operation.started` 和 `tool.operation.finished` 事件的 `operation_id` 与它相同，子智能体运行的工具也是如此。对于主智能体的工具调用，`session.json` 中的调用及其结果还以 `_chrys_operation_id` 记录同一个值。一次工具调用可能改动多个文件。
 
-旧记录以及无法归因到某个工具的 mutation 可以缺少这些字段。缺少关联时应标记为未知，不要依据相同的会话 ID 推断。这些字段只标识操作，不改变 shell 文件变更检测的归因可信度，也不计算改动行数。行数仍需通过已有 before/after blob 的差异计算，“修改行”的统计规则需另行约定。
+**哪次请求返回了模型回复。** `session.json` 中每条模型回复消息都带有 `_chrys_request_attempt_id`，即返回这条回复的 HTTP 请求的 ID。在 `trajectory/events.jsonl` 中：
+
+- `model.request.prepared` 表示 iCode 即将发送的一次请求，`model.request.headers_received` 表示提供商对该请求的响应。两者带有相同的 `request_attempt_id`。后者还记录 HTTP 状态码，以及提供商返回的请求 ID（`provider_request_id`，提供商未返回时没有）。
+- 每次自动重试或重定向都是一次单独的请求，各有自己的 ID。没有 `model.request.headers_received` 事件的请求，可能在到达提供商之前就失败了。
+- 收到响应不代表回复已经完成。要了解回复如何结束，请查看 `operation_id` 相同的 `model.exchange.finished` 事件。
+
+iCode 还会通过 `Chrys-Request-Attempt-Id` 请求头把这个 ID 发给提供商，便于在网关或代理日志中查找对应请求。如果开启了原始 HTTP 日志，日志中每次请求的 `exchange_id` 也是这个 ID。
+
+这些 ID 只用于关联记录。shell 命令执行后检测到的文件变更保留原有的可信度，这个 ID 并不能证明变更一定由该命令造成。这些 ID 也不统计改动行数。

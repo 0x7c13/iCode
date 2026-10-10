@@ -148,7 +148,12 @@ async def test_route_hook_adds_nothing_to_the_wire(provider: str) -> None:
                 event: [hook for hook in hooks if not _is_route_hook(hook)]
                 for event, hooks in control_http.event_hooks.items()
             }
-            assert all(not _is_route_hook(hook) for hooks in control_http.event_hooks.values() for hook in hooks)
+            assert {
+                event: [hook.__qualname__ for hook in hooks] for event, hooks in control_http.event_hooks.items()
+            } == {
+                "request": ["build_request_tracking_hooks.<locals>.prepared"],
+                "response": ["build_request_tracking_hooks.<locals>.received"],
+            }
             await _send(_sdk(routed, provider), provider)
             await _send(_sdk(control, provider), provider)
         finally:
