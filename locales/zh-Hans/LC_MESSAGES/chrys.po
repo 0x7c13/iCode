@@ -1,7 +1,7 @@
 # Simplified Chinese translations for Chrys.
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.29.1\n"
+"Project-Id-Version: Chrys 0.29.2\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: 2026-01-01 00:00+0000\n"
@@ -871,6 +871,12 @@ msgstr "检查更新"
 #: src/chrys/foundation/config/settings.py
 msgid "settings.approval.default_mode.label"
 msgstr "默认审批模式"
+
+#. English: Human approval timeout (seconds)
+#. chrys-meta={"fingerprint":"441876029e5dbb9db98094b59a808e0675f515d4b4680e3f1d42a308dbe8218e","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.timeout_seconds.label"
+msgstr "人工审批超时（秒）"
 
 #. English: Lowering {source}={raw} to the maximum of {limit}.
 #. chrys-meta={"fingerprint":"08856704e9743293e879aa58af94ee553170e14dd68beec58672b1ea4550f24a","multiline":false,"placeholders":["limit","raw","source"]}
@@ -9634,6 +9640,13 @@ msgstr "下次启动时的审批模式；/approval 会同时更改当前会话�
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.defer_while_judging"
 msgstr "自动模式下，自动审查批准的调用直接运行，不弹对话框；只有调用被标记或无法评估时才弹出。关闭后，每个调用在评估期间就会显示，可以先行决定。"
+
+#. English: Seconds to wait for human approval in TUI and ACP; timeout rejects
+#. the call. Default 0 means no timeout. Restart to apply.
+#. chrys-meta={"fingerprint":"2832be4bf24136d03294cd2ba97b7b7f272434f8a94d710fae5522b3fd91a49e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.timeout_seconds"
+msgstr "TUI 和 ACP 等待人工审批的秒数，超时后拒绝本次调用。默认 0 表示不超时，重启后生效。"
 
 #. English: Remember what you type so you can bring it back later with Ctrl+R.
 #. chrys-meta={"fingerprint":"5f63c61f7c1984a99d21d4bdc5ca7f6576efe3b8d5f814995cb362565c606618","multiline":false,"placeholders":[]}
