@@ -194,6 +194,7 @@ class ValidationReason:
     CONTENT_FILTERED = "content_filtered"
     WHITESPACE_ONLY = "whitespace_only"
     LEAKED_TOOL_CALL = "leaked_tool_call"
+    UNNAMED_TOOL_CALL = "unnamed_tool_call"
     RULE_VIOLATION = "rule_violation"
     UNKNOWN = "unknown"
 
