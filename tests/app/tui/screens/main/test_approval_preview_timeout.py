@@ -8,7 +8,9 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from textual.screen import ModalScreen
 
+from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
 from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
 from chrys.app.tui.widgets.diff_view import DiffView
 from chrys.foundation.config.settings import Settings
@@ -19,7 +21,11 @@ from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for, wait_until
 
 
-@pytest.mark.parametrize("outcome", ["ready", "error", "cancel"])
+class _Cover(ModalScreen[None]):
+    """Another screen the user opened over the approval dialog."""
+
+
+@pytest.mark.parametrize("outcome", ["ready", "error", "cancel", "covered"])
 async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: Path, monkeypatch, outcome: str) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
@@ -75,7 +81,22 @@ async def test_preview_preparation_does_not_consume_approval_timeout(tmp_path: P
                 assert not responses
                 assert not main._events._approval()._timeouts
             else:
+                dialog = app.screen
+                if outcome == "covered":
+                    await app.push_screen(_Cover())
                 release.set()
+                if outcome == "covered":
+
+                    def previews_ready() -> bool:
+                        previews = list(dialog.query(ApprovalDiffPreview))
+                        return bool(previews) and all(preview.is_ready for preview in previews)
+
+                    await wait_for(previews_ready, pilot=pilot, description="preview ready behind another screen")
+                    # A covered dialog is not shown, so its deadline has not started.
+                    assert not await wait_until(
+                        lambda: bool(main._events._approval()._timeouts), pilot=pilot, timeout=0.5
+                    )
+                    await app.pop_screen()
                 await wait_for(
                     lambda: bool(main._events._approval()._timeouts),
                     pilot=pilot,
