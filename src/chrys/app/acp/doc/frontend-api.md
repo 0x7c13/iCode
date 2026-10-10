@@ -248,7 +248,9 @@ server rejects the tool call. Restart the server after changing this setting.
 Transport shutdown cancels and drains outstanding SDK requests before closing
 sessions, so unanswered callbacks do not block exit. Unsent output is discarded
 on shutdown; cleanup does not wait for the client to read stdout and continues
-after a broken pipe. `session/cancel`, `session/close`, and
+after a broken pipe. On Windows the pinned SDK writes stdout synchronously, so a
+client that keeps stdout open without reading it can still block the server.
+`session/cancel`, `session/close`, and
 `session/delete` interrupt the engine first and then release pending input and
 permission callbacks; close and delete additionally stop prompt admission
 before releasing waits, so a prompt already queued on the session is rejected
