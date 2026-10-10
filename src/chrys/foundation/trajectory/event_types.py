@@ -60,6 +60,8 @@ class EventType:
     MODEL_CYCLE_FINISHED = "model.cycle.finished"
     MODEL_EXCHANGE_STARTED = "model.exchange.started"
     MODEL_EXCHANGE_FINISHED = "model.exchange.finished"
+    MODEL_REQUEST_PREPARED = "model.request.prepared"
+    MODEL_REQUEST_HEADERS_RECEIVED = "model.request.headers_received"
     MODEL_VALIDATION_FINISHED = "model.validation.finished"
 
     # Links, retries.
