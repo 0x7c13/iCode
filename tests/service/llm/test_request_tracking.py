@@ -239,32 +239,9 @@ async def _provider_request_id_from(headers: dict[str, str]) -> str | None:
     return tracker.provider_request_id
 
 
-@pytest.mark.parametrize(
-    "header",
-    [
-        "x-request-id",
-        "request-id",
-        "x-oai-request-id",
-        "x-ds-trace-id",
-        "msh-request-id",
-        "x-trace-id",
-        "x-log-id",
-        "minimax-request-id",
-        "trace-id",
-        "mistral-correlation-id",
-        "x-generation-id",
-        "x-oneapi-request-id",
-        "x-litellm-call-id",
-    ],
-)
-async def test_provider_request_id_is_read_from_each_provider_header(header: str) -> None:
-    assert await _provider_request_id_from({header: "req_provider"}) == "req_provider"
-
-
-async def test_provider_request_id_prefers_the_generic_header() -> None:
-    # Z.ai sends x-log-id beside x-request-id; api.minimax.io sends trace-id beside minimax-request-id.
-    assert await _provider_request_id_from({"x-log-id": "log", "x-request-id": "req"}) == "req"
-    assert await _provider_request_id_from({"trace-id": "trace", "minimax-request-id": "mm"}) == "mm"
+async def test_provider_request_id_is_read_from_the_provider_header_table() -> None:
+    # Which header each provider uses is pinned in test_provider_request_ids.py.
+    assert await _provider_request_id_from({"x-ds-trace-id": "deepseek", "eo-log-uuid": "edge"}) == "deepseek"
 
 
 async def test_provider_request_id_is_absent_without_a_known_header() -> None:

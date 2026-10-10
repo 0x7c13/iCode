@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
+from chrys.service.llm.provider_request_ids import read_provider_request_id
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -31,25 +32,6 @@ REQUEST_ATTEMPT_ID_METADATA = "_chrys_request_attempt_id"
 _PROVIDER_REQUEST_ID_METADATA = "provider_request_id"
 _CONTEXT_EXTENSION = "chrys_request_trajectory_context"
 _CURRENT: ContextVar[RequestTracking | None] = ContextVar("chrys_wire_request_tracking", default=None)
-# Response headers that carry the provider's own request id, first present wins:
-# a provider that sends several sends the generic one too.
-_PROVIDER_REQUEST_ID_HEADERS = (
-    # OpenAI, Azure OpenAI, Groq, Together, Fireworks, Volcengine Ark, DashScope,
-    # Qianfan, Hunyuan, Z.ai, Bedrock, vLLM (--enable-request-id-headers), SGLang router.
-    "x-request-id",
-    "request-id",  # Anthropic
-    "x-oai-request-id",
-    "x-ds-trace-id",  # DeepSeek
-    "msh-request-id",  # Moonshot (api.moonshot.cn / api.moonshot.ai)
-    "x-trace-id",  # Kimi (api.kimi.com)
-    "x-log-id",  # Zhipu (open.bigmodel.cn)
-    "minimax-request-id",  # MiniMax (api.minimax.io)
-    "trace-id",  # MiniMax (api.minimaxi.com sends only this)
-    "mistral-correlation-id",  # Mistral
-    "x-generation-id",  # OpenRouter (errors; a success's id is the response body's)
-    "x-oneapi-request-id",  # one-api / new-api gateways
-    "x-litellm-call-id",  # LiteLLM proxy
-)
 
 
 @dataclass
@@ -75,16 +57,6 @@ class RequestTracking:
         if self.provider_request_id is not None:
             facts[_PROVIDER_REQUEST_ID_METADATA] = self.provider_request_id
         return facts
-
-
-def _provider_request_id(response: httpx.Response) -> str | None:
-    for name in _PROVIDER_REQUEST_ID_HEADERS:
-        value = response.headers.get(name)
-        if value:
-            cleaned = "".join(ch for ch in value if ch.isprintable())[:256]
-            if cleaned:
-                return cleaned
-    return None
 
 
 def build_request_tracking_hooks() -> dict[str, list[Callable[..., Any]]]:
@@ -116,7 +88,7 @@ def build_request_tracking_hooks() -> dict[str, list[Callable[..., Any]]]:
         attempt_id = response.request.extensions.get(REQUEST_ATTEMPT_ID_EXTENSION)
         if not isinstance(attempt_id, str):
             return
-        provider_id = _provider_request_id(response)
+        provider_id = read_provider_request_id(response.headers)
         tracking = _CURRENT.get()
         if tracking is not None and tracking.request_attempt_id == attempt_id:
             tracking.provider_request_id = provider_id
