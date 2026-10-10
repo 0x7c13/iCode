@@ -202,19 +202,37 @@ class ApprovalQueueController:
         self.reviewed_dismissed_requests: set[str] = set()
         self.cancelled_requests: set[str] = set()
         self.deferred: dict[str, ApprovalRequest] = {}
-        # Requests whose open dialog waits for a person: manual, or flagged by the judge.
+        # Requests that need a person: manual, or flagged by the judge. Covers
+        # queued requests too — the queue shows them one at a time, and a wait
+        # the user cannot see yet is still a wait.
         self._awaiting_user: set[str] = set()
 
     @property
     def awaiting_user(self) -> bool:
-        """An open approval dialog waits for the user's decision."""
+        """A request waits for the user's decision: queued or an open dialog."""
         for request_id in self._awaiting_user:
             dialog = self.open_dialogs.get(request_id)
-            if dialog is not None and not dialog.is_dismissed and not dialog.user_decision_submitted:
+            if dialog is None:
+                # Confirmed to need the user, still behind the dialog queue.
+                return True
+            if not dialog.is_dismissed and not dialog.user_decision_submitted:
                 return True
         return False
 
+    def _track_user(self, request_id: str) -> None:
+        """Register that a request will need the user, without announcing it yet.
+
+        Queued requests stay silent until their dialog opens (or the judge
+        flags an open one); ``_require_user`` does the announcing, once per
+        request.
+        """
+        self._awaiting_user.add(request_id)
+
     def _require_user(self, request_id: str) -> None:
+        # Announce that this request needs a person: when its dialog opens,
+        # or when the judge flags a dialog that is already open. Each request
+        # reaches exactly one of those points, since queueing stays silent
+        # (see _track_user).
         self._awaiting_user.add(request_id)
         self._port.notify_approval_required()
 
@@ -290,6 +308,12 @@ class ApprovalQueueController:
                 self._port.debug("ApprovalRequest", f"{event.tool_name} (deferred while judging)")
                 return
             self.queue.append(event)
+            if not event.judging:
+                # A manual request is settled the moment it queues: it needs
+                # the user even while it waits behind another open dialog. A
+                # judging request waits for its verdict first. Silent until
+                # its dialog opens.
+                self._track_user(event.request_id)
             if not self.dialog_open:
                 self.show_next()
 
@@ -379,6 +403,10 @@ class ApprovalQueueController:
         """Dismiss or dequeue an abandoned request without publishing a response."""
         self._cancel_timeout(event.request_id)
         async with self.request_lock:
+            # Every path below abandons the request, including the early
+            # returns; the wait must not outlive them or the tab keeps its
+            # question mark forever.
+            self._awaiting_user.discard(event.request_id)
             if self.deferred.pop(event.request_id, None) is not None:
                 self.bodies.pop(event.request_id, None)
                 self._sync_review_count()
@@ -427,6 +455,9 @@ class ApprovalQueueController:
                 return
             self.pending_verdicts[event.request_id] = event
             self.queue.append(deferred)
+            # The judge flagged it, so the user must decide — even while it
+            # queues behind another open dialog. Announced when it opens.
+            self._track_user(event.request_id)
             if not self.dialog_open:
                 self.show_next()
             return
@@ -457,6 +488,9 @@ class ApprovalQueueController:
         for queued in self.queue:
             if queued.request_id == event.request_id:
                 self.pending_verdicts[event.request_id] = event
+                if not event.approved:
+                    # Flagged while queued: the user decides once it opens.
+                    self._track_user(event.request_id)
                 self._port.debug("ApprovalJudge", f"{queued.tool_name} ({label}, cached)")
                 return
 

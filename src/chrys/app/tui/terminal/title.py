@@ -26,7 +26,7 @@ def set_terminal_title(title: str, *, writer: _TitleWriter | None = None) -> Non
     if running_under_textual_web_driver():
         return
 
-    safe_title = _title_safe_text(title)
+    safe_title = title_safe_text(title)
     sequence = f"\x1b]0;{safe_title}\x07\x1b]2;{safe_title}\x07"
     with contextlib.suppress(Exception):
         if writer is not None:
@@ -38,7 +38,7 @@ def set_terminal_title(title: str, *, writer: _TitleWriter | None = None) -> Non
 
 def set_app_terminal_title(app: object, title: str) -> bool:
     """Write a built title through a Textual app's driver; False when it has none."""
-    writer = _app_terminal_title_writer(app)
+    writer = app_terminal_title_writer(app)
     if writer is None:
         return False
     set_terminal_title(title, writer=writer)
@@ -47,7 +47,7 @@ def set_app_terminal_title(app: object, title: str) -> bool:
 
 def set_app_terminal_title_for_current_cwd(app: object) -> None:
     """Set the terminal title for a Textual app using the current working directory."""
-    writer = _app_terminal_title_writer(app)
+    writer = app_terminal_title_writer(app)
     if writer is None:
         return
     set_terminal_title_for_current_cwd(writer=writer)
@@ -73,7 +73,7 @@ def terminal_title_for_cwd(cwd: str | os.PathLike[str]) -> str:
     raw_path = os.fspath(cwd)
     if not os.path.isdir(raw_path):
         return BASE_TERMINAL_TITLE
-    path = _title_safe_text(raw_path)
+    path = title_safe_text(raw_path)
     if not path:
         return BASE_TERMINAL_TITLE
     return path
@@ -97,7 +97,7 @@ class TerminalTabText:
     @classmethod
     def for_message(cls, text: str) -> TerminalTabText:
         """A submitted prompt's preview, or a session or workflow title."""
-        return cls(_title_safe_text(text)[:_MESSAGE_TITLE_CHARS], clipped=True)
+        return cls(title_safe_text(text)[:_MESSAGE_TITLE_CHARS], clipped=True)
 
     def with_mark(self, mark: str) -> str:
         """The title with ``mark`` (a spinner frame or status mark) before it."""
@@ -107,7 +107,7 @@ class TerminalTabText:
         return title[:_MESSAGE_TITLE_CHARS] if self.clipped else title
 
 
-def _title_safe_text(text: str) -> str:
+def title_safe_text(text: str) -> str:
     text = _strip_terminal_sequences(text)
     parts: list[str] = []
     pending_space = False
@@ -188,7 +188,7 @@ def _skip_until_string_terminator(text: str, start: int) -> int:
     return i
 
 
-def _app_terminal_title_writer(app: object) -> _TitleWriter | None:
+def app_terminal_title_writer(app: object) -> _TitleWriter | None:
     # Textual has no public raw terminal writer; keep the private driver
     # boundary here instead of spreading it through screens.
     driver = getattr(app, "_driver", None)

@@ -989,3 +989,91 @@ def test_image_compression_controller_opens_once_and_finishes() -> None:
     asyncio.run(controller.on_finished(ImageAttachmentCompressionFinished(image_count=2)))
     assert port.dialogs[0].finished is True
     assert controller.dialog is None
+
+
+def test_approval_controller_awaiting_user_counts_manual_queued_request() -> None:
+    port = _ApprovalPort()
+    controller = ApprovalQueueController(port)
+
+    asyncio.run(controller.on_request(_approval_request("open", judging=False)))
+    asyncio.run(controller.on_request(_approval_request("queued", judging=False)))
+    # The second request waits behind the open dialog, but the user already
+    # owes it a decision.
+    assert controller.awaiting_user is True
+
+    port.dialogs[0].user_decision_submitted = True
+    assert controller.awaiting_user is True
+
+
+def test_approval_controller_awaiting_user_counts_flagged_deferred_request() -> None:
+    port = _ApprovalPort()
+    port.defer_while_judging = True
+    controller = ApprovalQueueController(port)
+
+    asyncio.run(controller.on_request(_approval_request("open", judging=False)))
+    asyncio.run(controller.on_request(_approval_request("flagged", judging=True)))
+    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="flagged", approved=False, reason="danger")))
+    # The flagged verdict means the user must decide; the request still
+    # queues behind the open dialog.
+    assert controller.awaiting_user is True
+
+    port.dialogs[0].user_decision_submitted = True
+    assert controller.awaiting_user is True
+
+
+def test_approval_controller_awaiting_user_clears_with_the_queue() -> None:
+    port = _ApprovalPort()
+    controller = ApprovalQueueController(port)
+
+    asyncio.run(controller.on_request(_approval_request("solo", judging=False)))
+    assert controller.awaiting_user is True
+
+    port.dialogs[0].callback((True, "", None))
+    assert controller.awaiting_user is False
+
+
+def test_cancelled_queued_manual_request_leaves_no_wait_behind() -> None:
+    port = _ApprovalPort()
+    controller = ApprovalQueueController(port)
+    asyncio.run(controller.on_request(_approval_request("open", judging=False)))
+    asyncio.run(controller.on_request(_approval_request("queued", judging=False)))
+
+    asyncio.run(controller.on_cancelled(ApprovalCancelled(request_id="queued")))
+    port.dialogs[0].callback((True, "", None))
+
+    assert len(controller.queue) == 0
+    assert controller.open_dialogs == {}
+    assert controller.awaiting_user is False
+
+
+def test_cancelled_queued_flagged_request_leaves_no_wait_behind() -> None:
+    port = _ApprovalPort()
+    port.defer_while_judging = True
+    controller = ApprovalQueueController(port)
+    asyncio.run(controller.on_request(_approval_request("open", judging=False)))
+    asyncio.run(controller.on_request(_approval_request("flagged", judging=True)))
+    asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="flagged", approved=False, reason="danger")))
+
+    asyncio.run(controller.on_cancelled(ApprovalCancelled(request_id="flagged")))
+    port.dialogs[0].callback((True, "", None))
+
+    assert len(controller.queue) == 0
+    assert controller.open_dialogs == {}
+    assert controller.awaiting_user is False
+
+
+def test_cancelling_the_open_dialog_first_keeps_the_queue_consistent() -> None:
+    port = _ApprovalPort()
+    controller = ApprovalQueueController(port)
+    asyncio.run(controller.on_request(_approval_request("open", judging=False)))
+    asyncio.run(controller.on_request(_approval_request("queued", judging=False)))
+
+    # Control order: cancelling the open dialog lets the queued one show.
+    asyncio.run(controller.on_cancelled(ApprovalCancelled(request_id="open")))
+
+    assert controller.awaiting_user is True
+    port.dialogs[1].callback((False, "", None))
+
+    assert len(controller.queue) == 0
+    assert controller.open_dialogs == {}
+    assert controller.awaiting_user is False

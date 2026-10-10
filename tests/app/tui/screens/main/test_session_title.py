@@ -315,13 +315,13 @@ def test_chat_run_waiting_for_the_user_shows_its_mark_instead_of_the_spinner() -
 
 def test_a_long_prompt_is_cleaned_once_and_each_tick_only_adds_the_mark(monkeypatch: pytest.MonkeyPatch) -> None:
     cleaned_lengths: list[int] = []
-    clean = terminal_title._title_safe_text
+    clean = terminal_title.title_safe_text
 
     def counting_clean(text: str) -> str:
         cleaned_lengths.append(len(text))
         return clean(text)
 
-    monkeypatch.setattr(terminal_title, "_title_safe_text", counting_clean)
+    monkeypatch.setattr(terminal_title, "title_safe_text", counting_clean)
     harness = _Harness()
     harness.controller.set_session_title_state(fallback="First task")
     harness.run.agent_running = True
