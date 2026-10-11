@@ -532,7 +532,9 @@ class QuestionQueueController:
 
     @property
     def awaiting_user(self) -> bool:
-        """A shown question, modal or inline, waits for the user's answer."""
+        """A question waits for the user's answer: shown (modal or inline) or queued behind a modal."""
+        if self.queue:
+            return True
         return any(request_id not in self._settled for request_id in (*self.open_dialogs, *self.inline_call_ids))
 
     def inline_answered(self, request_id: str) -> None:

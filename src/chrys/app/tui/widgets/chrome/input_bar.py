@@ -47,7 +47,6 @@ from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import safe_getcwd
 
-# Status-bar chrome is synchronized by MainScreen through widget messages.
 # Unicode-name markers for CJK-family scripts where a preceding character cannot be an email local part.
 _CJK_NAME_TOKENS = ("CJK", "HIRAGANA", "KATAKANA", "HANGUL", "BOPOMOFO", "IDEOGRAPH")
 INPUT_SEND = msg("tui.input.send", fallback="Send")

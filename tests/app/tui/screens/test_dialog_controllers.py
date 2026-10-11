@@ -697,6 +697,24 @@ def test_question_controller_awaits_the_user_until_a_modal_closes_or_times_out()
     assert controller.open_dialogs == {} and controller.awaiting_user is False
 
 
+def test_question_controller_awaits_a_question_queued_behind_a_withdrawn_covered_modal() -> None:
+    port = _QuestionPort()
+    controller = QuestionQueueController(port)
+
+    asyncio.run(controller.on_question(_question_event("q1", "Covered?")))
+    # The fake defers the close, as a dialog covered by another modal does.
+    asyncio.run(controller.on_timed_out(AskUserTimedOut(request_id="q1")))
+    assert controller.awaiting_user is False
+    asyncio.run(controller.on_question(_question_event("q2", "Queued?")))
+    assert [event.request_id for event in controller.queue] == ["q2"]
+    assert controller.awaiting_user is True, "the queued question still waits"
+
+    port.dialogs[0].callback(None)
+    assert list(controller.open_dialogs) == ["q2"] and controller.awaiting_user is True
+    port.dialogs[1].callback(AnswerQuestionDialogResult(request_id="q2", answers=(AskUserAnswer(values=("a",)),)))
+    assert controller.awaiting_user is False
+
+
 def test_question_controller_stops_awaiting_an_inline_question_once_answered() -> None:
     port = _QuestionPort()
     port.inline_preferred = True

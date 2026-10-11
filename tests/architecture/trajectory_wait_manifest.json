@@ -3379,7 +3379,7 @@
         ["timeout", "asyncio.wait_for(future, timeout=timeout)", "unresolved"],
         ["awaitable", "await wait.finished()", "unresolved"],
         ["awaitable", "await wait.finished(outcome=WaitOutcome.TIMED_OUT)", "unresolved"],
-        ["awaitable", "await self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))", "unresolved"],
+        ["wrapper", "await self._withdraw(request_id)", "unresolved", "chrys.service.agent_middleware.control.ask_user.AskUserMiddleware._withdraw"],
         ["wrapper", "await self._withdraw(request_id)", "unresolved", "chrys.service.agent_middleware.control.ask_user.AskUserMiddleware._withdraw"]
       ]
     },

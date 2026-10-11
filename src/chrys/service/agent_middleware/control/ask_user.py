@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -177,8 +176,10 @@ class AskUserMiddleware(FunctionMiddleware):
                     )
                 )
             except asyncio.CancelledError:
-                # A frontend handler that already ran shows the question.
-                await self._withdraw(request_id)
+                # A frontend handler that already ran shows the question,
+                # unless it already answered it.
+                if not future.done() or future.cancelled():
+                    await self._withdraw(request_id)
                 raise
 
             timeout = self._timeout_seconds
@@ -202,15 +203,19 @@ class AskUserMiddleware(FunctionMiddleware):
                 if wait is not None:
                     await wait.finished()
             except TimeoutError:
-                if wait is not None:
-                    await wait.finished(outcome=WaitOutcome.TIMED_OUT)
+                try:
+                    if wait is not None:
+                        await wait.finished(outcome=WaitOutcome.TIMED_OUT)
+                finally:
+                    # The finish marker awaits its write ack: a cancel landing
+                    # there skips the handler below, so withdraw here.
+                    await self._withdraw(request_id)
                 context.result = tool_error(
                     "ask_user_timeout",
                     f"user did not respond within {_format_timeout(timeout or 0)}.",
                     retryable=True,
                     details={"timeout_seconds": timeout or 0},
                 )
-                await self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))
             except asyncio.CancelledError:
                 if wait is not None:
                     wait.finished_soon(outcome=WaitOutcome.CANCELLED)
@@ -220,12 +225,12 @@ class AskUserMiddleware(FunctionMiddleware):
                 raise
 
     async def _withdraw(self, request_id: str) -> None:
-        """Tell frontends the question no longer waits, even when another cancel lands.
+        """Tell frontends the question no longer waits.
 
-        Only a cancel ends the wait here, and the caller re-raises it.
+        The withdrawal finishes even when a cancel lands meanwhile; that cancel
+        is raised once it has.
         """
         withdraw = asyncio.create_task(
             self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))
         )
-        with contextlib.suppress(asyncio.CancelledError):
-            await finish_close(withdraw)
+        await finish_close(withdraw)
