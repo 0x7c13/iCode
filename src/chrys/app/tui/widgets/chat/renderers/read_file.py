@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import re
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Group
 from rich.syntax import Syntax
@@ -208,8 +208,6 @@ class ReadFileToolCall(BaseToolCard):
         border-title-style: not bold;
     }
     """
-
-    _SPINNERS: ClassVar[str] = "◐◓◑◒"
 
     def __init__(
         self,

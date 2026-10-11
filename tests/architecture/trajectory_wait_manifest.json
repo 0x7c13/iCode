@@ -3366,16 +3366,21 @@
       ]
     },
     "chrys.service.agent_middleware.control.ask_user": {
+      "AskUserMiddleware._withdraw": [
+        ["wrapper", "await finish_close(withdraw)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
       "AskUserMiddleware.process": [
         ["awaitable", "await call_next()", "unresolved"],
         ["async_context", "async with OneShotCorrelation(self._bus, AskUserResponse, request_id=request_id)", "unresolved"],
         ["awaitable", "await self._bus.publish(QuestionToUser(request_id=request_id, questions=questions, session_id=self._session_id, call_id=get_call_id(context), caller_name=self._caller_name))", "unresolved"],
+        ["wrapper", "await self._withdraw(request_id)", "unresolved", "chrys.service.agent_middleware.control.ask_user.AskUserMiddleware._withdraw"],
         ["awaitable", "await wait.started()", "unresolved"],
         ["awaitable", "await (future if timeout is None else asyncio.wait_for(future, timeout=timeout))", "unresolved"],
         ["timeout", "asyncio.wait_for(future, timeout=timeout)", "unresolved"],
         ["awaitable", "await wait.finished()", "unresolved"],
         ["awaitable", "await wait.finished(outcome=WaitOutcome.TIMED_OUT)", "unresolved"],
-        ["awaitable", "await self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))", "unresolved"],
+        ["wrapper", "await self._withdraw(request_id)", "unresolved", "chrys.service.agent_middleware.control.ask_user.AskUserMiddleware._withdraw"]
       ]
     },
     "chrys.service.agent_middleware.control.interrupt": {

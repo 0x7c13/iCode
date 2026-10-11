@@ -737,7 +737,7 @@ class QuestionToUser(Event):
 
 @dataclass
 class AskUserTimedOut(Event):
-    """An ask_user question expired before the user responded."""
+    """An ask_user question expired, or its caller withdrew it, before the user responded."""
 
     request_id: str = ""
 

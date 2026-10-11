@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from chrys.foundation.models.ask_user import (
 )
 from chrys.foundation.tool_kinds import KIND_ASK_USER, get_tool_kind
 from chrys.foundation.trajectory.event_types import WaitCategory
+from chrys.foundation.util.once_close import finish_close
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import _SHORT_ID_LEN
 from chrys.service.agent_middleware.events.hook_dispatch import get_call_id
@@ -121,8 +123,11 @@ class AskUserMiddleware(FunctionMiddleware):
     the user's answer into ``context.result`` — the underlying tool function
     is never invoked.
 
+    A cancelled call withdraws its unanswered question with ``AskUserTimedOut``,
+    so a frontend stops showing it.
+
     ``timeout_seconds`` bounds how long to wait for the reply.  ``None`` waits
-    indefinitely (no ``AskUserTimedOut``) — used by frontends that own the
+    indefinitely (no timeout) — used by frontends that own the
     interaction lifetime themselves (e.g. ACP clients).
     """
 
@@ -161,15 +166,20 @@ class AskUserMiddleware(FunctionMiddleware):
         # is owned across that whole interval.
         async with OneShotCorrelation(self._bus, AskUserResponse, request_id=request_id) as correlation:
             future = correlation.future
-            await self._bus.publish(
-                QuestionToUser(
-                    request_id=request_id,
-                    questions=questions,
-                    session_id=self._session_id,
-                    call_id=get_call_id(context),
-                    caller_name=self._caller_name,
+            try:
+                await self._bus.publish(
+                    QuestionToUser(
+                        request_id=request_id,
+                        questions=questions,
+                        session_id=self._session_id,
+                        call_id=get_call_id(context),
+                        caller_name=self._caller_name,
+                    )
                 )
-            )
+            except asyncio.CancelledError:
+                # A frontend handler that already ran shows the question.
+                await self._withdraw(request_id)
+                raise
 
             timeout = self._timeout_seconds
             wait = WaitTrace.open(WaitCategory.USER_INPUT, target_operation_id=tool_operation_id(context.metadata))
@@ -204,4 +214,18 @@ class AskUserMiddleware(FunctionMiddleware):
             except asyncio.CancelledError:
                 if wait is not None:
                     wait.finished_soon(outcome=WaitOutcome.CANCELLED)
+                # An interrupted wait cancels the future; only an answer settles it.
+                if not future.done() or future.cancelled():
+                    await self._withdraw(request_id)
                 raise
+
+    async def _withdraw(self, request_id: str) -> None:
+        """Tell frontends the question no longer waits, even when another cancel lands.
+
+        Only a cancel ends the wait here, and the caller re-raises it.
+        """
+        withdraw = asyncio.create_task(
+            self._bus.publish(AskUserTimedOut(request_id=request_id, session_id=self._session_id))
+        )
+        with contextlib.suppress(asyncio.CancelledError):
+            await finish_close(withdraw)

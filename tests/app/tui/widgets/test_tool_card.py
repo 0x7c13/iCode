@@ -13,11 +13,14 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
+from chrys.app.tui.util.spinner import SPINNER_FRAMES
+from chrys.app.tui.widgets.chat import tool_renderers
 from chrys.app.tui.widgets.chat.messages import (
     MessageCopyButton,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.tool_call import (
+    BaseToolCard,
     ToolCall,
     ToolCardHeader,
     ToolCopyButton,
@@ -35,6 +38,7 @@ from tests.support.tui_helpers import (
     click_copy_button,
     click_widget,
     png_bytes,
+    rich_plain,
 )
 
 
@@ -136,6 +140,9 @@ async def test_tool_call_lifecycle() -> None:
         header = tc.query_one(ToolCardHeader)
         assert tc.status == "running"
         assert header.actions_visible is False
+        # The spinner timer may already have ticked.
+        body = rich_plain(tc.query_one("#tc-body", Static).render())
+        assert body.startswith(tuple(f"{frame} " for frame in SPINNER_FRAMES))
 
         tc.set_complete("file contents", duration_ms=89)
         await pilot.pause()
@@ -147,6 +154,20 @@ async def test_tool_call_lifecycle() -> None:
         label = tc.query_one("#tc-label", ToolCardHeader).content
         assert "read_file" in label.plain
         assert "89ms" in label.plain
+
+
+def test_every_tool_card_spins_the_shared_braille_frames() -> None:
+    tool_renderers._ensure_loaded()
+    cards: set[type[BaseToolCard]] = set()
+    pending: list[type[BaseToolCard]] = [BaseToolCard]
+    while pending:
+        for card in pending.pop().__subclasses__():
+            if card not in cards:
+                cards.add(card)
+                pending.append(card)
+
+    assert len(cards) > 10
+    assert {card.__name__ for card in cards if card._SPINNERS != SPINNER_FRAMES} == set()
 
 
 async def test_tool_card_header_zones_disabled_when_narrower_than_actions_cell() -> None:

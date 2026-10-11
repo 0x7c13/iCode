@@ -13,6 +13,7 @@ from textual.widgets import Static
 
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
+from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.foundation.branding import format_app_version_title
 from chrys.foundation.config.settings import Settings
@@ -129,7 +130,7 @@ def _review_label(header: AppHeader) -> str:
     text = _reviewing(header).render().plain
     assert text.startswith(" ") and text.endswith(" ")
     frame, label = text.strip().split(" ", 1)
-    assert frame in "◐◓◑◒"
+    assert frame in SPINNER_FRAMES
     return label
 
 

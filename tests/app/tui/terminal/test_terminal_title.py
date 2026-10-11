@@ -8,12 +8,11 @@ import pytest
 
 from chrys.app.tui.terminal.title import (
     BASE_TERMINAL_TITLE,
-    set_app_terminal_title_for_user_message,
+    TerminalTabText,
+    set_app_terminal_title,
     set_terminal_title,
     set_terminal_title_for_current_cwd,
-    set_terminal_title_for_user_message,
     terminal_title_for_cwd,
-    terminal_title_for_user_message,
 )
 
 
@@ -57,7 +56,7 @@ def test_app_terminal_title_uses_textual_driver(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
     app = _App()
 
-    set_app_terminal_title_for_user_message(app, "hello")
+    assert set_app_terminal_title(app, "hello") is True
 
     title = "hello"
     assert app._driver.writes == [f"\x1b]0;{title}\x07\x1b]2;{title}\x07"]
@@ -68,7 +67,7 @@ def test_app_terminal_title_without_driver_is_noop(
 ) -> None:
     monkeypatch.delenv("TEXTUAL_DRIVER", raising=False)
 
-    set_app_terminal_title_for_user_message(object(), "hello")
+    assert set_app_terminal_title(object(), "hello") is False
 
     assert capsys.readouterr().err == ""
 
@@ -88,11 +87,23 @@ def test_user_message_title_caps_prompt_preview_at_100_chars() -> None:
     """The title preview should stay bounded while preserving CJK text."""
     text = "帮" * 120
 
-    assert terminal_title_for_user_message(text) == text[:100]
+    tab = TerminalTabText.for_message(text)
+
+    assert tab.with_mark("") == text[:100]
+    # The mark takes room from the text, not from the bound.
+    assert tab.with_mark("⠋") == f"⠋ {text[:98]}"
 
 
 def test_cwd_title_uses_full_existing_current_directory_path(tmp_path) -> None:
     assert terminal_title_for_cwd(tmp_path) == str(tmp_path)
+
+
+def test_cwd_tab_text_is_never_clipped(tmp_path) -> None:
+    deep = tmp_path / ("d" * 60)
+    deep.mkdir()
+    assert len(str(deep)) > 100
+
+    assert TerminalTabText.for_cwd(deep).with_mark("✓") == f"✓ {deep}"
 
 
 def test_cwd_title_uses_base_title_for_missing_directory(tmp_path) -> None:
@@ -114,8 +125,9 @@ def test_current_cwd_title_uses_base_title_when_getcwd_fails(monkeypatch: pytest
 
 
 def test_user_message_title_collapses_whitespace_and_ignores_empty_prompt() -> None:
-    assert terminal_title_for_user_message("  hello\n\tworld  ") == "hello world"
-    assert terminal_title_for_user_message("\n\t") == BASE_TERMINAL_TITLE
+    assert TerminalTabText.for_message("  hello\n\tworld  ").with_mark("") == "hello world"
+    assert TerminalTabText.for_message("\n\t").with_mark("") == BASE_TERMINAL_TITLE
+    assert TerminalTabText.for_message("\n\t").with_mark("⠋") == "⠋"
 
 
 def test_user_message_title_strips_terminal_control_sequences(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,17 +136,16 @@ def test_user_message_title_strips_terminal_control_sequences(monkeypatch: pytes
     writes: list[str] = []
     malicious = "hello\n\x1b]0;bad title\x07 there \x1b[31m red \u202eworld\rnext\tline\x9dignored\x9c\x1b(B"
 
-    set_terminal_title_for_user_message(malicious, writer=writes.append)
+    set_terminal_title(TerminalTabText.for_message(malicious).with_mark("⠋"), writer=writes.append)
+    set_terminal_title(malicious, writer=writes.append)
 
     title = "hello there red world next line"
-    assert writes == [f"\x1b]0;{title}\x07\x1b]2;{title}\x07"]
+    assert writes == [f"\x1b]0;⠋ {title}\x07\x1b]2;⠋ {title}\x07", f"\x1b]0;{title}\x07\x1b]2;{title}\x07"]
 
 
-def test_session_title_terminal_title_appends_fragment() -> None:
-    from chrys.app.tui.terminal.title import terminal_title_for_session_title
-
-    assert terminal_title_for_session_title("Login bug fix") == "Login bug fix"
-    assert terminal_title_for_session_title("") == BASE_TERMINAL_TITLE
-    assert terminal_title_for_session_title("  spaced \n out  ") == "spaced out"
-    assert terminal_title_for_session_title("✓ Login bug fix") == "✓ Login bug fix"
-    assert terminal_title_for_session_title("✗ Login bug fix") == "✗ Login bug fix"
+def test_session_title_tab_text_takes_the_mark_before_it() -> None:
+    assert TerminalTabText.for_message("Login bug fix").with_mark("") == "Login bug fix"
+    assert TerminalTabText.for_message("").with_mark("") == BASE_TERMINAL_TITLE
+    assert TerminalTabText.for_message("  spaced \n out  ").with_mark("?") == "? spaced out"
+    assert TerminalTabText.for_message("Login bug fix").with_mark("✓") == "✓ Login bug fix"
+    assert TerminalTabText.for_message("Login bug fix").with_mark("✗") == "✗ Login bug fix"
