@@ -78,3 +78,11 @@ When background commands stop:
 - `/rollback` stops the commands that the discarded turns started. It may not restore files that a command changed after it moved to the background.
 
 iCode cannot stop programs that detach themselves from the command that started them, such as services that some tools start with a `-d` option; they keep running after the session ends.
+
+### See and stop background commands in the TUI
+
+While the main agent waits on a shell command, the command's card shows "ctrl+t moves it to the background". Press **Ctrl+T** to move the main agent's running shell commands to the background right away. If the session already has 8 commands running in the background, iCode tells you, and the command keeps running as before.
+
+The **Tasks** tab of the sidebar shows the todos at the top and the main agent's background commands under **Background Tasks** below them, with how long each one has been in the background; the status bar shows how many are running. Click a command to see what it runs, why it moved to the background, and its output as it grows. There you can **Stop** it, or copy its output or the path of its log file. **Clear ended** removes the commands that have ended from the list.
+
+Before you start a new session (also with `/clear`), switch to another session, quit iCode, or roll back turns that started background commands, iCode lists the commands that would stop and asks first. Choose **Stop and continue** (**Stop and exit** when quitting) to go ahead. If you quit again while iCode is asking, it quits at once. Closing the terminal window stops them without asking.

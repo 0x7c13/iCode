@@ -129,13 +129,17 @@ class RestoreRequest(Enum):
     REQUESTED = "requested"
     """A restore was published; ``SessionRestored`` or an ``Error`` follows."""
     DECLINED = "declined"
-    """The session's folder is gone and the user chose no other one."""
+    """The session's folder is gone and the user chose no other one, or kept its background commands running."""
     SKIPPED = "skipped"
     """Nothing was published (busy, or the loading UI could not open)."""
 
 
 async def _decline_missing_working_dir(_missing: str) -> str | None:
     return None
+
+
+async def _stop_background_tasks_unasked() -> bool:
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +161,8 @@ class SessionCallbacks:
     debug: Callable[[str, str], None]
     refresh_model_indicator: Callable[[], None]
     choose_missing_working_dir: Callable[[str], Awaitable[str | None]] = _decline_missing_working_dir
+    confirm_stopping_background_tasks: Callable[[], Awaitable[bool]] = _stop_background_tasks_unasked
+    """Whether the user lets the running background commands stop as the session ends."""
 
 
 def _samepath(a: str, b: str) -> bool:
@@ -408,6 +414,8 @@ class SessionHandler:
         :meth:`on_session_clear_error`) and never starts a new session.
         """
         s = self
+        if not await self._callbacks.confirm_stopping_background_tasks():
+            return
         # Guard and claim the UI synchronously — no await between them — so
         # the /clear preflight and "input blocked" are one step: a submit that
         # is still being admitted (``submit.active``; ``agent_running`` flips
@@ -440,6 +448,8 @@ class SessionHandler:
 
     async def create_new_session(self) -> None:
         s = self
+        if not await self._callbacks.confirm_stopping_background_tasks():
+            return
         if s.agent_loading or s.agent_running or self._services.execution_busy():
             return
         from chrys.foundation.events.types import SessionNew
@@ -594,6 +604,13 @@ class SessionHandler:
             return await self.do_session_restore(
                 session_id, allow_while_loading=allow_while_loading, primary_cwd=chosen
             )
+        # Restoring the current session keeps its background commands.
+        if session_id != s.main_usage_source_id and not await self._callbacks.confirm_stopping_background_tasks():
+            if s.agent_loading:
+                with contextlib.suppress(Exception):
+                    self._agent_load.cancel_agent_load()
+            s.restoring_session = False
+            return RestoreRequest.DECLINED
 
         s.restoring_session = True
         try:

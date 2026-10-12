@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
     from chrys.app.tui.i18n import LocaleController
+    from chrys.foundation.models.background_tasks import BackgroundTaskView
 
 
 class SidebarPanel(Widget, can_focus=False):
@@ -45,6 +46,7 @@ class SidebarPanel(Widget, can_focus=False):
 
     context_usage_state: reactive[ContextUsageState | None] = reactive(None, always_update=True)
     todo_state: reactive[TodoListState | None] = reactive(None, always_update=True)
+    background_tasks: reactive[tuple[BackgroundTaskView, ...]] = reactive(())
 
     DEFAULT_CSS = """
     SidebarPanel {
@@ -81,7 +83,8 @@ class SidebarPanel(Widget, can_focus=False):
                 yield ConversationToc(locale_controller=self._locale_controller)
             with TabPane(self._localized_content(_SIDEBAR_TASKS.bind()), id="tab-tasks"):
                 yield TasksPanel(locale_controller=self._locale_controller).data_bind(
-                    todo_state=SidebarPanel.todo_state
+                    todo_state=SidebarPanel.todo_state,
+                    background_tasks=SidebarPanel.background_tasks,
                 )
             with TabPane(self._localized_content(_SIDEBAR_CONTEXT.bind()), id="tab-context"):
                 yield ContextPanel(locale_controller=self._locale_controller).data_bind(

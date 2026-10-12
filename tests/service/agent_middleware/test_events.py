@@ -17,6 +17,7 @@ from chrys.foundation.events.types import (
     InvocationMessage,
     InvocationToolCallResult,
     InvocationToolCallStart,
+    ShellToBackground,
 )
 from chrys.foundation.io.result_content import extract_result_text
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -61,7 +62,7 @@ from chrys.service.hooks.schema import HookConfig, HookDecision, HookExecution, 
 from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.session.sub_agent_logs import SubAgentLogStats
-from chrys.service.tools.builtins.shell import shell_result_metadata
+from chrys.service.tools.builtins.shell import shell_background_request, shell_result_metadata
 from chrys.service.tools.result_metadata import record_tool_success, tool_error
 from tests.service.agent_middleware._event_fakes import (
     DenyBeforeToolHookManager,
@@ -521,6 +522,30 @@ async def test_tool_event_middleware_publishes_and_persists_shell_exit_metadata(
     # subset rides the invocation context for the kernel fold.
     assert ctx.metadata[_TOOL_INVOCATION_ORDER_KEY] == 3
     assert ctx.metadata[TOOL_RESULT_METADATA_KEY] == {SHELL_EXIT_CODE_METADATA_KEY: exit_code}
+
+
+@pytest.mark.parametrize("main_agent", [True, False])
+async def test_only_a_main_agent_shell_call_moves_to_the_background_when_the_user_asks(main_agent: bool) -> None:
+    bus = EventBus()
+    turn = InvocationOrigin("turn", "test", "turn-test", None)
+    origin = turn if main_agent else InvocationOrigin("sub_agent", "test", "child", turn)
+    mw = ToolEventMiddleware(bus, session_id="test", origin=origin)
+    asked: list[bool] = []
+
+    async def _next() -> None:
+        request = shell_background_request.get()
+        asked.append(request is not None and request.is_set())
+        await bus.publish(ShellToBackground(session_id="test"))
+        asked.append(request is not None and request.is_set())
+        ctx.result = "[exit_code: 0]"
+
+    ctx = _ctx("bash", KIND_SHELL, args={"command": "npm run dev"}, metadata={"call_id": "provider-shell-call"})
+
+    await mw.process(ctx, _next)
+
+    assert asked == [False, main_agent]
+    assert shell_background_request.get() is None
+    assert not bus._handlers.get(ShellToBackground)
 
 
 async def test_tool_event_middleware_publishes_and_persists_generic_failure_metadata() -> None:

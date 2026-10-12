@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.platform.output_capture import CapturedOutput
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.service.tools.background import MAIN_SCOPE, BackgroundTask, BackgroundTasks, TaskScope, stop_command
@@ -348,6 +349,65 @@ async def test_rollback_stops_the_tasks_of_the_turns_it_removes_and_forgets_them
         assert removed.id not in reminder
         assert finished.id not in reminder
         assert tasks.unreported(MAIN_SCOPE) == []
+    finally:
+        await tasks.close()
+
+
+async def test_each_change_of_a_task_is_told_with_the_main_agents_tasks_as_they_are_then(tmp_path: Path) -> None:
+    turn = 1
+    told: list[tuple[tuple[BackgroundTaskView, ...], bool]] = []
+
+    async def on_change(registry: BackgroundTasks) -> None:
+        told.append((registry.views(), registry.full))
+
+    tasks = BackgroundTasks(tmp_path, turn=lambda: turn, on_change=on_change)
+    try:
+        server = HeldProcess()
+        main = tasks.adopt(server, command="npm run dev", reason="serve", cwd="/repo", trigger="user")
+        assert main is not None
+        await wait_for(lambda: len(told) == 1, description="the start was told")
+        (view,), full = told[-1]
+        assert not full and view.running
+        assert (view.id, view.command, view.reason, view.cwd, view.trigger, view.turn) == (
+            main.id,
+            "npm run dev",
+            "serve",
+            "/repo",
+            "user",
+            1,
+        )
+        assert (view.pids, view.log_path) == ((4242,), str(main.log_path))
+
+        child = tasks.adopt(HeldProcess(), command="pytest", trigger="timeout", scope=_SUB_AGENT)
+        assert child is not None
+        await wait_for(lambda: len(told) == 2, description="the sub-agent's start was told")
+        assert [view.id for view in told[-1][0]] == [main.id]
+
+        server.outlive(0, (7, 8))
+        await wait_for(lambda: len(told) == 3, description="the shell's exit was told")
+        (view,), _ = told[-1]
+        assert view.running and (view.shell_exit_code, view.pids) == (0, (7, 8))
+
+        turn = 2
+        built = HeldProcess()
+        build = tasks.adopt(built, command="make", trigger="timeout")
+        assert build is not None
+        built.exit(2)
+        await build.ended.wait()
+        await wait_for(lambda: told[-1][0][-1].ended_at is not None, description="the end was told")
+        assert told[-1][0][-1].exit_code == 2
+
+        count = len(told)
+        await tasks.stop_turns_after(1)
+        assert len(told) == count + 1
+        assert [view.id for view in told[-1][0]] == [main.id]
+
+        # A stop is told as it starts, then once the task ended.
+        count = len(told)
+        await tasks.stop(main, "user")
+        (stopping,), _ = told[count]
+        assert stopping.running and stopping.stopped_by == "user"
+        assert told[-1][0][0].ended_at is not None
     finally:
         await tasks.close()
 

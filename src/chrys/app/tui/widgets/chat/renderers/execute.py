@@ -41,6 +41,7 @@ from chrys.foundation.i18n import msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.tool_kinds import KIND_SHELL
 from chrys.foundation.tool_result_metadata import (
+    SHELL_BACKGROUND_TASK_METADATA_KEY,
     result_text_exit_code,
     result_text_without_exit_code,
     shell_exit_code_from_metadata,
@@ -53,6 +54,11 @@ if TYPE_CHECKING:
 _EXECUTE_OUTPUT = msg("tui.tool_card.execute.output", fallback="Output")
 _EXECUTE_NO_COMMAND = msg("tui.tool_card.execute.no_command", fallback="(no command)")
 _EXECUTE_TIMEOUT = msg("tui.tool_card.execute.timeout", fallback="timeout {duration}")
+_EXECUTE_BACKGROUND_HINT = msg("tui.tool_card.execute.background_hint", fallback="{key} moves it to the background")
+_EXECUTE_BACKGROUNDED = msg(
+    "tui.tool_card.execute.backgrounded",
+    fallback="→ in the background as {task}, pid {pid}",
+)
 
 _OUTPUT_MAX_LINES = 5
 """Max lines of output to show after completion."""
@@ -182,7 +188,7 @@ class ExecuteToolCall(BaseToolCard):
         border-subtitle-color: $text-error;
         border-subtitle-style: not bold;
     }
-    ExecuteToolCall.-rejected > #exec-panel {
+    ExecuteToolCall.-rejected > #exec-panel, ExecuteToolCall.-backgrounded > #exec-panel {
         border: round $tui-border-warning 50%;
         border-title-color: $warning;
         border-title-style: not bold;
@@ -206,6 +212,8 @@ class ExecuteToolCall(BaseToolCard):
         self._progress_lines: list[str] = []
         self._last_elapsed_sec = -1
         self._timer: Timer | None = None
+        self.offers_background = False
+        """Whether the running label says how to move the command to the background (main-agent commands)."""
 
     def _label_text(self, duration_ms: int = 0) -> Text:
         t = Text()
@@ -225,8 +233,13 @@ class ExecuteToolCall(BaseToolCard):
             widget_localizer(self),
             _EXECUTE_TIMEOUT.bind(duration=_fmt_duration(self._timeout)),
         )
+        hint = (
+            " • " + render_str(widget_localizer(self), _EXECUTE_BACKGROUND_HINT.bind(key="ctrl+t"))
+            if self.offers_background
+            else ""
+        )
         t.append(
-            f" ({_fmt_duration(elapsed)} • {timeout_label})",
+            f" ({_fmt_duration(elapsed)} • {timeout_label}{hint})",
             style="dim",
         )
         return t
@@ -381,6 +394,15 @@ class ExecuteToolCall(BaseToolCard):
 
         # Apply styling and border subtitle based on approval / exit code
         panel = self.query_one("#exec-panel", Static)
+        background = self.metadata.get(SHELL_BACKGROUND_TASK_METADATA_KEY)
+        backgrounded = (
+            render_text(
+                widget_localizer(self),
+                _EXECUTE_BACKGROUNDED.bind(task=str(background.get("id")), pid=str(background.get("pid"))),
+            )
+            if isinstance(background, dict)
+            else None
+        )
         if render_status == "rejected":
             panel.border_subtitle = render_text(widget_localizer(self), TOOL_CARD_REJECTED.bind())
             self.add_class("-rejected")
@@ -390,8 +412,13 @@ class ExecuteToolCall(BaseToolCard):
                 if exit_code is not None
                 else TOOL_CARD_ERRORED.bind()
             )
-            panel.border_subtitle = render_text(widget_localizer(self), definition)
+            errored = render_text(widget_localizer(self), definition)
+            # Its shell failed, but what it started still moved to the background.
+            panel.border_subtitle = errored if backgrounded is None else Text(" ").join((errored, backgrounded))
             self.add_class("-error")
+        elif backgrounded is not None:
+            panel.border_subtitle = backgrounded
+            self.add_class("-backgrounded")
         else:
             panel.border_subtitle = render_text(widget_localizer(self), TOOL_CARD_COMPLETED.bind())
             self.add_class("-success")

@@ -10,6 +10,7 @@ from textual.content import Content
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.widgets.sidebar import background_tasks as background_module
 from chrys.app.tui.widgets.sidebar import buddy as buddy_module
 from chrys.app.tui.widgets.sidebar import context as context_module
 from chrys.app.tui.widgets.sidebar import tasks as tasks_module
@@ -40,6 +41,7 @@ async def test_sidebar_empty_state_prompts_are_not_selectable(monkeypatch: pytes
         prompts = [
             pilot.app.query_one(".toc-empty", Static),
             pilot.app.query_one("#tasks-empty", Static),
+            pilot.app.query_one("#background-tasks-empty", Static),
             pilot.app.query_one(".buddy-empty", Static),
         ]
         assert all(not prompt.allow_select for prompt in prompts)
@@ -79,6 +81,7 @@ async def test_buddy_localized_status_treats_translation_markup_as_literal(
 async def test_sidebar_static_chrome_treats_translation_markup_as_literal() -> None:
     markup_definitions = (
         tasks_module._TASKS_EMPTY,
+        background_module._EMPTY,
         toc_module._TOC_EMPTY,
         context_module._CONTEXT_USAGE,
     )
@@ -104,7 +107,7 @@ async def test_sidebar_static_chrome_treats_translation_markup_as_literal() -> N
 
     async with MarkupSidebarApp().run_test(size=(80, 40)) as pilot:
         await pilot.pause()
-        for selector in (".toc-empty", "#tasks-empty", "#ctx-usage-label"):
+        for selector in (".toc-empty", "#tasks-empty", "#background-tasks-empty", "#ctx-usage-label"):
             rendered = pilot.app.query_one(selector, Static).render()
             assert str(rendered) == "[red]x[/red]", selector
             assert not getattr(rendered, "spans", []), selector

@@ -711,6 +711,7 @@
         ["awaitable", "await self._bus.subscribe(SettingsReload, self._on_settings_reload)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(SetApprovalMode, self._on_set_approval_mode)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(SetModelProfile, self._on_set_model_profile)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(BackgroundTaskStop, self._on_background_task_stop)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationRetryRequested, self._on_sub_agent_retry)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationAbortRequested, self._on_sub_agent_abort)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationPaused, self._on_sub_agent_paused)", "unresolved"],
@@ -1456,6 +1457,9 @@
         ["awaitable", "await self._bus.publish(Error(code='session_in_use', message=message, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._loader.stage_hook_manager(operation=operation, staged_loaded=staged_loaded, workspace=staged_workspace)", "unresolved"],
         ["awaitable", "await self._loader.load(profile, operation=operation, staged_loaded=staged_loaded, workspace=staged_workspace, hook_manager=hook_manager, trajectory=trajectory, old_hook_manager=old_hook_manager)", "unresolved"]
+      ],
+      "SessionLifecycle._start_locked._publish_background_tasks": [
+        ["awaitable", "await self._bus.publish(BackgroundTasksChanged(session_id=session_id, tasks=tasks.views(), full=tasks.full))", "unresolved"]
       ],
       "SessionLifecycle._stop_background_tasks": [
         ["awaitable", "await tasks.close()", "unresolved"]
@@ -3596,9 +3600,11 @@
         ["wrapper", "await prepare_mutation_tracking(self._mutation_tracker, tool_name, args, call_id, is_shell, workspace_cwd=self._workspace_cwd, coordinator=self._mutation_coordinator, tool_operation_id=tool_operation_id(_meta))", "unresolved", "chrys.service.mutations.pipeline.prepare_mutation_tracking"],
         ["awaitable", "await self._bus.publish(InvocationToolCallStart(origin=origin, tool_name=tool_name, tool_kind=tool_kind, args=args, call_id=call_id, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await self._on_start_published(provider_call_id)", "unresolved"],
+        ["awaitable", "await bus.subscribe(ShellToBackground, move_to_background)", "unresolved"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
         ["awaitable", "await trajectory.started(tool_name=tool_name, tool_kind=tool_kind, batch_index=self._intermediate_buffer.batch_id if self._intermediate_buffer is not None else None, invocation_order=get_tool_invocation_order(context), arguments=args, invocation_metadata=_meta, tool_context=resolve_tool_call_context(context.function, args) or None, preamble_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
+        ["awaitable", "await self._bus.unsubscribe(ShellToBackground, move_to_background)", "unresolved"],
         ["wrapper", "await finalize_mutation_tracking(self._mutation_tracker, mut_ctx, call_id, coordinator=self._mutation_coordinator, tool_errored=tool_failed)", "unresolved", "chrys.service.mutations.pipeline.finalize_mutation_tracking"],
         ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
         ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, session_id=self._session_id, metadata=metadata))", "unresolved"],
@@ -4655,20 +4661,27 @@
       ]
     },
     "chrys.service.tools.background.registry": {
+      "BackgroundTasks._changed": [
+        ["awaitable", "await self._on_change(self)", "unresolved"]
+      ],
       "BackgroundTasks._sample": [
         ["sleep", "await asyncio.sleep(_STOP_FILE_POLL)", "unresolved"]
       ],
       "BackgroundTasks._stop": [
+        ["wrapper", "await self._changed()", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks._changed"],
         ["awaitable", "await task.process.terminate(force=force)", "unresolved"],
         ["timeout", "await asyncio.wait_for(task.ended.wait(), grace)", "unresolved"],
         ["awaitable", "await task.process.close()", "unresolved"],
         ["sync_primitive", "await task.ended.wait()", "unresolved"]
       ],
       "BackgroundTasks._watch": [
+        ["wrapper", "await self._changed()", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks._changed"],
         ["awaitable", "await task.process.shell_exited()", "unresolved"],
+        ["wrapper", "await self._changed()", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks._changed"],
         ["sync_primitive", "await task.process.wait()", "unresolved"],
         ["awaitable", "await task.log.close(f'[icode] process {_ending(task)}')", "unresolved"],
         ["awaitable", "await task.process.close()", "unresolved"],
+        ["wrapper", "await self._changed()", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks._changed"],
         ["thread_pool", "await asyncio.to_thread(_tidy, self.directory, task.stop_path, set(self._running))", "unresolved"]
       ],
       "BackgroundTasks.close": [
@@ -4681,7 +4694,8 @@
         ["wrapper", "await self.wait_stopped(tasks)", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks.wait_stopped"]
       ],
       "BackgroundTasks.stop_turns_after": [
-        ["wrapper", "await self.wait_stopped(tasks)", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks.wait_stopped"]
+        ["wrapper", "await self.wait_stopped(tasks)", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks.wait_stopped"],
+        ["wrapper", "await self._changed()", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks._changed"]
       ],
       "BackgroundTasks.wait_stopped": [
         ["multi_wait", "await asyncio.wait(stopping, timeout=STOP_WAIT_SECONDS)", "unresolved"]
@@ -4745,14 +4759,14 @@
       ],
       "ShellTools._execute_pipe": [
         ["wrapper", "await _spawn_pipe(command, shell, cwd)", "unresolved", "chrys.service.tools.builtins.shell._spawn_pipe"],
-        ["wrapper", "await self._follow(run, command, reason, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._follow"]
+        ["wrapper", "await self._follow(run, command, reason, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._follow"]
       ],
       "ShellTools._execute_pty": [
         ["wrapper", "await _spawn_pty(command, shell, cwd)", "unresolved", "chrys.service.tools.builtins.shell._spawn_pty"],
-        ["wrapper", "await self._follow(run, command, reason, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._follow"]
+        ["wrapper", "await self._follow(run, command, reason, cwd, timeout)", "unresolved", "chrys.service.tools.builtins.shell.ShellTools._follow"]
       ],
       "ShellTools._follow": [
-        ["wrapper", "await wait_for_subprocess(run.follow(shell_progress_callback.get(None), idle=idle), timeout=max(0.0, deadline - time.monotonic()), process_group_id=owner, process_session_id=owner)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"],
+        ["wrapper", "await wait_for_subprocess(run.follow(shell_progress_callback.get(None), idle=idle, now=now), timeout=max(0.0, deadline - time.monotonic()), process_group_id=owner, process_session_id=owner)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"],
         ["awaitable", "await run.close()", "unresolved"]
       ],
       "ShellTools._output_then": [

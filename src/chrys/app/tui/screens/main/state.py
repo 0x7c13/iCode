@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.events.types import Error
+    from chrys.foundation.events.types import BackgroundTasksChanged, Error
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -87,6 +87,8 @@ class RuntimeState:
     details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
     details_confirmed: bool = False
     approval_mode: ApprovalMode = ApprovalMode.MANUAL
+    background_tasks: BackgroundTasksChanged | None = None
+    """The last list of the main agent's background commands; shown while its session is the current one."""
     # Set when a Save inside the agent config modal renames the active profile.
     # The engine switch waits for the modal to close (``on_agent_config_result``):
     # switching sooner would tear down the live agent while the modal's panels

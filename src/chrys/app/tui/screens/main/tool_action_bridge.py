@@ -11,8 +11,10 @@ from chrys.app.tui.screens.main.ports import EventPublisher
 from chrys.foundation.events.types import (
     ApprovalResponse,
     AskUserResponse,
+    BackgroundTaskStop,
     InvocationAbortRequested,
     InvocationRetryRequested,
+    ShellToBackground,
     SleepSkip,
 )
 from chrys.foundation.models.approval_reuse import ReuseChoice
@@ -40,6 +42,16 @@ class ToolActionBridge:
         """Publish a sleep-skip request."""
         await self._publisher.publish(SleepSkip(call_id=call_id))
         self._log(f"SleepSkip call={call_id}")
+
+    async def move_shells_to_background(self) -> None:
+        """Publish a request to move the main agent's running shell commands to the background."""
+        await self._publisher.publish(ShellToBackground())
+        self._log("ShellToBackground")
+
+    async def stop_background_task(self, task_id: str) -> None:
+        """Publish a request to stop one background command."""
+        await self._publisher.publish(BackgroundTaskStop(task_id=task_id))
+        self._log(f"BackgroundTaskStop task={task_id}")
 
     async def submit_ask_user_inline(self, request_id: str, answers: tuple[AskUserAnswer, ...]) -> None:
         """Publish an inline ask-user response."""

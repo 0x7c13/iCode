@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from chrys.foundation.events.types import (
     InvocationToolCallProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
+    ShellToBackground,
 )
 from chrys.foundation.io.result_content import extract_result_images, extract_result_text
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -444,6 +446,8 @@ class ToolEventMiddleware(FunctionMiddleware):
         progress_token = None
         shell_metadata_token = None
         shell_metadata: dict[str, object] | None = None
+        background_token = None
+        move_to_background: Callable[[ShellToBackground], Awaitable[None]] | None = None
         generic_metadata: dict[str, object] = {}
         generic_metadata_token = tool_result_metadata.set(generic_metadata)
         payload_observation: dict[str, object] = {}
@@ -468,6 +472,18 @@ class ToolEventMiddleware(FunctionMiddleware):
             progress_token = shell_progress_callback.set(_emit_progress)
             shell_metadata = {}
             shell_metadata_token = shell_result_metadata.set(shell_metadata)
+            if origin.kind == "turn":
+                # Only the main agent's commands: the TUI moves those to the background on request.
+                from chrys.service.tools.builtins.shell import shell_background_request
+
+                background_request = asyncio.Event()
+
+                async def _move_to_background(_event: ShellToBackground) -> None:
+                    background_request.set()
+
+                move_to_background = _move_to_background
+                await bus.subscribe(ShellToBackground, move_to_background)
+                background_token = shell_background_request.set(background_request)
 
         started_at = datetime.now(UTC)
         start = time.monotonic()
@@ -525,6 +541,12 @@ class ToolEventMiddleware(FunctionMiddleware):
                 from chrys.service.tools.builtins.shell import shell_result_metadata
 
                 shell_result_metadata.reset(shell_metadata_token)
+            if background_token is not None:
+                from chrys.service.tools.builtins.shell import shell_background_request
+
+                shell_background_request.reset(background_token)
+            if move_to_background is not None:
+                await self._bus.unsubscribe(ShellToBackground, move_to_background)
             tool_result_metadata.reset(generic_metadata_token)
             tool_payload_observation.reset(payload_observation_token)
 

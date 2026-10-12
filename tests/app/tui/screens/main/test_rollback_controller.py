@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -86,6 +86,7 @@ def _make_rollback_controller(
     set_has_messages: Callable[[bool], None] = lambda _value: None,
     post_gc_message: Callable[[GcReclaimRequested], object] = lambda _message: None,
     debug: Callable[[str, str], None] = lambda *_args: None,
+    confirm_stopping_background_tasks: Callable[[int], Awaitable[bool]] | None = None,
 ) -> RollbackController:
     """Build a RollbackController whose collaborators are inert unless overridden."""
     return RollbackController(
@@ -101,6 +102,7 @@ def _make_rollback_controller(
         set_has_messages=set_has_messages,
         post_gc_message=post_gc_message,
         debug=debug,
+        confirm_stopping_background_tasks=confirm_stopping_background_tasks,
     )
 
 
@@ -281,7 +283,10 @@ def test_rollback_direct_command_normalizes_empty_chat_session_id() -> None:
         notify=lambda *_args, **_kwargs: None,
     )
     controller = _make_rollback_controller(
-        view=_adapter_for(screen), bus=bus, engine_provider=object, current_session_id=str
+        view=_adapter_for(screen),
+        bus=bus,
+        engine_provider=lambda: SimpleNamespace(current_turn_number=1),
+        current_session_id=str,
     )
 
     controller.show_rollback("1")
@@ -414,6 +419,71 @@ async def test_rollback_publication_propagates_handler_failure_to_progress_modal
     with pytest.raises(RuntimeError, match="rollback handler failed"):
         await progress._operation()
     assert len(handled) == 1
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+@pytest.mark.parametrize("use_picker", [False, True])
+async def test_rollback_asks_before_stopping_the_background_tasks_of_later_turns(
+    monkeypatch: pytest.MonkeyPatch,
+    use_picker: bool,
+    confirmed: bool,
+) -> None:
+    import chrys.app.tui.screens.diff as diff_pkg
+
+    pushed: list[object] = []
+    callbacks: list[object] = []
+    state_loaders: list[object] = []
+    published: list[UserRollback] = []
+    asked: list[int] = []
+    bus = EventBus()
+
+    async def record_rollback(event: UserRollback) -> None:
+        published.append(event)
+
+    async def confirm(target_turn: int) -> bool:
+        asked.append(target_turn)
+        return confirmed
+
+    await bus.subscribe(UserRollback, record_rollback)
+
+    class _FakeRollbackModal:
+        def __init__(self, **kwargs: object) -> None:
+            state_loaders.append(kwargs["load_state"])
+
+    class _FakeEngine(_RollbackProjectionFenceMixin):
+        mutation_tracker = object()
+        mutation_coordinator = None
+        current_turn_number = 3
+        conversation_revision = 7
+
+        def available_rollback_turns(self) -> list[int]:
+            return [0, 1, 2]
+
+        def turn_prompt_previews(self) -> dict[int, str]:
+            return {}
+
+    def push_screen(modal: object, callback: object | None = None) -> None:
+        pushed.append(modal)
+        if callback is not None:
+            callbacks.append(callback)
+
+    monkeypatch.setattr(diff_pkg, "RollbackModal", _FakeRollbackModal)
+    screen = SimpleNamespace(app=SimpleNamespace(push_screen=push_screen), notify=lambda *_args, **_kwargs: None)
+    controller = _make_rollback_controller(
+        view=_adapter_for(screen), bus=bus, engine_provider=_FakeEngine, confirm_stopping_background_tasks=confirm
+    )
+
+    controller.show_rollback("" if use_picker else "2")
+    if use_picker:
+        assert await state_loaders[0]() is not None  # type: ignore[operator]
+        callbacks[0]((1, False, None))  # type: ignore[operator]
+
+    progress = pushed[-1]
+    assert isinstance(progress, RollbackProgressModal)
+    await progress._operation()
+    # Both selectors land on turn 1: the tasks turns 2 and 3 started would stop.
+    assert asked == [1]
+    assert len(published) == (1 if confirmed else 0)
 
 
 async def test_rollback_picker_loader_revalidates_owner_after_lifecycle_wait(

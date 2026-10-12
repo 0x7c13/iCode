@@ -37,6 +37,7 @@ from chrys.app.tui.screens.main.ports import (
     StatusTrail,
     SuggestionEntry,
 )
+from chrys.app.tui.screens.main.runtime_info import with_background_count
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.widgets import PromptDraft
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.events.types import ProvisionalPresentation
+    from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
@@ -134,6 +136,9 @@ class MainScreenViewAdapter:
         self._session_surfaces: dict[bool, frozenset[SessionSurface]] = {}
         # The status bar as shell mode found it, restored when shell mode exits.
         self._shell_status_snapshot: dict = {}
+        # The runtime trail the status bar shows, before the background command count.
+        self._runtime_trail: StatusTrail = ""
+        self._background_running = 0
 
     # -------------------------------------------------------------- #
     # Generic screen effects
@@ -231,6 +236,9 @@ class MainScreenViewAdapter:
     def call_after_refresh(self, callback: Callable[[], None]) -> None:
         self._screen.call_after_refresh(callback)
 
+    def call_later(self, callback: Callable[[], None]) -> None:
+        self._screen.call_later(callback)
+
     def stop_shell(self) -> None:
         self._screen.query_one(ShellPanel).stop()
 
@@ -322,7 +330,8 @@ class MainScreenViewAdapter:
     # -------------------------------------------------------------- #
 
     def set_tool_info(self, trail: StatusTrail) -> None:
-        self._screen.query_one(StatusBar).set_tool_info(trail)
+        self._runtime_trail = trail
+        self._screen.query_one(StatusBar).set_tool_info(with_background_count(trail, self._background_running))
 
     def show_status(self, text: StatusMessage) -> None:
         self._screen.query_one(StatusBar).show(text)
@@ -412,6 +421,13 @@ class MainScreenViewAdapter:
 
     def clear_todos(self) -> None:
         self._screen.todo_state = TodoListState()
+
+    def set_background_tasks(self, tasks: tuple[BackgroundTaskView, ...]) -> None:
+        self._screen.background_tasks_state = tasks
+        running = sum(task.running for task in tasks)
+        if running != self._background_running:
+            self._background_running = running
+            self.set_tool_info(self._runtime_trail)
 
     def set_header_approval_mode(self, mode: ApprovalMode) -> None:
         self._screen.header_approval_mode = mode
@@ -1470,7 +1486,9 @@ class MainScreenViewAdapter:
         sidebar.remove_class("-shell-active")
         # Restore last for the same reason flash runs last in enter_shell_mode:
         # its map rebuild must see the fully restored layout.
-        status.restore(self._shell_status_snapshot)
+        # With the trail as it is now: the run or its background count may have moved on while the shell showed.
+        trail = with_background_count(self._runtime_trail, self._background_running)
+        status.restore(self._shell_status_snapshot, tool_trail=trail)
         if not dashboard_restored and input_bar.display:
             input_bar.focus_input()
 

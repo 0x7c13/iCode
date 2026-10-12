@@ -126,6 +126,9 @@ receives batches of cleaned output lines (ANSI-stripped, \\r handled).
 shell_result_metadata: ContextVar[dict[str, object] | None] = ContextVar("shell_result_metadata", default=None)
 """Mutable metadata buffer set by ``ToolEventMiddleware`` for shell calls."""
 
+shell_background_request: ContextVar[asyncio.Event | None] = ContextVar("shell_background_request", default=None)
+"""Set by ``ToolEventMiddleware`` for the main agent's shell calls: once set, the command moves to the background."""
+
 
 def _record_shell_exit_code(returncode: int) -> None:
     metadata = shell_result_metadata.get(None)
@@ -384,7 +387,7 @@ IDLE_SECONDS = 60
 _IDLE_CPU_SECONDS = 0.5
 """CPU time that counts as next to none over that minute: under 1% of one core."""
 
-ForegroundEnd = Literal["ended", "idle", "shell_exited"]
+ForegroundEnd = Literal["ended", "idle", "shell_exited", "user"]
 
 
 class _Command:
@@ -464,18 +467,20 @@ class _Command:
         kept, self._captures = self.captured(), ()
         return kept
 
-    async def follow(self, show: Callable[[list[str]], Awaitable[None]] | None, *, idle: bool) -> ForegroundEnd:
+    async def follow(
+        self, show: Callable[[list[str]], Awaitable[None]] | None, *, idle: bool, now: asyncio.Event | None = None
+    ) -> ForegroundEnd:
         """Wait for the command to end, passing its output lines to *show* as they arrive.
 
         Returns "shell_exited" instead once processes outlived the shell by the
-        grace, and with *idle*, "idle" once the command printed nothing and used
-        next to no CPU for IDLE_SECONDS.
+        grace, with *idle*, "idle" once the command printed nothing and used
+        next to no CPU for IDLE_SECONDS, and "user" once *now* is set.
         """
         interval = _PROGRESS_THROTTLE_INTERVAL if show is not None else None
         quiet = asyncio.create_task(self._quiet()) if idle else None
+        asked = asyncio.create_task(now.wait()) if now is not None else None
         waits: set[asyncio.Future[Any]] = {self.finished, self.outlived}
-        if quiet is not None:
-            waits.add(quiet)
+        waits.update(task for task in (quiet, asked) if task is not None)
         try:
             while True:
                 done, _ = await asyncio.wait(waits, timeout=interval, return_when=asyncio.FIRST_COMPLETED)
@@ -490,9 +495,12 @@ class _Command:
                     waits.discard(self.outlived)
                 if quiet in done:
                     return "idle"
+                if asked in done:
+                    return "user"
         finally:
-            if quiet is not None:
-                quiet.cancel()
+            for task in (quiet, asked):
+                if task is not None:
+                    task.cancel()
 
     async def shell_exited(self) -> tuple[int, ...]:
         """Wait for the shell to exit, then return the processes that outlived it by the grace, if any."""
@@ -1210,11 +1218,11 @@ class ShellTools:
                 f"{follow_up}"
             )
             return await self._output_then(captures, budget, notice, f"[exit_code: {task.shell_exit_code}]")
-        why = (
-            f"timeout of {timeout}s reached"
-            if task.trigger == "timeout"
-            else f"no output and next to no CPU use for {IDLE_SECONDS}s"
-        )
+        why = {
+            "timeout": f"timeout of {timeout}s reached",
+            "idle": f"no output and next to no CPU use for {IDLE_SECONDS}s",
+            "user": "the user moved it there",
+        }[task.trigger]
         notice = (
             f"[Still running in the background: {why}]\n"
             f"Task {task.id} (pid {task.pid}) keeps running; do not run the command again.\n"
@@ -1231,7 +1239,7 @@ class ShellTools:
     ) -> tuple[CapturedOutput, int]:
         """Run *command* in a PTY (Unix only). Returns ``(output, returncode)``."""
         run = await _spawn_pty(command, shell, cwd)
-        returncode = await self._follow(run, command, reason, timeout)
+        returncode = await self._follow(run, command, reason, cwd, timeout)
         (output,) = run.captured()
         return output, returncode
 
@@ -1240,16 +1248,16 @@ class ShellTools:
     ) -> tuple[CapturedOutput, int, CapturedOutput]:
         """Run *command* with pipes (Windows fallback). Returns ``(stdout, returncode, stderr)``."""
         run = await _spawn_pipe(command, shell, cwd)
-        returncode = await self._follow(run, command, reason, timeout)
+        returncode = await self._follow(run, command, reason, cwd, timeout)
         stdout, stderr = run.captured()
         return stdout, returncode, stderr
 
-    async def _follow(self, run: _Command, command: str, reason: str, timeout: int | float) -> int:
+    async def _follow(self, run: _Command, command: str, reason: str, cwd: str, timeout: int | float) -> int:
         """Wait up to *timeout* for *run* to end and return its exit code.
 
         The command moves to the background when the session takes it: past the
-        timeout, once it went quiet (with a timeout longer than that), or once
-        processes outlived its shell. Otherwise a timeout kills it, and so does
+        timeout, once it went quiet (with a timeout longer than that), once
+        processes outlived its shell, or when the user asks. Otherwise a timeout kills it, and so does
         leaving any other way — an error, or the call being cancelled; so are the
         processes that outlived a shell the session cannot take.
         """
@@ -1260,10 +1268,11 @@ class ShellTools:
             owner = None if sys.platform == "win32" else run.pid
             deadline = time.monotonic() + timeout
             idle = tasks is not None and timeout > IDLE_SECONDS
+            now = shell_background_request.get(None) if tasks is not None else None
             while True:
                 try:
                     end: ForegroundEnd | Literal["timeout"] = await wait_for_subprocess(
-                        run.follow(shell_progress_callback.get(None), idle=idle),
+                        run.follow(shell_progress_callback.get(None), idle=idle, now=now),
                         timeout=max(0.0, deadline - time.monotonic()),
                         process_group_id=owner,
                         process_session_id=owner,
@@ -1278,6 +1287,7 @@ class ShellTools:
                         run,
                         command=command,
                         reason=reason,
+                        cwd=cwd,
                         trigger=end,
                         scope=current_scope.get(),
                         outlived=run.outlived.result() if end == "shell_exited" else (),
@@ -1291,6 +1301,9 @@ class ShellTools:
                 if end == "idle":
                     # The session takes no more: wait on.
                     idle = False
+                elif end == "user":
+                    if now is not None:
+                        now.clear()
                 elif end == "shell_exited":
                     raise _LeftBehind(run)
                 else:

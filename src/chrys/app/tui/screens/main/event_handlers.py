@@ -70,6 +70,7 @@ from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalReviewed,
     AskUserTimedOut,
+    BackgroundTasksChanged,
     CompactionFinished,
     CompactionStarted,
     ContextCompressed,
@@ -850,7 +851,11 @@ class BackendEventHandler:
         ui = self._ui()
 
         self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
+        if (event.session_id or "") != s.main_usage_source_id:
+            # The list was the previous session's: its commands ended with it.
+            self._state.runtime.background_tasks = None
         s.main_usage_source_id = event.session_id or ""
+        self._show_background_tasks()
         s.profile = event.display_name or event.agent_profile
         s.runtime_metadata = event.runtime_details
         self._state.runtime.details_confirmed = True
@@ -1682,6 +1687,18 @@ class BackendEventHandler:
         label = f"Usage[{event.agent_profile}]" if event.agent_profile else "UsageUpdate"
         source = _usage_source_debug_suffix(event.usage_source_id, main_source_id=s.main_usage_source_id)
         s.debug(label, f"{event.total_tokens:,} ({event.pct:.1f}%) local={event.local_tokens:,}{source}")
+
+    async def on_background_tasks_changed(self, event: BackgroundTasksChanged) -> None:
+        if event.session_id != self.main_usage_source_id:
+            return  # A session that ended, its commands stopping after it.
+        self._state.runtime.background_tasks = event
+        # On the screen's own pump: the registry publishes from a task without the app's context.
+        self._view.call_later(self._show_background_tasks)
+
+    def _show_background_tasks(self) -> None:
+        """Show the current session's last background command list, or none."""
+        last = self._state.runtime.background_tasks
+        self._ui().set_background_tasks(last.tasks if last is not None else ())
 
     async def on_todo_list_updated(self, event: TodoListUpdated) -> None:
         s = self

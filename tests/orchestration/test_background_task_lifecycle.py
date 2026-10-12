@@ -15,7 +15,13 @@ import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.events.types import InvocationToolCallStart, UserInject
+from chrys.foundation.events.types import (
+    BackgroundTasksChanged,
+    BackgroundTaskStop,
+    InvocationToolCallStart,
+    ShellToBackground,
+    UserInject,
+)
 from chrys.foundation.platform import get_platform
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -110,6 +116,41 @@ async def test_background_command_outlives_an_interrupted_turn_and_stops_with_th
     assert host.engine.session.background_tasks is None
     assert task.log_path.read_text(encoding="utf-8").endswith("[icode] process stopped at session end\n")
     await wait_for(lambda: not server.is_running(), timeout=ENGINE_TURN_TIMEOUT, description="the server exited")
+
+
+async def test_the_user_moves_a_command_to_the_background_watches_it_and_stops_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "serve.py"
+    script.write_text(_SERVE, encoding="utf-8")
+    server_pid = tmp_path / "server.pid"
+    client = MockChatClient(responses=[_shell_call("call-1", script, server_pid, timeout=60), MockResponse(text="ok")])
+    host = _host(monkeypatch, tmp_path, client, builtins=["shell"])
+    told: list[BackgroundTasksChanged] = []
+
+    async def on_change(event: BackgroundTasksChanged) -> None:
+        told.append(event)
+
+    await host.event_bus.subscribe(BackgroundTasksChanged, on_change)
+    try:
+        turn = asyncio.create_task(host.run_until_final("serve"))
+        await wait_for(lambda: server_pid.exists() or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="served")
+        assert not turn.done()
+        server = psutil.Process(int(server_pid.read_text(encoding="utf-8")))
+        session_id = host.engine.session.session_id
+        await host.event_bus.publish(ShellToBackground(session_id=session_id))
+
+        assert (await asyncio.wait_for(turn, ENGINE_TURN_TIMEOUT)).text == "ok"
+        [view] = told[-1].tasks
+        assert (told[-1].session_id, view.trigger, view.running) == (session_id, "user", True)
+        assert server.is_running()
+
+        await host.event_bus.publish(BackgroundTaskStop(task_id=view.id, session_id=session_id))
+        await wait_for(lambda: not told[-1].tasks[0].running, timeout=ENGINE_TURN_TIMEOUT, description="stopped")
+        assert told[-1].tasks[0].stopped_by == "user"
+        await wait_for(lambda: not server.is_running(), timeout=ENGINE_TURN_TIMEOUT, description="the server exited")
+    finally:
+        await host.shutdown()
 
 
 async def test_main_agents_sleep_returns_once_the_user_sends_a_message(

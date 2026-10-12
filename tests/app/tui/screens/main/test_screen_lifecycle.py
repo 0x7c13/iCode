@@ -277,8 +277,7 @@ def test_prompt_history_uses_hidden_ctrl_r_binding() -> None:
     assert binding.show is False
     assert binding.priority is True
     assert "ctrl+r" in screen._bindings.key_to_bindings
-    assert all(binding.key != "ctrl+t" for binding in MainScreen.BINDINGS)
-    assert "ctrl+t" not in screen._bindings.key_to_bindings
+    assert [binding.key for binding in MainScreen.BINDINGS if binding.action == "prompt_history"] == ["ctrl+r"]
     assert "action_toggle_toc" not in MainScreen.__dict__
 
 

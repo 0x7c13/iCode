@@ -9,7 +9,7 @@ Flash:  Agent [profile] Model [model] [message text] ... [tool counts]
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from rich.cells import cell_len
@@ -710,17 +710,24 @@ class StatusBar(Widget):
             "tool_trail": self._tool_trail,
         }
 
-    def restore(self, state: dict) -> None:
-        """Restore a previously snapshotted display state."""
+    def restore(self, state: dict, *, tool_trail: StatusTrail | None = None) -> None:
+        """Restore a previously snapshotted display state.
+
+        *tool_trail* replaces the snapshot's trail, which moved on meanwhile; a
+        flash that showed the old one shows it too.
+        """
         self._start_time = state.get("start_time", 0.0)
         self._tool_count = state.get("tool_count", 0)
-        self._tool_trail = state.get("tool_trail", self._tool_trail)
+        snapshot_trail = state.get("tool_trail", self._tool_trail)
+        self._tool_trail = snapshot_trail if tool_trail is None else tool_trail
+        flash: _FlashState | None = state.get("flash")
+        if flash is not None and flash.trail == snapshot_trail:
+            flash = replace(flash, trail=self._tool_trail)
         if not state.get("visible"):
             self.clear_status()
         elif not state.get("content_shown", True):
-            self._flash = state.get("flash")
+            self._flash = flash
             self.status = state.get("status", "")
-            flash = self._flash
             self.update_classes(
                 {
                     "-warn": flash.warn if flash is not None else False,
@@ -747,10 +754,10 @@ class StatusBar(Widget):
                 )
             set_widgets_visibility_without_layout(visibility)
             self._refresh_tag_interaction_state()
-        elif (f := state.get("flash")) is not None:
-            self.flash(f.text, warn=f.warn, error=f.error, caution=f.caution, trail=f.trail)
+        elif flash is not None:
+            self.flash(flash.text, warn=flash.warn, error=flash.error, caution=flash.caution, trail=flash.trail)
             if self._flash is not None:
-                self._flash.elapsed_seconds = f.elapsed_seconds
+                self._flash.elapsed_seconds = flash.elapsed_seconds
                 self._refresh_flash_text()
         else:
             self.show(state["status"])

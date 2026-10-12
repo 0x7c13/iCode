@@ -272,6 +272,67 @@ async def test_full_session_kills_the_timed_out_command(
     assert tasks.running == []
 
 
+_READY_THEN_WAIT = """\
+import pathlib, sys, time
+pathlib.Path(sys.argv[1]).write_text("ready", encoding="utf-8")
+while not pathlib.Path(sys.argv[2]).exists():
+    time.sleep(0.05)
+print("finished", flush=True)
+"""
+
+
+def _asked_to_background(command: str, shell: ShellTools, asked: asyncio.Event) -> asyncio.Task[str]:
+    token = shell_mod.shell_background_request.set(asked)
+    try:
+        return asyncio.create_task(shell.execute(command, reason="test", timeout=60))
+    finally:
+        shell_mod.shell_background_request.reset(token)
+
+
+async def test_the_user_moves_a_running_command_to_the_background(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path
+) -> None:
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = tmp_path / "family.py"
+    script.write_text(_SILENT_FAMILY, encoding="utf-8")
+    pids = tmp_path / "pids"
+    asked = asyncio.Event()
+    run = _asked_to_background(_python_command(script, pids), shell, asked)
+    processes = await _family(pids, run)
+
+    asked.set()
+    result = await run
+
+    [task] = tasks.running
+    assert "[Still running in the background: the user moved it there]" in result
+    assert metadata[SHELL_BACKGROUND_TASK_METADATA_KEY]["trigger"] == "user"
+    assert Path(task.cwd).samefile(Path.cwd())
+    await tasks.stop(task, "user")
+    await _gone(processes)
+
+
+async def test_a_full_session_keeps_the_command_the_user_asked_to_move_in_the_foreground(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(registry_mod, "MAX_RUNNING_TASKS", 0)
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = tmp_path / "ready.py"
+    script.write_text(_READY_THEN_WAIT, encoding="utf-8")
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    asked = asyncio.Event()
+    run = _asked_to_background(_python_command(script, ready, release), shell, asked)
+    await wait_for(lambda: ready.exists() or run.done(), timeout=ENGINE_TURN_TIMEOUT, description="the command started")
+    assert not run.done()
+
+    asked.set()
+    await wait_for(lambda: not asked.is_set(), description="the request was turned down")
+    release.touch()
+    result = await run
+
+    assert _lines(result)[-2:] == ["finished", "[exit_code: 0]"]
+    assert tasks.running == []
+
+
 def test_description_offers_the_background_only_with_a_registry(tmp_path: Path) -> None:
     runtime = SessionEnvironment.capture()
 

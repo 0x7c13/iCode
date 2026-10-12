@@ -23,11 +23,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.service.tools.background.log import TaskLog
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterable
+    from collections.abc import Awaitable, Callable, Coroutine, Iterable
     from pathlib import Path
 
     from chrys.foundation.models.invocations import InvocationOrigin
@@ -149,6 +150,7 @@ class BackgroundTask:
         stop_path: Path,
         *,
         reason: str,
+        cwd: str,
         trigger: str,
         scope: TaskScope,
         turn: int,
@@ -156,6 +158,7 @@ class BackgroundTask:
         self.id = task_id
         self.command = command
         self.reason = reason
+        self.cwd = cwd
         self.trigger = trigger
         self.scope = scope
         self.turn = turn
@@ -164,6 +167,8 @@ class BackgroundTask:
         self.log_path = log.path
         self.stop_path = stop_path
         self.started = time.monotonic()
+        self.started_at = time.time()
+        self.ended_at: float | None = None
         self.exit_code: int | None = None
         """The shell's exit code, once the command ended with it, without being stopped."""
         self.shell_exit_code: int | None = None
@@ -191,6 +196,23 @@ class BackgroundTask:
         listed = ", ".join(str(pid) for pid in pids[:_LISTED_PIDS])
         return f"{'pid' if len(pids) == 1 else 'pids'} {listed}{', …' if len(pids) > _LISTED_PIDS else ''}"
 
+    def view(self) -> BackgroundTaskView:
+        return BackgroundTaskView(
+            id=self.id,
+            command=self.command,
+            reason=self.reason,
+            cwd=self.cwd,
+            trigger=self.trigger,
+            turn=self.turn,
+            pids=self.outlived or (self.pid,),
+            log_path=str(self.log_path),
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+            exit_code=self.exit_code,
+            shell_exit_code=self.shell_exit_code,
+            stopped_by=self.stopped_by,
+        )
+
     @property
     def outcome(self) -> str:
         """How the command ended, as the last line of its log says it; until then, how it runs."""
@@ -210,11 +232,15 @@ class BackgroundTasks:
         *,
         turn: Callable[[], int] | None = None,
         trajectory: Callable[[], TrajectoryContext | None] | None = None,
+        on_change: Callable[[BackgroundTasks], Awaitable[None]] | None = None,
     ) -> None:
-        """*turn* reads the main agent's current turn; *trajectory* the session's recording scope, if any."""
+        """*turn* reads the main agent's current turn; *trajectory* the session's recording scope, if any;
+        *on_change* is awaited each time a task starts, outlives its shell, ends or is forgotten.
+        """
         self.directory = session_dir / BACKGROUND_DIR_NAME
         self._turn = turn
         self._trajectory = trajectory
+        self._on_change = on_change
         self._running: dict[str, BackgroundTask] = {}
         self._ended: deque[BackgroundTask] = deque(maxlen=_KEPT_FINISHED_LOGS)
         """The newest tasks that ended; a rollback's own stops are left out, as the turns they belong to."""
@@ -239,6 +265,7 @@ class BackgroundTasks:
         command: str,
         trigger: str,
         reason: str = "",
+        cwd: str = "",
         scope: TaskScope = MAIN_SCOPE,
         outlived: tuple[int, ...] = (),
     ) -> BackgroundTask | None:
@@ -266,6 +293,7 @@ class BackgroundTasks:
             log,
             self._stop_path(task_id),
             reason=reason,
+            cwd=cwd,
             trigger=trigger,
             scope=scope,
             turn=turn,
@@ -302,14 +330,17 @@ class BackgroundTasks:
             and task.stopped_by != "agent"
         ]
 
+    def views(self) -> tuple[BackgroundTaskView, ...]:
+        """The main agent's running commands and the few that ended last, as they are now."""
+        return tuple(task.view() for task in self._listed())
+
     def reminder(self, shell_name: str) -> str | None:
         """The main agent's running commands and the few that ended last, or None when it never had any.
 
         Only what stays the same until a task changes state: no output, no times.
         What is listed here is told: a sleep does not tell it again.
         """
-        ended = [task for task in self._ended if task.scope == MAIN_SCOPE][-_LISTED_ENDED:]
-        tasks = [task for task in self._running.values() if task.scope == MAIN_SCOPE] + ended
+        tasks = self._listed()
         if not tasks:
             return None
         lines = ["Background commands of this session:"]
@@ -350,6 +381,8 @@ class BackgroundTasks:
         removed = [task for task in self._ended if task.scope == MAIN_SCOPE and task.turn > turn]
         for task in removed:
             self._ended.remove(task)
+        if removed:
+            await self._changed()
 
     async def wait_stopped(self, tasks: Iterable[BackgroundTask]) -> None:
         """Wait a little for *tasks*, being stopped, to end."""
@@ -378,6 +411,14 @@ class BackgroundTasks:
         if self._sampler is not None:
             self._sampler.cancel()
         await self.stop_all()
+
+    def _listed(self) -> list[BackgroundTask]:
+        ended = [task for task in self._ended if task.scope == MAIN_SCOPE][-_LISTED_ENDED:]
+        return [task for task in self._running.values() if task.scope == MAIN_SCOPE] + ended
+
+    async def _changed(self) -> None:
+        if self._on_change is not None:
+            await self._on_change(self)
 
     def _stop_path(self, task_id: str) -> Path:
         return self.directory / f"{task_id}.stop"
@@ -409,6 +450,7 @@ class BackgroundTasks:
             self._sampler = None
 
     async def _stop(self, task: BackgroundTask) -> None:
+        await self._changed()  # The list shows it stopping.
         for force, grace in ((False, _TERM_GRACE), (True, _KILL_GRACE)):
             try:
                 await task.process.terminate(force=force)
@@ -423,9 +465,11 @@ class BackgroundTasks:
 
     async def _watch(self, task: BackgroundTask) -> None:
         try:
+            await self._changed()
             if (outlived := await task.process.shell_exited()) and task.stopped_by is None:
                 task.shell_exit_code, task.outlived = task.process.returncode, outlived
                 task.log.note(f"[icode] shell exited with code {task.shell_exit_code}; other processes still running")
+                await self._changed()
             code = await task.process.wait()
             if task.stopped_by is None and task.shell_exit_code is None:
                 task.exit_code = code
@@ -435,6 +479,7 @@ class BackgroundTasks:
             self._running.pop(task.id, None)
             if task.stopped_by != "rollback":
                 self._ended.append(task)
+            task.ended_at = time.time()
             task.ended.set()
             self._record(
                 EventType.BACKGROUND_TASK_FINISHED,
@@ -446,6 +491,7 @@ class BackgroundTasks:
                     "duration_ms": int((time.monotonic() - task.started) * 1000),
                 },
             )
+        await self._changed()
         await asyncio.to_thread(_tidy, self.directory, task.stop_path, set(self._running))
 
     def _record(self, event_type: str, payload: dict[str, Any]) -> None:

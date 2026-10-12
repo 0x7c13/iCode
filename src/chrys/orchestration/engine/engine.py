@@ -27,6 +27,7 @@ from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandl
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
     AgentRuntimeDetails,
+    BackgroundTaskStop,
     Error,
     InvocationAborted,
     InvocationAbortRequested,
@@ -497,6 +498,7 @@ class AgentEngine:
         await self._bus.subscribe(SettingsReload, self._on_settings_reload)
         await self._bus.subscribe(SetApprovalMode, self._on_set_approval_mode)
         await self._bus.subscribe(SetModelProfile, self._on_set_model_profile)
+        await self._bus.subscribe(BackgroundTaskStop, self._on_background_task_stop)
         await self._bus.subscribe(InvocationRetryRequested, self._on_sub_agent_retry)
         await self._bus.subscribe(InvocationAbortRequested, self._on_sub_agent_abort)
         await self._bus.subscribe(InvocationPaused, self._on_sub_agent_paused)
@@ -717,6 +719,15 @@ class AgentEngine:
     async def _on_user_inject_cancel(self, event: UserInjectCancel) -> None:
         """Handle user cancellation of a still-pending mid-run injection."""
         await self._turns.on_user_inject_cancel(event)
+
+    async def _on_background_task_stop(self, event: BackgroundTaskStop) -> None:
+        """Start stopping the background command the user picked (task ids are random, never reused)."""
+        tasks = self._session.background_tasks
+        if tasks is None:
+            return
+        for task in tasks.running:
+            if task.id == event.task_id:
+                tasks.stop(task, "user")
 
     async def _on_set_approval_mode(self, event: SetApprovalMode) -> None:
         """Update the active approval mode on the running middleware."""

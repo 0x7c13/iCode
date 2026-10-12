@@ -24,6 +24,7 @@ from chrys.foundation.config.settings_store import load_settings
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.foundation.events.types import (
+    BackgroundTasksChanged,
     Error,
     SessionClear,
     SessionDelete,
@@ -526,8 +527,18 @@ class SessionLifecycle:
         if session_dir is not None and self._session.background_tasks is None:
             from chrys.service.tools.background import BackgroundTasks
 
+            session_id = self._session.session_id
+
+            async def _publish_background_tasks(tasks: BackgroundTasks) -> None:
+                await self._bus.publish(
+                    BackgroundTasksChanged(session_id=session_id, tasks=tasks.views(), full=tasks.full)
+                )
+
             self._session.background_tasks = BackgroundTasks(
-                session_dir, turn=lambda: self._session.turn_number, trajectory=self._trajectory_recorder.context
+                session_dir,
+                turn=lambda: self._session.turn_number,
+                trajectory=self._trajectory_recorder.context,
+                on_change=_publish_background_tasks,
             )
 
         from chrys.foundation.observability.sink import get_otel_sink

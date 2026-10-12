@@ -61,6 +61,7 @@ from chrys.app.tui.widgets.chat.messages import (
 )
 from chrys.app.tui.widgets.chat.ports import ChatTranscriptPanelMarker, TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineResized, AskUserToolCall
+from chrys.app.tui.widgets.chat.renderers.execute import ExecuteToolCall
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.replay import HistoryReplayRenderer
 from chrys.app.tui.widgets.chat.replay_mount import ReplayMountController
@@ -175,6 +176,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             widget.handle_chat_viewport_resize(self.size.height)
         if isinstance(widget, SubAgentToolCall) and self._sub_agent_transcript_loader is not None:
             widget.configure_transcript_loader(self._sub_agent_transcript_loader)
+        if isinstance(widget, ExecuteToolCall):
+            widget.offers_background = True
 
     def gc_freeze_block_reason(self) -> GcFreezeBlockReason | None:
         """The MainScreen owns ChatPanel's activity and scroll hard gates."""

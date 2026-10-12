@@ -370,7 +370,8 @@ App:ansi #approval-reason .text-area--placeholder {
 }
 
 App:ansi ConversationToc > .toc-empty,
-App:ansi TasksPanel > #tasks-empty,
+App:ansi TasksPanel #tasks-empty,
+App:ansi BackgroundTaskList > #background-tasks-empty,
 App:ansi BuddyPanel .buddy-empty {
     color: $foreground-muted;
 }

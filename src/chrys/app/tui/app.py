@@ -865,6 +865,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         for screen in self.screen_stack:
             if isinstance(screen, SettingsDialog):
                 screen.commit_pending()
+        main = self._main_screen
+        if main is not None and main in self.screen_stack and main.background_tasks_running:
+            main.action_quit()  # It asks whether the background commands may stop.
+            return
         self.exit()
 
     def action_copy_with_insert(self) -> None:

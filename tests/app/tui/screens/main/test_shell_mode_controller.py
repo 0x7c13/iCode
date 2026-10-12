@@ -204,8 +204,8 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
         def flash(self, message: str, **kwargs: object) -> None:
             calls.append(("status_flash", (message, kwargs)))
 
-        def restore(self, state: dict[str, object]) -> None:
-            calls.append(("status_restore", state))
+        def restore(self, state: dict[str, object], *, tool_trail: object = None) -> None:
+            calls.append(("status_restore", {**state, "tool_trail": tool_trail}))
 
     class _FakeInput:
         display = True
@@ -288,6 +288,8 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
     assert ("shell_hide", None) in calls
     assert ("session_json_finish", False) in calls
     assert ("input_focus", None) in calls
+    # Restored with the trail as it is now, which may have changed while the shell showed.
+    assert ("status_restore", {"visible": True, "status": "Thinking", "tool_trail": ""}) in calls
 
 
 def test_panel_focus_hears_each_shell_and_fullscreen_change_after_the_state_lands() -> None:

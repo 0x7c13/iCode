@@ -29,6 +29,19 @@ _RUNTIME_FILES = msg(
     fallback="{count} file",
     plural_fallback="{count} files",
 )
+_RUNTIME_BACKGROUND = msg(
+    "tui.status.runtime_background",
+    fallback="{count} background task",
+    plural_fallback="{count} background tasks",
+)
+
+
+def with_background_count(trail: StatusTrail, running: int) -> StatusTrail:
+    """*trail*, then how many background commands run, when any do."""
+    if not running:
+        return trail
+    parts = trail if isinstance(trail, tuple) else ((trail,) if trail else ())
+    return (*parts, _RUNTIME_BACKGROUND.bind(count=running))
 
 
 class RegistryRuntimeInfoProvider:
