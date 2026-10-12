@@ -37,6 +37,8 @@ During execution, watch the graph to see which nodes are running, completed, or 
 
 If an error puts a node in the “awaiting retry” state, click it to inspect the error details, resolve the issue, and click “Retry”. You can also close the node details and cancel the entire run. Manual retry applies only to nodes awaiting retry in the current run; it cannot rerun completed nodes or resume a run that has ended. Retrying may repeat file writes or external requests, and changes already made are not automatically undone.
 
+While you work with a workflow, the terminal tab shows the workflow's title. Spinning dots before it, such as `⠋`, mean the run is in progress; `!` means a node is awaiting retry, and `?` means the workflow or one of its agents is waiting for you to answer a question or approve a tool call. When the run ends, `✓` marks a completed run and `✗` a failed one; a cancelled run shows no mark. When you switch back to chat, the tab shows the chat session again.
+
 After generating a project introduction, the example includes the draft in a question for review. Answer `ok` to accept it, or provide specific revision requests. The example performs at most two writing rounds and outputs the final introduction. The `deep` path also outputs suggestions for further reading.
 
 When the run ends with a result, click “Result” to the right of “■ Cancel” to read the final output. If the workflow has several outputs, each one gets its own tab, named after its output node. “Output” still shows the full record, including node states and progress messages. Click “▶ Start” again to enter new input and run again.

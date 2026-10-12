@@ -34,6 +34,7 @@ from chrys.app.tui.screens.main.ports import (
     StatusTrail,
 )
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
+from chrys.app.tui.screens.main.session_title import QUESTION_MARK, RETRY_MARK, AttentionMark
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -310,6 +311,29 @@ class BackendEventHandler:
         self._runtime_info = runtime_info or RegistryRuntimeInfoProvider(services)
         self._live_diff = live_diff or LiveDiffTracker()
         self._seen_warnings: set[_WarningDedupeKey] = set()
+        # Chat sub-agents paused for the user's Retry/Abort decision.
+        self._paused_sub_agents: set[str] = set()
+
+    def attention_mark(self) -> AttentionMark:
+        """Why the live run waits for the user: ``!`` a paused sub-agent, ``?`` an approval or question."""
+        # Only chat sub-agents pause, and a cancel can end one without an event:
+        # past its chat run, a pause no longer waits.
+        if self._paused_sub_agents and self.agent_running:
+            return RETRY_MARK
+        if self._approval_controller.awaiting_user or self._question_controller.awaiting_user:
+            return QUESTION_MARK
+        return ""
+
+    def reset_chat_attention(self) -> None:
+        """A new run starts with no paused sub-agent from the last one."""
+        self._paused_sub_agents.clear()
+
+    def sub_agent_decided(self, invocation_id: str) -> None:
+        """The user chose Retry or Abort; a new failure pauses it again."""
+        self._paused_sub_agents.discard(invocation_id)
+
+    def inline_question_answered(self, request_id: str) -> None:
+        self._question_controller.inline_answered(request_id)
 
     def _render_display(self, reference: MessageRef) -> str:
         controller = self._locale_controller
@@ -1447,6 +1471,7 @@ class BackendEventHandler:
         if not s.agent_running:
             return
 
+        self._paused_sub_agents.add(event.origin.invocation_id)
         self._ui().sub_agent_paused(
             event.origin.invocation_id,
             event.reason,
@@ -1464,12 +1489,14 @@ class BackendEventHandler:
         """Clear the paused state — the controller is running again."""
         if not _chat_sub_agent(event.origin):
             return
+        self._paused_sub_agents.discard(event.origin.invocation_id)
         self._ui().sub_agent_resumed_after_pause(event.origin.invocation_id)
 
     async def on_sub_agent_cascade_aborted(self, event: InvocationCascadeAborted) -> None:
         """Mark the sub-agent card as cancelled by a global interrupt."""
         if not _chat_sub_agent(event.origin):
             return
+        self._paused_sub_agents.discard(event.origin.invocation_id)
         self._ui().sub_agent_cascade_aborted(event.origin.invocation_id)
 
     async def on_sub_agent_aborted(self, event: InvocationAborted) -> None:
@@ -1482,6 +1509,7 @@ class BackendEventHandler:
         """
         if not _chat_sub_agent(event.origin):
             return
+        self._paused_sub_agents.discard(event.origin.invocation_id)
         self._ui().sub_agent_aborted(event.origin.invocation_id, event.last_error)
 
     # -- Live /diff accumulation helpers -----------------------------------
@@ -1605,7 +1633,7 @@ class BackendEventHandler:
         return self._gateway().question_can_reopen_modal(event)
 
     async def on_ask_user_timed_out(self, event: AskUserTimedOut) -> None:
-        """Dismiss or dequeue an ask_user dialog after the backend timeout fires."""
+        """Dismiss or dequeue an ask_user dialog the backend timed out or withdrew."""
         await self._questions().on_timed_out(event)
 
     async def on_usage_update(self, event: UsageUpdate) -> None:

@@ -144,6 +144,15 @@ def _make_pause_handler(agent_running: bool) -> tuple[BackendEventHandler, list[
         def sub_agent_paused(self, *args) -> None:
             calls.append(args)
 
+        def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:
+            calls.append(("resumed", invocation_id))
+
+        def sub_agent_cascade_aborted(self, invocation_id: str) -> None:
+            calls.append(("cascade_aborted", invocation_id))
+
+        def sub_agent_aborted(self, invocation_id: str, last_error: str) -> None:
+            calls.append(("aborted", invocation_id))
+
     def _query_one(_cls):
         return _FakePanel()
 
@@ -185,6 +194,48 @@ def test_on_sub_agent_paused_ignores_a_workflow_node_child() -> None:
     handler, calls = _make_pause_handler(agent_running=True)
     asyncio.run(_run_pause(handler, parent=InvocationOrigin("workflow_node", "", "node-run", None)))
     assert calls == []
+    assert handler.attention_mark() == ""
+
+
+@pytest.mark.parametrize("settle", ["decided", "resumed", "cascade_aborted", "aborted", "next_run"])
+def test_a_paused_chat_sub_agent_waits_for_a_retry_decision_until_settled(settle: str) -> None:
+    from chrys.foundation.events.types import InvocationAborted, InvocationCascadeAborted, InvocationResumed
+
+    handler, _calls = _make_pause_handler(agent_running=True)
+    assert handler.attention_mark() == ""
+    asyncio.run(_run_pause(handler))
+    assert handler.attention_mark() == "!"
+
+    origin = InvocationOrigin("sub_agent", "", "inv-1", None)
+    if settle == "decided":
+        handler.sub_agent_decided("inv-1")
+    elif settle == "resumed":
+        asyncio.run(handler.on_sub_agent_resumed_after_pause(InvocationResumed(origin=origin)))
+    elif settle == "cascade_aborted":
+        asyncio.run(handler.on_sub_agent_cascade_aborted(InvocationCascadeAborted(origin=origin)))
+    elif settle == "aborted":
+        asyncio.run(handler.on_sub_agent_aborted(InvocationAborted(origin=origin)))
+    else:
+        handler.reset_chat_attention()
+
+    assert handler.attention_mark() == ""
+    asyncio.run(_run_pause(handler))
+    assert handler.attention_mark() == "!", "a later failure pauses it again"
+
+
+def test_an_ignored_late_pause_does_not_wait_for_the_user() -> None:
+    handler, _calls = _make_pause_handler(agent_running=False)
+    asyncio.run(_run_pause(handler))
+    assert handler.attention_mark() == ""
+
+
+def test_a_pause_its_chat_run_ended_without_settling_no_longer_waits() -> None:
+    """A cancel can end a paused child with no event; a workflow run started next must not show its ``!``."""
+    handler, _calls = _make_pause_handler(agent_running=True)
+    asyncio.run(_run_pause(handler))
+    assert handler.attention_mark() == "!"
+    handler._state.run.agent_running = False
+    assert handler.attention_mark() == ""
 
 
 # ──────────── compaction events: status bar text ────────────────────────

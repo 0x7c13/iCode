@@ -21,6 +21,7 @@ from chrys.foundation.models.workspace import Workspace
 
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
+    from chrys.app.tui.screens.main.session_title import WorkflowTab
     from chrys.app.tui.screens.main.state import MainScreenServices
     from chrys.app.tui.widgets.workflow.panel import WorkflowPanel
     from chrys.foundation.i18n import MessageRef
@@ -36,10 +37,12 @@ class WorkflowController:
         cwd: Callable[[], str],
         schedule: Callable[[Callable[[], None]], bool],
         sync_chrome: Callable[[], None],
+        sync_terminal_title: Callable[[WorkflowTab | None], None],
         locale_controller: LocaleController | None,
     ) -> None:
         self.services, self.panel, self.cwd = services, panel, cwd
         self.schedule, self.sync_chrome = schedule, sync_chrome
+        self.sync_terminal_title = sync_terminal_title
         self.locale_controller = locale_controller
         self.workflow_mode = False
         self.closed = False
@@ -196,7 +199,11 @@ class WorkflowController:
         self.session_view.refresh_detail()
         run = self.session_view.view_run()
         title = run.started.title if run is not None else panel.definition.manifest.get("title", "")
-        panel.set_header(title, session_id=self.session_id, cwd=self.project_cwd or self.cwd())
+        cwd = self.project_cwd or self.cwd()
+        panel.set_header(title, session_id=self.session_id, cwd=cwd)
+        self.sync_terminal_title(
+            self.run_control.terminal_tab(title or panel.definition.workflow_id, cwd) if self.workflow_mode else None
+        )
         self.sync_chrome()
         if not panel.display:
             return

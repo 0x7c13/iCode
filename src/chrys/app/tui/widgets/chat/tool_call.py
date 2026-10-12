@@ -41,6 +41,7 @@ from chrys.app.tui.support.gc_freeze import (
     GcRemovedContent,
     current_gc_freeze_epoch,
 )
+from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
@@ -1145,6 +1146,7 @@ class BaseToolCard(ToolCopyExcludedMixin, Widget):
     """Shared state and copy/view behavior for tool renderer cards."""
 
     status: reactive[str] = reactive("running")
+    _SPINNERS: ClassVar[str] = SPINNER_FRAMES
 
     def __init__(
         self,
@@ -1241,8 +1243,6 @@ class ToolCall(BaseToolCard):
         border-title-style: not bold;
     }
     """
-
-    _SPINNERS: ClassVar[str] = "◐◓◑◒"
 
     def __init__(
         self,

@@ -23,6 +23,20 @@ The top of the "Session Title" dialog also shows the session ID. Click "Copy ID"
 
 After you set a title manually, the new title appears in the session list and on the main screen, and iCode stops updating that session's title automatically. If [automatic session titles](../configuration/settings.md#sessions) are enabled, clearing the "Session Title" dialog and saving restores the existing automatic title and lets iCode continue updating it automatically during subsequent tasks.
 
+## Follow a task in the terminal tab
+
+The terminal tab shows your latest message, or the session title once iCode updates it; a title you set yourself always stays. A mark before it shows how the current task is going, so you can check on it from another tab:
+
+| Mark | Meaning |
+| --- | --- |
+| Spinning dots, such as `⠋` | The agent is working. |
+| `?` | The agent is waiting for you to approve a tool call or answer a question. |
+| `!` | A sub-agent failed and is waiting for you to click "Retry" or "Abort". |
+| `✓` | The task is finished. |
+| `✗` | The task failed. |
+
+A task you stop shows no mark, and the mark clears when you start the next task. Some terminals do not show tab titles.
+
 ## Resume an existing session
 
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.

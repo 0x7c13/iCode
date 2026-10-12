@@ -21,7 +21,7 @@ import re
 from collections.abc import Callable
 from contextlib import suppress
 from html import unescape as html_unescape
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 from textual.timer import Timer
@@ -313,8 +313,6 @@ class SkillToolCall(BaseToolCard):
         border-title-style: not bold;
     }
     """
-
-    _SPINNERS: ClassVar[str] = "◐◓◑◒"
 
     def __init__(
         self,

@@ -448,6 +448,47 @@ def test_a_verdict_for_an_unknown_request_changes_nothing() -> None:
     assert port.review_counts == [1]
 
 
+async def test_approval_controller_awaits_the_user_only_while_a_person_must_decide() -> None:
+    port = _ApprovalPort()
+    controller = ApprovalQueueController(port, timeout_seconds=lambda: 30.0)
+
+    await controller.on_request(_approval_request("judged"))
+    assert controller.awaiting_user is False, "the judge decides before a person is asked"
+    await controller.on_reviewed(ApprovalReviewed(request_id="judged", approved=False, reason="danger"))
+    assert controller.awaiting_user is True
+    port.dialogs[0].user_decision_submitted = True
+    assert controller.awaiting_user is False, "a submitted decision no longer waits"
+    port.dialogs[0].user_decision_submitted = False
+    await controller.on_cancelled(ApprovalCancelled(request_id="judged"))
+    assert controller.awaiting_user is False
+
+    await controller.on_request(_approval_request("manual", judging=False))
+    assert controller.awaiting_user is True
+    port.dialogs[1].callback((True, "", None))
+    assert controller.awaiting_user is False
+
+    await controller.on_request(_approval_request("expires", judging=False))
+    assert controller.awaiting_user is True
+    port.timers[-1].fire()
+    assert controller.awaiting_user is False
+    assert port.responses[-1] == ("expires", False, "Human approval request timed out.", None)
+
+
+async def test_approval_controller_awaits_the_user_for_a_request_flagged_before_it_showed() -> None:
+    port = _ApprovalPort()
+    port.defer_while_judging = True
+    controller = ApprovalQueueController(port)
+
+    await controller.on_request(_approval_request("deferred"))
+    assert port.dialogs == [] and controller.awaiting_user is False
+    await controller.on_reviewed(ApprovalReviewed(request_id="deferred", approved=False, reason="danger"))
+
+    assert port.dialogs[0].opened_with == (False, "danger")
+    assert controller.awaiting_user is True
+    port.dialogs[0].is_dismissed = True
+    assert controller.awaiting_user is False
+
+
 class _QuestionPort:
     def __init__(self) -> None:
         self.dialogs: list[SimpleNamespace] = []
@@ -634,6 +675,67 @@ def test_question_controller_records_text_response_and_timeout_paths() -> None:
     asyncio.run(controller.on_question(_question_event("q2", "Second?")))
     asyncio.run(controller.on_timed_out(AskUserTimedOut(request_id="q2")))
     assert port.dialogs[1].timed_out is True
+
+
+def test_question_controller_awaits_the_user_until_a_modal_closes_or_times_out() -> None:
+    port = _QuestionPort()
+    controller = QuestionQueueController(port)
+    assert controller.awaiting_user is False
+
+    asyncio.run(controller.on_question(_question_event("q1", "Need input?")))
+    assert controller.awaiting_user is True
+    port.dialogs[0].callback(AnswerQuestionDialogResult(request_id="q1", answers=(AskUserAnswer(values=("a",)),)))
+    assert controller.awaiting_user is False
+
+    asyncio.run(controller.on_question(_question_event("q2", "Covered?")))
+    assert controller.awaiting_user is True
+    # The fake defers the close, as a dialog covered by another modal does.
+    asyncio.run(controller.on_timed_out(AskUserTimedOut(request_id="q2")))
+    assert port.dialogs[1].timed_out is True and "q2" in controller.open_dialogs
+    assert controller.awaiting_user is False
+    port.dialogs[1].callback(None)
+    assert controller.open_dialogs == {} and controller.awaiting_user is False
+
+
+def test_question_controller_awaits_a_question_queued_behind_a_withdrawn_covered_modal() -> None:
+    port = _QuestionPort()
+    controller = QuestionQueueController(port)
+
+    asyncio.run(controller.on_question(_question_event("q1", "Covered?")))
+    # The fake defers the close, as a dialog covered by another modal does.
+    asyncio.run(controller.on_timed_out(AskUserTimedOut(request_id="q1")))
+    assert controller.awaiting_user is False
+    asyncio.run(controller.on_question(_question_event("q2", "Queued?")))
+    assert [event.request_id for event in controller.queue] == ["q2"]
+    assert controller.awaiting_user is True, "the queued question still waits"
+
+    port.dialogs[0].callback(None)
+    assert list(controller.open_dialogs) == ["q2"] and controller.awaiting_user is True
+    port.dialogs[1].callback(AnswerQuestionDialogResult(request_id="q2", answers=(AskUserAnswer(values=("a",)),)))
+    assert controller.awaiting_user is False
+
+
+def test_question_controller_stops_awaiting_an_inline_question_once_answered() -> None:
+    port = _QuestionPort()
+    port.inline_preferred = True
+    port.inline_results.update(q1=True, q2=True, q3=True)
+    controller = QuestionQueueController(port)
+
+    asyncio.run(controller.on_question(_question_event("q1", "First?", call_id="c1")))
+    asyncio.run(controller.on_question(_question_event("q2", "Second?", call_id="c2")))
+    controller.inline_answered("q1")
+    assert controller.awaiting_user is True, "the second card still waits"
+    controller.inline_answered("q2")
+    assert controller.awaiting_user is False
+
+    controller.inline_answered("unknown")
+    asyncio.run(controller.on_question(_question_event("q3", "Third?", call_id="c3")))
+    assert controller.awaiting_user is True
+    asyncio.run(controller.on_timed_out(AskUserTimedOut(request_id="q3")))
+    assert controller.finish_inline_for_tool_result("c1") is True
+    assert controller.finish_inline_for_tool_result("c2") is True
+    assert controller.awaiting_user is False
+    assert controller._settled == set()
 
 
 class _FakeLoadDialog:

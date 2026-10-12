@@ -5,13 +5,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, Literal
 
-from chrys.app.tui.terminal.title import (
-    set_app_terminal_title_for_cwd,
-    set_app_terminal_title_for_session_title,
-    set_app_terminal_title_for_user_message,
-)
+from chrys.app.tui.terminal.title import TerminalTabText, set_app_terminal_title
+from chrys.app.tui.util.spinner import SPINNER_FRAMES, STATIC_SPINNER
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,12 +19,38 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.screens.main.state import RunState
 
-_ACTIVITY_INTERVAL_SECONDS = 0.65
-_RUNNING_FRAMES = ("◇", "◈", "◆", "◈")
+_ACTIVITY_INTERVAL_SECONDS = 0.3
 _COMPLETED_MARK = "✓"
 _FAILED_MARK = "✗"
+# The live run waits for the user: an answer or approval, or a retry decision.
+QUESTION_MARK: Final = "?"
+RETRY_MARK: Final = "!"
 
-type _TerminalTitleSource = Literal["cwd", "session", "user_message"]
+type AttentionMark = Literal["", "?", "!"]
+type WorkflowTabPhase = Literal["idle", "running", "awaiting_retry", "question", "completed", "failed"]
+
+# Phases of a live workflow run: the tab polls while one is shown.
+_LIVE_WORKFLOW_PHASES: frozenset[WorkflowTabPhase] = frozenset({"running", "awaiting_retry", "question"})
+_WORKFLOW_PHASE_MARKS: dict[WorkflowTabPhase, str] = {
+    "awaiting_retry": RETRY_MARK,
+    "question": QUESTION_MARK,
+    "completed": _COMPLETED_MARK,
+    "failed": _FAILED_MARK,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowTab:
+    """What the terminal tab shows in workflow mode.
+
+    ``title`` is the workflow's title; when it is empty the tab shows ``cwd``,
+    the workflow project directory. ``phase`` is the state of the run this
+    screen launched last (``idle`` before one, or after it was cancelled).
+    """
+
+    title: str
+    cwd: str
+    phase: WorkflowTabPhase = "idle"
 
 
 class SessionTitleController:
@@ -38,8 +62,11 @@ class SessionTitleController:
     before a summary lands. The terminal tab shows a submitted prompt's preview
     until the titles or the cwd change, which bring back the display title (or
     the cwd when there is none); a custom title pins the tab, so prompt
-    previews never replace it. A spinner prefixes the tab while the agent runs,
+    previews never replace it. A spinner prefixes the tab while the agent runs
+    (``?`` or ``!`` instead while the run waits for the user: ``attention``),
     and the last turn's result mark after it ends.
+    In workflow mode the tab shows the workflow's ``WorkflowTab`` instead; the
+    chat state keeps updating underneath and comes back when it is cleared.
     The session handler persists titles; this controller only displays them.
     """
 
@@ -55,6 +82,8 @@ class SessionTitleController:
         push_screen: Callable[[object, Callable[[str | None], None]], object],
         start_custom_title_save: Callable[[str, str], object],
         session_dir: Callable[[str], Path | None],
+        animations_enabled: Callable[[], bool],
+        attention: Callable[[], AttentionMark],
         locale_controller: LocaleController | None = None,
     ) -> None:
         self._run = run
@@ -66,15 +95,21 @@ class SessionTitleController:
         self._push_screen = push_screen
         self._start_custom_title_save = start_custom_title_save
         self._session_dir = session_dir
+        self._animations_enabled = animations_enabled
+        self._attention = attention
         self._locale_controller = locale_controller
         self._custom = ""
         self._generated = ""
         self._fallback = ""
-        self._terminal_source: _TerminalTitleSource = "cwd"
-        self._terminal_content = ""
+        # Cleaned when set, so each repaint only adds the mark. The chat tab
+        # shows the workspace cwd until something sets it.
+        self._chat_tab_text: TerminalTabText | None = None
+        self._workflow_tab_text: TerminalTabText | None = None
         self._result_mark = ""
         self._activity_frame = 0
         self._activity_timer: Timer | None = None
+        self._workflow_tab: WorkflowTab | None = None
+        self._written_title: str | None = None
 
     # ------------------------------------------------------------------ #
     # Session title
@@ -156,11 +191,9 @@ class SessionTitleController:
             # A session title pins the terminal tab; cwd changes (workspace
             # updates, restores) must not unpin it. The tab falls back to
             # the cwd once the title state clears.
-            self._terminal_source = "session"
-            self._terminal_content = display
+            self._chat_tab_text = TerminalTabText.for_message(display)
         else:
-            self._terminal_source = "cwd"
-            self._terminal_content = self._workspace_cwd() if cwd is None else cwd
+            self._chat_tab_text = TerminalTabText.for_cwd(cwd or self._workspace_cwd())
         self._render_terminal_title()
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
@@ -173,11 +206,9 @@ class SessionTitleController:
         if self._custom:
             # A custom title pins the terminal tab; prompt previews must
             # not replace it.
-            self._terminal_source = "session"
-            self._terminal_content = self._custom
+            self._chat_tab_text = TerminalTabText.for_message(self._custom)
         else:
-            self._terminal_source = "user_message"
-            self._terminal_content = text
+            self._chat_tab_text = TerminalTabText.for_message(text)
         self._render_terminal_title()
 
     def mark_terminal_title_completed(self) -> None:
@@ -196,14 +227,33 @@ class SessionTitleController:
         self._result_mark = ""
         self._render_terminal_title()
 
+    def set_workflow_tab(self, tab: WorkflowTab | None) -> None:
+        """Show workflow mode's tab; ``None`` brings the chat tab back."""
+        if tab == self._workflow_tab:
+            return
+        if tab is not None and tab.phase in _LIVE_WORKFLOW_PHASES and not self._live:
+            self._activity_frame = 0
+        self._workflow_tab = tab
+        if tab is None:
+            self._workflow_tab_text = None
+        else:
+            self._workflow_tab_text = (
+                TerminalTabText.for_message(tab.title) if tab.title else TerminalTabText.for_cwd(tab.cwd)
+            )
+        self.sync_activity()
+
     def run_started(self) -> None:
         """A new turn drops the last result mark and restarts the spinner."""
         self._result_mark = ""
         self._activity_frame = 0
 
     def sync_activity(self) -> None:
-        """Run the spinner exactly while the agent runs, then repaint the tab."""
-        if self._run.agent_running:
+        """Poll the tab exactly while a run is live, then repaint it.
+
+        Each tick advances the spinner and picks up waiting marks, which
+        change without telling this controller.
+        """
+        if self._live:
             if self._activity_timer is None:
                 self._activity_timer = self._set_interval(_ACTIVITY_INTERVAL_SECONDS, self._advance_activity)
         else:
@@ -217,29 +267,49 @@ class SessionTitleController:
             self._activity_timer = None
 
     def _advance_activity(self) -> None:
-        if not self._run.agent_running or self._activity_timer is None:
+        if not self._live or self._activity_timer is None:
             return
-        self._activity_frame = (self._activity_frame + 1) % len(_RUNNING_FRAMES)
+        if self._animations_enabled() and not self._waiting_mark():
+            self._activity_frame = (self._activity_frame + 1) % len(SPINNER_FRAMES)
         self._render_terminal_title()
 
     @property
+    def _live(self) -> bool:
+        """A run is live: the shown workflow tab's, else the chat agent's."""
+        if self._workflow_tab is not None:
+            return self._workflow_tab.phase in _LIVE_WORKFLOW_PHASES
+        return self._run.agent_running
+
+    def _waiting_mark(self) -> str:
+        """``!`` or ``?`` while the live run waits for the user; ``!`` wins."""
+        marks: set[str] = {self._attention()}
+        if self._workflow_tab is not None:
+            marks.add(_WORKFLOW_PHASE_MARKS.get(self._workflow_tab.phase, ""))
+        if RETRY_MARK in marks:
+            return RETRY_MARK
+        return QUESTION_MARK if QUESTION_MARK in marks else ""
+
+    @property
     def _indicator(self) -> str:
-        if self._run.agent_running:
-            return _RUNNING_FRAMES[self._activity_frame]
+        if self._live:
+            if waiting := self._waiting_mark():
+                return waiting
+            return SPINNER_FRAMES[self._activity_frame] if self._animations_enabled() else STATIC_SPINNER
+        if self._workflow_tab is not None:
+            return _WORKFLOW_PHASE_MARKS.get(self._workflow_tab.phase, "")
         return self._result_mark
 
-    def _with_indicator(self, title: str) -> str:
-        indicator = self._indicator
-        if not indicator:
-            return title
-        return f"{indicator} {title}" if title else indicator
+    def _terminal_title(self) -> str:
+        text = self._workflow_tab_text if self._workflow_tab_text is not None else self._chat_tab_text
+        if text is None:
+            text = TerminalTabText.for_cwd(self._workspace_cwd())
+        return text.with_mark(self._indicator)
 
     def _render_terminal_title(self) -> None:
-        app = self._app()
-        content = self._terminal_content
-        if self._terminal_source == "cwd":
-            set_app_terminal_title_for_cwd(app, content or self._workspace_cwd(), indicator=self._indicator)
-        elif self._terminal_source == "session":
-            set_app_terminal_title_for_session_title(app, self._with_indicator(content))
-        else:
-            set_app_terminal_title_for_user_message(app, self._with_indicator(content))
+        # Write only changes: the workflow side re-sends the tab on every
+        # run event, and the poll ticks while nothing changes.
+        title = self._terminal_title()
+        if title == self._written_title:
+            return
+        if set_app_terminal_title(self._app(), title):
+            self._written_title = title

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 from textual.timer import Timer
@@ -105,8 +105,6 @@ class _SearchToolCall(BaseToolCard):
         border-title-style: not bold;
     }
     """
-
-    _SPINNERS: ClassVar[str] = "◐◓◑◒"
 
     def __init__(
         self,

@@ -332,6 +332,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 partial(self._sessions.apply_custom_session_title, title, session_id)
             ),
             session_dir=self._session_dir_for,
+            animations_enabled=lambda: self.app.animation_level != "none",
+            attention=lambda: self._events.attention_mark(),  # noqa: PLW0108 — _events is built below
             locale_controller=self._locale_controller,
         )
         self._workspace_branch = WorkspaceBranchController(
@@ -505,6 +507,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # forwards to the active modal, which can close with a refresh still queued.
             schedule=self.call_later,
             sync_chrome=self._sync_workflow_chrome,
+            sync_terminal_title=self._session_title.set_workflow_tab,
             locale_controller=self._locale_controller,
         )
         self._workflow_timer: Timer | None = None
@@ -1827,6 +1830,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if running:
             self._state.run.turn_end_check_pending = True
             if not was_running:
+                self._events.reset_chat_attention()
                 self._session_title.run_started()
                 self._state.run.generation += 1
                 self._live_diff.reset_for_run_start(
@@ -1935,11 +1939,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     async def on_sub_agent_retry_clicked(self, event: SubAgentRetryClicked) -> None:
         """Bubbled from :class:`SubAgentToolCall` Retry button."""
         event.stop()
+        self._events.sub_agent_decided(event.invocation_id)
         await self._tool_actions.request_sub_agent_retry(event.invocation_id)
 
     async def on_sub_agent_abort_clicked(self, event: SubAgentAbortClicked) -> None:
         """Bubbled from :class:`SubAgentToolCall` Abort button."""
         event.stop()
+        self._events.sub_agent_decided(event.invocation_id)
         await self._tool_actions.request_sub_agent_abort(event.invocation_id)
 
     async def on_sleep_skip_clicked(self, event: SleepSkipClicked) -> None:
@@ -1950,6 +1956,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     async def on_ask_user_inline_submitted(self, event: AskUserInlineSubmitted) -> None:
         """Bubbled from :class:`AskUserToolCall` inline response controls."""
         event.stop()
+        self._events.inline_question_answered(event.request_id)
         await self._tool_actions.submit_ask_user_inline(event.request_id, event.answers)
 
     def action_quit(self) -> None:
@@ -2177,8 +2184,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         input_bar = self.query_one(InputBar)
         if self._dashboard_visible():
             self._view_adapter.hide_trajectory_dashboard()
-        if not workflow:
+        if workflow:
+            # Switching away acknowledges the chat's last result mark.
+            self._session_title.clear_terminal_title_result()
+        else:
             self._workflow.leave()
+            self._session_title.set_workflow_tab(None)
         self._workflow.workflow_mode = workflow
         self.query_one(SidebarPanel).set_workflow_mode(workflow)
         self._sync_sidebar_tab_strip_focus()
