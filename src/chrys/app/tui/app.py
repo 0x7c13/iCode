@@ -80,6 +80,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
@@ -922,6 +923,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     async def on_mount(self) -> None:
         """Push the main screen and start the engine."""
         self._set_terminal_title_for_cwd()
+        # Closing the terminal or SIGTERM quits without asking, so the session's background commands stop.
+        for signum in HANGUP_SIGNALS:
+            asyncio.get_running_loop().add_signal_handler(signum, self.exit)
         screen = self._build_main_screen()
         await self.push_screen(screen)
         self._main_screen = screen
@@ -1098,6 +1102,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 await self._update_check_task
         self._update_check_task = None
         await self._engine.shutdown()
+        # Only now: a second SIGHUP or SIGTERM while the engine stops its
+        # background commands must not end the process before it has.
+        for signum in HANGUP_SIGNALS:
+            asyncio.get_running_loop().remove_signal_handler(signum)
         # After the engine: its shutdown drains a still-finalizing run
         # whose success callback can schedule one last title task; the
         # updater must be the last thing torn down so that task is

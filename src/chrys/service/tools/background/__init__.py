@@ -6,10 +6,24 @@ from __future__ import annotations
 
 from chrys.service.tools.background.registry import (
     BACKGROUND_DIR_NAME,
+    MAIN_SCOPE,
     BackgroundProcess,
     BackgroundTask,
     BackgroundTasks,
+    StopCause,
+    TaskScope,
+    current_scope,
     stop_command,
 )
 
-__all__ = ["BACKGROUND_DIR_NAME", "BackgroundProcess", "BackgroundTask", "BackgroundTasks", "stop_command"]
+__all__ = [
+    "BACKGROUND_DIR_NAME",
+    "MAIN_SCOPE",
+    "BackgroundProcess",
+    "BackgroundTask",
+    "BackgroundTasks",
+    "StopCause",
+    "TaskScope",
+    "current_scope",
+    "stop_command",
+]

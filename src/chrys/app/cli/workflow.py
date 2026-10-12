@@ -32,6 +32,7 @@ from chrys.foundation.i18n.formatting import sanitize_legacy_scalar, sanitize_te
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.foundation.platform.signals import hangup_as_interrupt
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
     AmbiguousSessionIdError,
@@ -564,7 +565,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.timeout is not None and not (math.isfinite(args.timeout) and args.timeout > 0):
         parser.error("--timeout must be a positive number of seconds")
     try:
-        return asyncio.run(_run_command(args))
+        with hangup_as_interrupt():
+            return asyncio.run(_run_command(args))
     except WorkflowRunTimeoutError as exc:
         headless.write_error(str(exc), as_json=args.json, code=REASON_DEADLINE_EXCEEDED)
         return EXIT_TIMEOUT

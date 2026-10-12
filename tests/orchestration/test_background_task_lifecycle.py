@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.events.types import InvocationToolCallStart, UserInject
 from chrys.foundation.platform import get_platform
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -40,6 +42,33 @@ def _shell_call(call_id: str, script: Path, pid_file: Path, timeout: int) -> Moc
     return MockResponse(tool_calls=[(get_platform().shell.name, call_id, arguments)])
 
 
+def _host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client: MockChatClient, *, builtins: list[str]
+) -> ChrysSessionHost:
+    async def create_client(_profile: Any = None, **_kwargs: Any) -> MockChatClient:
+        return client
+
+    monkeypatch.setattr(builder_module, "create_client", create_client)
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="mock", name="mock", provider="mock", model_id="mock", stream=False))
+    agents = AgentProfileRegistry()
+    agents.register(
+        AgentProfile(
+            name="Serve",
+            instructions="Start the server.",
+            tools=ToolsConfig(builtins=builtins),
+            compaction=CompactionConfig(enabled=False),
+        )
+    )
+    return ChrysSessionHost(
+        profile_name="Serve",
+        settings=Settings(model_profile="mock"),
+        agent_registry=agents,
+        model_registry=models,
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+
+
 async def test_background_command_outlives_an_interrupted_turn_and_stops_with_the_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -54,28 +83,7 @@ async def test_background_command_outlives_an_interrupted_turn_and_stops_with_th
         ]
     )
 
-    async def create_client(_profile: Any = None, **_kwargs: Any) -> MockChatClient:
-        return client
-
-    monkeypatch.setattr(builder_module, "create_client", create_client)
-    models = ModelProfileRegistry()
-    models.register(ModelProfile(id="mock", name="mock", provider="mock", model_id="mock", stream=False))
-    agents = AgentProfileRegistry()
-    agents.register(
-        AgentProfile(
-            name="Serve",
-            instructions="Start the server.",
-            tools=ToolsConfig(builtins=["shell"]),
-            compaction=CompactionConfig(enabled=False),
-        )
-    )
-    host = ChrysSessionHost(
-        profile_name="Serve",
-        settings=Settings(model_profile="mock"),
-        agent_registry=agents,
-        model_registry=models,
-        state_store=JsonFileStateStore(tmp_path / "sessions"),
-    )
+    host = _host(monkeypatch, tmp_path, client, builtins=["shell"])
     try:
         result = await host.run_until_final("start the server", timeout=ENGINE_TURN_TIMEOUT)
         assert result.text == "started"
@@ -102,3 +110,39 @@ async def test_background_command_outlives_an_interrupted_turn_and_stops_with_th
     assert host.engine.session.background_tasks is None
     assert task.log_path.read_text(encoding="utf-8").endswith("[icode] process stopped at session end\n")
     await wait_for(lambda: not server.is_running(), timeout=ENGINE_TURN_TIMEOUT, description="the server exited")
+
+
+async def test_main_agents_sleep_returns_once_the_user_sends_a_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = MockChatClient(
+        responses=[
+            MockResponse(tool_calls=[("sleep", "call-1", {"seconds": 600, "reason": "wait"})]),
+            MockResponse(text="done"),
+        ]
+    )
+    host = _host(monkeypatch, tmp_path, client, builtins=["sleep"])
+    sleeping = asyncio.Event()
+
+    async def on_start(event: InvocationToolCallStart) -> None:
+        if event.tool_name == "sleep":
+            sleeping.set()
+
+    await host.event_bus.subscribe(InvocationToolCallStart, on_start)
+    try:
+        turn = asyncio.create_task(host.run_until_final("wait for me"))
+        await wait_for(lambda: sleeping.is_set() or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="asleep")
+        assert not turn.done()
+        await host.event_bus.publish(UserInject(text="check the logs now", injection_id="inject-1"))
+
+        result = await asyncio.wait_for(turn, ENGINE_TURN_TIMEOUT)
+    finally:
+        await host.shutdown()
+
+    assert result.text == "done"
+    sent = client.call_history[1][0]
+    [slept] = [content.result for message in sent for content in message.contents if content.type == "function_result"]
+    assert re.fullmatch(
+        r"Sleep ended early after \d+ seconds? \(requested 600 seconds\)\.\nThe user sent a new message\.", slept
+    )
+    assert sent[-1].text.endswith("check the logs now")

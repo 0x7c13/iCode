@@ -48,6 +48,8 @@ Session data is saved in iCode's session storage directory, rather than the work
 
 Sessions used through an ACP client also appear in the TUI's "Chat Sessions" window once you check "ACP" there. See [Resume an existing session](../daily-use/sessions.md#resume-an-existing-session).
 
+Shell commands that the agent moved to the background keep running across turns, and stop when the client closes the session or iCode exits. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 ## Interact through the client
 
 iCode sends agent replies and tool call status to the client. When the client cancels a task, iCode interrupts the current task.

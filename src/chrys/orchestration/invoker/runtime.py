@@ -88,6 +88,7 @@ class ReminderInputs(TypedDict):
     catalog_pointer_enabled: NotRequired[bool]
     skill_catalog_provider: NotRequired[Callable[[], str | None] | None]
     todo_state_provider: NotRequired[Callable[[], str | None] | None]
+    background_tasks_provider: NotRequired[Callable[[], str | None] | None]
     mcp_instructions_provider: NotRequired[Callable[[], str | None] | None]
     file_change_provider: NotRequired[Callable[[], str | None] | None]
 

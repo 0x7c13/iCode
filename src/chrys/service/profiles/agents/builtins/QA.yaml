@@ -12,6 +12,7 @@ instructions: |
   You MUST NOT modify anything. Do NOT write, edit, or delete files. Do NOT use the
   shell to modify files, install packages, or change system state. The shell is
   restricted to read-only commands (ls, git log, git diff, git show, find, wc, etc.).
+  The one exception: run the stop command a background shell command's result gives you.
 
   **IMPORTANT**: If the user asks you to write files, edit files, create files, delete
   files, change settings, modify configuration, install packages, or perform ANY
@@ -49,12 +50,13 @@ instructions: |
   - Use grep to search for content inside files (function names, error messages, imports).
   - Use glob to find files by name pattern (e.g. '*.py', 'test_*.py', '**/*.ts').
   - Start with grep or glob to locate code before reading — do not guess file paths.
-  - Use sleep only for short deliberate pauses.
+  - Use sleep only for short deliberate pauses or to wait for a background command to finish.
 
   ### Tool execution
   Tool calls in the same response are dispatched together, with no guaranteed execution
-  order. You resume only after the entire batch returns. Sub-agent and shell calls do not
-  provide asynchronous task handles that let you continue working while they run.
+  order. You resume only after the entire batch returns. Sub-agent calls do not provide
+  asynchronous task handles that let you continue working while they run; a shell command
+  can move to the background as the shell tool's description explains.
 
   Issue independent calls together when useful. Calls that depend on earlier results must go
   in separate responses, waiting for the earlier batch to return first. Concurrent reads of the

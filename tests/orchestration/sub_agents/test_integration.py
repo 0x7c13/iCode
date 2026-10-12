@@ -27,6 +27,9 @@ the duration of the test.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+import sys
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
 
@@ -59,6 +62,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_kinds import KIND_SKILL
 from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
 from chrys.kernel import Content
@@ -81,8 +85,10 @@ from chrys.service.profiles.agents.schema import (
 )
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import DEFAULT_MAX_OUTPUT_TOKENS, ModelProfile
+from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.tools.background import MAIN_SCOPE
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom, HostedMockResponse, hosted_image_result
 from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
@@ -1478,5 +1484,125 @@ async def test_cascade_abort_via_user_interrupt(
         # FSM in INTERRUPTED, paused set drained.
         assert ctx.engine.state is EngineState.INTERRUPTED
         assert ctx.engine.turns.turn_state.paused_sub_agents == set()
+    finally:
+        await ctx.cleanup()
+
+
+async def test_background_commands_a_sub_agent_started_stop_when_it_finishes(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    # PowerShell runs a quoted program path only through its call operator.
+    prefix = "& " if sys.platform == "win32" else ""
+    command = f'{prefix}"{sys.executable}" -c "import time; time.sleep(60)"'
+    shell = (get_platform().shell.name, "s-1", {"command": command, "reason": "serve", "timeout": 1})
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("serve"), MockResponse(text="done")],
+        sub_outcomes=[MockResponse(tool_calls=[shell]), MockResponse(text="Served.")],
+        sub_builtins=["shell"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        [request] = await ctx.wait_for_event(ApprovalRequest)
+        await ctx.bus.publish(ApprovalResponse(request_id=request.request_id, approved=True))
+        await ctx.wait_for_idle()
+
+        result = _explore_result(ctx).result
+        assert re.fullmatch(
+            r"Served\.\n\n\[Background commands this sub-agent started were stopped when it finished: "
+            r"\S+ \(.*time\.sleep\(60\).*\)\]",
+            result,
+        ), result
+        # The main agent never had a command of its own.
+        tasks = ctx.engine.session.background_tasks
+        assert tasks is not None
+        assert tasks.running == []
+        assert tasks.unreported(MAIN_SCOPE) == []
+        assert tasks.reminder(get_platform().shell.name) is None
+    finally:
+        await ctx.cleanup()
+
+
+async def test_an_interrupted_sub_agents_background_commands_have_ended_when_the_turn_does(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    # A command that ignores SIGTERM holds its stop for the kill grace, the window a rollback right after could hit.
+    prefix = "& " if sys.platform == "win32" else ""
+    script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    command = f'{prefix}"{sys.executable}" -c "{script}"'
+    shell = (get_platform().shell.name, "s-1", {"command": command, "reason": "serve", "timeout": 1})
+    hold = ("sleep", "sleep-1", {"seconds": 600, "reason": "wait for the server"})
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("serve"), MockResponse(text="Should not appear.")],
+        sub_outcomes=[MockResponse(tool_calls=[shell]), MockResponse(tool_calls=[hold])],
+        sub_builtins=["shell", "sleep"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        [request] = await ctx.wait_for_event(ApprovalRequest)
+        await ctx.bus.publish(ApprovalResponse(request_id=request.request_id, approved=True))
+        await wait_for(
+            lambda: any(isinstance(e, InvocationToolCallStart) and e.tool_name == "sleep" for e in ctx.events),
+            description="the sub-agent sleeps beside its background command",
+        )
+        tasks = ctx.engine.session.background_tasks
+        assert tasks is not None
+        [task] = tasks.running
+
+        await ctx.bus.publish(UserInterrupt())
+        await ctx.wait_for_idle()
+
+        assert task.ended.is_set()
+        assert task.outcome == "stopped when its agent finished"
+    finally:
+        await ctx.cleanup()
+
+
+async def test_an_interrupt_while_a_finished_sub_agents_commands_stop_keeps_it_completed(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, *, engine_services
+) -> None:
+    prefix = "& " if sys.platform == "win32" else ""
+    script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    command = f'{prefix}"{sys.executable}" -c "{script}"'
+    shell = (get_platform().shell.name, "s-1", {"command": command, "reason": "serve", "timeout": 1})
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("serve"), MockResponse(text="Should not appear.")],
+        sub_outcomes=[MockResponse(tool_calls=[shell]), MockResponse(text="Served.")],
+        sub_builtins=["shell"],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        [request] = await ctx.wait_for_event(ApprovalRequest)
+        await ctx.bus.publish(ApprovalResponse(request_id=request.request_id, approved=True))
+        tasks = ctx.engine.session.background_tasks
+        assert tasks is not None
+        # The command ignores SIGTERM, so it holds the finished sub-agent's call for the kill grace.
+        await wait_for(
+            lambda: any(task.stopped_by == "agent_finished" for task in tasks.running),
+            description="the finished sub-agent waits for its command to stop",
+        )
+
+        await ctx.bus.publish(UserInterrupt())
+        await ctx.wait_for_idle()
+
+        assert tasks.running == []
+        session_dir = ctx.engine.session.session_dir
+        assert session_dir is not None
+        [audit] = (session_dir / "sub_agents" / "sessions").glob("*.json")
+        assert json.loads(audit.read_text(encoding="utf-8"))["meta"]["status"] == "completed"
+        # The interrupted result still points at that record, so a reopened session replays the run.
+        [metadata] = [
+            content.additional_properties[TOOL_RESULT_METADATA_KEY]
+            for message in engine_services(ctx.engine).history.messages
+            for content in message.contents
+            if content.type == "function_result" and content.call_id == "call-1"
+        ]
+        assert metadata["sub_agent_log_file"] == audit.name
+        assert metadata["sub_agent_audit_complete"] is True
     finally:
         await ctx.cleanup()

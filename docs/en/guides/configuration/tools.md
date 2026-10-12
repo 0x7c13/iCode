@@ -58,3 +58,16 @@ Enabling a tool only makes that capability available to the agent; operations th
 For filesystem, search, and Shell tools, relative paths are resolved against the current [working directory](../daily-use/workspaces.md), and shell commands run in the current working directory by default. Switching working directories changes the base for these relative paths and the default working directory for commands. The working directory is the default location for operations; it does not restrict tools to paths within it. Whether an operation can run also depends on its tool arguments, whether approval is granted when required, and the permissions of the system user running iCode.
 
 When a command prints a lot, the agent sees the beginning and the end of its output, and iCode saves the output in the session directory when it can. If a command prints more than 32 MiB, iCode keeps only the first and last parts; the middle is not saved anywhere, and the result tells the agent how much was left out.
+
+## Commands that keep running in the background
+
+A shell command that is still running when its time limit is reached moves to the background instead of being stopped, so a development server or a file watcher keeps running while the agent goes on with its work. The agent is told where the command's output is saved and how to stop the command. To wait for a background command, the agent uses `sleep`, which ends early when one of its background commands ends; the main agent's `sleep` also ends early when you send a new message.
+
+When background commands stop:
+
+- In the TUI and through an ACP client, commands the main agent moved to the background keep running across turns, and the agent is reminded each turn which ones are still running. Commands a sub-agent or a workflow node moved to the background stop when it finishes.
+- All of them stop when the session ends: when you start a new session, switch to another session, delete the session, or quit iCode, including by closing the terminal window. With `icode run`, they stop when the run ends.
+- Interrupting the agent stops the command it is waiting on, but not the commands already in the background.
+- `/rollback` stops the commands that the discarded turns started. It may not restore files that a command changed after it moved to the background.
+
+iCode cannot stop programs that detach themselves from the command that started them, such as services that some tools start with a `-d` option; they keep running after the session ends.

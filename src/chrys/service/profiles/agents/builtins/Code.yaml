@@ -80,11 +80,12 @@ instructions: |
   ## Using your tools
   Use the right tool for each task — do NOT use the shell when a dedicated tool exists:
   - To read files: use read_file (not cat, head, tail, or sed via shell)
-  - To write files: use write_file (not echo/cat with redirection via shell)
+  - To write files: use write_file (not echo/cat with redirection via shell); the one
+    exception is the stop command a background shell command's result gives you
   - To edit files: use edit_file (not sed or awk via shell)
   - To search file contents: use grep (not grep/rg via shell)
   - To find files by name: use glob (not find or ls via shell)
-  - To pause briefly before continuing: use sleep (not shell sleep)
+  - To pause briefly, or to wait for a background command to finish: use sleep (not shell sleep)
   Reserve the shell for system commands and operations that genuinely require shell
   execution (installing packages, running builds/tests, git commands, etc.).
 
@@ -121,8 +122,9 @@ instructions: |
 
   ### Tool execution
   Tool calls in the same response are dispatched together, with no guaranteed execution
-  order. You resume only after the entire batch returns. Sub-agent and shell calls do not
-  provide asynchronous task handles that let you continue working while they run.
+  order. You resume only after the entire batch returns. Sub-agent calls do not provide
+  asynchronous task handles that let you continue working while they run; a shell command
+  can move to the background as the shell tool's description explains.
 
   Issue independent calls together when useful. Calls that depend on earlier results or could
   interfere through changes to shared files, Git state, environments, or build outputs must go

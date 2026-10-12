@@ -435,7 +435,7 @@ async def build_kernel_node(
     )
     approval.bind_publisher(callbacks.emitter())
     middleware.append(approval)
-    middleware.append(SleepMiddleware(res.bus, session_id=session_id))
+    middleware.append(SleepMiddleware(res.bus, session_id=session_id, background_tasks=res.background_tasks))
     middleware.append(
         UsageTrackingMiddleware(
             max_context_tokens=ctx.usage_middleware.max_context_tokens,

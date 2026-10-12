@@ -1250,7 +1250,7 @@ def test_foreign_writes_absorbed_by_baseline_still_reported_as_peer_changes(tmp_
     assert 'deleted: "src.txt"' in notice
     assert 'moved: "dst.txt"' in notice
     assert "Changed by you or your sub-agents:" not in notice
-    assert "Changed outside this session:" not in notice
+    assert "Changed outside your tool calls" not in notice
     assert "Re-read externally changed files" in notice
 
 
@@ -1282,7 +1282,7 @@ def test_peer_row_deduped_when_external_diff_already_reports_it(tmp_path: Path) 
     )
     assert notice is not None
     assert notice.count('"shared.txt"') == 1
-    assert "Changed outside this session:" in notice
+    assert "Changed outside your tool calls" in notice
     assert "Changed by another session working in this workspace:" not in notice
 
 

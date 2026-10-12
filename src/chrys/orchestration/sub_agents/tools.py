@@ -51,6 +51,7 @@ from chrys.foundation.tool_result_metadata import tool_result_metadata_failure_s
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG, trajectory_scope
 from chrys.foundation.trajectory.event_types import TraceCoverage
 from chrys.foundation.util.filenames import safe_fs_name
+from chrys.foundation.util.once_close import finish_close
 from chrys.foundation.util.sub_agent_context import (
     SubAgentParentResultMetadata,
     sub_agent_parent_call_id,
@@ -118,6 +119,7 @@ from chrys.service.session.sub_agent_logs import (
     sessions_dir,
 )
 from chrys.service.state.serializers import serialized_message_payload
+from chrys.service.tools.background import TaskScope
 from chrys.service.tools.builtins.web.build import assemble_web_tools
 from chrys.service.tools.names import chrys_reserved_tool_names
 from chrys.service.tools.registry import ToolRegistry
@@ -144,7 +146,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
-    from chrys.service.tools.background import BackgroundTasks
+    from chrys.service.tools.background import BackgroundTask, BackgroundTasks
 
 from .shell import SubAgentToolShell
 
@@ -1451,6 +1453,8 @@ class SubAgentTools:
             conversation: Conversation | None = None
             operation = OperationLifetime()
             unbind: Unbind | None = None
+            background_tasks = self._background_tasks
+            stopped: list[BackgroundTask] = []
             try:
                 self._total_active += 1
                 total_counter_incremented = True
@@ -1627,7 +1631,9 @@ class SubAgentTools:
                         approval_mw.bind_publisher(emitter)
                         middleware.append(approval_mw)
                         self._live_approvals.append(approval_mw)
-                    sleep_mw = SleepMiddleware(self._bus, session_id=self._session_id)
+                    sleep_mw = SleepMiddleware(
+                        self._bus, session_id=self._session_id, background_tasks=self._background_tasks
+                    )
                     middleware.append(sleep_mw)
                 if sub_event_mw is None:
                     middleware.append(SubAgentStatsMiddleware(log_stats))
@@ -1850,12 +1856,23 @@ class SubAgentTools:
                     ).build()
                 run_client_kwargs["continuation_token_observer"] = policy.observe_continuation_token
                 self._controllers[invocation_id] = controller
-                with (
-                    trajectory_scope(sub_agent_trace.child_context)
-                    if sub_agent_trace is not None
-                    else contextlib.nullcontext()
-                ):
-                    result = await controller.run()
+                try:
+                    with (
+                        trajectory_scope(sub_agent_trace.child_context)
+                        if sub_agent_trace is not None
+                        else contextlib.nullcontext()
+                    ):
+                        result = await controller.run()
+                finally:
+                    # Its background commands end with it, however it ends; the
+                    # cleanup below waits for them.
+                    if background_tasks is not None:
+                        stopped = background_tasks.stop_scope(TaskScope.of(origin))
+                if stopped:
+                    commands = ", ".join(task.label for task in stopped)
+                    result += (
+                        f"\n\n[Background commands this sub-agent started were stopped when it finished: {commands}]"
+                    )
                 segment = policy.final_segment
                 if parent_result_metadata is not None and segment is not None and segment.transcript != segment.result:
                     parent_result_metadata.transcript_final_text = segment.transcript
@@ -1947,6 +1964,17 @@ class SubAgentTools:
                     self._controllers.pop(invocation_id, None)
                     self._intermediate_buffers.pop(invocation_id, None)
                     self._invocation_emitters.pop(invocation_id, None)
+                if stopped and background_tasks is not None:
+                    # Ended before the turn goes on, which an interrupt (cancelling
+                    # more than once) and then a rollback can follow. Only once the
+                    # controller is gone: an interrupt meanwhile must not mark the
+                    # finished run aborted.
+                    try:
+                        await finish_close(asyncio.create_task(background_tasks.wait_stopped(stopped)))
+                    except asyncio.CancelledError:
+                        # The interrupted result must still point at the finished run's record.
+                        _commit_interrupted_parent_result(parent_result_metadata)
+                        cleanup_cancelled = True
                 if total_counter_incremented:
                     self._total_active -= 1
                 if agent_counter_incremented:

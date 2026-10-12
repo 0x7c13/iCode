@@ -750,6 +750,15 @@ msgstr ""
 msgid "rollback.turns_unavailable"
 msgstr ""
 
+#. English: Stopping {count} background command the run left running.
+#. English-plural: Stopping {count} background commands the run left running.
+#. chrys-meta={"fingerprint":"9bc636de543ae587a325b23a479276dd2b0f2e9684839a1ddccb0e7f5305264c","multiline":false,"placeholders":[]}
+#: src/chrys/app/cli/run.py
+msgid "run.background_tasks_stopping"
+msgid_plural "run.background_tasks_stopping#plural"
+msgstr[0] ""
+msgstr[1] ""
+
 #. English: Agent run timed out.
 #. chrys-meta={"fingerprint":"18a94dffc4256d5aa72665048a05efb6b5f832b8b21fe30f3e50fde6d829b906","multiline":false,"placeholders":[]}
 #: src/chrys/app/cli/run.py

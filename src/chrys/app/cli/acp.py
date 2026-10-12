@@ -26,6 +26,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.config.warnings import settings_warning_events
+from chrys.foundation.platform.signals import hangup_as_interrupt
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.startup import bootstrap_runtime
 from chrys.service.approval.policy import ApprovalMode
@@ -192,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"Error: {missing_cwd}\n")
         return 1
     try:
-        return asyncio.run(run_command(args))
+        with hangup_as_interrupt():
+            return asyncio.run(run_command(args))
     except KeyboardInterrupt:
         return 130
     except Exception as exc:

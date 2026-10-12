@@ -299,6 +299,8 @@ Set `timeout=None` for no execution deadline. Time spent waiting for user answer
 
 Retrying may repeat model calls, file writes, or an external ACP agent's tool calls. When a non-ACP agent's attempt fails or times out, the retry continues its conversation, so tool calls that already finished do not run again. Operations that have already occurred are not automatically undone. Not every error is retried automatically; see [Workflow reference: Timeouts and retries](../../reference/workflows.md#timeouts-and-retries).
 
+Shell commands that an agent node moved to the background stop when its attempt ends, so a retry does not inherit them. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 ## Define conditional branches
 
 ### Select one branch with switch()

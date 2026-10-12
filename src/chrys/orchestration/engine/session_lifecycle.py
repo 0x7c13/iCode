@@ -526,7 +526,9 @@ class SessionLifecycle:
         if session_dir is not None and self._session.background_tasks is None:
             from chrys.service.tools.background import BackgroundTasks
 
-            self._session.background_tasks = BackgroundTasks(session_dir)
+            self._session.background_tasks = BackgroundTasks(
+                session_dir, turn=lambda: self._session.turn_number, trajectory=self._trajectory_recorder.context
+            )
 
         from chrys.foundation.observability.sink import get_otel_sink
 
@@ -653,6 +655,12 @@ class SessionLifecycle:
         """Close the session and process resources."""
         await self._teardown(release_lock=True, close_mcp=True)
 
+    async def _stop_background_tasks(self) -> None:
+        """Stop the session's background commands for good; the next start of a session takes new ones."""
+        tasks, self._session.background_tasks = self._session.background_tasks, None
+        if tasks is not None:
+            await tasks.close()
+
     async def _teardown(self, *, release_lock: bool, close_mcp: bool) -> None:
         """Gracefully shut down the engine."""
         self._session.mark_closing()
@@ -697,9 +705,8 @@ class SessionLifecycle:
         await self._loader.cancel_outbox_recovery()
         # Background commands never outlive their session; an in-place close
         # (rollback) keeps them.
-        if release_lock and self._session.background_tasks is not None:
-            tasks, self._session.background_tasks = self._session.background_tasks, None
-            await tasks.close()
+        if release_lock:
+            await self._stop_background_tasks()
         # Drain any queued UsageUpdate publish tasks before the bus is torn
         # down — orphaned tasks otherwise either deliver a stale UsageUpdate
         # into the next session's subscriber set (engine instance is reused
@@ -1969,6 +1976,11 @@ class SessionLifecycle:
             # and NOT re-arming would instead drop the real ``session_end`` of a
             # session that keeps going, which loses more than a repeat costs.
             await self.fire_session_end_hooks()
+            # Their logs are in the directory, and their ends belong in the trajectory.
+            # The registry stays open for a session a failed delete keeps; the
+            # shutdown after a delete closes it.
+            if (tasks := self._session.background_tasks) is not None:
+                await tasks.stop_all()
             # The trajectory writer holds the log's lease, and a leased directory
             # is tombstoned instead of removed — close it so the delete below is
             # physical.

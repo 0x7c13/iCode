@@ -538,6 +538,8 @@ async def build_agent(
             session_dir=effective_session_dir,
             web=web_tools,
             background_tasks=background_tasks,
+            # An interactive session keeps them across turns; a headless run stops them when it ends.
+            session_wide_background=allow_user_interaction,
         )
         # Published once the web tools are decided, like the skill and memory warnings
         # further on; a later step can still fail the whole build.
@@ -832,6 +834,11 @@ async def build_agent(
             spill_quota=spill_quota,
             skill_catalog_provider=skills_provider.render_catalog_reminder if skills_provider else None,
             todo_state_provider=partial(_render_todo_reminder, todo_tracker) if todo_enabled else None,
+            background_tasks_provider=(
+                partial(background_tasks.reminder, runtime.platform.shell.name)
+                if background_tasks is not None
+                else None
+            ),
             mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
             file_change_provider=file_change_provider,
         )
@@ -1033,6 +1040,7 @@ async def build_agent(
             invocation_publishers=invocation_publishers,
             commit_intermediate_text=commit_intermediate_text,
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
+            background_tasks=background_tasks,
         )
 
         return AgentBuildResult(

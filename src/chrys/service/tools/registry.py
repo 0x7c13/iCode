@@ -107,6 +107,8 @@ class ToolRegistry:
         session_dir: Path | None = None,
         web: WebTools | None = None,
         background_tasks: BackgroundTasks | None = None,
+        *,
+        session_wide_background: bool = False,
     ) -> list[Any]:
         """Load built-in tool categories by name.
 
@@ -120,6 +122,8 @@ class ToolRegistry:
             web: The build's assembled web tools; without them the web categories load nothing.
             background_tasks: The session's background commands; without them a timed-out
                 shell command is killed instead of moving to the background.
+            session_wide_background: Whether the agent's background commands run until the
+                session ends rather than until the agent finishes.
 
         Returns:
             List of all loaded tool functions/instances.
@@ -147,6 +151,7 @@ class ToolRegistry:
                     session_id,
                     session_dir,
                     background_tasks,
+                    session_wide_background,
                 )
             else:
                 tools = _STATIC_CATEGORIES.get(cat, [])
@@ -164,6 +169,7 @@ class ToolRegistry:
         session_id: str | None = None,
         session_dir: Path | None = None,
         background_tasks: BackgroundTasks | None = None,
+        session_wide_background: bool = False,
     ) -> list[Any]:
         """Create instance-based tools that need SessionEnvironment or Settings."""
         if runtime is None:
@@ -174,7 +180,11 @@ class ToolRegistry:
         if category == "shell":
             command_filter = _build_shell_filter(shell_filter_config)
             shell = ShellTools(
-                runtime, command_filter=command_filter, session_dir=session_dir, background_tasks=background_tasks
+                runtime,
+                command_filter=command_filter,
+                session_dir=session_dir,
+                background_tasks=background_tasks,
+                session_wide_background=session_wide_background,
             )
             tools = shell.tools()
             # Register additional shells (e.g. Git Bash on Windows)
@@ -185,6 +195,7 @@ class ToolRegistry:
                     shell=extra_shell,
                     session_dir=session_dir,
                     background_tasks=background_tasks,
+                    session_wide_background=session_wide_background,
                 )
                 tools.extend(extra.tools())
             return tools

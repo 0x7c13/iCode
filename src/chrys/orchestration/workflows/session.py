@@ -205,7 +205,9 @@ class WorkflowSessionOwner:
             )
         self._resources.own(self._close_mutations)
         if session.background_tasks is None:
-            session.background_tasks = BackgroundTasks(session_dir)
+            session.background_tasks = BackgroundTasks(
+                session_dir, trajectory=lambda: self.trajectory.context() if self.trajectory is not None else None
+            )
             self._resources.own(session.background_tasks.close)
         session.hook_manager = await hooks(
             project_root=workspace.primary_cwd,

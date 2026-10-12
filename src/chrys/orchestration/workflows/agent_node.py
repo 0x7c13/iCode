@@ -86,6 +86,7 @@ from chrys.service.agent_middleware.events.intermediate_text import Intermediate
 from chrys.service.agent_middleware.response_validation import hosted_commits_from_error
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
 from chrys.service.session.sub_agent_logs import SubAgentLogStats
+from chrys.service.tools.background import TaskScope
 from chrys.service.workflows.scheduler import ErrorClass, FailureReport
 from chrys.service.workflows.store import WorkflowStorageFailed
 
@@ -312,6 +313,10 @@ class WorkflowAgentShell:
         # Delivery belongs to the pass boundary, even while the activation is
         # retained for outgoing-condition evaluation and possible retries.
         _PASS_SHELL.set(self)
+        # The attempt's background commands end with it; a sleep of the next
+        # attempt, which shares their scope, says so.
+        if (tasks := self._resources.background_tasks) is not None:
+            await tasks.wait_stopped(tasks.stop_scope(TaskScope.of(self.origin)))
         await self._flush_progress()
         await self._resources.usage_publisher.drain()
         await self._require_checkpoint().close()

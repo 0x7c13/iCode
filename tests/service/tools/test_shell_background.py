@@ -119,6 +119,8 @@ async def test_timed_out_command_keeps_running_and_logs_to_its_end(
     }
     assert metadata[TOOL_FAILED_METADATA_KEY] is False
     assert SHELL_TIMED_OUT_METADATA_KEY not in metadata
+    # What the tool call kept is in its result; the command may run on for hours without it.
+    assert task.process.captured() == ()
 
     release.touch()
     await wait_for(task.ended.is_set, timeout=ENGINE_TURN_TIMEOUT, description="the command finished")
@@ -202,8 +204,15 @@ def test_description_offers_the_background_only_with_a_registry(tmp_path: Path) 
 
     without = description(ShellTools(runtime))
     with_tasks = description(ShellTools(runtime, background_tasks=BackgroundTasks(tmp_path)))
+    session_wide = description(
+        ShellTools(runtime, background_tasks=BackgroundTasks(tmp_path), session_wide_background=True)
+    )
 
     assert "No asynchronous task handle is provided." in without
     assert "moves to the background" not in without
     assert "No asynchronous task handle is provided." not in with_tasks
     assert "moves to the background" in with_tasks
+    assert "stopped when you finish" in with_tasks
+    assert "stopped when the session ends" not in with_tasks
+    assert "stopped when the session ends" in session_wide
+    assert "stopped when you finish" not in session_wide

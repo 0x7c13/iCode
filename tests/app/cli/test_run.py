@@ -85,6 +85,7 @@ class FakeHost:
             workspace=None,
         )
         self.on_event: Callable[[Event], None] | None = None
+        self.running_background_tasks = 0
         FakeHost.instances.append(self)
 
     async def start(self) -> None:
@@ -259,6 +260,31 @@ def test_run_command_prints_final_text(monkeypatch: pytest.MonkeyPatch, capsys, 
     assert FakeHost.instances[0].kwargs["session_id"] is None
     assert FakeHost.instances[0].kwargs["on_successful_turn"] is run_cli.on_buddy_successful_turn
     assert FakeHost.instances[0].shutdown_called
+
+
+@pytest.mark.parametrize("as_json", (False, True), ids=("text", "json"))
+def test_run_command_says_it_stops_the_commands_the_run_left_running(
+    monkeypatch: pytest.MonkeyPatch, capsys, as_json: bool
+) -> None:
+    class BackgroundHost(FakeHost):
+        async def run_until_final(self, prompt: str, **kwargs: Any) -> HeadlessRunResult:
+            self.running_background_tasks = 2
+            return await super().run_until_final(prompt, **kwargs)
+
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(run_cli, "ChrysSessionHost", BackgroundHost)
+
+    rc = run_cli.main(["hello", "-a", "Headless", "--quiet", *(["--json"] if as_json else [])])
+
+    err = capsys.readouterr().err
+    assert rc == 0
+    if as_json:
+        assert json.loads(err) == {
+            "warning": "Stopping 2 background commands the run left running.",
+            "code": "background_tasks_stopping",
+        }
+    else:
+        assert err == "Warning: Stopping 2 background commands the run left running.\n"
 
 
 def test_run_command_accepts_short_flags(monkeypatch: pytest.MonkeyPatch, capsys) -> None:

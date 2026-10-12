@@ -73,7 +73,7 @@ from chrys.service.tools.approval_targets import (
     approved_cwd,
     physical_dir,
 )
-from chrys.service.tools.background import stop_command
+from chrys.service.tools.background import current_scope, stop_command
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import record_tool_success, tool_error
 from chrys.service.tools.spill import bound_process_output
@@ -419,7 +419,9 @@ class _Command:
         if self._trace_file is not None:
             # fsatrace writes its trace when the command ends, after the tool call stopped looking.
             self._cleanup.callback(discard_trace_file, self._trace_file)
-        return self.captured()
+        # The command may run on for hours: let go of what the tool call kept.
+        kept, self._captures = self.captured(), ()
+        return kept
 
     async def follow(self, show: Callable[[list[str]], Awaitable[None]] | None) -> int:
         """Wait for the command to end, passing its output lines to *show* as they arrive."""
@@ -677,12 +679,16 @@ class ShellTools:
         shell: ShellInfo | None = None,
         session_dir: Path | None = None,
         background_tasks: BackgroundTasks | None = None,
+        *,
+        session_wide_background: bool = False,
     ) -> None:
+        """*session_wide_background*: the agent's background commands run until the session ends, not until it finishes."""
         self._runtime = runtime
         self._filter = command_filter
         self._shell = shell or runtime.platform.shell
         self._session_dir = session_dir
         self._tasks = background_tasks
+        self._session_wide_background = session_wide_background
 
     @property
     def shell(self) -> ShellInfo:
@@ -743,12 +749,21 @@ class ShellTools:
                 "stops it. To start a server, watcher, or other long-running process, give it a short "
                 "timeout (about 5-15 seconds) so startup errors still appear in the result; `&` and "
                 "`nohup` are not needed. When a background command finishes, its log ends with a line "
-                "starting with `[icode]`, such as `[icode] process exited with code N`. To stop it, run "
+                "starting with `[icode]`, such as `[icode] process exited with code N`. To wait for it, "
+                "call sleep, which returns early with the end of the log when one of your background "
+                "commands finishes. To stop it, run "
                 "the shell command shown in the result, which creates its stop file (use the shell for "
                 "this, even though files are otherwise written with write_file); this stops every process "
                 "the command started, which killing the pid may not. Put commands that need the stopped "
                 "command's port or files in your next response, not in the same command or the same "
                 "batch of calls. "
+                + (
+                    "Running background commands are listed in a system reminder at the start of each "
+                    "turn and are stopped when the session ends. "
+                    if self._session_wide_background
+                    else "Background commands you start are stopped when you finish, so do not report "
+                    "one as still running. "
+                )
             )
             handle_note = ""
         else:
@@ -952,15 +967,17 @@ class ShellTools:
             cwd = pinned_cwd
 
         if tasks is None:
-            return await self._run(command, cwd, timeout, budget, working_dir)
+            return await self._run(command, reason, cwd, timeout, budget, working_dir)
         # A stop file may come from another tool: stop its task before a new
         # command can reach for the same port or files.
         stopped = await tasks.stop_requested()
-        result = await self._run(command, cwd, timeout, budget, working_dir)
+        result = await self._run(command, reason, cwd, timeout, budget, working_dir)
         stopped += [task for task in await tasks.stop_requested() if task not in stopped]
         return _with_stop_notes(result, stopped)
 
-    async def _run(self, command: str, cwd: str, timeout: int, budget: int, working_dir: str | None) -> str:
+    async def _run(
+        self, command: str, reason: str, cwd: str, timeout: int, budget: int, working_dir: str | None
+    ) -> str:
         shell = self._shell
         try:
             if sys.platform == "win32":
@@ -969,7 +986,7 @@ class ShellTools:
                 # outer chrys without mouse/keyboard input after it exits.
                 # See ``preserve_console_mode`` for the full rationale.
                 with preserve_console_mode():
-                    stdout, returncode, stderr = await self._execute_pipe(command, shell, cwd, timeout)
+                    stdout, returncode, stderr = await self._execute_pipe(command, shell, cwd, timeout, reason)
                 body = stdout.text(_clean_output)
                 stderr_clean = stderr.text(_clean_output)
                 exit_suffix = f"[exit_code: {returncode}]"
@@ -981,7 +998,7 @@ class ShellTools:
                 parts.append(exit_suffix)
                 _record_shell_exit_code(returncode)
                 return await self._bound_result("\n".join(parts), budget, (stdout, stderr))
-            merged, returncode = await self._execute_pty(command, shell, cwd, timeout)
+            merged, returncode = await self._execute_pty(command, shell, cwd, timeout, reason)
             body = merged.text(_clean_output)
             suffix = f"[exit_code: {returncode}]"
             parts = [body, suffix] if body else [suffix]
@@ -1039,24 +1056,24 @@ class ShellTools:
     # ------------------------------------------------------------------
 
     async def _execute_pty(
-        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float
+        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
     ) -> tuple[CapturedOutput, int]:
         """Run *command* in a PTY (Unix only). Returns ``(output, returncode)``."""
         run = await _spawn_pty(command, shell, cwd)
-        returncode = await self._follow(run, command, timeout)
+        returncode = await self._follow(run, command, reason, timeout)
         (output,) = run.captured()
         return output, returncode
 
     async def _execute_pipe(
-        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float
+        self, command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
     ) -> tuple[CapturedOutput, int, CapturedOutput]:
         """Run *command* with pipes (Windows fallback). Returns ``(stdout, returncode, stderr)``."""
         run = await _spawn_pipe(command, shell, cwd)
-        returncode = await self._follow(run, command, timeout)
+        returncode = await self._follow(run, command, reason, timeout)
         stdout, stderr = run.captured()
         return stdout, returncode, stderr
 
-    async def _follow(self, run: _Command, command: str, timeout: int | float) -> int:
+    async def _follow(self, run: _Command, command: str, reason: str, timeout: int | float) -> int:
         """Wait up to *timeout* for *run* to end and return its exit code.
 
         Past the timeout the command moves to the background when the session
@@ -1076,7 +1093,11 @@ class ShellTools:
                 )
             except TimeoutError:
                 captures = run.captured()
-                task = self._tasks.adopt(run, command=command, trigger="timeout") if self._tasks is not None else None
+                task = (
+                    self._tasks.adopt(run, command=command, reason=reason, trigger="timeout", scope=current_scope.get())
+                    if self._tasks is not None
+                    else None
+                )
                 handed_off = task is not None
                 raise _Timeout(*captures, task=task) from None
         finally:

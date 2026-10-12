@@ -5,7 +5,8 @@
 The registry owns each command from the moment it moves to the background: it
 keeps reading the output into the task's log, writes the line that ends the
 log, and stops the command when asked — by the stop file the model creates,
-or when the session ends. A turn that is cancelled leaves these commands alone.
+when the agent that started it finishes, or when the session ends. A turn that
+is cancelled leaves these commands alone.
 """
 
 from __future__ import annotations
@@ -15,16 +16,23 @@ import contextvars
 import logging
 import secrets
 import shlex
+import time
+from collections import deque
 from contextlib import suppress
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from chrys.foundation.trajectory.event_types import EventType
 from chrys.service.tools.background.log import TaskLog
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Iterable
     from pathlib import Path
 
+    from chrys.foundation.models.invocations import InvocationOrigin
     from chrys.foundation.platform.output_capture import CapturedOutput
+    from chrys.foundation.trajectory.context import TrajectoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +43,15 @@ MAX_RUNNING_TASKS = 8
 """Background commands a session runs at once; past it, a timed-out command is killed."""
 
 STOP_WAIT_SECONDS = 5.0
-"""How long a shell call waits for a task it stopped to end before it returns."""
+"""How long a caller that stopped tasks waits for them to end before it goes on."""
 
 _KEPT_FINISHED_LOGS = 20
+"""Finished logs kept in the directory, and ended tasks kept in memory for the agents."""
+
+_LISTED_ENDED = 5
+"""Ended tasks the main agent's reminder still lists."""
+
+_COMMAND_CHARS = 200
 
 _TERM_GRACE = 3.0
 """Seconds between asking a command to stop and killing it."""
@@ -47,13 +61,34 @@ _KILL_GRACE = 2.0
 
 _STOP_FILE_POLL = 2.0
 
-StopCause = Literal["agent", "user", "session_end"]
+StopCause = Literal["agent", "user", "agent_finished", "rollback", "session_end"]
 
-_STOPPED_LINES: dict[StopCause, str] = {
-    "agent": "[icode] process stopped by agent",
-    "user": "[icode] process stopped by user",
-    "session_end": "[icode] process stopped at session end",
+_STOPPED: dict[StopCause, str] = {
+    "agent": "stopped by agent",
+    "user": "stopped by user",
+    "agent_finished": "stopped when its agent finished",
+    "rollback": "stopped by rollback",
+    "session_end": "stopped at session end",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskScope:
+    """The agent a task belongs to: the main agent across its turns, or one sub-agent call or workflow node."""
+
+    kind: Literal["main", "sub_agent", "workflow_node"] = "main"
+    invocation_id: str = ""
+    """The sub-agent call, or the workflow node activation whose attempts all share the scope."""
+
+    @classmethod
+    def of(cls, origin: InvocationOrigin) -> TaskScope:
+        return cls() if origin.kind == "turn" else cls(origin.kind, origin.invocation_id)
+
+
+MAIN_SCOPE = TaskScope()
+
+current_scope: ContextVar[TaskScope] = ContextVar("background_task_scope", default=MAIN_SCOPE)
+"""The agent whose tool calls run now, bound by the invocation that runs them."""
 
 
 class BackgroundProcess(Protocol):
@@ -95,30 +130,68 @@ class BackgroundTask:
     """One command running in the background, from its hand-off to its end."""
 
     def __init__(
-        self, task_id: str, command: str, trigger: str, process: BackgroundProcess, log: TaskLog, stop_path: Path
+        self,
+        task_id: str,
+        command: str,
+        process: BackgroundProcess,
+        log: TaskLog,
+        stop_path: Path,
+        *,
+        reason: str,
+        trigger: str,
+        scope: TaskScope,
+        turn: int,
     ) -> None:
         self.id = task_id
         self.command = command
+        self.reason = reason
         self.trigger = trigger
+        self.scope = scope
+        self.turn = turn
+        """The main agent's turn the command started in; rollback stops those of the turns it removes."""
         self.pid = process.pid
         self.log_path = log.path
         self.stop_path = stop_path
+        self.started = time.monotonic()
         self.exit_code: int | None = None
         """The shell's exit code, once the command ended without being stopped."""
         self.stopped_by: StopCause | None = None
         self.ended = asyncio.Event()
         """Set once the command ended and its log was closed."""
+        self.reported = False
+        """Whether a sleep of its agent, or the main agent's reminder, already said that it ended."""
         self.process = process
         self.log = log
         self.stopping: asyncio.Task[None] | None = None
+
+    @property
+    def label(self) -> str:
+        """The task's id and command, on one line."""
+        return f"{self.id} ({_one_line(self.command)})"
+
+    @property
+    def outcome(self) -> str:
+        """How the command ended, as the last line of its log says it; "running" until then."""
+        return _ending(self) if self.ended.is_set() else "running"
 
 
 class BackgroundTasks:
     """The background commands of one session."""
 
-    def __init__(self, session_dir: Path) -> None:
+    def __init__(
+        self,
+        session_dir: Path,
+        *,
+        turn: Callable[[], int] | None = None,
+        trajectory: Callable[[], TrajectoryContext | None] | None = None,
+    ) -> None:
+        """*turn* reads the main agent's current turn; *trajectory* the session's recording scope, if any."""
         self.directory = session_dir / BACKGROUND_DIR_NAME
+        self._turn = turn
+        self._trajectory = trajectory
         self._running: dict[str, BackgroundTask] = {}
+        self._ended: deque[BackgroundTask] = deque(maxlen=_KEPT_FINISHED_LOGS)
+        """The newest tasks that ended; a rollback's own stops are left out, as the turns they belong to."""
         self._used_ids: set[str] = set()
         self._workers: set[asyncio.Task[None]] = set()
         """Each task's watcher and stopper; closing waits for them all."""
@@ -133,7 +206,15 @@ class BackgroundTasks:
     def full(self) -> bool:
         return len(self._running) >= MAX_RUNNING_TASKS
 
-    def adopt(self, process: BackgroundProcess, *, command: str, trigger: str) -> BackgroundTask | None:
+    def adopt(
+        self,
+        process: BackgroundProcess,
+        *,
+        command: str,
+        trigger: str,
+        reason: str = "",
+        scope: TaskScope = MAIN_SCOPE,
+    ) -> BackgroundTask | None:
         """Take *process* over, or return None when the session takes no more or has no log for it.
 
         Synchronous, so the output *process* kept just before this call is
@@ -149,8 +230,23 @@ class BackgroundTasks:
             logger.warning("Could not create the log of background task %s", task_id, exc_info=True)
             return None
         log.start(process.hand_off(log.feed))
-        task = BackgroundTask(task_id, command, trigger, process, log, self._stop_path(task_id))
+        turn = self._turn() if self._turn is not None else 0
+        task = BackgroundTask(
+            task_id,
+            command,
+            process,
+            log,
+            self._stop_path(task_id),
+            reason=reason,
+            trigger=trigger,
+            scope=scope,
+            turn=turn,
+        )
         self._running[task_id] = task
+        self._record(
+            EventType.BACKGROUND_TASK_STARTED,
+            {"task": task_id, "pid": task.pid, "trigger": trigger, "agent": scope.kind, "turn": turn},
+        )
         self._spawn(self._watch(task), self._workers)
         if self._sampler is None:
             self._sampler = self._spawn(self._sample())
@@ -161,12 +257,67 @@ class BackgroundTasks:
         command = command.strip()
         return any(command == stop_command(shell_name, self._stop_path(task_id)) for task_id in self._used_ids)
 
+    def unreported(self, scope: TaskScope) -> list[BackgroundTask]:
+        """The tasks of *scope* that ended since a sleep last said so; a stop by the agent's own stop file is no news."""
+        return [
+            task for task in self._ended if task.scope == scope and not task.reported and task.stopped_by != "agent"
+        ]
+
+    def reminder(self, shell_name: str) -> str | None:
+        """The main agent's running commands and the few that ended last, or None when it never had any.
+
+        Only what stays the same until a task changes state: no output, no times.
+        An end listed here is told: a sleep does not tell it again.
+        """
+        ended = [task for task in self._ended if task.scope == MAIN_SCOPE][-_LISTED_ENDED:]
+        for task in ended:
+            task.reported = True
+        tasks = [task for task in self._running.values() if task.scope == MAIN_SCOPE] + ended
+        if not tasks:
+            return None
+        lines = ["Background commands of this session:"]
+        for task in tasks:
+            lines.append(f"- {task.id} (pid {task.pid}), {task.outcome}: {_one_line(task.command)}")
+            if task.reason:
+                lines.append(f"  reason: {_one_line(task.reason)}")
+            lines.append(f"  log: {task.log_path}")
+            if not task.ended.is_set():
+                lines.append(f"  stop: {stop_command(shell_name, task.stop_path)}")
+        if any(not task.ended.is_set() for task in tasks):
+            lines.append(
+                "To stop a running command, run its stop command in the shell: "
+                "this stops every process the command started."
+            )
+        return "\n".join(lines)
+
     async def stop_requested(self) -> list[BackgroundTask]:
         """Stop the tasks whose stop file exists and wait a little for them to end."""
         tasks = self._apply_stop_files()
-        if tasks:
-            await asyncio.wait([self.stop(task, "agent") for task in tasks], timeout=STOP_WAIT_SECONDS)
+        await self.wait_stopped(tasks)
         return tasks
+
+    def stop_scope(self, scope: TaskScope) -> list[BackgroundTask]:
+        """Start stopping the running tasks of an agent that finished; return them."""
+        tasks = [task for task in self._running.values() if task.scope == scope]
+        for task in tasks:
+            self.stop(task, "agent_finished")
+        return tasks
+
+    async def stop_turns_after(self, turn: int) -> None:
+        """Stop and forget the main agent's tasks that the turns after *turn* started, as a rollback removes those turns."""
+        tasks = [task for task in self._running.values() if task.scope == MAIN_SCOPE and task.turn > turn]
+        for task in tasks:
+            self.stop(task, "rollback")
+        await self.wait_stopped(tasks)
+        removed = [task for task in self._ended if task.scope == MAIN_SCOPE and task.turn > turn]
+        for task in removed:
+            self._ended.remove(task)
+
+    async def wait_stopped(self, tasks: Iterable[BackgroundTask]) -> None:
+        """Wait a little for *tasks*, being stopped, to end."""
+        stopping = [task.stopping for task in tasks if task.stopping is not None]
+        if stopping:
+            await asyncio.wait(stopping, timeout=STOP_WAIT_SECONDS)
 
     def stop(self, task: BackgroundTask, by: StopCause) -> asyncio.Task[None]:
         """Start stopping *task*, unless that already began; the returned task ends once *task* did."""
@@ -176,15 +327,19 @@ class BackgroundTasks:
             task.stopping = self._spawn(self._stop(task), self._workers)
         return task.stopping
 
-    async def close(self) -> None:
-        """Stop every task at session end and take no more."""
-        self._closed = True
-        if self._sampler is not None:
-            self._sampler.cancel()
+    async def stop_all(self) -> None:
+        """Stop every task, as the session ends, and wait for each to end."""
         for task in self.running:
             self.stop(task, "session_end")
         if self._workers:
             await asyncio.wait(set(self._workers))
+
+    async def close(self) -> None:
+        """Stop every task, as the session ends, and take no more."""
+        self._closed = True
+        if self._sampler is not None:
+            self._sampler.cancel()
+        await self.stop_all()
 
     def _stop_path(self, task_id: str) -> Path:
         return self.directory / f"{task_id}.stop"
@@ -233,15 +388,29 @@ class BackgroundTasks:
             code = await task.process.wait()
             if task.stopped_by is None:
                 task.exit_code = code
-                last_line = f"[icode] process exited with code {code}"
-            else:
-                last_line = _STOPPED_LINES[task.stopped_by]
-            await task.log.close(last_line)
+            await task.log.close(f"[icode] process {_ending(task)}")
         finally:
             await task.process.close()
             self._running.pop(task.id, None)
+            if task.stopped_by != "rollback":
+                self._ended.append(task)
             task.ended.set()
+            self._record(
+                EventType.BACKGROUND_TASK_FINISHED,
+                {
+                    "task": task.id,
+                    "exit_code": task.exit_code,
+                    "stopped_by": task.stopped_by,
+                    "duration_ms": int((time.monotonic() - task.started) * 1000),
+                },
+            )
         await asyncio.to_thread(_tidy, self.directory, task.stop_path, set(self._running))
+
+    def _record(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Record *event_type* on the session's trajectory as it is now, never one bound when the task started."""
+        context = self._trajectory() if self._trajectory is not None else None
+        if context is not None:
+            context.sink.emit_soon(context.draft(event_type, payload=payload))
 
     def _spawn[T](self, coro: Coroutine[Any, Any, T], owner: set[asyncio.Task[T]] | None = None) -> asyncio.Task[T]:
         # A fresh context: the task belongs to the session, not to the tool call that started it.
@@ -250,6 +419,17 @@ class BackgroundTasks:
             owner.add(task)
             task.add_done_callback(owner.discard)
         return task
+
+
+def _ending(task: BackgroundTask) -> str:
+    if task.exit_code is not None:
+        return f"exited with code {task.exit_code}"
+    return _STOPPED[task.stopped_by] if task.stopped_by is not None else "ended"
+
+
+def _one_line(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= _COMMAND_CHARS else f"{text[: _COMMAND_CHARS - 1]}…"
 
 
 def _tidy(directory: Path, stop_path: Path, running: set[str]) -> None:

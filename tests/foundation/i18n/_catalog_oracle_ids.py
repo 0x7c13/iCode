@@ -138,6 +138,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "rollback.target_turn_invalid",
     "rollback.turn_unavailable",
     "rollback.turns_unavailable",
+    ("run.background_tasks_stopping", "run.background_tasks_stopping#plural"),
     "run.headless_timeout",
     "run.interrupted",
     "run.model_profile_not_found",

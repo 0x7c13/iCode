@@ -1,6 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Sleep middleware — intercepts sleep tool calls so the TUI can skip them."""
+"""Sleep middleware — intercepts sleep tool calls so the TUI can skip them.
+
+A sleep also ends early once a background command of its agent ended — the
+result then carries the end of each log — and, for the main agent, once the
+user sent a message that waits for the next model call.
+"""
 
 from __future__ import annotations
 
@@ -13,21 +18,40 @@ from chrys.foundation.tool_kinds import KIND_SLEEP, get_tool_kind
 from chrys.kernel.middleware import FunctionMiddleware
 from chrys.service.agent_middleware._metadata_keys import _SLEEP_INTERRUPTED_KEY, _SLEEP_SKIPPED_KEY
 from chrys.service.agent_middleware.events.hook_dispatch import get_call_id
+from chrys.service.tools.background import current_scope
 from chrys.service.tools.builtins.sleep import format_sleep_seconds, parse_sleep_seconds
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
     from chrys.kernel.middleware import FunctionInvocationContext
+    from chrys.service.tools.background import BackgroundTasks
+
+_TAIL_LINES = 40
+_TAIL_BYTES = 4096
+"""The end of one log a sleep that ended early carries."""
+_TAILS_BYTES = 8192
+"""The ends of all logs one sleep carries; past it, a task gets only its log path."""
 
 
 class SleepMiddleware(FunctionMiddleware):
     """Intercept ``sleep`` tool calls and race the timer against skip/interrupt events."""
 
-    def __init__(self, event_bus: EventBus, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        session_id: str | None = None,
+        *,
+        background_tasks: BackgroundTasks | None = None,
+        user_message_waiting: Callable[[], bool] | None = None,
+    ) -> None:
+        """*user_message_waiting* tells whether the user sent text the next model call delivers (main agent only)."""
         self._bus = event_bus
         self._session_id = session_id
+        self._tasks = background_tasks
+        self._user_message_waiting = user_message_waiting
         self._active: dict[str, asyncio.Future[str]] = {}
 
     @property
@@ -86,11 +110,15 @@ class SleepMiddleware(FunctionMiddleware):
             while True:
                 elapsed = time.monotonic() - start
                 remaining = seconds - elapsed
+                if (early := await self._woke_early(min(seconds, int(elapsed)), seconds)) is not None:
+                    context.result = early
+                    return
                 if remaining <= 0:
                     context.result = f"Slept for {format_sleep_seconds(seconds)}."
                     return
                 try:
-                    # Wake in short ticks so cancellation and timer drift stay bounded.
+                    # Wake in short ticks so cancellation, timer drift and the
+                    # early wake-ups above stay bounded.
                     # ``shield`` keeps the shared event Future reusable after wait_for timeouts.
                     resolution = await asyncio.wait_for(asyncio.shield(resolved), timeout=min(1.0, remaining))
                 except TimeoutError:
@@ -116,3 +144,48 @@ class SleepMiddleware(FunctionMiddleware):
                 del self._active[call_id]
             await self._bus.unsubscribe(SleepSkip, _skip_handler)
             await self._bus.unsubscribe(UserInterrupt, _interrupt_handler)
+
+    async def _woke_early(self, elapsed: int, requested: int) -> str | None:
+        """The result of a sleep that ends now for a background command or the user, or None to sleep on."""
+        ended = self._tasks.unreported(current_scope.get()) if self._tasks is not None else []
+        user = self._user_message_waiting is not None and self._user_message_waiting()
+        if not ended and not user:
+            return None
+        lines = [
+            f"Sleep ended early after {format_sleep_seconds(elapsed)} (requested {format_sleep_seconds(requested)})."
+        ]
+        if user:
+            lines.append("The user sent a new message.")
+        tails = await asyncio.to_thread(_log_tails, [task.log_path for task in ended]) if ended else []
+        for task, tail in zip(ended, tails, strict=True):
+            task.reported = True
+            lines.append(f"Background task {task.id} (pid {task.pid}) {task.outcome}. Log: {task.log_path}")
+            if tail:
+                lines.append(f"End of its log:\n{tail}")
+        return "\n".join(lines)
+
+
+def _log_tails(paths: list[Path]) -> list[str]:
+    """The last lines of each log, within the size each one and all of them together may take."""
+    tails: list[str] = []
+    left = _TAILS_BYTES
+    for path in paths:
+        tail = _log_tail(path, min(_TAIL_BYTES, left)) if left > 0 else ""
+        left -= len(tail.encode("utf-8"))
+        tails.append(tail)
+    return tails
+
+
+def _log_tail(path: Path, limit: int) -> str:
+    try:
+        with path.open("rb") as log:
+            size = log.seek(0, 2)
+            log.seek(max(0, size - limit))
+            data = log.read(limit)
+    except OSError:
+        return ""
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > limit:
+        # The first line read is most likely the end of a longer one.
+        lines = lines[1:]
+    return "\n".join(lines[-_TAIL_LINES:])

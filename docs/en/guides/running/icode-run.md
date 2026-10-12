@@ -50,6 +50,8 @@ icode run "Fix the login form validation error and run the relevant tests" --age
 
 These tasks may modify files in the working directory and execute commands. Before running one, check that the prompt, agent, and current directory are what you intend.
 
+Shell commands that the agent moved to the background, such as a development server, stop when the run ends, and iCode prints a warning saying how many it stops. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 Run `icode run -h` or `icode run --help` to see the options supported by the current version.
 
 ## Read the progress

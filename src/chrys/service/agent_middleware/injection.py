@@ -387,6 +387,11 @@ class InjectionMiddleware(ChatMiddleware):
                 return self._pending.pop(i)
         return None
 
+    @property
+    def has_pending(self) -> bool:
+        """Whether queued text waits for the next model call."""
+        return bool(self._pending)
+
     def drain_pending(self) -> list[QueuedInjection]:
         """Return and clear any un-consumed pending injections."""
         drained = self._pending.copy()

@@ -4,53 +4,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from chrys.foundation.platform.output_capture import CapturedOutput
-from chrys.service.tools.background import BackgroundTasks, stop_command
+from chrys.foundation.trajectory.event_types import EventType
+from chrys.service.tools.background import MAIN_SCOPE, BackgroundTask, BackgroundTasks, TaskScope, stop_command
 from chrys.service.tools.background import log as log_mod
 from chrys.service.tools.background import registry as registry_mod
 from chrys.service.tools.background.log import TaskLog
+from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.background_tasks import HeldProcess
 from tests.support.waiting import wait_for
-
-
-class _Process:
-    """A command the registry adopts; the test decides when and how it ends."""
-
-    def __init__(self, *, ignores: tuple[bool, ...] = ()) -> None:
-        self.pid = 4242
-        self.sink: Callable[[int, bytes], None] | None = None
-        self.signals: list[bool] = []
-        self.closed = False
-        self._ignores = ignores
-        self._code: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-
-    def hand_off(self, sink: Callable[[int, bytes], None]) -> tuple[CapturedOutput, ...]:
-        self.sink = sink
-        return (CapturedOutput(b"before\n", b"", 7),)
-
-    async def wait(self) -> int:
-        return await asyncio.shield(self._code)
-
-    async def terminate(self, *, force: bool) -> None:
-        self.signals.append(force)
-        if force not in self._ignores:
-            self.exit(-9 if force else -15)
-
-    async def close(self) -> None:
-        self.closed = True
-        self.exit(-9)
-
-    def exit(self, code: int) -> None:
-        if not self._code.done():
-            self._code.set_result(code)
 
 
 @pytest.fixture
@@ -65,7 +35,7 @@ def _log(path: Path) -> str:
 
 
 async def test_adopted_command_logs_its_output_and_exit_code(tasks: BackgroundTasks) -> None:
-    process = _Process()
+    process = HeldProcess()
     task = tasks.adopt(process, command="make serve", trigger="timeout")
     assert task is not None and process.sink is not None
     assert tasks.running == [task]
@@ -83,7 +53,7 @@ async def test_adopted_command_logs_its_output_and_exit_code(tasks: BackgroundTa
 
 
 async def test_stop_file_stops_the_task_and_is_removed(tasks: BackgroundTasks) -> None:
-    process = _Process()
+    process = HeldProcess()
     task = tasks.adopt(process, command="npm run dev", trigger="timeout")
     assert task is not None
     assert await tasks.stop_requested() == []
@@ -103,7 +73,7 @@ async def test_stop_kills_a_command_that_ignores_it_then_stops_reading(
 ) -> None:
     monkeypatch.setattr(registry_mod, "_TERM_GRACE", 0.01)
     monkeypatch.setattr(registry_mod, "_KILL_GRACE", 0.01)
-    process = _Process(ignores=(False, True))
+    process = HeldProcess(ignores=(False, True))
     task = tasks.adopt(process, command="stubborn", trigger="timeout")
     assert task is not None
 
@@ -116,8 +86,8 @@ async def test_stop_kills_a_command_that_ignores_it_then_stops_reading(
 
 async def test_close_stops_every_task_and_takes_no_more(tmp_path: Path) -> None:
     tasks = BackgroundTasks(tmp_path)
-    first = tasks.adopt(_Process(), command="one", trigger="timeout")
-    second = tasks.adopt(_Process(), command="two", trigger="timeout")
+    first = tasks.adopt(HeldProcess(), command="one", trigger="timeout")
+    second = tasks.adopt(HeldProcess(), command="two", trigger="timeout")
     assert first is not None and second is not None
 
     await tasks.close()
@@ -125,15 +95,15 @@ async def test_close_stops_every_task_and_takes_no_more(tmp_path: Path) -> None:
     for task in (first, second):
         assert task.ended.is_set()
         assert _log(task.log_path).endswith("[icode] process stopped at session end\n")
-    assert tasks.adopt(_Process(), command="three", trigger="timeout") is None
+    assert tasks.adopt(HeldProcess(), command="three", trigger="timeout") is None
 
 
 async def test_a_full_session_takes_no_more_tasks(tasks: BackgroundTasks) -> None:
     for index in range(registry_mod.MAX_RUNNING_TASKS):
-        assert tasks.adopt(_Process(), command=f"task {index}", trigger="timeout") is not None
+        assert tasks.adopt(HeldProcess(), command=f"task {index}", trigger="timeout") is not None
     assert tasks.full
 
-    process = _Process()
+    process = HeldProcess()
     assert tasks.adopt(process, command="one more", trigger="timeout") is None
     assert process.sink is None
 
@@ -146,8 +116,8 @@ async def test_task_ids_never_repeat_a_used_id_or_an_existing_file(
     tokens = iter(["aaaaaa", "bbbbbb", "bbbbbb", "cccccc"])
     monkeypatch.setattr(registry_mod, "secrets", SimpleNamespace(token_hex=lambda _n: next(tokens)))
 
-    first = tasks.adopt(_Process(), command="one", trigger="timeout")
-    second = tasks.adopt(_Process(), command="two", trigger="timeout")
+    first = tasks.adopt(HeldProcess(), command="one", trigger="timeout")
+    second = tasks.adopt(HeldProcess(), command="two", trigger="timeout")
 
     assert first is not None and first.id == "bg-bbbbbb"
     assert second is not None and second.id == "bg-cccccc"
@@ -162,8 +132,8 @@ async def test_only_the_newest_finished_logs_are_kept(tasks: BackgroundTasks, mo
             path = tasks.directory / f"{name}{suffix}"
             path.touch()
             os.utime(path, (old + index, old + index))
-    running = tasks.adopt(_Process(), command="still running", trigger="timeout")
-    process = _Process()
+    running = tasks.adopt(HeldProcess(), command="still running", trigger="timeout")
+    process = HeldProcess()
     finished = tasks.adopt(process, command="done", trigger="timeout")
     assert running is not None and finished is not None
     await wait_for(running.log_path.exists, description="the running task's log was written")
@@ -188,8 +158,8 @@ def test_stop_command_quotes_the_path_for_each_shell(shell_name: str, expected: 
 
 
 async def test_only_the_exact_stop_command_of_a_task_counts(tasks: BackgroundTasks) -> None:
-    task = tasks.adopt(_Process(), command="serve", trigger="timeout")
-    ended_process = _Process()
+    task = tasks.adopt(HeldProcess(), command="serve", trigger="timeout")
+    ended_process = HeldProcess()
     ended = tasks.adopt(ended_process, command="build", trigger="timeout")
     assert task is not None and ended is not None
     ended_process.exit(0)
@@ -202,6 +172,156 @@ async def test_only_the_exact_stop_command_of_a_task_counts(tasks: BackgroundTas
     assert not tasks.is_stop_command(f"{command} && rm -rf build", "zsh")
     assert not tasks.is_stop_command(command, "pwsh")
     assert not tasks.is_stop_command(stop_command("zsh", tasks.directory / "bg-other.stop"), "zsh")
+
+
+# ───────────────────────── agents, reminder, trajectory ─────────────────────────
+
+_SUB_AGENT = TaskScope("sub_agent", "invocation-1")
+
+
+async def _ended(task: BackgroundTask) -> None:
+    await wait_for(task.ended.is_set, description=f"{task.id} ended")
+
+
+async def test_each_agent_hears_once_of_its_own_ended_tasks_but_not_of_its_own_stops(tasks: BackgroundTasks) -> None:
+    built, child_process = HeldProcess(), HeldProcess()
+    build = tasks.adopt(built, command="make", trigger="timeout")
+    served = tasks.adopt(HeldProcess(), command="serve", trigger="timeout")
+    child = tasks.adopt(child_process, command="pytest", trigger="timeout", scope=_SUB_AGENT)
+    assert build is not None and served is not None and child is not None
+    built.exit(0)
+    child_process.exit(1)
+    served.stop_path.touch()
+    await tasks.stop_requested()
+    await _ended(build)
+    await _ended(child)
+
+    assert tasks.unreported(MAIN_SCOPE) == [build]
+    assert tasks.unreported(_SUB_AGENT) == [child]
+    build.reported = True
+    assert tasks.unreported(MAIN_SCOPE) == []
+
+
+async def test_reminder_lists_the_main_agents_commands_and_nothing_that_changes_with_output(
+    tasks: BackgroundTasks,
+) -> None:
+    running_process, built = HeldProcess(), HeldProcess()
+    running = tasks.adopt(running_process, command="npm  run\ndev", trigger="timeout", reason="Start the dev server")
+    build = tasks.adopt(built, command="make", trigger="timeout")
+    assert tasks.adopt(HeldProcess(), command="pytest", trigger="timeout", scope=_SUB_AGENT) is not None
+    assert running is not None and build is not None and running_process.sink is not None
+    built.exit(2)
+    await _ended(build)
+
+    text = tasks.reminder("zsh")
+
+    assert text == "\n".join(
+        [
+            "Background commands of this session:",
+            f"- {running.id} (pid 4242), running: npm run dev",
+            "  reason: Start the dev server",
+            f"  log: {running.log_path}",
+            f"  stop: {stop_command('zsh', running.stop_path)}",
+            f"- {build.id} (pid 4242), exited with code 2: make",
+            f"  log: {build.log_path}",
+            (
+                "To stop a running command, run its stop command in the shell: "
+                "this stops every process the command started."
+            ),
+        ]
+    )
+    running_process.sink(0, b"more output\n")
+    assert tasks.reminder("zsh") == text
+
+    await tasks.stop(running, "user")
+    assert tasks.reminder("zsh") == "\n".join(
+        [
+            "Background commands of this session:",
+            f"- {build.id} (pid 4242), exited with code 2: make",
+            f"  log: {build.log_path}",
+            f"- {running.id} (pid 4242), stopped by user: npm run dev",
+            "  reason: Start the dev server",
+            f"  log: {running.log_path}",
+        ]
+    )
+
+
+async def test_an_end_the_reminder_listed_is_no_news_for_a_sleep(tasks: BackgroundTasks) -> None:
+    built = HeldProcess()
+    build = tasks.adopt(built, command="make", trigger="timeout")
+    assert build is not None
+    built.exit(0)
+    await _ended(build)
+    assert tasks.unreported(MAIN_SCOPE) == [build]
+
+    assert tasks.reminder("zsh") is not None
+
+    assert tasks.unreported(MAIN_SCOPE) == []
+
+
+async def test_reminder_is_none_while_the_main_agent_never_had_a_task(tasks: BackgroundTasks) -> None:
+    assert tasks.reminder("zsh") is None
+    assert tasks.adopt(HeldProcess(), command="pytest", trigger="timeout", scope=_SUB_AGENT) is not None
+    assert tasks.reminder("zsh") is None
+
+
+async def test_a_finished_agent_stops_only_its_own_tasks(tasks: BackgroundTasks) -> None:
+    child = tasks.adopt(HeldProcess(), command="pytest", trigger="timeout", scope=_SUB_AGENT)
+    main = tasks.adopt(HeldProcess(), command="serve", trigger="timeout")
+    assert child is not None and main is not None
+
+    stopped = tasks.stop_scope(_SUB_AGENT)
+    await tasks.wait_stopped(stopped)
+
+    assert stopped == [child]
+    assert child.outcome == "stopped when its agent finished"
+    assert tasks.running == [main]
+
+
+async def test_rollback_stops_the_tasks_of_the_turns_it_removes_and_forgets_them(tmp_path: Path) -> None:
+    turn = 1
+    tasks = BackgroundTasks(tmp_path, turn=lambda: turn)
+    try:
+        kept = tasks.adopt(HeldProcess(), command="serve", trigger="timeout")
+        turn = 2
+        removed = tasks.adopt(HeldProcess(), command="watch", trigger="timeout")
+        built = HeldProcess()
+        finished = tasks.adopt(built, command="build", trigger="timeout")
+        assert kept is not None and removed is not None and finished is not None
+        built.exit(0)
+        await finished.ended.wait()
+
+        await tasks.stop_turns_after(1)
+
+        assert removed.ended.is_set()
+        assert _log(removed.log_path).endswith("[icode] process stopped by rollback\n")
+        assert tasks.running == [kept]
+        reminder = tasks.reminder("zsh") or ""
+        assert removed.id not in reminder
+        assert finished.id not in reminder
+        assert tasks.unreported(MAIN_SCOPE) == []
+    finally:
+        await tasks.close()
+
+
+async def test_start_and_end_of_a_task_are_recorded_on_the_trajectory(tmp_path: Path) -> None:
+    sink = FakeSink()
+    context = make_context(sink)
+    tasks = BackgroundTasks(tmp_path, turn=lambda: 3, trajectory=lambda: context)
+    try:
+        process = HeldProcess()
+        task = tasks.adopt(process, command="make", trigger="timeout", scope=_SUB_AGENT)
+        assert task is not None
+        process.exit(0)
+        await _ended(task)
+    finally:
+        await tasks.close()
+
+    started = sink.only(EventType.BACKGROUND_TASK_STARTED).payload
+    finished = sink.only(EventType.BACKGROUND_TASK_FINISHED).payload
+    assert started == {"task": task.id, "pid": 4242, "trigger": "timeout", "agent": "sub_agent", "turn": 3}
+    assert finished == {"task": task.id, "exit_code": 0, "duration_ms": finished["duration_ms"]}
+    assert finished["duration_ms"] >= 0
 
 
 # ───────────────────────── task log ─────────────────────────

@@ -606,7 +606,7 @@ def format_workspace_change_notice(notice: WorkspaceChangeNotice, *, cwd: str) -
         lines.extend(("", "Some agent file changes could not be determined completely."))
 
     if notice.external_changes or notice.external_omitted:
-        lines.extend(("", "Changed outside this session:"))
+        lines.extend(("", "Changed outside your tool calls (by the user, another program or a background command):"))
         for entry in notice.external_changes:
             overlap = " [you also edited this; re-read it]" if entry.agent_overlap else ""
             lines.append(f"- {_external_label(entry.operation)}: {_quoted_path(entry.path, cwd)}{overlap}")
