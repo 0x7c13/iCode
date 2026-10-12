@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -24,9 +24,17 @@ from chrys.service.workflows.scheduler import AttemptRef
 from chrys.service.workflows.sdk import SourceValue, WorkflowValue
 from chrys.service.workflows.values import canonical_json, source_to_wire
 from tests.orchestration.workflows.conftest import FAKE_WORKER, Launcher
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.waiting import wait_for
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _earlier_tests_heap_frozen() -> Iterator[None]:
+    """Every test here drives a worker under short budgets; keep the worker's history out of them."""
+    with earlier_tests_heap_frozen():
+        yield
 
 
 def _ref(node: str, activation: str) -> AttemptRef:

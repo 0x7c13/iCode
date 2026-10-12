@@ -35,6 +35,7 @@ from chrys.service.workflows.store import (
     read_run_header,
     read_run_spec,
 )
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.trajectory_invariants import assert_trajectory_accounted
 from tests.support.waiting import ENGINE_TURN_TIMEOUT
 
@@ -318,10 +319,11 @@ async def test_torn_tail_is_reported_and_the_prefix_still_reads(tmp_path: Path) 
 
 async def test_thousand_appends_are_cheap(tmp_path: Path, record_property: pytest.FixtureRequest) -> None:
     store, _ = _open(tmp_path)
-    started = time.perf_counter()
-    for index in range(1000):
-        await store.append(RunRecord.NODE_STATE, {"node": "a", "state": "running", "index": index})
-    elapsed = time.perf_counter() - started
+    with earlier_tests_heap_frozen():
+        started = time.perf_counter()
+        for index in range(1000):
+            await store.append(RunRecord.NODE_STATE, {"node": "a", "state": "running", "index": index})
+        elapsed = time.perf_counter() - started
     record_property("append_1000_seconds", round(elapsed, 3))
     assert store.last_written_seq == 1000
     await store.close()
