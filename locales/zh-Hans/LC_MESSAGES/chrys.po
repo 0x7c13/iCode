@@ -4100,6 +4100,12 @@ msgstr "复制日志路径"
 msgid "tui.background_task.button.copy_output"
 msgstr "复制输出"
 
+#. English: Ignore
+#. chrys-meta={"fingerprint":"5265b1512bfcc4ddc880ceffbada08642e7476bf7d77bd07d89c8ad25d11e1a8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.ignore"
+msgstr "忽略"
+
 #. English: Stop
 #. chrys-meta={"fingerprint":"2daa1a836bbe1f64cc789345cc84a4d878b90c6aae2d9e5cd4717190db2d28db","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/background_task.py
@@ -4165,6 +4171,19 @@ msgstr "转入后台时间"
 #: src/chrys/app/tui/screens/dialogs/background_task.py
 msgid "tui.background_task.field.trigger"
 msgstr "转入后台原因"
+
+#. English: {app} closed unexpectedly while these commands ran in the
+#. background. They are still running:
+#. chrys-meta={"fingerprint":"d98880c2daf57d5ac0cbd8e1d734bb0891c7c17073294c675b442f2c7a0153e2","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.left_behind.message"
+msgstr "{app} 意外关闭时，这些命令正在后台运行，现在仍在运行："
+
+#. English: Commands still running
+#. chrys-meta={"fingerprint":"66e49502823976e40d6bc6d9f6ea807fd6d2e4efed2f90bbb5c1d3076857cf05","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.left_behind.title"
+msgstr "仍在运行的命令"
 
 #. English: The log can't be read.
 #. chrys-meta={"fingerprint":"d1aa83e2df4991c2c95f944d638bf6b1b00299fc24dd66eca8b0145e203ef46a","multiline":false,"placeholders":[]}

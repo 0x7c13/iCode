@@ -76,7 +76,7 @@ from chrys.service.tools.approval_targets import (
     approved_cwd,
     physical_dir,
 )
-from chrys.service.tools.background import current_scope, stop_command
+from chrys.service.tools.background import MAX_RUNNING_TASKS, current_scope, stop_command
 from chrys.service.tools.kinds import KIND_SHELL, set_tool_kind, tool
 from chrys.service.tools.result_metadata import record_tool_success, tool_error
 from chrys.service.tools.spill import bound_process_output
@@ -527,6 +527,10 @@ class _Command:
         """
         await self._close_once()
 
+    async def still_running(self) -> tuple[int, ...]:
+        """The processes of the command that still run."""
+        return tuple(sorted(await self._sample()))
+
     async def _close(self) -> None:
         try:
             ended = self.finished.done() and not self.finished.cancelled() and self.finished.exception() is None
@@ -783,7 +787,7 @@ def _with_stop_notes(result: str, stopped: Sequence[BackgroundTask]) -> str:
     if not stopped:
         return result
     notes = [
-        f"[Stopped background task {task.id}]"
+        f"[Stopped background task {task.id}{task.stop_note}]"
         if task.ended.is_set()
         else f"[Background task {task.id} is still stopping]"
         for task in stopped
@@ -891,7 +895,8 @@ class ShellTools:
                 "Commands run with a timeout (default 30s). Give commands whose results or file changes "
                 "you need now — installs, builds, tests, formatters, code generators — a timeout long "
                 "enough for them to finish. If a command is still running when its timeout expires, it is "
-                "not killed: it moves to the background and keeps running, and you get the output so far, "
+                f"not killed (unless {MAX_RUNNING_TASKS} background commands already run): it moves to the "
+                "background and keeps running, and you get the output so far, "
                 "its pid, the path of a log file that receives all further output, and the command that "
                 "stops it. To start a server, watcher, or other long-running process, give it a short "
                 "timeout (about 5-15 seconds) so startup errors still appear in the result; `&` and "

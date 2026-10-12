@@ -61,7 +61,7 @@ When a command prints a lot, the agent sees the beginning and the end of its out
 
 ## Commands that keep running in the background
 
-A shell command that is still running when its time limit is reached moves to the background instead of being stopped, so a development server or a file watcher keeps running while the agent goes on with its work. The agent is told where the command's output is saved and how to stop the command. To wait for a background command, the agent uses `sleep`, which ends early when one of its background commands ends; the main agent's `sleep` also ends early when you send a new message.
+A shell command that is still running when its time limit is reached moves to the background instead of being stopped, so a development server or a file watcher keeps running while the agent goes on with its work. The agent is told where the command's output is saved and how to stop the command. A session runs at most 32 commands in the background: when 32 already run, a command that reaches its time limit is stopped, and so are programs a finished command left running. To wait for a background command, the agent uses `sleep`, which ends early when one of its background commands ends; the main agent's `sleep` also ends early when you send a new message.
 
 A command can also move to the background before its time limit:
 
@@ -79,9 +79,11 @@ When background commands stop:
 
 iCode cannot stop programs that detach themselves from the command that started them, such as services that some tools start with a `-d` option; they keep running after the session ends.
 
+If iCode ends before it can stop its background commands, for example when it crashes or an ACP client ends it outright, the commands keep running on macOS and Linux. The next time you open the TUI, iCode lists the ones still running and asks whether to **Stop** them; choose **Ignore** to leave them running. When an ACP client starts iCode again, iCode stops the ones that earlier ACP sessions left running, without asking. On Windows, the commands end together with iCode.
+
 ### See and stop background commands in the TUI
 
-While the main agent waits on a shell command, the command's card shows "ctrl+t moves it to the background". Press **Ctrl+T** to move the main agent's running shell commands to the background right away. If the session already has 8 commands running in the background, iCode tells you, and the command keeps running as before.
+While the main agent waits on a shell command, the command's card shows "ctrl+t moves it to the background". Press **Ctrl+T** to move the main agent's running shell commands to the background right away. If the session already has 32 commands running in the background, iCode tells you, and the command keeps running as before.
 
 The **Tasks** tab of the sidebar shows the todos at the top and the main agent's background commands under **Background Tasks** below them, with how long each one has been in the background; the status bar shows how many are running. Click a command to see what it runs, why it moved to the background, and its output as it grows. There you can **Stop** it, or copy its output or the path of its log file. **Clear ended** removes the commands that have ended from the list.
 

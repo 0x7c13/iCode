@@ -31,6 +31,7 @@ from chrys.service.tools.builtins import shell as shell_mod
 from chrys.service.tools.builtins.shell import ShellTools, shell_result_metadata
 from chrys.service.tools.builtins.shell_filter import ShellCommandFilter
 from chrys.service.tools.result_metadata import tool_result_metadata
+from tests.support.background_tasks import HeldProcess
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 _WAIT_FOR_RELEASE = """\
@@ -522,3 +523,27 @@ async def test_stopping_kills_a_process_that_ignores_the_request_after_its_shell
 
     await _gone(processes)
     assert task.log_path.read_text(encoding="utf-8").endswith("[icode] process stopped by user\n")
+
+
+async def test_the_stop_note_names_what_the_stop_could_not_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The model's stop waits past a stop that gives up, or the note would only say it is still stopping.
+    assert registry_mod.STOP_WAIT_SECONDS > registry_mod._TERM_GRACE + registry_mod._KILL_GRACE
+    monkeypatch.setattr(registry_mod, "_TERM_GRACE", 0.01)
+    monkeypatch.setattr(registry_mod, "_KILL_GRACE", 0.01)
+    tasks = BackgroundTasks(tmp_path)
+    try:
+        process = HeldProcess(ignores=(False, True))
+        process.alive = (4243,)  # Root's, say, from sudo.
+        task = tasks.adopt(process, command="sudo -n ./server", trigger="timeout")
+        assert task is not None
+        task.stop_path.touch()
+
+        stopped = await tasks.stop_requested()
+
+        assert shell_mod._with_stop_notes("[exit_code: 0]", stopped) == (
+            f"[Stopped background task {task.id}, but could not stop pid 4243]\n[exit_code: 0]"
+        )
+    finally:
+        await tasks.close()

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.trajectory.event_types import EventType
+from chrys.service.tools.background.crash import RunningRecord
 from chrys.service.tools.background.log import TaskLog
 
 if TYPE_CHECKING:
@@ -40,11 +41,8 @@ logger = logging.getLogger(__name__)
 BACKGROUND_DIR_NAME = "background"
 """The session subdirectory holding each task's log and stop file."""
 
-MAX_RUNNING_TASKS = 8
+MAX_RUNNING_TASKS = 32
 """Background commands a session runs at once; past it, a timed-out command is killed."""
-
-STOP_WAIT_SECONDS = 5.0
-"""How long a caller that stopped tasks waits for them to end before it goes on."""
 
 _KEPT_FINISHED_LOGS = 20
 """Finished logs kept in the directory, and ended tasks kept in memory for the agents."""
@@ -59,6 +57,9 @@ _TERM_GRACE = 3.0
 
 _KILL_GRACE = 2.0
 """Seconds a killed command gets to close its output before it is no longer read."""
+
+STOP_WAIT_SECONDS = _TERM_GRACE + _KILL_GRACE + 1.0
+"""How long a caller that stopped tasks waits for them to end before it goes on: past a stop that gives up."""
 
 _STOP_FILE_POLL = 2.0
 
@@ -125,6 +126,10 @@ class BackgroundProcess(Protocol):
         """Stop reading the output and release the process, killing what still runs."""
         ...
 
+    async def still_running(self) -> tuple[int, ...]:
+        """The processes of the command that still run."""
+        ...
+
 
 def stop_command(shell_name: str, path: Path) -> str:
     """A command for the shell named *shell_name* that creates the stop file at *path*."""
@@ -176,10 +181,12 @@ class BackgroundTask:
         self.outlived: tuple[int, ...] = ()
         """Those processes, as the shell exited."""
         self.stopped_by: StopCause | None = None
+        self.unstopped: tuple[int, ...] = ()
+        """The processes iCode could not stop, still running as it gave the command up."""
         self.ended = asyncio.Event()
         """Set once the command ended and its log was closed."""
         self.reported: str | None = None
-        """The outcome a sleep of its agent, its tool result or the main agent's reminder last told."""
+        """The outcome a sleep of its agent or its tool result last told."""
         self.process = process
         self.log = log
         self.stopping: asyncio.Task[None] | None = None
@@ -190,11 +197,18 @@ class BackgroundTask:
         return f"{self.id} ({_one_line(self.command)})"
 
     @property
+    def pids(self) -> tuple[int, ...]:
+        """The pids to tell whether it runs: the shell's, or the processes that outlived it."""
+        return self.outlived or (self.pid,)
+
+    @property
     def processes(self) -> str:
-        """The pid to tell whether it runs: the shell's, or the processes that outlived it."""
-        pids = self.outlived or (self.pid,)
-        listed = ", ".join(str(pid) for pid in pids[:_LISTED_PIDS])
-        return f"{'pid' if len(pids) == 1 else 'pids'} {listed}{', …' if len(pids) > _LISTED_PIDS else ''}"
+        return _pids_text(self.pids)
+
+    @property
+    def stop_note(self) -> str:
+        """What a stop could not do, to follow "stopped": the processes it could not stop, if any."""
+        return f", but could not stop {_pids_text(self.unstopped)}" if self.unstopped else ""
 
     def view(self) -> BackgroundTaskView:
         return BackgroundTaskView(
@@ -204,7 +218,7 @@ class BackgroundTask:
             cwd=self.cwd,
             trigger=self.trigger,
             turn=self.turn,
-            pids=self.outlived or (self.pid,),
+            pids=self.pids,
             log_path=str(self.log_path),
             started_at=self.started_at,
             ended_at=self.ended_at,
@@ -233,11 +247,14 @@ class BackgroundTasks:
         turn: Callable[[], int] | None = None,
         trajectory: Callable[[], TrajectoryContext | None] | None = None,
         on_change: Callable[[BackgroundTasks], Awaitable[None]] | None = None,
+        surface: str = "",
     ) -> None:
         """*turn* reads the main agent's current turn; *trajectory* the session's recording scope, if any;
         *on_change* is awaited each time a task starts, outlives its shell, ends or is forgotten.
+        *surface* is the frontend the session runs on, which the record a crash leaves names.
         """
         self.directory = session_dir / BACKGROUND_DIR_NAME
+        self._crash_record = RunningRecord(self.directory, surface=surface)
         self._turn = turn
         self._trajectory = trajectory
         self._on_change = on_change
@@ -338,14 +355,13 @@ class BackgroundTasks:
         """The main agent's running commands and the few that ended last, or None when it never had any.
 
         Only what stays the same until a task changes state: no output, no times.
-        What is listed here is told: a sleep does not tell it again.
+        Taking it changes nothing: a sleep still tells an end it lists, as this turn may never be sent.
         """
         tasks = self._listed()
         if not tasks:
             return None
         lines = ["Background commands of this session:"]
         for task in tasks:
-            task.reported = task.outcome
             lines.append(f"- {task.id} ({task.processes}), {task.outcome}: {_one_line(task.command)}")
             if task.reason:
                 lines.append(f"  reason: {_one_line(task.reason)}")
@@ -393,8 +409,7 @@ class BackgroundTasks:
     def stop(self, task: BackgroundTask, by: StopCause) -> asyncio.Task[None]:
         """Start stopping *task*, unless that already began; the returned task ends once *task* did."""
         if task.stopping is None:
-            if task.stopped_by is None and not task.ended.is_set():
-                task.stopped_by = by
+            task.stopped_by = by
             task.stopping = self._spawn(self._stop(task), self._workers)
         return task.stopping
 
@@ -419,6 +434,7 @@ class BackgroundTasks:
     async def _changed(self) -> None:
         if self._on_change is not None:
             await self._on_change(self)
+        await self._crash_record.update(self._running.values())
 
     def _stop_path(self, task_id: str) -> Path:
         return self.directory / f"{task_id}.stop"
@@ -459,7 +475,9 @@ class BackgroundTasks:
             with suppress(TimeoutError):
                 await asyncio.wait_for(task.ended.wait(), grace)
                 return
-        # A process outside the command's reach still holds the output open: stop reading it.
+        # What still runs is out of reach (another user's, say), or a process that left the command
+        # holds the output open: tell the first, and stop reading.
+        task.unstopped = await task.process.still_running()
         await task.process.close()
         await task.ended.wait()
 
@@ -513,11 +531,16 @@ def _ending(task: BackgroundTask) -> str:
     if task.exit_code is not None:
         return f"exited with code {task.exit_code}"
     if task.stopped_by is not None:
-        return _STOPPED[task.stopped_by]
+        return f"{_STOPPED[task.stopped_by]}{task.stop_note}"
     if task.shell_exit_code is not None:
         # How the processes that outlived the shell ended is not known.
         return f"ended (its shell had exited with code {task.shell_exit_code})"
     return "ended"
+
+
+def _pids_text(pids: tuple[int, ...]) -> str:
+    listed = ", ".join(str(pid) for pid in pids[:_LISTED_PIDS])
+    return f"{'pid' if len(pids) == 1 else 'pids'} {listed}{', …' if len(pids) > _LISTED_PIDS else ''}"
 
 
 def _one_line(text: str) -> str:

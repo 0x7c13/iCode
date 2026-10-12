@@ -7,6 +7,7 @@ from __future__ import annotations
 from chrys.service.tools.background.registry import (
     BACKGROUND_DIR_NAME,
     MAIN_SCOPE,
+    MAX_RUNNING_TASKS,
     BackgroundProcess,
     BackgroundTask,
     BackgroundTasks,
@@ -19,6 +20,7 @@ from chrys.service.tools.background.registry import (
 __all__ = [
     "BACKGROUND_DIR_NAME",
     "MAIN_SCOPE",
+    "MAX_RUNNING_TASKS",
     "BackgroundProcess",
     "BackgroundTask",
     "BackgroundTasks",

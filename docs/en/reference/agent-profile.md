@@ -191,7 +191,7 @@ For configuration instructions, connection tests, and verification of tool calls
 
 `shell_filter` applies only to tools in the `shell` kind. If this field is omitted or set to `unrestricted`, iCode does not filter shell commands.
 
-Shell tool calls go through [approval](#approval) first. Once approved, `shell_filter` checks the actual command. The command runs only after both checks pass. If the filter blocks a command, iCode returns a tool error indicating that the command was blocked, without starting a shell process.
+Shell tool calls go through [approval](#approval) first. Once approved, `shell_filter` checks the actual command. The command runs only after both checks pass. If the filter blocks a command, iCode returns a tool error indicating that the command was blocked, without starting a shell process. The filter always allows the command iCode gives the agent for stopping a [background command](../guides/configuration/tools.md#commands-that-keep-running-in-the-background), so a read-only agent can still stop its own.
 
 You can use a preset or define your own allowed or blocked commands. To use a preset, specify its name directly or select it with `preset` in an object. These two forms are equivalent:
 

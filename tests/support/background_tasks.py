@@ -23,6 +23,8 @@ class HeldProcess:
         self.sink: Callable[[int, bytes], None] | None = None
         self.signals: list[bool] = []
         self.closed = False
+        self.alive: tuple[int, ...] = ()
+        """What :meth:`still_running` tells."""
         self._ignores = ignores
         self._kept = kept
         loop = asyncio.get_running_loop()
@@ -48,6 +50,9 @@ class HeldProcess:
     async def close(self) -> None:
         self.closed = True
         self.exit(-9)
+
+    async def still_running(self) -> tuple[int, ...]:
+        return self.alive
 
     def outlive(self, code: int, pids: tuple[int, ...]) -> None:
         """Let its shell exit with *code* while the processes *pids* run on."""

@@ -143,23 +143,17 @@ class TaskLog:
             self._timer = asyncio.get_running_loop().call_later(_FLUSH_DELAY, self._start_write)
 
     def _append(self, batch: list[tuple[int, bytes]], dropped: int, last_line: str | None) -> None:
-        texts = [capture.text(_clean_text) for capture in self._captured]
-        parts = [text if text.endswith("\n") else f"{text}\n" for text in texts if text]
+        parts: list[str] = []
+        for stream, capture in enumerate(self._captured):
+            if capture.dropped:
+                text = capture.text(_clean_text)
+                parts.append(text if text.endswith("\n") else f"{text}\n")
+            elif kept := capture.head + capture.tail:
+                # As later output: the line or character the handoff split goes on with it.
+                parts.extend(self._lines(stream, kept))
         self._captured = ()
         for stream, chunk in batch:
-            if stream not in self._utf16:
-                codec = subprocess_output_utf16_codec(chunk)
-                self._utf16[stream] = codecs.getincrementaldecoder(codec)(errors="replace") if codec else None
-            if (decoder := self._utf16[stream]) is not None:
-                chunk = decoder.decode(chunk).encode("utf-8")
-            pending = self._partial.setdefault(stream, bytearray())
-            pending += chunk
-            *lines, rest = bytes(pending).split(b"\n")
-            parts.extend(f"{_clean_line(line)}\n" for line in lines)
-            if len(rest) > _LINE_LIMIT:
-                parts.append(f"{_clean_line(rest)}\n")
-                rest = b""
-            pending[:] = rest
+            parts.extend(self._lines(stream, chunk))
         if dropped:
             parts.append(f"[... {dropped} bytes of output dropped ...]\n")
         if last_line is not None:
@@ -177,15 +171,38 @@ class TaskLog:
                     os.close(self._fd)
                 self._fd = None
 
+    def _lines(self, stream: int, chunk: bytes) -> list[str]:
+        """The lines *chunk* finishes on *stream*; the unfinished rest waits for the next chunk."""
+        if stream not in self._utf16:
+            codec = subprocess_output_utf16_codec(chunk)
+            self._utf16[stream] = codecs.getincrementaldecoder(codec)(errors="replace") if codec else None
+        if (decoder := self._utf16[stream]) is not None:
+            chunk = decoder.decode(chunk).encode("utf-8")
+        pending = self._partial.setdefault(stream, bytearray())
+        pending += chunk
+        *lines, rest = bytes(pending).split(b"\n")
+        finished = [f"{_clean_line(line)}\n" for line in lines]
+        if len(rest) > _LINE_LIMIT:
+            finished.append(f"{_clean_line(rest)}\n")
+            rest = b""
+        pending[:] = rest
+        return finished
+
     def _write_text(self, text: str) -> None:
         data = text.encode("utf-8", errors="replace")
-        if self._fd is not None and self._size + len(data) > LOG_LIMIT_BYTES:
-            os.close(self._fd)
-            self._fd = None
-            replace_with_retry(self.path, self.path.with_name(f"{self.path.name}.1"))
-        fd = self._fd if self._fd is not None else self.open()
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-            self._size += written
+        while data:
+            if self._fd is not None and self._size and self._size + len(data) > LOG_LIMIT_BYTES:
+                os.close(self._fd)
+                self._fd = None
+                replace_with_retry(self.path, self.path.with_name(f"{self.path.name}.1"))
+            fd = self._fd if self._fd is not None else self.open()
+            # Output captured before the move can outgrow a whole log: its lines up to the limit go first.
+            cut = len(data)
+            if cut > LOG_LIMIT_BYTES:
+                cut = data.rfind(b"\n", 0, LOG_LIMIT_BYTES) + 1 or LOG_LIMIT_BYTES
+            view = memoryview(data)[:cut]
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+                self._size += written
+            data = data[cut:]

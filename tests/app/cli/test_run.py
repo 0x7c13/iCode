@@ -287,6 +287,22 @@ def test_run_command_says_it_stops_the_commands_the_run_left_running(
         assert err == "Warning: Stopping 2 background commands the run left running.\n"
 
 
+def test_a_failed_run_still_says_it_stops_the_commands_it_left_running(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    class FailingHost(FakeHost):
+        async def run_until_final(self, prompt: str, **kwargs: Any) -> HeadlessRunResult:
+            self.running_background_tasks = 1
+            raise HeadlessRunError(Error(code="boom", message="failed", session_id="session-1"))
+
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(run_cli, "ChrysSessionHost", FailingHost)
+
+    rc = run_cli.main(["hello", "-a", "Headless", "--quiet"])
+
+    assert rc == 1
+    assert capsys.readouterr().err == "Warning: Stopping 1 background command the run left running.\nError: failed\n"
+    assert FailingHost.instances[0].shutdown_called
+
+
 def test_run_command_accepts_short_flags(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     _patch_runtime(monkeypatch)
     _patch_model_registry(monkeypatch)

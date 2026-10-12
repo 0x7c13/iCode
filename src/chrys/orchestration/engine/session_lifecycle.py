@@ -539,6 +539,7 @@ class SessionLifecycle:
                 turn=lambda: self._session.turn_number,
                 trajectory=self._trajectory_recorder.context,
                 on_change=_publish_background_tasks,
+                surface=self._session.surface or "",
             )
 
         from chrys.foundation.observability.sink import get_otel_sink

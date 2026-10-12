@@ -4651,6 +4651,13 @@
         ["sync_primitive", "async with self._lock", "unresolved"]
       ]
     },
+    "chrys.service.tools.background.crash": {
+      "RunningRecord.update": [
+        ["sync_primitive", "async with self._lock", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(_members, task.pid)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(self._write, entries)", "unresolved"]
+      ]
+    },
     "chrys.service.tools.background.log": {
       "TaskLog._start_write": [
         ["thread_pool", "asyncio.to_thread(self._append, batch, dropped, None)", "unresolved"]
@@ -4662,7 +4669,8 @@
     },
     "chrys.service.tools.background.registry": {
       "BackgroundTasks._changed": [
-        ["awaitable", "await self._on_change(self)", "unresolved"]
+        ["awaitable", "await self._on_change(self)", "unresolved"],
+        ["awaitable", "await self._crash_record.update(self._running.values())", "unresolved"]
       ],
       "BackgroundTasks._sample": [
         ["sleep", "await asyncio.sleep(_STOP_FILE_POLL)", "unresolved"]
@@ -4671,6 +4679,7 @@
         ["wrapper", "await self._changed()", "unresolved", "chrys.service.tools.background.registry.BackgroundTasks._changed"],
         ["awaitable", "await task.process.terminate(force=force)", "unresolved"],
         ["timeout", "await asyncio.wait_for(task.ended.wait(), grace)", "unresolved"],
+        ["awaitable", "await task.process.still_running()", "unresolved"],
         ["awaitable", "await task.process.close()", "unresolved"],
         ["sync_primitive", "await task.ended.wait()", "unresolved"]
       ],
@@ -4821,6 +4830,9 @@
       ],
       "_Command.shell_exited": [
         ["multi_wait", "await asyncio.wait({self.outlived, self.finished}, return_when=asyncio.FIRST_COMPLETED)", "unresolved"]
+      ],
+      "_Command.still_running": [
+        ["wrapper", "await self._sample()", "unresolved", "chrys.service.tools.builtins.shell._Command._sample"]
       ],
       "_Command.wait": [
         ["multi_wait", "await asyncio.wait({self.finished})", "unresolved"]

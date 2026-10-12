@@ -45,6 +45,7 @@ from chrys.app.tui.widgets.sidebar.background_tasks import (
     task_icon,
     task_outcome,
 )
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.platform.files import surrogate_safe_text
 
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
 
     from chrys.foundation.i18n import MessageDef
     from chrys.foundation.models.background_tasks import BackgroundTaskView
+    from chrys.service.tools.background.crash import LeftCommand
 
 _TAIL_BYTES = 256 * 1024
 """How much of the log's end the modal shows at most."""
@@ -108,6 +110,12 @@ _STOP_ALL_MESSAGE = msg(
 )
 _STOP_AND_CONTINUE = msg("tui.background_task.button.stop_and_continue", fallback="Stop and continue")
 _STOP_AND_EXIT = msg("tui.background_task.button.stop_and_exit", fallback="Stop and exit")
+_LEFT_BEHIND_TITLE = msg("tui.background_task.left_behind.title", fallback="Commands still running")
+_LEFT_BEHIND_MESSAGE = msg(
+    "tui.background_task.left_behind.message",
+    fallback="{app} closed unexpectedly while these commands ran in the background. They are still running:",
+)
+_IGNORE = msg("tui.background_task.button.ignore", fallback="Ignore")
 ROLLBACK_NOTE = msg(
     "tui.background_task.stop_all.rollback_note",
     fallback="Rollback may not restore what they changed while in the background.",
@@ -143,6 +151,22 @@ def confirm_stopping(
         title=_STOP_ALL_TITLE.bind(),
         message=message,
         confirm_label=(_STOP_AND_EXIT if exiting else _STOP_AND_CONTINUE).bind(),
+        confirm_variant="error",
+        locale_controller=widget_locale_controller(owner),
+    )
+
+
+def confirm_stopping_left_behind(commands: Sequence[LeftCommand], owner: Widget) -> NoticeDialog:
+    """A question, for *owner* to show, whether to stop the *commands* a launch that crashed left running."""
+    message = Text(render_str(widget_localizer(owner), _LEFT_BEHIND_MESSAGE.bind(app=APP_DISPLAY_NAME)))
+    for command in commands:
+        message.append(f"\n\n• {_shown(command.command)}")
+        message.append(f"\n  {_shown(command.cwd)}", style="dim")
+    return NoticeDialog(
+        title=_LEFT_BEHIND_TITLE.bind(),
+        message=message,
+        confirm_label=_STOP.bind(),
+        cancel_label=_IGNORE.bind(),
         confirm_variant="error",
         locale_controller=widget_locale_controller(owner),
     )

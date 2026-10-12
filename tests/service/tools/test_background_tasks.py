@@ -75,6 +75,7 @@ async def test_stop_kills_a_command_that_ignores_it_then_stops_reading(
     monkeypatch.setattr(registry_mod, "_TERM_GRACE", 0.01)
     monkeypatch.setattr(registry_mod, "_KILL_GRACE", 0.01)
     process = HeldProcess(ignores=(False, True))
+    process.alive = (4243,)  # Another user's, say.
     task = tasks.adopt(process, command="stubborn", trigger="timeout")
     assert task is not None
 
@@ -82,7 +83,8 @@ async def test_stop_kills_a_command_that_ignores_it_then_stops_reading(
 
     assert process.signals == [False, True]
     assert process.closed
-    assert _log(task.log_path).endswith("[icode] process stopped by user\n")
+    assert _log(task.log_path).endswith("[icode] process stopped by user, but could not stop pid 4243\n")
+    assert task.outcome == "stopped by user, but could not stop pid 4243"
 
 
 async def test_close_stops_every_task_and_takes_no_more(tmp_path: Path) -> None:
@@ -247,7 +249,7 @@ async def test_reminder_lists_the_main_agents_commands_and_nothing_that_changes_
     )
 
 
-async def test_an_end_the_reminder_listed_is_no_news_for_a_sleep(tasks: BackgroundTasks) -> None:
+async def test_an_end_the_reminder_lists_is_still_news_for_a_sleep(tasks: BackgroundTasks) -> None:
     built = HeldProcess()
     build = tasks.adopt(built, command="make", trigger="timeout")
     assert build is not None
@@ -257,7 +259,7 @@ async def test_an_end_the_reminder_listed_is_no_news_for_a_sleep(tasks: Backgrou
 
     assert tasks.reminder("zsh") is not None
 
-    assert tasks.unreported(MAIN_SCOPE) == []
+    assert tasks.unreported(MAIN_SCOPE) == [build]
 
 
 async def test_a_task_whose_shell_exits_first_is_news_once_then_ends_with_no_exit_code(
@@ -273,7 +275,7 @@ async def test_a_task_whose_shell_exits_first_is_news_once_then_ends_with_no_exi
     assert task.outcome == "running after its shell exited with code 0"
     assert task.processes == "pids 5001, 5002, 5003, 5004, 5005, …"
     assert tasks.unreported(MAIN_SCOPE) == [task]
-    assert tasks.reminder("zsh") is not None
+    task.reported = task.outcome  # As a sleep that told it does.
     assert tasks.unreported(MAIN_SCOPE) == []
 
     process.exit(0)
@@ -489,7 +491,7 @@ async def test_log_turns_utf16_output_into_utf8_lines(tmp_path: Path, monkeypatc
 
 
 async def test_log_rotates_past_its_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(log_mod, "LOG_LIMIT_BYTES", 40)
+    monkeypatch.setattr(log_mod, "LOG_LIMIT_BYTES", 60)
     log = TaskLog(tmp_path / "bg-1.log")
     log.start((CapturedOutput(b"x" * 30 + b"\n", b"", 31),))
     await _written(log, "x" * 30 + "\n")
@@ -498,3 +500,26 @@ async def test_log_rotates_past_its_limit(tmp_path: Path, monkeypatch: pytest.Mo
 
     assert _log(tmp_path / "bg-1.log.1") == "x" * 30 + "\n"
     assert _log(log.path) == "after rotation\n[icode] process exited with code 0\n"
+
+
+async def test_log_splits_captured_output_longer_than_its_limit_at_a_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(log_mod, "LOG_LIMIT_BYTES", 80)
+    line = "x" * 29 + "\n"
+    log = TaskLog(tmp_path / "bg-1.log")
+    log.start((CapturedOutput((line * 3).encode(), b"", 90),))
+    await log.close("[icode] process exited with code 0")
+
+    assert _log(tmp_path / "bg-1.log.1") == line * 2
+    assert _log(log.path) == line + "[icode] process exited with code 0\n"
+
+
+async def test_log_goes_on_with_the_line_and_character_the_move_split(tmp_path: Path) -> None:
+    character = "你".encode()
+    log = TaskLog(tmp_path / "bg-1.log")
+    log.start((CapturedOutput(b"step 1\nstep " + character[:2], b"", 14),))
+    log.feed(0, character[2:] + b" done\n")
+    await log.close("[icode] process exited with code 0")
+
+    assert _log(log.path) == "step 1\nstep 你 done\n[icode] process exited with code 0\n"

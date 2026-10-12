@@ -308,17 +308,20 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
         if progress is not None:
             progress.succeeded(duration=duration, session_id=result.session_id)
         _write_result(result, as_json=args.json, duration=duration)
-        if count := host.running_background_tasks:
-            headless.write_warning(
-                _localized_or_english(
-                    _BACKGROUND_TASKS_STOPPING.bind(count=count), as_json=args.json, runtime=prepared
-                ),
-                as_json=args.json,
-                code="background_tasks_stopping",
-            )
         return 0
     finally:
-        await host.shutdown()
+        try:
+            # Also when the run failed: shutting down stops them all the same.
+            if count := host.running_background_tasks:
+                headless.write_warning(
+                    _localized_or_english(
+                        _BACKGROUND_TASKS_STOPPING.bind(count=count), as_json=args.json, runtime=prepared
+                    ),
+                    as_json=args.json,
+                    code="background_tasks_stopping",
+                )
+        finally:
+            await host.shutdown()
 
 
 def _localized_or_english(
