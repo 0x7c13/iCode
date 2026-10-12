@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import logging
 import os
 import struct
@@ -32,18 +33,19 @@ import time
 from collections import deque
 from contextlib import AsyncExitStack, suppress
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, cast
 
 from chrys.foundation.platform.output_capture import BoundedCapture
 from chrys.foundation.platform.paths import resolve_workspace_path
 from chrys.foundation.platform.process import (
+    ManagedStdioProcess,
     MissingWorkingDirectoryError,
     SubprocessStoppedError,
     decode_subprocess_output,
-    kill_windows_process_tree,
-    managed_subprocess,
     raise_if_missing_cwd,
+    session_processes,
     signal_process_session,
+    spawn_managed_stdio_process,
     wait_for_subprocess,
 )
 from chrys.foundation.platform.pty_output import PtyOutputProtocol
@@ -66,6 +68,7 @@ from chrys.foundation.tool_result_metadata import (
     result_text_without_exit_code,
 )
 from chrys.foundation.util.once_close import OnceClose
+from chrys.kernel.tools import SyncToolCancelledAfterCompletion
 from chrys.service.mutations.trace import discard_trace_file, prefix_trace_file, shell_trace_argv
 from chrys.service.tools.approval_targets import (
     CHANGED_AFTER_APPROVAL,
@@ -259,18 +262,6 @@ def _clean_output(text: str) -> str:
     return _process_carriage_returns(_strip_ansi(text))
 
 
-def _format_partial_output(output: CapturedOutput | None, stderr: CapturedOutput | None = None) -> str:
-    """Assemble what a command printed before its timeout, or ``""`` when it printed nothing."""
-    parts: list[str] = []
-    body = output.text(_clean_output) if output is not None else ""
-    if body:
-        parts.append(f"{PARTIAL_OUTPUT_LABEL}\n{body}")
-    stderr_clean = stderr.text(_clean_output) if stderr is not None else ""
-    if stderr_clean:
-        parts.append(f"[partial stderr]\n{stderr_clean}")
-    return "\n".join(parts)
-
-
 _PIPEFAIL_SHELLS = frozenset({"bash", "zsh", "git_bash"})
 """Shells launched with ``-o pipefail`` so pipelines propagate upstream failures.
 
@@ -362,42 +353,92 @@ def _trace_file(argv: Sequence[str]) -> str | None:
     return prefix_trace_file(prefix) if prefix and tuple(argv[: len(prefix)]) == prefix else None
 
 
+class _Process(Protocol):
+    """The shell process of a command: asyncio's on a PTY, a managed one on pipes."""
+
+    @property
+    def pid(self) -> int: ...
+
+    @property
+    def returncode(self) -> int | None: ...
+
+    async def wait(self) -> int: ...
+
+
+_EXIT_GRACE = 2.0
+"""Seconds the processes a shell started get to end after it before they count as outliving it.
+
+Only a bound: the command ends as soon as none is left and its output was read.
+"""
+
+_QUICK_POLL = 0.1
+_SLOW_POLL = 2.0
+"""How often a command whose shell exited, or that may have gone quiet, is looked at."""
+
+_STOP_WATCH = 5.0
+"""Seconds after a signal during which a command is looked at as often as within the grace."""
+
+IDLE_SECONDS = 60
+"""How long a command printed nothing and used next to no CPU before it moves to the background."""
+
+_IDLE_CPU_SECONDS = 0.5
+"""CPU time that counts as next to none over that minute: under 1% of one core."""
+
+ForegroundEnd = Literal["ended", "idle", "shell_exited"]
+
+
 class _Command:
-    """A running shell command: its process, the tasks reading its output, and what they kept.
+    """A running shell command: its processes, the tasks reading its output, and what they kept.
 
     The readers never wait on anyone. Until :meth:`hand_off` they keep the head
     and tail of each stream and queue the first one's lines for live progress;
     after it every chunk goes to the sink handed over. So a command can outlive
     the tool call that started it without ever blocking on a full pipe or PTY.
+
+    The command ends once its shell exited and no process of its session (its
+    Job on Windows) is left, not when its output closes: a process the shell put
+    in the background may have let go of the output, and one that left the
+    session may hold it on.
     """
 
     def __init__(
         self,
-        proc: asyncio.subprocess.Process,
+        proc: _Process,
         streams: Sequence[asyncio.StreamReader],
         cleanup: AsyncExitStack,
         *,
+        live: Callable[[], dict[int, float]],
+        stop: Callable[[bool], None],
         after_exit: Callable[[], Awaitable[None]] | None = None,
         trace_file: str | None = None,
     ) -> None:
+        """*live* lists the processes of the command still alive with the CPU seconds each used, blocking;
+        *stop* asks them all to stop, or kills them when passed True.
+        """
         self.proc = proc
+        self._live = live
+        self._stop = stop
         self._captures = tuple(BoundedCapture() for _ in streams)
         self._progress = _ProgressLines() if shell_progress_callback.get(None) is not None else None
         self._line = bytearray()
         self._sink: Callable[[int, bytes], None] | None = None
+        self._last_output = time.monotonic()
+        self._quick_until = 0.0
+        self._look = asyncio.Event()
         self._cleanup = cleanup
         self._trace_file = trace_file
         self._close_once = OnceClose(self._close)
         loop = asyncio.get_running_loop()
+        self.outlived: asyncio.Future[tuple[int, ...]] = loop.create_future()
+        """The processes still running a grace after the shell exited, or () once none was."""
         # Fresh contexts: the readers may outlive the tool call and must not carry its state.
-        self._parts = [
+        self._readers = [
             loop.create_task(self._read(index, stream), context=contextvars.Context())
             for index, stream in enumerate(streams)
         ]
-        self._parts.append(loop.create_task(self._exit(after_exit), context=contextvars.Context()))
-        self.finished = asyncio.gather(*self._parts)
-        """Done once the shell exited and every output stream ended."""
-        # Closing cancels the parts, which ends the gather with an error nobody reads.
+        self.finished = loop.create_task(self._run_out(after_exit), context=contextvars.Context())
+        """Done once the shell exited, no process of the command is left and its output was read."""
+        # Closing cancels it, which ends it with an error nobody reads.
         self.finished.add_done_callback(lambda finished: finished.cancelled() or finished.exception())
 
     @property
@@ -423,16 +464,40 @@ class _Command:
         kept, self._captures = self.captured(), ()
         return kept
 
-    async def follow(self, show: Callable[[list[str]], Awaitable[None]] | None) -> int:
-        """Wait for the command to end, passing its output lines to *show* as they arrive."""
+    async def follow(self, show: Callable[[list[str]], Awaitable[None]] | None, *, idle: bool) -> ForegroundEnd:
+        """Wait for the command to end, passing its output lines to *show* as they arrive.
+
+        Returns "shell_exited" instead once processes outlived the shell by the
+        grace, and with *idle*, "idle" once the command printed nothing and used
+        next to no CPU for IDLE_SECONDS.
+        """
         interval = _PROGRESS_THROTTLE_INTERVAL if show is not None else None
-        while True:
-            done, _ = await asyncio.wait({self.finished}, timeout=interval)
-            if show is not None and self._progress:
-                await show(self._progress.take())
-            if done:
-                self.finished.result()
-                return self.returncode
+        quiet = asyncio.create_task(self._quiet()) if idle else None
+        waits: set[asyncio.Future[Any]] = {self.finished, self.outlived}
+        if quiet is not None:
+            waits.add(quiet)
+        try:
+            while True:
+                done, _ = await asyncio.wait(waits, timeout=interval, return_when=asyncio.FIRST_COMPLETED)
+                if show is not None and self._progress:
+                    await show(self._progress.take())
+                if self.finished in done:
+                    self.finished.result()
+                    return "ended"
+                if self.outlived in done:
+                    if self.outlived.result():
+                        return "shell_exited"
+                    waits.discard(self.outlived)
+                if quiet in done:
+                    return "idle"
+        finally:
+            if quiet is not None:
+                quiet.cancel()
+
+    async def shell_exited(self) -> tuple[int, ...]:
+        """Wait for the shell to exit, then return the processes that outlived it by the grace, if any."""
+        await asyncio.wait({self.outlived, self.finished}, return_when=asyncio.FIRST_COMPLETED)
+        return self.outlived.result() if self.outlived.done() else ()
 
     async def wait(self) -> int:
         """Wait for the command to end and return its shell's exit code."""
@@ -443,14 +508,9 @@ class _Command:
 
     async def terminate(self, *, force: bool) -> None:
         """Ask every process of the command to stop, or kill them all when *force* is set."""
-        if sys.platform == "win32":
-            # A console process tree has no polite stop here: both kill it.
-            await kill_windows_process_tree(self.proc.pid)
-            if self.proc.returncode is None:
-                with suppress(ProcessLookupError, OSError):
-                    self.proc.kill()
-        else:
-            _signal_command(self.proc, signal.SIGKILL if force else signal.SIGTERM)
+        self._stop(force)
+        self._quick_until = time.monotonic() + _STOP_WATCH
+        self._look.set()
 
     async def close(self) -> None:
         """Stop reading the output and release the process, killing what of the command still runs.
@@ -464,11 +524,63 @@ class _Command:
             ended = self.finished.done() and not self.finished.cancelled() and self.finished.exception() is None
             if not ended:
                 await self.terminate(force=True)
-            for part in self._parts:
+            parts = [*self._readers, self.finished]
+            for part in parts:
                 part.cancel()
-            await asyncio.wait(self._parts)
+            await asyncio.wait(parts)
         finally:
             await self._cleanup.aclose()
+
+    async def _run_out(self, after_exit: Callable[[], Awaitable[None]] | None) -> None:
+        await self.proc.wait()
+        await self._settle()
+        if after_exit is not None:
+            await after_exit()
+        # A process that left the session or Job may hold the output open: stop reading for it.
+        done, reading = await asyncio.wait(self._readers, timeout=_EXIT_GRACE)
+        for reader in reading:
+            reader.cancel()
+        for reader in done:
+            reader.result()
+
+    async def _settle(self) -> None:
+        """Return once no process of the command is left, telling meanwhile which outlived the shell."""
+        grace_ends = time.monotonic() + _EXIT_GRACE
+        while live := await self._sample():
+            now = time.monotonic()
+            if now >= grace_ends and not self.outlived.done():
+                self.outlived.set_result(tuple(sorted(live)))
+            self._look.clear()
+            with suppress(TimeoutError):
+                quick = now < max(grace_ends, self._quick_until)
+                await asyncio.wait_for(self._look.wait(), _QUICK_POLL if quick else _SLOW_POLL)
+        if not self.outlived.done():
+            self.outlived.set_result(())
+
+    async def _quiet(self) -> None:
+        """Return once the command printed nothing and its processes used next to no CPU for IDLE_SECONDS.
+
+        A process that started meanwhile is no quiet either: a build running one
+        short compiler after another may never be seen using CPU.
+        """
+        since, before = time.monotonic(), {}
+        while True:
+            await asyncio.sleep(_SLOW_POLL)
+            live = await self._sample()
+            now = time.monotonic()
+            used = sum(cpu - before[pid] for pid, cpu in live.items() if pid in before)
+            if self._last_output > since or live.keys() - before.keys() or used >= _IDLE_CPU_SECONDS:
+                since, before = now, live
+            elif now - since >= IDLE_SECONDS:
+                return
+
+    async def _sample(self) -> dict[int, float]:
+        try:
+            return await asyncio.to_thread(self._live)
+        except Exception:
+            # As before liveness was looked at: the command ends with its shell.
+            logger.debug("Could not list the processes of a shell command", exc_info=True)
+            return {}
 
     async def _read(self, stream: int, reader: asyncio.StreamReader) -> None:
         while chunk := await reader.read(_READ_CHUNK_BYTES):
@@ -478,12 +590,8 @@ class _Command:
             if last:
                 self._progress.add(last)
 
-    async def _exit(self, after_exit: Callable[[], Awaitable[None]] | None) -> None:
-        await self.proc.wait()
-        if after_exit is not None:
-            await after_exit()
-
     def _feed(self, stream: int, chunk: bytes) -> None:
+        self._last_output = time.monotonic()
         if self._sink is not None:
             self._sink(stream, chunk)
             return
@@ -555,7 +663,8 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
     # copy) before the async reader has drained the master, the PTY can
     # reach EOF and the child's final output is silently dropped.  Holding
     # the slave open here keeps the master from reaching EOF until we close
-    # it ourselves — after the child has exited and its output is read.
+    # it ourselves — after every process of the command has exited, not only
+    # the shell, and its output is read.
     slave_open = True
 
     def release_slave() -> None:
@@ -566,8 +675,8 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
                 os.close(slave)
 
     async def drained() -> None:
-        # Once the child exits, release the parent's slave fd so the PTY
-        # master reaches EOF *after* the child's buffered output has been
+        # Once the command's processes exited, release the parent's slave fd so
+        # the PTY master reaches EOF *after* their buffered output has been
         # flushed.  Waiting for the reader to catch up first is what makes
         # that flush real: see _await_pty_master_drained.
         await _await_pty_master_drained(master)
@@ -578,7 +687,21 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
     master_file = os.fdopen(master, "rb", 0)
     cleanup.callback(master_file.close)
     reader = asyncio.StreamReader()
-    run = _Command(proc, (reader,), cleanup, after_exit=drained, trace_file=_trace_file(argv))
+    shell_proc = proc
+
+    def stop(force: bool) -> None:
+        _signal_command(shell_proc, signal.SIGKILL if force else signal.SIGTERM)
+
+    run = _Command(
+        proc,
+        (reader,),
+        cleanup,
+        # Spawned with setsid: the session carries the shell's pid.
+        live=functools.partial(session_processes, proc.pid),
+        stop=stop,
+        after_exit=drained,
+        trace_file=_trace_file(argv),
+    )
     try:
         # Async reader on PTY master (same pattern as TUI shell)
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
@@ -592,43 +715,59 @@ async def _spawn_pty(command: str, shell: ShellInfo, cwd: str) -> _Command:
 
 
 async def _spawn_pipe(command: str, shell: ShellInfo, cwd: str) -> _Command:
-    """Start *command* with its output on pipes (the Windows backend)."""
+    """Start *command* with its output on pipes (the Windows backend).
+
+    In a Job of its own on Windows, joined as it is created, and in a session
+    of its own elsewhere: every process the command starts can be listed and
+    stopped with it.
+    """
     env = _build_subprocess_env()
     argv_variants = _shell_argv_variants(shell, _prepare_pipe_command(command, shell))
-    cleanup = AsyncExitStack()
-    proc: asyncio.subprocess.Process | None = None
+    proc: ManagedStdioProcess | None = None
     for index, argv in enumerate(argv_variants):
         try:
-            proc = await cleanup.enter_async_context(
-                managed_subprocess(
-                    *argv,
-                    # stdin=DEVNULL so the child's STD_INPUT_HANDLE is not the
-                    # outer chrys's console input handle on Windows.  Without this,
-                    # a grandchild TUI (e.g. ``uv run icode`` inside PowerShell)
-                    # can call ``SetConsoleMode`` on the inherited handle and wipe
-                    # the outer TUI's mouse/keyboard flags.  Harmless on Unix.
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=cwd,
-                    env=env,
-                )
-            )
+            proc = await spawn_managed_stdio_process(*argv, cwd=cwd, env=env, limit=_READ_CHUNK_BYTES)
             break
         except MissingWorkingDirectoryError:
             raise
         except OSError:
-            # Spawn failure surfaces at context entry, before the
-            # cleanup registers — safe to retry the bare argv.
             if index == len(argv_variants) - 1:
                 raise
             logger.debug("Traced shell spawn failed; degrading to untraced", exc_info=True)
     if proc is None:
         raise RuntimeError("No shell process was created by the configured spawn variants.")
-    if proc.stdout is None or proc.stderr is None:
-        await cleanup.aclose()
-        raise RuntimeError("The shell process has no output pipes.")
-    return _Command(proc, (proc.stdout, proc.stderr), cleanup, trace_file=_trace_file(argv))
+    # Its input is a pipe that ends at once, never the console of the outer
+    # chrys: a grandchild TUI (e.g. ``uv run icode`` inside PowerShell) could
+    # otherwise call ``SetConsoleMode`` on it and wipe the outer TUI's
+    # mouse/keyboard flags.
+    proc.close_stdin()
+    cleanup = AsyncExitStack()
+    cleanup.callback(proc.close_transports)
+    managed = proc
+
+    def stop(force: bool) -> None:
+        # A console process tree has no polite stop here: both kill it.
+        managed.kill_tree()
+
+    return _Command(
+        proc,
+        (proc.stdout, proc.stderr),
+        cleanup,
+        live=proc.live_processes,
+        stop=stop,
+        trace_file=_trace_file(argv),
+    )
+
+
+def _output_parts(captures: Sequence[CapturedOutput], *, partial: bool = False) -> list[str]:
+    """What a command printed (*partial*: before it timed out or moved to the background), its stderr apart."""
+    output_label, stderr_label = (f"{PARTIAL_OUTPUT_LABEL}\n", "[partial stderr]\n") if partial else ("", "[stderr]\n")
+    parts: list[str] = []
+    if body := captures[0].text(_clean_output):
+        parts.append(f"{output_label}{body}")
+    if len(captures) > 1 and (stderr := captures[1].text(_clean_output)):
+        parts.append(f"{stderr_label}{stderr}")
+    return parts
 
 
 def _with_stop_notes(result: str, stopped: Sequence[BackgroundTask]) -> str:
@@ -748,8 +887,11 @@ class ShellTools:
                 "its pid, the path of a log file that receives all further output, and the command that "
                 "stops it. To start a server, watcher, or other long-running process, give it a short "
                 "timeout (about 5-15 seconds) so startup errors still appear in the result; `&` and "
-                "`nohup` are not needed. When a background command finishes, its log ends with a line "
-                "starting with `[icode]`, such as `[icode] process exited with code N`. To wait for it, "
+                f"`nohup` are not needed. A command that prints nothing and uses no CPU for {IDLE_SECONDS} seconds (for "
+                "example one waiting for a browser login) moves to the background early, and so does one "
+                "whose shell exits while processes it started still run. When a background command "
+                "finishes, its log ends with a line starting with `[icode] process`, such as "
+                "`[icode] process exited with code N`. To wait for it, "
                 "call sleep, which returns early with the end of the log when one of your background "
                 "commands finishes. To stop it, run "
                 "the shell command shown in the result, which creates its stop file (use the shell for "
@@ -987,26 +1129,24 @@ class ShellTools:
                 # See ``preserve_console_mode`` for the full rationale.
                 with preserve_console_mode():
                     stdout, returncode, stderr = await self._execute_pipe(command, shell, cwd, timeout, reason)
-                body = stdout.text(_clean_output)
-                stderr_clean = stderr.text(_clean_output)
-                exit_suffix = f"[exit_code: {returncode}]"
-                parts: list[str] = []
-                if body:
-                    parts.append(body)
-                if stderr_clean:
-                    parts.append(f"[stderr]\n{stderr_clean}")
-                parts.append(exit_suffix)
-                _record_shell_exit_code(returncode)
-                return await self._bound_result("\n".join(parts), budget, (stdout, stderr))
-            merged, returncode = await self._execute_pty(command, shell, cwd, timeout, reason)
-            body = merged.text(_clean_output)
-            suffix = f"[exit_code: {returncode}]"
-            parts = [body, suffix] if body else [suffix]
+                captures: tuple[CapturedOutput, ...] = (stdout, stderr)
+            else:
+                merged, returncode = await self._execute_pty(command, shell, cwd, timeout, reason)
+                captures = (merged,)
             _record_shell_exit_code(returncode)
-            return await self._bound_result("\n".join(parts), budget, (merged,))
+            parts = [*_output_parts(captures), f"[exit_code: {returncode}]"]
+            return await self._bound_result("\n".join(parts), budget, captures)
+        except _LeftBehind as exc:
+            _record_shell_exit_code(exc.run.returncode)
+            stopped = "Processes it started still ran after its shell exited, so they were stopped"
+            if self._tasks is not None and self._tasks.full:
+                stopped += ": the session already runs as many background commands as it can; stop one first"
+            return await self._output_then(
+                exc.run.captured(), budget, f"[{stopped}]", f"[exit_code: {exc.run.returncode}]"
+            )
+        except _Backgrounded as exc:
+            return await self._backgrounded_result(exc.task, exc.captures, timeout, budget)
         except _Timeout as exc:
-            if exc.task is not None:
-                return await self._backgrounded_result(exc.task, exc.captures, timeout, budget)
             _record_shell_timeout(timeout)
             message = f"Error: command timed out after {timeout} seconds."
             if self._tasks is not None and self._tasks.full:
@@ -1014,7 +1154,7 @@ class ShellTools:
                     " The session already runs as many background commands as it can, so it was stopped"
                     " instead of moving to the background; stop one first."
                 )
-            partial = _format_partial_output(exc.output, exc.stderr)
+            partial = "\n".join(_output_parts(exc.captures, partial=True))
             if not partial:
                 return message
             return await self._bound_result(partial, budget, exc.captures, lead=f"{message}\n")
@@ -1035,21 +1175,52 @@ class ShellTools:
                 "command_execution_failed", f"failed to execute command — {e}", details={"command": command}
             )
 
+    async def _output_then(
+        self, captures: tuple[CapturedOutput, ...], budget: int, *lines: str, partial: bool = False
+    ) -> str:
+        """The bounded output of *captures*, then *lines*, which the bound never cuts."""
+        parts = _output_parts(captures, partial=partial)
+        try:
+            bounded = [await self._bound_result("\n".join(parts), budget, captures)] if parts else []
+        except SyncToolCancelledAfterCompletion as exc:
+            # Cancelled while the output was spilled: the result kept for the call still carries *lines*.
+            exc.completed_result = "\n".join([exc.completed_result, *lines])
+            raise
+        return "\n".join([*bounded, *lines])
+
     async def _backgrounded_result(
         self, task: BackgroundTask, captures: tuple[CapturedOutput, ...], timeout: int, budget: int
     ) -> str:
         _record_background_task(task)
-        notice = (
-            f"[Still running in the background: timeout of {timeout}s reached]\n"
-            f"Task {task.id} (pid {task.pid}) keeps running; do not run the command again.\n"
-            f'Its output goes to {task.log_path}, which ends with a line starting with "[icode]" '
-            "when the command finishes.\n"
+        follow_up = (
+            f'Its output goes to {task.log_path}, which ends with a line starting with "[icode] process" '
+            f"once {'the command finishes' if task.shell_exit_code is None else 'those processes end'}.\n"
             f"To stop it, run: {stop_command(self._shell.name, task.stop_path)}"
         )
-        partial = _format_partial_output(*captures)
-        if not partial:
-            return notice
-        return f"{await self._bound_result(partial, budget, captures)}\n{notice}"
+        if task.shell_exit_code is not None:
+            # The shell finished in the foreground: its output is all there is, and its exit code counts.
+            _record_shell_exit_code(task.shell_exit_code)
+            notice = (
+                f"[The shell exited with code {task.shell_exit_code}, but processes it started still run "
+                "in the background]\n"
+                f"Task {task.id} ({task.processes}) keeps running. "
+                "The exit code is the shell's: the command's own result when it ran in the foreground (such as "
+                "a build that left a server behind), but not the result of work it put in the background "
+                "(such as with & or nohup); for that, wait for it to end or read the log.\n"
+                f"{follow_up}"
+            )
+            return await self._output_then(captures, budget, notice, f"[exit_code: {task.shell_exit_code}]")
+        why = (
+            f"timeout of {timeout}s reached"
+            if task.trigger == "timeout"
+            else f"no output and next to no CPU use for {IDLE_SECONDS}s"
+        )
+        notice = (
+            f"[Still running in the background: {why}]\n"
+            f"Task {task.id} (pid {task.pid}) keeps running; do not run the command again.\n"
+            f"{follow_up}"
+        )
+        return await self._output_then(captures, budget, notice, partial=True)
 
     # ------------------------------------------------------------------
     # Execution backends
@@ -1076,30 +1247,54 @@ class ShellTools:
     async def _follow(self, run: _Command, command: str, reason: str, timeout: int | float) -> int:
         """Wait up to *timeout* for *run* to end and return its exit code.
 
-        Past the timeout the command moves to the background when the session
-        takes it, and is killed otherwise. Leaving any other way — an error,
-        or the call being cancelled — kills it too.
+        The command moves to the background when the session takes it: past the
+        timeout, once it went quiet (with a timeout longer than that), or once
+        processes outlived its shell. Otherwise a timeout kills it, and so does
+        leaving any other way — an error, or the call being cancelled; so are the
+        processes that outlived a shell the session cannot take.
         """
+        tasks = self._tasks
         handed_off = False
         try:
             # Spawned with setsid off Windows: the session and group both carry the shell's pid.
             owner = None if sys.platform == "win32" else run.pid
-            try:
-                return await wait_for_subprocess(
-                    run.follow(shell_progress_callback.get(None)),
-                    timeout=timeout,
-                    process_group_id=owner,
-                    process_session_id=owner,
-                )
-            except TimeoutError:
+            deadline = time.monotonic() + timeout
+            idle = tasks is not None and timeout > IDLE_SECONDS
+            while True:
+                try:
+                    end: ForegroundEnd | Literal["timeout"] = await wait_for_subprocess(
+                        run.follow(shell_progress_callback.get(None), idle=idle),
+                        timeout=max(0.0, deadline - time.monotonic()),
+                        process_group_id=owner,
+                        process_session_id=owner,
+                    )
+                except TimeoutError:
+                    end = "timeout"
+                if end == "ended":
+                    return run.returncode
                 captures = run.captured()
                 task = (
-                    self._tasks.adopt(run, command=command, reason=reason, trigger="timeout", scope=current_scope.get())
-                    if self._tasks is not None
+                    tasks.adopt(
+                        run,
+                        command=command,
+                        reason=reason,
+                        trigger=end,
+                        scope=current_scope.get(),
+                        outlived=run.outlived.result() if end == "shell_exited" else (),
+                    )
+                    if tasks is not None
                     else None
                 )
-                handed_off = task is not None
-                raise _Timeout(*captures, task=task) from None
+                if task is not None:
+                    handed_off = True
+                    raise _Backgrounded(task, captures)
+                if end == "idle":
+                    # The session takes no more: wait on.
+                    idle = False
+                elif end == "shell_exited":
+                    raise _LeftBehind(run)
+                else:
+                    raise _Timeout(captures)
         finally:
             if not handed_off:
                 await run.close()
@@ -1127,23 +1322,25 @@ class ShellTools:
 
 
 class _Timeout(Exception):
-    """Internal sentinel — keeps timeout handling out of the backends.
+    """Internal sentinel — keeps timeout handling out of the backends."""
 
-    *task* is where the command moved when it was not killed.
-    """
-
-    def __init__(
-        self,
-        output: CapturedOutput | None = None,
-        stderr: CapturedOutput | None = None,
-        *,
-        task: BackgroundTask | None = None,
-    ) -> None:
+    def __init__(self, captures: tuple[CapturedOutput, ...]) -> None:
         super().__init__()
-        self.output = output
-        self.stderr = stderr
-        self.task = task
+        self.captures = captures
 
-    @property
-    def captures(self) -> tuple[CapturedOutput, ...]:
-        return tuple(capture for capture in (self.output, self.stderr) if capture is not None)
+
+class _LeftBehind(Exception):
+    """Internal sentinel: the shell of *run* exited, and the processes it left were stopped."""
+
+    def __init__(self, run: _Command) -> None:
+        super().__init__()
+        self.run = run
+
+
+class _Backgrounded(Exception):
+    """Internal sentinel: the command moved to *task*, after printing *captures* in the foreground."""
+
+    def __init__(self, task: BackgroundTask, captures: tuple[CapturedOutput, ...]) -> None:
+        super().__init__()
+        self.task = task
+        self.captures = captures

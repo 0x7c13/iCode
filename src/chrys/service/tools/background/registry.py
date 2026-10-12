@@ -61,6 +61,8 @@ _KILL_GRACE = 2.0
 
 _STOP_FILE_POLL = 2.0
 
+_LISTED_PIDS = 5
+
 StopCause = Literal["agent", "user", "agent_finished", "rollback", "session_end"]
 
 _STOPPED: dict[StopCause, str] = {
@@ -97,12 +99,21 @@ class BackgroundProcess(Protocol):
     @property
     def pid(self) -> int: ...
 
+    @property
+    def returncode(self) -> int:
+        """The shell's exit code, once it exited."""
+        ...
+
     def hand_off(self, sink: Callable[[int, bytes], None]) -> tuple[CapturedOutput, ...]:
         """Send all further output to *sink*, returning what was kept until now."""
         ...
 
+    async def shell_exited(self) -> tuple[int, ...]:
+        """Wait for the shell to exit; return the processes it started that outlived it, if any."""
+        ...
+
     async def wait(self) -> int:
-        """Wait for the command to end and return its shell's exit code."""
+        """Wait for every process of the command to end and return its shell's exit code."""
         ...
 
     async def terminate(self, *, force: bool) -> None:
@@ -154,12 +165,16 @@ class BackgroundTask:
         self.stop_path = stop_path
         self.started = time.monotonic()
         self.exit_code: int | None = None
-        """The shell's exit code, once the command ended without being stopped."""
+        """The shell's exit code, once the command ended with it, without being stopped."""
+        self.shell_exit_code: int | None = None
+        """The shell's exit code, once it exited while processes it started ran on."""
+        self.outlived: tuple[int, ...] = ()
+        """Those processes, as the shell exited."""
         self.stopped_by: StopCause | None = None
         self.ended = asyncio.Event()
         """Set once the command ended and its log was closed."""
-        self.reported = False
-        """Whether a sleep of its agent, or the main agent's reminder, already said that it ended."""
+        self.reported: str | None = None
+        """The outcome a sleep of its agent, its tool result or the main agent's reminder last told."""
         self.process = process
         self.log = log
         self.stopping: asyncio.Task[None] | None = None
@@ -170,9 +185,20 @@ class BackgroundTask:
         return f"{self.id} ({_one_line(self.command)})"
 
     @property
+    def processes(self) -> str:
+        """The pid to tell whether it runs: the shell's, or the processes that outlived it."""
+        pids = self.outlived or (self.pid,)
+        listed = ", ".join(str(pid) for pid in pids[:_LISTED_PIDS])
+        return f"{'pid' if len(pids) == 1 else 'pids'} {listed}{', …' if len(pids) > _LISTED_PIDS else ''}"
+
+    @property
     def outcome(self) -> str:
-        """How the command ended, as the last line of its log says it; "running" until then."""
-        return _ending(self) if self.ended.is_set() else "running"
+        """How the command ended, as the last line of its log says it; until then, how it runs."""
+        if self.ended.is_set():
+            return _ending(self)
+        if self.shell_exit_code is not None:
+            return f"running after its shell exited with code {self.shell_exit_code}"
+        return "running"
 
 
 class BackgroundTasks:
@@ -214,11 +240,13 @@ class BackgroundTasks:
         trigger: str,
         reason: str = "",
         scope: TaskScope = MAIN_SCOPE,
+        outlived: tuple[int, ...] = (),
     ) -> BackgroundTask | None:
         """Take *process* over, or return None when the session takes no more or has no log for it.
 
-        Synchronous, so the output *process* kept just before this call is
-        exactly what the log starts with.
+        *outlived* are the processes still running after its shell exited, which
+        the caller already told. Synchronous, so the output *process* kept just
+        before this call is exactly what the log starts with.
         """
         if self._closed or self.full:
             return None
@@ -242,6 +270,9 @@ class BackgroundTasks:
             scope=scope,
             turn=turn,
         )
+        if outlived:
+            task.shell_exit_code, task.outlived = process.returncode, outlived
+            task.reported = task.outcome
         self._running[task_id] = task
         self._record(
             EventType.BACKGROUND_TASK_STARTED,
@@ -258,26 +289,33 @@ class BackgroundTasks:
         return any(command == stop_command(shell_name, self._stop_path(task_id)) for task_id in self._used_ids)
 
     def unreported(self, scope: TaskScope) -> list[BackgroundTask]:
-        """The tasks of *scope* that ended since a sleep last said so; a stop by the agent's own stop file is no news."""
+        """The tasks of *scope* that ended, or outlived their shell, since that was last told.
+
+        A stop by the agent's own stop file is no news.
+        """
         return [
-            task for task in self._ended if task.scope == scope and not task.reported and task.stopped_by != "agent"
+            task
+            for task in [*self._running.values(), *self._ended]
+            if task.scope == scope
+            and task.outcome != "running"
+            and task.reported != task.outcome
+            and task.stopped_by != "agent"
         ]
 
     def reminder(self, shell_name: str) -> str | None:
         """The main agent's running commands and the few that ended last, or None when it never had any.
 
         Only what stays the same until a task changes state: no output, no times.
-        An end listed here is told: a sleep does not tell it again.
+        What is listed here is told: a sleep does not tell it again.
         """
         ended = [task for task in self._ended if task.scope == MAIN_SCOPE][-_LISTED_ENDED:]
-        for task in ended:
-            task.reported = True
         tasks = [task for task in self._running.values() if task.scope == MAIN_SCOPE] + ended
         if not tasks:
             return None
         lines = ["Background commands of this session:"]
         for task in tasks:
-            lines.append(f"- {task.id} (pid {task.pid}), {task.outcome}: {_one_line(task.command)}")
+            task.reported = task.outcome
+            lines.append(f"- {task.id} ({task.processes}), {task.outcome}: {_one_line(task.command)}")
             if task.reason:
                 lines.append(f"  reason: {_one_line(task.reason)}")
             lines.append(f"  log: {task.log_path}")
@@ -385,8 +423,11 @@ class BackgroundTasks:
 
     async def _watch(self, task: BackgroundTask) -> None:
         try:
+            if (outlived := await task.process.shell_exited()) and task.stopped_by is None:
+                task.shell_exit_code, task.outlived = task.process.returncode, outlived
+                task.log.note(f"[icode] shell exited with code {task.shell_exit_code}; other processes still running")
             code = await task.process.wait()
-            if task.stopped_by is None:
+            if task.stopped_by is None and task.shell_exit_code is None:
                 task.exit_code = code
             await task.log.close(f"[icode] process {_ending(task)}")
         finally:
@@ -400,6 +441,7 @@ class BackgroundTasks:
                 {
                     "task": task.id,
                     "exit_code": task.exit_code,
+                    "shell_exit_code": task.shell_exit_code,
                     "stopped_by": task.stopped_by,
                     "duration_ms": int((time.monotonic() - task.started) * 1000),
                 },
@@ -424,7 +466,12 @@ class BackgroundTasks:
 def _ending(task: BackgroundTask) -> str:
     if task.exit_code is not None:
         return f"exited with code {task.exit_code}"
-    return _STOPPED[task.stopped_by] if task.stopped_by is not None else "ended"
+    if task.stopped_by is not None:
+        return _STOPPED[task.stopped_by]
+    if task.shell_exit_code is not None:
+        # How the processes that outlived the shell ended is not known.
+        return f"ended (its shell had exited with code {task.shell_exit_code})"
+    return "ended"
 
 
 def _one_line(text: str) -> str:

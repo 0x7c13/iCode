@@ -37,6 +37,9 @@ _QUEUE_LIMIT = 8 * 1024 * 1024
 _LINE_LIMIT = 64 * 1024
 """Bytes of an unfinished line held before it is written as a line of its own."""
 
+_NOTES = -1
+"""The stream icode's own lines arrive on, apart from the command's."""
+
 
 def _clean_text(text: str) -> str:
     return process_carriage_returns(strip_ansi(text))
@@ -84,6 +87,10 @@ class TaskLog:
             self._queued += len(chunk)
         if self._timer is None and self._write is None:
             self._timer = asyncio.get_running_loop().call_later(_FLUSH_DELAY, self._start_write)
+
+    def note(self, line: str) -> None:
+        """Queue *line*, one of icode's own, after the output that arrived until now."""
+        self.feed(_NOTES, f"{line}\n".encode())
 
     def open(self) -> int:
         """Create the log and its directory, so both exist before the command prints anything."""

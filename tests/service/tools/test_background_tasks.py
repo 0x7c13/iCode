@@ -198,7 +198,7 @@ async def test_each_agent_hears_once_of_its_own_ended_tasks_but_not_of_its_own_s
 
     assert tasks.unreported(MAIN_SCOPE) == [build]
     assert tasks.unreported(_SUB_AGENT) == [child]
-    build.reported = True
+    build.reported = build.outcome
     assert tasks.unreported(MAIN_SCOPE) == []
 
 
@@ -257,6 +257,54 @@ async def test_an_end_the_reminder_listed_is_no_news_for_a_sleep(tasks: Backgrou
     assert tasks.reminder("zsh") is not None
 
     assert tasks.unreported(MAIN_SCOPE) == []
+
+
+async def test_a_task_whose_shell_exits_first_is_news_once_then_ends_with_no_exit_code(
+    tasks: BackgroundTasks,
+) -> None:
+    process = HeldProcess()
+    task = tasks.adopt(process, command="npm run build && npm start", trigger="timeout")
+    assert task is not None
+
+    process.outlive(0, tuple(range(5001, 5007)))
+    await wait_for(lambda: task.outcome != "running", description="its shell exited")
+
+    assert task.outcome == "running after its shell exited with code 0"
+    assert task.processes == "pids 5001, 5002, 5003, 5004, 5005, …"
+    assert tasks.unreported(MAIN_SCOPE) == [task]
+    assert tasks.reminder("zsh") is not None
+    assert tasks.unreported(MAIN_SCOPE) == []
+
+    process.exit(0)
+    await _ended(task)
+
+    # What the processes that outlived the shell ended with is not known.
+    assert task.exit_code is None
+    assert task.outcome == "ended (its shell had exited with code 0)"
+    assert tasks.unreported(MAIN_SCOPE) == [task]
+    assert _log(task.log_path) == (
+        "before\n"
+        "[icode] shell exited with code 0; other processes still running\n"
+        "[icode] process ended (its shell had exited with code 0)\n"
+    )
+
+
+async def test_a_command_adopted_once_its_shell_exited_is_no_news_until_it_ends(tasks: BackgroundTasks) -> None:
+    process = HeldProcess()
+    process.outlive(3, (5001,))
+    # Its tool call already said that the shell exited.
+    task = tasks.adopt(process, command="serve &", trigger="shell_exited", outlived=(5001,))
+    assert task is not None
+
+    assert (task.shell_exit_code, task.processes) == (3, "pid 5001")
+    assert tasks.unreported(MAIN_SCOPE) == []
+    reminder = tasks.reminder("zsh")
+    assert reminder is not None
+    assert f"- {task.id} (pid 5001), running after its shell exited with code 3: serve &" in reminder
+
+    process.exit(0)
+    await _ended(task)
+    assert tasks.unreported(MAIN_SCOPE) == [task]
 
 
 async def test_reminder_is_none_while_the_main_agent_never_had_a_task(tasks: BackgroundTasks) -> None:

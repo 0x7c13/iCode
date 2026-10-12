@@ -239,13 +239,68 @@ async def test_sleep_wakes_with_the_end_of_the_log_when_its_agents_task_ends(tas
     assert first.startswith("Sleep ended early after ")
     assert first.endswith(" (requested 600 seconds).")
     assert rest == [
-        f"Background task {task.id} (pid 4242) exited with code 0. Log: {task.log_path}",
+        f"Background task {task.id} (pid 4242): exited with code 0. Log: {task.log_path}",
         "End of its log:",
         "before",
         "compiled",
         "[icode] process exited with code 0",
     ]
-    assert task.reported
+    assert task.reported == task.outcome
+
+
+async def test_sleep_wakes_once_when_its_agents_task_outlives_its_shell(tasks: BackgroundTasks) -> None:
+    process = HeldProcess()
+    task = tasks.adopt(process, command="make serve", trigger="timeout")
+    assert task is not None
+    middleware = SleepMiddleware(EventBus(), background_tasks=tasks)
+    ctx = _sleep_context(600)
+    sleeping = asyncio.create_task(middleware.process(ctx, _no_tool))
+    await asyncio.sleep(0)
+    assert not sleeping.done()
+
+    process.outlive(0, (5001,))
+    await asyncio.wait_for(sleeping, ENGINE_TURN_TIMEOUT)
+
+    assert (
+        f"Background task {task.id} (pid 5001): running after its shell exited with code 0. Log: {task.log_path}"
+        in ctx.result
+    )
+    again = _sleep_context(0, call_id="again")
+    await middleware.process(again, _no_tool)
+    assert again.result == "Slept for 0 seconds."
+
+
+async def test_an_end_that_comes_while_sleep_reads_the_logs_is_news_for_the_next_sleep(
+    tasks: BackgroundTasks, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = HeldProcess()
+    task = tasks.adopt(process, command="make serve", trigger="timeout")
+    assert task is not None
+    process.outlive(0, (5001,))
+    await wait_for(lambda: task.shell_exit_code is not None, description="the task outlived its shell")
+    loop = asyncio.get_running_loop()
+    read_tails = sleep_mod._log_tails
+
+    async def _end() -> None:
+        process.exit(0)
+        await task.ended.wait()
+
+    def _tails_after_the_task_ended(paths: list[Path]) -> list[str]:
+        # Runs in a worker thread while sleep awaits it.
+        asyncio.run_coroutine_threadsafe(_end(), loop).result(ENGINE_TURN_TIMEOUT)
+        return read_tails(paths)
+
+    monkeypatch.setattr(sleep_mod, "_log_tails", _tails_after_the_task_ended)
+    middleware = SleepMiddleware(EventBus(), background_tasks=tasks)
+    first = _sleep_context(600, call_id="first")
+    await asyncio.wait_for(middleware.process(first, _no_tool), ENGINE_TURN_TIMEOUT)
+    monkeypatch.setattr(sleep_mod, "_log_tails", read_tails)
+    second = _sleep_context(0, call_id="second")
+    await middleware.process(second, _no_tool)
+
+    assert f"Background task {task.id} (pid 5001): running after its shell exited with code 0." in first.result
+    assert f"Background task {task.id} (pid 5001): ended (its shell had exited with code 0)." in second.result
+    assert second.result.endswith("[icode] process ended (its shell had exited with code 0)")
 
 
 async def test_sleep_returns_at_once_for_a_task_that_already_ended_and_says_so_only_once(
@@ -265,7 +320,7 @@ async def test_sleep_returns_at_once_for_a_task_that_already_ended_and_says_so_o
 
     assert first.result.startswith(
         "Sleep ended early after 0 seconds (requested 600 seconds).\n"
-        f"Background task {task.id} (pid 4242) exited with code 3."
+        f"Background task {task.id} (pid 4242): exited with code 3."
     )
     assert second.result == "Slept for 0 seconds."
 
@@ -292,7 +347,7 @@ async def test_sleep_hears_only_of_its_own_agents_tasks_and_not_of_their_stop_fi
         current_scope.reset(token)
 
     assert main_sleep.result == "Slept for 0 seconds."
-    assert f"Background task {child.id} (pid 4242) exited with code 1." in child_sleep.result
+    assert f"Background task {child.id} (pid 4242): exited with code 1." in child_sleep.result
 
 
 async def test_main_agents_sleep_returns_once_the_user_sent_a_message() -> None:

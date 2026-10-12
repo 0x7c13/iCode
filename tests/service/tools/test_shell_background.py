@@ -1,11 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A shell command that outlives its timeout moves to the session's background tasks."""
+"""A shell command moves to the session's background tasks when it outlives its timeout, goes quiet,
+or leaves processes running after its shell exited; it ends with the last of its processes.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
@@ -14,13 +17,17 @@ import psutil
 import pytest
 
 from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.foundation.platform.output_capture import CapturedOutput
 from chrys.foundation.tool_result_metadata import (
     SHELL_BACKGROUND_TASK_METADATA_KEY,
     SHELL_TIMED_OUT_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
+    tool_result_metadata_failure_state,
 )
-from chrys.service.tools.background import BackgroundTasks, stop_command
+from chrys.kernel.tools import SyncToolCancelledAfterCompletion
+from chrys.service.tools.background import MAIN_SCOPE, BackgroundTasks, stop_command
 from chrys.service.tools.background import registry as registry_mod
+from chrys.service.tools.builtins import shell as shell_mod
 from chrys.service.tools.builtins.shell import ShellTools, shell_result_metadata
 from chrys.service.tools.builtins.shell_filter import ShellCommandFilter
 from chrys.service.tools.result_metadata import tool_result_metadata
@@ -43,6 +50,56 @@ while True:
     time.sleep(0.05)
 """
 
+_WAIT_FOR_FILE = """\
+import pathlib, sys, time
+while not pathlib.Path(sys.argv[1]).exists():
+    time.sleep(0.05)
+"""
+
+_LEAVE_BEHIND = """\
+import pathlib, subprocess, sys, time
+waiter, release, pid_file, code, *start = sys.argv[1:]
+print("built", flush=True)
+while start and not pathlib.Path(start[0]).exists():
+    time.sleep(0.05)
+# As `cmd &` with its output redirected, or nohup, leaves it: no longer writing to the command's output.
+child = subprocess.Popen(
+    [sys.executable, waiter, release],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path(pid_file).write_text(str(child.pid), encoding="utf-8")
+sys.exit(int(code))
+"""
+
+_LATE_WORKER = """\
+import subprocess, sys
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.3); print('late', flush=True)"])
+print("shell done", flush=True)
+"""
+
+_TERM_IGNORER = """\
+import pathlib, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(sys.argv[1]).write_text("ready", encoding="utf-8")
+time.sleep(300)
+"""
+
+_PARENT_OF_TERM_IGNORER = """\
+import os, pathlib, subprocess, sys, time
+ignorer, ready, pids = sys.argv[1:]
+child = subprocess.Popen(
+    [sys.executable, ignorer, ready],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pathlib.Path(pids).write_text(f"{os.getpid()} {child.pid}", encoding="utf-8")
+while True:
+    time.sleep(0.05)
+"""
+
 
 @pytest.fixture
 async def tasks(tmp_path: Path) -> AsyncIterator[BackgroundTasks]:
@@ -61,10 +118,30 @@ def metadata() -> Iterator[dict[str, Any]]:
     shell_result_metadata.reset(shell_token)
 
 
-def _python_command(script: Path, *args: Path) -> str:
+def _python_command(script: Path, *args: Path | str) -> str:
     # PowerShell runs a quoted program path only through its call operator.
     prefix = "& " if sys.platform == "win32" else ""
     return " ".join([f'{prefix}"{sys.executable}"', f'"{script}"', *(f'"{arg}"' for arg in args)])
+
+
+def _lines(result: str) -> list[str]:
+    return [line for line in result.splitlines() if line]
+
+
+def _scripts(tmp_path: Path, **scripts: str) -> dict[str, Path]:
+    paths = {name: tmp_path / f"{name}.py" for name in scripts}
+    for name, text in scripts.items():
+        paths[name].write_text(text, encoding="utf-8")
+    return paths
+
+
+async def _pid_of(pid_file: Path) -> psutil.Process:
+    await wait_for(
+        lambda: pid_file.exists() and pid_file.read_text(encoding="utf-8").isdigit(),
+        timeout=ENGINE_TURN_TIMEOUT,
+        description="the pid written",
+    )
+    return psutil.Process(int(pid_file.read_text(encoding="utf-8")))
 
 
 async def _family(pids: Path, call: asyncio.Task[str] | None = None) -> list[psutil.Process]:
@@ -89,12 +166,12 @@ async def _gone(processes: list[psutil.Process]) -> None:
 
 
 async def _start_waiting_command(
-    shell: ShellTools, tasks: BackgroundTasks, tmp_path: Path
+    shell: ShellTools, tasks: BackgroundTasks, tmp_path: Path, *, timeout: int = 1
 ) -> tuple[str, registry_mod.BackgroundTask, Path]:
     script = tmp_path / "wait_for_release.py"
     script.write_text(_WAIT_FOR_RELEASE, encoding="utf-8")
     release = tmp_path / "release"
-    result = await shell.execute(_python_command(script, release), reason="test", timeout=1)
+    result = await shell.execute(_python_command(script, release), reason="test", timeout=timeout)
     [task] = tasks.running
     return result, task, release
 
@@ -216,3 +293,171 @@ def test_description_offers_the_background_only_with_a_registry(tmp_path: Path) 
     assert "stopped when the session ends" not in with_tasks
     assert "stopped when the session ends" in session_wide
     assert "stopped when you finish" not in session_wide
+
+
+async def test_processes_left_after_the_shell_exited_move_to_the_background_with_its_exit_code(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path
+) -> None:
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = _scripts(tmp_path, leave=_LEAVE_BEHIND, waiter=_WAIT_FOR_FILE)
+    release, pid_file = tmp_path / "release", tmp_path / "pid"
+
+    result = await shell.execute(
+        _python_command(script["leave"], script["waiter"], release, pid_file, "3"), reason="test", timeout=60
+    )
+
+    [task] = tasks.running
+    child = await _pid_of(pid_file)
+    assert _lines(result)[:2] == [
+        "built",
+        "[The shell exited with code 3, but processes it started still run in the background]",
+    ]
+    assert f"Task {task.id} (pid {child.pid}) keeps running." in result
+    assert str(task.log_path) in result
+    assert result.endswith("\n[exit_code: 3]")
+    assert (task.trigger, task.shell_exit_code, task.outlived) == ("shell_exited", 3, (child.pid,))
+    assert metadata[SHELL_BACKGROUND_TASK_METADATA_KEY]["trigger"] == "shell_exited"
+    # The shell's own result still counts.
+    assert tool_result_metadata_failure_state(metadata) is True
+    # The tool call already said so.
+    assert tasks.unreported(MAIN_SCOPE) == []
+
+    release.touch()
+    await wait_for(task.ended.is_set, timeout=ENGINE_TURN_TIMEOUT, description="the left process ended")
+
+    assert task.log_path.read_text(encoding="utf-8").endswith(
+        "[icode] shell exited with code 3; other processes still running\n"
+        "[icode] process ended (its shell had exited with code 3)\n"
+    )
+
+
+async def test_a_call_cancelled_while_its_output_spills_keeps_the_lines_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _cancelled_while_spilling(*_args: object, **_kwargs: object) -> str:
+        raise SyncToolCancelledAfterCompletion("[output, cut]")
+
+    monkeypatch.setattr(shell_mod, "bound_process_output", _cancelled_while_spilling)
+    shell = ShellTools(SessionEnvironment.capture())
+
+    with pytest.raises(SyncToolCancelledAfterCompletion) as cancelled:
+        await shell._output_then((CapturedOutput(b"built\n", b"", 6),), 100, "[note]", "[exit_code: 0]")
+
+    assert cancelled.value.completed_result == "[output, cut]\n[note]\n[exit_code: 0]"
+
+
+@pytest.mark.parametrize("loud", [False, True], ids=["short", "spilled"])
+async def test_without_a_registry_processes_left_after_the_shell_exited_are_stopped(
+    loud: bool, metadata: dict[str, Any], tmp_path: Path
+) -> None:
+    shell = ShellTools(SessionEnvironment.capture(), session_dir=tmp_path / "session")
+    script = _scripts(tmp_path, leave=_LEAVE_BEHIND, waiter=_WAIT_FOR_FILE, loud="print('word ' * 2000)\n")
+    pid_file = tmp_path / "pid"
+    command = _python_command(script["leave"], script["waiter"], tmp_path / "release", pid_file, "0")
+    if loud:
+        command = f"{_python_command(script['loud'])}; {command}"
+    call = asyncio.create_task(shell.execute(command, reason="test", timeout=60, max_tokens=100))
+    child = await _pid_of(pid_file)
+
+    result = await call
+
+    # However much of the output the budget keeps, the note on the stopped processes stays.
+    assert _lines(result)[-2:] == [
+        "[Processes it started still ran after its shell exited, so they were stopped]",
+        "[exit_code: 0]",
+    ]
+    assert (_lines(result)[0] == "built") is not loud
+    await _gone([child])
+
+
+async def test_a_process_ending_just_after_the_shell_ends_the_command_with_all_its_output(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path
+) -> None:
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = _scripts(tmp_path, late=_LATE_WORKER)
+
+    result = await shell.execute(_python_command(script["late"]), reason="test", timeout=60)
+
+    assert _lines(result) == ["shell done", "late", "[exit_code: 0]"]
+    assert tasks.running == []
+
+
+async def test_a_command_that_went_quiet_moves_to_the_background_before_its_timeout(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shell_mod, "IDLE_SECONDS", 1)
+    monkeypatch.setattr(shell_mod, "_SLOW_POLL", 0.2)
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+
+    started = time.monotonic()
+    result, task, release = await _start_waiting_command(shell, tasks, tmp_path, timeout=50)
+
+    assert time.monotonic() - started < 50
+    assert "[Still running in the background: no output and next to no CPU use for 1s]" in result
+    assert result.startswith("[partial output]\nstarted\n")
+    assert task.trigger == "idle"
+    release.touch()
+    await wait_for(task.ended.is_set, timeout=ENGINE_TURN_TIMEOUT, description="the command finished")
+    assert task.exit_code == 0
+
+
+async def test_a_command_busy_without_output_is_not_quiet(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shell_mod, "IDLE_SECONDS", 1)
+    monkeypatch.setattr(shell_mod, "_SLOW_POLL", 0.2)
+    # Even a loaded machine gives a busy process more than this of every second.
+    monkeypatch.setattr(shell_mod, "_IDLE_CPU_SECONDS", 0.05)
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = _scripts(
+        tmp_path,
+        busy="import time\nend = time.monotonic() + 3\nwhile time.monotonic() < end:\n    pass\nprint('done')\n",
+    )
+
+    result = await shell.execute(_python_command(script["busy"]), reason="test", timeout=50)
+
+    assert _lines(result) == ["done", "[exit_code: 0]"]
+    assert tasks.running == []
+
+
+async def test_a_background_command_whose_shell_exits_first_ends_with_its_last_process(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path
+) -> None:
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = _scripts(tmp_path, leave=_LEAVE_BEHIND, waiter=_WAIT_FOR_FILE)
+    start, release, pid_file = tmp_path / "start", tmp_path / "release", tmp_path / "pid"
+    command = _python_command(script["leave"], script["waiter"], release, pid_file, "0", start)
+    await shell.execute(command, reason="test", timeout=1)
+    [task] = tasks.running
+
+    start.touch()
+    child = await _pid_of(pid_file)
+    await wait_for(lambda: task.shell_exit_code is not None, timeout=ENGINE_TURN_TIMEOUT, description="shell exited")
+
+    assert (task.outcome, task.outlived) == ("running after its shell exited with code 0", (child.pid,))
+    assert tasks.unreported(MAIN_SCOPE) == [task]
+    release.touch()
+    await wait_for(task.ended.is_set, timeout=ENGINE_TURN_TIMEOUT, description="the left process ended")
+    assert task.exit_code is None
+    assert task.log_path.read_text(encoding="utf-8").endswith(
+        "[icode] process ended (its shell had exited with code 0)\n"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows stops a command by killing its Job at once")
+async def test_stopping_kills_a_process_that_ignores_the_request_after_its_shell_exited(
+    tasks: BackgroundTasks, metadata: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(registry_mod, "_TERM_GRACE", 0.5)
+    shell = ShellTools(SessionEnvironment.capture(), background_tasks=tasks)
+    script = _scripts(tmp_path, parent=_PARENT_OF_TERM_IGNORER, ignorer=_TERM_IGNORER)
+    ready, pids = tmp_path / "ready", tmp_path / "pids"
+    await shell.execute(_python_command(script["parent"], script["ignorer"], ready, pids), reason="test", timeout=1)
+    [task] = tasks.running
+    processes = await _family(pids)
+    await wait_for(ready.exists, timeout=ENGINE_TURN_TIMEOUT, description="the child ignores SIGTERM")
+
+    await tasks.stop(task, "user")
+
+    await _gone(processes)
+    assert task.log_path.read_text(encoding="utf-8").endswith("[icode] process stopped by user\n")

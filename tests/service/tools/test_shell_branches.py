@@ -21,7 +21,7 @@ import contextlib
 import os
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -221,7 +221,7 @@ async def test_execute_records_timeout_metadata(runtime: SessionEnvironment, mon
     async def _timeout(
         command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
     ) -> tuple[CapturedOutput, int]:
-        raise _Timeout(output=CapturedOutput(b"before", b"", 6))
+        raise _Timeout((CapturedOutput(b"before", b"", 6),))
 
     if IS_UNIX:
         monkeypatch.setattr(shell, "_execute_pty", _timeout)
@@ -473,28 +473,43 @@ class _FakeStream:
 
 
 class _FakeWinProc:
-    """Minimal stand-in for asyncio.subprocess.Process used by _execute_pipe."""
+    """Minimal stand-in for the managed process _execute_pipe spawns."""
 
     pid = 0
-    """No real process: a tree kill of it does nothing."""
 
     def __init__(self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> None:
-        self._stdout = stdout
-        self._stderr = stderr
         self.returncode = returncode
         self.stdout = _FakeStream([], tail=stdout)
         self.stderr = _FakeStream([], tail=stderr)
-
-    async def communicate(self) -> tuple[bytes, bytes]:
-        return self._stdout, self._stderr
+        self.stdin_closed = False
 
     async def wait(self) -> int:
         return self.returncode
 
+    def close_stdin(self) -> None:
+        self.stdin_closed = True
 
-@contextlib.asynccontextmanager
-async def _fake_managed(*_args: Any, **_kwargs: Any):
-    yield _FakeWinProc(stdout=b"hello from win\n", stderr=b"warn\n", returncode=0)
+    def close_transports(self) -> None:
+        pass
+
+    def kill_tree(self) -> None:
+        pass
+
+    def live_processes(self) -> dict[int, float]:
+        # No real process: none of its tree is left once its shell exited.
+        return {}
+
+
+def _spawning(make: Callable[[], _FakeWinProc]) -> Callable[..., Awaitable[_FakeWinProc]]:
+    """A stand-in for spawn_managed_stdio_process that starts the process *make* returns."""
+
+    async def spawn(*_args: Any, **_kwargs: Any) -> _FakeWinProc:
+        return make()
+
+    return spawn
+
+
+_fake_managed = _spawning(lambda: _FakeWinProc(stdout=b"hello from win\n", stderr=b"warn\n", returncode=0))
 
 
 @contextlib.contextmanager
@@ -509,7 +524,7 @@ async def test_windows_execute_pipe_path(runtime: SessionEnvironment, monkeypatc
     # Pretend we're on Windows (the compile-time imports at top of shell.py
     # guard fcntl/pty — those modules are NOT referenced on this code path)
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _fake_managed)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _fake_managed)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     shell = ShellTools(runtime)
@@ -528,12 +543,10 @@ async def test_windows_execute_pipe_no_stderr(runtime: SessionEnvironment, monke
     """Windows path with empty stderr omits the ``[stderr]`` label."""
     from chrys.service.tools.builtins import shell as shell_mod
 
-    @contextlib.asynccontextmanager
-    async def _no_stderr(*_a: Any, **_kw: Any):
-        yield _FakeWinProc(stdout=b"ok\n", stderr=b"", returncode=0)
+    _no_stderr = _spawning(lambda: _FakeWinProc(stdout=b"ok\n", stderr=b"", returncode=0))
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _no_stderr)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _no_stderr)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     out = await ShellTools(runtime).execute("echo x", reason="test")
@@ -561,12 +574,10 @@ async def test_windows_execute_pipe_timeout(runtime: SessionEnvironment, monkeyp
             await asyncio.sleep(5)
             return 0
 
-    @contextlib.asynccontextmanager
-    async def _slow(*_a: Any, **_kw: Any):
-        yield _SlowProc()
+    _slow = _spawning(_SlowProc)
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _slow)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _slow)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     out = await ShellTools(runtime).execute("sleep 5", reason="test", timeout=1)
@@ -587,12 +598,10 @@ async def test_windows_execute_pipe_timeout_includes_partial_output_without_prog
             await asyncio.sleep(5)
             return 0
 
-    @contextlib.asynccontextmanager
-    async def _hanging(*_a: Any, **_kw: Any):
-        yield _HangingProc()
+    _hanging = _spawning(_HangingProc)
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _hanging)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _hanging)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     out = await ShellTools(runtime).execute("anything", reason="test", timeout=1)
@@ -618,12 +627,10 @@ async def test_windows_execute_pipe_timeout_includes_partial_stderr_with_progres
             await asyncio.sleep(5)
             return 0
 
-    @contextlib.asynccontextmanager
-    async def _hanging(*_a: Any, **_kw: Any):
-        yield _HangingProc()
+    _hanging = _spawning(_HangingProc)
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _hanging)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _hanging)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     received: list[list[str]] = []
@@ -646,25 +653,26 @@ async def test_windows_execute_pipe_timeout_includes_partial_stderr_with_progres
 # ───────────────────────── pipe streaming (Windows path) ───────────────
 
 
-class _StreamingProc:
-    pid = 0
-
+class _StreamingProc(_FakeWinProc):
     def __init__(self, out_lines: list[bytes], err: bytes = b"") -> None:
+        super().__init__()
         self.stdout = _FakeStream(out_lines)
         self.stderr = _FakeStream([], tail=err)
-        self.returncode = 0
-
-    async def wait(self) -> int:
-        return self.returncode
 
 
 async def _follow_pipes(proc: _StreamingProc, show: Any) -> tuple[CapturedOutput, ...]:
     """Run *proc* through the command reader as the pipe backend does, returning what each stream kept."""
     token = shell_progress_callback.set(show)
     try:
-        run = _Command(proc, (proc.stdout, proc.stderr), contextlib.AsyncExitStack())  # type: ignore[arg-type]
+        run = _Command(
+            proc,
+            (proc.stdout, proc.stderr),  # type: ignore[arg-type]
+            contextlib.AsyncExitStack(),
+            live=proc.live_processes,
+            stop=lambda _force: None,
+        )
         try:
-            await run.follow(show)
+            await run.follow(show, idle=False)
             return run.captured()
         finally:
             await run.close()
@@ -761,12 +769,10 @@ async def test_windows_pipe_progress_path_end_to_end(
     """End-to-end: with progress_cb set, the Windows branch streams progress lines."""
     from chrys.service.tools.builtins import shell as shell_mod
 
-    @contextlib.asynccontextmanager
-    async def _streaming(*_a: Any, **_kw: Any):
-        yield _StreamingProc(out_lines=[b"alpha\n", b"beta\n"], err=b"")
+    _streaming = _spawning(lambda: _StreamingProc(out_lines=[b"alpha\n", b"beta\n"], err=b""))
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _streaming)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _streaming)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     received: list[list[str]] = []

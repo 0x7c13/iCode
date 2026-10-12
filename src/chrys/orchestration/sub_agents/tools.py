@@ -1869,7 +1869,12 @@ class SubAgentTools:
                     if background_tasks is not None:
                         stopped = background_tasks.stop_scope(TaskScope.of(origin))
                 if stopped:
-                    commands = ", ".join(task.label for task in stopped)
+                    commands = "; ".join(
+                        task.label
+                        if task.shell_exit_code is None
+                        else f"{task.label}, whose shell had exited with code {task.shell_exit_code}"
+                        for task in stopped
+                    )
                     result += (
                         f"\n\n[Background commands this sub-agent started were stopped when it finished: {commands}]"
                     )

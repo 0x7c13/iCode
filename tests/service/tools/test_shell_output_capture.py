@@ -212,7 +212,7 @@ async def test_a_timed_out_result_keeps_the_note_last(monkeypatch: pytest.Monkey
     shell = ShellTools(SessionEnvironment.capture())
 
     async def timed_out(command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = "") -> Any:
-        raise _Timeout(output=CapturedOutput(b"started\n", b"still going\n", 5000))
+        raise _Timeout((CapturedOutput(b"started\n", b"still going\n", 5000),))
 
     monkeypatch.setattr(shell, "_execute_pty" if IS_UNIX else "_execute_pipe", timed_out)
 
@@ -232,7 +232,7 @@ async def test_a_timed_out_result_keeps_its_error_line_under_a_small_budget(
     tail = "".join(f"still going {i}\n" for i in range(200)).encode()
 
     async def timed_out(command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = "") -> Any:
-        raise _Timeout(output=CapturedOutput(head, tail, 100_000))
+        raise _Timeout((CapturedOutput(head, tail, 100_000),))
 
     monkeypatch.setattr(shell, "_execute_pty" if IS_UNIX else "_execute_pipe", timed_out)
 
@@ -359,9 +359,11 @@ async def _follow_pipes(proc: ExitedProcess, show: Any) -> CapturedOutput:
     """Read *proc*'s pipes as the pipe backend does, returning what stdout kept."""
     token = shell_progress_callback.set(show)
     try:
-        run = shell_mod._Command(proc, (proc.stdout, proc.stderr), contextlib.AsyncExitStack())  # type: ignore[arg-type]
+        run = shell_mod._Command(
+            proc, (proc.stdout, proc.stderr), contextlib.AsyncExitStack(), live=dict, stop=lambda _force: None
+        )
         try:
-            await run.follow(show)
+            await run.follow(show, idle=False)
             stdout, _stderr = run.captured()
             return stdout
         finally:

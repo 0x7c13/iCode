@@ -149,6 +149,18 @@ class _ExtendedLimitInformation(ctypes.Structure):
     )
 
 
+_JOB_LISTED_PROCESSES = 256
+
+
+class _JobProcessIdList(ctypes.Structure):
+    """``JOBOBJECT_BASIC_PROCESS_ID_LIST``, with room for the first processes of a job."""
+
+    _fields_ = struct_fields(
+        (wintypes.DWORD, "NumberOfAssignedProcesses NumberOfProcessIdsInList"),
+        (ctypes.c_size_t * _JOB_LISTED_PROCESSES, "ProcessIdList"),
+    )
+
+
 @functools.cache
 def _windows_uses_utf8() -> bool:
     """Return True if the Windows console output code page is UTF-8.
@@ -345,6 +357,18 @@ class ManagedStdioProcess:
             return
         _terminate_windows_retained_process(self._windows_job_handle, self._windows_process_handle, exit_code=9)
 
+    def live_processes(self) -> dict[int, float]:
+        """The processes of the owned tree still alive, each with the CPU seconds it used so far.
+
+        Those of its Job on Windows, but the console hosts the system started
+        for them; those of its session elsewhere. Blocking: run it in a thread.
+        """
+        if self._process is not None:
+            return session_processes(self.pid)
+        if self._windows_job_handle is None:
+            return {}
+        return _windows_job_processes(self._windows_job_handle)
+
     def close_transports(self) -> None:
         """Close owned stream transports and release retained process handles."""
         self.stdin.close()
@@ -504,6 +528,10 @@ def _windows_process_api() -> _WindowsProcessAPI:
                 ],
             ),
             "SetHandleInformation": (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]),
+            "QueryInformationJobObject": (
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD],
+            ),
             "TerminateJobObject": (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
             "TerminateProcess": (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
             "GetExitCodeProcess": (wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
@@ -1058,6 +1086,69 @@ def signal_process_session(process_session_id: int, signum: int) -> bool:
         else:
             sent = True
     return sent
+
+
+def session_processes(session_id: int) -> dict[int, float]:
+    """The live processes of the POSIX session *session_id*, each with the CPU seconds it used so far.
+
+    A zombie is no longer alive. A process of another user counts, with no CPU
+    time: that is not ours to read. Blocking: run it in a thread.
+    """
+    if sys.platform == "win32" or session_id <= 0:
+        return {}
+    import psutil
+
+    found: dict[int, float] = {}
+    for pid in psutil.pids():
+        try:
+            if os.getsid(pid) != session_id:
+                continue
+            cpu = _cpu_seconds(psutil.Process(pid))
+        except OSError, psutil.NoSuchProcess:
+            continue
+        if cpu is not None:
+            found[pid] = cpu
+    return found
+
+
+def _windows_job_processes(job_handle: int) -> dict[int, float]:
+    import psutil
+
+    api = _windows_process_api()
+    listing = _JobProcessIdList()
+    listed = api.kernel32.QueryInformationJobObject(job_handle, 3, ctypes.byref(listing), ctypes.sizeof(listing), None)
+    # A job with more processes than the list holds fills it and fails with ERROR_MORE_DATA.
+    if not listed and cast(Any, ctypes).get_last_error() != 234:
+        return {}
+    found: dict[int, float] = {}
+    for pid in listing.ProcessIdList[: listing.NumberOfProcessIdsInList]:
+        try:
+            process = psutil.Process(pid)
+            # conhost.exe serves the console a process of the job opened, and outlives it a little.
+            if process.name().casefold() == "conhost.exe":
+                continue
+            cpu = _cpu_seconds(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            cpu = 0.0
+        if cpu is not None:
+            found[pid] = cpu
+    return found
+
+
+def _cpu_seconds(process: Any) -> float | None:
+    """The CPU seconds the psutil *process* and the children it reaped used, or None once it is a zombie."""
+    import psutil
+
+    with process.oneshot():
+        try:
+            if process.status() == psutil.STATUS_ZOMBIE:
+                return None
+            times = process.cpu_times()
+        except psutil.AccessDenied:
+            return 0.0
+    return times.user + times.system + times.children_user + times.children_system
 
 
 async def kill_windows_process_tree(pid: int) -> bool:

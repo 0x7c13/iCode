@@ -63,6 +63,13 @@ When a command prints a lot, the agent sees the beginning and the end of its out
 
 A shell command that is still running when its time limit is reached moves to the background instead of being stopped, so a development server or a file watcher keeps running while the agent goes on with its work. The agent is told where the command's output is saved and how to stop the command. To wait for a background command, the agent uses `sleep`, which ends early when one of its background commands ends; the main agent's `sleep` also ends early when you send a new message.
 
+A command can also move to the background before its time limit:
+
+- When it prints nothing and uses almost no CPU for 60 seconds, for example a login command waiting for you to finish signing in with a browser. This happens only when the command's time limit is longer than 60 seconds.
+- When its shell has finished but programs it started are still running, for example a server started with `&`. The agent also gets the command's exit code.
+
+A command counts as finished only when every program it started has ended. So a command whose tool leaves a helper running, such as a build server, also moves to the background, and the helper stops when the command is stopped. On Windows, a browser or an editor that a command opened when it was not already running also closes when the command is stopped.
+
 When background commands stop:
 
 - In the TUI and through an ACP client, commands the main agent moved to the background keep running across turns, and the agent is reminded each turn which ones are still running. Commands a sub-agent or a workflow node moved to the background stop when it finishes.

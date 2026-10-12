@@ -2,9 +2,10 @@
 
 """Sleep middleware — intercepts sleep tool calls so the TUI can skip them.
 
-A sleep also ends early once a background command of its agent ended — the
-result then carries the end of each log — and, for the main agent, once the
-user sent a message that waits for the next model call.
+A sleep also ends early once a background command of its agent ended, or its
+shell exited while processes it started run on — the result then carries the
+end of each log — and, for the main agent, once the user sent a message that
+waits for the next model call.
 """
 
 from __future__ import annotations
@@ -147,19 +148,21 @@ class SleepMiddleware(FunctionMiddleware):
 
     async def _woke_early(self, elapsed: int, requested: int) -> str | None:
         """The result of a sleep that ends now for a background command or the user, or None to sleep on."""
-        ended = self._tasks.unreported(current_scope.get()) if self._tasks is not None else []
+        news = self._tasks.unreported(current_scope.get()) if self._tasks is not None else []
         user = self._user_message_waiting is not None and self._user_message_waiting()
-        if not ended and not user:
+        if not news and not user:
             return None
         lines = [
             f"Sleep ended early after {format_sleep_seconds(elapsed)} (requested {format_sleep_seconds(requested)})."
         ]
         if user:
             lines.append("The user sent a new message.")
-        tails = await asyncio.to_thread(_log_tails, [task.log_path for task in ended]) if ended else []
-        for task, tail in zip(ended, tails, strict=True):
-            task.reported = True
-            lines.append(f"Background task {task.id} (pid {task.pid}) {task.outcome}. Log: {task.log_path}")
+        # An outcome that changes while the logs are read is news for a later sleep, with its own tail.
+        outcomes = [task.outcome for task in news]
+        tails = await asyncio.to_thread(_log_tails, [task.log_path for task in news]) if news else []
+        for task, outcome, tail in zip(news, outcomes, tails, strict=True):
+            task.reported = outcome
+            lines.append(f"Background task {task.id} ({task.processes}): {outcome}. Log: {task.log_path}")
             if tail:
                 lines.append(f"End of its log:\n{tail}")
         return "\n".join(lines)
