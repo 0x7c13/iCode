@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shlex
 import sys
@@ -354,6 +355,21 @@ def small_line_limit(progress_waits_for_the_end: None, monkeypatch: pytest.Monke
 _SHORT_LINES = [f"line-{i:03d}-{'p' * 10}" for i in range(500)]
 
 
+async def _follow_pipes(proc: ExitedProcess, show: Any) -> CapturedOutput:
+    """Read *proc*'s pipes as the pipe backend does, returning what stdout kept."""
+    token = shell_progress_callback.set(show)
+    try:
+        run = shell_mod._Command(proc, (proc.stdout, proc.stderr), contextlib.AsyncExitStack())  # type: ignore[arg-type]
+        try:
+            await run.follow(show)
+            stdout, _stderr = run.captured()
+            return stdout
+        finally:
+            await run.close()
+    finally:
+        shell_progress_callback.reset(token)
+
+
 def _waiting_size(lines: list[str]) -> int:
     """The size a progress batch counts toward its limit: each line and its newline."""
     return sum(len(line) + 1 for line in lines)
@@ -366,10 +382,7 @@ async def test_pipe_progress_keeps_only_the_newest_waiting_lines() -> None:
     async def show(lines: list[str]) -> None:
         received.append(lines)
 
-    stdout, _stderr = await ShellTools._stream_pipe(
-        ExitedProcess("".join(f"{line}\n" for line in _SHORT_LINES).encode()),  # type: ignore[arg-type]
-        show,
-    )
+    stdout = await _follow_pipes(ExitedProcess("".join(f"{line}\n" for line in _SHORT_LINES).encode()), show)
 
     [batch] = received
     assert batch == _SHORT_LINES[-len(batch) :]
@@ -384,7 +397,7 @@ async def test_pipe_progress_counts_blank_lines_toward_the_limit() -> None:
     async def show(lines: list[str]) -> None:
         received.append(lines)
 
-    await ShellTools._stream_pipe(ExitedProcess(b"\n" * 100_000 + b"END\n"), show)  # type: ignore[arg-type]
+    await _follow_pipes(ExitedProcess(b"\n" * 100_000 + b"END\n"), show)
 
     [batch] = received
     assert batch[-1] == "END"
@@ -398,7 +411,7 @@ async def test_pipe_progress_drops_the_start_of_a_long_unfinished_line() -> None
     async def show(lines: list[str]) -> None:
         received.append(lines)
 
-    await ShellTools._stream_pipe(ExitedProcess(b"x" * 200_000 + b"\nEND\n"), show)  # type: ignore[arg-type]
+    await _follow_pipes(ExitedProcess(b"x" * 200_000 + b"\nEND\n"), show)
 
     [[long_line, end]] = received
     assert end == "END"

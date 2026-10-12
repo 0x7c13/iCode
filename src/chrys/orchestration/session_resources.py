@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.session.persistence import SessionPersistence
+    from chrys.service.tools.background import BackgroundTasks
 
 
 class SessionResources[Metadata: SessionUsageMetadata]:
@@ -41,6 +42,8 @@ class SessionResources[Metadata: SessionUsageMetadata]:
         self.mutation_tracker: MutationTracker | None = None
         self.mutation_coordinator: MutationCoordinator | None = None
         self.hook_manager: HookManager | None = None
+        self.background_tasks: BackgroundTasks | None = None
+        """The session's shell commands running in the background; it outlives every rebuild."""
 
     def workspace_cwd(self) -> str:
         """Return the current workspace cwd, falling back only before workspace initialization."""

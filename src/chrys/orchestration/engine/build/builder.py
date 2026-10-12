@@ -116,6 +116,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
     from chrys.service.todos.tracker import TodoTracker
+    from chrys.service.tools.background import BackgroundTasks
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,7 @@ async def build_agent(
     mcp_cache: MCPConnectionCache | None = None,
     hook_manager: HookManager | None = None,
     spill_quota: SpillQuota | None = None,
+    background_tasks: BackgroundTasks | None = None,
     persist_recovery_now: Callable[[], Awaitable[bool]] | None = None,
     turn_context: TurnContextHolder | None = None,
     allow_user_interaction: bool = True,
@@ -535,6 +537,7 @@ async def build_agent(
             session_id=session_id,
             session_dir=effective_session_dir,
             web=web_tools,
+            background_tasks=background_tasks,
         )
         # Published once the web tools are decided, like the skill and memory warnings
         # further on; a later step can still fail the whole build.
@@ -609,6 +612,7 @@ async def build_agent(
                 workspace_cwd=runtime.cwd,
                 serialize_implicit_windows=serialize_implicit_windows,
                 spill_quota=spill_quota,
+                background_tasks=background_tasks,
                 ask_user_timeout_seconds=settings.ask_user_timeout_seconds,
                 turn_context=turn_context,
                 max_transient_retries=transient_retries,

@@ -334,6 +334,7 @@ async def build_agent(
             mcp_cache=mcp_cache,
             hook_manager=staged.hook_manager,
             spill_quota=session.spill_quota,
+            background_tasks=session.background_tasks,
             persist_recovery_now=checkpoints.persist_now,
             turn_context=turn_context,
             allow_user_interaction=allow_user_interaction,

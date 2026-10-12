@@ -53,6 +53,7 @@ async def test_middleware_usage_fields_reach_session_events_and_extra_args_do_no
             mutation_tracker=None,
             mutation_coordinator=None,
             spill_quota=None,
+            background_tasks=None,
             allow_user_interaction=False,
             mcp_cache=None,
             agent_registry=None,

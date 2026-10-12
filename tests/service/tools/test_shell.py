@@ -84,6 +84,7 @@ async def test_execute_pipe_passes_stdin_devnull(shell: ShellTools, monkeypatch:
                 return b""
 
         class _Proc:
+            pid = 0
             returncode = 0
             stdout = _Stream()
             stderr = _Stream()

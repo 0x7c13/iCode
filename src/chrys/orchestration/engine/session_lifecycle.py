@@ -523,6 +523,10 @@ class SessionLifecycle:
             hook_manager.trajectory_context_provider = self._trajectory_recorder.context
 
         session_dir = self._session.session_dir if self._persistence.state_store is not None else None
+        if session_dir is not None and self._session.background_tasks is None:
+            from chrys.service.tools.background import BackgroundTasks
+
+            self._session.background_tasks = BackgroundTasks(session_dir)
 
         from chrys.foundation.observability.sink import get_otel_sink
 
@@ -691,6 +695,11 @@ class SessionLifecycle:
                         target_turn_id=injection.target_turn_id,
                     )
         await self._loader.cancel_outbox_recovery()
+        # Background commands never outlive their session; an in-place close
+        # (rollback) keeps them.
+        if release_lock and self._session.background_tasks is not None:
+            tasks, self._session.background_tasks = self._session.background_tasks, None
+            await tasks.close()
         # Drain any queued UsageUpdate publish tasks before the bus is torn
         # down — orphaned tasks otherwise either deliver a stale UsageUpdate
         # into the next session's subscriber set (engine instance is reused

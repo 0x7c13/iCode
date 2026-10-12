@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.models.session_env import SessionEnvironment
     from chrys.service.profiles.agents.schema import ShellFilterConfig
+    from chrys.service.tools.background import BackgroundTasks
     from chrys.service.tools.builtins.doc_converter import DocConverterTools
     from chrys.service.tools.builtins.web.build import WebTools
 
@@ -105,6 +106,7 @@ class ToolRegistry:
         session_id: str | None = None,
         session_dir: Path | None = None,
         web: WebTools | None = None,
+        background_tasks: BackgroundTasks | None = None,
     ) -> list[Any]:
         """Load built-in tool categories by name.
 
@@ -116,6 +118,8 @@ class ToolRegistry:
             session_id: Current session ID (used by instance tools that need session dir access).
             session_dir: Current session directory, when already resolved by the caller.
             web: The build's assembled web tools; without them the web categories load nothing.
+            background_tasks: The session's background commands; without them a timed-out
+                shell command is killed instead of moving to the background.
 
         Returns:
             List of all loaded tool functions/instances.
@@ -142,6 +146,7 @@ class ToolRegistry:
                     shell_filter_config,
                     session_id,
                     session_dir,
+                    background_tasks,
                 )
             else:
                 tools = _STATIC_CATEGORIES.get(cat, [])
@@ -158,6 +163,7 @@ class ToolRegistry:
         shell_filter_config: ShellFilterConfig | None = None,
         session_id: str | None = None,
         session_dir: Path | None = None,
+        background_tasks: BackgroundTasks | None = None,
     ) -> list[Any]:
         """Create instance-based tools that need SessionEnvironment or Settings."""
         if runtime is None:
@@ -167,7 +173,9 @@ class ToolRegistry:
 
         if category == "shell":
             command_filter = _build_shell_filter(shell_filter_config)
-            shell = ShellTools(runtime, command_filter=command_filter, session_dir=session_dir)
+            shell = ShellTools(
+                runtime, command_filter=command_filter, session_dir=session_dir, background_tasks=background_tasks
+            )
             tools = shell.tools()
             # Register additional shells (e.g. Git Bash on Windows)
             for extra_shell in runtime.platform.extra_shells:
@@ -176,6 +184,7 @@ class ToolRegistry:
                     command_filter=command_filter,
                     shell=extra_shell,
                     session_dir=session_dir,
+                    background_tasks=background_tasks,
                 )
                 tools.extend(extra.tools())
             return tools

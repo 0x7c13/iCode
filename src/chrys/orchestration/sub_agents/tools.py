@@ -144,6 +144,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
+    from chrys.service.tools.background import BackgroundTasks
 
 from .shell import SubAgentToolShell
 
@@ -301,6 +302,7 @@ class SubAgentTools:
         workspace_cwd: str = "",
         serialize_implicit_windows: bool = False,
         spill_quota: SpillQuota | None = None,
+        background_tasks: BackgroundTasks | None = None,
         ask_user_timeout_seconds: int | None = DEFAULT_ASK_USER_TIMEOUT_SECONDS,
         turn_context: TurnContextHolder | None = None,
         max_transient_retries: int | None = None,
@@ -333,6 +335,7 @@ class SubAgentTools:
         self._workspace_cwd = workspace_cwd
         self._serialize_implicit_windows = serialize_implicit_windows
         self._spill_quota = spill_quota
+        self._background_tasks = background_tasks
         # Per-tool profile name for hook payloads.  Filled in
         # :meth:`register`; reads on missing keys fall back to the bare
         # tool name in :meth:`_make_tool._invoke`.
@@ -492,6 +495,7 @@ class SubAgentTools:
                 session_id=self._session_id,
                 session_dir=self._session_dir,
                 web=web_tools,
+                background_tasks=self._background_tasks,
             )
             if self._bus is not None:
                 for warning in web_tools.warnings:

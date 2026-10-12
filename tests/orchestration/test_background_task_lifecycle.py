@@ -1,0 +1,104 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""A command the main agent moved to the background outlives its turn and ends with its session."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from pathlib import Path
+from typing import Any
+
+import psutil
+import pytest
+
+import chrys.orchestration.engine.build.builder as builder_module
+from chrys.foundation.config.settings import Settings
+from chrys.foundation.platform import get_platform
+from chrys.orchestration.session_host import ChrysSessionHost
+from chrys.service.llm.mock import MockChatClient, MockResponse
+from chrys.service.profiles.agents.registry import AgentProfileRegistry
+from chrys.service.profiles.agents.schema import AgentProfile, CompactionConfig, ToolsConfig
+from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.profiles.models.schema import ModelProfile
+from chrys.service.state.store import JsonFileStateStore
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+
+_SERVE = """\
+import os, pathlib, sys, time
+pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")
+while True:
+    time.sleep(0.1)
+"""
+
+
+def _shell_call(call_id: str, script: Path, pid_file: Path, timeout: int) -> MockResponse:
+    # PowerShell runs a quoted program path only through its call operator.
+    prefix = "& " if sys.platform == "win32" else ""
+    command = f'{prefix}"{sys.executable}" "{script}" "{pid_file}"'
+    arguments = {"command": command, "reason": "serve", "timeout": timeout}
+    return MockResponse(tool_calls=[(get_platform().shell.name, call_id, arguments)])
+
+
+async def test_background_command_outlives_an_interrupted_turn_and_stops_with_the_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "serve.py"
+    script.write_text(_SERVE, encoding="utf-8")
+    server_pid, held_pid = tmp_path / "server.pid", tmp_path / "held.pid"
+    client = MockChatClient(
+        responses=[
+            _shell_call("call-1", script, server_pid, timeout=1),
+            MockResponse(text="started"),
+            _shell_call("call-2", script, held_pid, timeout=60),
+        ]
+    )
+
+    async def create_client(_profile: Any = None, **_kwargs: Any) -> MockChatClient:
+        return client
+
+    monkeypatch.setattr(builder_module, "create_client", create_client)
+    models = ModelProfileRegistry()
+    models.register(ModelProfile(id="mock", name="mock", provider="mock", model_id="mock", stream=False))
+    agents = AgentProfileRegistry()
+    agents.register(
+        AgentProfile(
+            name="Serve",
+            instructions="Start the server.",
+            tools=ToolsConfig(builtins=["shell"]),
+            compaction=CompactionConfig(enabled=False),
+        )
+    )
+    host = ChrysSessionHost(
+        profile_name="Serve",
+        settings=Settings(model_profile="mock"),
+        agent_registry=agents,
+        model_registry=models,
+        state_store=JsonFileStateStore(tmp_path / "sessions"),
+    )
+    try:
+        result = await host.run_until_final("start the server", timeout=ENGINE_TURN_TIMEOUT)
+        assert result.text == "started"
+        tasks = host.engine.session.background_tasks
+        assert tasks is not None
+        [task] = tasks.running
+        await wait_for(server_pid.exists, timeout=ENGINE_TURN_TIMEOUT, description="the server started")
+        server = psutil.Process(int(server_pid.read_text(encoding="utf-8")))
+
+        # An interrupted turn kills its own command but leaves the background alone.
+        turn = asyncio.create_task(host.run_until_final("hold"))
+        await wait_for(lambda: held_pid.exists() or turn.done(), timeout=ENGINE_TURN_TIMEOUT, description="held")
+        assert not turn.done()
+        held = psutil.Process(int(held_pid.read_text(encoding="utf-8")))
+        await host.cancel_current_turn()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            await asyncio.wait_for(turn, ENGINE_TURN_TIMEOUT)
+        await wait_for(lambda: not held.is_running(), timeout=ENGINE_TURN_TIMEOUT, description="held command killed")
+        assert server.is_running()
+        assert tasks.running == [task]
+    finally:
+        await host.shutdown()
+
+    assert host.engine.session.background_tasks is None
+    assert task.log_path.read_text(encoding="utf-8").endswith("[icode] process stopped at session end\n")
+    await wait_for(lambda: not server.is_running(), timeout=ENGINE_TURN_TIMEOUT, description="the server exited")

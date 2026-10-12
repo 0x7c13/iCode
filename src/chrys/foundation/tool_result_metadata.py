@@ -116,6 +116,9 @@ SHELL_TIMED_OUT_METADATA_KEY = "shell_timed_out"
 SHELL_TIMEOUT_SECONDS_METADATA_KEY = "shell_timeout_seconds"
 """Configured timeout, in seconds, for timed-out shell commands."""
 
+SHELL_BACKGROUND_TASK_METADATA_KEY = "shell_background_task"
+"""The background task a shell command moved to (``id``, ``pid``, ``trigger``, ``log``), when it did."""
+
 PARTIAL_OUTPUT_LABEL = "[partial output]"
 """The line that opens what a timed-out command or script printed, under its error line."""
 
