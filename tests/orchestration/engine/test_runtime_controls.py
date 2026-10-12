@@ -339,8 +339,11 @@ async def test_workspace_change_derives_settings_from_the_new_root(
     assert engine.settings is replacement_settings
 
 
-async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_auto(
+@pytest.mark.parametrize(("mode", "saved"), [(ApprovalMode.BYPASS, "auto"), (ApprovalMode.AUTO_FORMAL, "auto-formal")])
+async def test_set_approval_mode_updates_runtime_targets_and_persists_default(
     monkeypatch: pytest.MonkeyPatch,
+    mode: ApprovalMode,
+    saved: str,
 ) -> None:
     events: list[ApprovalModeUpdated] = []
     bus = EventBus()
@@ -368,16 +371,16 @@ async def test_set_approval_mode_updates_runtime_targets_and_persists_bypass_as_
 
     monkeypatch.setattr(engine_module, "persist_approval_mode", persist_mode)
 
-    await engine._on_set_approval_mode(SetApprovalMode(mode="bypass"))
+    await engine._on_set_approval_mode(SetApprovalMode(mode=mode.value))
 
-    assert engine.session.approval_mode is ApprovalMode.BYPASS
-    assert executor.modes == [ApprovalMode.BYPASS]
-    assert sub_agents._approval_mode is ApprovalMode.BYPASS
-    assert live_approval.approval_mode is ApprovalMode.BYPASS
-    workflow_nodes.assert_called_once_with(ApprovalMode.BYPASS)
-    assert persisted == ["bypass"]
-    assert engine.settings.default_approval_mode == "auto"
-    assert [(event.mode, event.session_id) for event in events] == [("bypass", "sid")]
+    assert engine.session.approval_mode is mode
+    assert executor.modes == [mode]
+    assert sub_agents._approval_mode is mode
+    assert live_approval.approval_mode is mode
+    workflow_nodes.assert_called_once_with(mode)
+    assert persisted == [mode.value]
+    assert engine.settings.default_approval_mode == saved
+    assert [(event.mode, event.session_id) for event in events] == [(mode.value, "sid")]
 
 
 async def test_setting_the_approval_mode_moves_its_provenance_with_the_value(

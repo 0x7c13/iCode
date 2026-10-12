@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
@@ -75,7 +76,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.approval_reuse import ReuseChoice
     from chrys.kernel.middleware import FunctionInvocationContext
-    from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
     from chrys.service.approval.policy import ApprovalPolicy
     from chrys.service.approval.reuse import Candidate
     from chrys.service.approval.turn_context import TurnContextHolder
@@ -495,6 +496,12 @@ class ApprovalMiddleware(FunctionMiddleware):
         # arrival order.
         self._decisions.append(decision)
 
+        judge_audit: Mapping[str, Any] | None = None
+
+        def _record_judge_audit(verdict: JudgeVerdict) -> None:
+            nonlocal judge_audit
+            judge_audit = verdict.audit
+
         judge_task: asyncio.Task[None] | None = None
         approval_trace = None
         # Set just before the request goes out: from then on a frontend may hold
@@ -508,11 +515,8 @@ class ApprovalMiddleware(FunctionMiddleware):
             async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id) as correlation:
                 future = correlation.future
                 try:
-                    judging = (
-                        self._approval_mode == ApprovalMode.AUTO
-                        and self._approval_judge is not None
-                        and not dev_sub_agent_review
-                    )
+                    review_mode = self._approval_mode
+                    judging = review_mode.uses_judge and self._approval_judge is not None and not dev_sub_agent_review
                     if judging:
                         # Frontends may synchronously block auto-fulfilment while handling
                         # ApprovalRequest, so install the shared arbitration subscription
@@ -567,6 +571,8 @@ class ApprovalMiddleware(FunctionMiddleware):
                                         session_id=self._session_id,
                                     ),
                                     log_dir=self._approval_log_dir,
+                                    on_verdict=_record_judge_audit,
+                                    formal=review_mode is ApprovalMode.AUTO_FORMAL,
                                 )
                             )
 
@@ -626,6 +632,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                     decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE,
                     reason_code="user_reason" if reason else "",
                     arguments_modified=bool(modified_args),
+                    judge_audit=judge_audit,
                 )
         except BaseException as exc:
             # Interrupted (or failed) while the dialog was still open: the

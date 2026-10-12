@@ -47,18 +47,19 @@ async def test_app_header_can_hide_approval_badge() -> None:
         assert list(pilot.app.query("#approval-badge")) == []
 
 
-async def test_app_header_reactives_refresh_title_and_approval_badge() -> None:
+@pytest.mark.parametrize("mode", [ApprovalMode.AUTO, ApprovalMode.AUTO_FORMAL])
+async def test_app_header_reactives_refresh_title_and_approval_badge(mode: ApprovalMode) -> None:
     async with AppHeaderApp().run_test() as pilot:
         header = pilot.app.query_one(AppHeader)
         header.subtitle_parts = ("Code", "mock-model")
-        header.approval_mode = ApprovalMode.AUTO
+        header.approval_mode = mode
         await pilot.pause()
 
         title = pilot.app.query_one("#header-title", Static)
         badge = pilot.app.query_one("#approval-badge", Static)
 
         assert title.render().plain.endswith("Code \u2502 mock-model")
-        assert badge.render().plain == " APPROVAL MODE: AUTO "
+        assert badge.render().plain == f" APPROVAL MODE: {mode.value.upper()} "
         assert badge.has_class("approval-auto")
         assert badge.allow_select is False
         pilot.app.screen.selections = {badge: SELECT_ALL}
@@ -86,6 +87,7 @@ async def test_app_header_relocalizes_current_approval_mode_and_unregisters(
 
         for mode, expected in (
             (ApprovalMode.AUTO, " 审批模式：自动 "),  # noqa: RUF001
+            (ApprovalMode.AUTO_FORMAL, " 审批模式：自动（Formal） "),  # noqa: RUF001
             (ApprovalMode.BYPASS, " 审批模式：绕过 "),  # noqa: RUF001
             (ApprovalMode.MANUAL, " 审批模式：手动 "),  # noqa: RUF001
         ):

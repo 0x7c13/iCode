@@ -40,6 +40,7 @@ APPROVAL_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.approval.sub_agent.review",
         "tui.approval.title",
         "tui.approval_mode.description.auto",
+        "tui.approval_mode.description.auto_formal",
         "tui.approval_mode.description.bypass",
         "tui.approval_mode.description.manual",
         "tui.approval_mode.title",

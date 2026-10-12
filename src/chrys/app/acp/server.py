@@ -86,6 +86,11 @@ _PERMISSION_REQUEST_TIMEOUT_SECONDS = 600.0
 _APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
     ("manual", "Manual", "Every tool call that requires approval shows a prompt."),
     ("auto", "Auto", "An LLM judge evaluates calls; only flagged ones prompt."),
+    (
+        "auto-formal",
+        "Auto Formal",
+        "Checks risks individually, applies fixed approval rules, and uses model review when uncertain.",
+    ),
     ("bypass", "Bypass", "All tool calls are auto-approved."),
 )
 _APPROVAL_MODE_IDS = frozenset(mode_id for mode_id, _, _ in _APPROVAL_MODES)
@@ -435,7 +440,7 @@ class ChrysAcpServer:
         """Set the session approval mode (standard ACP session mode)."""
         _ = kwargs
         if mode_id not in _APPROVAL_MODE_IDS:
-            raise RequestError.invalid_params({"details": "mode_id must be manual, auto, or bypass."})
+            raise RequestError.invalid_params({"details": "mode_id must be manual, auto, auto-formal, or bypass."})
         try:
             result = await self._manager.set_approval_mode(session_id, mode_id)
         except Exception as exc:

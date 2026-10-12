@@ -76,10 +76,11 @@ def test_completion_labels_localize_without_changing_values() -> None:
     approval = next(command for command in commands if command.name == "approval")
     assert approval.subcommands is not None
     approval_items = approval.subcommands()
-    assert [value for value, _label in approval_items] == ["manual", "auto", "bypass"]
+    assert [value for value, _label in approval_items] == ["manual", "auto", "auto-formal", "bypass"]
     assert [label.plain for _value, label in approval_items] == [
         "● Manual  逐一批准需要审批的调用",
         "  Auto  自动批准安全调用，并标记可疑调用",  # noqa: RUF001
+        "  Auto-formal  逐项检查风险，按固定规则审批；判断不明确时由模型复核。",  # noqa: RUF001
         "  Bypass  所有工具调用均无需审批即可运行",
     ]
 
@@ -171,7 +172,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /fold         - Toggle collapse on all tool groups\n"
         "  /diff         - View file changes for the current session\n"
         "  /rollback     - Discard recent turns or return to a specific turn\n"
-        "  /approval     - Switch approval mode: manual → auto → bypass\n"
+        "  /approval     - Switch approval mode: manual → auto → auto-formal → bypass\n"
         "  /models       - Configure model provider and settings\n"
         "  /buddy        - Hatch, pet and look after your buddy\n"
         "  /agents       - Manage agent configs\n"

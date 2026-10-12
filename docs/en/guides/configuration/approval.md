@@ -2,16 +2,17 @@
 
 When an agent makes a tool call, such as running a Shell command or writing a file, iCode may require approval first. This guide explains how to choose an approval mode and handle approval requests in the terminal user interface (TUI), as well as how approval settings differ across ways of running iCode.
 
-## Understand the three approval modes
+## Understand the four approval modes
 
 The approval mode determines how iCode handles tool calls that require approval. Which calls require approval depends on both the `approval` policy in the agent profile and iCode's safety rules. See the [approval field in the agent profile reference](../../reference/agent-profile.md#approval).
 
-The three approval modes behave as follows:
+The four approval modes behave as follows:
 
 | Mode | Behavior |
 | --- | --- |
 | MANUAL | Tool calls that require approval open a dialog and wait for a person to approve or decline. |
 | AUTO | An approval judge model evaluates tool calls. Calls judged safe are approved automatically; suspicious calls are flagged for a person to decide. |
+| AUTO-FORMAL | Checks risks individually, applies fixed approval rules, and uses model review when uncertain. |
 | BYPASS | Tool calls run without asking, even when the agent configuration or safety rules require approval. |
 
 **Approval judge model**: In automatic mode, iCode calls the approval judge model and sends it the current time, the workspace directories, all user prompts of the current turn and the latest of them, and the tool name, tool kind, and arguments. By default, the approval judge uses the current session's model. To change it, press **F10** to open **Settings**, select the **Models & Agents** tab, and change **Approval judge model** in the **Model roles** section.
@@ -19,6 +20,18 @@ The three approval modes behave as follows:
 > **Tip**
 >
 > **Manual mode does not mean every tool call opens a dialog.** It means that calls requiring approval are decided by the user. Calls that do not require approval or qualify for automatic approval run directly. See [Understand automatic approval and safety protections](#understand-automatic-approval-and-safety-protections).
+
+## Optional Formal evaluation
+
+Type `/approval auto-formal`, or choose AUTO-FORMAL in the approval mode list, to enable Formal without editing a model YAML file. The selected approval judge (an ordinary LLM or Jev) checks seven risk conditions individually.
+
+Tools without a kind are still reviewed. Missing tool names or user context require human approval without a model call.
+
+Confirmed risks flag the call for human approval, with the triggering conditions shown in the existing dialog. If every condition is confirmed false, the call is automatically approved. If no risk is confirmed but some conditions cannot be determined, the main model reviews the call using the original approval prompt. Select an ordinary LLM for that main model; Jev cannot perform this step. Workflows use their node's effective model, falling back to the run model.
+
+Each risk is checked independently: even an explicitly requested `git push` needs human approval because it changes an external repository. Each stage uses its own model's configured read timeout (default: 300 seconds), shared by that stage's retries. Missing input, invalid responses or timeouts leave the call for human approval; cancelling the task cancels its review.
+
+Type `/approval auto` to return to the original Direct verdict. If the selected judge is Jev, ordinary automatic mode uses the main model. Read-only fast paths, remembered approvals and human-decision priority remain unchanged; model approvals never create remembered grants.
 
 ## Switch approval modes in the TUI
 
@@ -31,7 +44,7 @@ You can switch modes while a task is running. Approval requests that are already
 
 ### Set the default approval mode
 
-With the default settings unchanged, the TUI starts in manual approval mode on its first launch. Switching the current approval mode also updates the default for the next launch: choosing manual or automatic mode saves that mode as the default. Choosing bypass mode applies only to the current run; to avoid continuing to bypass approval protections after a restart, the default for the next launch is saved as automatic mode.
+With the default settings unchanged, the TUI starts in manual approval mode on its first launch. Switching to `manual`, `auto`, or `auto-formal` also saves that mode as the default for the next launch. Choosing bypass mode applies only to the current run; to avoid continuing to bypass approval protections after a restart, the default for the next launch is saved as automatic mode.
 
 To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Security** tab. **Settings** does not offer bypass mode as a default that can be saved.
 
@@ -113,5 +126,5 @@ This command only displays the version and does not modify files, but it is not 
 Other ways of running iCode use the following approval modes and switching methods:
 
 - **Headless CLI (`icode run`)**: Always bypasses approval and provides no approval-related options.
-- **iCode ACP server**: Defaults to manual mode. Use `icode acp --approval manual|auto|bypass` to set the initial mode. ACP clients that support this capability can also switch the current session's mode.
+- **iCode ACP server**: Defaults to manual mode. Use `icode acp --approval manual|auto|auto-formal|bypass` to set the initial mode. ACP clients that support this capability can also switch the current session's mode.
 - **Browser-hosted TUI (`icode serve`)**: Use the TUI operations described earlier to switch approval modes and handle approval requests.

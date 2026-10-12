@@ -295,6 +295,7 @@ async def build_agent(
     )
     approval_judge = ApprovalJudge(
         judge_profile,
+        reasoning_profile=judge_fallback,
         session_id=judge_session_id,
         parent_session_id=session.session_id,
         session_dir=session_dir,

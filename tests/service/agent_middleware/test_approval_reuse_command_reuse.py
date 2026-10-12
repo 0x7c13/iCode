@@ -133,7 +133,8 @@ def test_session_command_grant_cannot_cross_registered_shells(runtime, source, t
 
 
 @pytest.mark.parametrize("human_remembers", [False, True])
-async def test_judge_review_preserves_explicit_human_remember_choice(runtime, monkeypatch, human_remembers):
+@pytest.mark.parametrize("mode", [ApprovalMode.AUTO, ApprovalMode.AUTO_FORMAL])
+async def test_judge_review_preserves_explicit_human_remember_choice(runtime, monkeypatch, human_remembers, mode):
     tool, binding = shell_binding(runtime)
     bus = EventBus()
     judge = create_autospec(ApprovalJudge, instance=True)
@@ -152,7 +153,7 @@ async def test_judge_review_preserves_explicit_human_remember_choice(runtime, mo
         ApprovalPolicy(ApprovalConfig(default="require", overrides={})),
         bus,
         session_id=runtime.session_id,
-        approval_mode=ApprovalMode.AUTO,
+        approval_mode=mode,
         approval_judge=judge,
         reuse=binding,
     )
@@ -162,11 +163,13 @@ async def test_judge_review_preserves_explicit_human_remember_choice(runtime, mo
         await middleware.process(context, called)
         called.assert_awaited_once()
         judge.evaluate.assert_awaited_once()
+        assert judge.evaluate.call_args.kwargs["formal"] is (mode is ApprovalMode.AUTO_FORMAL)
         trace.resolved.assert_awaited_once_with(
             approved=True,
             decider=ApprovalDecider.USER if human_remembers else ApprovalDecider.JUDGE,
             reason_code="",
             arguments_modified=False,
+            judge_audit=None,
         )
         assert bool(binding.service.match(reuse_candidate(binding, context))) is human_remembers
     finally:

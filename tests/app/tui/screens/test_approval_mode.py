@@ -36,7 +36,8 @@ def test_approval_mode_selection_dismisses_once(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_approval_mode_duplicate_queued_selection_events_complete_once() -> None:
+@pytest.mark.parametrize("selected_mode", [ApprovalMode.BYPASS, ApprovalMode.AUTO_FORMAL])
+async def test_approval_mode_duplicate_queued_selection_events_complete_once(selected_mode) -> None:
     class _Harness(App):
         def __init__(self) -> None:
             super().__init__()
@@ -55,7 +56,7 @@ async def test_approval_mode_duplicate_queued_selection_events_complete_once() -
         screen = pilot.app.approval_screen
         assert screen is not None
         option_list = screen.query_one(OptionList)
-        option_id = ApprovalMode.BYPASS.value
+        option_id = selected_mode.value
         option = option_list.get_option(option_id)
         option_index = option_list.get_option_index(option_id)
 
@@ -63,7 +64,7 @@ async def test_approval_mode_duplicate_queued_selection_events_complete_once() -
         option_list.post_message(OptionList.OptionSelected(option_list, option, option_index))
         await pilot.pause()
 
-    assert pilot.app.results == [ApprovalMode.BYPASS]
+    assert pilot.app.results == [selected_mode]
 
 
 @pytest.mark.asyncio

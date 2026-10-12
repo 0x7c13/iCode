@@ -30,6 +30,10 @@ MODE_AUTO_DESCRIPTION = msg(
     "tui.approval_mode.description.auto",
     fallback="Auto-approves safe calls, flags suspicious ones",
 )
+MODE_AUTO_FORMAL_DESCRIPTION = msg(
+    "tui.approval_mode.description.auto_formal",
+    fallback="Checks risks individually, applies fixed approval rules, and uses model review when uncertain",
+)
 MODE_BYPASS_DESCRIPTION = msg(
     "tui.approval_mode.description.bypass",
     fallback="All tool calls run without approval",
@@ -39,6 +43,7 @@ _APPROVAL_MODE_TITLE = msg("tui.approval_mode.title", fallback="Approval Mode")
 _MODE_DESCRIPTIONS: dict[ApprovalMode, MessageDef] = {
     ApprovalMode.MANUAL: _MODE_MANUAL_DESCRIPTION,
     ApprovalMode.AUTO: MODE_AUTO_DESCRIPTION,
+    ApprovalMode.AUTO_FORMAL: MODE_AUTO_FORMAL_DESCRIPTION,
     ApprovalMode.BYPASS: MODE_BYPASS_DESCRIPTION,
 }
 

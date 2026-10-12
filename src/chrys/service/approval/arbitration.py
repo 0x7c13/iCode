@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
-    from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -53,10 +54,16 @@ class ApprovalDecisionArbiter:
         decision_future: asyncio.Future[Any],
         approved_value: Any,
         log_dir: Path | None,
+        on_verdict: Callable[[JudgeVerdict], None] | None = None,
+        formal: bool = False,
     ) -> None:
         """Publish a verdict and fulfil only while no user decision has won."""
-        from chrys.service.approval.judge import JudgeVerdict
+        from chrys.service.approval.judge import FormalEvaluationCancelled, JudgeVerdict
 
+        # A response can win between task creation and its first instruction.
+        # Do not spend a model call or emit a stale review in that case.
+        if decision_future.done():
+            return
         try:
             verdict = await judge.evaluate(
                 user_message=judge_input.user_message,
@@ -67,12 +74,26 @@ class ApprovalDecisionArbiter:
                 workspace_roots=list(judge_input.workspace_roots),
                 request_id=request_id,
                 log_dir=log_dir,
+                formal=formal,
             )
+        except FormalEvaluationCancelled as exc:
+            # Owner-only evidence (e.g. ACP audit ring); no UI verdict and no
+            # future fulfillment after cancellation or a human decision.
+            if on_verdict is not None:
+                on_verdict(exc.verdict)
+            return
         except asyncio.CancelledError:
             return
         except Exception as exc:
             verdict = JudgeVerdict(approved=False, reason=f"Judge evaluation failed: {exc}")
 
+        # Middleware cancels the task when a human responds.  This additional
+        # guard covers a response that wins while a provider cancellation is
+        # being delivered, so no late Judge verdict reaches the UI.
+        if decision_future.done():
+            return
+        if on_verdict is not None:
+            on_verdict(verdict)
         await self._bus.publish(
             ApprovalReviewed(
                 request_id=request_id,

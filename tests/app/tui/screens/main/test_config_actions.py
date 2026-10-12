@@ -22,6 +22,7 @@ from chrys.app.tui.screens.main.config_actions import (
     RuntimeConfigCallbacks,
     RuntimeConfigController,
     _canonical_active_model_profile_id,
+    resolve_approval_mode,
 )
 from chrys.app.tui.screens.main.model_indicator import compute_model_indicator_state
 from chrys.app.tui.screens.main.session_handlers import SessionCallbacks, SessionHandler
@@ -39,6 +40,7 @@ from chrys.foundation.events.types import (
     SettingsReload,
 )
 from chrys.foundation.i18n import Localizer
+from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
@@ -108,6 +110,20 @@ def _notification_service() -> object:
 
 def _settings_coordinator() -> object:
     return object()
+
+
+@pytest.mark.parametrize(
+    ("current", "next_mode"),
+    [
+        (ApprovalMode.MANUAL, ApprovalMode.AUTO),
+        (ApprovalMode.AUTO, ApprovalMode.AUTO_FORMAL),
+        (ApprovalMode.AUTO_FORMAL, ApprovalMode.BYPASS),
+        (ApprovalMode.BYPASS, ApprovalMode.MANUAL),
+    ],
+)
+def test_approval_mode_cycle_includes_formal(current: ApprovalMode, next_mode: ApprovalMode) -> None:
+    assert resolve_approval_mode("", current) is next_mode
+    assert resolve_approval_mode(" AUTO-FORMAL ", current) is ApprovalMode.AUTO_FORMAL
 
 
 def _callbacks() -> RuntimeConfigCallbacks:
@@ -652,7 +668,7 @@ def test_open_settings_pushes_the_dialog_on_the_requested_tab_and_attaches_it() 
 
 @pytest.mark.parametrize(
     ("requested", "noted"),
-    [("manual", "manual"), ("auto", "auto"), ("bypass", "auto")],
+    [("manual", "manual"), ("auto", "auto"), ("auto-formal", "auto-formal"), ("bypass", "auto")],
 )
 async def test_set_approval_mode_tells_the_settings_panel_what_the_engine_persists(
     requested: str,

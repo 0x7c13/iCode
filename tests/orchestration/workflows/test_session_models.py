@@ -407,3 +407,36 @@ async def test_a_judge_without_a_model_of_its_own_runs_on_its_nodes_model(
         assert [call.args[0].profile for call in evaluate.await_args_list] == [bound]
     finally:
         await host.shutdown()
+
+
+async def test_workflow_judge_binds_reasoning_to_its_node_and_shares_only_matching_profiles(tmp_path):
+    from chrys.foundation.config.settings import Settings
+    from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.workspace import Workspace
+    from chrys.orchestration.workflows.session import WorkflowSessionOwner
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.session.persistence import SessionPersistence
+
+    registry = ModelProfileRegistry()
+    main = ModelProfile(id="main", name="Main", model_id="reasoning-main")
+    node = replace(main, id="node", name="Node", model_id="reasoning-node")
+    judge_profile = replace(main, id="judge", name="Judge", model_id="typesafe/jev-test")
+    for profile in (main, node, judge_profile):
+        registry.register(profile)
+    bus = EventBus()
+    owner = WorkflowSessionOwner(
+        bus=bus,
+        persistence=SessionPersistence(JsonFileStateStore(tmp_path / "sessions"), bus),
+        session_id="workflow-test",
+        workspace=Workspace.from_cwd(str(tmp_path)),
+    )
+    owner._prepare_agents(Settings(model_profile=main.id, approval_judge_model_profile=judge_profile.id), registry)
+    try:
+        first, second = owner.judge_for(None), owner.judge_for(node)
+        assert first.profile == second.profile == judge_profile
+        assert owner.judge_for(node) is second
+        assert first is not second
+        assert first._reasoning_judge.profile == main
+        assert second._reasoning_judge.profile == node
+    finally:
+        await owner.close()

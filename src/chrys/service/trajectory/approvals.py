@@ -140,7 +140,15 @@ class ApprovalTrace:
         except Exception:
             logger.debug("Trajectory approval.requested emit failed", exc_info=True)
 
-    def _resolved_draft(self, *, decision: str, decider: str, reason_code: str, arguments_modified: bool) -> Any:
+    def _resolved_draft(
+        self,
+        *,
+        decision: str,
+        decider: str,
+        reason_code: str,
+        arguments_modified: bool,
+        judge_audit: Mapping[str, Any] | None = None,
+    ) -> Any:
         payload: dict[str, Any] = {
             "approval_request_id": self._request_id,
             **self._target_payload(),
@@ -151,6 +159,8 @@ class ApprovalTrace:
             "resolved_at": utc_now_rfc3339(),
             "wait_ms": max(0, (time.monotonic_ns() - self._requested_ns) // 1_000_000),
         }
+        if judge_audit is not None:
+            payload["formal_judge"] = _bounded_formal_audit(judge_audit)
         return self._context.draft(
             EventType.APPROVAL_RESOLVED,
             operation_id=self._operation_id(),
@@ -159,7 +169,15 @@ class ApprovalTrace:
             measurements={"/payload/wait_ms": measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)},
         )
 
-    async def resolved(self, *, approved: bool, decider: str, reason_code: str, arguments_modified: bool) -> None:
+    async def resolved(
+        self,
+        *,
+        approved: bool,
+        decider: str,
+        reason_code: str,
+        arguments_modified: bool,
+        judge_audit: Mapping[str, Any] | None = None,
+    ) -> None:
         if self._resolved:
             return
         self._resolved = True
@@ -170,6 +188,7 @@ class ApprovalTrace:
             decider=decider,
             reason_code=reason_code,
             arguments_modified=arguments_modified,
+            judge_audit=judge_audit,
         )
         try:
             await self._context.sink.emit(draft)
@@ -199,3 +218,31 @@ class ApprovalTrace:
             self._context.sink.emit_soon(draft)
         except Exception:
             logger.debug("Trajectory approval.resolved emit failed", exc_info=True)
+
+
+def _bounded_formal_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep durable trajectory evidence structured and free of raw prompts."""
+    fields = (
+        "route",
+        "stages",
+        "failure_reason",
+        "predicate_results",
+        "asset_version",
+        "decision_version",
+        "asset_digest",
+        "usage",
+        "application_attempts",
+        "transport_attempts",
+        "transport_count_available",
+        "usage_complete",
+        "approved",
+    )
+
+    result = {key: audit[key][:4096] if isinstance(audit[key], str) else audit[key] for key in fields if key in audit}
+    result["stages"] = list(audit.get("stages", []))[:4]
+    result["predicate_results"] = [
+        {key: item[key][:128] if isinstance(item[key], str) else item[key] for key in ("id", "value") if key in item}
+        for item in (audit.get("predicate_results") or [])[:32]
+    ]
+    result["usage"] = {key: value for key, value in audit.get("usage", {}).items() if type(value) is int}
+    return result

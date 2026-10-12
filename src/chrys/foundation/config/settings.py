@@ -66,7 +66,7 @@ DEFAULT_LOCALE = "system"
 DEFAULT_APPROVAL_MODE = "manual"
 """Fallback approval mode when ``CHRYS_DEFAULT_APPROVAL_MODE`` is empty, missing, or invalid.
 
-Valid values are ``manual``, ``auto``, ``bypass``.  The persistence helper
+Valid values are ``manual``, ``auto``, ``auto-formal``, ``bypass``.  The persistence helper
 (:func:`persist_approval_mode`) deliberately downgrades ``bypass`` to ``auto``
 so that Chrys never launches in BYPASS mode — that mode is opt-in per launch:
 once chosen it stays in force for every session until the app exits.
@@ -81,7 +81,7 @@ DEFAULT_EDITOR_KEYMAP = "standard"
 SESSION_ROOT_DIR_ENV_VAR: Final[str] = "CHRYS_SESSION_ROOT_DIR"
 """Base directory for session storage. The actual session store lives under ``sessions/`` within it."""
 
-_VALID_APPROVAL_MODES = ("manual", "auto", "bypass")
+_VALID_APPROVAL_MODES = ("manual", "auto", "auto-formal", "bypass")
 _VALID_EDITOR_KEYMAPS = ("standard", "emacs", "vim")
 
 _TRUTHY_ENV = {"1", "true", "yes", "on"}
@@ -1076,7 +1076,7 @@ class Settings:
 
     # ── Approval ──────────────────────────────────────────────────
     # Persisted default approval mode applied at engine startup.  One of
-    # ``manual`` / ``auto`` / ``bypass``.  Invalid or missing values fall
+    # ``manual`` / ``auto`` / ``auto-formal`` / ``bypass``. Invalid or missing values fall
     # back to :data:`DEFAULT_APPROVAL_MODE`.  :func:`persist_approval_mode`
     # maps ``bypass`` → ``auto`` on write so Chrys never boots directly
     # into BYPASS mode.

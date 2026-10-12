@@ -3899,6 +3899,13 @@ msgstr ""
 msgid "tui.approval_mode.description.auto"
 msgstr ""
 
+#. English: Checks risks individually, applies fixed approval rules, and uses
+#. model review when uncertain
+#. chrys-meta={"fingerprint":"affc4a337f0bc34703932e8ecb93e0af9fa6fa8be21bc6d401ea5d68cda02faa","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/mode.py
+msgid "tui.approval_mode.description.auto_formal"
+msgstr ""
+
 #. English: All tool calls run without approval
 #. chrys-meta={"fingerprint":"00c673898ea5cda9e76dea1dbe24f82970e2563011fe037c0cf7c9a3f621fc70","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/mode.py
@@ -4503,6 +4510,12 @@ msgstr ""
 msgid "tui.chrome.approval_mode.auto"
 msgstr ""
 
+#. English: AUTO-FORMAL
+#. chrys-meta={"fingerprint":"3adfb5b48a6d9b750ca9a7f212b740f8b6e08d2455bc32de2b5c5cadd4d5ecc9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/app_header.py
+msgid "tui.chrome.approval_mode.auto_formal"
+msgstr ""
+
 #. English:  APPROVAL MODE: {mode}
 #. chrys-meta={"fingerprint":"de148dab0f6869f457e00ea34206a2399b38d3301cb1e4fbc7b8d6db8bb412a9","multiline":false,"placeholders":["mode"]}
 #: src/chrys/app/tui/widgets/chrome/app_header.py
@@ -4629,8 +4642,8 @@ msgstr ""
 msgid "tui.commands.description.agents"
 msgstr ""
 
-#. English: Switch approval mode: manual → auto → bypass
-#. chrys-meta={"fingerprint":"24ad985f3aedc2d87b38d1a17b6cadd4dfc38820322689fb9600b8de979dabd0","multiline":false,"placeholders":[]}
+#. English: Switch approval mode: manual → auto → auto-formal → bypass
+#. chrys-meta={"fingerprint":"086e42cc237aafe18af0caf5bd278a989d79ea2b9610d56b3758e491c8c3dcd6","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.approval"
 msgstr ""

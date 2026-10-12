@@ -458,19 +458,20 @@ async def test_sub_agent_retry_and_abort_extension_requests_route_to_manager() -
 
 
 @pytest.mark.anyio
-async def test_set_session_mode_routes_to_manager_and_emits_current_mode_update() -> None:
+@pytest.mark.parametrize("mode", ["auto", "auto-formal"])
+async def test_set_session_mode_routes_to_manager_and_emits_current_mode_update(mode: str) -> None:
     host = _FakeHost(event_bus=EventBus())
     manager = _FakeManager(host)
     client = _FakeClient()
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(client)
 
-    result = await server.set_session_mode(mode_id="auto", session_id="s1")
+    result = await server.set_session_mode(mode_id=mode, session_id="s1")
 
-    assert manager.approval_modes == [("s1", "auto")]
+    assert manager.approval_modes == [("s1", mode)]
     assert isinstance(result, acp_schema.SetSessionModeResponse)
     assert len(client.updates) == 1
-    assert client.updates[0].update.current_mode_id == "auto"
+    assert client.updates[0].update.current_mode_id == mode
 
 
 @pytest.mark.anyio
@@ -539,7 +540,7 @@ async def test_session_mode_and_model_states_advertise_available_options() -> No
     models = server._session_model_state("s1")
 
     assert modes.current_mode_id == "auto"
-    assert [mode.id for mode in modes.available_modes] == ["manual", "auto", "bypass"]
+    assert [mode.id for mode in modes.available_modes] == ["manual", "auto", "auto-formal", "bypass"]
     assert models.current_model_id == "m1"
     assert [model.model_id for model in models.available_models] == ["m1"]
 

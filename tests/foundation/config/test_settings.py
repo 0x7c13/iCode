@@ -231,7 +231,9 @@ def test_default_approval_mode_falls_back_when_unset(monkeypatch: pytest.MonkeyP
     assert Settings.from_env().default_approval_mode == DEFAULT_APPROVAL_MODE
 
 
-@pytest.mark.parametrize("raw,expected", [("manual", "manual"), ("auto", "auto"), ("bypass", "bypass")])
+@pytest.mark.parametrize(
+    "raw,expected", [("manual", "manual"), ("auto", "auto"), ("auto-formal", "auto-formal"), ("bypass", "bypass")]
+)
 def test_default_approval_mode_reads_valid_env(monkeypatch: pytest.MonkeyPatch, raw: str, expected: str) -> None:
     monkeypatch.setenv("CHRYS_DEFAULT_APPROVAL_MODE", raw)
     assert Settings.from_env().default_approval_mode == expected
@@ -872,6 +874,8 @@ def test_persist_writes_manual_and_auto(fake_config_dir: Path) -> None:
 
     persist_approval_mode("auto")
     assert _read_setting(fake_config_dir, "approval.default_mode") == "auto"
+    persist_approval_mode("auto-formal")
+    assert _read_setting(fake_config_dir, "approval.default_mode") == "auto-formal"
     assert "CHRYS_DEFAULT_APPROVAL_MODE" not in os.environ
 
 

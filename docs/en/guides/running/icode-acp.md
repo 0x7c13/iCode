@@ -34,7 +34,7 @@ After saving the configuration, verify the connection:
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `-a`, `--agent <agent>` | `Code` | Specify the built-in or custom agent for new sessions, by name, display name, or ID. Restored sessions keep the agent they were saved with. To create a custom agent, see [Configure agents](../configuration/agents.md). |
-| `--approval <mode>` | `manual` | Set the initial approval mode for every session this ACP server creates or restores: `manual`, `auto`, or `bypass`. The `bypass` approval mode skips approval and executes tool calls directly; use it with care. For the rules of each mode, see [Configure approval modes](../configuration/approval.md). |
+| `--approval <mode>` | `manual` | Set the initial approval mode for every session this ACP server creates or restores: `manual`, `auto`, `auto-formal`, or `bypass`. The `bypass` approval mode skips approval and executes tool calls directly; use it with care. For the rules of each mode, see [Configure approval modes](../configuration/approval.md). |
 | `-C`, `--workdir <directory>` | None | Provide a default working directory for sessions where the client does not send one. |
 | `--ask-user-timeout <seconds>` | No time limit | Limit how long to wait for the client to answer an agent's question. Omit this option or set it to `0` or a negative value to wait without a time limit. |
 

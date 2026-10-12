@@ -42,6 +42,7 @@ _APPROVAL_BADGE = msg(
 )
 _APPROVAL_MODE_MANUAL = msg("tui.chrome.approval_mode.manual", fallback="MANUAL")
 _APPROVAL_MODE_AUTO = msg("tui.chrome.approval_mode.auto", fallback="AUTO")
+_APPROVAL_MODE_AUTO_FORMAL = msg("tui.chrome.approval_mode.auto_formal", fallback="AUTO-FORMAL")
 _APPROVAL_MODE_BYPASS = msg("tui.chrome.approval_mode.bypass", fallback="BYPASS")
 _APPROVAL_REVIEWING = msg("tui.chrome.approval_mode.reviewing", fallback="Reviewing")
 _REVIEW_SPINNER = "◐◓◑◒"
@@ -50,12 +51,14 @@ _REVIEW_SPIN_SECONDS = 0.12
 _APPROVAL_CLASSES = {
     ApprovalMode.MANUAL: "approval-manual",
     ApprovalMode.AUTO: "approval-auto",
+    ApprovalMode.AUTO_FORMAL: "approval-auto",
     ApprovalMode.BYPASS: "approval-bypass",
 }
 
 APPROVAL_MODE_MESSAGES = {
     ApprovalMode.MANUAL: _APPROVAL_MODE_MANUAL,
     ApprovalMode.AUTO: _APPROVAL_MODE_AUTO,
+    ApprovalMode.AUTO_FORMAL: _APPROVAL_MODE_AUTO_FORMAL,
     ApprovalMode.BYPASS: _APPROVAL_MODE_BYPASS,
 }
 
@@ -175,8 +178,8 @@ class AppHeader(Widget):
         badge_text = self._render_message(_APPROVAL_BADGE.bind(mode=mode_text))
         badge.update(Content.from_text(badge_text, markup=False), layout=False)
         # Swap CSS class for color
-        for mode_key, cls in _APPROVAL_CLASSES.items():
-            badge.set_class(mode_key == mode, cls)
+        for cls in set(_APPROVAL_CLASSES.values()):
+            badge.set_class(cls == _APPROVAL_CLASSES[mode], cls)
         if badge.styles.set_rule("width", Scalar.from_number(cell_len(badge_text))):
             self._clear_arrangement_cache()
             if not self._refresh_review_count():

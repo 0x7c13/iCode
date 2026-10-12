@@ -84,12 +84,19 @@ class ApprovalMode(Enum):
 
     MANUAL — every tool call that requires approval shows a dialog.
     AUTO   — an LLM judge evaluates the call; only flagged calls show a dialog.
+    AUTO_FORMAL — checks individual risks and applies fixed approval rules.
     BYPASS — all tool calls are silently auto-approved.
     """
 
     MANUAL = "manual"
     AUTO = "auto"
+    AUTO_FORMAL = "auto-formal"
     BYPASS = "bypass"
+
+    @property
+    def uses_judge(self) -> bool:
+        """Both automatic modes review calls before asking the user."""
+        return self in {ApprovalMode.AUTO, ApprovalMode.AUTO_FORMAL}
 
     @classmethod
     def from_string(cls, value: str | None, default: ApprovalMode | None = None) -> ApprovalMode:

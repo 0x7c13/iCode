@@ -92,7 +92,7 @@ all sessions for the `cwd` are returned (each session reports its own roots via
 Approval mode uses ACP's native session-mode mechanism, not an extension:
 
 - `session/new` / `session/load` advertise `modes` (`SessionModeState`):
-  available `manual` / `auto` / `bypass` + the current mode.
+  available `manual` / `auto` / `auto-formal` / `bypass` + the current mode.
 - `set_session_mode(mode_id, session_id)` switches it.
 - Changes are pushed as the standard `current_mode_update` (`session/update`).
 

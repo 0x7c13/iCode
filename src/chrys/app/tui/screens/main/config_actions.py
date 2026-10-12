@@ -69,11 +69,12 @@ class RuntimeConfigCallbacks:
 def resolve_approval_mode(arg: str, current: ApprovalMode) -> ApprovalMode:
     """Resolve a named mode, or cycle from the currently displayed mode."""
     arg = arg.strip().lower()
-    if arg in ("manual", "auto", "bypass"):
+    if arg in ("manual", "auto", "auto-formal", "bypass"):
         return ApprovalMode(arg)
     return {
         ApprovalMode.MANUAL: ApprovalMode.AUTO,
-        ApprovalMode.AUTO: ApprovalMode.BYPASS,
+        ApprovalMode.AUTO: ApprovalMode.AUTO_FORMAL,
+        ApprovalMode.AUTO_FORMAL: ApprovalMode.BYPASS,
         ApprovalMode.BYPASS: ApprovalMode.MANUAL,
     }[current]
 

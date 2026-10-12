@@ -34,7 +34,7 @@ icode acp
 | 选项 | 默认值 | 用途 |
 | --- | --- | --- |
 | `-a`、`--agent <agent>` | `Code` | 指定新会话使用的内置或自定义智能体；可使用名称、显示名称或 ID。恢复的会话沿用保存时的智能体。如需创建自定义智能体，参阅[配置智能体](../configuration/agents.md)。 |
-| `--approval <mode>` | `manual` | 指定该 ACP 服务新建或恢复的每个会话的初始审批模式；可选 `manual`、`auto` 或 `bypass`。`bypass` 审批模式会跳过审批并直接执行工具调用，请谨慎使用。各审批模式的规则参阅[配置审批模式](../configuration/approval.md)。 |
+| `--approval <mode>` | `manual` | 指定该 ACP 服务新建或恢复的每个会话的初始审批模式；可选 `manual`、`auto`、`auto-formal` 或 `bypass`。`bypass` 审批模式会跳过审批并直接执行工具调用，请谨慎使用。各审批模式的规则参阅[配置审批模式](../configuration/approval.md)。 |
 | `-C`、`--workdir <directory>` | 无 | 为客户端未发送工作目录的会话提供默认工作目录。 |
 | `--ask-user-timeout <seconds>` | 不限时 | 限制等待客户端回答智能体提问的时间；省略或设为 `0` 及负数时，不设置等待时限。 |
 

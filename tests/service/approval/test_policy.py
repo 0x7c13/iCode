@@ -187,6 +187,11 @@ def test_approval_mode_from_string_valid() -> None:
 def test_approval_mode_from_string_normalizes_case_and_whitespace() -> None:
     assert ApprovalMode.from_string("  AUTO  ") is ApprovalMode.AUTO
     assert ApprovalMode.from_string("Manual") is ApprovalMode.MANUAL
+    assert ApprovalMode.from_string(" AUTO-FORMAL ") is ApprovalMode.AUTO_FORMAL
+    assert ApprovalMode.AUTO_FORMAL.uses_judge is True
+    assert ApprovalMode.AUTO.uses_judge is True
+    assert ApprovalMode.MANUAL.uses_judge is False
+    assert ApprovalMode.BYPASS.uses_judge is False
 
 
 def test_approval_mode_from_string_falls_back_on_invalid() -> None:

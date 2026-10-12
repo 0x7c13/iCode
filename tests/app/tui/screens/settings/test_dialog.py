@@ -286,7 +286,8 @@ async def test_select_row_injects_the_current_value_when_it_is_not_a_choice() ->
 
 
 @pytest.mark.asyncio
-async def test_approval_mode_row_hides_bypass_and_confirms_only_the_move_to_auto() -> None:
+@pytest.mark.parametrize("mode", ["auto", "auto-formal"])
+async def test_approval_mode_row_hides_bypass_and_confirms_the_move_to_automatic(mode: str) -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
@@ -294,13 +295,13 @@ async def test_approval_mode_row_hides_bypass_and_confirms_only_the_move_to_auto
         await pilot.pause()
         rows = _rows(dialog)
         select = rows["approval.default_mode"].query_one(Select)
-        assert [value for _prompt, value in select._options] == ["manual", "auto"]
+        assert [value for _prompt, value in select._options] == ["manual", "auto", "auto-formal"]
 
-        select.value = "auto"
+        select.value = mode
         await pilot.pause()
         assert len(ports.confirms) == 1
         assert format_message(ports.confirms[0]).startswith("Auto mode lets a model approve")
-        assert ports.persisted == [{"approval.default_mode": "auto"}]
+        assert ports.persisted == [{"approval.default_mode": mode}]
 
         select.value = "manual"
         await pilot.pause()
@@ -673,7 +674,12 @@ async def test_an_env_pinned_bypass_shows_as_the_current_choice_without_writing(
 
         assert select.disabled is True
         assert select.value == "bypass"
-        assert [str(prompt) for prompt, _value in select._options] == ["manual", "auto", "bypass (current)"]
+        assert [str(prompt) for prompt, _value in select._options] == [
+            "manual",
+            "auto",
+            "auto-formal",
+            "bypass (current)",
+        ]
         assert ports.persisted == [] and ports.confirms == []
 
 
