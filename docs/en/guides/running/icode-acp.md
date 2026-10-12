@@ -58,7 +58,7 @@ If the client supports session management, a closed session can still be restore
 
 To use the question feature through an ACP client, the client must support iCode's `_chrys/request_input` extension request (shown as `chrys/request_input` in ACP SDKs that add the underscore prefix automatically). iCode uses this request to send the agent's questions to the client and receive the user's answers; a client that does not support it cannot complete tasks that require user answers. Use `--ask-user-timeout` to limit how long iCode waits for an answer.
 
-For local tool calls, the permission request's `toolCall.toolCallId` matches the ID in the tool start and status updates. Reply using the permission request's JSON-RPC `id`, which is a separate correlation identifier. Requests without a local tool call ID use their approval request ID as a fallback.
+When a tool call from the main agent needs approval, the approval request refers to the tool call the client is already showing, so the client can show the approval on that tool call.
 
 Approval requests sent to the client wait without a time limit by default. To decline requests that stay unanswered, set a human approval timeout; see [Set the human approval timeout](../configuration/approval.md#set-the-human-approval-timeout).
 

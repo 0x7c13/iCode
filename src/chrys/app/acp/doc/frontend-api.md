@@ -241,6 +241,17 @@ per-session `Settings.ask_user_timeout_seconds` value (TUI/CLI default to a boun
 default (TUI/CLI sessions are unpinned, so they pick up an edited
 `CHRYS_ASK_USER_TIMEOUT_SECONDS` on reload).
 
+In standard `session/request_permission`, `toolCall` is a `ToolCallUpdate` for
+the call that needs approval. For a main-agent tool call its `toolCallId` is the
+id of that call's `tool_call` and `tool_call_update` notifications, so the
+request applies to the card the client already shows (with status `pending`).
+Sub-agent tool calls get no standard card of their own (their activity is noted
+on the parent call's card); their permission's `toolCallId` matches `callId` in
+`chrys/sub_agent_tool_call_start` and `chrys/sub_agent_tool_call_result`. A
+permission forwarded from an ACP sub-agent names no local tool call and carries
+an id of its own. The client answers by the request's JSON-RPC `id`;
+`toolCallId` is not an approval handle.
+
 Standard `session/request_permission` callbacks use `approval.timeout_seconds`
 (`CHRYS_APPROVAL_TIMEOUT_SECONDS`), shared with TUI human approvals. The default
 `0` means no timeout; positive values set a deadline in seconds, after which the
@@ -427,6 +438,13 @@ Priority: P1 = high-value VS Code UX, P2 = can stay TUI-only for now.
 - **[P1] Richer CRUD validation.** Profile/MCP write/delete is functional, but
   field-level validation feedback and a config-dir MCP overlay beyond
   session-create are still thin.
+- **[P2] Tool status after an allowed permission.** The permission sets the
+  main-agent card to `pending`; after an allow the backend sends no
+  `in_progress` update, so unless the client restores the status itself the
+  card stays `pending` until the tool reports progress or finishes.
+- **[P2] Linking a judge verdict to its permission.** `chrys/approval_reviewed`
+  carries the approval `requestId`; the permission that follows a flagged
+  verdict carries only the tool's `toolCallId`, and no field links the two.
 - **[P2] Image attachment compression events**
   (`ImageAttachmentCompressionStarted/Finished`).
 - **[P2] Shell mode / terminal delegation** — use ACP's standard terminal client
