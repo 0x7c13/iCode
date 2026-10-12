@@ -121,11 +121,21 @@ jobs:
             os: macos
             workers: 6
             pytest_args: tests --ignore=tests/architecture --ignore=tests/app/tui
-          - label: macos/tui
-            artifact: macos-tui
+          # The same cut as Windows: the main screen's and behaviors' tests weigh
+          # as much as the rest of the TUI suite; the second shard takes
+          # everything the first does not name.
+          - label: macos/1/tui
+            artifact: macos-tui-1
             os: macos
             workers: 6
-            pytest_args: tests/app/tui
+            pytest_args: tests/app/tui/screens/main tests/app/tui/behaviors
+          - label: macos/2/tui
+            artifact: macos-tui-2
+            os: macos
+            workers: 6
+            pytest_args: >-
+              tests/app/tui --ignore=tests/app/tui/screens/main
+              --ignore=tests/app/tui/behaviors
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:

@@ -179,6 +179,7 @@ def _record_chat_entries(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]
 async def test_real_build_preserves_main_child_model_context_approval_and_chat_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine: AgentEngineFactory, stream: bool
 ) -> None:
+    monkeypatch.setenv("CHRYS_DOCS_ROOT", str(tmp_path / "missing-docs"))
     entries = _record_chat_entries(monkeypatch)
     engine, main, child = await build_recipe_engine(
         agent_engine,
@@ -208,8 +209,11 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         root_messages, root_options = main.call_history[0]
         child_messages, child_options = child.call_history[0]
         assert "ROOT-INSTRUCTION" in root_options["instructions"]
+        assert "iCode documentation" in root_options["instructions"]
+        assert "Product documentation could not be found" in root_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" in root_options["instructions"]
         assert child_options["instructions"].startswith("CHILD-INSTRUCTION")
+        assert "iCode documentation" not in child_options["instructions"]
         assert "ROOT-MEMORY-SENTINEL" not in child_options["instructions"]
         root_names = {tool.name for tool in root_options["tools"]}
         child_names = {tool.name for tool in child_options["tools"]}

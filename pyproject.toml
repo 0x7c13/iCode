@@ -2,7 +2,7 @@
 # The PyPI distribution name; the import package, the commands' code name and
 # ~/.chrys keep "chrys" (src/chrys/__init__.py::DISTRIBUTION_NAME).
 name = "iCode-TUI"
-version = "0.29.1"
+version = "0.29.2"
 description = "A general-purpose extensible agent platform for rapidly building and evolving custom agents."
 readme = "README.pypi.md"
 requires-python = ">=3.14"
@@ -109,8 +109,8 @@ dev = [
 packages = ["src/chrys"]
 
 [tool.hatch.build.targets.wheel.force-include]
-# The /help user guide reads docs/ at runtime; installed builds carry it here
-# (src/chrys/app/tui/screens/guides/index.py::resolve_docs_root).
+# The /help user guide and agent runtime read docs/; installed builds carry it here
+# (src/chrys/foundation/documentation.py::resolve_docs_root).
 "docs" = "chrys/app/tui/screens/guides/_docs"
 
 [tool.hatch.build]

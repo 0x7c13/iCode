@@ -27,6 +27,7 @@ _TAB_NOTIFICATIONS = msg("tui.settings.tab.notifications", fallback="Notificatio
 # ── Section titles ─────────────────────────────────────────────────────
 _SECTION_APPEARANCE = msg("tui.settings.section.appearance", fallback="Appearance")
 _SECTION_INPUT = msg("tui.settings.section.input", fallback="Input")
+_SECTION_UPDATES = msg("tui.settings.section.updates", fallback="Updates")
 _SECTION_SESSION_TITLES = msg("tui.settings.section.session_titles", fallback="Titles")
 _SECTION_AGENT = msg("tui.settings.section.agent", fallback="Agent")
 _SECTION_MODEL_ROLES = msg("tui.settings.section.model_roles", fallback="Model roles")
@@ -53,6 +54,10 @@ _HINT_UI_LOCALE = msg(
 _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
     "tui.settings.hint.ui.chat.tool_groups_expanded",
     fallback="Expand new tool groups by default. When off, click the tool status at any time to view details.",
+)
+_HINT_APP_UPDATE_CHECK = msg(
+    "tui.settings.hint.app.update_check",
+    fallback="Once a day at startup, look up the newest version and show it on the welcome screen. Sends no personal data.",
 )
 _HINT_HISTORY_PROMPT_ENABLED = msg(
     "tui.settings.hint.history.prompt.enabled",
@@ -87,6 +92,13 @@ _HINT_APPROVAL_DEFAULT_MODE = msg(
     fallback=(
         "Approval mode at the next launch; /approval changes both the current session and this default. "
         "/approval bypass applies to the current launch only and saves auto."
+    ),
+)
+_HINT_APPROVAL_TIMEOUT_SECONDS = msg(
+    "tui.settings.hint.approval.timeout_seconds",
+    fallback=(
+        "Seconds to wait for human approval in TUI and ACP; timeout rejects the call. "
+        "Default 0 means no timeout. Restart to apply."
     ),
 )
 _HINT_APPROVAL_DEFER_WHILE_JUDGING = msg(
@@ -283,6 +295,10 @@ TABS: tuple[SettingsTab, ...] = (
                 _SECTION_INPUT,
                 (SettingRowSpec("history.prompt.enabled", hint=_HINT_HISTORY_PROMPT_ENABLED),),
             ),
+            SettingsSection(
+                _SECTION_UPDATES,
+                (SettingRowSpec("app.update_check", hint=_HINT_APP_UPDATE_CHECK),),
+            ),
         ),
     ),
     SettingsTab(
@@ -340,6 +356,7 @@ TABS: tuple[SettingsTab, ...] = (
                 _SECTION_APPROVAL,
                 (
                     SettingRowSpec("approval.default_mode", hint=_HINT_APPROVAL_DEFAULT_MODE),
+                    SettingRowSpec("approval.timeout_seconds", hint=_HINT_APPROVAL_TIMEOUT_SECONDS),
                     SettingRowSpec("ui.approval.defer_while_judging", hint=_HINT_APPROVAL_DEFER_WHILE_JUDGING),
                 ),
             ),

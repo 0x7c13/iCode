@@ -2,7 +2,7 @@
 
 """InputBar widget — multi-line input area with Send/Stop button.
 
-Enter submits. Ctrl+J inserts a newline for multi-line input.
+Enter submits. Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline.
 Cross-platform system clipboard support (macOS pbcopy/pbpaste,
 Win32 ``SetClipboardData``/``GetClipboardData`` on Windows,
 xclip/xsel on Linux).
@@ -41,7 +41,7 @@ from chrys.app.tui.widgets.chrome.image_paste import (
     save_clipboard_image_to_file,
 )
 from chrys.app.tui.widgets.selection import NonSelectableTextMixin
-from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS
+from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS, NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import safe_getcwd
@@ -179,7 +179,7 @@ class _HistoryBrowser:
 
 
 class _ChatTextArea(EnhancedTextArea):
-    """EnhancedTextArea subclass: Enter = submit, Ctrl+J = newline, input history."""
+    """Chat input with Enter-submit, explicit newline shortcuts and input history."""
 
     _history: _HistoryBrowser
     _history_browsing: bool
@@ -432,7 +432,7 @@ class _ChatTextArea(EnhancedTextArea):
             return
         if event.key == "escape":
             self.post_message(self.ShellModeCancelled())
-        if event.key in ("ctrl+j", "shift+enter"):
+        if event.key in NEWLINE_SHORTCUT_KEYS:
             # Insert newline
             event.stop()
             event.prevent_default()
@@ -495,7 +495,7 @@ class InputBar(Widget):
     """Multi-line input bar with Send/Stop button.
 
     - Enter or clicking Send submits the message.
-    - Ctrl+J inserts a newline for multi-line input.
+    - Ctrl+J, Shift+Enter and Ctrl+Enter insert a newline for multi-line input.
     - When agent is running, button becomes Stop (fires ``InterruptRequested``).
     """
 

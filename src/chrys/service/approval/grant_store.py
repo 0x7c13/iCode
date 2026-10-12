@@ -61,7 +61,7 @@ class ApprovalGrantStore:
         try:
             return self._read()
         except OSError, ValueError, RecursionError:
-            logger.warning("Approval grants could not be read; no grants reused")
+            logger.debug("Approval grants could not be read; no grants reused", exc_info=True)
             return []
 
     def _update(self, edit: Callable[[list[dict[str, Any]]], list[dict[str, Any]] | None]) -> bool:

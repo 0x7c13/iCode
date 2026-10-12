@@ -8,7 +8,7 @@ uv sync                              # setup, as CI; also installs the dev group
 ./scripts/fetch_rg.sh                # vendored ripgrep, gitignored (Windows: .ps1); search falls back to rg on PATH
 uv run icode                         # TUI (-s session, -a agent, -m model, -C workdir)
 uv run icode run "<prompt>" -a Code  # headless, approval BYPASS (as `icode workflow run`)
-uv run icode acp                     # ACP stdio server; also: serve, agents, models, workflow, trajectory, install
+uv run icode acp                     # ACP stdio server; also: serve, agents, models, workflow, trajectory, install, uninstall
 uv run python scripts/chrys_test.py --smart --paths <changed files...>   # default verification; both modes run below normal CPU priority
 uv run python scripts/chrys_test.py --full        # complete non-integration suite; only when asked
 uv run pytest tests/x/test_y.py::test_fn -n0      # debugging only
@@ -39,7 +39,7 @@ Pin third-party code to immutable ids so every bump is a reviewed diff; never lo
 - Ruff's version lives in `pyproject.toml` and `.pre-commit-config.yaml` (`rev:`); bump both. Version bump: `pyproject.toml` → `uv sync` (rewrites chrys's own version in `uv.lock`; commit both) → full i18n pipeline (stamps the installed `__version__` into `Project-Id-Version`).
 
 ## Architecture & control flow
-- **Bootstrap**: every runtime entrypoint calls `orchestration/startup.py::bootstrap_runtime()` (guard `tests/architecture/test_entrypoint_bootstrap.py`; `serve`/`install` exempt); never duplicate its steps. Production reads settings via `load_settings()`; `Settings.from_env()` is a compat shim.
+- **Bootstrap**: every runtime entrypoint calls `orchestration/startup.py::bootstrap_runtime()` (guard `tests/architecture/test_entrypoint_bootstrap.py`; `serve`/`install`/`uninstall` exempt); never duplicate its steps. Production reads settings via `load_settings()`; `Settings.from_env()` is a compat shim.
 - **CLI**: `app/cli/app.py::main` is a hand-written if-chain on `argv[0]` (no argparse subparsers); unmatched argv → TUI.
 - **EventBus** (`foundation/events/bus.py`), the only frontend↔backend channel: `publish()` awaits `subscribe()` handlers inline (exact-type match; backpressure — never fire-and-forget), logs and swallows their errors unless `raise_handler_errors=True`, then feeds `stream(*types)` (isinstance match; a stream sees only events published after its `async with` is entered). Stream queues are unbounded on purpose: dropping would truncate streamed LLM output on headless/ACP.
 - **AgentEngine** (`orchestration/engine/engine.py`) is built only by `orchestration/engine/assembly.py::assemble_agent_engine` (tests: `agent_engine` fixture), which wires its component attributes (`engine.current`, `engine.turns`, …). Components never get the engine as a host, and build code returns values instead of writing engine state (guards in `tests/architecture/test_layering.py`). Handlers subscribe before the first build so settings/profile events can recover a failed start. Every rebuild replaces `engine.current.loaded` (`LoadedAgent`; None after shutdown): call `current.require_loaded()` per use, never hold it across an `await`.

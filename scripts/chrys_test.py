@@ -194,6 +194,7 @@ _LLM_CLIENT_SOURCES = (
 # and import-every-module checks are invisible to the AST import graph.
 REGULAR_RULES = (
     TestRule("tests/service/approval/test_formal_jev_core.py", ("src/chrys/service/approval/principles.json",)),
+    TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),
     TestRule("tests/service/acp_client", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/orchestration/sub_agents/test_acp_engine.py", ("tests/support/acp_stub_agent.py",)),
     TestRule("tests/service/workflows/test_protocol.py", _WORKFLOW_WORKER_HOST),
@@ -219,6 +220,8 @@ REGULAR_RULES = (
     TestRule("tests/service/llm/test_client_contracts.py", _LLM_CLIENT_SOURCES),
     TestRule("tests/service/llm/test_persisted_names.py", ("src/chrys/service/llm/**",)),
     TestRule("tests/app/features/buddy", ("src/chrys/app/features/buddy/sprites/*.toml",)),
+    # The install scripts run in a subprocess.
+    TestRule("tests/app/test_install_scripts.py", ("scripts/install.sh", "scripts/install.ps1")),
     TestRule("tests/app/tui/behaviors/test_chrys_themes.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/app/tui/i18n/test_bindings.py", ("src/chrys/app/tui/**",)),
     TestRule("tests/app/tui/screens/test_modal_insert_clipboard.py", ("src/chrys/app/tui/screens/**",)),

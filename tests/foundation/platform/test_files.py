@@ -99,7 +99,10 @@ def test_atomic_write_owner_only_bytes_can_refuse_to_create_a_missing_parent(tmp
     assert not missing.parent.exists()
 
 
-@pytest.mark.parametrize("reader", [files.secure_open_owner_verified_binary, files.secure_open_regular_binary])
+@pytest.mark.parametrize(
+    "reader",
+    [files.secure_open_owner_only_binary, files.secure_open_owner_verified_binary, files.secure_open_regular_binary],
+)
 def test_secure_binary_readers_report_an_absent_file_or_parent_as_enoent(tmp_path, reader) -> None:
     """Callers treat ENOENT as "nothing there yet" on every platform, a missing parent directory included."""
     for missing in (tmp_path / "absent.bin", tmp_path / "no-such-dir" / "absent.bin"):

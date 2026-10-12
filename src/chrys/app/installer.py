@@ -56,7 +56,7 @@ _PROCESS_INFO_UNAVAILABLE = object()
 
 @dataclass(frozen=True)
 class _RunningChrysProcess:
-    """A Chrys-looking process found during install preflight."""
+    """A Chrys-looking process found by the check before install or uninstall."""
 
     pid: int
     name: str
@@ -235,8 +235,11 @@ def _prune_old_pyapp_versions() -> None:
     Called from ``chrys install`` so users opt in by re-running install on a new version.
     """
 
-    def _force_remove(func, path, _exc):
-        # Clear read-only bit (common on Windows) and retry the failed operation.
+    def _force_remove(func, path, exc):
+        # A read-only bit (common on Windows) blocks deleting; clear it and retry. Any other
+        # failure, such as a folder that cannot be read, stands.
+        if func not in (os.unlink, os.rmdir):
+            raise exc
         os.chmod(path, stat.S_IWRITE)
         func(path)
 
@@ -387,21 +390,34 @@ def _is_python_host_command(cmdline: list[str] | tuple[str, ...] | None) -> bool
     )
 
 
+def _is_shell_command(program: str) -> bool:
+    """Return whether ``program`` names a POSIX shell."""
+    return re.fullmatch(r"(?:ba|z|da|k|fi)?sh", _path_basename(program)) is not None
+
+
 def _is_chrys_process(name: str | None, exe: str | None, cmdline: list[str] | tuple[str, ...] | None) -> bool:
-    """Return whether process metadata looks like a Chrys runtime."""
+    """Return whether process metadata looks like a Chrys runtime.
+
+    Only the program and, for a Python or shell host, the script it runs can name Chrys: the
+    uv and pipx entry points run as ``python …/bin/icode``. Any later argument is data, such as a
+    folder called iCode or the ``icode`` that ``uv run`` starts in a child of its own.
+    """
     if _path_basename(name) in _CHRYS_PROCESS_BASENAMES:
         return True
     if _path_basename(exe) in _CHRYS_PROCESS_BASENAMES:
         return True
 
+    args = [str(arg) for arg in cmdline or ()]
+    if not args:
+        return False
+    if _path_basename(args[0]) in _CHRYS_PROCESS_BASENAMES:
+        return True
     is_python_host = _is_python_host_command(cmdline)
-    for raw_arg in cmdline or ():
-        arg = str(raw_arg)
-        if _path_basename(arg) in _CHRYS_PROCESS_BASENAMES:
+    if is_python_host or _is_shell_command(args[0]):
+        script = next((arg for arg in args[1:] if not arg.startswith("-")), None)
+        if _path_basename(script) in _CHRYS_PROCESS_BASENAMES:
             return True
-        if is_python_host and any(marker in arg for marker in _CHRYS_CMDLINE_MARKERS):
-            return True
-    return False
+    return is_python_host and any(marker in arg for arg in args for marker in _CHRYS_CMDLINE_MARKERS)
 
 
 def _current_install_process_ids() -> set[int]:
@@ -451,7 +467,7 @@ def _find_running_chrys_processes(*, ignored_pids: set[int] | None = None) -> _C
                 complete = False
                 continue
     except (psutil.Error, OSError, TypeError, ValueError) as e:
-        _print_warning(f"Could not check for running {APP_DISPLAY_NAME} processes: {e}. Continuing install.")
+        _print_warning(f"Could not check for running {APP_DISPLAY_NAME} processes: {e}.")
         return _ChrysProcessScan(
             processes=tuple(sorted(running, key=lambda process: process.pid)),
             complete=False,
@@ -459,9 +475,16 @@ def _find_running_chrys_processes(*, ignored_pids: set[int] | None = None) -> _C
     return _ChrysProcessScan(processes=tuple(sorted(running, key=lambda process: process.pid)), complete=complete)
 
 
-def _require_no_running_chrys_instances() -> bool:
-    """Block until known Chrys instances exit, returning whether the final scan was complete."""
-    ignored_pids = _current_install_process_ids()
+def _require_no_running_chrys_instances(
+    *, ignored_pids: set[int] | None = None, action: str = "install", rerun: str | None = None
+) -> bool:
+    """Block until known Chrys instances exit, returning whether the final scan was complete.
+
+    ``ignored_pids`` defaults to this process and its ancestors; ``action`` names the command in
+    the messages, and ``rerun`` is the command line to suggest when there is no terminal to wait in.
+    """
+    if ignored_pids is None:
+        ignored_pids = _current_install_process_ids()
     while True:
         scan = _find_running_chrys_processes(ignored_pids=ignored_pids)
         running = scan.processes
@@ -469,7 +492,7 @@ def _require_no_running_chrys_instances() -> bool:
             return scan.complete
 
         _print_error(f"{APP_DISPLAY_NAME} is already running.", leading_blank=True)
-        _print_line(f"Quit or kill all running {APP_DISPLAY_NAME} instances before continuing with install:")
+        _print_line(f"Quit or kill all running {APP_DISPLAY_NAME} instances before continuing with {action}:")
         for process in running:
             summary = f"  - PID {process.pid}: {process.name}"
             if process.command:
@@ -477,12 +500,14 @@ def _require_no_running_chrys_instances() -> bool:
             _print_line(summary)
 
         if not sys.stdin.isatty():
-            _print_error(f"Rerun '{APP_COMMAND} install' after those processes have exited.", leading_blank=True)
+            _print_error(
+                f"Rerun '{rerun or f'{APP_COMMAND} {action}'}' after those processes have exited.", leading_blank=True
+            )
             sys.exit(1)
 
         response = input("\nPress Enter after quitting them to check again, or type 'q' to abort: ").strip().casefold()
         if response in {"q", "quit", "abort", "n", "no"}:
-            _print_error("Install aborted.")
+            _print_error(f"{action.capitalize()} aborted.")
             sys.exit(1)
 
 
@@ -569,7 +594,14 @@ def install_to_path() -> None:
         dest = install_dir / f"{_INSTALLED_BINARY}.exe"
         # Installing from the installed binary, or from its alias, has nothing to copy.
         if not (dest.exists() and src.samefile(dest)):
-            shutil.copy2(str(src), str(dest))
+            try:
+                shutil.copy2(str(src), str(dest))
+            except OSError as e:
+                # A running copy keeps its file locked. The check above leaves out the processes
+                # this install runs under, such as an iCode whose terminal started it.
+                _print_error(f"Could not replace {dest}: {e}")
+                _print_line(f"Quit every running {APP_DISPLAY_NAME}, then install again.")
+                sys.exit(1)
         alias = _install_command_alias(src, dest)
         _print_success(f"Installed {APP_DISPLAY_NAME} to {dest}. Run it with {_installed_commands(alias)}.")
 
@@ -582,6 +614,9 @@ def install_to_path() -> None:
                 "-NoProfile",
                 "-Command",
                 (
+                    # A failed .NET call ends only its own statement, so without "Stop" a refused
+                    # write would still report the entry as added.
+                    '$ErrorActionPreference = "Stop"; '
                     f'$p = [Environment]::GetEnvironmentVariable("Path","User"); '
                     f'if ($p -notlike "*{install_dir}*") {{ '
                     f'[Environment]::SetEnvironmentVariable("Path", "{install_dir};$p", "User"); '

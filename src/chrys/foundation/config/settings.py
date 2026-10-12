@@ -63,6 +63,9 @@ stay reserved: a user theme taking one would be renamed away on the next start.
 DEFAULT_LOCALE = "system"
 """Fallback locale selector when ``CHRYS_LOCALE`` is empty or missing."""
 
+DEFAULT_APPROVAL_TIMEOUT_SECONDS = 0
+"""Zero disables the human approval deadline in both TUI and ACP."""
+
 DEFAULT_APPROVAL_MODE = "manual"
 """Fallback approval mode when ``CHRYS_DEFAULT_APPROVAL_MODE`` is empty, missing, or invalid.
 
@@ -665,12 +668,16 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
 )
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
+_LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
+    "settings.approval.timeout_seconds.label", fallback="Human approval timeout (seconds)"
+)
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
 _LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
     "settings.ui.approval.defer_while_judging.label",
     fallback="Show the approval dialog only when Auto-Review flags a call",
 )
 _LABEL_APP_DEV_MODE = msg("settings.app.dev_mode.label", fallback="Developer mode")
+_LABEL_APP_UPDATE_CHECK = msg("settings.app.update_check.label", fallback="Check for updates")
 _LABEL_MUTATIONS_PARALLEL_IMPLICIT_TOOLS = msg(
     "settings.mutations.parallel_implicit_tools.label", fallback="Parallel implicit tools"
 )
@@ -1097,6 +1104,19 @@ class Settings:
         ),
     )
 
+    approval_timeout_seconds: int = field(
+        default=DEFAULT_APPROVAL_TIMEOUT_SECONDS,
+        metadata=spec(
+            key="approval.timeout_seconds",
+            label=_LABEL_APPROVAL_TIMEOUT_SECONDS,
+            env="CHRYS_APPROVAL_TIMEOUT_SECONDS",
+            coerce=int_coercer(minimum=0),
+            apply=Apply.RESTART,
+            group="approval",
+            kind=Kind.INT,
+        ),
+    )
+
     # TUI presentation only: in AUTO mode, keep a call the judge is still
     # reviewing out of sight and open its dialog only once it is flagged.
     # The backend sends the same events either way; ACP and headless ignore it.
@@ -1125,6 +1145,21 @@ class Settings:
             # reload performs, so a reload genuinely applies it — RESTART would
             # promise a stability this process never had.
             apply=Apply.RELOAD,
+            group="app",
+            kind=Kind.BOOL,
+        ),
+    )
+
+    # ── Update check ───────────────────────────────────────────────
+    # Once a day at TUI startup, look up the newest release for the welcome screen's hint.
+    update_check: bool = field(
+        default=True,
+        metadata=spec(
+            key="app.update_check",
+            label=_LABEL_APP_UPDATE_CHECK,
+            env="CHRYS_UPDATE_CHECK",
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
             group="app",
             kind=Kind.BOOL,
         ),

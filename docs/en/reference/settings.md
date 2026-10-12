@@ -13,6 +13,10 @@ For steps to change settings in the terminal user interface (TUI) and when those
 
 iCode looks for `.chrys/settings.yaml` only in the current session's working directory. It does not search parent directories or subdirectories.
 
+UTF-8 is recommended for settings and `.env` files. iCode also detects common legacy encodings such as GBK/GB18030 and BOM-marked UTF-16/UTF-32. Whenever iCode writes one of these files, it uses UTF-8: when you save settings, and at startup when it moves settings left by an older version (such as `CHRYS_*` lines in `.env`) into `settings.yaml`.
+
+Bytes that cannot be decoded using the detected encoding make the file invalid; iCode does not replace them with `�`. Settings use the existing invalid-file recovery rules. An undecodable `.env` file is skipped during loading, and attempts to update it fail without overwriting it.
+
 The file uses YAML. Dots in key names represent nesting. For example, write `llm.retry.max_transient` as:
 
 ```yaml
@@ -37,6 +41,7 @@ In the tables, “None” means there is no corresponding environment variable, 
 | `ui.chat.tool_groups_expanded` | None | `false` | Boolean; whether newly displayed tool groups expand their details by default |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | Integer; limits the before-and-after file content loaded directly with a file edit card, measured by their combined byte size. Within the limit, content loads with the card and the header shows the exact numbers of added and deleted lines. Above the limit, if snapshot references are available, content is read only when the diff is expanded, and the header does not show exact line counts. `0` or a negative value sets the limit to zero; inline content may still be retained when no snapshot references are available. This setting controls only how the card loads content; `mutations.snapshot.max_file_mb` and `mutations.snapshot.skip_binary` determine whether file content is backed up |
 | `history.prompt.enabled` | `CHRYS_HISTORY_DISABLE` | `true` | Boolean; save and read input history across sessions. Disabling it does not delete existing records. The environment variable has the opposite meaning: only the exact value `1` disables history; other values do not |
+| `app.update_check` | `CHRYS_UPDATE_CHECK` | `true` | Boolean; once a day, when the TUI starts, look up the newest iCode version and, when it is newer, show it on the welcome screen with the command that upgrades iCode. The request carries none of your personal information or data. `icode run`, `icode acp` and `icode serve` never check |
 | `workspace.mru_max_entries` | `CHRYS_WORKSPACE_MRU_MAX_ENTRIES` | `20` | Integer; maximum number of recently used working directories to retain, capped at `100`. `0` or a negative value disables recording |
 
 ### Agents, models, and requests
@@ -61,6 +66,7 @@ The `approval` keys control approval behavior when an agent requests an operatio
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | String; `manual` for manual approval, `auto` for model review, `auto-formal` for individual risk checks with fixed approval rules, or `bypass` to bypass approval. Setting the default mode does not switch the current session's mode |
+| `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | Integer; seconds to wait for human approval in TUI and ACP. `0` disables the timeout; positive values set a deadline. Negative values are raised to `0`. Timeout rejects the tool call. Restart iCode to apply |
 | `ui.approval.defer_while_judging` | None | `true` | Boolean; in automatic mode, whether the TUI opens the approval dialog only when the approval judge model flags a call or evaluation fails. `false` opens it at once while the call is evaluated. The ACP server and `icode run` ignore it |
 | `project.config_enabled` | None | `false` | Boolean; whether to load project settings for each working directory. Must be enabled in user settings |
 | `project.hooks_enabled` | None | `false` | Boolean; whether to load project hooks from `.chrys/hooks` in the working directory. Must be enabled in user settings. Does not affect user-level hooks |

@@ -58,6 +58,23 @@ async def test_ctrl_a_selects_all() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_shift_enter_replaces_selection_once_and_respects_read_only(read_only: bool) -> None:
+    ta = EnhancedTextArea("aOLDz", read_only=read_only, id="ta")
+    app = _Harness(text_area=ta)
+    async with app.run_test() as pilot:
+        ta.focus()
+        ta.selection = Selection((0, 1), (0, 4))
+        await pilot.press("shift+enter")
+
+        assert ta.text == ("aOLDz" if read_only else "a\nz")
+        if not read_only:
+            assert ta.cursor_location == (1, 0)
+            await pilot.press("ctrl+z")
+            assert ta.text == "aOLDz"
+
+
+@pytest.mark.asyncio
 async def test_multi_character_printable_key_inserts_text() -> None:
     """IME commits decoded from Kitty keyboard input may arrive as one key event."""
     app = _Harness()

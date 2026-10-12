@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from openai.types import CompletionUsage
 from openai.types.chat.chat_completion_chunk import (
     ChatCompletionChunk,
     ChoiceDeltaToolCall,
@@ -19,6 +20,7 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta as ChunkChoiceDe
 
 from chrys.kernel import ChatResponse, Content, FunctionTool, Message, ResponseStream
 from chrys.kernel.exceptions import ChatClientInvalidResponseException
+from chrys.service.agent_middleware.validators import DefaultResponseValidator
 from chrys.service.llm.chat_completions import ChatCompletionsClient
 from chrys.service.llm.chat_completions.client import OPENAI
 from chrys.service.llm.chat_completions.history import encode_messages
@@ -278,6 +280,168 @@ async def test_nonempty_call_id_wins_when_gateway_reuses_tool_index() -> None:
     assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
         ("call-a", "alpha", {"value": 1}),
         ("call-b", "beta", {"value": 2}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_distinct_whole_calls_to_one_function_reusing_tool_index_stay_apart() -> None:
+    chunks = [
+        _tool_chunk(_tool_delta(index=0, call_id="call-a", name="read_file", arguments='{"path":"a"}')),
+        _tool_chunk(_tool_delta(index=0, call_id="call-b", name="read_file", arguments='{"path":"b"}')),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "read_file", {"path": "a"}),
+        ("call-b", "read_file", {"path": "b"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_call_id_changing_mid_call_continues_the_call_under_its_first_id() -> None:
+    # A Kimi-style stream: every fragment of one call under a new id, the name only on the first.
+    chunks = [
+        _tool_chunk(_tool_delta(index=0, call_id="functions.read:0", name="read", arguments="")),
+        _tool_chunk(_tool_delta(index=0, call_id="chatcmpl-tool-a", arguments='{"path":"README')),
+        _chunk(
+            ChunkChoiceDelta.model_construct(
+                role="assistant", tool_calls=[_tool_delta(index=0, call_id="chatcmpl-tool-b", arguments='.md"}')]
+            ),
+            finish_reason="tool_calls",
+        ),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("functions.read:0", "read", {"path": "README.md"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_name_sent_under_a_changed_call_id_after_a_nameless_first_fragment_names_the_call() -> None:
+    chunks = [
+        _tool_chunk(_tool_delta(index=0, call_id="call-a", arguments="")),
+        _tool_chunk(_tool_delta(index=0, call_id="call-b", name="read_file", arguments='{"path":')),
+        _tool_chunk(_tool_delta(index=0, call_id="call-c", arguments='"a"}')),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "read_file", {"path": "a"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_named_whole_call_reusing_the_index_of_a_nameless_whole_call_stays_apart() -> None:
+    chunks = [
+        _tool_chunk(
+            _tool_delta(index=0, call_id="call-a", arguments='{"path":"a"}'),
+            _tool_delta(index=0, call_id="call-b", name="read_file", arguments='{"path":"b"}'),
+        ),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "", {"path": "a"}),
+        ("call-b", "read_file", {"path": "b"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_trailing_empty_fragment_under_a_new_call_id_adds_no_call() -> None:
+    chunks = [
+        _tool_chunk(_tool_delta(index=0, call_id="call-a", name="read_file", arguments='{"path":"x"}')),
+        _tool_chunk(_tool_delta(index=0, call_id="call-b", arguments="")),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "read_file", {"path": "x"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_calls_with_changing_ids_and_indexless_calls_assemble_independently() -> None:
+    chunks = [
+        _tool_chunk(
+            _tool_delta(index=0, call_id="tc_read_initial", name="read", arguments='{"path":"README'),
+            _tool_delta(index=1, call_id="tc_grep_initial", name="grep", arguments='{"pattern":"TODO'),
+            _tool_delta(index=_MISSING, call_id="tc_list_no_index", name="list", arguments='{"path":"packages'),
+            _tool_delta(index=_MISSING, call_id="tc_write_no_index", name="write", arguments='{"path":"out'),
+        ),
+        _tool_chunk(
+            _tool_delta(index=1, call_id="tc_grep_changed", arguments='","path":"src'),
+            _tool_delta(index=_MISSING, call_id="tc_write_no_index", arguments='.txt","content":"ok"}'),
+            _tool_delta(index=_MISSING, call_id="tc_list_no_index", arguments='/ai"}'),
+        ),
+        _chunk(
+            ChunkChoiceDelta.model_construct(
+                role="assistant",
+                tool_calls=[
+                    _tool_delta(index=0, call_id="tc_read_changed", arguments='.md"}'),
+                    _tool_delta(index=1, arguments='"}'),
+                ],
+            ),
+            finish_reason="tool_calls",
+        ),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("tc_read_initial", "read", {"path": "README.md"}),
+        ("tc_grep_initial", "grep", {"pattern": "TODO", "path": "src"}),
+        ("tc_list_no_index", "list", {"path": "packages/ai"}),
+        ("tc_write_no_index", "write", {"path": "out.txt", "content": "ok"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_changed_call_id_finds_its_call_again_without_an_index() -> None:
+    chunks = [
+        _tool_chunk(
+            _tool_delta(index=0, call_id="call-a", name="alpha", arguments="{"),
+            _tool_delta(index=1, call_id="call-b", name="beta", arguments="{"),
+        ),
+        _tool_chunk(_tool_delta(index=0, call_id="call-a2", arguments='"x":')),
+        _tool_chunk(_tool_delta(index=_MISSING, call_id="call-a2", arguments="1}")),
+        _tool_chunk(_tool_delta(index=1, arguments='"y":2}')),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "alpha", {"x": 1}),
+        ("call-b", "beta", {"y": 2}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_known_call_id_wins_over_the_index_of_another_call() -> None:
+    chunks = [
+        _tool_chunk(
+            _tool_delta(index=0, call_id="call-a", name="alpha", arguments='{"x":1}'),
+            _tool_delta(index=1, call_id="call-b", name="beta", arguments="{"),
+        ),
+        _tool_chunk(_tool_delta(index=0, call_id="call-b", arguments='"y":2}')),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "alpha", {"x": 1}),
+        ("call-b", "beta", {"y": 2}),
     ]
 
 
@@ -694,6 +858,81 @@ async def test_plain_openai_text_stream_adds_no_reasoning_content() -> None:
     assert response.raw_text == "hello world"
 
 
+def _usage_chunk(*, chunk_id: str) -> ChatCompletionChunk:
+    return ChatCompletionChunk.model_construct(
+        id=chunk_id,
+        object="chat.completion.chunk",
+        created=1_717_171_717,
+        model="glm-5.2",
+        choices=[],
+        usage=CompletionUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+    )
+
+
+def _content_shape(content: Content) -> tuple[Any, ...]:
+    if content.type == "function_call":
+        return (content.type, content.call_id, content.name, content.parse_arguments())
+    return (content.type, content.text)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "shape", "stream_id"),
+    [
+        pytest.param(
+            [
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Hel"), chunk_id="chunk-1"),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="lo"), chunk_id="chunk-2"),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="stop", chunk_id="chunk-3"),
+                _usage_chunk(chunk_id="chunk-4"),
+            ],
+            [("text", "Hello")],
+            "chunk-1",
+            id="text",
+        ),
+        pytest.param(
+            [
+                _tool_chunk(_tool_delta(index=0, call_id="call-1", name="read", arguments=""), chunk_id="chunk-1"),
+                _tool_chunk(_tool_delta(index=0, call_id="call-2", arguments='{"path":"README'), chunk_id="chunk-2"),
+                _tool_chunk(_tool_delta(index=0, call_id="call-3", arguments='.md"}'), chunk_id="chunk-3"),
+                _chunk(
+                    ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls", chunk_id="chunk-4"
+                ),
+                _usage_chunk(chunk_id="chunk-5"),
+            ],
+            [("function_call", "call-1", "read", {"path": "README.md"})],
+            "chunk-1",
+            id="tool-call",
+        ),
+        pytest.param(
+            [
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="Hel"), chunk_id=""),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant", content="lo"), chunk_id="chunk-2"),
+                _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="stop", chunk_id="chunk-3"),
+                _usage_chunk(chunk_id="chunk-4"),
+            ],
+            [("text", "Hello")],
+            "chunk-2",
+            id="first-chunk-without-id",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_fresh_id_on_every_chunk_keeps_the_reply_in_one_message(
+    chunks: list[ChatCompletionChunk], shape: list[tuple[Any, ...]], stream_id: str
+) -> None:
+    # Some gateways mint a new id for each chunk. The closing usage chunk
+    # under its own id must not end the reply with an empty message, which
+    # response validation would reject as blank.
+    _, response = await _raw_stream_response(chunks)
+
+    (message,) = response.messages
+    assert [_content_shape(content) for content in message.contents] == shape
+    assert (message.message_id, response.response_id) == (stream_id, stream_id)
+    assert response.usage_details is not None
+    assert response.usage_details.get("total_token_count") == 5
+    assert DefaultResponseValidator().validate(response).ok
+
+
 @pytest.mark.asyncio
 async def test_idless_single_tool_call_preserves_legacy_behavior(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("DEBUG", logger="chrys.service.llm.chat_completions.stream")
@@ -724,6 +963,22 @@ async def test_length_truncated_call_remains_final_content() -> None:
     assert response.finish_reason == "length"
     assert [content.type for content in response.messages[0].contents] == ["text_reasoning", "function_call"]
     assert response.messages[0].contents[-1].arguments == "{"
+
+
+@pytest.mark.asyncio
+async def test_nameless_call_is_handed_over_for_response_validation(caplog: pytest.LogCaptureFixture) -> None:
+    # Response validation rejects it and sends the request again.
+    chunks = [
+        _tool_chunk(_tool_delta(index=0, call_id="call-a", arguments='{"path":"x"}')),
+        _chunk(ChunkChoiceDelta.model_construct(role="assistant"), finish_reason="tool_calls"),
+    ]
+
+    _, response = await _raw_stream_response(chunks)
+
+    assert [(call.call_id, call.name, call.parse_arguments()) for call in _function_calls(response)] == [
+        ("call-a", "", {"path": "x"})
+    ]
+    assert "Streamed tool call ended without a function name for choice 0, index 0" in caplog.text
 
 
 @pytest.mark.asyncio

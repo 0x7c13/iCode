@@ -65,11 +65,13 @@ _RESTART_FIELDS_OUTSIDE_THE_SNAPSHOT = {
     # Read once during startup and never again; the routing keeps the reload's
     # report agreeing with that read.
     "workspace_mru_max_entries": "read once when TUI services are wired",
+    "approval_timeout_seconds": "ACP captures it at startup; TUI reads the restart-routed settings",
     "otel_enabled": "read once by setup_otel at bootstrap",
     "otel_sensitive_data": "read once by setup_otel at bootstrap",
     "otel_endpoint": "read once by setup_otel at bootstrap",
     "mutation_snapshot_max_file_mb": "policy captured when the snapshot store is first built",
     "mutation_snapshot_skip_binary": "policy captured when the snapshot store is first built",
+    "update_check": "read once when the TUI starts, to decide whether it checks for a newer release",
 }
 
 

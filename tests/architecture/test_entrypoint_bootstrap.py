@@ -23,6 +23,10 @@ _ENTRYPOINT_BOOTSTRAP_EXEMPT = {
         "copies the PyApp binary and edits PATH without touching sessions, config, or the agent runtime; "
         "bootstrapping would be dead weight and would let a broken config block the installer"
     ),
+    Path("src/chrys/app/uninstaller.py"): (
+        "removes the offline install and, with --purge, the data folders; a broken config must not "
+        "block removing the app, and there is no runtime to start"
+    ),
 }
 
 

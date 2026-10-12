@@ -1,26 +1,21 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""User-guide docs index — YAML topic parsing and docs-root resolution.
+"""User-guide docs index — YAML topic parsing.
 
 Pure logic with no Textual dependency: models the ``docs/index.yaml`` topic
-tree and locale ordering, and locates the docs root at runtime. The dialog
+tree and locale ordering. The dialog
 content is read from the files referenced here; nothing is hardcoded in code.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-INDEX_FILENAME = "index.yaml"
-BUNDLED_DOCS_DIRNAME = "_docs"
-"""Where built wheels carry ``docs/``, next to this module (``pyproject.toml`` force-include)."""
-_CHECKOUT_DEPTH = 6
-"""``<checkout>/src/chrys/app/tui/screens/guides/index.py`` sits this many directories below the checkout."""
+from chrys.foundation.documentation import INDEX_FILENAME
 
 
 class GuideIndexError(Exception):
@@ -57,30 +52,6 @@ class GuideIndex:
     """Ordered locales, also used as docs subdirectory names."""
     default_topic_id: str | None
     topics: tuple[GuideTopic, ...]
-
-
-def resolve_docs_root() -> Path | None:
-    """Locate the docs root, or ``None`` when unavailable.
-
-    Resolution order:
-    1. ``CHRYS_DOCS_ROOT``, for previewing edited docs.  A value without an
-       ``index.yaml`` reports the docs as missing instead of quietly showing
-       another copy;
-    2. the copy bundled into built wheels next to this module;
-    3. the source checkout's ``docs/`` (an editable install runs from ``src/``).
-    """
-    override = os.environ.get("CHRYS_DOCS_ROOT")
-    if override:
-        candidate = Path(override).expanduser()
-        return candidate if (candidate / INDEX_FILENAME).is_file() else None
-    here = Path(__file__).resolve()
-    bundled = here.parent / BUNDLED_DOCS_DIRNAME
-    if (bundled / INDEX_FILENAME).is_file():
-        return bundled
-    checkout = here.parents[_CHECKOUT_DEPTH]
-    if (checkout / "pyproject.toml").is_file() and (checkout / "docs" / INDEX_FILENAME).is_file():
-        return checkout / "docs"
-    return None
 
 
 def load_guide_index(docs_root: Path) -> GuideIndex:

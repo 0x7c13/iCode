@@ -332,6 +332,43 @@ def test_chrys_install_rejects_additional_args(monkeypatch, capsys) -> None:
     assert "install does not accept arguments" in out.err
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ([], {"purge": False, "assume_yes": False}),
+        (["--purge"], {"purge": True, "assume_yes": False}),
+        (["--purge", "-y"], {"purge": True, "assume_yes": True}),
+        (["--yes"], {"purge": False, "assume_yes": True}),
+    ],
+)
+def test_icode_uninstall_dispatches_its_flags(monkeypatch, args: list[str], expected: dict[str, bool]) -> None:
+    calls: list[dict[str, bool]] = []
+
+    def fake_uninstall(*, purge: bool, assume_yes: bool) -> int:
+        calls.append({"purge": purge, "assume_yes": assume_yes})
+        return 3
+
+    monkeypatch.setattr("chrys.app.uninstaller.uninstall", fake_uninstall)
+    monkeypatch.setattr(sys, "argv", ["icode", "uninstall", *args])
+
+    assert cli_app.main() == 3
+    assert calls == [expected]
+
+
+def test_icode_uninstall_rejects_unknown_args_and_lists_itself(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["icode", "uninstall", "--force"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_app.main()
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --force" in capsys.readouterr().err
+
+    monkeypatch.setattr(sys, "argv", ["icode", "--help"])
+    assert cli_app.main() == 0
+    assert "uninstall   Remove" in capsys.readouterr().out
+
+
 def test_pyapp_build_scripts_use_cli_dispatcher() -> None:
     root = REPO_ROOT
 
@@ -342,6 +379,22 @@ def test_pyapp_build_scripts_use_cli_dispatcher() -> None:
     assert 'PYAPP_EXEC_SPEC: "chrys.app.cli.app:pyapp_main"' in (root / ".github" / "workflows" / "cd.yml").read_text(
         encoding="utf-8"
     )
+
+
+def test_pyapp_builds_hide_the_self_commands() -> None:
+    """``icode uninstall`` replaces PyApp's ``self`` commands, which stay unreachable."""
+    root = REPO_ROOT
+    build_sh = (root / "scripts" / "build.sh").read_text(encoding="utf-8")
+    build_ps1 = (root / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    cd_workflow = (root / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
+
+    assert "export PYAPP_SELF_COMMAND=none\n" in build_sh
+    assert '$env:PYAPP_SELF_COMMAND = "none"\n' in build_ps1
+    assert 'PYAPP_SELF_COMMAND: "none"\n' in cd_workflow
+    for text in (build_sh, build_ps1, cd_workflow):
+        assert text.count("PYAPP_SELF_COMMAND") == 1
+    # No CI job runs build.ps1, and a variable used before it is set stops the script.
+    assert build_ps1.index("$AppRs") == build_ps1.index("$AppRs = ")
 
 
 def test_pyapp_build_renames_runtime_python_on_process_name_sensitive_platforms() -> None:

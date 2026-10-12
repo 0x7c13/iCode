@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.style import Style
 from rich.text import Text
 from textual.content import Content
 from textual.message import Message
@@ -17,7 +18,7 @@ from chrys.app.tui.util.logo import CHAT_LOGO
 from chrys.app.tui.util.removal import remove_shielded
 from chrys.app.tui.widgets.chat.ports import ChatChromeHost
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
-from chrys.app.tui.widgets.welcome import WelcomeWidget
+from chrys.app.tui.widgets.welcome import WelcomeWidget, copy_on_click
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from textual.widget import Widget
 
     from chrys.app.tui.i18n import LocaleController
+    from chrys.app.update_check import UpdateNotice
 
 # Border-title budget for the session title fragment; the full title is
 # available via the click-to-edit dialog and the F1 sessions modal.
@@ -36,6 +38,9 @@ _CHAT_SCROLL_TO_BOTTOM = msg("tui.chat.scroll_to_bottom", fallback="Scroll to bo
 _CHAT_SCROLL_TO_BOTTOM_TOOLTIP = msg(
     "tui.chat.scroll_to_bottom_tooltip",
     fallback="Jump to the bottom of the conversation ({shortcut})",
+)
+_CHAT_UPDATE_AVAILABLE = msg(
+    "tui.chat.update_available", fallback="New version found: {version}\nRun: {command} to upgrade", multiline=True
 )
 
 
@@ -131,6 +136,7 @@ class ChatPanelChrome:
         self._session_title: str = ""
         self._workspace_cwd: str = ""
         self._workspace_branch: str = ""
+        self._update_notice: UpdateNotice | None = None
 
     @property
     def welcome(self) -> WelcomeWidget | None:
@@ -185,7 +191,9 @@ class ChatPanelChrome:
 
     def _create_widgets(self) -> tuple[WelcomeWidget, ChatBottomSpacer, ScrollToBottomButton]:
         # Rebuild from panel metadata, which survives transcript and mode changes.
-        welcome = WelcomeWidget(CHAT_LOGO, title=self._host.profile_name, cwd=self._host.workspace_cwd)
+        welcome = WelcomeWidget(
+            CHAT_LOGO, title=self._host.profile_name, cwd=self._host.workspace_cwd, notice=self._update_notice_text()
+        )
         spacer = ChatBottomSpacer()
         spacer.display = False
         button = ScrollToBottomButton(
@@ -213,6 +221,28 @@ class ChatPanelChrome:
         """Update welcome widget metadata if the widget is still present."""
         if self._welcome is not None:
             self._welcome.update_info(title=profile or None, cwd=cwd or None)
+
+    def set_update_notice(self, notice: UpdateNotice | None) -> None:
+        """Show a newer release on this and every later welcome screen, or stop showing one."""
+        if notice == self._update_notice:
+            return
+        self._update_notice = notice
+        if self._welcome is not None:
+            self._welcome.set_notice(self._update_notice_text())
+
+    def _update_notice_text(self) -> Text | None:
+        notice = self._update_notice
+        if notice is None:
+            return None
+        text = Text(self._render_str(_CHAT_UPDATE_AVAILABLE.bind(version=notice.version, command=notice.command)))
+        for value, style in (
+            (notice.version, Style(bold=True)),
+            (notice.command, Style(bold=True) + copy_on_click(notice.command)),
+        ):
+            start = text.plain.find(value)
+            if start >= 0:
+                text.stylize(style, start, start + len(value))
+        return text
 
     def set_session_id(self, session_id: str) -> None:
         """Set session id metadata and refresh the border title."""
@@ -246,8 +276,10 @@ class ChatPanelChrome:
         self._host.set_border_title(Text(title))
 
     def refresh_localization(self) -> None:
-        """Retranslate only stored border metadata and persistent button chrome."""
+        """Retranslate only stored border metadata, persistent button chrome and the update notice."""
         self._update_border_title()
+        if self._welcome is not None and self._update_notice is not None:
+            self._welcome.set_notice(self._update_notice_text())
         button = self._scroll_to_bottom_button
         if button is not None:
             self._refresh_scroll_to_bottom_button(button)

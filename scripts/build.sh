@@ -152,7 +152,10 @@ export PYAPP_PROJECT_NAME=chrys
 export PYAPP_PROJECT_VERSION="$VERSION"
 export PYAPP_PYTHON_VERSION="$PYTHON_VERSION"
 export PYAPP_EXEC_SPEC=chrys.app.cli.app:pyapp_main
-export PYAPP_SELF_COMMAND=self
+# iCode has its own upgrade and uninstall paths, so PyApp's `self` commands
+# (update, remove, restore, ...) stay hidden: `none` names them with a random
+# string nobody types.
+export PYAPP_SELF_COMMAND=none
 export PYAPP_PASS_LOCATION=true
 
 if [ "$OFFLINE" = "true" ]; then
@@ -239,30 +242,6 @@ perl -i -pe '
   s/reqwest::blocking::get\(([^)]+)\)/reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(300)).build().unwrap().get($1).send()/g;
 ' build.rs
 
-# 3. Disable PyApp's self-update command.
-#
-# PyApp's default update path runs `pip install --upgrade <project name>`.
-# The public PyPI name `chrys` belongs to a different project, so leaving
-# `self update` enabled can replace this app's installed package with that one.
-# Verified against PyApp 0.29.0; re-verify these source patches when bumping PYAPP_VERSION.
-echo "==> Patching PyApp to disable self update..."
-perl -0pi -e '
-  s/\n    Update\(super::update::Cli\),//;
-  s/\n            Commands::Update\(cli\) => cli\.exec\(\),//;
-' src/commands/self_cmd/cli.rs
-perl -0pi -e 's/\npub mod update;//' src/commands/self_cmd/mod.rs
-perl -0pi -e 's/\npub fn allow_updates\(\) -> bool \{/\n#[allow(dead_code)]\npub fn allow_updates() -> bool {/' src/app.rs
-if grep -R -E 'Update\(super::update::Cli\)|Commands::Update|pub mod update' src/commands/self_cmd/cli.rs src/commands/self_cmd/mod.rs >/dev/null; then
-    echo "Error: failed to disable PyApp self update" >&2
-    exit 1
-fi
-perl -0pi -e '
-  s/\n            Err\(err\) => \{\n                if !err\.use_stderr\(\) \{\n                    err\.exit\(\);\n                \}\n            \}/\n            Err(err) => err.exit(),/;
-' src/main.rs
-if grep -F 'if !err.use_stderr()' src/main.rs >/dev/null; then
-    echo "Error: failed to harden PyApp self command parsing" >&2
-    exit 1
-fi
 if [ "$BUILD_USES_RUNTIME_ALIAS" = "true" ]; then
     # PyApp launches Chrys by spawning the unpacked Python executable. On
     # Windows, macOS, and Linux, process-name cleanup tools can still match

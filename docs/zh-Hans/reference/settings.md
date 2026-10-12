@@ -13,6 +13,10 @@
 
 iCode 仅在当前会话的工作目录下查找 `.chrys/settings.yaml`，不向父目录或子目录查找。
 
+设置文件和 `.env` 文件建议使用 UTF-8。iCode 也会自动检测 GBK/GB18030 等常见旧编码，以及带 BOM 的 UTF-16/UTF-32。iCode 写入这些文件时一律使用 UTF-8：一是你保存设置时，二是启动时把旧版本留下的设置（例如 `.env` 中的 `CHRYS_*` 行）移入 `settings.yaml` 时。
+
+文件中存在无法按检测到的编码解码的字节时，iCode 会将其视为无效文件，不会用 `�` 替换。设置文件沿用无效文件的恢复规则；无法解码的 `.env` 文件会在加载时跳过，尝试更新时会报错并保留原文件。
+
 文件使用 YAML 格式。键名以点分隔表示嵌套层级，例如 `llm.retry.max_transient` 在文件中写为：
 
 ```yaml
@@ -37,6 +41,7 @@ llm:
 | `ui.chat.tool_groups_expanded` | 无 | `false` | 布尔值；新出现的工具组是否默认展开详情 |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | 整数；控制文件编辑卡片直接载入的改动前后内容上限，按两者字节数合计判断。不超过上限时随卡片载入，标题显示具体的增删行数；超过上限且有可用快照引用时，展开差异才读取，标题不显示具体行数。`0` 或负数将上限设为零；没有可用快照引用时仍可能保留内联内容。此设置只控制卡片的内容载入方式；是否备份文件内容由 `mutations.snapshot.max_file_mb` 和 `mutations.snapshot.skip_binary` 决定 |
 | `history.prompt.enabled` | `CHRYS_HISTORY_DISABLE` | `true` | 布尔值；跨会话保存和读取输入历史，关闭不会删除已有记录。环境变量含义相反：只有精确的 `1` 禁用历史，其他值不禁用 |
+| `app.update_check` | `CHRYS_UPDATE_CHECK` | `true` | 布尔值；TUI 每天启动时最多查询一次 iCode 的最新版本，有新版本时在欢迎页显示新版本号和升级 iCode 的命令。查询请求不包含你的任何个人信息或数据。`icode run`、`icode acp` 和 `icode serve` 不会查询 |
 | `workspace.mru_max_entries` | `CHRYS_WORKSPACE_MRU_MAX_ENTRIES` | `20` | 整数；最多保留多少个最近使用的工作目录，上限 `100`，`0` 或负数禁用记录 |
 
 ### 智能体、模型与请求
@@ -61,6 +66,7 @@ llm:
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 模型复核、`auto-formal` 逐项检查风险并按固定规则审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
+| `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | 整数；TUI 和 ACP 等待人工审批的秒数，`0` 表示不超时，正数表示等待时限，负数调整为 `0`。超时后拒绝本次工具调用。重启 iCode 后生效 |
 | `ui.approval.defer_while_judging` | 无 | `true` | 布尔值；自动模式下，TUI 是否只在审批裁判模型标记调用或评估失败时才弹出审批对话框。`false` 表示评估期间立即弹出。ACP 服务器和 `icode run` 不受影响 |
 | `project.config_enabled` | 无 | `false` | 布尔值；是否加载各工作目录的项目设置，必须在用户设置中启用 |
 | `project.hooks_enabled` | 无 | `false` | 布尔值；是否加载工作目录 `.chrys/hooks` 中的项目 Hooks，必须在用户设置中启用，不影响用户级 Hooks |

@@ -20,7 +20,7 @@ You can also open a tab directly with `/settings <tab>`:
 
 | Tab | `<tab>` | Main settings |
 | --- | --- | --- |
-| General | `general` | Appearance and input |
+| General | `general` | Appearance, input and updates |
 | Models & Agents | `models` | Default agent, model roles, and request retries |
 | Security | `security` | Approval, project trust, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback |
@@ -61,6 +61,12 @@ The "Takes effect" column in the following tables describes each setting's usual
 | --- | --- | --- |
 | Save prompt history | Saves submitted input across sessions for reuse. When no other dialog covers the main screen, press **Ctrl+R** to open the prompt history list above the input field. Click an entry, or select it with the up and down arrow keys and press **Enter**, to copy the prompt into the input field. The history file, `prompt_history.jsonl`, is stored in `~/.chrys/` on macOS and Linux, or `%APPDATA%\chrys\` on Windows. Turning this setting off does not delete the file; iCode stops reading it, and **Ctrl+R** shows "No results". Re-enable the setting and restart iCode to read the file's entries again. To clear the history, delete the history file; deletion cannot be undone. | After restart |
 
+#### Updates
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Check for updates | Once a day, when iCode starts, looks up the newest version. When a newer one is out, the welcome screen shows it with the command that upgrades iCode; click the command to copy it. The check sends none of your personal information or data. | After restart |
+
 ### Models & Agents
 
 This tab selects existing agent or model profiles; it does not edit them. For those operations, see [Configure agents](./agents.md) and [Configure models](./models.md).
@@ -92,6 +98,7 @@ This tab selects existing agent or model profiles; it does not edit them. For th
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Default approval mode | Sets the default approval mode for the next iCode launch; it does not affect the current session. Only `manual` and `auto` are offered; to bypass approval in the current session, use `/approval bypass`. For switching the current session's mode and the differences between modes, see [Configure approval modes](./approval.md). | Saved immediately; applies at the next launch |
+| Human approval timeout (seconds) | Defaults to `0` (no timeout); positive values set a deadline in seconds. Negative values are adjusted to `0`. Applies to TUI and ACP human approvals. Timeout rejects the call. | After restarting iCode |
 | Show the approval dialog only when Auto-Review flags a call | On by default. In automatic mode, no dialog opens while the approval judge model evaluates a call, and calls it judges safe run without one; the dialog opens only for flagged calls or when evaluation fails. When disabled, the dialog opens at once and shows **Evaluating**, so you can decide before evaluation finishes. Requests already waiting keep the behavior they started with. See [Handle approval requests in the TUI](./approval.md#handle-approval-requests-in-the-tui). | Immediately |
 
 #### Project trust

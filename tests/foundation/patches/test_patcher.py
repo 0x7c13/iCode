@@ -205,6 +205,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         textual_callback_dispatch,
         textual_compositor_cjk,
         textual_dispatch_cache,
+        textual_extended_keys,
         textual_ime_cursor_anchor,
         textual_kitty_keyboard,
         textual_lru_acyclic,
@@ -267,6 +268,7 @@ def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch.setattr(textual_tab_selection, "apply_runtime_patch", lambda: calls.append("tab_selection"))
     monkeypatch.setattr(textual_ime_cursor_anchor, "apply_runtime_patch", lambda: calls.append("ime_cursor_anchor"))
     monkeypatch.setattr(textual_kitty_keyboard, "apply_runtime_patch", lambda: calls.append("kitty_keyboard"))
+    monkeypatch.setattr(textual_extended_keys, "apply_runtime_patch", lambda: calls.append("extended_keys"))
     monkeypatch.setattr(textual_utf8_decoder, "apply_runtime_patch", lambda: calls.append("utf8_decoder"))
 
     patcher.apply_all()
@@ -297,6 +299,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         "tab_selection",
         "ime_cursor_anchor",
         "kitty_keyboard",
+        "extended_keys",
         "utf8_decoder",
     ]
     assert "Runtime patch error: textual_compositor_cjk — upstream private API moved" in caplog.text
