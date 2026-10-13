@@ -74,52 +74,33 @@ def test_chrys_serve_dispatches_to_serve_subcommand(monkeypatch) -> None:
     assert calls == [["--host", "0.0.0.0", "--port", "9000"]]
 
 
-def test_chrys_agents_dispatches_to_agents_subcommand(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("module_name", "function_name", "singular", "plural"),
+    [
+        ("chrys.app.cli.profiles", "agents_main", "agent", "agents"),
+        ("chrys.app.cli.profiles", "models_main", "model", "models"),
+        ("chrys.app.cli.approvals", "main", "approval", "approvals"),
+        ("chrys.app.cli.workflow", "main", "workflow", "workflows"),
+        ("chrys.app.cli.trajectory", "main", "trajectory", "trajectories"),
+    ],
+)
+def test_noun_commands_accept_singular_and_plural(
+    monkeypatch, module_name: str, function_name: str, singular: str, plural: str
+) -> None:
+    import importlib
+
     calls: list[list[str]] = []
 
-    def fake_agents_main(argv: list[str]) -> int:
+    def fake_main(argv: list[str]) -> int:
         calls.append(argv)
-        return 10
+        return 13
 
-    import chrys.app.cli.profiles as profiles_module
+    monkeypatch.setattr(importlib.import_module(module_name), function_name, fake_main)
+    for word in (singular, plural):
+        monkeypatch.setattr(sys, "argv", ["chrys", word, "list", "--json"])
+        assert cli_app.main() == 13
 
-    monkeypatch.setattr(profiles_module, "agents_main", fake_agents_main)
-    monkeypatch.setattr(sys, "argv", ["chrys", "agents", "--json"])
-
-    assert cli_app.main() == 10
-    assert calls == [["--json"]]
-
-
-def test_chrys_models_dispatches_to_models_subcommand(monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_models_main(argv: list[str]) -> int:
-        calls.append(argv)
-        return 11
-
-    import chrys.app.cli.profiles as profiles_module
-
-    monkeypatch.setattr(profiles_module, "models_main", fake_models_main)
-    monkeypatch.setattr(sys, "argv", ["chrys", "models", "list"])
-
-    assert cli_app.main() == 11
-    assert calls == [["list"]]
-
-
-def test_chrys_workflow_dispatches_to_workflow_subcommand(monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_workflow_main(argv: list[str]) -> int:
-        calls.append(argv)
-        return 12
-
-    import chrys.app.cli.workflow as workflow_module
-
-    monkeypatch.setattr(workflow_module, "main", fake_workflow_main)
-    monkeypatch.setattr(sys, "argv", ["chrys", "workflow", "run", "demo-workflow", "--trust"])
-
-    assert cli_app.main() == 12
-    assert calls == [["run", "demo-workflow", "--trust"]]
+    assert calls == [["list", "--json"], ["list", "--json"]]
 
 
 def test_chrys_hidden_tui_subprocess_dispatches_to_tui(monkeypatch) -> None:
@@ -238,12 +219,14 @@ def test_chrys_help_shows_top_level_modes(monkeypatch, capsys) -> None:
     assert "-C DIR" in out.out
     assert "--workdir DIR" in out.out
     assert "install" in out.out
-    assert "agents" in out.out
-    assert "models" in out.out
+    assert "  agent       List available agent profiles" in out.out
+    assert "  model       List available model profiles" in out.out
+    assert "  approval    List, revoke or clear remembered approvals" in out.out
+    assert "  workflow    List, validate and run workflows headlessly" in out.out
+    assert "agent, model, approval, workflow and trajectory also work in the plural;" in out.out
+    assert "agent, model, approval and workflow list when given no subcommand." in out.out
     assert "acp" in out.out
     assert "serve" in out.out
-    assert "List available agent profiles" in out.out
-    assert "List available model profiles" in out.out
     assert f"Host the {APP_DISPLAY_NAME} TUI in a browser" in out.out
     assert "Run an Agent Client Protocol stdio server" in out.out
     assert "Run an agent headlessly until the final response" in out.out
@@ -262,8 +245,8 @@ def test_chrys_short_help_shows_top_level_modes(monkeypatch, capsys) -> None:
     assert "--version" in out.out
     assert "run" in out.out
     assert "install" in out.out
-    assert "agents" in out.out
-    assert "models" in out.out
+    assert "  agent       " in out.out
+    assert "  model       " in out.out
     assert "acp" in out.out
     assert "serve" in out.out
     assert "Run an Agent Client Protocol stdio server" in out.out

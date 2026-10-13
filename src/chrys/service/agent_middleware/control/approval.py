@@ -63,7 +63,7 @@ from chrys.service.trajectory.tools import tool_operation_id
 
 _REMEMBER_FAILED = msg(
     "approval.reuse.save_failed",
-    fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with icode approvals.",
+    fallback="Allowed once, but the approval could not be remembered. Check storage permissions or manage grants with icode approval.",
 )
 
 _GITDIR_POINTER_PREFIX = "gitdir:"

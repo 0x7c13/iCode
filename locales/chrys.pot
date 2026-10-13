@@ -15,8 +15,8 @@ msgstr ""
 "Generated-By: Babel 2.18.0\n"
 
 #. English: Allowed once, but the approval could not be remembered. Check
-#. storage permissions or manage grants with icode approvals.
-#. chrys-meta={"fingerprint":"c91616456df496f2e172de04a6f110be536221689f8ab1922238c4949e6e2d3d","multiline":false,"placeholders":[]}
+#. storage permissions or manage grants with icode approval.
+#. chrys-meta={"fingerprint":"279b7064d529d04e14050b066cbe8ee9e05790fabd5087cea79846cb7f5f8c61","multiline":false,"placeholders":[]}
 #: src/chrys/service/agent_middleware/control/approval.py
 msgid "approval.reuse.save_failed"
 msgstr ""

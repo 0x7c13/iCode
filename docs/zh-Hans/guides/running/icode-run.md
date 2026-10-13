@@ -106,7 +106,7 @@ icode run --task prompts/review.md --agent Code --workdir <project-directory>
 
 ## 选择智能体和模型
 
-`icode run` 必须通过 `--agent` 指定智能体。运行 `icode agents` 可以查看可用的智能体配置：
+`icode run` 必须通过 `--agent` 指定智能体。运行 `icode agent list` 可以查看可用的智能体配置：
 
 ```text
 Default  Name  Display Name  ID            Model
@@ -120,7 +120,7 @@ Default  Name  Display Name  ID            Model
 
 对于使用 `active` 模型的智能体，可以通过 `-m` 或 `--model` 为本次运行指定模型配置；对于已绑定模型的智能体，`--model` 不生效。
 
-运行 `icode models` 可以查看可用的模型配置：
+运行 `icode model list` 可以查看可用的模型配置：
 
 ```text
 Active  ID            Name           Provider  API   Model          Context  Flags

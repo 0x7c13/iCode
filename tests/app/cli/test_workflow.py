@@ -111,14 +111,17 @@ def _stub_runtime(monkeypatch: pytest.MonkeyPatch) -> Callable[..., headless.Pre
 # ---------------------------------------------------------------------------
 
 
-def test_help_lists_both_commands(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_lists_every_command(flag: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        workflow_cli.main(["--help"])
+        workflow_cli.main([flag])
 
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
-    assert "list" in out
-    assert "run" in out
+    assert out.startswith("usage: icode workflow ")
+    assert "List the workflows found for the current directory" in out
+    assert "Check a workflow file or folder" in out
+    assert "Run one workflow until it finishes" in out
 
 
 def test_run_help_shows_every_option(capsys: pytest.CaptureFixture[str]) -> None:
@@ -131,12 +134,24 @@ def test_run_help_shows_every_option(capsys: pytest.CaptureFixture[str]) -> None
     assert "--timeout-s" not in out
 
 
-def test_a_command_is_required(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        workflow_cli.main([])
+@pytest.mark.parametrize("argv", [[], ["--json"], ["--", "list", "--json"]])
+def test_lists_with_no_command_or_after_the_separator(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_discovery(
+        monkeypatch,
+        Discovery(
+            sources=(_source("demo-workflow", SOURCE_KIND_BUILTIN, "/lib/builtins/demo-workflow.py"),), skipped=()
+        ),
+    )
 
-    assert exc_info.value.code == 2
-    assert "command" in capsys.readouterr().err
+    assert workflow_cli.main(argv) == 0
+
+    out = capsys.readouterr().out
+    if "--json" in argv:
+        assert [row["id"] for row in json.loads(out)["workflows"]] == ["demo-workflow"]
+    else:
+        assert out.splitlines()[1].split()[:2] == ["demo-workflow", "builtin"]
 
 
 def test_run_requires_a_workflow_id(capsys: pytest.CaptureFixture[str]) -> None:

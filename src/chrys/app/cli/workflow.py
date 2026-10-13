@@ -24,7 +24,7 @@ from chrys.app.cli import headless
 from chrys.app.cli.headless import PreparedRuntime
 from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.app.cli.progress import ProgressWriter, WorkflowProgress, guarded, progress_console
-from chrys.app.parsing import SanitizingArgumentParser
+from chrys.app.parsing import SanitizingArgumentParser, default_to_list
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
 from chrys.foundation.events.types import WorkflowRunAccepted
@@ -63,7 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the ``chrys workflow`` parser: ``list``, ``validate`` and ``run`` sub-commands."""
     parser = SanitizingArgumentParser(
         prog=f"{APP_COMMAND} workflow",
-        description=f"List {APP_DISPLAY_NAME} workflows, check one, and run one headlessly until its outputs are ready.",
+        description=f"List {APP_DISPLAY_NAME} workflows, check one, and run one headlessly until its outputs are ready. "
+        "With no command, list them.",
         add_help=False,
     )
     _add_help(parser)
@@ -554,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for ``chrys workflow``."""
     headless.configure_logging()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(default_to_list(sys.argv[1:] if argv is None else argv))
     if (missing_cwd := launch_cwd_missing_message(workdir_flag=False)) is not None:
         headless.write_error(missing_cwd, as_json=args.json, code=LAUNCH_CWD_MISSING_CODE)
         return 1

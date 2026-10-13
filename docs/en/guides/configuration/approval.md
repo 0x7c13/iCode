@@ -68,16 +68,16 @@ If iCode cannot save your choice, the call still runs once and a notice says tha
 
 ### Manage remembered approvals
 
-Use the `icode approvals` command to see and remove what you have remembered:
+Use the `icode approval` command to see and remove what you have remembered:
 
 ```bash
-icode approvals list                         # everything you have remembered
-icode approvals list --project /work/demo    # only one project
-icode approvals list --session SESSION_ID --json
-icode approvals revoke GRANT_ID              # remove one approval by its ID from the list
-icode approvals clear --project /work/demo   # remove all approvals for one project
-icode approvals clear --session SESSION_ID   # remove all approvals for one session
-icode approvals clear --all                  # remove everything
+icode approval list                          # everything you have remembered
+icode approval list --project /work/demo     # only one project
+icode approval list --session SESSION_ID --json
+icode approval revoke GRANT_ID               # remove one approval by its ID from the list
+icode approval clear --project /work/demo    # remove all approvals for one project
+icode approval clear --session SESSION_ID    # remove all approvals for one session
+icode approval clear --all                   # remove everything
 ```
 
 Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a project stay until you remove them.

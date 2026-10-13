@@ -227,11 +227,11 @@ workflow = wf.build()
 `wf.agent()` 用于定义智能体节点。在 `wf.agent("plan", profile="QA")` 中，`"plan"` 是节点名称，`profile="QA"` 选择智能体配置。使用以下命令查看可用配置：
 
 ```shell
-icode agents
-icode models
+icode agent list
+icode model list
 ```
 
-`profile` 填写 `icode agents` 输出中的 `Name`，可选参数 `model` 填写 `icode models` 输出中的 `Name`。需要为该节点指定模型时，替换注册语句，并将 `My model` 换成实际的模型配置名称：
+`profile` 填写 `icode agent list` 输出中的 `Name`，可选参数 `model` 填写 `icode model list` 输出中的 `Name`。需要为该节点指定模型时，替换注册语句，并将 `My model` 换成实际的模型配置名称：
 
 ```python
 plan = wf.agent("plan", profile="QA", model="My model")
@@ -265,7 +265,7 @@ plan = wf.agent(
 plan = wf.agent("plan", profile="My ACP agent")
 ```
 
-将 `My ACP agent` 替换为 `icode agents` 中已有的 ACP 配置名称，并确保该配置指定的外部程序可以启动。
+将 `My ACP agent` 替换为 `icode agent list` 中已有的 ACP 配置名称，并确保该配置指定的外部程序可以启动。
 
 ACP 节点默认使用外部智能体配置中的模型，不使用工作流默认模型。
 

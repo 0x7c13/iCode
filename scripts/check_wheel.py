@@ -36,13 +36,14 @@ BUNDLED_DOCS_PREFIX = "chrys/app/tui/screens/guides/_docs/"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The one command the wheel installs.
 COMMAND = "icode"
-# Every command app/cli/app.py dispatches, plus the bare entry point.
+# Every command app/cli/app.py dispatches, plus the bare entry point and one plural alias.
 HELP_COMMANDS = (
     (),
     ("run",),
+    ("agent",),
     ("agents",),
-    ("models",),
-    ("approvals",),
+    ("model",),
+    ("approval",),
     ("acp",),
     ("serve",),
     ("trajectory",),
@@ -50,6 +51,8 @@ HELP_COMMANDS = (
     ("install",),
     ("uninstall",),
 )
+# The plural in HELP_COMMANDS, and the command its usage names.
+PLURAL_ALIASES = {"agents": "agent"}
 
 # Runs inside the installed tool environment.
 _PROBE = """
@@ -200,7 +203,11 @@ def check_install(wheel: Path, version: str, *, all_ripgrep: bool) -> None:
         if reported != version:
             sys.exit(f"{COMMAND} --version printed {reported!r}, expected {version}")
         for subcommand in HELP_COMMANDS:
-            run(icode, *subcommand, "--help")
+            # A command the dispatcher misses falls through to the TUI, whose help also exits 0.
+            usage = run(icode, *subcommand, "--help").stdout.partition("\n")[0]
+            expected = " ".join(["usage:", COMMAND, *(PLURAL_ALIASES.get(word, word) for word in subcommand)])
+            if not usage.startswith(f"{expected} "):
+                sys.exit(f"{' '.join([COMMAND, *subcommand])} --help printed {usage!r}, not {expected!r}")
         print(f"==> {COMMAND} reports {version}; {len(HELP_COMMANDS)} help screens render", flush=True)
 
         tool_env = root / "tools" / DISTRIBUTION_NAME.lower()

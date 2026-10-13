@@ -365,7 +365,7 @@ def test_trajectory_in_an_existing_directory_loads_settings(tmp_path: Path, monk
     assert calls == ["prepare"]
 
 
-# --- icode agents / icode models ---------------------------------------------
+# --- icode agent / icode model -----------------------------------------------
 
 
 def _stub_profiles_runtime(monkeypatch: pytest.MonkeyPatch) -> list[str]:
