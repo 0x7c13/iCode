@@ -27,6 +27,7 @@ from chrys.service.tools.builtins.shell import (
     _strip_ansi,
     shell_progress_callback,
 )
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.pty_masters import linux_style_master
 from tests.support.waiting import wait_for
 
@@ -148,11 +149,13 @@ async def test_execute_stopped_process_returns_promptly(shell: ShellTools) -> No
     script = "import os, signal, time; os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)"
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} | tail -n 20"
 
-    started = time.monotonic()
-    result = await shell.execute(command, reason="test", timeout=10)
+    with earlier_tests_heap_frozen():
+        started = time.monotonic()
+        result = await shell.execute(command, reason="test", timeout=10)
+        elapsed = time.monotonic() - started
 
     assert "stopped state" in result
-    assert time.monotonic() - started < 5
+    assert elapsed < 5
 
 
 @pytest.mark.skipif(not IS_UNIX, reason="PTY path is Unix-only")

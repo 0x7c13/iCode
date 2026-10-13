@@ -25,9 +25,12 @@ from chrys.foundation.events.types import (
     ApprovalReviewed,
     AskUserResponse,
     AskUserTimedOut,
+    InvocationToolCallResult,
+    InvocationToolCallStart,
     QuestionToUser,
 )
 from chrys.foundation.models.ask_user import AskUserQuestion
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.orchestration.session_host import Cancelled, EndTurn
 from tests.app.acp._server_fakes import _FakeClient, _FakeHost, _FakeManager, _FakeSession
 
@@ -782,3 +785,80 @@ def test_permission_timeout_rejects_invalid_deadlines(seconds: float) -> None:
     host = _FakeHost(event_bus=EventBus(), events=[], outcome=EndTurn())
     with pytest.raises(ValueError, match="finite and non-negative"):
         ChrysAcpServer(_FakeManager(host), initial_vision=False, permission_timeout_seconds=seconds)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("option_id", ["allow", "reject"])
+@pytest.mark.parametrize("judging", [False, True])
+@pytest.mark.anyio
+async def test_permission_and_tool_updates_share_call_id_without_reusing_approval_id(
+    option_id: str, judging: bool
+) -> None:
+    """A permission callback must identify the same call as start and result updates."""
+    bus = EventBus()
+    host = _FakeHost(event_bus=bus)
+    client = _FakeClient(option_id=option_id)
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+    origin = InvocationOrigin("turn", "s1", "turn-test", None)
+    responses: list[ApprovalResponse] = []
+
+    async def collect(event: ApprovalResponse) -> None:
+        responses.append(event)
+
+    await bus.subscribe(ApprovalResponse, collect)
+    bridge = AcpEventBridge()
+    pending: dict[str, ApprovalRequest] = {}
+    await server._handle_event(
+        "s1",
+        InvocationToolCallStart(
+            origin=origin,
+            call_id="tool-123",
+            tool_name="zsh",
+            tool_kind="shell",
+            args={"command": "icode --version"},
+            session_id="s1",
+        ),
+        bridge,
+        pending,
+    )
+    await server._handle_event(
+        "s1",
+        ApprovalRequest(
+            request_id="approval-456",
+            call_id="tool-123",
+            tool_name="zsh",
+            tool_kind="shell",
+            args={"command": "icode --version"},
+            session_id="s1",
+            judging=judging,
+        ),
+        bridge,
+        pending,
+    )
+    if judging:
+        assert client.permission_requests == []
+        await server._handle_event(
+            "s1",
+            ApprovalReviewed(request_id="approval-456", approved=False, reason="Review", session_id="s1"),
+            bridge,
+            pending,
+        )
+    await server._handle_event(
+        "s1",
+        InvocationToolCallResult(
+            origin=origin,
+            call_id="tool-123",
+            tool_name="zsh",
+            result="0.29.2\n[exit_code:0]" if option_id == "allow" else "Error: rejected",
+            session_id="s1",
+        ),
+        bridge,
+        pending,
+    )
+    assert len(client.permission_requests) == 1
+    assert client.permission_requests[0].tool_call.tool_call_id == "tool-123"
+    assert [notification.update.tool_call_id for notification in client.updates] == ["tool-123", "tool-123"]
+    assert client.updates[-1].update.status == ("completed" if option_id == "allow" else "failed")
+    assert len(responses) == 1
+    assert responses[0].request_id == "approval-456"
+    assert responses[0].approved is (option_id == "allow")

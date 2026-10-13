@@ -67,7 +67,8 @@ STUCK = python_workflow("import time\nasync def fn(value, ctx):\n    time.sleep(
 LATE_AWAITABLE = python_workflow(
     "import asyncio, os, time\n"
     "async def inner():\n    os.write(1, b'LATE\\n')\n    await asyncio.sleep(3600)\n"
-    "def fn(text):\n    time.sleep(0.2)\n    os.write(1, b'THREAD_DONE\\n')\n    return inner()\n",
+    "def fn(text):\n    for _ in range(1000):\n        if os.path.exists(text.text):\n            break\n        time.sleep(0.01)\n"
+    "    os.write(1, b'THREAD_DONE\\n')\n    return inner()\n",
     "fn",
 )
 HUGE_INT = python_workflow(
@@ -157,16 +158,16 @@ LEAKY_CONDITIONS = (
     b"wf.start(a)\nwf.output(loop)\nworkflow = wf.build()\n"
 )
 ORPHANS = python_workflow(
-    "import asyncio, os, threading\n"
-    "def stuck():\n    os.write(1, b'STUCK\\n')\n    threading.Event().wait(3600)\n"
-    "async def sibling():\n    await asyncio.sleep(0.05)\n    await asyncio.to_thread(stuck)\n"
+    "import asyncio\n"
+    "alive = []\n"
+    "async def sibling():\n    alive.append(1)\n    try:\n        await asyncio.sleep(3600)\n    finally:\n        alive.pop()\n"
     "async def boom():\n    raise ValueError('boom')\n"
     "async def fail(value, ctx):\n    await asyncio.gather(boom(), *(sibling() for _ in range(8)))\n"
     "async def leave(value, ctx):\n    for _ in range(8):\n        asyncio.create_task(sibling())\n    return 'left'\n"
-    "def quick(text):\n    return text\n",
+    "def survivors(text):\n    return str(len(alive))\n",
     "fail",
     "leave",
-    "quick",
+    "survivors",
 )
 ORPHAN_CLEANUP = python_workflow(
     "import asyncio, os, threading\n"
@@ -195,17 +196,17 @@ UNWINDING_CHILD = python_workflow(
     "fn",
 )
 CLEANUP_SPAWNS = python_workflow(
-    "import asyncio, os, threading\n"
+    "import asyncio\n"
     "started = []\n"
-    "def stuck():\n    os.write(1, b'STUCK\\n')\n    threading.Event().wait(3600)\n"
-    "async def cleanup():\n    await asyncio.sleep(0.05)\n    await asyncio.to_thread(stuck)\n"
+    "alive = []\n"
+    "async def cleanup():\n    alive.append(1)\n    try:\n        await asyncio.sleep(3600)\n    finally:\n        alive.pop()\n"
     "async def child():\n    try:\n        started.append(1)\n        await asyncio.sleep(3600)\n"
     "    finally:\n        asyncio.create_task(cleanup())\n"
     "async def fn(value, ctx):\n    for _ in range(8):\n        asyncio.create_task(child())\n"
     "    while len(started) < 8:\n        await asyncio.sleep(0.001)\n    return 'left'\n"
-    "def quick(text):\n    return text\n",
+    "def survivors(text):\n    return str(len(alive))\n",
     "fn",
-    "quick",
+    "survivors",
 )
 ASYNCGEN_CLEANUP = python_workflow(
     "import asyncio, os\n"
@@ -389,13 +390,12 @@ async def test_sync_body_returning_an_awaitable_is_awaited(launch: Launcher, wor
 
 async def test_late_awaitable_from_a_cancelled_sync_body_never_starts(launch: Launcher, workspace: Path) -> None:
     client = await _loaded(launch, workspace, LATE_AWAITABLE)
-    with pytest.raises(AttemptTimeout):
-        await client.run_python(ref("fn"), WorkflowValue(text=""), blocking=False, timeout=0.05)
+    release = workspace / "release"
+    with pytest.raises(AttemptTimeout):  # raised once the worker acknowledged the cancel
+        await client.run_python(ref("fn"), WorkflowValue(text=str(release)), blocking=False, timeout=0.05)
+    release.touch()  # only now does the thread return its awaitable, to an attempt already cancelled
     # The thread announces its return on the native tail; a coroutine that was started writes at once.
-    for _ in range(250):
-        if "THREAD_DONE" in (await client.native_output()).text:
-            break
-        await asyncio.sleep(0.02)
+    await _announced(client, "THREAD_DONE")
     await asyncio.sleep(0.1)
     text = (await client.native_output()).text
     assert "THREAD_DONE" in text
@@ -660,7 +660,7 @@ async def test_successful_evaluations_settle_their_own_leaks(
 async def test_tasks_a_body_leaves_behind_end_with_it(
     launch: Launcher, workspace: Path, interpreter: str, node: str
 ) -> None:
-    """A failed gather's siblings and a fire-and-forget task are cancelled with the body, before they can offload."""
+    """A failed gather's siblings and a fire-and-forget task are cancelled with the body: none outlives its verdict."""
     client = await _loaded(launch, workspace, ORPHANS, interpreter=interpreter)
     if node == "fail":
         with pytest.raises(WorkerRpcError) as failure:
@@ -668,12 +668,8 @@ async def test_tasks_a_body_leaves_behind_end_with_it(
         assert failure.value.code == ErrorCode.USER_EXCEPTION
     else:
         assert (await client.run_python(ref(node), WorkflowValue(text=""), blocking=False)).value.text == "left"
-    await asyncio.sleep(0.2)  # had the eight survivors lived, they would hold every pool thread by now
+    assert (await client.run_python(ref("survivors"), WorkflowValue(text=""), blocking=False)).value.text == "0"
     assert sum(client._leaked_threads_by_pool.values()) == 0
-    assert (
-        await client.run_python(ref("quick"), WorkflowValue(text="alive"), blocking=False, timeout=1)
-    ).value.text == "alive"
-    assert "STUCK" not in (await client.native_output()).text
 
 
 @pytest.mark.parametrize("node", ["fail", "leave", "hang"])
@@ -723,12 +719,8 @@ async def test_tasks_started_while_the_body_unwinds_are_unwound_too(
     """A finally block that starts a cleanup task hands it to the same drain: it cannot outlive the verdict either."""
     client = await _loaded(launch, workspace, CLEANUP_SPAWNS, interpreter=interpreter)
     assert (await client.run_python(ref("fn"), WorkflowValue(text=""), blocking=False)).value.text == "left"
-    await asyncio.sleep(0.2)  # had the eight cleanup tasks lived, they would hold every pool thread by now
+    assert (await client.run_python(ref("survivors"), WorkflowValue(text=""), blocking=False)).value.text == "0"
     assert sum(client._leaked_threads_by_pool.values()) == 0
-    assert (
-        await client.run_python(ref("quick"), WorkflowValue(text="alive"), blocking=False, timeout=1)
-    ).value.text == "alive"
-    assert "STUCK" not in (await client.native_output()).text
 
 
 async def test_an_async_generators_cleanup_gets_the_allowance_instead_of_a_cancel(

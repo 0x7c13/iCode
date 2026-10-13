@@ -13,6 +13,7 @@ import pytest
 from chrys.service.workflows.scheduler import AttemptRef
 from chrys.service.workflows.sdk import WorkflowValue
 from tests.orchestration.workflows.conftest import Launcher
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.workflow_workers import python_workflow
 
 NOOP = python_workflow("def fn(text):\n    return text\n", "fn")
@@ -30,10 +31,11 @@ async def test_thousand_sequential_activations(
 ) -> None:
     client = await launch()
     await client.load(NOOP, filename=str(workspace / "wf.py"), workspace=workspace)
-    started = time.perf_counter()
-    for index in range(1000):
-        await client.run_python(ref(f"a{index}"), WorkflowValue(text="x"), blocking=False)
-    elapsed = time.perf_counter() - started
+    with earlier_tests_heap_frozen():
+        started = time.perf_counter()
+        for index in range(1000):
+            await client.run_python(ref(f"a{index}"), WorkflowValue(text="x"), blocking=False)
+        elapsed = time.perf_counter() - started
     record_property("sequential_1000_seconds", round(elapsed, 3))
     assert elapsed < 20.0
 
@@ -43,11 +45,12 @@ async def test_hundred_concurrent_activations(
 ) -> None:
     client = await launch()
     await client.load(FAN_OUT, filename=str(workspace / "wf.py"), workspace=workspace)
-    started = time.perf_counter()
-    results = await asyncio.gather(
-        *(client.run_python(ref(f"c{i}"), WorkflowValue(text=""), blocking=False) for i in range(100))
-    )
-    elapsed = time.perf_counter() - started
+    with earlier_tests_heap_frozen():
+        started = time.perf_counter()
+        results = await asyncio.gather(
+            *(client.run_python(ref(f"c{i}"), WorkflowValue(text=""), blocking=False) for i in range(100))
+        )
+        elapsed = time.perf_counter() - started
     record_property("concurrent_100_seconds", round(elapsed, 3))
     assert len(results) == 100
     assert elapsed < 2.5, "100 concurrent 50ms sleeps must overlap, not serialize"

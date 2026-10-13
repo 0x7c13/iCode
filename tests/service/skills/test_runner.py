@@ -37,6 +37,7 @@ from chrys.service.skills.runner import SubprocessScriptRunner
 from chrys.service.tools.result_metadata import tool_result_metadata
 from chrys.service.tools.spill import TOOL_RESULTS_DIR_NAME
 from chrys.service.tools.workspace_paths import WORKING_DIR_MISSING_KIND, working_dir_missing_error
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.processes import ExitedProcess
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
@@ -473,11 +474,13 @@ async def test_stopped_script_returns_promptly(tmp_path: Path, monkeypatch: pyte
         "import os, signal, time\nos.kill(os.getpid(), signal.SIGSTOP)\ntime.sleep(30)\n",
     )
 
-    started = time.monotonic()
-    result = await runner(skill, script)
+    with earlier_tests_heap_frozen():
+        started = time.monotonic()
+        result = await runner(skill, script)
+        elapsed = time.monotonic() - started
 
     assert "stopped state" in result
-    assert time.monotonic() - started < 5
+    assert elapsed < 5
 
 
 async def test_no_output(runner: SubprocessScriptRunner, tmp_path: Path) -> None:

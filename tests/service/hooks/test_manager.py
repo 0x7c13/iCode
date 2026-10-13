@@ -44,6 +44,7 @@ from chrys.service.hooks.schema import (
 from chrys.service.trajectory.hooks import HookOutcome
 from chrys.service.trajectory.session import SessionStartInfo, SessionTrajectory, trajectory_events_path
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.trajectory_invariants import assert_trajectory_file_accounted, assert_trajectory_operation_settlement
 from tests.support.waiting import wait_until
 
@@ -472,11 +473,12 @@ async def test_fire_and_forget_is_not_awaited_by_turn_drain(hooks_dir: Path) -> 
     )
     sink = FakeSink()
 
-    start = time.monotonic()
-    with trajectory_scope(make_context(sink)):
-        await mgr.fire(HookEvent.AFTER_TURN, {"turn": 1}, scope="turn")
-    await mgr.drain_turn()
-    elapsed = time.monotonic() - start
+    with earlier_tests_heap_frozen():
+        start = time.monotonic()
+        with trajectory_scope(make_context(sink)):
+            await mgr.fire(HookEvent.AFTER_TURN, {"turn": 1}, scope="turn")
+        await mgr.drain_turn()
+        elapsed = time.monotonic() - start
 
     assert elapsed < 0.45
     assert not marker.exists()
