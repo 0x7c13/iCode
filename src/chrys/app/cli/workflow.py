@@ -8,7 +8,6 @@ import argparse
 import asyncio
 import json
 import math
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -21,10 +20,11 @@ from rich.table import Table
 from rich.text import Text
 
 from chrys.app.cli import headless
-from chrys.app.cli.headless import PreparedRuntime
+from chrys.app.cli.display import counted, one_line, shown_path
+from chrys.app.cli.headless import EXIT_INTERRUPTED, PreparedRuntime
 from chrys.app.cli.launch_cwd import LAUNCH_CWD_MISSING_CODE, launch_cwd_missing_message
 from chrys.app.cli.progress import ProgressWriter, WorkflowProgress, guarded, progress_console
-from chrys.app.parsing import SanitizingArgumentParser
+from chrys.app.parsing import SanitizingArgumentParser, add_help_option, default_to_list
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE
 from chrys.foundation.events.types import WorkflowRunAccepted
@@ -56,17 +56,17 @@ from chrys.service.workflows.outcomes import REASON_DEADLINE_EXCEEDED, RunOutcom
 from chrys.service.workflows.store import read_run_output
 
 EXIT_TIMEOUT: Final = 124
-EXIT_INTERRUPTED: Final = 130
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the ``chrys workflow`` parser: ``list``, ``validate`` and ``run`` sub-commands."""
     parser = SanitizingArgumentParser(
         prog=f"{APP_COMMAND} workflow",
-        description=f"List {APP_DISPLAY_NAME} workflows, check one, and run one headlessly until its outputs are ready.",
+        description=f"List {APP_DISPLAY_NAME} workflows, check one, and run one headlessly until its outputs are ready. "
+        "With no command, list them.",
         add_help=False,
     )
-    _add_help(parser)
+    add_help_option(parser)
     commands = parser.add_subparsers(
         dest="command", metavar="command", required=True, parser_class=SanitizingArgumentParser
     )
@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         ".py file of the same name; a project workflow shadows a global one, which shadows a builtin.",
         add_help=False,
     )
-    _add_help(list_parser)
+    add_help_option(list_parser)
     list_parser.add_argument("--json", action="store_true", help="Emit JSON output")
     validate_parser = commands.add_parser(
         "validate",
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         "it records no confirmation. Exit code 0 means PASS (warnings allowed), 1 means FAIL.",
         add_help=False,
     )
-    _add_help(validate_parser)
+    add_help_option(validate_parser)
     validate_parser.add_argument("path", help="The workflow file or folder, relative to the current directory")
     validate_parser.add_argument("--json", action="store_true", help="Emit one JSON report on stdout")
     run_parser = commands.add_parser(
@@ -98,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
         "confirmed before; --trust confirms it as it is now.",
         add_help=False,
     )
-    _add_help(run_parser)
+    add_help_option(run_parser)
     run_parser.add_argument(
         "workflow_id",
         help=f"Workflow id (the file name without .py, or the folder name), as listed by '{APP_COMMAND} workflow list'",
@@ -131,12 +131,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
-
-
-def _add_help(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit"
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +248,7 @@ def _report_lines(report: ValidationReport, workspace: Path) -> list[str]:
         lines.append("  note: more diagnostics were found than are shown")
     if not report.passed and report.output.text:
         lines.append("captured output (load, truncated):" if report.output.truncated else "captured output (load):")
-        lines.extend(f"  | {_one_line(text)}" for text in report.output.text.splitlines())
+        lines.extend(f"  | {one_line(text)}" for text in report.output.text.splitlines())
     lines.append(_status_line(report, workspace))
     return lines
 
@@ -262,27 +256,27 @@ def _report_lines(report: ValidationReport, workspace: Path) -> list[str]:
 def _diagnostic_lines(diagnostic: Diagnostic, workspace: Path) -> list[str]:
     place = ""
     if diagnostic.file is not None:
-        place = _shown_path(diagnostic.file, workspace)
+        place = shown_path(diagnostic.file, workspace)
         if diagnostic.line is not None:
             place += f":{diagnostic.line}"
             if diagnostic.column is not None:
                 place += f":{diagnostic.column}"
         place += ": "
     first, *rest = diagnostic.message.splitlines() or [""]
-    lines = [f"{place}{diagnostic.severity}: {_one_line(first)} [{_one_line(diagnostic.code)}]"]
-    lines.extend(f"    {_one_line(text)}" for text in rest)
+    lines = [f"{place}{diagnostic.severity}: {one_line(first)} [{one_line(diagnostic.code)}]"]
+    lines.extend(f"    {one_line(text)}" for text in rest)
     if diagnostic.line is not None and diagnostic.source_line is not None:
         gutter = f"{diagnostic.line:>5}"
-        lines.append(f"{gutter} | {_one_line(diagnostic.source_line.replace(chr(9), ' '))}")
+        lines.append(f"{gutter} | {one_line(diagnostic.source_line.replace(chr(9), ' '))}")
         if diagnostic.column is not None:
             lines.append(f"{' ' * len(gutter)} | {_caret(diagnostic)}")
     for note in diagnostic.notes:
         where = ""
         if note.file is not None:
-            where = " " + _shown_path(note.file, workspace) + (f":{note.line}" if note.line is not None else "")
-        lines.append(f"  note: {_one_line(note.message)}{where}")
+            where = " " + shown_path(note.file, workspace) + (f":{note.line}" if note.line is not None else "")
+        lines.append(f"  note: {one_line(note.message)}{where}")
     if diagnostic.hint is not None:
-        lines.append(f"  help: {_one_line(diagnostic.hint)}")
+        lines.append(f"  help: {one_line(diagnostic.hint)}")
     return lines
 
 
@@ -290,16 +284,16 @@ def _caret(diagnostic: Diagnostic) -> str:
     """``^`` under the column (by display width, a tab counted as one cell), ``~`` along the rest of the range."""
     text = (diagnostic.source_line or "").replace("\t", " ")
     column = diagnostic.column or 1
-    start = cell_len(_one_line(text[: column - 1]))
+    start = cell_len(one_line(text[: column - 1]))
     width = 1
     end = diagnostic.end_column
     if diagnostic.end_line == diagnostic.line and end is not None and end > column:
-        width = max(1, cell_len(_one_line(text[column - 1 : end - 1])))
+        width = max(1, cell_len(one_line(text[column - 1 : end - 1])))
     return " " * start + "^" + "~" * (width - 1)
 
 
 def _status_line(report: ValidationReport, workspace: Path) -> str:
-    name = _one_line(report.workflow_id) if report.workflow_id is not None else _shown_path(report.path, workspace)
+    name = one_line(report.workflow_id) if report.workflow_id is not None else shown_path(report.path, workspace)
     if report.layout is not None:
         name += f" ({report.layout})"
     errors = sum(diagnostic.severity == "error" for diagnostic in report.diagnostics)
@@ -307,34 +301,14 @@ def _status_line(report: ValidationReport, workspace: Path) -> str:
     if report.passed and report.workflow is not None:
         parts = [
             f"PASS {name}",
-            _count(report.workflow.node_count, "node"),
-            _count(report.workflow.edge_count, "edge"),
+            counted(report.workflow.node_count, "node"),
+            counted(report.workflow.edge_count, "edge"),
         ]
         if warnings:
-            parts.append(_count(warnings, "warning"))
+            parts.append(counted(warnings, "warning"))
         return " · ".join(parts)
-    counts = _count(errors, "error") + (f", {_count(warnings, 'warning')}" if warnings else "")
+    counts = counted(errors, "error") + (f", {counted(warnings, 'warning')}" if warnings else "")
     return f"FAIL {name}: {counts}"
-
-
-def _count(number: int, noun: str) -> str:
-    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
-
-
-def _shown_path(path: str, workspace: Path) -> str:
-    """``./`` and the path below the current directory, or the absolute path, on one line."""
-    try:
-        relative = Path(path).relative_to(workspace)
-    except ValueError:
-        shown = path
-    else:
-        shown = "." if not relative.parts else f".{os.sep}{relative}"
-    return _one_line(shown)
-
-
-def _one_line(text: str) -> str:
-    """*text* as one display line: lone surrogates made safe, controls and Unicode line breaks replaced."""
-    return sanitize_legacy_scalar(surrogate_safe_text(text)).replace("\u2028", "\ufffd").replace("\u2029", "\ufffd")
 
 
 def _report_json(report: ValidationReport) -> dict[str, Any]:
@@ -554,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for ``chrys workflow``."""
     headless.configure_logging()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(default_to_list(sys.argv[1:] if argv is None else argv))
     if (missing_cwd := launch_cwd_missing_message(workdir_flag=False)) is not None:
         headless.write_error(missing_cwd, as_json=args.json, code=LAUNCH_CWD_MISSING_CODE)
         return 1

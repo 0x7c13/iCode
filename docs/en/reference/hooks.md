@@ -47,7 +47,7 @@ Project hooks are not loaded by default, because they come with the repository y
 
 Editing a hook configuration file on disk does not take effect immediately. After editing, switch sessions or restart iCode to reload the configuration. Changes to hook scripts alone do not require a reload; the next time the hook is triggered, it uses the new script content.
 
-Enter `/runtime` in the TUI and open the **Hooks** tab to view the currently loaded project and global hooks.
+Enter `/runtime` in the TUI and open the **Hooks** tab to view the currently loaded project and global hooks. In a terminal, [`icode hook list`](#icode-hook-list) shows the hooks a session started in the current directory loads, and [`icode hook validate`](#icode-hook-validate) checks the configuration files.
 
 ## Configuration file structure
 
@@ -603,4 +603,101 @@ Duplicate `id` values within one configuration file cause that file to fail to l
 
 `settings` in project and global configurations are merged field by field: explicitly set project values take precedence, followed by global values, with defaults used when neither file sets a field.
 
-If either configuration file is invalid, iCode displays a warning and disables all hooks defined in that file; a valid configuration file in the other location still takes effect. No warning is issued when a configuration file is not found.
+If either configuration file is invalid, iCode displays a warning and disables all hooks defined in that file; a valid configuration file in the other location still takes effect. No warning is issued when a configuration file is not found. To see every problem in a file, run [`icode hook validate`](#icode-hook-validate).
+
+## Command line
+
+### `icode hook list`
+
+List the hooks a session started in the current directory loads, without running any of them. `icode hook` without a command does the same.
+
+```shell
+icode hook list [--json]
+```
+
+Each configuration file found is listed, the project file first, then the global one. Its first line gives its path and one of these states:
+
+| State | Meaning |
+| --- | --- |
+| `loaded` | A session started here runs the hooks in this file |
+| `not loaded` | Project hooks are turned off; see [Loading configuration files](#loading-configuration-files). If the file also has an error, the first one is shown too |
+| `invalid, not loaded` | The file has an error, so a session runs none of its hooks. The first error is shown; run `icode hook validate` to see them all |
+
+The file's hooks follow in order. Each starts with its ID and, in parentheses, its event and run mode, plus `turned off` when its `enabled` is `false`. A `match:` line follows with its match conditions, when it has any, then a `run:` line: `script` and the script path, `command` and the program, or `shell`. Command arguments, environment variable values and shell snippets are not shown, because they can contain passwords or tokens. The script path and the program are shown only when they can be found from the folder you run the command in: a file that exists, or a program on `PATH`. Otherwise `…` stands in for them, because what was written there may hold more, as in `"notify --token abc"`. A program found only through the hook's own `cwd` or `PATH` setting also shows `…`. `icode hook validate` reports the scripts and programs it can tell are missing. A hook left out because a regular expression in its match conditions is invalid is shown on a `skipped` line.
+
+```text
+Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
+  record-turn (after_turn, fire_and_forget)
+    run: script scripts/record_turn.py
+  protect-env (before_tool_call, blocking)
+    match: tool_kind=filesystem.write, args.path matches '(^|[\\/])\.env$'
+    run: script scripts/protect_env.py
+```
+
+The command exits with code 0 even when a file is invalid; to check files, use `icode hook validate`.
+
+With `--json`, stdout holds one object: `version` (currently `1`), `files`, and `searched` (the folders looked in). Each item in `files` contains `scope` (`project` or `global`), `path`, `state` (`loaded`, `not_loaded`, or `invalid`; `not_loaded` whenever project hooks are turned off), `error` (the error that keeps a session from loading the file, in the form of a `validate` diagnostic, or `null`; other errors, such as a missing script, are reported only by `validate`), `hooks`, and `skipped` (each with `id` and `reason`). Each hook contains `id`, `event`, `enabled`, `description`, `execution`, `match`, and `run`; in `run`, `type` is `script`, `command`, or `shell`, and `path` is the script path and `program` the command's program, each `null` for the other types of hook or when the listing shows `…`.
+
+### `icode hook validate`
+
+Check hook configuration files the way a session loads them, and report every problem with its file and line. No hook is run.
+
+```shell
+icode hook validate [<path>] [--json]
+```
+
+Without `<path>`, the command checks the project file of the current directory and the global file. It checks the project file even when project hooks are turned off. `<path>` is a hook configuration file, which can have any name and be anywhere, or a folder; for a folder, it checks the file a session would read there.
+
+A session stops at the first error and ignores the whole file. Validation goes on and reports every hook with a problem. It also warns about settings that are accepted but probably do not do what you meant.
+
+Each problem is shown as `file:line: severity: message [code]`. The last line is the result:
+
+```text
+./my-hooks.yaml:2: warning: hook 'record-turn': match.tool_kind never matches on after_turn, which has no tool [match_never_fires]
+./my-hooks.yaml:9: error: hook 'protect-env': execution.mode must be 'blocking' / 'async' / 'fire_and_forget', got 'block' [schema]
+FAIL 1 file · 2 hooks: 1 error, 1 warning
+```
+
+When no errors are found, the result is `PASS`, such as `PASS 2 files · 5 hooks · 1 warning`. Warnings do not fail validation. The exit code is `0` for `PASS` and `1` for `FAIL`.
+
+These problems are errors:
+
+| Code | Meaning |
+| --- | --- |
+| `syntax` | The file is not valid YAML or JSON |
+| `decode` | The file's text encoding cannot be read |
+| `unreadable` | The file cannot be read, for example because of its permissions |
+| `schema` | A field is missing, unknown, or has an invalid value, or an `id` is used twice in the file |
+| `regex_invalid` | A regular expression in `match.args` is invalid. A session leaves this hook out and still loads the others. Hooks that are turned off are checked too |
+| `script_missing` | The script of an enabled hook does not exist |
+| `no_config` | No hook configuration file was found where the command looked |
+| `not_found` | Nothing exists at `<path>` |
+
+After a `syntax`, `decode`, `unreadable`, or `schema` error, a session loads none of the file's hooks.
+
+These problems are warnings:
+
+| Code | Meaning |
+| --- | --- |
+| `match_never_fires` | `match.tool_kind`, `match.tool_name`, or `match.args` is set for an event that has no tool call, so the hook never runs |
+| `unknown_tool_kind` | `match.tool_kind` is not a known tool kind; see [Tool kinds and names](tool-kinds-and-names.md) |
+| `unknown_profile` | `match.profile` or `match.profiles` names an agent that does not exist on this computer |
+| `on_error_block_ignored` | `on_error: block` is set on a hook that cannot block, so its failures are handled as `warn` |
+| `durable_blocking` | `delivery: durable` is set on a blocking hook, which does not use it |
+| `broad_before_tool_call` | A `before_tool_call` hook has no match conditions, so it runs for every tool call |
+| `duplicate_id_across_files` | The project and global files both define this `id`; both hooks run |
+| `shadowed_file` | The folder holds more than one hook configuration file; only the first is read (see [Configuration file locations](#configuration-file-locations)) |
+| `program_not_found` | The program that runs an enabled hook's command or script is not found on `PATH` |
+| `unknown_template_var` | `run.cwd` or `run.env` uses a `${...}` variable that iCode does not fill in, or `run.argv` or `run.args` uses any `${...}` variable (iCode fills in variables only in `cwd` and `env` values), so it is passed on as written |
+
+Missing scripts and programs are checked only for enabled hooks. A hook whose `run.env` sets `PATH` is not checked for a missing program.
+
+With `--json`, stdout holds one object. Every field is always present; unknown values are `null`.
+
+| Field | Type and meaning |
+| --- | --- |
+| `version` | Integer: report format version, currently `1` |
+| `status` | String: `pass` or `fail` |
+| `files` | Array of objects: each file checked, with its `scope` (`project`, `global`, or `path` for a file named on the command line), `path`, `loaded` (whether a session started here loads it; `null` for `path`), and `hook_count` (the number of hook entries) |
+| `searched` | Array of strings: the folders, or the path, the command looked in |
+| `diagnostics` | Array of objects: each problem's `severity` (`error` or `warning`), `code`, `message`, `file`, `line` and `column` (starting at 1), `hook_id`, and `entry` (the hook's position in `hooks`, starting at 0) |

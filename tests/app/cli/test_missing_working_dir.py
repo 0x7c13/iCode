@@ -15,6 +15,7 @@ import pytest
 
 from chrys.app.cli import acp as acp_cli
 from chrys.app.cli import headless, launch_cwd
+from chrys.app.cli import hooks as hooks_cli
 from chrys.app.cli import profiles as profiles_cli
 from chrys.app.cli import run as run_cli
 from chrys.app.cli import trajectory as trajectory_cli
@@ -365,7 +366,7 @@ def test_trajectory_in_an_existing_directory_loads_settings(tmp_path: Path, monk
     assert calls == ["prepare"]
 
 
-# --- icode agents / icode models ---------------------------------------------
+# --- icode agent / icode model -----------------------------------------------
 
 
 def _stub_profiles_runtime(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -409,6 +410,52 @@ def test_profile_listing_in_an_existing_directory_loads_settings(command: str, m
 
     with pytest.raises(_PastLaunchCheck):
         _profiles_main(command, [])
+
+    assert calls == ["prepare"]
+
+
+# --- icode hook ---------------------------------------------------------------
+
+
+def _stub_hook_runtime(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+
+    def prepare_runtime(*, restoring_session: bool = False) -> headless.PreparedRuntime:
+        calls.append("prepare")
+        raise _PastLaunchCheck
+
+    monkeypatch.setattr(headless, "prepare_runtime", prepare_runtime)
+    return calls
+
+
+_HOOK_ARGVS = [pytest.param(["list"], id="list"), pytest.param(["validate"], id="validate")]
+
+
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
+@pytest.mark.parametrize("argv", _HOOK_ARGVS)
+def test_hook_from_a_deleted_directory_stops_before_loading_settings(
+    argv: list[str], as_json: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _enter_deleted_directory(tmp_path, monkeypatch)
+    calls = _stub_hook_runtime(monkeypatch)
+
+    rc = hooks_cli.main([*argv, "--json"] if as_json else argv)
+
+    output = capsys.readouterr()
+    assert rc == 1
+    assert calls == []
+    assert output.out == ""
+    if as_json:
+        assert json.loads(output.err) == {"error": _MISSING_WITHOUT_WORKDIR, "code": "working_dir_missing"}
+    else:
+        assert output.err == f"Error: {_MISSING_WITHOUT_WORKDIR}\n"
+
+
+@pytest.mark.parametrize("argv", _HOOK_ARGVS)
+def test_hook_in_an_existing_directory_loads_settings(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stub_hook_runtime(monkeypatch)
+
+    hooks_cli.main(argv)
 
     assert calls == ["prepare"]
 

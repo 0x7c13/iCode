@@ -250,8 +250,8 @@ agent(
 | Parameter | Meaning |
 | --- | --- |
 | `name` | Node name |
-| `profile` | Required ID, name, or display name of an existing agent profile; using the ID is recommended. List profiles with `icode agents` |
-| `model` | Optional iCode model profile ID or name, listed by `icode models`; when omitted, the model selection rules below apply |
+| `profile` | Required ID, name, or display name of an existing agent profile; using the ID is recommended. List profiles with `icode agent list` |
+| `model` | Optional iCode model profile ID or name, listed by `icode model list`; when omitted, the model selection rules below apply |
 | `instructions_suffix` | Optional string with additional instructions for this node |
 | `timeout` | Maximum seconds per attempt, unlimited by default; a finite positive number or `None` |
 | `retry` | When omitted, at most three attempts with zero backoff; not all errors are retried automatically |
@@ -774,7 +774,7 @@ All these events include `session_kind: "workflow"`, `workflow_id`, `session_id`
 
 ### `icode workflow list`
 
-List workflows according to the [file discovery](#file-discovery) rules without executing workflow code. Custom workflow titles come from previously saved trust confirmations.
+List workflows according to the [file discovery](#file-discovery) rules without executing workflow code. Custom workflow titles come from previously saved trust confirmations. `icode workflow` without a command does the same.
 
 ```shell
 icode workflow list [--json]

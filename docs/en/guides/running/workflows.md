@@ -227,11 +227,11 @@ Input → prepare (Python) → plan (agent) → Workflow output
 Use `wf.agent()` to define an agent node. In `wf.agent("plan", profile="QA")`, `"plan"` is the node name and `profile="QA"` selects the agent profile. List available profiles with:
 
 ```shell
-icode agents
-icode models
+icode agent list
+icode model list
 ```
 
-For `profile`, use a `Name` from `icode agents`; for the optional `model` parameter, use a `Name` from `icode models`. To specify a model for this node, replace the registration below, substituting an actual model profile name for `My model`:
+For `profile`, use a `Name` from `icode agent list`; for the optional `model` parameter, use a `Name` from `icode model list`. To specify a model for this node, replace the registration below, substituting an actual model profile name for `My model`:
 
 ```python
 plan = wf.agent("plan", profile="QA", model="My model")
@@ -265,7 +265,7 @@ If you have [configured an external Agent Client Protocol (ACP) agent](../extens
 plan = wf.agent("plan", profile="My ACP agent")
 ```
 
-Replace `My ACP agent` with an existing ACP profile name from `icode agents`, and make sure the external program specified in that profile can start.
+Replace `My ACP agent` with an existing ACP profile name from `icode agent list`, and make sure the external program specified in that profile can start.
 
 By default, ACP nodes use the model configured for the external agent, not the workflow's default model.
 

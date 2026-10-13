@@ -106,7 +106,7 @@ Each run accepts only one prompt source: either a prompt passed directly or a fi
 
 ## Choose an agent and model
 
-`icode run` requires an agent specified with `--agent`. Run `icode agents` to list the available agent profiles:
+`icode run` requires an agent specified with `--agent`. Run `icode agent list` to see the available agent profiles:
 
 ```text
 Default  Name  Display Name  ID            Model
@@ -120,7 +120,7 @@ You can use `Name`, `Display Name`, or `ID` as the value of `--agent`. A `Model`
 
 For agents that use the `active` model, you can specify a model profile for this run with `-m` or `--model`. For agents with a bound model, `--model` has no effect.
 
-Run `icode models` to list the available model profiles:
+Run `icode model list` to see the available model profiles:
 
 ```text
 Active  ID            Name           Provider  API   Model          Context  Flags

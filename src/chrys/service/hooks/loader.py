@@ -19,9 +19,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, fields, replace
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import yaml
 
@@ -50,6 +51,19 @@ class HooksConfigError(ValueError):
     """Raised on any structural / semantic problem in the hooks config."""
 
 
+@dataclass(frozen=True, slots=True)
+class HookEntryError:
+    """A hook entry that cannot load: its index in ``hooks``, its id when it has one, and why."""
+
+    index: int
+    hook_id: str | None
+    detail: str
+
+
+HOOKS_FILE_NAMES: Final = ("hooks.yaml", "hooks.yml", "hooks.json")
+"""The names a hooks folder is searched for, the first one present being the one loaded."""
+
+
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
@@ -69,21 +83,57 @@ def load_hooks_file(path: Path) -> HooksFile:
         msg = f"Hooks config file not found: {path}"
         raise FileNotFoundError(msg)
 
+    text = read_hooks_text(path)
     try:
-        text = decode_bytes(path.read_bytes(), errors="strict")
-    except UnicodeError as exc:
-        raise HooksConfigError(f"Cannot decode hooks config file {path}: {exc}") from exc
-    suffix = path.suffix.lower()
-    try:
-        raw = (json.loads(text) if text.strip() else {}) if suffix == ".json" else (yaml.safe_load(text) or {})
+        raw = parse_hooks_text(text, path)
     except (yaml.YAMLError, json.JSONDecodeError) as exc:
         msg = f"Failed to parse {path}: {exc}"
         raise HooksConfigError(msg) from exc
+    return attach_source(parse_hooks_dict(raw), path)
 
-    file = parse_hooks_dict(raw)
+
+def read_hooks_text(path: Path) -> str:
+    """The text of the hooks file *path*, in the encoding it was written in.
+
+    Raises:
+        OSError: *path* cannot be read.
+        HooksConfigError: The bytes do not decode.
+    """
+    try:
+        return decode_bytes(path.read_bytes(), errors="strict")
+    except UnicodeError as exc:
+        raise HooksConfigError(f"Cannot decode hooks config file {path}: {exc}") from exc
+
+
+def parse_hooks_text(text: str, path: Path) -> Any:
+    """The mapping *text* holds, read as JSON when *path* ends in ``.json`` and as YAML otherwise.
+
+    Raises:
+        yaml.YAMLError, json.JSONDecodeError: *text* does not parse.
+    """
+    if path.suffix.lower() == ".json":
+        return json.loads(text) if text.strip() else {}
+    try:
+        return yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        raise
+    except Exception as exc:
+        # The text parses, but a value is not the type it is written as (2026-13-01, ``!!bool x``), and the
+        # constructor raises its own error, which can quote the value: a secret, perhaps.
+        msg = "a value is not valid as the type it is written as, such as the date 2026-13-01; put it in quotes"
+        raise yaml.YAMLError(msg) from exc
+
+
+def attach_source(file: HooksFile, path: Path) -> HooksFile:
+    """*file*, parsed from *path*, with its script paths resolved against *path*'s folder and *path* recorded."""
     _normalize_script_paths(file, base_dir=path.parent)
     file.source = str(path)
     return file
+
+
+def hooks_file_candidates(hooks_dir: Path) -> list[Path]:
+    """The hooks files present in *hooks_dir*, the one a session loads first."""
+    return [hooks_dir / name for name in HOOKS_FILE_NAMES if (hooks_dir / name).exists()]
 
 
 def load_hooks_dir(config_dir: Path) -> HooksFile:
@@ -94,12 +144,8 @@ def load_hooks_dir(config_dir: Path) -> HooksFile:
     disabled" so the no-config path does not create outbox/log/tmp
     directories.
     """
-    hooks_dir = config_dir / "hooks"
-    for name in ("hooks.yaml", "hooks.yml", "hooks.json"):
-        path = hooks_dir / name
-        if path.exists():
-            return load_hooks_file(path)
-    return HooksFile()
+    candidates = hooks_file_candidates(config_dir / "hooks")
+    return load_hooks_file(candidates[0]) if candidates else HooksFile()
 
 
 def load_hooks_project(project_root: Path) -> HooksFile | None:
@@ -113,12 +159,13 @@ def load_hooks_project(project_root: Path) -> HooksFile | None:
     The file-naming precedence matches :func:`load_hooks_dir`:
     ``hooks.yaml`` > ``hooks.yml`` > ``hooks.json``.
     """
-    hooks_dir = project_root / ".chrys" / "hooks"
-    for name in ("hooks.yaml", "hooks.yml", "hooks.json"):
-        path = hooks_dir / name
-        if path.exists():
-            return load_hooks_file(path)
-    return None
+    candidates = hooks_file_candidates(project_hooks_dir(project_root))
+    return load_hooks_file(candidates[0]) if candidates else None
+
+
+def project_hooks_dir(project_root: Path) -> Path:
+    """The folder a session started in *project_root* reads project hooks from."""
+    return project_root / ".chrys" / "hooks"
 
 
 def merge_hooks_files(
@@ -171,11 +218,16 @@ def _same_source_file(project: HooksFile | None, global_: HooksFile | None) -> b
     """Return True when project/global inputs came from the same hooks file."""
     if project is None or global_ is None or not project.source or not global_.source:
         return False
+    return same_hooks_file(Path(project.source), Path(global_.source))
+
+
+def same_hooks_file(first: Path, second: Path) -> bool:
+    """Whether two paths name one file."""
     try:
         # By identity: on a caseless disk two spellings of one file differ in case.
-        return Path(project.source).samefile(global_.source)
+        return first.samefile(second)
     except OSError:
-        return Path(project.source).resolve() == Path(global_.source).resolve()
+        return first.resolve() == second.resolve()
 
 
 def _merge_settings(project: HooksFile | None, global_: HooksFile | None) -> HookSettings:
@@ -219,14 +271,15 @@ def _warn_on_id_collisions(
     if not collisions:
         return
     for hook_id in sorted(collisions):
-        logger.warning(
-            "Hook id %r is defined in both project (%s) and global (%s) "
-            "hooks configs. Both will run, project first. To suppress the "
-            "global hook, set 'enabled: false' in the global file.",
-            hook_id,
-            project.source,
-            global_.source,
-        )
+        logger.warning("Hook id %r is %s", hook_id, id_collision_warning(project.source, global_.source))
+
+
+def id_collision_warning(project_source: str, global_source: str) -> str:
+    """What a hook id defined in both the project and the global file means."""
+    return (
+        f"defined in both project ({project_source}) and global ({global_source}) hooks configs. Both will run, "
+        "project first. To suppress the global hook, set 'enabled: false' in the global file."
+    )
 
 
 def _normalize_script_paths(file: HooksFile, *, base_dir: Path) -> None:
@@ -245,11 +298,16 @@ def _normalize_script_paths(file: HooksFile, *, base_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def parse_hooks_dict(raw: Any) -> HooksFile:
+def parse_hooks_dict(raw: Any, *, entry_errors: list[HookEntryError] | None = None) -> HooksFile:
     """Convert a raw parsed mapping into a :class:`HooksFile`.
 
     Exposed separately from :func:`load_hooks_file` so callers (and
     tests) can drive the loader without writing temp files.
+
+    A bad hook entry raises, unless *entry_errors* is given: then every bad
+    entry is appended to it and left out, and the rest load.  Problems
+    outside the entries (the root, ``settings``, ``hooks`` not a list)
+    always raise.
     """
     if raw is None:
         return HooksFile()
@@ -260,7 +318,7 @@ def parse_hooks_dict(raw: Any) -> HooksFile:
     valid_root = {"version", "settings", "hooks"}
     extra_root = cast("set[str]", set(raw) - valid_root)
     if extra_root:
-        msg = f"Unknown keys in hooks config root: {sorted(extra_root)}"
+        msg = f"Unknown keys in hooks config root: {sorted(extra_root, key=str)}"
         raise HooksConfigError(msg)
 
     version = raw.get("version", 1)
@@ -270,7 +328,7 @@ def parse_hooks_dict(raw: Any) -> HooksFile:
 
     raw_settings = raw.get("settings")
     settings = _parse_settings(raw_settings)
-    hooks, skipped_hooks = _parse_hooks_list(raw.get("hooks", []))
+    hooks, skipped_hooks = _parse_hooks_list(raw.get("hooks", []), entry_errors)
     settings_overrides = set() if raw_settings is None else set(raw_settings)
     return HooksFile(
         version=version,
@@ -290,7 +348,7 @@ def _parse_settings(raw: Any) -> HookSettings:
     valid = {f.name for f in fields(HookSettings)}
     extra = cast("set[str]", set(raw) - valid)
     if extra:
-        msg = f"Unknown keys in 'settings': {sorted(extra)}"
+        msg = f"Unknown keys in 'settings': {sorted(extra, key=str)}"
         raise HooksConfigError(msg)
 
     defaults = HookSettings()
@@ -327,7 +385,9 @@ def _parse_settings(raw: Any) -> HookSettings:
     )
 
 
-def _parse_hooks_list(raw: Any) -> tuple[list[HookConfig], list[SkippedHook]]:
+def _parse_hooks_list(
+    raw: Any, entry_errors: list[HookEntryError] | None
+) -> tuple[list[HookConfig], list[SkippedHook]]:
     if not isinstance(raw, list):
         msg = f"'hooks' must be a list, got {type(raw).__name__}"
         raise HooksConfigError(msg)
@@ -337,14 +397,21 @@ def _parse_hooks_list(raw: Any) -> tuple[list[HookConfig], list[SkippedHook]]:
     for i, item in enumerate(raw):
         try:
             cfg = _parse_one_hook(item)
+            if cfg.id in seen_ids:
+                msg = f"duplicate id '{cfg.id}'"
+                raise HooksConfigError(msg)
         except HooksConfigError as exc:
-            msg = f"hooks[{i}]: {exc}"
-            raise HooksConfigError(msg) from exc
-        if cfg.id in seen_ids:
-            msg = f"hooks[{i}]: duplicate id '{cfg.id}'"
-            raise HooksConfigError(msg)
+            if entry_errors is None:
+                msg = f"hooks[{i}]: {exc}"
+                raise HooksConfigError(msg) from exc
+            hook_id = entry_hook_id(item)
+            entry_errors.append(HookEntryError(i, hook_id, str(exc)))
+            if hook_id is not None:
+                # A later entry reusing the id is a duplicate once this one is fixed.
+                seen_ids.add(hook_id)
+            continue
         seen_ids.add(cfg.id)
-        reason = _invalid_match_regex(cfg.match) if cfg.enabled else None
+        reason = invalid_match_regex(cfg.match) if cfg.enabled else None
         if reason is not None:
             skipped.append(SkippedHook(id=cfg.id, reason=reason))
             continue
@@ -352,7 +419,16 @@ def _parse_hooks_list(raw: Any) -> tuple[list[HookConfig], list[SkippedHook]]:
     return out, skipped
 
 
-def _invalid_match_regex(match: HookMatch) -> str | None:
+def entry_hook_id(item: Any) -> str | None:
+    """The id of the raw hook entry *item*, as the loader reads it, when it has a usable one."""
+    if isinstance(item, dict):
+        hook_id = item.get("id")
+        if isinstance(hook_id, str) and hook_id.strip():
+            return hook_id.strip()
+    return None
+
+
+def invalid_match_regex(match: HookMatch) -> str | None:
     """Why *match* can never match: a regex that does not compile, or None.
 
     The matcher treats such a condition as a miss, which would silently
@@ -377,7 +453,7 @@ def _parse_one_hook(raw: Any) -> HookConfig:
     valid_top = {"id", "event", "run", "execution", "match", "enabled", "description"}
     extra = cast("set[str]", set(raw) - valid_top)
     if extra:
-        msg = f"unknown keys: {sorted(extra)}"
+        msg = f"unknown keys: {sorted(extra, key=str)}"
         raise HooksConfigError(msg)
 
     hook_id = raw.get("id")
@@ -405,8 +481,6 @@ def _parse_one_hook(raw: Any) -> HookConfig:
     match = _parse_match(raw.get("match"))
 
     _validate_run_execution_combo(execution, hook_id=hook_id)
-    _warn_on_blocking_durable_hook(hook_id=hook_id, execution=execution)
-    _warn_on_broad_before_tool_hook(hook_id=hook_id, event=event, match=match)
 
     enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):
@@ -418,7 +492,7 @@ def _parse_one_hook(raw: Any) -> HookConfig:
         msg = f"'description' must be a string, got {type(description).__name__}"
         raise HooksConfigError(msg)
 
-    return HookConfig(
+    hook = HookConfig(
         id=hook_id,
         event=event,
         run=run,
@@ -427,6 +501,11 @@ def _parse_one_hook(raw: Any) -> HookConfig:
         enabled=enabled,
         description=description,
     )
+    if (warning := blocking_durable_warning(hook)) is not None:
+        logger.warning("Hook %r %s", hook_id, warning)
+    if (warning := broad_before_tool_call_warning(hook)) is not None:
+        logger.warning("Hook %r is %s", hook_id, warning)
+    return hook
 
 
 def _parse_run(raw: Any) -> HookRun:
@@ -440,7 +519,7 @@ def _parse_run(raw: Any) -> HookRun:
     valid = {f.name for f in fields(HookRun)}
     extra = cast("set[str]", set(raw) - valid)
     if extra:
-        msg = f"run: unknown keys: {sorted(extra)}"
+        msg = f"run: unknown keys: {sorted(extra, key=str)}"
         raise HooksConfigError(msg)
 
     run_type = raw.get("type")
@@ -468,6 +547,10 @@ def _parse_run(raw: Any) -> HookRun:
         if not all(isinstance(a, str) for a in argv):
             msg = "run.argv entries must all be strings"
             raise HooksConfigError(msg)
+    elif not isinstance(argv, Iterable):
+        # Only command hooks read argv: any other value list() takes keeps loading as it always has.
+        msg = "run.argv must be a list of strings"
+        raise HooksConfigError(msg)
     if run_type == "shell" and not shell:
         msg = "run.shell is required when run.type == 'shell'"
         raise HooksConfigError(msg)
@@ -499,7 +582,7 @@ def _parse_execution(raw: Any) -> HookExecution:
     valid = {f.name for f in fields(HookExecution)}
     extra = cast("set[str]", set(raw) - valid)
     if extra:
-        msg = f"execution: unknown keys: {sorted(extra)}"
+        msg = f"execution: unknown keys: {sorted(extra, key=str)}"
         raise HooksConfigError(msg)
 
     mode = raw.get("mode", "fire_and_forget")
@@ -545,7 +628,7 @@ def _parse_match(raw: Any) -> HookMatch:
     valid = {f.name for f in fields(HookMatch)}
     extra = cast("set[str]", set(raw) - valid)
     if extra:
-        msg = f"match: unknown keys: {sorted(extra)}"
+        msg = f"match: unknown keys: {sorted(extra, key=str)}"
         raise HooksConfigError(msg)
 
     profile = raw.get("profile")
@@ -588,7 +671,7 @@ def _parse_match(raw: Any) -> HookMatch:
         valid_arg = {"equals", "contains", "regex"}
         extra_arg = cast("set[str]", set(val) - valid_arg)
         if extra_arg:
-            msg = f"match.args.{name}: unknown keys: {sorted(extra_arg)}"
+            msg = f"match.args.{name}: unknown keys: {sorted(extra_arg, key=str)}"
             raise HooksConfigError(msg)
         equals = _optional_string_field(val.get("equals"), f"match.args.{name}.equals")
         contains = _optional_string_field(val.get("contains"), f"match.args.{name}.contains")
@@ -619,9 +702,11 @@ def _validate_run_execution_combo(execution: HookExecution, *, hook_id: str) -> 
         raise HooksConfigError(msg)
 
 
-def _warn_on_broad_before_tool_hook(*, hook_id: str, event: HookEvent, match: HookMatch) -> None:
-    if event != HookEvent.BEFORE_TOOL_CALL:
-        return
+def broad_before_tool_call_warning(hook: HookConfig) -> str | None:
+    """Why *hook* runs more often than likely meant: a ``before_tool_call`` hook that matches every call."""
+    if hook.event != HookEvent.BEFORE_TOOL_CALL:
+        return None
+    match = hook.match
     if (
         match.profile is not None
         or match.profiles
@@ -629,20 +714,17 @@ def _warn_on_broad_before_tool_hook(*, hook_id: str, event: HookEvent, match: Ho
         or match.tool_name is not None
         or match.args
     ):
-        return
-    logger.warning(
-        "Hook %r is a before_tool_call hook with no match filters; it will run for every tool call",
-        hook_id,
-    )
+        return None
+    return "a before_tool_call hook with no match filters; it will run for every tool call"
 
 
-def _warn_on_blocking_durable_hook(*, hook_id: str, execution: HookExecution) -> None:
-    if execution.mode != "blocking" or execution.delivery != "durable":
-        return
-    logger.warning(
-        "Hook %r uses execution.delivery='durable' with mode='blocking'; blocking hooks are awaited inline and do "
-        "not use the durable outbox",
-        hook_id,
+def blocking_durable_warning(hook: HookConfig) -> str | None:
+    """Why *hook*'s ``delivery: durable`` does nothing: blocking hooks never use the outbox."""
+    if hook.execution.mode != "blocking" or hook.execution.delivery != "durable":
+        return None
+    return (
+        "uses execution.delivery='durable' with mode='blocking'; blocking hooks are awaited inline and do not use "
+        "the durable outbox"
     )
 
 

@@ -68,16 +68,16 @@
 
 ### 管理已记住的审批
 
-使用 `icode approvals` 命令查看和删除已记住的审批：
+使用 `icode approval` 命令查看和删除已记住的审批：
 
 ```bash
-icode approvals list                         # 列出所有已记住的审批
-icode approvals list --project /work/demo    # 只看某个项目
-icode approvals list --session SESSION_ID --json
-icode approvals revoke GRANT_ID              # 按列表中的 ID 删除一条
-icode approvals clear --project /work/demo   # 删除某个项目的全部审批
-icode approvals clear --session SESSION_ID   # 删除某个会话的全部审批
-icode approvals clear --all                  # 全部删除
+icode approval list                          # 列出所有已记住的审批
+icode approval list --project /work/demo     # 只看某个项目
+icode approval list --session SESSION_ID --json
+icode approval revoke GRANT_ID               # 按列表中的 ID 删除一条
+icode approval clear --project /work/demo    # 删除某个项目的全部审批
+icode approval clear --session SESSION_ID    # 删除某个会话的全部审批
+icode approval clear --all                   # 全部删除
 ```
 
 会话的审批会随该会话一起删除，用 `/fork` 创建分支时不会被复制到分支。项目的审批会一直保留，直到你删除。

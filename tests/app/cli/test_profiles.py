@@ -205,3 +205,19 @@ def test_profile_table_output_is_identical_english_across_locales(monkeypatch: p
         assert heading in outputs["en"][0]
     for heading in ("Active", "ID", "Name", "Provider", "API", "Model", "Context", "Flags"):
         assert heading in outputs["en"][1]
+
+
+@pytest.mark.parametrize(
+    ("main", "command", "noun"),
+    [(profiles_cli.agents_main, "agent", "agent profiles"), (profiles_cli.models_main, "model", "model profiles")],
+)
+def test_help_names_the_singular_command_and_its_list_subcommand(
+    main: Any, command: str, noun: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    assert exc_info.value.code == 0
+    out = capsys.readouterr().out
+    assert out.startswith(f"usage: icode {command} ")
+    assert f"List the {noun} (the default)" in out
