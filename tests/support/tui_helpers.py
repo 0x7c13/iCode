@@ -41,6 +41,7 @@ from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
+from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
@@ -467,10 +468,10 @@ def status_text(value: MessageRef | str) -> str:
     return value if isinstance(value, str) else format_message(value)
 
 
-def status_trail(value: MessageRef | str | tuple[MessageRef | str, ...]) -> str:
-    """Render a status trail — a ``MessageRef``/string or a tuple of them."""
+def status_trail(value: StatusTrail) -> str:
+    """Render a status trail — a ``MessageRef``/string or a tuple of them and counts — in full."""
     if isinstance(value, tuple):
-        return " · ".join(status_text(part) for part in value)
+        return " · ".join(status_text(part.message if isinstance(part, TrailCount) else part) for part in value)
     return status_text(value)
 
 

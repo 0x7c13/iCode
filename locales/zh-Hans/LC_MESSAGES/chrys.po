@@ -10839,6 +10839,14 @@ msgid "tui.status.runtime_background"
 msgid_plural "tui.status.runtime_background#plural"
 msgstr[0] "{count} 个后台任务"
 
+#. English: {count} task
+#. English-plural: {count} tasks
+#. chrys-meta={"fingerprint":"a0e02502a6d4b53b2eb410fdd4640438b4d62dc93f5e357cb1b0d2f30dce8fb6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/runtime_info.py
+msgid "tui.status.runtime_background_short"
+msgid_plural "tui.status.runtime_background_short#plural"
+msgstr[0] "{count} 个任务"
+
 #. English: {count} file
 #. English-plural: {count} files
 #. chrys-meta={"fingerprint":"4339e9fb7957b389de563381810b48011a4074e2e1d2d3cef5cc41b323398e5a","multiline":false,"placeholders":[]}

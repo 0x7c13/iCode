@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.engine_read_model import RollbackReadState
     from chrys.app.tui.util.diff_entries import DiffFileEntry
     from chrys.app.tui.widgets import PromptDraft
+    from chrys.app.tui.widgets.chrome.status_bar import TrailCount
     from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
     from chrys.foundation.events.types import AgentRuntimeDetails
     from chrys.foundation.models.ask_user import AskUserAnswer
@@ -53,7 +54,7 @@ if TYPE_CHECKING:
 type SuggestionEntry = SuggestionItem | tuple[str, str | Content]
 type NotificationSeverity = Literal["information", "warning", "error"]
 type StatusMessage = MessageRef | str
-type StatusTrail = StatusMessage | tuple[StatusMessage, ...]
+type StatusTrail = StatusMessage | tuple[StatusMessage | TrailCount, ...]
 type InputLabel = MessageRef | str
 type ConfirmMessage = StatusMessage | Text
 # Runs async work in a screen worker. The work is called only once the worker

@@ -851,6 +851,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.status.retrying",
     "tui.status.running_tool",
     ("tui.status.runtime_background", "tui.status.runtime_background#plural"),
+    ("tui.status.runtime_background_short", "tui.status.runtime_background_short#plural"),
     ("tui.status.runtime_files", "tui.status.runtime_files#plural"),
     ("tui.status.runtime_hooks", "tui.status.runtime_hooks#plural"),
     ("tui.status.runtime_skills", "tui.status.runtime_skills#plural"),

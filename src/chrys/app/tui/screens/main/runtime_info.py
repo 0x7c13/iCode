@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from chrys.app.tui.screens.main.ports import StatusMessage, StatusTrail
 from chrys.app.tui.screens.main.state import MainScreenServices
+from chrys.app.tui.widgets.chrome.status_bar import TrailCount
 from chrys.foundation.events.types import AgentRuntimeDetails
 from chrys.foundation.i18n import msg
 
@@ -34,6 +35,11 @@ _RUNTIME_BACKGROUND = msg(
     fallback="{count} background task",
     plural_fallback="{count} background tasks",
 )
+_RUNTIME_BACKGROUND_SHORT = msg(
+    "tui.status.runtime_background_short",
+    fallback="{count} task",
+    plural_fallback="{count} tasks",
+)
 
 
 def with_background_count(trail: StatusTrail, running: int) -> StatusTrail:
@@ -41,7 +47,10 @@ def with_background_count(trail: StatusTrail, running: int) -> StatusTrail:
     if not running:
         return trail
     parts = trail if isinstance(trail, tuple) else ((trail,) if trail else ())
-    return (*parts, _RUNTIME_BACKGROUND.bind(count=running))
+    return (
+        *parts,
+        TrailCount(_RUNTIME_BACKGROUND.bind(count=running), _RUNTIME_BACKGROUND_SHORT.bind(count=running)),
+    )
 
 
 class RegistryRuntimeInfoProvider:
