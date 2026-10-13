@@ -370,9 +370,10 @@ def test_log_tails_keep_the_last_whole_lines_within_each_and_all_limits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     many = tmp_path / "many.log"
-    many.write_text("".join(f"line {index}\n" for index in range(100)), encoding="utf-8")
+    # Bytes, as a log holds them: text mode would write Windows line ends, which count against the limits.
+    many.write_bytes("".join(f"line {index}\n" for index in range(100)).encode())
     wide = tmp_path / "wide.log"
-    wide.write_text("x" * 5000 + "\nlast\n", encoding="utf-8")
+    wide.write_bytes(b"x" * 5000 + b"\nlast\n")
 
     assert sleep_mod._log_tails([many, wide, tmp_path / "missing.log"]) == [
         "\n".join(f"line {index}" for index in range(60, 100)),
@@ -381,6 +382,6 @@ def test_log_tails_keep_the_last_whole_lines_within_each_and_all_limits(
     ]
 
     short = tmp_path / "short.log"
-    short.write_text("a\nb\n", encoding="utf-8")
+    short.write_bytes(b"a\nb\n")
     monkeypatch.setattr(sleep_mod, "_TAILS_BYTES", 4)
     assert sleep_mod._log_tails([short, many]) == ["a\nb", ""]

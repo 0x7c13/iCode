@@ -145,6 +145,11 @@ async def _pid_of(pid_file: Path) -> psutil.Process:
     return psutil.Process(int(pid_file.read_text(encoding="utf-8")))
 
 
+def _left_by(child: psutil.Process) -> set[int]:
+    """*child* and what it started: on Windows a venv's python.exe runs the real interpreter as its child."""
+    return {child.pid, *(process.pid for process in child.children(recursive=True))}
+
+
 async def _family(pids: Path, call: asyncio.Task[str] | None = None) -> list[psutil.Process]:
     """The command's processes, once its script wrote their pids; *call* runs the command in the foreground."""
     await wait_for(
@@ -364,8 +369,10 @@ async def test_processes_left_after_the_shell_exited_move_to_the_background_with
     script = _scripts(tmp_path, leave=_LEAVE_BEHIND, waiter=_WAIT_FOR_FILE)
     release, pid_file = tmp_path / "release", tmp_path / "pid"
 
+    command = _python_command(script["leave"], script["waiter"], release, pid_file, "3")
+    # PowerShell exits with 1 after a failed native command unless told its code.
     result = await shell.execute(
-        _python_command(script["leave"], script["waiter"], release, pid_file, "3"), reason="test", timeout=60
+        f"{command}; exit $LASTEXITCODE" if sys.platform == "win32" else command, reason="test", timeout=60
     )
 
     [task] = tasks.running
@@ -374,10 +381,11 @@ async def test_processes_left_after_the_shell_exited_move_to_the_background_with
         "built",
         "[The shell exited with code 3, but processes it started still run in the background]",
     ]
-    assert f"Task {task.id} (pid {child.pid}) keeps running." in result
+    assert f"Task {task.id} ({task.processes}) keeps running." in result
     assert str(task.log_path) in result
     assert result.endswith("\n[exit_code: 3]")
-    assert (task.trigger, task.shell_exit_code, task.outlived) == ("shell_exited", 3, (child.pid,))
+    assert (task.trigger, task.shell_exit_code) == ("shell_exited", 3)
+    assert child.pid in task.outlived and set(task.outlived) <= _left_by(child)
     assert metadata[SHELL_BACKGROUND_TASK_METADATA_KEY]["trigger"] == "shell_exited"
     # The shell's own result still counts.
     assert tool_result_metadata_failure_state(metadata) is True
@@ -496,7 +504,8 @@ async def test_a_background_command_whose_shell_exits_first_ends_with_its_last_p
     child = await _pid_of(pid_file)
     await wait_for(lambda: task.shell_exit_code is not None, timeout=ENGINE_TURN_TIMEOUT, description="shell exited")
 
-    assert (task.outcome, task.outlived) == ("running after its shell exited with code 0", (child.pid,))
+    assert task.outcome == "running after its shell exited with code 0"
+    assert child.pid in task.outlived and set(task.outlived) <= _left_by(child)
     assert tasks.unreported(MAIN_SCOPE) == [task]
     release.touch()
     await wait_for(task.ended.is_set, timeout=ENGINE_TURN_TIMEOUT, description="the left process ended")

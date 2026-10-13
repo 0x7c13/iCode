@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import AsyncIterator
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -148,16 +148,20 @@ async def test_only_the_newest_finished_logs_are_kept(tasks: BackgroundTasks, mo
 
 
 @pytest.mark.parametrize(
-    ("shell_name", "expected"),
+    ("shell_name", "path", "expected"),
     [
-        ("zsh", "touch '/tmp/it'\"'\"'s/bg-1.stop'"),
-        ("git_bash", "touch '/tmp/it'\"'\"'s/bg-1.stop'"),
-        ("pwsh", "New-Item -ItemType File -Force -Path '/tmp/it''s/bg-1.stop' | Out-Null"),
-        ("cmd", 'type nul > "/tmp/it\'s/bg-1.stop"'),
+        ("zsh", PurePosixPath("/tmp/it's/bg-1.stop"), "touch '/tmp/it'\"'\"'s/bg-1.stop'"),
+        ("git_bash", PureWindowsPath(r"C:\it's\bg-1.stop"), "touch 'C:/it'\"'\"'s/bg-1.stop'"),
+        (
+            "pwsh",
+            PureWindowsPath(r"C:\it's\bg-1.stop"),
+            r"New-Item -ItemType File -Force -Path 'C:\it''s\bg-1.stop' | Out-Null",
+        ),
+        ("cmd", PureWindowsPath(r"C:\it's\bg-1.stop"), 'type nul > "C:\\it\'s\\bg-1.stop"'),
     ],
 )
-def test_stop_command_quotes_the_path_for_each_shell(shell_name: str, expected: str) -> None:
-    assert stop_command(shell_name, Path("/tmp/it's/bg-1.stop")) == expected
+def test_stop_command_quotes_the_path_for_each_shell(shell_name: str, path: PurePath, expected: str) -> None:
+    assert stop_command(shell_name, path) == expected
 
 
 async def test_only_the_exact_stop_command_of_a_task_counts(tasks: BackgroundTasks) -> None:

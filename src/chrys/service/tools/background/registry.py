@@ -30,7 +30,7 @@ from chrys.service.tools.background.log import TaskLog
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterable
-    from pathlib import Path
+    from pathlib import Path, PurePath
 
     from chrys.foundation.models.invocations import InvocationOrigin
     from chrys.foundation.platform.output_capture import CapturedOutput
@@ -131,7 +131,7 @@ class BackgroundProcess(Protocol):
         ...
 
 
-def stop_command(shell_name: str, path: Path) -> str:
+def stop_command(shell_name: str, path: PurePath) -> str:
     """A command for the shell named *shell_name* that creates the stop file at *path*."""
     if shell_name in ("pwsh", "powershell"):
         literal = str(path).replace("'", "''")
