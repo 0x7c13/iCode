@@ -31,12 +31,14 @@ def test_the_signal_cancels_the_main_task_so_its_teardown_runs(name: str) -> Non
 
     # asyncio.run turns Ctrl+C into a cancel only while Python's own SIGINT handler is installed.
     interrupt = signal.signal(signal.SIGINT, signal.default_int_handler)
-    hangup = signal.getsignal(signum)
+    # As a terminal starts a process: a CI runner may start the tests with SIGHUP ignored, as nohup does.
+    hangup = signal.signal(signum, signal.SIG_DFL)
     try:
         with pytest.raises(KeyboardInterrupt), hangup_as_interrupt():
             asyncio.run(main())
-        assert signal.getsignal(signum) is hangup
+        assert signal.getsignal(signum) is signal.SIG_DFL
     finally:
+        signal.signal(signum, hangup)
         signal.signal(signal.SIGINT, interrupt)
 
     assert torn_down == ["cancelled"]
