@@ -44,6 +44,7 @@ HELP_COMMANDS = (
     ("agents",),
     ("model",),
     ("approval",),
+    ("hook",),
     ("acp",),
     ("serve",),
     ("trajectory",),

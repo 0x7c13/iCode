@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from chrys.foundation.trajectory.context import TrajectoryContext
-from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.events import GATED_EVENTS, HookEvent
 from chrys.service.hooks.matcher import matches
 from chrys.service.hooks.outbox import Outbox, OutboxJob
 from chrys.service.hooks.runner import HookResult, HookRunner
@@ -34,7 +34,6 @@ from chrys.service.hooks.schema import HookConfig, HookDecision, HooksFile, Merg
 from chrys.service.trajectory.hooks import HookOperationTrace, HookOutcome, TrajectoryContextProvider
 
 logger = logging.getLogger(__name__)
-_GATED_EVENTS = frozenset({HookEvent.BEFORE_TOOL_CALL, HookEvent.USER_PROMPT_SUBMIT})
 _ARGS_OVERRIDE_EVENTS = frozenset({HookEvent.BEFORE_TOOL_CALL})
 _SYSTEM_REMINDER_EVENTS = frozenset({HookEvent.USER_PROMPT_SUBMIT})
 _EXTRA_CONTEXT_EVENTS = frozenset({HookEvent.AFTER_TOOL_CALL, HookEvent.TOOL_ERROR})
@@ -729,7 +728,7 @@ def _merge_blocking_result(
 
     if failed:
         msg_kind = _result_failure_label(result)
-        if on_error == "block" and event in _GATED_EVENTS:
+        if on_error == "block" and event in GATED_EVENTS:
             decision.blocked = True
             decision.block_reason = f"hook '{hook.id}' failed ({msg_kind}): {result.stderr.strip()[:200]}"
             return
@@ -748,7 +747,7 @@ def _merge_blocking_result(
 
     action = str(result.decision.get("action") or "allow").lower()
     if action == "block":
-        if event in _GATED_EVENTS:
+        if event in GATED_EVENTS:
             decision.blocked = True
             reason = str(result.decision.get("reason") or "")
             decision.block_reason = f"hook '{hook.id}' blocked: {reason}" if reason else f"hook '{hook.id}' blocked"

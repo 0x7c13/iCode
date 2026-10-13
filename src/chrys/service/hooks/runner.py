@@ -44,7 +44,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, Final
 
 from chrys.foundation.platform import windows_program_files_dirs
 from chrys.foundation.platform.output_capture import BoundedCapture, drain_process_pipes
@@ -165,7 +165,8 @@ def _find_bash() -> str:
     return "bash"
 
 
-def _build_script_command(script_path: Path) -> list[str]:
+def build_script_command(script_path: Path) -> list[str]:
+    """The argv that starts *script_path*: the program its extension calls for, then the script."""
     suffix = script_path.suffix.lower()
     if suffix == ".py":
         return [*_find_python_runner(), str(script_path)]
@@ -184,16 +185,18 @@ def _build_script_command(script_path: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+TEMPLATE_VARIABLES: Final = ("workspace_cwd", "chrys_home", "session_id", "profile")
+"""The ``${name}`` placeholders :func:`_expand_template` fills in; any other ``${...}`` is passed on as written."""
+
+
 def _expand_template(value: str, *, workspace_cwd: str, chrys_home: Path, session_id: str, profile: str) -> str:
     """Substitute the ``${var}`` placeholders documented on :class:`HookRun`."""
     if not value:
         return value
-    return (
-        value.replace("${workspace_cwd}", workspace_cwd)
-        .replace("${chrys_home}", str(chrys_home))
-        .replace("${session_id}", session_id)
-        .replace("${profile}", profile)
-    )
+    filled = zip(TEMPLATE_VARIABLES, (workspace_cwd, str(chrys_home), session_id, profile), strict=True)
+    for name, text in filled:
+        value = value.replace(f"${{{name}}}", text)
+    return value
 
 
 def _resolve_script_path(rel_or_abs: str, hooks_dir: Path) -> Path:
@@ -295,7 +298,7 @@ class HookRunner:
         run = hook.run
         if run.type == "script":
             script = _resolve_script_path(run.path, self._hooks_dir)
-            cmd = [*_build_script_command(script), *run.args]
+            cmd = [*build_script_command(script), *run.args]
         elif run.type == "command":
             cmd = [*run.argv, *run.args]
         else:  # shell

@@ -443,6 +443,15 @@ def test_command_requires_argv() -> None:
         )
 
 
+@pytest.mark.parametrize("argv", ["--flag", [1, 2], {"a": "b"}], ids=["string", "numbers", "mapping"])
+def test_argv_a_shell_hook_never_reads_still_loads(argv: object) -> None:
+    file = parse_hooks_dict(
+        {"hooks": [{"id": "x", "event": "session_start", "run": {"type": "shell", "shell": "s", "argv": argv}}]}
+    )
+
+    assert file.hooks[0].run.shell == "s"
+
+
 def test_shell_requires_string() -> None:
     with pytest.raises(HooksConfigError, match=r"run\.shell is required"):
         parse_hooks_dict(

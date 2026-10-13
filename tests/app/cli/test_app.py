@@ -80,6 +80,7 @@ def test_chrys_serve_dispatches_to_serve_subcommand(monkeypatch) -> None:
         ("chrys.app.cli.profiles", "agents_main", "agent", "agents"),
         ("chrys.app.cli.profiles", "models_main", "model", "models"),
         ("chrys.app.cli.approvals", "main", "approval", "approvals"),
+        ("chrys.app.cli.hooks", "main", "hook", "hooks"),
         ("chrys.app.cli.workflow", "main", "workflow", "workflows"),
         ("chrys.app.cli.trajectory", "main", "trajectory", "trajectories"),
     ],
@@ -222,9 +223,10 @@ def test_chrys_help_shows_top_level_modes(monkeypatch, capsys) -> None:
     assert "  agent       List available agent profiles" in out.out
     assert "  model       List available model profiles" in out.out
     assert "  approval    List, revoke or clear remembered approvals" in out.out
+    assert "  hook        List hooks and check hook configuration files" in out.out
     assert "  workflow    List, validate and run workflows headlessly" in out.out
-    assert "agent, model, approval, workflow and trajectory also work in the plural;" in out.out
-    assert "agent, model, approval and workflow list when given no subcommand." in out.out
+    assert "agent, model, approval, hook, workflow and trajectory also work in the plural;" in out.out
+    assert "agent, model, approval, hook and workflow list when given no subcommand." in out.out
     assert "acp" in out.out
     assert "serve" in out.out
     assert f"Host the {APP_DISPLAY_NAME} TUI in a browser" in out.out

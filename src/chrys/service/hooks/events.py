@@ -11,6 +11,7 @@ specific fields are listed in each member's docstring.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Final
 
 
 class HookEvent(StrEnum):
@@ -155,3 +156,18 @@ class HookEvent(StrEnum):
     # ── Interrupt ────────────────────────────────────────────────────
     USER_INTERRUPT = "user_interrupt"
     """The user pressed interrupt mid-turn.  Payload: base envelope."""
+
+
+GATED_EVENTS: Final = frozenset({HookEvent.BEFORE_TOOL_CALL, HookEvent.USER_PROMPT_SUBMIT})
+"""The events a blocking hook can stop, by its decision or by ``on_error: block``."""
+
+TOOL_EVENTS: Final = frozenset(
+    {
+        HookEvent.BEFORE_TOOL_CALL,
+        HookEvent.AFTER_TOOL_CALL,
+        HookEvent.TOOL_ERROR,
+        HookEvent.APPROVAL_REQUESTED,
+        HookEvent.APPROVAL_RESOLVED,
+    }
+)
+"""The events whose payload carries a ``tool``, the only ones ``match.tool_kind``, ``tool_name`` and ``args`` match."""

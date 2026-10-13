@@ -11,7 +11,7 @@ import os
 import sys
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from chrys.foundation.config.context import EvalContext
 from chrys.foundation.config.settings import (
@@ -26,6 +26,9 @@ from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.orchestration.startup import bootstrap_runtime
+
+EXIT_INTERRUPTED: Final = 130
+"""Exit code of a headless command stopped by Ctrl+C, as a shell reports SIGINT."""
 
 _MAX_TRANSIENT_RETRIES_INVALID = msg(
     "settings.max_transient_retries_invalid",

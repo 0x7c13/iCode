@@ -51,7 +51,21 @@ iCode 通过 `CHRYS_HOOK_PAYLOAD_FILE` 环境变量提供本次事件的 JSON �
 
 ### 3. 加载并验证
 
+在工作目录中打开终端，运行以下命令检查配置：
+
+```shell
+icode hook validate
+```
+
+该命令检查项目和全局钩子配置文件，不会运行任何钩子。它逐条列出问题及其所在文件和行号，最后一行在没有错误时为 `PASS`，否则为 `FAIL` 和错误数量。按提示修改后再次运行，直到输出类似下面的一行：
+
+```text
+PASS 1 file · 1 hook
+```
+
 项目钩子默认不加载。在终端用户界面（Terminal User Interface，TUI）中按 **F10** 打开“设置”，在“安全”-“项目信任”区域勾选“加载项目钩子”。如果已经勾选，切换会话或重启 iCode，使磁盘上的配置生效。
+
+运行 `icode hook list`，查看在此目录中启动的会话会加载哪些钩子。`Project hooks` 一行末尾应为 `(loaded)`，下方列出 `record-turn`。
 
 在 TUI 中输入 `/runtime`，打开“钩子”标签页，应能看到 `record-turn`。提交一条消息并等待当前轮结束后，检查工作目录中的 `hook-events.log`。文件应出现类似内容：
 

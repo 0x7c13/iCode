@@ -17,6 +17,7 @@ _PLURAL_ALIASES: Final = {
     "agents": "agent",
     "models": "model",
     "approvals": "approval",
+    "hooks": "hook",
     "workflows": "workflow",
     "trajectories": "trajectory",
 }
@@ -108,14 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
             "  agent       List available agent profiles\n"
             "  model       List available model profiles\n"
             "  approval    List, revoke or clear remembered approvals\n"
+            "  hook        List hooks and check hook configuration files\n"
             "  workflow    List, validate and run workflows headlessly\n"
             "  trajectory  Export recorded trajectory analytics (perfetto/json/csv)\n"
             "  acp         Run an Agent Client Protocol stdio server\n"
             f"  serve       Host the {APP_DISPLAY_NAME} TUI in a browser\n"
             f"  install     Install {APP_DISPLAY_NAME} to PATH\n"
             f"  uninstall   Remove {APP_DISPLAY_NAME} (--purge also deletes your data)\n\n"
-            "agent, model, approval, workflow and trajectory also work in the plural;\n"
-            "agent, model, approval and workflow list when given no subcommand.\n\n"
+            "agent, model, approval, hook, workflow and trajectory also work in the plural;\n"
+            "agent, model, approval, hook and workflow list when given no subcommand.\n\n"
             f"Default: '{APP_COMMAND}' launches the TUI. Run '{APP_COMMAND} <command> --help' for command options."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -181,6 +183,10 @@ def main() -> int:
         from chrys.app.cli.approvals import main as approvals_main
 
         return approvals_main(argv[1:])
+    if argv and argv[0] == "hook":
+        from chrys.app.cli.hooks import main as hooks_main
+
+        return hooks_main(argv[1:])
     if argv and argv[0] == "install":
         return _run_install(argv[1:])
     if argv and argv[0] == "uninstall":

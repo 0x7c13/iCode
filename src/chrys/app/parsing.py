@@ -17,6 +17,13 @@ class SanitizingArgumentParser(argparse.ArgumentParser):
         super().error(sanitize_legacy_scalar(message))
 
 
+def add_help_option(parser: argparse.ArgumentParser) -> None:
+    """Give *parser*, built with ``add_help=False``, the usual ``-h``/``--help`` with a capitalized description."""
+    parser.add_argument(
+        "-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit"
+    )
+
+
 def default_to_list(argv: list[str]) -> list[str]:
     """*argv* for a command group with ``list`` filled in when no subcommand was named.
 
