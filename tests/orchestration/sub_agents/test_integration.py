@@ -1561,12 +1561,12 @@ async def test_an_interrupted_sub_agents_background_commands_have_ended_when_the
         await ctx.cleanup()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows stops a command by killing its Job at once")
 async def test_an_interrupt_while_a_finished_sub_agents_commands_stop_keeps_it_completed(
     tmp_path: Path, fast_sub_agent_controller: None, agent_engine, *, engine_services
 ) -> None:
-    prefix = "& " if sys.platform == "win32" else ""
     script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
-    command = f'{prefix}"{sys.executable}" -c "{script}"'
+    command = f'"{sys.executable}" -c "{script}"'
     shell = (get_platform().shell.name, "s-1", {"command": command, "reason": "serve", "timeout": 1})
     ctx = await _make_ctx(
         tmp_path,
@@ -1584,6 +1584,7 @@ async def test_an_interrupt_while_a_finished_sub_agents_commands_stop_keeps_it_c
         # The command ignores SIGTERM, so it holds the finished sub-agent's call for the kill grace.
         await wait_for(
             lambda: any(task.stopped_by == "agent_finished" for task in tasks.running),
+            timeout=ENGINE_TURN_TIMEOUT,
             description="the finished sub-agent waits for its command to stop",
         )
 
