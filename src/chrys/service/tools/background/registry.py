@@ -186,7 +186,7 @@ class BackgroundTask:
         self.ended = asyncio.Event()
         """Set once the command ended and its log was closed."""
         self.reported: str | None = None
-        """The outcome a sleep of its agent or its tool result last told."""
+        """The outcome a sleep of its agent or its tool result last told, or a reminder told of a user stop."""
         self.process = process
         self.log = log
         self.stopping: asyncio.Task[None] | None = None
@@ -355,13 +355,18 @@ class BackgroundTasks:
         """The main agent's running commands and the few that ended last, or None when it never had any.
 
         Only what stays the same until a task changes state: no output, no times.
-        Taking it changes nothing: a sleep still tells an end it lists, as this turn may never be sent.
+        Taking it tells the user's stops it lists, so they wake no sleep: the user made them, and a turn
+        that never sends this list makes no sleep and lists them again. A sleep still tells any other
+        end it lists, with the end of its log.
         """
         tasks = self._listed()
         if not tasks:
             return None
         lines = ["Background commands of this session:"]
         for task in tasks:
+            if task.stopped_by == "user" and task.exit_code is None and task.ended.is_set():
+                # Not one that exited as the user stopped it: its outcome is that exit.
+                task.reported = task.outcome
             lines.append(f"- {task.id} ({task.processes}), {task.outcome}: {_one_line(task.command)}")
             if task.reason:
                 lines.append(f"  reason: {_one_line(task.reason)}")

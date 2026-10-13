@@ -266,6 +266,30 @@ async def test_an_end_the_reminder_lists_is_still_news_for_a_sleep(tasks: Backgr
     assert tasks.unreported(MAIN_SCOPE) == [build]
 
 
+async def test_a_user_stop_is_news_only_until_the_reminder_lists_it(tasks: BackgroundTasks) -> None:
+    served = tasks.adopt(HeldProcess(), command="serve", trigger="timeout")
+    assert served is not None
+    assert tasks.reminder("zsh") is not None
+    await tasks.stop(served, "user")
+    # Stopped after this turn's list was taken: the agent has not heard of it yet.
+    assert tasks.unreported(MAIN_SCOPE) == [served]
+
+    assert tasks.reminder("zsh") is not None
+
+    assert tasks.unreported(MAIN_SCOPE) == []
+
+    # A command that exited as the user stopped it ended with that exit, which stays news.
+    built = HeldProcess()
+    build = tasks.adopt(built, command="make", trigger="timeout")
+    assert build is not None
+    built.exit(0)
+    await _ended(build)
+    await tasks.stop(build, "user")
+    assert build.outcome == "exited with code 0"
+    assert tasks.reminder("zsh") is not None
+    assert tasks.unreported(MAIN_SCOPE) == [build]
+
+
 async def test_a_task_whose_shell_exits_first_is_news_once_then_ends_with_no_exit_code(
     tasks: BackgroundTasks,
 ) -> None:

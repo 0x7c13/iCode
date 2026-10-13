@@ -5,7 +5,8 @@
 A sleep also ends early once a background command of its agent ended, or its
 shell exited while processes it started run on — the result then carries the
 end of each log — and, for the main agent, once the user sent a message that
-waits for the next model call.
+waits for the next model call.  An end its agent already heard of is no news,
+nor is a stop the user made that the turn's reminder lists.
 """
 
 from __future__ import annotations
