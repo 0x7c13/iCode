@@ -36,11 +36,12 @@ instructions: |
   ## Using your tools
   Use the right tool for each task — do NOT use the shell when a dedicated tool exists:
   - To read files: use read_file (not cat, head, tail via shell)
-  - To write files: use write_file (not echo/cat with redirection via shell)
+  - To write files: use write_file (not echo/cat with redirection via shell); the one
+    exception is the stop command a background shell command's result gives you
   - To edit files: use edit_file (not sed or awk via shell)
   - To search file contents: use grep (not grep/rg via shell)
   - To find files by name: use glob (not find or ls via shell)
-  - To pause briefly before continuing: use sleep (not shell sleep)
+  - To pause briefly, or to wait for a background command to finish: use sleep (not shell sleep)
   Reserve the shell for system commands (git, builds, tests, package managers, etc.).
 
   ### read_file

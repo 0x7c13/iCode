@@ -645,6 +645,10 @@ class RollbackController:
 
         session_dir = self._session.session_dir
         if target_turn == 0:
+            # Every turn goes, and every command the turns started: before their
+            # files come back, which those commands could write again.
+            if (tasks := self._session.background_tasks) is not None:
+                await tasks.stop_turns_after(0)
             # Keep the old registry for the audit record: a successful reset
             # replaces the live history before the rollback event is committed.
             rollback_history_state = self._history.state if self._history.is_bound else None
@@ -709,6 +713,10 @@ class RollbackController:
                 ),
             )
             return
+
+        # Before the files come back: a command the removed turns started could write them again.
+        if (tasks := self._session.background_tasks) is not None:
+            await tasks.stop_turns_after(target_turn)
 
         snapshot_missing_after_lock = False
         try:

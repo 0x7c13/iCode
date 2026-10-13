@@ -11,6 +11,8 @@ When the agent is idle, enter the appropriate command in the input field, depend
 | Start a new session and keep the current session available to resume later | `/new` | Kept; you can resume it from the session list |
 | Start a new session without keeping the current session | `/clear` | Opens a confirmation dialog; once confirmed, the session is permanently deleted and cannot be recovered |
 
+Leaving a session, by either command or by switching to another session, stops the shell commands it runs in the background. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 ## Change the session title
 
 You can change the current session's title in any of these ways:

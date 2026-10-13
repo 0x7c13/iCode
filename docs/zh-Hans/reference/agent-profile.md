@@ -191,7 +191,7 @@ tools:
 
 `shell_filter` 只对 `shell` 类别中的工具生效。省略此字段或设置为 `unrestricted` 时，iCode 不过滤 Shell 命令。
 
-Shell 工具调用先经过[审批](#approval)，放行后再由 `shell_filter` 检查具体命令；两项检查都通过后，命令才会执行。若命令被过滤器阻止，iCode 不会启动 Shell 进程，而是返回“命令被阻止”的工具错误。
+Shell 工具调用先经过[审批](#approval)，放行后再由 `shell_filter` 检查具体命令；两项检查都通过后，命令才会执行。若命令被过滤器阻止，iCode 不会启动 Shell 进程，而是返回“命令被阻止”的工具错误。iCode 告诉智能体用来停止[后台命令](../guides/configuration/tools.md#在后台继续运行的命令)的那条命令始终会被过滤器放行，因此只读的智能体也能停止自己的后台命令。
 
 `shell_filter` 可以使用预设，也可以自定义允许或阻止的命令。使用预设时，可以直接填写预设名称，也可以在对象中通过 `preset` 选择；两种写法效果相同：
 

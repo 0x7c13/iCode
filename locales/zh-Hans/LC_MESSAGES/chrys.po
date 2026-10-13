@@ -775,6 +775,14 @@ msgstr "无法回滚到第 {target_turn} 轮；可用轮次：{available}"
 msgid "rollback.turns_unavailable"
 msgstr "无法回滚 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
 
+#. English: Stopping {count} background command the run left running.
+#. English-plural: Stopping {count} background commands the run left running.
+#. chrys-meta={"fingerprint":"9bc636de543ae587a325b23a479276dd2b0f2e9684839a1ddccb0e7f5305264c","multiline":false,"placeholders":[]}
+#: src/chrys/app/cli/run.py
+msgid "run.background_tasks_stopping"
+msgid_plural "run.background_tasks_stopping#plural"
+msgstr[0] "正在停止本次运行留下的 {count} 个后台命令。"
+
 #. English: Agent run timed out.
 #. chrys-meta={"fingerprint":"18a94dffc4256d5aa72665048a05efb6b5f832b8b21fe30f3e50fde6d829b906","multiline":false,"placeholders":[]}
 #: src/chrys/app/cli/run.py
@@ -4067,6 +4075,205 @@ msgstr "问题 {index}/{total} · {header}"
 msgid "tui.ask_user.title.review"
 msgstr "问题 · 检查"
 
+#. English: The command keeps running here. Stop a background task in the Tasks
+#. tab, then try again.
+#. chrys-meta={"fingerprint":"7f87bebe56cbefcaa134dd5fb63b45f789ed424568270d86739b9e46dab14af1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.background.full.message"
+msgstr "命令会继续在这里运行。请先在“任务”标签页停止一个后台任务，再试一次。"
+
+#. English: Too many background tasks
+#. chrys-meta={"fingerprint":"f01712ec4f4a175369de9729c274fcbab6a9fd28c4b3e01908b490f4e4599041","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.background.full.title"
+msgstr "后台任务过多"
+
+#. English: Copy log path
+#. chrys-meta={"fingerprint":"20b9a1cb4b4910e8ff4d8ba89fb01b77f436b044505270413ba66810f4f7161d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.copy_log_path"
+msgstr "复制日志路径"
+
+#. English: Copy output
+#. chrys-meta={"fingerprint":"4d7003904918ca81f464d2cdefc25e74e20d309c53b514b8a178ecfa34c1862f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.copy_output"
+msgstr "复制输出"
+
+#. English: Ignore
+#. chrys-meta={"fingerprint":"5265b1512bfcc4ddc880ceffbada08642e7476bf7d77bd07d89c8ad25d11e1a8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.ignore"
+msgstr "忽略"
+
+#. English: Stop
+#. chrys-meta={"fingerprint":"2daa1a836bbe1f64cc789345cc84a4d878b90c6aae2d9e5cd4717190db2d28db","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.stop"
+msgstr "停止"
+
+#. English: Stop and continue
+#. chrys-meta={"fingerprint":"22e87f05c52bb995a73b1cc89484f900d6bcdfe96aaef7f76dad74f0f92bb121","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.stop_and_continue"
+msgstr "停止并继续"
+
+#. English: Stop and exit
+#. chrys-meta={"fingerprint":"d72938e49ecbb2b595bab2e2d3c7a659174b8380d349f5212086d022fa0a1491","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.stop_and_exit"
+msgstr "停止并退出"
+
+#. English: Copied log path
+#. chrys-meta={"fingerprint":"87ede8461a4168c6439cb0814da6124fe28d8193222a81286dfe86a8836bccfb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.copy.log_path"
+msgstr "已复制日志路径"
+
+#. English: Copied log path (terminal clipboard unavailable)
+#. chrys-meta={"fingerprint":"bc849068d0b31f404bdfa13b9d4337afa1f8ec555b9d2396b95c9986f152f7af","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.copy.log_path_unavailable"
+msgstr "已复制日志路径（终端剪贴板不可用）"
+
+#. English: Folder
+#. chrys-meta={"fingerprint":"0f9c65141e8489266ba992a732ea7f44d47b66a0a1f8c62d88fe0526bb649ea4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.cwd"
+msgstr "文件夹"
+
+#. English: Log
+#. chrys-meta={"fingerprint":"33b400523094269b6e91c373570d3cf8cdc52c0149345e6e0dd08569f775276c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.log"
+msgstr "日志"
+
+#. English: Processes
+#. chrys-meta={"fingerprint":"a79373213538982d5211abb876ce0a66519291e420a585eea81ead06ac864f4b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.processes"
+msgstr "进程"
+
+#. English: Reason
+#. chrys-meta={"fingerprint":"66f811712c4e6a2d77c47f15e589a963b929b30563b6dc38faab0fd8914647d2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.reason"
+msgstr "原因"
+
+#. English: In background since
+#. chrys-meta={"fingerprint":"d144fc448f0f08883182a12e2c8e6d4e2f3b3a3dd1c36f388c2b1f68f7b08930","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.started"
+msgstr "转入后台时间"
+
+#. English: Moved there because
+#. chrys-meta={"fingerprint":"ec97fb90b09c06106d6ca62a53b049e33ab571ed4bcc525beca7ec10f5063208","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.trigger"
+msgstr "转入后台原因"
+
+#. English: {app} closed unexpectedly while these commands ran in the
+#. background. They are still running:
+#. chrys-meta={"fingerprint":"d98880c2daf57d5ac0cbd8e1d734bb0891c7c17073294c675b442f2c7a0153e2","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.left_behind.message"
+msgstr "{app} 意外关闭时，这些命令正在后台运行，现在仍在运行："
+
+#. English: Commands still running
+#. chrys-meta={"fingerprint":"66e49502823976e40d6bc6d9f6ea807fd6d2e4efed2f90bbb5c1d3076857cf05","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.left_behind.title"
+msgstr "仍在运行的命令"
+
+#. English: The log can't be read.
+#. chrys-meta={"fingerprint":"d1aa83e2df4991c2c95f944d638bf6b1b00299fc24dd66eca8b0145e203ef46a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.log_unreadable"
+msgstr "无法读取日志。"
+
+#. English: running
+#. chrys-meta={"fingerprint":"30a70ec2e1543266fdf8c3d3507853a36b54e6a70feed23c5ae22fd78476fa4a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.running"
+msgstr "运行中"
+
+#. English: {command}  This stops every process the command started.
+#. chrys-meta={"fingerprint":"7576990b36584d42dd4d127cf967f043fecd2688b5b3469abdd682ce9b631497","multiline":true,"placeholders":["command"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop.message"
+msgstr ""
+"{command}\n"
+"\n"
+"这会停止该命令启动的所有进程。"
+
+#. English: Stop this background task?
+#. chrys-meta={"fingerprint":"9d94da6a955b2dea2b8daad7d64f18bde74f54e13f8adf43d514d15ab1c9f1e7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop.title"
+msgstr "停止这个后台任务？"
+
+#. English: This stops the background task:
+#. English-plural: This stops {count} background tasks:
+#. chrys-meta={"fingerprint":"3036ec200520dc552d06e304e31c8d245070ca71fc270650dcdfd5516697bf12","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop_all.message"
+msgid_plural "tui.background_task.stop_all.message#plural"
+msgstr[0] "这会停止 {count} 个后台任务："
+
+#. English: Rollback may not restore what they changed while in the background.
+#. chrys-meta={"fingerprint":"82a83ccc4ba8fceb3138a419730efcd97e7b6b66bde2179d2ff0c936f5f5f70f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop_all.rollback_note"
+msgstr "它们在后台期间所做的改动，回滚可能无法恢复。"
+
+#. English: Stop background tasks?
+#. chrys-meta={"fingerprint":"54c5bb51b3823d38f647f27f3188527f60bfc379c5aefeb3468bbbc48269fe48","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop_all.title"
+msgstr "停止后台任务？"
+
+#. English: Input
+#. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.tab.input"
+msgstr "输入"
+
+#. English: Output
+#. chrys-meta={"fingerprint":"05859c2cb178f6b52e68ea789358b4f6d9958c27ad628104ccee05f67586426d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.tab.output"
+msgstr "输出"
+
+#. English: Background task · {command}
+#. chrys-meta={"fingerprint":"d5b11fe0b0eeed558f6e3ef6eec3cbdd381bf4b4f362b2e433b477a378dac58f","multiline":false,"placeholders":["command"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.title"
+msgstr "后台任务 · {command}"
+
+#. English: it printed nothing and was nearly idle for a minute
+#. chrys-meta={"fingerprint":"043cbb2a5b0cad284c84dc0d7409557717dbbac89f670ec6ff051bb77ff19f75","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.idle"
+msgstr "一分钟内没有输出，且几乎空闲"
+
+#. English: its shell exited while processes it started kept running
+#. chrys-meta={"fingerprint":"985c05fd758812ae7b9fd913d2d05929b99f0917ce03b9f8a6aa96aefacd438d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.shell_exited"
+msgstr "它的 shell 已退出，但它启动的进程仍在运行"
+
+#. English: it ran past its timeout
+#. chrys-meta={"fingerprint":"f4abae5c9e8c28090c31950431d52bc9a078461c5b52eb2f67e96fd432f5c90b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.timeout"
+msgstr "运行超过了超时时间"
+
+#. English: you moved it there
+#. chrys-meta={"fingerprint":"7a54278da2ff9ab359a61d8976548cec7acfdd3133341fa3b20c7b53bdaef20f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.user"
+msgstr "你把它转到了后台"
+
 #. English: Agents
 #. chrys-meta={"fingerprint":"a5bb9560e9ea162c7ee9c240168ee643410fbf17779975cc28a71308ea717fb7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/screen.py
@@ -4174,6 +4381,12 @@ msgstr "会话"
 #: src/chrys/app/tui/screens/main/screen.py
 msgid "tui.binding.settings"
 msgstr "设置"
+
+#. English: Move to background
+#. chrys-meta={"fingerprint":"740536b16bdb15ac0444abc6dea48257a9b4a5cf23efc900066b01919d426faf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.binding.shell_to_background"
+msgstr "转到后台"
 
 #. English: Sidebar
 #. chrys-meta={"fingerprint":"6a6db5bf6c1bc4ac2deeff354ee581dca36bc9bd386cf64700365b2c7ea1ab83","multiline":false,"placeholders":[]}
@@ -10229,6 +10442,68 @@ msgstr "工具"
 msgid "tui.settings.title"
 msgstr "设置"
 
+#. English: Clear ended
+#. chrys-meta={"fingerprint":"dcb6a0d30ef78d850aaba51180142bacbdaa9a48b7a3679ec9f128ff97c7a0ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.clear_ended"
+msgstr "清除已结束"
+
+#. English: No background tasks
+#. chrys-meta={"fingerprint":"7a5b99198c3c51ff1189c15d7b408e6990fdf6f1788f29f50f2d51b37d37ce07","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.empty"
+msgstr "暂无后台任务"
+
+#. English: ended
+#. chrys-meta={"fingerprint":"1f7f91bb0d6987e916d8aa11277fba59dc1d0bbc23c1d3d7e724085d9fc4b037","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.ended"
+msgstr "已结束"
+
+#. English: exit {code}
+#. chrys-meta={"fingerprint":"19d84c7da6f00031ba6efcaf7ea40ad59766c004b4654ac15b6e4c82aa079b64","multiline":false,"placeholders":["code"]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.exit"
+msgstr "退出码 {code}"
+
+#. English: pid {pid}
+#. chrys-meta={"fingerprint":"3babd4d004f0ea774f982e8ac31390c174964f3b62ca3cf016fc35471eaa9631","multiline":false,"placeholders":["pid"]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.pid"
+msgstr "pid {pid}"
+
+#. English: pid {pid}, shell exit {code}
+#. chrys-meta={"fingerprint":"dcc87f20a73b484ac22955d703f6abc35821ddaf417ec3bd84bd9bf662457d8a","multiline":false,"placeholders":["code","pid"]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.shell_exited"
+msgstr "pid {pid}，shell 退出码 {code}"
+
+#. English: stopped
+#. chrys-meta={"fingerprint":"03a8071b3a8834f3aba1eea0b87550435dafcc28882bde8db593f5e66d84ac3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.stopped"
+msgstr "已停止"
+
+#. English: stopping
+#. chrys-meta={"fingerprint":"3113865edb78b210cabca86ca91390aa545776b64c53f4f5015db54f0e5573bb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.stopping"
+msgstr "正在停止"
+
+#. English: Background Tasks
+#. chrys-meta={"fingerprint":"fcace1cd695b3ef74b8e965538ffcdaeff022dfc2a17f3127c3f36c90b124fc2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.title"
+msgstr "后台任务"
+
+#. English: Background Tasks ({count})
+#. English-plural: Background Tasks ({count})
+#. chrys-meta={"fingerprint":"7ba8469b4764cf05848d619a1f911b8641adc888528069e39ba98d6f534c9263","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.title_running"
+msgid_plural "tui.sidebar.background.title_running#plural"
+msgstr[0] "后台任务（{count} 个运行中）"
+
 #. English: Click to pet!
 #. chrys-meta={"fingerprint":"6a22a07c91607b4cef9061c6cf44da0b0ca5c3297d0da64e662bd6383e984dec","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/buddy.py
@@ -10387,11 +10662,11 @@ msgstr "任务"
 msgid "tui.sidebar.tasks.counter"
 msgstr "待办 ({done}/{total})"
 
-#. English: No tasks yet
-#. chrys-meta={"fingerprint":"6dd1d5424c4fc9b2a69d03a1fc02230a399bbace32d650f6339ccf926b24adb8","multiline":false,"placeholders":[]}
+#. English: No todos yet
+#. chrys-meta={"fingerprint":"96912ccb22d97745c96454869fe0a57d69723f001201092b8997b54d9d24b451","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/tasks.py
 msgid "tui.sidebar.tasks.empty"
-msgstr "暂无任务"
+msgstr "暂无待办"
 
 #. English: Todos
 #. chrys-meta={"fingerprint":"f19a32d373f8db6aa0a2c27538683a0822d0d993ffe41638b913760ee3e891c8","multiline":false,"placeholders":[]}
@@ -10555,6 +10830,22 @@ msgstr "正在重试（{attempt}/{max_attempts}）..."
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.running_tool"
 msgstr "正在运行：{tool_name}"
+
+#. English: {count} background task
+#. English-plural: {count} background tasks
+#. chrys-meta={"fingerprint":"b73c7e3776a1c82c287b1ce1bb7e8eaf8af1927db9f6d8022e1699b0fd266a84","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/runtime_info.py
+msgid "tui.status.runtime_background"
+msgid_plural "tui.status.runtime_background#plural"
+msgstr[0] "{count} 个后台任务"
+
+#. English: {count} task
+#. English-plural: {count} tasks
+#. chrys-meta={"fingerprint":"a0e02502a6d4b53b2eb410fdd4640438b4d62dc93f5e357cb1b0d2f30dce8fb6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/runtime_info.py
+msgid "tui.status.runtime_background_short"
+msgid_plural "tui.status.runtime_background_short#plural"
+msgstr[0] "{count} 个任务"
 
 #. English: {count} file
 #. English-plural: {count} files
@@ -11094,6 +11385,18 @@ msgstr "问题"
 #: src/chrys/app/tui/widgets/chat/renderers/ask_user.py
 msgid "tui.tool_card.ask_user.waiting"
 msgstr "等待中"
+
+#. English: {key} moves it to the background
+#. chrys-meta={"fingerprint":"9ad0cd2eca9beb6b0389b05f76b326964aa6019c4e9d363d5ad598d18752f807","multiline":false,"placeholders":["key"]}
+#: src/chrys/app/tui/widgets/chat/renderers/execute.py
+msgid "tui.tool_card.execute.background_hint"
+msgstr "{key} 转到后台"
+
+#. English: → in the background as {task}, pid {pid}
+#. chrys-meta={"fingerprint":"7c064536aa0fc52ff1fe54f91becfe156785983e7ad3fac05abf1c9877051d70","multiline":false,"placeholders":["pid","task"]}
+#: src/chrys/app/tui/widgets/chat/renderers/execute.py
+msgid "tui.tool_card.execute.backgrounded"
+msgstr "→ 已转到后台：{task}，pid {pid}"
 
 #. English: (no command)
 #. chrys-meta={"fingerprint":"ab9a0bf0c4af06c4ae35625dfc29f81d7ce5488ec4ce892fa22035e3053bd589","multiline":false,"placeholders":[]}

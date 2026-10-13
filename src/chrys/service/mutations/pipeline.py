@@ -33,6 +33,7 @@ from chrys.service.mutations.types import (
     MutationSource,
     SnapshotSkipReason,
 )
+from chrys.service.tools.background import BACKGROUND_DIR_NAME
 
 if TYPE_CHECKING:
     from contextvars import Token
@@ -120,6 +121,12 @@ class _ShellObservation:
 # ---------------------------------------------------------------------------
 
 
+def _is_background_task_file(tracker: MutationTracker, path: str) -> bool:
+    """Whether *path* is a background command's log or stop file, which no rollback restores."""
+    directory = tracker.store.mutations_dir.parent / BACKGROUND_DIR_NAME
+    return os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(str(directory))
+
+
 def _track_file_mutation_before(
     tracker: MutationTracker,
     tool_name: str,
@@ -137,6 +144,8 @@ def _track_file_mutation_before(
     if not file_path:
         return None
     resolved = resolve_workspace_path(file_path, base_cwd=workspace_cwd)
+    if _is_background_task_file(tracker, resolved):
+        return None
     if tool_name == "write_file":
         op = MutationOp.CREATE if not os.path.exists(resolved) else MutationOp.MODIFY
         source = MutationSource.WRITE_FILE
@@ -157,7 +166,7 @@ def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd
     cwd = resolve_workspace_path(raw_cwd, base_cwd=workspace_cwd) if raw_cwd else resolve_workspace_path(".")
 
     targets = ShellMutationDetector.detect_targets(command, cwd)
-    target_paths = [entry_display_path(path) for path, _ in targets]
+    target_paths = [entry_display_path(path) for path, _ in targets if not _is_background_task_file(tracker, path)]
 
     if not target_paths:
         return None

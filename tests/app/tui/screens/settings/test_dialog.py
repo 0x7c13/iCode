@@ -750,6 +750,7 @@ async def test_quit_commits_a_settings_dialog_that_sits_under_another_modal() ->
     dialog.commit_pending = lambda: committed.append("settings")  # type: ignore[method-assign]
     fake_app = SimpleNamespace(
         screen_stack=[object(), dialog, SimpleNamespace(name="confirm-on-top")],
+        _main_screen=None,
         exit=lambda: exits.append(True),
     )
 

@@ -382,6 +382,7 @@ def test_every_declared_binding_id_has_matching_registered_provenance() -> None:
         "tui.binding.trajectory",
         "tui.binding.sessions",
         "tui.binding.settings",
+        "tui.binding.shell_to_background",
         "tui.binding.sidebar",
         "tui.binding.themes",
         "tui.binding.toggle_change_list",
@@ -432,6 +433,7 @@ def test_migrated_bindings_preserve_english_and_keymap_contracts() -> None:
         for binding in (*main_bindings, *diff_bindings)
     ] == [
         ("ctrl+b", "interrupt", "Break", False, None, False, "", False, None),
+        ("ctrl+t", "shell_to_background", "Move to background", False, None, False, "", False, None),
         ("f1", "sessions", "Sessions", True, None, True, "", False, None),
         ("f2", "agents_config", "Agents", True, None, True, "", False, None),
         ("f4", "models_config", "Models", True, None, True, "", False, None),

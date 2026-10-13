@@ -9,7 +9,7 @@ Flash:  Agent [profile] Model [model] [message text] ... [tool counts]
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from rich.cells import cell_len
@@ -35,14 +35,25 @@ from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
-    from textual.app import ComposeResult
+    from textual.app import ComposeResult, RenderResult
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.screens.main.model_indicator import ModelIndicatorState
 
 
 type StatusMessage = MessageRef | str
-type StatusTrail = StatusMessage | tuple[StatusMessage, ...]
+type StatusTrail = StatusMessage | tuple[StatusMessage | TrailCount, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TrailCount:
+    """A count in the trail: when the trail does not fit, it shows in its *short* form, at the end."""
+
+    message: StatusMessage
+    short: StatusMessage
+
+
+_TRAIL_SEPARATOR = " \u00b7 "
 
 
 _WIDE_TAG_LAYOUT_MIN_COLUMNS = 72
@@ -131,6 +142,31 @@ class _FlashState:
 
 class _StatusBarChromeLabel(NonSelectableStatic):
     """Status chrome excluded from terminal drag selection and copy."""
+
+
+class _TrailInfo(Static):
+    """The right-aligned trail; one too wide for it keeps its counts, in their short form, and cuts the rest."""
+
+    def __init__(self, *, classes: str, id: str) -> None:
+        super().__init__("", classes=classes, id=id)
+        self._narrow = ("", "")
+
+    def show_trail(self, full: str, narrow: tuple[str, str]) -> None:
+        """Show *full*, or *narrow* — the other parts and the counts' short forms, each joined — when it does not fit."""
+        self._narrow = narrow
+        self.update(Text(full), layout=False)
+
+    def render(self) -> RenderResult:
+        others, counts = self._narrow
+        width = self.size.width
+        if not counts or not width or cell_len(str(self.content)) <= width:
+            return super().render()
+        room = width - cell_len(_TRAIL_SEPARATOR + counts)
+        if not others or room < 1:
+            return Text(counts)
+        head = Text(others)
+        head.truncate(room, overflow="ellipsis")
+        return Text(head.plain + _TRAIL_SEPARATOR + counts)
 
 
 class StatusBar(Widget):
@@ -337,10 +373,10 @@ class StatusBar(Widget):
                 yield ChrysLoadingIndicator()
                 yield Static("", classes="status-text", id="status-text")
                 yield Static("", classes="status-trail", id="status-trail")
-                yield Static("", classes="status-tool-info", id="status-tool-info")
+                yield _TrailInfo(classes="status-tool-info", id="status-tool-info")
             with Horizontal(classes="status-flash-bar"):
                 yield Static("", classes="status-flash", id="status-flash")
-                yield Static("", classes="status-flash-trail", id="status-flash-trail")
+                yield _TrailInfo(classes="status-flash-trail", id="status-flash-trail")
 
     def on_mount(self) -> None:
         if self._locale_controller is not None:
@@ -667,8 +703,8 @@ class StatusBar(Widget):
     def _set_flash_trail(self, trail: StatusTrail) -> None:
         """Render runtime details into the space left by the primary flash."""
         display_trail = self._render_trail(trail)
-        trail_widget = self.query_one("#status-flash-trail", Static)
-        trail_widget.update(Text(display_trail), layout=False)
+        trail_widget = self.query_one("#status-flash-trail", _TrailInfo)
+        trail_widget.show_trail(display_trail, self._narrow_trail(trail))
         trail_widget.tooltip = self._build_tooltip_text(display_trail)
 
     def _sync_visibility(self, shown: bool) -> None:
@@ -710,17 +746,24 @@ class StatusBar(Widget):
             "tool_trail": self._tool_trail,
         }
 
-    def restore(self, state: dict) -> None:
-        """Restore a previously snapshotted display state."""
+    def restore(self, state: dict, *, tool_trail: StatusTrail | None = None) -> None:
+        """Restore a previously snapshotted display state.
+
+        *tool_trail* replaces the snapshot's trail, which moved on meanwhile; a
+        flash that showed the old one shows it too.
+        """
         self._start_time = state.get("start_time", 0.0)
         self._tool_count = state.get("tool_count", 0)
-        self._tool_trail = state.get("tool_trail", self._tool_trail)
+        snapshot_trail = state.get("tool_trail", self._tool_trail)
+        self._tool_trail = snapshot_trail if tool_trail is None else tool_trail
+        flash: _FlashState | None = state.get("flash")
+        if flash is not None and flash.trail == snapshot_trail:
+            flash = replace(flash, trail=self._tool_trail)
         if not state.get("visible"):
             self.clear_status()
         elif not state.get("content_shown", True):
-            self._flash = state.get("flash")
+            self._flash = flash
             self.status = state.get("status", "")
-            flash = self._flash
             self.update_classes(
                 {
                     "-warn": flash.warn if flash is not None else False,
@@ -747,10 +790,10 @@ class StatusBar(Widget):
                 )
             set_widgets_visibility_without_layout(visibility)
             self._refresh_tag_interaction_state()
-        elif (f := state.get("flash")) is not None:
-            self.flash(f.text, warn=f.warn, error=f.error, caution=f.caution, trail=f.trail)
+        elif flash is not None:
+            self.flash(flash.text, warn=flash.warn, error=flash.error, caution=flash.caution, trail=flash.trail)
             if self._flash is not None:
-                self._flash.elapsed_seconds = f.elapsed_seconds
+                self._flash.elapsed_seconds = flash.elapsed_seconds
                 self._refresh_flash_text()
         else:
             self.show(state["status"])
@@ -789,8 +832,18 @@ class StatusBar(Widget):
 
     def _render_trail(self, trail: StatusTrail) -> str:
         if isinstance(trail, tuple):
-            return " \u00b7 ".join(self._render_message(part) for part in trail)
+            return _TRAIL_SEPARATOR.join(
+                self._render_message(part.message if isinstance(part, TrailCount) else part) for part in trail
+            )
         return self._render_message(trail)
+
+    def _narrow_trail(self, trail: StatusTrail) -> tuple[str, str]:
+        """*trail*'s parts other than its counts, and its counts' short forms, each joined."""
+        if not isinstance(trail, tuple):
+            return self._render_message(trail), ""
+        others = [self._render_message(part) for part in trail if not isinstance(part, TrailCount)]
+        counts = [self._render_message(part.short) for part in trail if isinstance(part, TrailCount)]
+        return _TRAIL_SEPARATOR.join(others), _TRAIL_SEPARATOR.join(counts)
 
     def _refresh_status_text(self) -> None:
         rendered = self._render_message(self.status)
@@ -824,9 +877,9 @@ class StatusBar(Widget):
         text = f"  ({' \u00b7 '.join(stats)})" if stats else ""
         self.query_one("#status-trail", Static).update(Text(text), layout=False)
         # Tool info on the right
-        tool_info = self.query_one("#status-tool-info", Static)
+        tool_info = self.query_one("#status-tool-info", _TrailInfo)
         rendered_tool_trail = self._render_trail(self._tool_trail)
-        tool_info.update(Text(rendered_tool_trail), layout=False)
+        tool_info.show_trail(rendered_tool_trail, self._narrow_trail(self._tool_trail))
         tool_info.tooltip = self._build_tooltip_text(rendered_tool_trail)
         self._pin_run_widths(trail_text=text)
         self._refresh_details_pointer()

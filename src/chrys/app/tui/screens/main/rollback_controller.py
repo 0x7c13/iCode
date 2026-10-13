@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -134,6 +134,7 @@ class RollbackController:
         post_gc_message: Callable[[GcReclaimRequested], object],
         debug: Callable[[str, str], None],
         locale_controller: LocaleController | None = None,
+        confirm_stopping_background_tasks: Callable[[int], Awaitable[bool]] | None = None,
     ) -> None:
         self._services = services
         self._view = view
@@ -148,6 +149,8 @@ class RollbackController:
         self._post_gc_message = post_gc_message
         self._debug = debug
         self._locale_controller = locale_controller
+        self._confirm_stopping_background_tasks = confirm_stopping_background_tasks
+        """Whether the user lets the background commands that the turns after a turn started stop."""
 
     def _render_message(self, reference: MessageRef) -> str:
         controller = self._locale_controller
@@ -181,10 +184,16 @@ class RollbackController:
             return
         request_owner = self._request_owner()
         if command.target_turn is not None or command.relative_turns is not None:
+            target_turn = (
+                command.target_turn
+                if command.target_turn is not None
+                else EngineReadModel(engine).current_turn_number - (command.relative_turns or 0)
+            )
             self._view.open_rollback_progress_modal(
                 lambda: self._publish_direct_rollback(
                     command,
                     request_owner,
+                    target_turn,
                 )
             )
             return
@@ -235,6 +244,8 @@ class RollbackController:
             )
 
             async def _publish_confirmed_rollback() -> None:
+                if not await self._may_stop_background_tasks(target_turn):
+                    return
                 await await_task_quiescence(captured_lifecycle_task)
                 if self._cancel_if_session_changed(request_owner) or self._cancel_if_agent_busy():
                     return
@@ -298,8 +309,11 @@ class RollbackController:
         self,
         command: _RollbackCommand,
         request_owner: _RollbackRequestOwner,
+        target_turn: int,
     ) -> None:
         """Dispatch a direct selector so the backend can fence and validate it."""
+        if not await self._may_stop_background_tasks(target_turn):
+            return
         if self._cancel_if_session_changed(request_owner) or self._cancel_if_agent_busy():
             return
         await self._services.bus.publish(
@@ -311,6 +325,10 @@ class RollbackController:
             ),
             raise_handler_errors=True,
         )
+
+    async def _may_stop_background_tasks(self, target_turn: int) -> bool:
+        confirm = self._confirm_stopping_background_tasks
+        return confirm is None or await confirm(target_turn)
 
     async def _load_picker_state(
         self,

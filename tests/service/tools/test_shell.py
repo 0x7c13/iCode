@@ -61,44 +61,42 @@ async def test_execute_simple_command(shell: ShellTools) -> None:
     assert "[exit_code: 0]" in result
 
 
-async def test_execute_pipe_passes_stdin_devnull(shell: ShellTools, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The Windows pipe path must pass ``stdin=DEVNULL`` to managed_subprocess.
+async def test_execute_pipe_closes_stdin_at_once(shell: ShellTools, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Windows pipe path gives the command an input that has already ended.
 
     This stops a child TUI from inheriting the outer chrys's console
     input handle and calling ``SetConsoleMode`` on it (which would
     wipe the outer TUI's mouse / keyboard flags).  The Unix PTY path uses
     its own DEVNULL assertion below.
     """
-    import asyncio
-    import contextlib
+    from tests.support.processes import ExitedProcess
 
-    captured: dict[str, object] = {}
+    class _Proc(ExitedProcess):
+        stdin_closed = False
 
-    @contextlib.asynccontextmanager
-    async def fake_managed(*args: object, **kwargs: object):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
+        def close_stdin(self) -> None:
+            self.stdin_closed = True
 
-        class _Stream:
-            async def read(self, _size: int = -1) -> bytes:
-                return b""
+        def close_transports(self) -> None:
+            pass
 
-        class _Proc:
-            returncode = 0
-            stdout = _Stream()
-            stderr = _Stream()
+        def kill_tree(self) -> None:
+            pass
 
-            async def wait(self) -> int:
-                return 0
+        def live_processes(self) -> dict[int, float]:
+            return {}
 
-        yield _Proc()
+    proc = _Proc()
+
+    async def spawn(*_args: object, **_kwargs: object) -> _Proc:
+        return proc
 
     from chrys.service.tools.builtins import shell as shell_mod
 
-    monkeypatch.setattr(shell_mod, "managed_subprocess", fake_managed)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", spawn)
     await shell._execute_pipe("echo hi", shell._shell, cwd=".", timeout=5)
 
-    assert captured["kwargs"].get("stdin") is asyncio.subprocess.DEVNULL
+    assert proc.stdin_closed
 
 
 async def test_execute_python_cjk_output(shell: ShellTools, tmp_path: Path) -> None:

@@ -29,7 +29,7 @@ Only reminders not already visible are added to the last user message:
   differs — a switch made before a retry reaches the retried request, and
   Code → QA → Code → QA across retries sends the last notice again;
 - catalogs — standing context: runtime environment, sub-agent tip, todo
-  list, skill catalog, MCP server instructions, archive-catalog pointer —
+  list, background commands, skill catalog, MCP server instructions, archive-catalog pointer —
   whenever the latest version of that catalog in view differs: a changed
   catalog (changed back included), or one whose carrier a context fold took
   out of view, is sent again, and one no longer offered is replaced by a
@@ -273,6 +273,8 @@ class TurnReminderState:
     sub_agent_tip: str | None = None
     todo: str | None = None
     """Turn-start todo list (None when empty)."""
+    background_tasks: str | None = None
+    """Turn-start background commands of the main agent (None when it never had any)."""
     skill_catalog: str | None = None
     mcp_instructions: str | None = None
     switch: SwitchSnapshot | None = None
@@ -406,6 +408,7 @@ class SystemReminderMiddleware(ChatMiddleware):
         catalog_pointer_enabled: bool = True,
         skill_catalog_provider: Callable[[], str | None] | None = None,
         todo_state_provider: Callable[[], str | None] | None = None,
+        background_tasks_provider: Callable[[], str | None] | None = None,
         mcp_instructions_provider: Callable[[], str | None] | None = None,
         file_change_provider: Callable[[], str | None] | None = None,
         last_words: LastWordsPort | None = None,
@@ -422,6 +425,7 @@ class SystemReminderMiddleware(ChatMiddleware):
             shell_tool_enabled=shell_tool_enabled,
             sub_agent_names=sub_agent_names,
             todo_state_provider=todo_state_provider,
+            background_tasks_provider=background_tasks_provider,
             skill_catalog_provider=skill_catalog_provider,
             mcp_instructions_provider=mcp_instructions_provider,
             file_change_provider=file_change_provider,
@@ -433,7 +437,14 @@ class SystemReminderMiddleware(ChatMiddleware):
         )
         sources = self._sources
         self._withdrawn_notices = _withdrawn_notices(
-            (sources.runtime_env, sources.sub_agents, sources.todo, sources.skills, sources.mcp)
+            (
+                sources.runtime_env,
+                sources.sub_agents,
+                sources.todo,
+                sources.background_tasks,
+                sources.skills,
+                sources.mcp,
+            )
         )
         # The catalogs a service-side conversation holds, keyed by the handle
         # its last answered call returned (see the module docstring).
@@ -478,6 +489,7 @@ class SystemReminderMiddleware(ChatMiddleware):
                 runtime_hint=previous.runtime_hint,
                 sub_agent_tip=previous.sub_agent_tip,
                 todo=previous.todo,
+                background_tasks=previous.background_tasks,
                 skill_catalog=previous.skill_catalog,
                 mcp_instructions=previous.mcp_instructions,
                 switch=previous.switch,
@@ -880,6 +892,7 @@ class SystemReminderMiddleware(ChatMiddleware):
                 (self._sources.runtime_env.name, state.runtime_hint),
                 (self._sources.sub_agents.name, state.sub_agent_tip),
                 (self._sources.todo.name, state.todo),
+                (self._sources.background_tasks.name, state.background_tasks),
                 (self._sources.skills.name, state.skill_catalog),
                 (self._sources.mcp.name, state.mcp_instructions),
                 (self._sources.archive_pointer.name, self._sources.archive_pointer.current_text()),
@@ -1029,6 +1042,7 @@ class SystemReminderMiddleware(ChatMiddleware):
             runtime_hint=self._sources.runtime_env.snapshot(),
             sub_agent_tip=self._sources.sub_agents.snapshot(),
             todo=self._sources.todo.snapshot(),
+            background_tasks=self._sources.background_tasks.snapshot(),
         )
 
         # The turn line: time at turn start and the previous turn's usage.

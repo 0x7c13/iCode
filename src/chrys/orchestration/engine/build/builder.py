@@ -116,6 +116,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.schema import ModelProfile
     from chrys.service.skills.provider import ChrysSkillsProvider
     from chrys.service.todos.tracker import TodoTracker
+    from chrys.service.tools.background import BackgroundTasks
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,7 @@ async def build_agent(
     mcp_cache: MCPConnectionCache | None = None,
     hook_manager: HookManager | None = None,
     spill_quota: SpillQuota | None = None,
+    background_tasks: BackgroundTasks | None = None,
     persist_recovery_now: Callable[[], Awaitable[bool]] | None = None,
     turn_context: TurnContextHolder | None = None,
     allow_user_interaction: bool = True,
@@ -535,6 +537,9 @@ async def build_agent(
             session_id=session_id,
             session_dir=effective_session_dir,
             web=web_tools,
+            background_tasks=background_tasks,
+            # An interactive session keeps them across turns; a headless run stops them when it ends.
+            session_wide_background=allow_user_interaction,
         )
         # Published once the web tools are decided, like the skill and memory warnings
         # further on; a later step can still fail the whole build.
@@ -609,6 +614,7 @@ async def build_agent(
                 workspace_cwd=runtime.cwd,
                 serialize_implicit_windows=serialize_implicit_windows,
                 spill_quota=spill_quota,
+                background_tasks=background_tasks,
                 ask_user_timeout_seconds=settings.ask_user_timeout_seconds,
                 turn_context=turn_context,
                 max_transient_retries=transient_retries,
@@ -828,6 +834,11 @@ async def build_agent(
             spill_quota=spill_quota,
             skill_catalog_provider=skills_provider.render_catalog_reminder if skills_provider else None,
             todo_state_provider=partial(_render_todo_reminder, todo_tracker) if todo_enabled else None,
+            background_tasks_provider=(
+                partial(background_tasks.reminder, runtime.platform.shell.name)
+                if background_tasks is not None
+                else None
+            ),
             mcp_instructions_provider=mcp_adapter.render_instructions_reminder if mcp_adapter is not None else None,
             file_change_provider=file_change_provider,
         )
@@ -1029,6 +1040,7 @@ async def build_agent(
             invocation_publishers=invocation_publishers,
             commit_intermediate_text=commit_intermediate_text,
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
+            background_tasks=background_tasks,
         )
 
         return AgentBuildResult(

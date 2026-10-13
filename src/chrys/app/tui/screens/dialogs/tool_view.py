@@ -30,21 +30,22 @@ from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
 from chrys.app.tui.widgets.chat.tool_call import ToolViewRequested
 from chrys.app.tui.widgets.chat.tool_view_builders import ToolViewContent
-from chrys.foundation.i18n import msg
+from chrys.foundation.i18n import MessageDef, msg
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.screen import Screen
 
 
 _TITLE_MAX = 72
 
 _COPIED_INPUT = msg("tui.tool_view.copy.input", fallback="Copied input")
-_COPIED_OUTPUT = msg("tui.tool_view.copy.output", fallback="Copied output")
+COPIED_OUTPUT = msg("tui.tool_view.copy.output", fallback="Copied output")
 _COPIED_INPUT_TOO_LARGE = msg(
     "tui.tool_view.copy.input_too_large",
     fallback="Copied input (terminal clipboard skipped: payload too large)",
 )
-_COPIED_OUTPUT_TOO_LARGE = msg(
+COPIED_OUTPUT_TOO_LARGE = msg(
     "tui.tool_view.copy.output_too_large",
     fallback="Copied output (terminal clipboard skipped: payload too large)",
 )
@@ -52,7 +53,7 @@ _COPIED_INPUT_UNAVAILABLE = msg(
     "tui.tool_view.copy.input_unavailable",
     fallback="Copied input (terminal clipboard unavailable)",
 )
-_COPIED_OUTPUT_UNAVAILABLE = msg(
+COPIED_OUTPUT_UNAVAILABLE = msg(
     "tui.tool_view.copy.output_unavailable",
     fallback="Copied output (terminal clipboard unavailable)",
 )
@@ -61,6 +62,26 @@ _INPUT = msg("tui.tool_view.tab.input", fallback="Input")
 _OUTPUT = msg("tui.tool_view.tab.output", fallback="Output")
 _NO_INPUT = msg("tui.tool_view.empty.input", fallback="(no input)")
 _NO_OUTPUT = msg("tui.tool_view.empty.output", fallback="(no output)")
+
+
+def copy_and_notify(
+    screen: Screen[object], payload: str, *, copied: MessageDef, too_large: MessageDef, unavailable: MessageDef
+) -> None:
+    """Copy *payload* to the clipboards and tell how that went."""
+    terminal_payload_too_large = terminal_clipboard_size(payload) > OSC52_COPY_MAX_BYTES
+    if copy_text_to_clipboards(screen.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES):
+        message, timeout = copied, 2
+    elif terminal_payload_too_large:
+        message, timeout = too_large, 3
+    else:
+        message, timeout = unavailable, 3
+    localizer = widget_localizer(screen)
+    screen.notify(
+        render_str(localizer, message.bind()),
+        title=render_str(localizer, COPIED_TITLE.bind()),
+        timeout=timeout,
+        markup=False,
+    )
 
 
 def _shorten(value: str, *, limit: int = _TITLE_MAX) -> str:
@@ -170,36 +191,21 @@ class ToolDetailModal(BaseDialog[None]):
         """Copy the active tab's raw payload (input JSON / output string) to the clipboard."""
         if not self._copy_enabled:
             return
-        active = self.query_one(TabbedContent).active
-        if active == "tool-view-output":
-            payload, label = self._raw_output, "output"
-        else:
-            payload, label = self._raw_input, "input"
-        terminal_payload_too_large = terminal_clipboard_size(payload) > OSC52_COPY_MAX_BYTES
-        localizer = widget_localizer(self)
-        copied = _COPIED_OUTPUT if label == "output" else _COPIED_INPUT
-        too_large = _COPIED_OUTPUT_TOO_LARGE if label == "output" else _COPIED_INPUT_TOO_LARGE
-        unavailable = _COPIED_OUTPUT_UNAVAILABLE if label == "output" else _COPIED_INPUT_UNAVAILABLE
-        if copy_text_to_clipboards(self.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES):
-            self.notify(
-                render_str(localizer, copied.bind()),
-                title=render_str(localizer, COPIED_TITLE.bind()),
-                timeout=2,
-                markup=False,
-            )
-        elif terminal_payload_too_large:
-            self.notify(
-                render_str(localizer, too_large.bind()),
-                title=render_str(localizer, COPIED_TITLE.bind()),
-                timeout=3,
-                markup=False,
+        if self.query_one(TabbedContent).active == "tool-view-output":
+            copy_and_notify(
+                self,
+                self._raw_output,
+                copied=COPIED_OUTPUT,
+                too_large=COPIED_OUTPUT_TOO_LARGE,
+                unavailable=COPIED_OUTPUT_UNAVAILABLE,
             )
         else:
-            self.notify(
-                render_str(localizer, unavailable.bind()),
-                title=render_str(localizer, COPIED_TITLE.bind()),
-                timeout=3,
-                markup=False,
+            copy_and_notify(
+                self,
+                self._raw_input,
+                copied=_COPIED_INPUT,
+                too_large=_COPIED_INPUT_TOO_LARGE,
+                unavailable=_COPIED_INPUT_UNAVAILABLE,
             )
 
     def action_close(self) -> None:

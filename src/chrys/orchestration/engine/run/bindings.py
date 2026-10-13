@@ -113,6 +113,7 @@ if TYPE_CHECKING:
     from chrys.service.hooks.manager import HookManager
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.tracker import MutationTracker
+    from chrys.service.tools.background import BackgroundTasks
     from chrys.service.trajectory.preparation import PreparationTrace
 
 
@@ -193,6 +194,7 @@ class TurnBindings:
         invocation_publishers: InvocationPublishers | None = None,
         commit_intermediate_text: Callable[[str, int], None] | None = None,
         tool_result_ceiling_tokens: int | None = None,
+        background_tasks: BackgroundTasks | None = None,
     ) -> None:
         self.resource_scope = conversation
         self._agent = agent
@@ -200,7 +202,13 @@ class TurnBindings:
         self._bus = event_bus
         self.approval = approval_middleware
         self._ask_user = ask_user_middleware
-        self._sleep = SleepMiddleware(event_bus, session_id=session_id)
+        # A queued user message ends the main agent's sleep: the next model call delivers it.
+        self._sleep = SleepMiddleware(
+            event_bus,
+            session_id=session_id,
+            background_tasks=background_tasks,
+            user_message_waiting=lambda: injection_middleware.has_pending,
+        )
         self._injection = injection_middleware
         self._loop_recorder = loop_recorder
         self._session_id = session_id

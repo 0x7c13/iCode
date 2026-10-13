@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .archive_pointer import ArchivePointerSource
+from .background_tasks import BackgroundTasksSource
 from .context_usage import ContextWarningSource
 from .file_change import FileChangeSource
 from .mcp import McpSource
@@ -44,6 +45,7 @@ class ReminderSources:
     runtime_env: RuntimeEnvSource
     sub_agents: SubAgentsSource
     todo: TodoSource
+    background_tasks: BackgroundTasksSource
     skills: SkillsSource
     mcp: McpSource
     file_change: FileChangeSource
@@ -59,6 +61,7 @@ def build_sources(
     shell_tool_enabled: bool,
     sub_agent_names: Sequence[str] | None,
     todo_state_provider: Callable[[], str | None] | None,
+    background_tasks_provider: Callable[[], str | None] | None,
     skill_catalog_provider: Callable[[], str | None] | None,
     mcp_instructions_provider: Callable[[], str | None] | None,
     file_change_provider: Callable[[], str | None] | None,
@@ -78,6 +81,7 @@ def build_sources(
         runtime_env=RuntimeEnvSource(runtime, shell_tool_enabled=shell_tool_enabled),
         sub_agents=SubAgentsSource(sub_agent_names),
         todo=TodoSource(todo_state_provider),
+        background_tasks=BackgroundTasksSource(background_tasks_provider),
         skills=SkillsSource(skill_catalog_provider),
         mcp=McpSource(mcp_instructions_provider),
         file_change=FileChangeSource(file_change_provider),

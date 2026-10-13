@@ -23,7 +23,7 @@ def check_main_action(
         return chat_foreground and not suggestions_active
     if action == "prompt_history":
         return chat_foreground
-    if action == "interrupt":
+    if action in {"interrupt", "shell_to_background"}:
         return agent_running
     if action in {"sessions", "pick_theme", "settings"}:
         return not agent_running

@@ -19,6 +19,7 @@ from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_SESSION_RESTORED,
     STATUS_THINKING,
     StatusBar,
+    TrailCount,
 )
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import (
@@ -498,3 +499,37 @@ async def test_status_bar_spinner_ticks_only_while_it_is_painted() -> None:
         await wait_for(timer._active.is_set, pilot=pilot, description="the spinner animates again")
         sb.hide()
         await wait_for(lambda: not timer._active.is_set(), pilot=pilot, description="the hidden bar parks the spinner")
+
+
+@pytest.mark.parametrize(
+    ("reveal", "target_id", "room"),
+    [
+        # Status text after the 8-cell spinner; the trail's 2 cells of padding.
+        pytest.param(StatusBar.show, "#status-tool-info", 70, id="running"),
+        # The flash with its 2 cells of padding; the trail's 2.
+        pytest.param(StatusBar.flash, "#status-flash-trail", 76, id="flash"),
+    ],
+)
+async def test_a_trail_too_wide_keeps_its_count_short_at_the_end(
+    reveal: Callable[[StatusBar, str], None], target_id: str, room: int
+) -> None:
+    async with WidgetApp(StatusBar).run_test(size=(80, 3)) as pilot:
+        sb = pilot.app.query_one(StatusBar)
+        sb.set_tool_info(("13 tools", "1 skill", TrailCount("1 background task", "1 task")))
+        trail = sb.query_one(target_id, Static)
+
+        async def shown_at(width: int) -> str:
+            reveal(sb, "x" * (room - width))
+            await wait_for(lambda: trail.size.width == width, pilot=pilot, description=f"the trail {width} wide")
+            return trail.render().plain
+
+        assert await shown_at(40) == "13 tools · 1 skill · 1 background task"
+        assert await shown_at(27) == "13 tools · 1 skill · 1 task"
+        assert await shown_at(24) == "13 tools · 1 s… · 1 task"
+        assert await shown_at(10) == "… · 1 task"
+        assert await shown_at(9) == "1 task"
+        assert await shown_at(40) == "13 tools · 1 skill · 1 background task"
+        assert str(trail.content) == "13 tools · 1 skill · 1 background task"
+
+        sb.set_tool_info((TrailCount("2 background tasks", "2 tasks"),))
+        assert await shown_at(10) == "2 tasks"

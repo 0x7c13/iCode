@@ -21,6 +21,9 @@ class ExitedProcess:
     Build it inside the running event loop: its pipe readers belong to that loop.
     """
 
+    pid = 0
+    """No real process: a tree kill of it does nothing."""
+
     def __init__(self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> None:
         self.stdout = finished_reader(stdout)
         self.stderr = finished_reader(stderr)

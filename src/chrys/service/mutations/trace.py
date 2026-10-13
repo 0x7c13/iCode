@@ -47,7 +47,7 @@ from chrys.foundation.platform.process import windows_hidden_subprocess_kwargs
 from chrys.service.mutations.coordination import canonical_key, fold_case
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -175,6 +175,11 @@ def allocate_trace_file(mutations_dir: Path) -> tuple[list[str], str] | None:
         return None
     trace_file = str(mutations_dir / f"trace-{uuid.uuid4().hex}.log")
     return [binary, TRACE_OPS, trace_file, "--"], trace_file
+
+
+def prefix_trace_file(prefix: Sequence[str]) -> str | None:
+    """The trace file an :func:`allocate_trace_file` argv *prefix* writes, or None for another prefix."""
+    return prefix[2] if len(prefix) == 4 and prefix[3] == "--" else None
 
 
 def discard_trace_file(trace_file: str | None) -> None:

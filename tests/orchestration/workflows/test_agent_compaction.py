@@ -128,6 +128,7 @@ async def test_parallel_node_compactions_archive_reduce_context_and_publish_node
         mutation_tracker=None,
         mutation_coordinator=None,
         spill_quota=quota,
+        background_tasks=None,
         allow_user_interaction=False,
         mcp_cache=None,
         agent_registry=None,
