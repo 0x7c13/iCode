@@ -54,6 +54,7 @@ from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_RETRYING,
     STATUS_RUNNING_TOOL,
     STATUS_SHELL_MODE,
+    STATUS_STILL_SENDING,
     StatusBar,
 )
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
@@ -316,6 +317,9 @@ class MainScreenViewAdapter:
     def flash_interrupted(self) -> None:
         self._screen.query_one(StatusBar).flash(STATUS_INTERRUPTED.bind(), caution=True)
 
+    def flash_submit_still_sending(self) -> None:
+        self._screen.query_one(StatusBar).flash(STATUS_STILL_SENDING.bind())
+
     async def render_interrupted(self) -> None:
         await self._screen.query_one(ChatPanel).add_interrupted()
 
@@ -443,8 +447,22 @@ class MainScreenViewAdapter:
     def set_input_paste_cwd(self, cwd: str) -> None:
         self._screen.query_one(InputBar).set_paste_cwd(cwd)
 
+    def unlock_input_clearing(self, text: str) -> None:
+        """Unlock the composer, clearing it unless edited since *text* was sent.
+
+        A locked composer is read-only, so it still holds what was sent; Enter
+        sends the composer's text stripped.
+        """
+        input_bar = self._screen.query_one(InputBar)
+        if input_bar.locked or input_bar.value.strip() == text:
+            input_bar.unlock_and_clear()
+
+    def restore_input_draft(self, text: str) -> bool:
+        """Hand *text* back to an empty composer; a draft already there wins."""
+        return self._screen.query_one(InputBar).restore_draft(text)
+
     def restore_input_text(self, text: str) -> InputRestore | None:
-        """Hand a consumed prompt back to an empty composer.
+        """Hand a consumed prompt back to an empty composer, or a queued one's.
 
         Returns proof of that restore for a caller that has to rewrite the same
         text afterwards, or ``None`` when nothing was written — the composer
@@ -457,6 +475,11 @@ class MainScreenViewAdapter:
         input_bar = self._screen.query_one(InputBar)
         if input_bar.locked:
             input_bar.unlock_and_keep()
+            # A queued message's composer stays read-only from its Enter, which
+            # sends the text stripped: holding *text*, it still holds that
+            # message, and unlocking it hands the message back.
+            if input_bar.value.strip() == text:
+                return InputRestore(generation=self._input_restore_generation, text=input_bar.value)
         if not input_bar.restore_draft(text):
             return None
         return InputRestore(generation=self._input_restore_generation, text=text)

@@ -6399,6 +6399,12 @@ msgid_plural "tui.image_compression.title#plural"
 msgstr[0] ""
 msgstr[1] ""
 
+#. English: Message not sent
+#. chrys-meta={"fingerprint":"e4d0c7dae748bdeecd18b664e00b4552f296abe6a27e40d5c8850ef9ada16f51","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/event_handlers.py
+msgid "tui.injection.not_sent"
+msgstr ""
+
 #. English: Continue
 #. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -10716,6 +10722,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"7475b867a3ae3a9acbfc8bb42f31ac5e2b62640e10da3d3b2e4672e81748e65c","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.shell_mode"
+msgstr ""
+
+#. English: Still sending the previous message
+#. chrys-meta={"fingerprint":"7dbd5988de3703b2875598add0d9fabd762db699546932e140a3e45bdce2dd6d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.still_sending"
 msgstr ""
 
 #. English: streaming...

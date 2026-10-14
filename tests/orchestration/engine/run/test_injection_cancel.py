@@ -328,7 +328,10 @@ async def test_cancel_removes_queued_injection_and_approval_context() -> None:
     results = await _collect_inject_results(host._bus)
 
     try:
-        await on_user_message(host, UserMessage(text="change of plans", injection_id="inj-1"))
+        event = UserMessage(text="change of plans", injection_id="inj-1")
+        await on_user_message(host, event)
+        # Queued into the live run: the frontend keeps showing it as pending.
+        assert event.started_turn is False
         assert host.current.loaded.bindings.approval_context == ["change of plans"]
         # The reminders travel with the queued text until a call drains it.
         assert host.current.loaded.reminder_middleware.queued == []
@@ -592,8 +595,10 @@ async def test_cancelled_locked_submit_does_not_start_fresh_turn() -> None:
     # admission waits (in flight, so the cancel handler recorded a mark) and
     # the run finishing before the submit resumed on the fresh-turn path.
     host._turn_state.mark_injection_cancelled("inj-1")
-    await on_user_message(host, UserMessage(text="withdrawn", injection_id="inj-1"))
+    event = UserMessage(text="withdrawn", injection_id="inj-1")
+    await on_user_message(host, event)
 
+    assert event.started_turn is False
     assert host.run_texts == []
     assert host._fsm.transitions == []
     assert [(r.consumed, r.injection_id, r.text) for r in results] == [(False, "inj-1", "withdrawn")]
@@ -601,11 +606,20 @@ async def test_cancelled_locked_submit_does_not_start_fresh_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uncancelled_submit_with_injection_id_still_starts_fresh_turn() -> None:
+@pytest.mark.parametrize("reminders", [True, False], ids=["reminder_scope", "no_reminder_middleware"])
+async def test_uncancelled_submit_with_injection_id_still_starts_fresh_turn(reminders: bool) -> None:
     """The injection id alone must not stop a legitimate fresh-turn promotion."""
     host = _Host(executor_running=False)
+    if not reminders:
+        install_loaded_agent(host, reminder_middleware=None)
 
-    await on_user_message(host, UserMessage(text="still wanted", injection_id="inj-1"))
+    event = UserMessage(text="still wanted", injection_id="inj-1")
+    await on_user_message(host, event)
+    # Marked before the publish returns, so the frontend shows a new turn
+    # rather than an injection still waiting for its run — and returned
+    # before the run's task could start, so its first events find that turn.
+    assert event.started_turn is True
+    assert host.run_texts == []
     task = host._turn_state.lease.run_task
     assert task is not None
     await task

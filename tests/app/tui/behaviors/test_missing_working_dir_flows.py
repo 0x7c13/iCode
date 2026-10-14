@@ -215,6 +215,7 @@ async def test_a_turn_that_outlived_its_folder_asks_for_another_when_it_ends(tmp
 
     async def accept(event: UserMessage) -> None:
         sent.append(event.text)
+        event.started_turn = True
 
     await bus.subscribe(UserMessage, accept)
     await bus.subscribe(WorkspaceChange, lambda event: collect_events(changes, event))

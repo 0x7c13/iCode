@@ -114,6 +114,10 @@ class UserMessage(Event):
     # mid-run injection can be correlated and cancelled (``UserInjectCancel``)
     # before the model sees it. ``None`` for ordinary fresh-turn submits.
     injection_id: str | None = None
+    # Set by the backend, before its publish returns, when this message opened
+    # a new turn — also for an injection submit whose run ended before it was
+    # admitted, so the frontend shows that turn instead of a queued injection.
+    started_turn: bool = field(default=False, compare=False)
 
 
 @dataclass

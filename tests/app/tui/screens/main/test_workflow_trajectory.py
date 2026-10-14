@@ -46,7 +46,11 @@ async def test_f12_waits_for_completion_and_lease_release(
     async def requested(event: events.WorkflowRunRequest) -> None:
         requests.append(event)
 
+    async def admitted(event: events.UserMessage) -> None:
+        event.started_turn = True
+
     await bus.subscribe(events.WorkflowRunRequest, requested)
+    await bus.subscribe(events.UserMessage, admitted)
     app = make_chrys_app(tmp_path / "sessions", engine=engine, event_bus=bus)
     async with app.run_test(size=(140, 45)) as pilot:
         main = app._main_screen

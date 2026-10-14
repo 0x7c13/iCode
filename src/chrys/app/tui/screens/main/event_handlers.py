@@ -147,6 +147,7 @@ _APPROVAL_MODE_CHANGED = msg("tui.approval.mode_changed", fallback="Approval mod
 _WARNING_TITLE = msg("tui.warning.title", fallback="Warning")
 _UNKNOWN_ERROR = msg("tui.error.unknown", fallback="Unknown error")
 _RETRY_NOT_STARTED = msg("tui.retry.not_started", fallback="Retry not started")
+_INJECTION_NOT_SENT = msg("tui.injection.not_sent", fallback="Message not sent")
 _AGENT_FAILED_TO_LOAD = msg("tui.agent_load.failed", fallback="Agent failed to load.")
 _NON_TURN_NOTIFICATION_ERROR_CODES = {
     "hook_blocked",
@@ -490,8 +491,8 @@ class BackendEventHandler:
         self._state.workspace_marker.original_cwd = value
 
     @property
-    def pending_user_submit_active(self) -> bool:
-        return self._state.submit.active
+    def in_pending_submit_publish(self) -> bool:
+        return self._state.submit.in_publish()
 
     @property
     def pending_user_submit_text(self) -> str:
@@ -1094,8 +1095,11 @@ class BackendEventHandler:
 
         if event.consumed:
             try:
-                # Render the bubble even when cancelled-too-late: the model
-                # did see this text, so the transcript must show it.
+                # Show it even when cancelled-too-late: the model did see this
+                # text. The tab first, before any await, so it cannot overwrite
+                # a turn result that lands meanwhile.
+                if s.agent_running:
+                    ui.set_terminal_title_for_user_message(event.text)
                 await ui.add_user_injection(event.text, created_at=event.created_at)
                 s.update_toc()
                 s.debug("UserInjectResult", "consumed" if owns_input else "consumed (stale id)")
@@ -1811,7 +1815,7 @@ class BackendEventHandler:
 
     async def on_warning(self, event: Warning) -> None:
         s = self
-        submit_rejected = event.code in _SUBMIT_BLOCKING_WARNING_CODES and s.pending_user_submit_active
+        submit_rejected = event.code in _SUBMIT_BLOCKING_WARNING_CODES and s.in_pending_submit_publish
         if submit_rejected:
             s.block_pending_user_submit()
             if event.code in _IMAGE_WARNING_CODES:
@@ -1916,8 +1920,9 @@ class BackendEventHandler:
             s.push_screen(dialog)
             s.debug("Error", f"[{event.code}] {full_msg[:60]}")
             return
-        if s.pending_user_submit_active and event.code in _SUBMIT_BLOCKING_ERROR_CODES:
-            s.set_agent_running(False)
+        if s.in_pending_submit_publish and event.code in _SUBMIT_BLOCKING_ERROR_CODES:
+            # The backend refusing the submit in flight: the message, never a
+            # run (see ``SubmitKind``).
             s.block_pending_user_submit()
             if event.code in _IMAGE_ERROR_CODES:
                 self._show_image_rejection_dialog(event.code, display_full)
@@ -2022,8 +2027,16 @@ class BackendEventHandler:
         if "- {" in short_msg:
             short_msg = short_msg[: short_msg.index("- {")].strip()
         chat_msg = self._extract_error_detail(message)
+        kind = self._state.submit.kind
+        if kind == "injection":
+            # The turn it was meant for goes on, and the status line and the
+            # transcript are that turn's: an error card would end its running
+            # tool cards.
+            s.notify(chat_msg, title=_INJECTION_NOT_SENT.bind(), severity="error", timeout=8)
+            s.debug("Error", f"[{code}] {(message if raw_message is None else raw_message)[:60]}")
+            return
         ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
-        if self._state.submit.is_retry:
+        if kind == "retry":
             # Admission did not start a new run. Keep the previous terminal
             # card and its action so the user can retry after resolving this.
             s.notify(chat_msg, title=_RETRY_NOT_STARTED.bind(), severity="error", timeout=8)

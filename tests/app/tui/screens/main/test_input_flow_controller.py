@@ -148,9 +148,13 @@ def _make_input_flow_controller(
 
 
 async def _run_started(scheduled: list[Callable[[], Awaitable[object]]]) -> None:
-    """Run the work the controller handed its worker hook, as the started workers would."""
+    """Run the work the controller handed its worker hook, as the started workers would.
+
+    Each on a task of its own, as a Textual worker runs, apart from the handler
+    that scheduled it.
+    """
     while scheduled:
-        await scheduled.pop(0)()
+        await asyncio.ensure_future(scheduled.pop(0)())
 
 
 def test_input_bar_retry_leaves_status_action_until_admission() -> None:
@@ -350,7 +354,9 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
         _session_title=fake_session_title(),
         query_one=query_one,
         _debug=lambda *_args: None,
-        notify=lambda message, **kwargs: order.append(f"notify:{status_text(message)}:{kwargs['severity']}"),
+        notify=lambda message, **kwargs: order.append(
+            f"notify:{status_text(kwargs['title'])}:{status_text(message)}:{kwargs['severity']}"
+        ),
     )
     handler = make_backend_handler(screen)
     handler._agent_load_dialog = None
@@ -380,7 +386,8 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
     assert state.render_gate.active is False
     if error_code != "executor_error":
         severity = "warning" if error_code == "sub_agent_paused" else "error"
-        assert f"notify:retry failed:{severity}" in order
+        title = "Warning" if error_code == "sub_agent_paused" else "Retry not started"
+        assert f"notify:{title}:retry failed:{severity}" in order
         assert not any(item.startswith("error:") for item in order)
         assert "hide_status_action" not in order
         assert "status:Resuming" not in order
@@ -493,7 +500,7 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
             assert not button.disabled and not input_bar.retry_pending
             assert input_bar.value == "https://example.com/document"
             assert not state.run.agent_running
-            assert not state.submit.active and not state.submit.is_retry
+            assert not state.submit.active and state.submit.kind == "turn"
 
         controller.request_retry("https://example.com/document")
         await _run_started(scheduled)
@@ -501,7 +508,7 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
         assert card.is_mounted and not row.display
         assert not input_bar.retry_pending
         assert state.run.agent_running
-        assert not state.submit.active and not state.submit.is_retry
+        assert not state.submit.active and state.submit.kind == "turn"
 
 
 def test_publish_interrupt_publishes_before_marking_agent_idle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -673,6 +680,7 @@ def test_send_user_message_defers_fast_agent_message_until_user_bubble_is_render
 
     async def _accept_and_finish(event: UserMessage) -> None:
         event.prepared_contents = ["hello", "prepared-image-content"]
+        event.started_turn = True
         await bus.publish(
             InvocationMessage(
                 text=f"done:{event.text}",
@@ -752,6 +760,7 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
 
     async def _accept_and_fail(event: UserMessage) -> None:
         event.prepared_contents = ["hello", "prepared-image-content"]
+        event.started_turn = True
         await bus.publish(Error(code="executor_error", message=f"failed:{event.text}", session_id=event.session_id))
 
     async def _run() -> None:
