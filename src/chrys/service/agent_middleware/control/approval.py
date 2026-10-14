@@ -516,7 +516,11 @@ class ApprovalMiddleware(FunctionMiddleware):
                 future = correlation.future
                 try:
                     review_mode = self._approval_mode
-                    judging = review_mode.uses_judge and self._approval_judge is not None and not dev_sub_agent_review
+                    judging = (
+                        review_mode is ApprovalMode.AUTO
+                        and self._approval_judge is not None
+                        and not dev_sub_agent_review
+                    )
                     if judging:
                         # Frontends may synchronously block auto-fulfilment while handling
                         # ApprovalRequest, so install the shared arbitration subscription
@@ -547,6 +551,18 @@ class ApprovalMiddleware(FunctionMiddleware):
                         )
                     )
 
+                    # Commit the request marker before the model review starts.
+                    if approval_trace is not None:
+                        await approval_trace.requested(
+                            tool_name=tool_name,
+                            approval_mode=self._approval_mode.value,
+                            approval_level=_approval_level(
+                                policy=policy_requires_approval,
+                                dev_sub_agent_review=dev_sub_agent_review,
+                                sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write,
+                            ),
+                        )
+
                     if judging:
                         # The judge's model call is a side call of this session: rebind
                         # the ambient trajectory actor so its exchange is attributed to
@@ -572,25 +588,9 @@ class ApprovalMiddleware(FunctionMiddleware):
                                     ),
                                     log_dir=self._approval_log_dir,
                                     on_verdict=_record_judge_audit,
-                                    formal=review_mode is ApprovalMode.AUTO_FORMAL,
                                 )
                             )
 
-                    # Inside the block that lets the request go: the marker awaits
-                    # its write ack, and an interrupt landing there would otherwise
-                    # leave this request's handler subscribed and its judge still
-                    # calling the model. The judge task cannot run before this
-                    # either, so its own events still follow the request.
-                    if approval_trace is not None:
-                        await approval_trace.requested(
-                            tool_name=tool_name,
-                            approval_mode=self._approval_mode.value,
-                            approval_level=_approval_level(
-                                policy=policy_requires_approval,
-                                dev_sub_agent_review=dev_sub_agent_review,
-                                sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write,
-                            ),
-                        )
                     response = await await_approval_with_hooks(
                         future=future,
                         judge_task=judge_task,
@@ -638,7 +638,7 @@ class ApprovalMiddleware(FunctionMiddleware):
             # Interrupted (or failed) while the dialog was still open: the
             # request is abandoned, and only this path can say so.
             if approval_trace is not None:
-                approval_trace.interrupted_soon()
+                approval_trace.interrupted_soon(judge_audit=judge_audit)
             # A frontend still shows the request (or holds it unseen while the
             # judge reviews it) until told otherwise. The judge is drained by
             # now, so this follows any verdict it published.

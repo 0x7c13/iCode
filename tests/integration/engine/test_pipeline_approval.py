@@ -369,7 +369,6 @@ class TestInterruptWhileTheJudgeReviews:
             request_id: str = "",
             log_dir: Path | None = None,
             user_messages: list[str] | None = None,
-            formal: bool = False,
         ) -> JudgeVerdict:
             entered.set()
             try:

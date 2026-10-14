@@ -839,7 +839,7 @@ class AcpPermissionBroker:
 
             future = correlation.future
             self._permission_waits[request_id] = future
-            judging = mode.uses_judge and self._judge is not None
+            judging = mode is ApprovalMode.AUTO and self._judge is not None
             judge_title, judge_kind, raw_args = _permission_judge_fields(tool_call)
             presentation_title = preview_text(tool_call.title or "tool", limit=_MAX_FIELD_CHARS - 4)
             published_args = _raw_args_dict(tool_call.raw_input)
@@ -912,7 +912,6 @@ class AcpPermissionBroker:
                             ),
                             log_dir=None,
                             on_verdict=record_verdict,
-                            formal=mode is ApprovalMode.AUTO_FORMAL,
                         ),
                     )
             except BaseException:
@@ -924,8 +923,12 @@ class AcpPermissionBroker:
                 response = await future
             except asyncio.CancelledError:
                 should_notify = self._permission_waits.pop(request_id, None) is not None
+                if judge_task is not None and not judge_task.done():
+                    judge_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await judge_task
                 if approval_trace is not None:
-                    approval_trace.interrupted_soon(reason_code="cancelled")
+                    approval_trace.interrupted_soon(reason_code="cancelled", judge_audit=judge_audit)
                 if should_notify:
                     await self._bus.publish(ApprovalCancelled(request_id=request_id, session_id=self._session_id))
                 return PermissionDecision.cancelled()
@@ -945,7 +948,7 @@ class AcpPermissionBroker:
         # here would let the remote run a tool after the global interrupt.
         if self._aborted:
             if approval_trace is not None:
-                approval_trace.interrupted_soon(reason_code="cascade_abort")
+                approval_trace.interrupted_soon(reason_code="cascade_abort", judge_audit=judge_audit)
             return PermissionDecision.cancelled()
         if response.approved:
             if approval_trace is not None:

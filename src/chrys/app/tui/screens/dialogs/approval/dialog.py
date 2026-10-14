@@ -26,6 +26,7 @@ from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, 
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
+from chrys.app.tui.screens.dialogs.approval.review_reason import review_reason
 from chrys.app.tui.util.source_text import mark_hidden_format, sanitize_source_text
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
@@ -771,7 +772,9 @@ class ApprovalDialog(
         judge_area.add_class("judge-flagged")
         self.query_one("#approval-judge-loading").display = False
         concern_widget = self.query_one("#approval-concern", Static)
-        concern_widget.update(Text(mark_hidden_format(sanitize_legacy_block(verdict.reason))))
+        concern_widget.update(
+            Text(mark_hidden_format(sanitize_legacy_block(review_reason(verdict, widget_localizer(self)))))
+        )
         concern_widget.display = True
         self.query_one("#approval-reason-section", Collapsible).collapsed = False
 

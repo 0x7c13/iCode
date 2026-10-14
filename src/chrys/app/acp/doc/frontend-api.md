@@ -92,7 +92,7 @@ all sessions for the `cwd` are returned (each session reports its own roots via
 Approval mode uses ACP's native session-mode mechanism, not an extension:
 
 - `session/new` / `session/load` advertise `modes` (`SessionModeState`):
-  available `manual` / `auto` / `auto-formal` / `bypass` + the current mode.
+  available `manual` / `auto` / `bypass` + the current mode.
 - `set_session_mode(mode_id, session_id)` switches it.
 - Changes are pushed as the standard `current_mode_update` (`session/update`).
 
@@ -356,6 +356,8 @@ profile CRUD, `mcp/test`, mid-run injection, agent-load progress, context/tool
 compaction, structured errors/warnings.
 
 ### Why config options stay an extension
+
+`session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.
 
 ACP has a native config mechanism (`config_options` on `session/new`,
 `set_config_option`, `current_config_option_update`). Chrys deliberately does

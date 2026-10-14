@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-a", "--agent", default="Code", help="Agent profile id, name, or display name to expose")
     parser.add_argument(
         "--approval",
-        choices=["manual", "auto", "auto-formal", "bypass"],
+        choices=["manual", "auto", "bypass"],
         default="manual",
         help="Initial approval mode for ACP sessions",
     )

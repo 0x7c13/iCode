@@ -866,6 +866,12 @@ msgstr "开发者模式"
 msgid "settings.app.update_check.label"
 msgstr "检查更新"
 
+#. English: Automatic review strategy
+#. chrys-meta={"fingerprint":"e900839e0cb419651c36d199a1ebc7efea285ff567afcfb709d7d57cb54a1ff6","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.auto_review.label"
+msgstr "自动审查策略"
+
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -3914,6 +3920,96 @@ msgstr "恢复同一会话后仍然有效。"
 msgid "tui.approval.reuse.title"
 msgstr "记住审批"
 
+#. English: The risk definitions could not be loaded.
+#. chrys-meta={"fingerprint":"1bb7592ee2026f1ec271d16fd198cb4be1e1677c0077172fdf0ebb09bfb07d96","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.asset_unavailable"
+msgstr "无法加载风险条件。"
+
+#. English: Automatic review was cancelled.
+#. chrys-meta={"fingerprint":"56ec1d3ea02ae80ce9e11198bbef7756c450610b7795727e0a5d69b8925f2cc1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.cancelled"
+msgstr "自动审查已取消。"
+
+#. English: Automatic review failed. Please check the action.
+#. chrys-meta={"fingerprint":"e6a14f280c8028c5c439ba0d5f392d05b00bd00018c98805446c8cdcacf90f74","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.failed"
+msgstr "自动审查失败，请检查此操作。"
+
+#. English: There is not enough valid context to review this action.
+#. chrys-meta={"fingerprint":"80cea776974b1c7027ea1781e63c36b14023640d62326e926af540ca8ccd68d0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.invalid_input"
+msgstr "缺少审查此操作所需的有效上下文。"
+
+#. English: The risk check returned an invalid response.
+#. chrys-meta={"fingerprint":"693f7df0c6218f8aec154626478a018255734a39b0006fb15a94cb82230a9c3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.invalid_shape"
+msgstr "风险检查返回了无效响应。"
+
+#. English: The approval model returned an invalid response.
+#. chrys-meta={"fingerprint":"28e63dc23808f38c6fe45ac4e1bfdddf98306804685bc7632e80136a23185d82","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.invalid_verdict"
+msgstr "审批模型返回了无效响应。"
+
+#. English: Automatic review timed out.
+#. chrys-meta={"fingerprint":"91f33bc2bd6171886ad186d6d591f453a208263d87dc66d5f0949da34b7113cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.timeout"
+msgstr "自动审查超时。"
+
+#. English: Requires human confirmation: {conditions}.
+#. chrys-meta={"fingerprint":"8d216e000809e03daebedb05417fadc52eef6d609f531d5c7b921098fc6333a9","multiline":false,"placeholders":["conditions"]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.triggered"
+msgstr "需要人工确认：{conditions}。"
+
+#. English: Deletion or destructive changes
+#. chrys-meta={"fingerprint":"40f27eb4b731fad44e4f8169ef139d0b4a463609416faab1a72bf6211f886333","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.destructive_action"
+msgstr "删除或破坏性修改"
+
+#. English: External publication or transfer
+#. chrys-meta={"fingerprint":"fca65260a1707caa0f9aace61e4db8031c2f5210c48f15ce98cb48a79f042951","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.external_action"
+msgstr "对外发布或传输"
+
+#. English: Actions beyond the requested scope
+#. chrys-meta={"fingerprint":"ae29394698d983d8bd226f5f0f7b9c6e93df24c38c5c48313502fac0fcf49d1e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.scope_escalation"
+msgstr "超出用户要求的操作"
+
+#. English: Security or permission changes
+#. chrys-meta={"fingerprint":"0ccb3ecc7cc9a9b333514af148bfd35266dec1888da772877e9410187cff8377","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.security_boundary"
+msgstr "安全或权限变更"
+
+#. English: Sensitive data or account operations
+#. chrys-meta={"fingerprint":"bbadd3af80674e4441568e558f49588aba2cb96c267d47b149ea65dda07631ae","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.sensitive_data"
+msgstr "敏感数据或账户操作"
+
+#. English: Changes to shared or production resources
+#. chrys-meta={"fingerprint":"663acb1cb9c542827be1c81d2aa786aaedcdcfaf57d70e40a92f7d9c6fdf4913","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.shared_mutation"
+msgstr "共享或生产资源修改"
+
+#. English: Untrusted code or externally exposed services
+#. chrys-meta={"fingerprint":"f10e013eabef62565627db9b930cab1a221f93989c4eed24b35f008419650e2a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.untrusted_execution"
+msgstr "不可信代码或对外开放服务"
+
 #. English: Review sub-agent delegation
 #. chrys-meta={"fingerprint":"7dcb85149a86ce191f347580fab4a3af3588038f343870f21f4ac65eed0af3c8","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/bodies/sub_agent.py
@@ -3944,13 +4040,6 @@ msgstr "审批"
 #: src/chrys/app/tui/screens/dialogs/approval/mode.py
 msgid "tui.approval_mode.description.auto"
 msgstr "自动批准安全调用，并标记可疑调用"
-
-#. English: Checks risks individually, applies fixed approval rules, and uses
-#. model review when uncertain
-#. chrys-meta={"fingerprint":"affc4a337f0bc34703932e8ecb93e0af9fa6fa8be21bc6d401ea5d68cda02faa","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/dialogs/approval/mode.py
-msgid "tui.approval_mode.description.auto_formal"
-msgstr "逐项检查风险，按固定规则审批；判断不明确时由模型复核。"
 
 #. English: All tool calls run without approval
 #. chrys-meta={"fingerprint":"00c673898ea5cda9e76dea1dbe24f82970e2563011fe037c0cf7c9a3f621fc70","multiline":false,"placeholders":[]}
@@ -4577,12 +4666,6 @@ msgstr ""
 msgid "tui.chrome.approval_mode.auto"
 msgstr "自动"
 
-#. English: AUTO-FORMAL
-#. chrys-meta={"fingerprint":"3adfb5b48a6d9b750ca9a7f212b740f8b6e08d2455bc32de2b5c5cadd4d5ecc9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/chrome/app_header.py
-msgid "tui.chrome.approval_mode.auto_formal"
-msgstr "自动（Formal）"
-
 #. English:  APPROVAL MODE: {mode}
 #. chrys-meta={"fingerprint":"de148dab0f6869f457e00ea34206a2399b38d3301cb1e4fbc7b8d6db8bb412a9","multiline":false,"placeholders":["mode"]}
 #: src/chrys/app/tui/widgets/chrome/app_header.py
@@ -4709,11 +4792,11 @@ msgstr "逐一批准需要审批的调用"
 msgid "tui.commands.description.agents"
 msgstr "管理智能体配置"
 
-#. English: Switch approval mode: manual → auto → auto-formal → bypass
-#. chrys-meta={"fingerprint":"086e42cc237aafe18af0caf5bd278a989d79ea2b9610d56b3758e491c8c3dcd6","multiline":false,"placeholders":[]}
+#. English: Switch approval mode: manual → auto → bypass
+#. chrys-meta={"fingerprint":"24ad985f3aedc2d87b38d1a17b6cadd4dfc38820322689fb9600b8de979dabd0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.approval"
-msgstr "切换审批模式：manual → auto → auto-formal → bypass"
+msgstr "切换审批模式：manual → auto → bypass"
 
 #. English: Hatch, pet and look after your buddy
 #. chrys-meta={"fingerprint":"cb54466977309d63bd1dd99072d253df407389fc282d6fa057cf0ec07fcbc13b","multiline":false,"placeholders":[]}
@@ -9458,6 +9541,18 @@ msgstr "工作流：{workflow}"
 msgid "tui.sessions.workflow_count"
 msgstr "{count_text} 个工作流会话"
 
+#. English: Direct review
+#. chrys-meta={"fingerprint":"3714fcf3e79dc48a90c520205f3d804d11bf58da150260c9203b2e219f0d1007","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/rows.py
+msgid "tui.settings.approval.auto_review.direct"
+msgstr "直接审查"
+
+#. English: Individual risk checks
+#. chrys-meta={"fingerprint":"a25f3cd3d83a9cdeb15a8810bbffb9a95010df5d6591760394023e7c9c35328d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/rows.py
+msgid "tui.settings.approval.auto_review.formal"
+msgstr "逐项风险检查"
+
 #. English: ⚠
 #. chrys-meta={"fingerprint":"eca56b71fa7c94e68d974945338ab5d8226beb51ebbe48fcc75bb2d90ecd061e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/rows.py
@@ -9637,6 +9732,13 @@ msgstr "下次启动时默认使用的智能体。"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.app.update_check"
 msgstr "每天启动时最多查询一次最新版本，并显示在欢迎页上。不会发送任何个人数据。"
+
+#. English: Only used in auto mode. Defaults to direct review. Reload settings
+#. to apply.
+#. chrys-meta={"fingerprint":"8cb684e1042946b6102571a32dab047a04d81006451537b52d1d85012c23723d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.auto_review"
+msgstr "只在自动模式下生效，默认直接审查。重载设置后生效。"
 
 #. English: Approval mode at the next launch; /approval changes both the
 #. current session and this default. /approval bypass applies to the current
@@ -14264,6 +14366,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "tui.app.open_visible_diagram"
 #~ msgstr "打开可见图表"
 
+#~ msgid "tui.approval_mode.description.auto_formal"
+#~ msgstr "逐项检查风险，按固定规则审批；判断不明确时由模型复核。"
+
 #~ msgid "tui.ask_user.progress.compact"
 #~ msgstr "{index}/{total} · {header}"
 
@@ -14291,6 +14396,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.chat.copy_agent_response_button"
 #~ msgstr "复制"
+
+#~ msgid "tui.chrome.approval_mode.auto_formal"
+#~ msgstr "自动（Formal）"
 
 #~ msgid "tui.commands.approval.auto"
 #~ msgstr "自动批准安全调用并标记可疑调用"

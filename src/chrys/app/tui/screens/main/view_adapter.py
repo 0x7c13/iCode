@@ -102,7 +102,12 @@ def _push_screen_untyped(app: Any, screen: object, callback: object | None = Non
 def _judge_verdict(event: ApprovalReviewed) -> JudgeVerdict:
     from chrys.service.approval.judge import JudgeVerdict
 
-    return JudgeVerdict(approved=event.approved, reason=event.reason)
+    return JudgeVerdict(
+        approved=event.approved,
+        reason=event.reason,
+        triggered=event.triggered,
+        failure_reason=event.failure_reason,
+    )
 
 
 class _StatusFlashKwargs(TypedDict, total=False):

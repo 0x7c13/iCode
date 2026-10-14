@@ -55,7 +55,6 @@ class ApprovalDecisionArbiter:
         approved_value: Any,
         log_dir: Path | None,
         on_verdict: Callable[[JudgeVerdict], None] | None = None,
-        formal: bool = False,
     ) -> None:
         """Publish a verdict and fulfil only while no user decision has won."""
         from chrys.service.approval.judge import FormalEvaluationCancelled, JudgeVerdict
@@ -74,7 +73,6 @@ class ApprovalDecisionArbiter:
                 workspace_roots=list(judge_input.workspace_roots),
                 request_id=request_id,
                 log_dir=log_dir,
-                formal=formal,
             )
         except FormalEvaluationCancelled as exc:
             # Owner-only evidence (e.g. ACP audit ring); no UI verdict and no
@@ -90,15 +88,17 @@ class ApprovalDecisionArbiter:
         # Middleware cancels the task when a human responds.  This additional
         # guard covers a response that wins while a provider cancellation is
         # being delivered, so no late Judge verdict reaches the UI.
-        if decision_future.done():
-            return
         if on_verdict is not None:
             on_verdict(verdict)
+        if decision_future.done():
+            return
         await self._bus.publish(
             ApprovalReviewed(
                 request_id=request_id,
                 approved=verdict.approved,
                 reason=verdict.reason,
+                triggered=verdict.triggered,
+                failure_reason=verdict.failure_reason,
                 session_id=self._session_id,
             )
         )

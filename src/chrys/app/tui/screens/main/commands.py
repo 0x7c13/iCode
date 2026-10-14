@@ -11,11 +11,7 @@ from typing import Protocol
 
 from textual.content import Content
 
-from chrys.app.tui.screens.dialogs.approval.mode import (
-    MODE_AUTO_DESCRIPTION,
-    MODE_AUTO_FORMAL_DESCRIPTION,
-    MODE_BYPASS_DESCRIPTION,
-)
+from chrys.app.tui.screens.dialogs.approval.mode import MODE_AUTO_DESCRIPTION, MODE_BYPASS_DESCRIPTION
 from chrys.app.tui.screens.main.buddy_command import BuddyCommandController
 from chrys.app.tui.widgets.chrome.commands import (
     ManPageHeading,
@@ -74,7 +70,7 @@ _DESCRIPTION_ROLLBACK = msg(
 )
 _DESCRIPTION_APPROVAL = msg(
     "tui.commands.description.approval",
-    fallback="Switch approval mode: manual → auto → auto-formal → bypass",
+    fallback="Switch approval mode: manual → auto → bypass",
 )
 _DESCRIPTION_MODELS = msg(
     "tui.commands.description.models",
@@ -673,7 +669,6 @@ class MainSlashCommandRegistry:
             modes = [
                 ("manual", _APPROVAL_MANUAL.bind()),
                 ("auto", MODE_AUTO_DESCRIPTION.bind()),
-                ("auto-formal", MODE_AUTO_FORMAL_DESCRIPTION.bind()),
                 ("bypass", MODE_BYPASS_DESCRIPTION.bind()),
             ]
             return [
@@ -992,7 +987,6 @@ class MainSlashCommandRegistry:
                         (
                             ("    manual  - ", _APPROVAL_MANUAL.bind()),
                             ("    auto    - ", MODE_AUTO_DESCRIPTION.bind()),
-                            ("    auto-formal - ", MODE_AUTO_FORMAL_DESCRIPTION.bind()),
                             ("    bypass  - ", MODE_BYPASS_DESCRIPTION.bind()),
                         ),
                         indent=8,

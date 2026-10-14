@@ -90,8 +90,9 @@ class WorkflowSessionOwner:
         )
         self.usage = SessionUsagePublisher(bus=bus, session=self.session)
         self.trajectory: SessionTrajectory | None = None
-        self._judge_model: Callable[[ModelProfile | None], tuple[ModelProfile, ModelProfile]] | None = None
-        self._judges: dict[tuple[str, str], ApprovalJudge] = {}
+        self._judge_model: Callable[[ModelProfile | None], ModelProfile] | None = None
+        self._judges: dict[str, ApprovalJudge] = {}
+        self._auto_review = "direct"
         self.state: WorkflowSessionState | None = None
         self.title = ""
         self.hooks_transferred = False
@@ -238,11 +239,11 @@ class WorkflowSessionOwner:
     def _prepare_agents(self, settings: Settings, model_registry: ModelProfileRegistry | None) -> None:
         run_model = resolve_active_profile(model_registry, settings)
 
-        def judge_model(node_model: ModelProfile | None) -> tuple[ModelProfile, ModelProfile]:
-            reasoning_model = run_model if node_model is None else node_model
-            return resolve_judge_profile(model_registry, settings, reasoning_model), reasoning_model
+        def judge_model(node_model: ModelProfile | None) -> ModelProfile:
+            return resolve_judge_profile(model_registry, settings, run_model if node_model is None else node_model)
 
         self._judge_model = judge_model
+        self._auto_review = settings.approval_auto_review
         self._judges = {}
 
     def judge_for(self, node_model: ModelProfile | None) -> ApprovalJudge | None:
@@ -251,25 +252,24 @@ class WorkflowSessionOwner:
         With no judge model configured, the judge follows its node. A run needs no model of its
         own when every node brings one (its own, or its agent profile's), and a judge left on the
         run's missing model would fail every call those nodes make. A node without a model (ACP)
-        gets the run's. Formal judges are shared only when both model profiles match.
+        gets the run's.
         """
         if self._judge_model is None:
             return None
         session = self.session
         session_id = self.require_session_id()
-        profile, reasoning_profile = self._judge_model(node_model)
-        key = (profile.id, reasoning_profile.id)
-        judge = self._judges.get(key)
+        profile = self._judge_model(node_model)
+        judge = self._judges.get(profile.id)
         if judge is None:
             judge = ApprovalJudge(
                 profile,
-                reasoning_profile=reasoning_profile,
+                auto_review=self._auto_review,
                 session_id=derive_llm_route_session_id(session_id, route_kind="approval-judge", model_profile=profile),
                 parent_session_id=session_id,
                 session_dir=session.session_dir,
             )
             self._resources.own(judge.aclose)
-            self._judges[key] = judge
+            self._judges[profile.id] = judge
         return judge
 
     async def checkpoint(self) -> None:

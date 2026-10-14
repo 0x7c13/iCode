@@ -195,7 +195,9 @@ class ApprovalTrace:
         except Exception:
             logger.debug("Trajectory approval.resolved emit failed", exc_info=True)
 
-    def interrupted_soon(self, *, reason_code: str = "interrupted") -> None:
+    def interrupted_soon(
+        self, *, reason_code: str = "interrupted", judge_audit: Mapping[str, Any] | None = None
+    ) -> None:
         """Close a request nobody answered (queued in order, ack not awaited).
 
         The interrupt that abandons an approval also cancels the task waiting
@@ -213,6 +215,7 @@ class ApprovalTrace:
             decider=ApprovalDecider.NONE,
             reason_code=reason_code,
             arguments_modified=False,
+            judge_audit=judge_audit,
         )
         try:
             self._context.sink.emit_soon(draft)
@@ -231,10 +234,6 @@ def _bounded_formal_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
         "decision_version",
         "asset_digest",
         "usage",
-        "application_attempts",
-        "transport_attempts",
-        "transport_count_available",
-        "usage_complete",
         "approved",
     )
 

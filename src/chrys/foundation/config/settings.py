@@ -69,7 +69,7 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 0
 DEFAULT_APPROVAL_MODE = "manual"
 """Fallback approval mode when ``CHRYS_DEFAULT_APPROVAL_MODE`` is empty, missing, or invalid.
 
-Valid values are ``manual``, ``auto``, ``auto-formal``, ``bypass``.  The persistence helper
+Valid values are ``manual``, ``auto``, ``bypass``.  The persistence helper
 (:func:`persist_approval_mode`) deliberately downgrades ``bypass`` to ``auto``
 so that Chrys never launches in BYPASS mode — that mode is opt-in per launch:
 once chosen it stays in force for every session until the app exits.
@@ -84,7 +84,7 @@ DEFAULT_EDITOR_KEYMAP = "standard"
 SESSION_ROOT_DIR_ENV_VAR: Final[str] = "CHRYS_SESSION_ROOT_DIR"
 """Base directory for session storage. The actual session store lives under ``sessions/`` within it."""
 
-_VALID_APPROVAL_MODES = ("manual", "auto", "auto-formal", "bypass")
+_VALID_APPROVAL_MODES = ("manual", "auto", "bypass")
 _VALID_EDITOR_KEYMAPS = ("standard", "emacs", "vim")
 
 _TRUTHY_ENV = {"1", "true", "yes", "on"}
@@ -672,6 +672,7 @@ _LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
     "settings.approval.timeout_seconds.label", fallback="Human approval timeout (seconds)"
 )
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
+_LABEL_APPROVAL_AUTO_REVIEW = msg("settings.approval.auto_review.label", fallback="Automatic review strategy")
 _LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
     "settings.ui.approval.defer_while_judging.label",
     fallback="Show the approval dialog only when Auto-Review flags a call",
@@ -1083,7 +1084,7 @@ class Settings:
 
     # ── Approval ──────────────────────────────────────────────────
     # Persisted default approval mode applied at engine startup.  One of
-    # ``manual`` / ``auto`` / ``auto-formal`` / ``bypass``. Invalid or missing values fall
+    # ``manual`` / ``auto`` / ``bypass``.  Invalid or missing values fall
     # back to :data:`DEFAULT_APPROVAL_MODE`.  :func:`persist_approval_mode`
     # maps ``bypass`` → ``auto`` on write so Chrys never boots directly
     # into BYPASS mode.
@@ -1100,6 +1101,21 @@ class Settings:
             choices=_VALID_APPROVAL_MODES,
             risk=Risk.DANGEROUS,
             # Falling through could land on a persisted ``bypass``.
+            invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+
+    approval_auto_review: str = field(
+        default="direct",
+        metadata=spec(
+            key="approval.auto_review",
+            label=_LABEL_APPROVAL_AUTO_REVIEW,
+            env="CHRYS_APPROVAL_AUTO_REVIEW",
+            coerce=choice_coercer(choices=("direct", "formal")),
+            choices=("direct", "formal"),
+            apply=Apply.RELOAD,
+            group="approval",
+            kind=Kind.ENUM,
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
     )

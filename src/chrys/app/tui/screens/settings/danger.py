@@ -16,11 +16,10 @@ def is_dangerous_transition(key: str, old: Any, new: Any) -> bool:
     """Whether changing *key* from *old* to *new* lowers a safety posture.
 
     Turning a ``DANGEROUS`` boolean on, or moving the default approval mode
-    onto an automatic mode (fewer human approvals), asks first; the reverse never does.
+    onto ``auto`` (fewer human approvals), asks first; the reverse never does.
     """
     if key == APPROVAL_MODE_KEY:
-        automatic_modes = {"auto", "auto-formal"}
-        return new in automatic_modes and old not in automatic_modes
+        return new == "auto" and old != "auto"
     entry = specs_by_key(Settings).get(key)
     if entry is None or entry.risk is not Risk.DANGEROUS or entry.kind is not Kind.BOOL:
         return False

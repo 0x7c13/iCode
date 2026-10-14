@@ -55,7 +55,6 @@ class PredicateAsset:
 
     asset_version: str
     decision_version: str
-    project: str
     digest: str
     principles: tuple[Principle, ...]
 
@@ -112,7 +111,6 @@ def parse_asset(raw: bytes | str) -> PredicateAsset:
     return PredicateAsset(
         asset_version="risk-predicates-v1",
         decision_version=_DECISION_VERSION,
-        project="iCode",
         digest=asset_digest(digest_source),
         principles=tuple(principles),
     )
@@ -169,7 +167,6 @@ def validate_asset_snapshot(asset: PredicateAsset) -> None:
     if (
         asset.decision_version != _DECISION_VERSION
         or not _valid_text(asset.asset_version)
-        or not _valid_text(asset.project)
         or not isinstance(asset.digest, str)
         or len(asset.digest) != 64
         or any(character not in "0123456789abcdef" for character in asset.digest)

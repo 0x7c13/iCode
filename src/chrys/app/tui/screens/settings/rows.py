@@ -112,6 +112,9 @@ _ACTIVE_PLACEHOLDER_KEYS = frozenset(
 _APPROVAL_MODE_KEY = "approval.default_mode"
 _LOCALE_KEY = "ui.locale"
 _LOCALE_LABELS: dict[str, MessageDef] = dict(LANGUAGE_OPTIONS)
+_AUTO_REVIEW_DIRECT = msg("tui.settings.approval.auto_review.direct", fallback="Direct review")
+_AUTO_REVIEW_FORMAL = msg("tui.settings.approval.auto_review.formal", fallback="Individual risk checks")
+_AUTO_REVIEW_LABELS = {"direct": _AUTO_REVIEW_DIRECT, "formal": _AUTO_REVIEW_FORMAL}
 
 BADGE_SEPARATOR = " · "
 
@@ -364,6 +367,8 @@ class SelectRow(SettingRow):
         return options
 
     def _display_for(self, value: str) -> str:
+        if self.spec.key == "approval.auto_review":
+            return render_str(widget_localizer(self), _AUTO_REVIEW_LABELS[value].bind())
         if self.spec.key == _LOCALE_KEY and value in _LOCALE_LABELS:
             return render_str(widget_localizer(self), _LOCALE_LABELS[value].bind())
         return value

@@ -13,7 +13,7 @@ import pytest
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.service.llm.mock import MockChatClient
-from chrys.service.profiles.agents.schema import ModelConfig
+from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile, ModelConfig, SubAgentRef, SubAgentsConfig
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.orchestration.engine._recovery_helpers import _model_registry, _profile, _registry
 
@@ -74,7 +74,10 @@ async def test_a_judge_without_a_model_of_its_own_runs_on_the_agents_model(
     assert engine.current.loaded.approval_judge.profile == expected
 
 
-async def test_a_judge_with_a_model_of_its_own_keeps_it(agent_engine, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("auto_review", ["direct", "formal"])
+async def test_a_judge_with_a_model_of_its_own_keeps_it(
+    agent_engine, monkeypatch: pytest.MonkeyPatch, auto_review
+) -> None:
     import chrys.orchestration.engine.build.builder as builder_module
 
     monkeypatch.setattr(
@@ -86,7 +89,7 @@ async def test_a_judge_with_a_model_of_its_own_keeps_it(agent_engine, monkeypatc
     judge_profile = _JUDGE
     engine = agent_engine(
         EventBus(),
-        settings=Settings(approval_judge_model_profile=_JUDGE.id),
+        settings=Settings(approval_judge_model_profile=_JUDGE.id, approval_auto_review=auto_review),
         agent_registry=_registry(profile),
         model_registry=_model_registry(_PINNED, _OTHER, judge_profile),
     )
@@ -97,4 +100,31 @@ async def test_a_judge_with_a_model_of_its_own_keeps_it(agent_engine, monkeypatc
     assert engine.active_model_profile == _PINNED
     judge = engine.current.loaded.approval_judge
     assert judge.profile == judge_profile
-    assert judge._reasoning_judge.profile == _PINNED
+    assert judge._auto_review == auto_review
+
+
+@pytest.mark.parametrize("auto_review", ["direct", "formal"])
+@pytest.mark.parametrize("acp", [False, True])
+async def test_built_subagents_borrow_the_parent_judge(agent_engine, monkeypatch, auto_review, acp):
+    import chrys.orchestration.engine.build.builder as builder_module
+    import chrys.orchestration.sub_agents.tools as tools_module
+
+    for module in (builder_module, tools_module):
+        monkeypatch.setattr(
+            module, "create_client", create_autospec(module.create_client, return_value=MockChatClient(responses=[]))
+        )
+    child = AgentProfile(
+        name="Child", sub_agent_only=True, acp=AcpAgentConfig(command="unused-test-command") if acp else None
+    )
+    parent = replace(_profile("Code"), sub_agents=SubAgentsConfig(agents=[SubAgentRef(profile=child.name)]))
+    engine = agent_engine(
+        EventBus(),
+        settings=Settings(model_profile=_PINNED.id, approval_auto_review=auto_review),
+        agent_registry=_registry(parent, child),
+        model_registry=_model_registry(_PINNED),
+    )
+    await engine.start(parent)
+    loaded = engine.current.loaded
+    assert loaded.sub_agent_tools is not None
+    assert loaded.sub_agent_tools._approval_judge is loaded.approval_judge
+    assert loaded.approval_judge._auto_review == auto_review

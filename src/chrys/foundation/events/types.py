@@ -294,7 +294,7 @@ class SettingsReload(Event):
 
 @dataclass
 class SetApprovalMode(Event):
-    """User changes the approval mode (manual/auto/auto-formal/bypass).
+    """User changes the approval mode (manual/auto/bypass).
 
     The engine updates ``ApprovalMiddleware`` and echoes ``ApprovalModeUpdated``
     so the TUI can refresh the badge from the authoritative backend state.
@@ -302,7 +302,7 @@ class SetApprovalMode(Event):
     ACP standard session-mode changes are session-scoped and set this false.
     """
 
-    mode: str = ""  # "manual" | "auto" | "auto-formal" | "bypass"
+    mode: str = ""  # "manual" | "auto" | "bypass"
     persist: bool = True
 
 
@@ -713,6 +713,8 @@ class ApprovalReviewed(Event):
     request_id: str = ""
     approved: bool = False
     reason: str = ""
+    triggered: tuple[str, ...] = ()
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -722,7 +724,7 @@ class ApprovalModeUpdated(Event):
     for the header badge.
     """
 
-    mode: str = ""  # "manual" | "auto" | "auto-formal" | "bypass"
+    mode: str = ""  # "manual" | "auto" | "bypass"
 
 
 @dataclass

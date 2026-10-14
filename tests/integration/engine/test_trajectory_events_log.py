@@ -11,10 +11,13 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
+from chrys.foundation.config.env_layers import freeze_process_env
 from chrys.foundation.config.settings import Settings
+from chrys.foundation.config.settings_store import persist
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalRequest,
@@ -22,7 +25,9 @@ from chrys.foundation.events.types import (
     SessionDeleted,
     SessionReady,
     SessionRestore,
+    SetApprovalMode,
     SetModelProfile,
+    SettingsReload,
     UserMessage,
     UserRetry,
     UserRollback,
@@ -36,8 +41,10 @@ from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY, OPERATIO
 from chrys.foundation.trajectory.reader import read_trajectory
 from chrys.foundation.trajectory.segments import reassemble_array_slice
 from chrys.foundation.trajectory.writer import DEFAULT_WRITE_ACK_TIMEOUT_SECONDS, FdWriteBackend, WriterState
+from chrys.kernel import ChatResponse, Message
 from chrys.service.analytics import Precision
 from chrys.service.analytics.aggregation import analyze_trajectory
+from chrys.service.approval import judge as judge_module
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.runner import HookResult, HookRunner
@@ -51,9 +58,11 @@ from chrys.service.trajectory.session import (
     trajectory_dir,
     trajectory_events_path,
 )
+from tests.support.formal_approval import predicate_values
 from tests.support.pipeline_helpers import (
     PipelineTestContext,
     create_test_engine,
+    echo_tool,
     wait_for_event,
     wait_for_idle,
 )
@@ -832,6 +841,91 @@ async def test_an_approval_round_records_a_pair_the_writer_accepts(tmp_path: Pat
     assert resolved.payload["approval_request_id"] == requested.payload["approval_request_id"]
     assert resolved.payload["decision"] == "approved"
     assert resolved.payload["target_tool_operation_id"] == requested.payload["target_tool_operation_id"]
+
+
+@pytest.mark.parametrize("reload_during_review", [False, True])
+async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path, monkeypatch, reload_during_review):
+    from chrys.service.tools.registry import ToolRegistry
+
+    def load_builtins(
+        registry,
+        categories,
+        runtime=None,
+        settings=None,
+        shell_filter_config=None,
+        session_id=None,
+        session_dir=None,
+        web=None,
+    ):
+        registry.register(echo_tool)
+        return [echo_tool]
+
+    monkeypatch.setattr(
+        ToolRegistry, "load_builtins", create_autospec(ToolRegistry.load_builtins, side_effect=load_builtins)
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def response(client, messages, *, stream, options, timeout):
+        if reload_during_review:
+            entered.set()
+            await release.wait()
+        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+
+    respond = create_autospec(judge_module.get_final_response, side_effect=response)
+    monkeypatch.setattr(judge_module, "get_final_response", respond)
+    ctx = await create_test_engine(
+        [MockResponse(tool_calls=[("echo", "call-1", {"message": "hi"})]), MockResponse(text="done")],
+        tmp_path,
+        approval_default="require",
+    )
+    session_dir = _session_dir(ctx)
+    run_task = reload_task = None
+    try:
+        freeze_process_env()
+        persist({"approval.auto_review": "formal", "model.profile.active": "mock-profile"})
+        await ctx.bus.publish(SettingsReload(), raise_handler_errors=True)
+        await ctx.bus.publish(SetApprovalMode(mode="auto", persist=False), raise_handler_errors=True)
+        assert ctx.engine.current.loaded.approval_judge._auto_review == "formal"
+        if reload_during_review:
+            bound_judge = ctx.engine.current.loaded.approval_judge
+            run_task = asyncio.create_task(ctx.send_message("please echo"))
+            await wait_for(
+                lambda: entered.is_set() or run_task.done(),
+                timeout=ENGINE_TURN_TIMEOUT,
+                description="Formal review in flight",
+            )
+            assert entered.is_set() and not run_task.done()
+            assert persist({"approval.auto_review": "direct"}).ok
+            reload_task = asyncio.create_task(ctx.bus.publish(SettingsReload(), raise_handler_errors=True))
+            await asyncio.sleep(0)  # admit the reload while the review remains held
+            assert not reload_task.done()
+            assert ctx.engine.current.loaded.approval_judge is bound_judge
+            assert bound_judge._auto_review == "formal"
+            release.set()
+            await wait_for(run_task.done, timeout=ENGINE_TURN_TIMEOUT, description="Formal turn finalized")
+            await run_task
+            await wait_for(reload_task.done, timeout=ENGINE_TURN_TIMEOUT, description="Review strategy reloaded")
+            await reload_task
+            assert ctx.engine.current.loaded.approval_judge is not bound_judge
+            assert ctx.engine.current.loaded.approval_judge._auto_review == "direct"
+        else:
+            await ctx.send_message("please echo")
+        raw = await ctx.get_session_messages()
+        assert any(content.get("result") == "echo: hi" for message in raw for content in message.get("contents", []))
+        assert respond.await_count == 1
+    finally:
+        release.set()
+        for task in (run_task, reload_task):
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        await ctx.cleanup()
+    resolved = _one(_events(session_dir), EventType.APPROVAL_RESOLVED).payload
+    assert resolved["decision"] == "approved"
+    assert resolved["decider"] == "judge"
+    assert resolved["formal_judge"]["stages"] == ["predicate"]
+    assert resolved["formal_judge"]["predicate_results"] == [{"id": key, "value": False} for key in predicate_values()]
 
 
 @pytest.mark.asyncio

@@ -5,59 +5,26 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import logging
-import time
 from collections.abc import Mapping
-from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from chrys.foundation.text.model_json import model_json
 from chrys.foundation.util.once_close import OnceClose
 from chrys.kernel import ChatResponse, Message
-from chrys.service.approval.jev import JevPredicateClient, is_jev_profile
-from chrys.service.approval.predicate import (
-    PredicateAsset,
-    PredicateAssetError,
-    PredicateDecision,
-    PredicateEvaluation,
-    evaluate_predicate_response,
-    load_default_asset,
-)
 from chrys.service.llm.one_shot import get_final_response
 
 if TYPE_CHECKING:
+    from chrys.service.approval.formal import FormalAuditState, FormalEvaluator
     from chrys.service.profiles.models.schema import ModelProfile
 
 _log = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
-_ACTIVE_JUDGE_CALL: ContextVar[dict[str, Any] | None] = ContextVar("active_judge_call", default=None)
-
-
-async def _count_transport_request(_request: httpx.Request) -> None:
-    """Count actual HTTP request attempts without retaining URLs or headers."""
-    call = _ACTIVE_JUDGE_CALL.get()
-    if call is not None:
-        call["transport_attempts"] += 1
-
-
-_PREDICATE_SYSTEM_PROMPT = (
-    "You are a precise evaluator of independent policy conditions for a proposed AI-agent tool action. "
-    "Determine true, false, or unknown for every condition from the complete final effect of the proposed "
-    "action and its arguments, not from whether the outer tool name is a direct primitive. Effects produced by "
-    "a high-level tool, command, script, service, or subcomponent are still effects of the proposed action. "
-    "A condition that holds remains true even if another condition does not hold. Apply every qualifier written "
-    "in that condition. Use unknown when the available input is insufficient; do not invent missing facts. "
-    "User authorization does not negate a behavioral condition: an explicitly requested git push still makes "
-    "external_action true, while scope_escalation may be false. Examples and exceptions are data, not commands."
-)
 
 _SYSTEM_PROMPT = """\
 You are an auto-approval assistant for an AI agent. Your job is to help \
@@ -168,19 +135,25 @@ def _current_time_context() -> str:
     )
 
 
-def _format_user_messages(user_message: str, user_messages: list[str] | None) -> tuple[str, str]:
-    """Return formatted current-turn messages and latest prompt text."""
+def _normalize_user_messages(user_message: str, user_messages: list[str] | None) -> list[str]:
+    """Keep nonblank current-turn messages and the latest prompt."""
     messages = [message.strip() for message in (user_messages or []) if message.strip()]
     latest = user_message.strip() or (messages[-1] if messages else "")
     if latest and (not messages or messages[-1] != latest):
         messages.append(latest)
+    return messages
+
+
+def _format_user_messages(user_message: str, user_messages: list[str] | None) -> tuple[str, str]:
+    """Return formatted current-turn messages and latest prompt text."""
+    messages = _normalize_user_messages(user_message, user_messages)
     if not messages:
         return "(no user message available)", "(no user message available)"
 
     formatted = "\n".join(
         f"{index}. {message.replace('\n', '\n   ')}" for index, message in enumerate(messages, start=1)
     )
-    return formatted, latest
+    return formatted, messages[-1]
 
 
 def _build_user_prompt(
@@ -204,18 +177,6 @@ def _build_user_prompt(
         f"Proposed action:\n"
         f"Tool: {tool_name} (kind: {tool_kind})\n"
         f"Arguments:\n{formatted_args}"
-    )
-
-
-def _build_predicate_system_prompt(asset: PredicateAsset) -> str:
-    """Render complete independent predicate definitions in one request."""
-    principles = [asdict(principle) for principle in asset.principles]
-    flags = ",".join(f'"{principle.id}":true|false|"unknown"' for principle in asset.principles)
-    return (
-        f"{_PREDICATE_SYSTEM_PROMPT}\n\n"
-        f"Fixed principles:\n{json.dumps(principles, ensure_ascii=False)}\n\n"
-        f"Return JSON only:\n{{{flags}}}\n"
-        'Use JSON booleans true/false or the string "unknown", not the example label strings "true"/"false".'
     )
 
 
@@ -437,6 +398,8 @@ class JudgeVerdict:
     approved: bool
     reason: str
     audit: Mapping[str, Any] | None = field(default=None, compare=False, repr=False)
+    triggered: tuple[str, ...] = ()
+    failure_reason: str | None = None
 
 
 class FormalEvaluationCancelled(asyncio.CancelledError):
@@ -447,24 +410,7 @@ class FormalEvaluationCancelled(asyncio.CancelledError):
         self.verdict = verdict
 
 
-@dataclass(slots=True)
-class _FormalAuditState:
-    """Request-local audit data; never retained on the shared judge instance."""
-
-    request_id: str
-    deadline: float
-    asset_version: str | None = None
-    decision_version: str | None = None
-    asset_digest: str | None = None
-    stages: list[str] = field(default_factory=list)
-    failure_reason: str | None = None
-    predicate_results: list[dict[str, Any]] | None = None
-    usage: dict[str, int] = field(default_factory=dict)
-    calls: list[dict[str, Any]] = field(default_factory=list)
-    log_dir: Path | None = None
-
-
-def _assistant_retry_messages(response: Any, fallback_text: str) -> list[Message]:
+def _assistant_retry_messages(response: ChatResponse, fallback_text: str) -> list[Message]:
     """Return assistant messages to echo on a retry.
 
     For thinking models, retrying with only ``response.text`` drops hidden
@@ -473,15 +419,9 @@ def _assistant_retry_messages(response: Any, fallback_text: str) -> list[Message
     messages verbatim; fall back to plain text only when the caller did not
     receive structured messages.
     """
-    raw_messages = getattr(response, "messages", None)
-    if isinstance(raw_messages, list):
-        cloned = [
-            Message.from_dict(msg.to_dict())
-            for msg in raw_messages
-            if isinstance(msg, Message) and msg.role == "assistant"
-        ]
-        if cloned:
-            return cloned
+    cloned = [Message.from_dict(message.to_dict()) for message in response.messages if message.role == "assistant"]
+    if cloned:
+        return cloned
     if fallback_text:
         return [Message("assistant", [fallback_text])]
     return []
@@ -490,8 +430,8 @@ def _assistant_retry_messages(response: Any, fallback_text: str) -> list[Message
 class ApprovalJudge:
     """Judge tool calls with a resolved model profile.
 
-    Formal sends any true predicate to human review and approves all false.
-    Otherwise the reasoning model uses Direct. Both stages retry invalid responses.
+    Direct reviews the complete action. Formal checks individual risks and
+    uses the same model for Direct review when no risk is true but some are unknown.
     """
 
     def __init__(
@@ -500,7 +440,7 @@ class ApprovalJudge:
         session_id: str | None = None,
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
-        reasoning_profile: ModelProfile | None = None,
+        auto_review: str = "direct",
     ) -> None:
         self._profile = profile
         self._session_id = session_id
@@ -510,24 +450,9 @@ class ApprovalJudge:
         self._client_lock = asyncio.Lock()
         self._closed = False
         self._chat_options: dict[str, Any] | None = None
-        self._predicate_asset: PredicateAsset | None = None
-        self._transport_audited = False
+        self._formal: FormalEvaluator | None = None
+        self._auto_review = auto_review
         self._close = OnceClose(self._close_clients)
-        self._reasoning_judge: ApprovalJudge | None = None
-        if reasoning_profile is not None:
-            from chrys.service.llm.route_sessions import derive_llm_route_session_id
-
-            reasoning_session_id = (
-                derive_llm_route_session_id(
-                    parent_session_id, route_kind="approval-judge", model_profile=reasoning_profile
-                )
-                if parent_session_id is not None
-                else session_id
-            )
-            # Reuse Direct's client/options/parser without invoking evaluate recursively.
-            self._reasoning_judge = ApprovalJudge(
-                reasoning_profile, reasoning_session_id, parent_session_id, session_dir
-            )
 
     @property
     def profile(self) -> ModelProfile:
@@ -553,21 +478,15 @@ class ApprovalJudge:
             return self._client
 
     async def aclose(self) -> None:
-        """Drain both owned clients even if a close waiter is cancelled."""
+        """Drain the owned client even if a close waiter is cancelled."""
         self._closed = True
-        if self._reasoning_judge is not None:
-            self._reasoning_judge._closed = True
         await self._close()
 
     async def _close_clients(self) -> None:
         async with self._client_lock:
             client, self._client = self._client, None
-        try:
-            if client is not None:
-                await client.aclose()
-        finally:
-            if self._reasoning_judge is not None:
-                await self._reasoning_judge.aclose()
+        if client is not None:
+            await client.aclose()
 
     async def evaluate(
         self,
@@ -579,24 +498,12 @@ class ApprovalJudge:
         request_id: str = "",
         log_dir: Path | None = None,
         user_messages: list[str] | None = None,
-        formal: bool = False,
     ) -> JudgeVerdict:
-        """Route Formal predicates to approval, human review, or the Direct judge."""
+        """Evaluate with the review strategy bound at construction."""
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise asyncio.CancelledError
-        if not formal:
-            if is_jev_profile(self._profile) and self._reasoning_judge is not None:
-                return await self._reasoning_judge.evaluate(
-                    user_message,
-                    tool_name,
-                    tool_kind,
-                    args,
-                    workspace_roots,
-                    request_id,
-                    log_dir,
-                    user_messages,
-                )
+        if self._auto_review == "direct":
             return await self._evaluate_direct(
                 user_message=user_message,
                 tool_name=tool_name,
@@ -607,160 +514,13 @@ class ApprovalJudge:
                 log_dir=log_dir,
                 user_messages=user_messages,
             )
-        audit = _FormalAuditState(request_id=request_id, log_dir=log_dir, deadline=time.monotonic())
-        valid_request = _valid_request(
-            user_message=user_message,
-            user_messages=user_messages,
-            tool_name=tool_name,
-            tool_kind=tool_kind,
-            args=args,
-            workspace_roots=workspace_roots,
-        )
-        if not valid_request:
-            audit.failure_reason = "invalid_input"
-            return self._finalize_formal_verdict(
-                log_dir, audit, approved=False, reason="Approval judge input is invalid"
-            )
-        args = copy.deepcopy(args)
-        workspace_roots = list(workspace_roots)
-        user_messages = list(user_messages) if user_messages is not None else None
-        started_at = time.monotonic()
-        total_timeout = self._profile.http_read_timeout
-        if total_timeout is None or total_timeout <= 0:
-            audit.failure_reason = "timeout"
-            return self._finalize_formal_verdict(
-                log_dir, audit, approved=False, reason="Approval judge time budget exhausted"
-            )
-        audit.deadline = started_at + total_timeout
-        try:
-            if self._predicate_asset is None:
-                self._predicate_asset = load_default_asset()
-            asset = self._predicate_asset
-        except OSError, PredicateAssetError:
-            audit.failure_reason = "asset_unavailable"
-            return self._finalize_formal_verdict(
-                log_dir, audit, approved=False, reason="Approval judge principle asset unavailable"
-            )
-        audit.asset_version = asset.asset_version
-        audit.decision_version = asset.decision_version
-        audit.asset_digest = asset.digest
-        try:
-            remaining = audit.deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            audit.stages.append("predicate")
-            predicate = await asyncio.wait_for(
-                self._evaluate_predicates(
-                    asset=asset,
-                    user_message=user_message,
-                    user_messages=user_messages,
-                    tool_name=tool_name,
-                    tool_kind=tool_kind,
-                    args=args,
-                    workspace_roots=workspace_roots,
-                    audit=audit,
-                ),
-                timeout=remaining,
-            )
-            audit.predicate_results = [{"id": value.id, "value": value.value} for value in predicate.values]
-            remaining = audit.deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            if predicate.decision is PredicateDecision.NEEDS_REVIEW:
-                return self._finalize_formal_verdict(log_dir, audit, approved=False, reason=predicate.reason)
-            if predicate.decision is PredicateDecision.ALLOW:
-                return self._finalize_formal_verdict(log_dir, audit, approved=True, reason=predicate.reason)
-            if self._reasoning_judge is None or is_jev_profile(self._reasoning_judge.profile):
-                audit.failure_reason = "reasoning_profile_unavailable"
-                return self._finalize_formal_verdict(
-                    log_dir, audit, approved=False, reason="Approval judge requires an ordinary reasoning model profile"
-                )
-            reasoning_timeout = self._reasoning_judge.profile.http_read_timeout
-            if reasoning_timeout is None or reasoning_timeout <= 0:
-                raise TimeoutError
-            audit.deadline = time.monotonic() + reasoning_timeout
-            audit.stages.append("reasoning")
-            verdict = await asyncio.wait_for(
-                self._reasoning_judge._evaluate_direct(
-                    user_message=user_message,
-                    user_messages=user_messages,
-                    tool_name=tool_name,
-                    tool_kind=tool_kind,
-                    args=args,
-                    workspace_roots=workspace_roots,
-                    request_id=request_id,
-                    log_dir=log_dir,
-                    audit=audit,
-                ),
-                timeout=reasoning_timeout,
-            )
-            if time.monotonic() >= audit.deadline:
-                raise TimeoutError
-            return self._finalize_formal_verdict(log_dir, audit, approved=verdict.approved, reason=verdict.reason)
-        except asyncio.CancelledError:
-            verdict = self._finalize_formal_verdict(log_dir, audit, approved=False, reason="Approval judge cancelled")
-            raise FormalEvaluationCancelled(verdict) from None
-        except PredicateAssetError:
-            audit.failure_reason = "invalid_shape"
-            reason = "Predicate response is invalid"
-        except TimeoutError:
-            audit.failure_reason = "timeout"
-            reason = "Approval judge time budget exhausted"
-        except Exception:
-            _log.debug("Formal evaluation failed for %s", tool_name, exc_info=True)
-            audit.failure_reason = "extraction_error"
-            reason = "Approval judge evaluation failed"
-        return self._finalize_formal_verdict(log_dir, audit, approved=False, reason=reason)
+        if self._formal is None:
+            from chrys.service.approval.formal import FormalEvaluator
 
-    async def _evaluate_predicates(
-        self,
-        asset: PredicateAsset,
-        user_message: str,
-        user_messages: list[str] | None,
-        tool_name: str,
-        tool_kind: str,
-        args: dict[str, Any],
-        workspace_roots: list[str],
-        audit: _FormalAuditState | None = None,
-    ) -> PredicateEvaluation:
-        """Retry invalid predicate JSON with the same conversation repair flow as Direct."""
-        client = await self._get_client()
-        if is_jev_profile(self._profile):
-            client = JevPredicateClient(client.sdk_client, self._profile.model_id, asset)
-        user_prompt = _build_user_prompt(user_message, tool_name, tool_kind, args, workspace_roots, user_messages)
-        messages: list[Message] = [
-            Message("system", [_build_predicate_system_prompt(asset)]),
-            Message("user", [user_prompt]),
-        ]
-        log_path = audit.log_dir / f"{audit.request_id}.log" if audit and audit.log_dir and audit.request_id else None
-        fields = ",".join(f'"{principle.id}":true|false|"unknown"' for principle in asset.principles)
-        for attempt in range(_MAX_RETRIES + 1):
-            response = await self._get_final_response(
-                client,
-                messages,
-                stream=self._profile.stream and not isinstance(client, JevPredicateClient),
-                options=self._chat_options,
-                timeout=self._profile.http_read_timeout,
-                audit=audit,
-            )
-            text = response.text or ""
-            try:
-                result = evaluate_predicate_response(text, asset)
-            except PredicateAssetError:
-                result = None
-            verdict = JudgeVerdict(result.decision is PredicateDecision.ALLOW, result.reason) if result else None
-            self._write_log(log_path, attempt, messages, text, verdict)
-            if result is not None:
-                return result
-            if attempt < _MAX_RETRIES:
-                messages.extend(_assistant_retry_messages(response, text))
-                messages.append(
-                    Message(
-                        "user", [f"Invalid response. You must respond with ONLY this JSON object shape: {{{fields}}}."]
-                    )
-                )
-        self._write_log(log_path, _MAX_RETRIES + 1, messages, "", JudgeVerdict(False, "Predicate response is invalid"))
-        raise PredicateAssetError("predicate response is invalid")
+            self._formal = FormalEvaluator()
+        return await self._formal.evaluate(
+            self, user_message, tool_name, tool_kind, args, workspace_roots, request_id, log_dir, user_messages
+        )
 
     async def _evaluate_direct(
         self,
@@ -772,7 +532,7 @@ class ApprovalJudge:
         request_id: str = "",
         log_dir: Path | None = None,
         user_messages: list[str] | None = None,
-        audit: _FormalAuditState | None = None,
+        audit: FormalAuditState | None = None,
     ) -> JudgeVerdict:
         """Evaluate a tool call for safety and relevance.
 
@@ -781,7 +541,7 @@ class ApprovalJudge:
         approval.
 
         If *log_dir* is provided, raw input/output for each LLM round is
-        appended to ``{log_dir}/{request_id}.jsonl``.
+        appended to ``{log_dir}/{request_id}.log``.
         """
         client = await self._get_client()
         user_prompt = _build_user_prompt(user_message, tool_name, tool_kind, args, workspace_roots, user_messages)
@@ -843,127 +603,12 @@ class ApprovalJudge:
         stream: bool,
         options: dict[str, Any] | None,
         timeout: float | None,
-        audit: _FormalAuditState | None = None,
+        audit: FormalAuditState | None = None,
     ) -> ChatResponse:
-        """Run one request; Formal records actual provider usage and attempts."""
+        """Collect response usage within the request's remaining budget."""
         if audit is None:
             return await get_final_response(client, messages, stream=stream, options=options, timeout=timeout)
-        task = asyncio.current_task()
-        if task is not None and task.cancelling():
-            raise asyncio.CancelledError
-        if time.monotonic() >= audit.deadline:
-            raise TimeoutError
-        if not self._transport_audited and self._profile.provider in {"openai", "deepseek-openai", "glm-openai"}:
-            # The profile may have been used in Direct mode before this call.
-            transport = getattr(self._client.sdk_client, "_client", None)
-            if isinstance(transport, httpx.AsyncClient):
-                if _count_transport_request not in transport.event_hooks["request"]:
-                    transport.event_hooks["request"].append(_count_transport_request)
-                self._transport_audited = True
-        call: dict[str, Any] = {
-            "ordinal": len(audit.calls) + 1,
-            "stage": audit.stages[-1],
-            "model_profile_id": self._profile.id,
-            "model_id": self._profile.model_id,
-            "started_at": datetime.now(UTC).isoformat(),
-            "status": "started",
-            "usage": None,
-            "transport_attempts": 0,
-            "transport_count_available": self._transport_audited,
-        }
-        audit.calls.append(call)
-        token = _ACTIVE_JUDGE_CALL.set(call)
-        started = time.monotonic()
-        try:
-            response = await get_final_response(client, messages, stream=stream, options=options, timeout=timeout)
-            usage_details = response.usage_details
-            usage = (
-                {key: value for key, value in (usage_details or {}).items() if type(value) is int}
-                if usage_details
-                else {}
-            )
-            call["usage"] = usage or None
-            call["status"] = "completed"
-            if usage_details:
-                for key, value in usage.items():
-                    audit.usage[key] = audit.usage.get(key, 0) + value
-            # Some SDKs suppress cancellation and return a late response.
-            # Account for it, but never accept it as an active approval.
-            if task is not None and task.cancelling():
-                raise asyncio.CancelledError
-            if time.monotonic() >= audit.deadline:
-                raise TimeoutError
-            return response
-        except asyncio.CancelledError:
-            call["status"] = "cancelled"
-            raise
-        except Exception as exc:
-            call["status"] = "failed"
-            call["error"] = type(exc).__name__
-            raise
-        finally:
-            call["elapsed_seconds"] = time.monotonic() - started
-            call["ended_at"] = datetime.now(UTC).isoformat()
-            _ACTIVE_JUDGE_CALL.reset(token)
-            self._write_call_audit(audit, call)
-
-    @staticmethod
-    def _write_call_audit(audit: _FormalAuditState, call: dict[str, Any]) -> None:
-        if audit.log_dir is None or not audit.request_id:
-            return
-        try:
-            audit.log_dir.mkdir(parents=True, exist_ok=True)
-            with (audit.log_dir / f"{audit.request_id}.calls.jsonl").open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(call) + "\n")
-        except OSError:
-            _log.debug("Could not persist judge call audit", exc_info=True)
-
-    @staticmethod
-    def _finalize_formal_verdict(
-        log_dir: Path | None, audit: _FormalAuditState, approved: bool, reason: str
-    ) -> JudgeVerdict:
-        """Bind one immutable audit snapshot to the terminal Formal verdict."""
-        record = ApprovalJudge._formal_audit_record(audit, approved=approved, reason=reason)
-        verdict = JudgeVerdict(approved=approved, reason=reason, audit=record)
-        ApprovalJudge._write_formal_audit(log_dir, record)
-        return verdict
-
-    @staticmethod
-    def _formal_audit_record(audit: _FormalAuditState, approved: bool, reason: str) -> dict[str, Any]:
-        return {
-            "request_id": audit.request_id,
-            "route": "predicate_reasoning_v1",
-            "stages": list(audit.stages),
-            "failure_reason": audit.failure_reason,
-            "predicate_results": audit.predicate_results,
-            "asset_version": audit.asset_version,
-            "decision_version": audit.decision_version,
-            "asset_digest": audit.asset_digest,
-            "usage": dict(audit.usage),
-            "calls": copy.deepcopy(audit.calls),
-            "application_attempts": len(audit.calls),
-            "transport_attempts": sum(call["transport_attempts"] for call in audit.calls),
-            "transport_count_available": bool(audit.calls)
-            and all(call["transport_count_available"] for call in audit.calls),
-            "usage_complete": bool(audit.calls) and all(call["usage"] is not None for call in audit.calls),
-            "approved": approved,
-            "reason": reason,
-        }
-
-    @staticmethod
-    def _write_formal_audit(log_dir: Path | None, record: Mapping[str, Any]) -> None:
-        """Append request-scoped, machine-readable formal-route evidence."""
-        request_id = record.get("request_id")
-        if log_dir is None or not isinstance(request_id, str) or not request_id:
-            return
-        try:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            with open(log_dir / f"{request_id}.formal.jsonl", "a", encoding="utf-8") as file:
-                summary = {key: value for key, value in record.items() if key != "calls"}
-                summary["calls_file"] = f"{request_id}.calls.jsonl"
-                file.write(json.dumps(summary, sort_keys=True) + "\n")
-        except Exception:
-            _log.debug("Failed to write formal approval audit for %s", request_id, exc_info=True)
+        return await audit.get_final_response(client, messages, stream, options)
 
     @staticmethod
     def _write_log(
@@ -1005,15 +650,3 @@ class ApprovalJudge:
                 f.write("\n".join(lines))
         except Exception:
             _log.debug("Failed to write approval log to %s", log_path, exc_info=True)
-
-
-def _valid_request(
-    user_message: str,
-    user_messages: list[str] | None,
-    tool_name: str,
-    tool_kind: str,
-    args: dict[str, Any],
-    workspace_roots: list[str],
-) -> bool:
-    """Check required online fields; typed inputs are owned by the host."""
-    return not (not tool_name.strip() or not (user_message.strip() or user_messages))

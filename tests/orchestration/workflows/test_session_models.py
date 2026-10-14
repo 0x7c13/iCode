@@ -409,7 +409,8 @@ async def test_a_judge_without_a_model_of_its_own_runs_on_its_nodes_model(
         await host.shutdown()
 
 
-async def test_workflow_judge_binds_reasoning_to_its_node_and_shares_only_matching_profiles(tmp_path):
+@pytest.mark.parametrize("auto_review", ["direct", "formal"])
+async def test_workflow_judge_uses_run_strategy_and_shares_matching_profiles(tmp_path, auto_review):
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
@@ -420,7 +421,7 @@ async def test_workflow_judge_binds_reasoning_to_its_node_and_shares_only_matchi
     registry = ModelProfileRegistry()
     main = ModelProfile(id="main", name="Main", model_id="reasoning-main")
     node = replace(main, id="node", name="Node", model_id="reasoning-node")
-    judge_profile = replace(main, id="judge", name="Judge", model_id="typesafe/jev-test")
+    judge_profile = replace(main, id="judge", name="Judge", model_id="judge-test")
     for profile in (main, node, judge_profile):
         registry.register(profile)
     bus = EventBus()
@@ -430,13 +431,15 @@ async def test_workflow_judge_binds_reasoning_to_its_node_and_shares_only_matchi
         session_id="workflow-test",
         workspace=Workspace.from_cwd(str(tmp_path)),
     )
-    owner._prepare_agents(Settings(model_profile=main.id, approval_judge_model_profile=judge_profile.id), registry)
+    settings = Settings(
+        model_profile=main.id, approval_judge_model_profile=judge_profile.id, approval_auto_review=auto_review
+    )
+    owner._prepare_agents(settings, registry)
     try:
         first, second = owner.judge_for(None), owner.judge_for(node)
         assert first.profile == second.profile == judge_profile
         assert owner.judge_for(node) is second
-        assert first is not second
-        assert first._reasoning_judge.profile == main
-        assert second._reasoning_judge.profile == node
+        assert first is second
+        assert first._auto_review == auto_review
     finally:
         await owner.close()

@@ -82,7 +82,7 @@ async def test_mounting_the_dialog_writes_nothing_and_focuses_a_control() -> Non
         assert ports.notification_ports.saved == []
         assert isinstance(dialog.focused, Select)
         rows = dialog.rows()
-        assert len(rows) == ROW_COUNT == 35
+        assert len(rows) == ROW_COUNT == 36
         assert all(row.spec.key != "trajectory.verify_commands" for row in rows)
         assert dialog.query_one(TabbedContent).active == pane_id(GENERAL_TAB_ID)
 
@@ -286,8 +286,7 @@ async def test_select_row_injects_the_current_value_when_it_is_not_a_choice() ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["auto", "auto-formal"])
-async def test_approval_mode_row_hides_bypass_and_confirms_the_move_to_automatic(mode: str) -> None:
+async def test_approval_mode_row_hides_bypass_and_confirms_only_the_move_to_auto() -> None:
     ports = StubPorts()
     app = Host()
     async with app.run_test(size=(100, 40)) as pilot:
@@ -295,13 +294,13 @@ async def test_approval_mode_row_hides_bypass_and_confirms_the_move_to_automatic
         await pilot.pause()
         rows = _rows(dialog)
         select = rows["approval.default_mode"].query_one(Select)
-        assert [value for _prompt, value in select._options] == ["manual", "auto", "auto-formal"]
+        assert [value for _prompt, value in select._options] == ["manual", "auto"]
 
-        select.value = mode
+        select.value = "auto"
         await pilot.pause()
         assert len(ports.confirms) == 1
         assert format_message(ports.confirms[0]).startswith("Auto mode lets a model approve")
-        assert ports.persisted == [{"approval.default_mode": mode}]
+        assert ports.persisted == [{"approval.default_mode": "auto"}]
 
         select.value = "manual"
         await pilot.pause()
@@ -684,12 +683,7 @@ async def test_an_env_pinned_bypass_shows_as_the_current_choice_without_writing(
 
         assert select.disabled is True
         assert select.value == "bypass"
-        assert [str(prompt) for prompt, _value in select._options] == [
-            "manual",
-            "auto",
-            "auto-formal",
-            "bypass (current)",
-        ]
+        assert [str(prompt) for prompt, _value in select._options] == ["manual", "auto", "bypass (current)"]
         assert ports.persisted == [] and ports.confirms == []
 
 

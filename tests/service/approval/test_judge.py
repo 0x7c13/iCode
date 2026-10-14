@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
-from chrys.kernel import Content, Message
+from chrys.kernel import ChatResponse, Content, Message
 from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict, _assistant_retry_messages, _parse_verdict
 from chrys.service.profiles.models.resolver import default_profile
 
@@ -410,10 +410,7 @@ def test_assistant_retry_messages_falls_back_to_text_when_no_messages() -> None:
     Mock clients and any provider that doesn't surface a ``messages`` list
     must still produce a usable retry turn so the judge keeps converging."""
 
-    class _NoMessagesResponse:
-        text = "raw text response"
-
-    result = _assistant_retry_messages(_NoMessagesResponse(), "raw text response")
+    result = _assistant_retry_messages(ChatResponse(messages=[]), "raw text response")
 
     assert len(result) == 1
     assert result[0].role == "assistant"
@@ -426,10 +423,7 @@ def test_assistant_retry_messages_returns_empty_when_no_messages_and_no_text() -
     Better to append nothing than to inject an empty assistant turn the
     model would have to interpret."""
 
-    class _Empty:
-        text = ""
-
-    assert _assistant_retry_messages(_Empty(), "") == []
+    assert _assistant_retry_messages(ChatResponse(messages=[]), "") == []
 
 
 def test_assistant_retry_messages_filters_non_assistant_messages() -> None:

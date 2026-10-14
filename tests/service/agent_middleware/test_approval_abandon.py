@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -30,12 +31,15 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import EventType
+from chrys.kernel import ChatResponse, Message
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
+from chrys.service.approval import judge as judge_module
 from chrys.service.approval.judge import JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.hooks.manager import HookManager
 from tests.service.agent_middleware.test_approval import _ctx, _require_all_policy
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.formal_approval import judge_client, predicate_values
 from tests.support.waiting import wait_for
 
 _SESSION_ID = "sess-1"
@@ -60,7 +64,6 @@ class _HeldJudge:
         request_id: str = "",
         log_dir: Path | None = None,
         user_messages: list[str] | None = None,
-        formal: bool = False,
     ) -> JudgeVerdict:
         self.entered.set()
         try:
@@ -342,3 +345,85 @@ async def test_an_interrupt_during_a_failed_wait_retraction_is_not_lost() -> Non
             await task
 
     assert len(recorder.of(ApprovalCancelled)) == 1
+
+
+@pytest.mark.parametrize("cancel_during_write", [False, True])
+async def test_formal_cancellation_on_either_side_of_request_write_ack(monkeypatch, cancel_during_write):
+    writing, written, reviewing, release = (asyncio.Event() for _ in range(4))
+
+    class HeldWriteAckSink(FakeSink):
+        async def emit(self, draft, *, payload_factory=None):
+            result = await super().emit(draft, payload_factory=payload_factory)
+            if draft.event_type == EventType.APPROVAL_REQUESTED:
+                writing.set()
+                await written.wait()
+            return result
+
+    async def response(client, messages, *, stream, options, timeout):
+        reviewing.set()
+        await release.wait()
+        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+
+    respond = create_autospec(judge_module.get_final_response, side_effect=response)
+    monkeypatch.setattr(judge_module, "get_final_response", respond)
+    bus, sink = EventBus(), HeldWriteAckSink()
+    recorder = await _Recorder.attach(bus)
+    async with judge_client(monkeypatch, []) as (judge, _):
+        mw = _middleware(bus, judge=judge)
+        mw.set_user_message("Inspect the file")
+        with trajectory_scope(make_context(sink)):
+            async with _owned(mw, gates=(written, release)) as task:
+                await wait_for(writing.is_set, description="approval request write acknowledgement held")
+                respond.assert_not_awaited()
+                assert not task.done()
+                if not cancel_during_write:
+                    written.set()
+                    await wait_for(reviewing.is_set, description="Formal model review started")
+                await _interrupt(task)
+        resolved = sink.only(EventType.APPROVAL_RESOLVED).payload
+        assert resolved["decision"] == "interrupted"
+        assert resolved["decider"] == "none"
+        if cancel_during_write:
+            respond.assert_not_awaited()
+            assert "formal_judge" not in resolved
+        else:
+            respond.assert_awaited_once()
+            assert resolved["formal_judge"]["failure_reason"] == "cancelled"
+        assert recorder.of(ApprovalReviewed) == []
+        assert len(recorder.of(ApprovalCancelled)) == 1
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+async def test_formal_terminal_keeps_audit_when_human_or_interrupt_wins(monkeypatch, interrupt):
+    bus, sink = EventBus(), FakeSink()
+    recorder = await _Recorder.attach(bus)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def response(client, messages, *, stream, options, timeout):
+        entered.set()
+        if interrupt:
+            await release.wait()
+        else:
+            await bus.publish(ApprovalResponse(request_id=recorder.request().request_id, approved=False))
+        return ChatResponse(messages=[Message("assistant", [json.dumps(predicate_values())])])
+
+    monkeypatch.setattr(
+        judge_module, "get_final_response", create_autospec(judge_module.get_final_response, side_effect=response)
+    )
+    async with judge_client(monkeypatch, []) as (judge, _):
+        mw = _middleware(bus, judge=judge)
+        mw.set_user_message("Inspect the file")
+        with trajectory_scope(make_context(sink)):
+            async with _owned(mw, gates=(release,)) as task:
+                await wait_for(lambda: entered.is_set() or task.done(), description="Formal request started")
+                if interrupt:
+                    assert not task.done()
+                    await _interrupt(task)
+                else:
+                    await task
+        resolved = sink.only(EventType.APPROVAL_RESOLVED).payload
+        assert resolved["decision"] == ("interrupted" if interrupt else "rejected")
+        assert resolved["decider"] == ("none" if interrupt else "user")
+        assert resolved["formal_judge"].get("failure_reason") == ("cancelled" if interrupt else None)
+        assert resolved["formal_judge"]["approved"] is (not interrupt)
+        assert recorder.of(ApprovalReviewed) == []

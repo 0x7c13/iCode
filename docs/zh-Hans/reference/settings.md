@@ -65,7 +65,8 @@ llm:
 
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
-| `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 模型复核、`auto-formal` 逐项检查风险并按固定规则审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
+| `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 自动审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
+| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` 直接审查或 `formal` 逐项风险检查；只在 `auto` 模式下生效，重载设置后应用。仅用户级可设置，项目不能覆盖；无效值使用 `direct` |
 | `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | 整数；TUI 和 ACP 等待人工审批的秒数，`0` 表示不超时，正数表示等待时限，负数调整为 `0`。超时后拒绝本次工具调用。重启 iCode 后生效 |
 | `ui.approval.defer_while_judging` | 无 | `true` | 布尔值；自动模式下，TUI 是否只在审批裁判模型标记调用或评估失败时才弹出审批对话框。`false` 表示评估期间立即弹出。ACP 服务器和 `icode run` 不受影响 |
 | `project.config_enabled` | 无 | `false` | 布尔值；是否加载各工作目录的项目设置，必须在用户设置中启用 |
@@ -193,7 +194,7 @@ llm:
 - 整数直接写数字。标明上下限的键，超界值会被调整到边界；明确禁止负数的键会拒绝负值。`0` 或负数的特殊含义（禁用、取消限制等）以各键行说明为准。
 - 未填写的键和空字符串通常不提供覆盖。要撤销某个文件中的设置，删除该键；删除后仍可能使用其他来源的值（见[来源优先级](#来源优先级)）。
 - 类型列为“整数或 `null`”的键可写 `null`，其含义已在对应键行说明；用户设置与项目文件对 `null` 的处理不同，见[项目级设置](#项目级设置)。
-- 未知键会被报告且不生效。多数无效值会被忽略并报告，取值继续向较低优先级查找——例如，环境变量中的值无效而用户设置中已有有效值时，使用用户设置的值。`approval.default_mode`、`tools.result.ceiling_tokens`、`log.raw_http_capture`、`otel.sensitive_data`、`mutations.trace.fsatrace_path` 五个键不同：一旦在查找中遇到无效值，就直接采用内置默认值并停止查找，不回退到较低优先级。例如，无法识别的审批模式会采用默认值 `manual`。
+- 未知键会被报告且不生效。多数无效值会被忽略并报告，取值继续向较低优先级查找——例如，环境变量中的值无效而用户设置中已有有效值时，使用用户设置的值。`approval.default_mode`、`approval.auto_review`、`tools.result.ceiling_tokens`、`log.raw_http_capture`、`otel.sensitive_data`、`mutations.trace.fsatrace_path` 六个键不同：一旦在查找中遇到无效值，就直接采用内置默认值并停止查找，不回退到较低优先级。例如，无法识别的审批模式会采用默认值 `manual`。
 
 ## 项目级设置
 

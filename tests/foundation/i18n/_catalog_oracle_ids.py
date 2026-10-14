@@ -279,7 +279,6 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.chat.session_title",
     "tui.chat.update_available",
     "tui.chrome.approval_mode.auto",
-    "tui.chrome.approval_mode.auto_formal",
     "tui.chrome.approval_mode.badge",
     "tui.chrome.approval_mode.bypass",
     "tui.chrome.approval_mode.manual",
