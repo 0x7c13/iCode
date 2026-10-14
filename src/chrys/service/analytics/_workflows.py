@@ -12,6 +12,7 @@ from collections import defaultdict
 from dataclasses import replace
 from threading import Event
 
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._facts import WORKFLOW_RUN_FAMILY, _active, _Endpoint, _Intermediate, _Node, _payload_str
 from chrys.service.analytics._timeline import (
     _endpoint_in_coverage_runtime,
@@ -33,7 +34,7 @@ from chrys.service.analytics.reader import raise_if_cancelled
 
 def workflow_runs(
     facts: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     integrity_reason: str | None,
     cancel_event: Event | None,

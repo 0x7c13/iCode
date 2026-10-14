@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from typing import NamedTuple
 
 from rich.cells import cell_len, set_cell_size
 from rich.console import Console
 from rich.style import Style
 from rich.text import Text
+
+from chrys.service.analytics.math import Interval
 
 # One blank cell between each vertical border and the box content.
 SECTION_BOX_PADDING = 1
@@ -67,11 +70,26 @@ def time_ruler(span_ns: int, *, width: int) -> Text:
     return Text("".join(cells))
 
 
+class WaterfallTurn[K](NamedTuple):
+    """One turn of a waterfall: its length and each lane's intervals, as offsets from the turn's start."""
+
+    span_ns: int
+    intervals: Mapping[K, Iterable[Interval]]
+
+
+class WaterfallLane[K](NamedTuple):
+    """One lane of a waterfall: the key its intervals are stored under and how its cells are drawn."""
+
+    key: K
+    glyph: str
+    style: Style | str
+
+
 def waterfall_lanes[K](
-    turns: Iterable[tuple[int, Mapping[K, Iterable[tuple[int, int]]]]],
+    turns: Iterable[WaterfallTurn[K]],
     *,
     width: int,
-    lanes: Sequence[tuple[K, str, Style | str]],
+    lanes: Sequence[WaterfallLane[K]],
     separator_style: Style | str = "dim",
 ) -> dict[K, Text]:
     """Render concatenated per-turn intervals as mutually exclusive lanes.
@@ -82,8 +100,8 @@ def waterfall_lanes[K](
     instant another lane owns, and sub-cell slivers cannot bridge a gap the
     neighbouring lane is drawn in.
     """
-    keys = [key for key, _, _ in lanes]
-    materialized = [(max(0, span), {key: tuple(intervals.get(key, ())) for key in keys}) for span, intervals in turns]
+    keys = [lane.key for lane in lanes]
+    materialized = [(max(0, turn.span_ns), {key: tuple(turn.intervals.get(key, ())) for key in keys}) for turn in turns]
     total = sum(span for span, _ in materialized)
     usable = max(1, width)
     cells: dict[K, list[str]] = {key: [" "] * usable for key in keys}
@@ -113,19 +131,19 @@ def waterfall_lanes[K](
     for cell in range(usable):
         winner = max(keys, key=lambda key: coverage[key][cell])
         if coverage[winner][cell] > 0:
-            cells[winner][cell] = next(glyph for key, glyph, _ in lanes if key == winner)
+            cells[winner][cell] = next(lane.glyph for lane in lanes if lane.key == winner)
     for separator in separators:
         for key in keys:
             cells[key][separator] = "┊"
     rendered: dict[K, Text] = {}
-    for key, glyph, style in lanes:
-        lane = Text("".join(cells[key]))
-        for index, character in enumerate(cells[key]):
-            if character == glyph:
-                lane.stylize(style, index, index + 1)
+    for lane in lanes:
+        text = Text("".join(cells[lane.key]))
+        for index, character in enumerate(cells[lane.key]):
+            if character == lane.glyph:
+                text.stylize(lane.style, index, index + 1)
             elif character == "┊":
-                lane.stylize(separator_style, index, index + 1)
-        rendered[key] = lane
+                text.stylize(separator_style, index, index + 1)
+        rendered[lane.key] = text
     return rendered
 
 

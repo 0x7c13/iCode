@@ -1249,6 +1249,90 @@ def test_checkpointed_summary_keeps_the_exact_session_detail(tmp_path: Path) -> 
     assert {row.path for row in change.rows} == {"a.py", "b.py"}
 
 
+@pytest.mark.parametrize(("saved", "reported"), [(True, False), (False, True)])
+def test_edits_that_cancelled_out_hide_the_warning_only_once_their_detail_is_saved(
+    tmp_path: Path, saved: bool, reported: bool
+) -> None:
+    """The finalizer records a turn's end, saves, and only then writes the
+    turn's mutation summary. Until the summary lands, the readable detail
+    holds only earlier turns, which say nothing about the newer edit."""
+    path = _installed_log(tmp_path)
+    log = EventLog()
+    log.coverage()
+    turns = ((_TURN_ONE, 1, "8" * 32, "6" * 32), (_TURN_TWO, 2, "9" * 32, "3" * 32))
+    for index, (turn_id, number, operation_id, call_item_id) in enumerate(turns):
+        start = index * 5 * _NS
+        log.add("turn.started", start, turn_id=turn_id, payload={"turn_number": number})
+        log.span(
+            "tool.operation",
+            operation_id,
+            start + _NS,
+            start + 2 * _NS,
+            turn_id=turn_id,
+            start_payload={
+                "tool_name": "write_file",
+                "tool_kind": "filesystem.write",
+                "call_item_id": call_item_id,
+                "argument_fingerprint": f"edit-{number}",
+            },
+        )
+        log.add(
+            "turn.finished", start + 3 * _NS, turn_id=turn_id, payload={"end_reason": "completed", "duration_ms": 0}
+        )
+        if number == 1 or saved:
+            log.add(
+                "tool.mutation_batch.summary",
+                start + 4 * _NS,
+                turn_id=turn_id,
+                payload={
+                    "files_touched": 1,
+                    "create": 0,
+                    "modify": 1,
+                    "delete": 0,
+                    "net_zero_count": 1,
+                    "source_ref": {"kind": "session_checkpoint", "id": f"{number}" * 32, "hash": "h" * 8},
+                },
+            )
+    log.write(path)
+    saved_turns = [{"turn_id": 1, "path": "a.py", "hash": "1" * 64}]
+    if saved:
+        saved_turns.append({"turn_id": 2, "path": "b.py", "hash": "2" * 64})
+    path.parents[1].joinpath("session.json").write_text(
+        json.dumps(
+            {
+                "state": {
+                    "chrys_mutations": {
+                        "turns": [
+                            {
+                                "turn_id": turn["turn_id"],
+                                "detection_truncated": False,
+                                "mutations": [
+                                    {
+                                        "path": turn["path"],
+                                        "before_hash": turn["hash"],
+                                        "after_hash": turn["hash"],
+                                        "provenance": "proven",
+                                    }
+                                ],
+                            }
+                            for turn in saved_turns
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    analysis = analyze_trajectory(path)
+
+    change = analysis.change_verification
+    assert change is not None
+    assert {row.state for row in change.rows} == {ChangeVerificationState.NET_ZERO}
+    assert all(row.precision is Precision.EXACT for row in change.rows)
+    assert ("unverified-change" in {finding.rule_id for finding in analysis.findings}) is reported
+
+
 def _installed_log(tmp_path: Path) -> Path:
     path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
     path.parent.mkdir(parents=True)

@@ -19,6 +19,7 @@ from chrys.service.analytics.model import (
     CorruptLineDiagnostic,
     FindingRow,
     FindingSeverity,
+    Grade,
     HookOwnership,
     InsightsAnalysis,
     McpInsights,
@@ -59,6 +60,7 @@ from chrys.service.analytics.model import (
     ValidationMetrics,
     WallBucket,
     WorkflowRunAnalysis,
+    least_precision,
 )
 from chrys.service.analytics.reader import TrajectoryScanCancelled
 
@@ -77,6 +79,7 @@ __all__ = [
     "CorruptLineDiagnostic",
     "FindingRow",
     "FindingSeverity",
+    "Grade",
     "HookOwnership",
     "InsightsAnalysis",
     "McpInsights",
@@ -121,4 +124,5 @@ __all__ = [
     "WorkflowRunAnalysis",
     "analyze_trajectory",
     "classify_hook_ownership",
+    "least_precision",
 ]

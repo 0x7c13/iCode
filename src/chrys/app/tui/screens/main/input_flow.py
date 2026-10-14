@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from chrys.app.tui.screens.main.ports import InputFlowView, StartWorker
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, SubmitKind
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
@@ -78,22 +78,66 @@ class InputFlowController:
         if event is not None:
             self._start_worker(partial(self._publish_retry, event))
 
+    def _claim_submit(self, text: str, *, kind: SubmitKind) -> bool:
+        """Make *text* the one submit in flight, or hand it back to the composer.
+
+        Called before the worker's first await, so of two submits scheduled in
+        the same tick only the first claims: the one in flight owns the submit
+        state, and its cleanup would erase a second one's refusal. A running
+        turn's Enter never cleared the composer; a new turn's did, so the text
+        coming back says why — until the first submit's own outcome shows.
+        """
+        if self._state.submit.active:
+            if self._view.restore_input_draft(text):
+                self._view.flash_submit_still_sending()
+            return False
+        self._state.submit.begin(text, kind=kind)
+        return True
+
+    async def _publish_submit(self, event: UserMessage | UserRetry) -> bool:
+        """Publish the submit in flight; return whether the backend refused it.
+
+        ``EventBus.publish`` awaits its handlers in order, so a refusal reaches
+        the frontend on this task before the publish returns.
+        """
+        self._state.submit.publish_from_current_task()
+        await self._bus.publish(event)
+        return self._state.submit.blocked
+
     async def send_user_message(self, text: str) -> None:
         """Publish and render a normal user message."""
         if self._state.run.agent_loading:
             return
-
-        event = UserMessage(text=text)
-        self._state.render_gate.begin()
-        self._state.submit.begin(text)
+        if not self._claim_submit(text, kind="turn"):
+            return
         try:
-            await self._bus.publish(event)
-            if self._state.submit.blocked:
+            event = UserMessage(text=text)
+            self._state.render_gate.begin()
+            if await self._publish_submit(event):
                 self._state.render_gate.finish(rendered=False)
                 return
         finally:
             self._state.submit.clear()
+        if not event.started_turn:
+            # Neither refused nor a new turn: the run seen ending here was still
+            # finishing and took the message, or the backend dropped it. The
+            # text is the user's again; if that run used it, its outcome shows
+            # it in the transcript and clears the composer.
+            self._state.render_gate.finish(rendered=False)
+            self._view.restore_input_draft(text)
+            self._debug("UserMessage (no turn)", text[:60])
+            return
+        await self._open_turn(event)
+        self._debug("UserMessage", text[:60])
 
+    async def _open_turn(self, event: UserMessage) -> None:
+        """Show *event* as the opener of the turn its publish just started.
+
+        Called right after that publish returns, before the new run's task has
+        had a chance to run, with the render gate up: the run's first events
+        then find the turn live and wait for the bubble.
+        """
+        text = event.text
         self._state.run.started_at = event.timestamp
         self._view.set_terminal_title_for_user_message(text)
         self._set_agent_running(True)
@@ -115,22 +159,33 @@ class InputFlowController:
 
         await self.flush_deferred_agent_messages()
         self._view.update_toc()
-        self._debug("UserMessage", text[:60])
 
     async def queue_injection(self, text: str) -> None:
         """Queue a user message for mid-run injection without chat display."""
-        injection_id = uuid4().hex[:12]
-        self._view.set_terminal_title_for_user_message(text)
-        self._view.lock_input_with_text()
-        self._state.pending_injection.begin(injection_id, text)
-        self._state.submit.begin(text)
+        if not self._claim_submit(text, kind="injection"):
+            return
         try:
-            await self._bus.publish(UserMessage(text=text, injection_id=injection_id))
-            if self._state.submit.blocked:
+            injection_id = uuid4().hex[:12]
+            self._view.lock_input_with_text()
+            self._state.pending_injection.begin(injection_id, text)
+            event = UserMessage(text=text, injection_id=injection_id)
+            if await self._publish_submit(event):
                 self._state.pending_injection.clear()
                 return
         finally:
             self._state.submit.clear()
+        if event.started_turn:
+            # The run ended before the backend admitted this message, so it
+            # opened a new turn with it: show that turn as a new turn's Enter
+            # would. The run's end or an Esc handed the composer back meanwhile,
+            # so only the sent text leaves it.
+            if self._state.pending_injection.matches(injection_id):
+                self._state.pending_injection.clear()
+                self._view.unlock_input_clearing(text)
+            self._state.render_gate.begin()
+            await self._open_turn(event)
+            self._debug("UserMessage (inject → new turn)", text[:60])
+            return
         self._debug("UserMessage (inject)", text[:60])
 
     def cancel_pending_injection(self) -> bool:
@@ -200,15 +255,14 @@ class InputFlowController:
 
         event = UserRetry(text=text)
         self._state.render_gate.begin()
-        self._state.submit.begin(text, is_retry=True)
+        self._state.submit.begin(text, kind="retry")
         self._view.set_retry_pending(True)
         return event
 
     async def _publish_retry(self, event: UserRetry) -> None:
         text = event.text
         try:
-            await self._bus.publish(event)
-            if self._state.submit.blocked:
+            if await self._publish_submit(event):
                 self._state.render_gate.finish(rendered=False)
                 return
         except BaseException:

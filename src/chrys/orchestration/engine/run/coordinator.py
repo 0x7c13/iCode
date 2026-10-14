@@ -561,6 +561,7 @@ class TurnCoordinator:
                 # Retry must find it even before preparation has populated history.
                 self._turn_state.set_current_input(event.text, contents, event.timestamp)
                 self._queue_prompt_hook_reminders(decision, injected=False)
+                event.started_turn = True
                 return True
 
             reminder_scope = reminder_middleware.create_current_run_scope()
@@ -593,6 +594,7 @@ class TurnCoordinator:
             self._turn_state.set_current_input(event.text, contents, event.timestamp)
             self._fsm.try_transition(Trigger.USER_MESSAGE)
             self._queue_prompt_hook_reminders(decision, injected=False)
+            event.started_turn = True
             return True
         finally:
             if admission is not None and not admission_released:

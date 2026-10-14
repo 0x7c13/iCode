@@ -5,8 +5,11 @@ waterfall, usage, action and change sections, and submission latency."""
 
 from __future__ import annotations
 
+import ntpath
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from rich.cells import cell_len
 from rich.style import Style
@@ -14,6 +17,8 @@ from rich.text import Text
 
 from chrys.app.tui.util.formatting import format_byte_size
 from chrys.app.tui.widgets.trajectory.chartkit import (
+    WaterfallLane,
+    WaterfallTurn,
     coverage_bar,
     fit_cells,
     percentage_meter,
@@ -47,12 +52,13 @@ from chrys.app.tui.widgets.trajectory.presentation import (
     DashboardLook,
     RenderContext,
     ResponsiveTier,
+    SectionSpec,
     align_edges,
     badged_section_title,
     bordered_section_row,
     cache_hit_metric,
     callsite,
-    derived_metric_precision,
+    derived_metric_grade,
     fit_text_right,
     format_duration,
     format_tokens,
@@ -78,6 +84,7 @@ from chrys.service.analytics import (
     UsageBucket,
     WallBucket,
 )
+from chrys.service.analytics.math import Interval
 
 _UTILIZATION = msg(
     "tui.trajectory.utilization",
@@ -110,6 +117,7 @@ _WATERFALL = msg(
     "tui.trajectory.waterfall",
     fallback="Per-turn time breakdown · turns {first}-{last}",
 )
+_WATERFALL_ONE_TURN = msg("tui.trajectory.waterfall_one_turn", fallback="Per-turn time breakdown · turn {turn}")
 _CHARTS_TOO_NARROW = msg(
     "tui.trajectory.charts_too_narrow",
     fallback="Terminal too narrow; widen it to display charts.",
@@ -268,9 +276,11 @@ def overview_lines(
         kpi = bordered_section_row(
             look,
             (
-                (_KPI_TIME, _kpi_time_lines(look, overview, width=lower_interiors[0]), lower_widths[0]),
-                (_KPI_SPLIT, _kpi_split_lines(look, overview, width=lower_interiors[1]), lower_widths[1]),
-                (_KPI_PARALLEL, _kpi_parallel_lines(look, overview, width=lower_interiors[2]), lower_widths[2]),
+                SectionSpec(_KPI_TIME, _kpi_time_lines(look, overview, width=lower_interiors[0]), lower_widths[0]),
+                SectionSpec(_KPI_SPLIT, _kpi_split_lines(look, overview, width=lower_interiors[1]), lower_widths[1]),
+                SectionSpec(
+                    _KPI_PARALLEL, _kpi_parallel_lines(look, overview, width=lower_interiors[2]), lower_widths[2]
+                ),
             ),
         )
     else:
@@ -312,17 +322,17 @@ def overview_lines(
         usage_trio = bordered_section_row(
             look,
             (
-                (_TOKEN_USAGE, token_usage, lower_widths[0]),
-                (_SKILL_USAGE, skill_usage, lower_widths[1]),
-                (_MCP_USAGE, mcp_usage, lower_widths[2]),
+                SectionSpec(_TOKEN_USAGE, token_usage, lower_widths[0]),
+                SectionSpec(_SKILL_USAGE, skill_usage, lower_widths[1]),
+                SectionSpec(_MCP_USAGE, mcp_usage, lower_widths[2]),
             ),
         )
         lower = bordered_section_row(
             look,
             (
-                (_ACTION_FUNNEL, funnel, lower_widths[0]),
-                (_FAILURE_RECOVERY, recovery, lower_widths[1]),
-                (_CHANGE_VERIFICATION, changes, lower_widths[2]),
+                SectionSpec(_ACTION_FUNNEL, funnel, lower_widths[0]),
+                SectionSpec(_FAILURE_RECOVERY, recovery, lower_widths[1]),
+                SectionSpec(_CHANGE_VERIFICATION, changes, lower_widths[2]),
             ),
         )
     else:
@@ -338,7 +348,11 @@ def overview_lines(
         ]
     first = analysis.turns[0].turn_number if analysis.turns else "—"
     last = analysis.turns[-1].turn_number if analysis.turns else "—"
-    waterfall_title = _WATERFALL.bind(first=first or "—", last=last or "—")
+    waterfall_title = (
+        _WATERFALL_ONE_TURN.bind(turn=first or "—")
+        if len(analysis.turns) == 1
+        else _WATERFALL.bind(first=first or "—", last=last or "—")
+    )
     return [
         *session_info,
         *kpi,
@@ -360,6 +374,32 @@ def overview_lines(
             width=width,
         ),
     ]
+
+
+class _LabeledValue(NamedTuple):
+    """A label drawn at a cell's left edge and its value at the right."""
+
+    label: Text
+    value: Text
+
+    def aligned(self, width: int) -> Text:
+        return align_edges(self.label, self.value, width)
+
+
+class _MetricRow(NamedTuple):
+    """A labeled row whose value is followed by its metric's precision badge."""
+
+    label: str
+    value: Text
+    metric: Metric
+
+
+class _FunnelStep(NamedTuple):
+    """One action class's bar in the action funnel."""
+
+    label: MessageDef
+    metric: Metric
+    action: ActionClass
 
 
 def _session_info_lines(
@@ -417,26 +457,28 @@ def _session_info_lines(
     first_message = _local_clock(span.first_turn_started_at) if span is not None else None
     last_reply = _local_clock(span.last_turn_finished_at) if span is not None else None
     clock_span = _clock_span_ns(span.first_turn_started_at, span.last_turn_finished_at) if span is not None else None
-    groups: list[list[tuple[Text, Text]]] = [
+    groups: list[list[_LabeledValue]] = [
         [
-            (label(_SESSION_INFO_ON_DISK), on_disk),
-            (Text("session.json", style=label_style), size(storage.session_json_bytes if storage else None)),
-            (Text("events.jsonl", style=label_style), size(storage.events_bytes if storage else None)),
+            _LabeledValue(label(_SESSION_INFO_ON_DISK), on_disk),
+            _LabeledValue(
+                Text("session.json", style=label_style), size(storage.session_json_bytes if storage else None)
+            ),
+            _LabeledValue(Text("events.jsonl", style=label_style), size(storage.events_bytes if storage else None)),
         ],
         [
-            (label(_SESSION_INFO_MUTATIONS), size(storage.mutations_bytes if storage else None)),
-            (label(_SESSION_INFO_SNAPSHOTS), size(storage.snapshots_bytes if storage else None)),
-            (label(_SESSION_INFO_SUB_AGENTS), size(storage.sub_agents_bytes if storage else None)),
+            _LabeledValue(label(_SESSION_INFO_MUTATIONS), size(storage.mutations_bytes if storage else None)),
+            _LabeledValue(label(_SESSION_INFO_SNAPSHOTS), size(storage.snapshots_bytes if storage else None)),
+            _LabeledValue(label(_SESSION_INFO_SUB_AGENTS), size(storage.sub_agents_bytes if storage else None)),
         ],
         [
-            (label(_SESSION_INFO_FIRST_MESSAGE), Text(first_message or "—")),
-            (label(_SESSION_INFO_LAST_REPLY), Text(last_reply or "—")),
-            (label(_SESSION_INFO_SPAN), Text("—" if clock_span is None else format_duration(clock_span))),
+            _LabeledValue(label(_SESSION_INFO_FIRST_MESSAGE), Text(first_message or "—")),
+            _LabeledValue(label(_SESSION_INFO_LAST_REPLY), Text(last_reply or "—")),
+            _LabeledValue(label(_SESSION_INFO_SPAN), Text("—" if clock_span is None else format_duration(clock_span))),
         ],
         [
-            (label(_SESSION_INFO_TURNS), Text(str(len(analysis.turns)))),
-            (label(_SESSION_INFO_EVENTS), Text(f"{analysis.diagnostics.line_count:,}")),
-            (label(_SESSION_INFO_RUNTIMES), Text("—" if span is None else str(span.runtime_count))),
+            _LabeledValue(label(_SESSION_INFO_TURNS), Text(str(len(analysis.turns)))),
+            _LabeledValue(label(_SESSION_INFO_EVENTS), Text(f"{analysis.diagnostics.line_count:,}")),
+            _LabeledValue(label(_SESSION_INFO_RUNTIMES), Text("—" if span is None else str(span.runtime_count))),
         ],
     ]
     lines.extend(_grouped_grid_lines(groups, width=width, columns=columns))
@@ -452,7 +494,7 @@ def _kpi_time_lines(look: DashboardLook, overview: TrajectoryOverview, *, width:
         _metric_cell(look, METRIC_USAGE, overview.usage_tokens, tokens=True),
         _coverage_cell(look, overview),
     ]
-    return [align_edges(left, right, width) for left, right in cells]
+    return [cell.aligned(width) for cell in cells]
 
 
 def _kpi_split_lines(look: DashboardLook, overview: TrajectoryOverview, *, width: int) -> list[Text]:
@@ -466,28 +508,28 @@ def _kpi_split_lines(look: DashboardLook, overview: TrajectoryOverview, *, width
             (WallBucket.IDLE, BUCKET_IDLE),
         )
     ]
-    return [align_edges(left, right, width) for left, right in cells]
+    return [cell.aligned(width) for cell in cells]
 
 
 def _kpi_parallel_lines(look: DashboardLook, overview: TrajectoryOverview, *, width: int) -> list[Text]:
     lines = [
-        align_edges(*_metric_cell(look, METRIC_PARALLELISM, overview.parallelism), width),
-        align_edges(*_metric_cell(look, METRIC_OVERLAP, overview.overlap_gain_ns), width),
+        _metric_cell(look, METRIC_PARALLELISM, overview.parallelism).aligned(width),
+        _metric_cell(look, METRIC_OVERLAP, overview.overlap_gain_ns).aligned(width),
         Text(look.message(_UTILIZATION.bind()), style="dim"),
     ]
     for bucket, label in ((WallBucket.MODEL, BUCKET_MODEL), (WallBucket.TOOLS, BUCKET_TOOLS)):
-        lines.append(align_edges(*_utilization_cell(look, label, overview.utilization[bucket], bucket), width))
+        lines.append(_utilization_cell(look, label, overview.utilization[bucket], bucket).aligned(width))
     return lines
 
 
-def _coverage_cell(look: DashboardLook, overview: TrajectoryOverview) -> tuple[Text, Text]:
+def _coverage_cell(look: DashboardLook, overview: TrajectoryOverview) -> _LabeledValue:
     metrics = _overview_metrics(overview)
     total = max(1, len(metrics))
     exact = sum(metric.precision is Precision.EXACT for metric in metrics) * 100 / total
     estimated = sum(metric.precision is Precision.ESTIMATED for metric in metrics) * 100 / total
     missing = sum(metric.precision is Precision.MISSING for metric in metrics) * 100 / total
     unresolved = 100.0 - exact - estimated - missing
-    return (
+    return _LabeledValue(
         Text(look.message(_COVERAGE.bind())),
         Text.assemble(
             coverage_bar(
@@ -522,16 +564,19 @@ def _waterfall_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, width
     chart_width = max(12, width - 10)
     # Lane order doubles as the tie-break when two buckets cover a cell
     # equally; tools and waits outrank the model so short calls stay visible.
-    lane_specs = (
-        (WallBucket.TOOLS, BUCKET_TOOLS, "▬"),
-        (WallBucket.WAIT, BUCKET_WAIT, "▒"),
-        (WallBucket.MODEL, BUCKET_MODEL, "█"),
-        (WallBucket.IDLE, BUCKET_IDLE, "·"),
-    )
-    turns: list[tuple[int, dict[WallBucket, list[tuple[int, int]]]]] = []
+    chart_lanes = [
+        WaterfallLane(bucket, glyph, _bucket_style(look, bucket))
+        for bucket, glyph in (
+            (WallBucket.TOOLS, "▬"),
+            (WallBucket.WAIT, "▒"),
+            (WallBucket.MODEL, "█"),
+            (WallBucket.IDLE, "·"),
+        )
+    ]
+    turns: list[WaterfallTurn[WallBucket]] = []
     for turn in analysis.turns:
         span = max(0, turn.axis_end_ns - turn.axis_start_ns)
-        intervals: dict[WallBucket, list[tuple[int, int]]] = {bucket: [] for bucket, _, _ in lane_specs}
+        intervals: dict[WallBucket, list[Interval]] = {lane.key: [] for lane in chart_lanes}
         for item in turn.slices:
             if item.wall_bucket in intervals and item.end_ns > turn.axis_start_ns and item.start_ns < turn.axis_end_ns:
                 intervals[item.wall_bucket].append(
@@ -540,28 +585,24 @@ def _waterfall_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, width
                         min(span, item.end_ns - turn.axis_start_ns),
                     )
                 )
-        turns.append((span, intervals))
-    lanes = waterfall_lanes(
-        turns,
-        width=chart_width,
-        lanes=[(bucket, glyph, _bucket_style(look, bucket)) for bucket, _, glyph in lane_specs],
-    )
+        turns.append(WaterfallTurn(span, intervals))
+    lanes = waterfall_lanes(turns, width=chart_width, lanes=chart_lanes)
     lines = [
         Text.assemble(
             Text(fit_cells(look.message(label.bind()), 8)),
             Text(" "),
             lanes[bucket],
         )
-        for bucket, label, _ in (
-            (WallBucket.MODEL, BUCKET_MODEL, "█"),
-            (WallBucket.TOOLS, BUCKET_TOOLS, "▬"),
-            (WallBucket.WAIT, BUCKET_WAIT, "▒"),
-            (WallBucket.IDLE, BUCKET_IDLE, "·"),
+        for bucket, label in (
+            (WallBucket.MODEL, BUCKET_MODEL),
+            (WallBucket.TOOLS, BUCKET_TOOLS),
+            (WallBucket.WAIT, BUCKET_WAIT),
+            (WallBucket.IDLE, BUCKET_IDLE),
         )
     ]
     # The axis is cumulative turn time (turn spans concatenated, gaps
     # between turns excluded) — the same scale the lanes are drawn on.
-    ruler = time_ruler(sum(span for span, _ in turns), width=chart_width)
+    ruler = time_ruler(sum(turn.span_ns for turn in turns), width=chart_width)
     ruler.stylize("dim")
     lines.append(
         Text.assemble(
@@ -577,19 +618,19 @@ def _action_funnel_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, w
     validation = analysis.validation
     if validation is None:
         return []
-    metrics = (
-        (_ACTION_SEARCH, validation.funnel.search, ActionClass.SEARCH),
-        (_ACTION_READ, validation.funnel.read, ActionClass.READ),
-        (_ACTION_EDIT, validation.funnel.edit, ActionClass.EDIT),
-        (_ACTION_VERIFY, validation.funnel.verify, ActionClass.VERIFY),
+    steps = (
+        _FunnelStep(_ACTION_SEARCH, validation.funnel.search, ActionClass.SEARCH),
+        _FunnelStep(_ACTION_READ, validation.funnel.read, ActionClass.READ),
+        _FunnelStep(_ACTION_EDIT, validation.funnel.edit, ActionClass.EDIT),
+        _FunnelStep(_ACTION_VERIFY, validation.funnel.verify, ActionClass.VERIFY),
     )
-    count_width = max(cell_len(_format_count(metric)) for _, metric, _ in metrics)
-    badge_width = max(cell_len(precision_badge(look, metric.precision).plain) for _, metric, _ in metrics)
-    label_reserve = min(8, max(cell_len(look.message(label.bind())) for label, _, _ in metrics))
+    count_width = max(cell_len(_format_count(step.metric)) for step in steps)
+    badge_width = max(cell_len(precision_badge(look, step.metric.precision).plain) for step in steps)
+    label_reserve = min(8, max(cell_len(look.message(step.label.bind())) for step in steps))
     bar_width = max(1, min(12, width - label_reserve - count_width - badge_width - 3))
-    maximum = max((int(metric.value) for _, metric, _ in metrics if metric.value is not None), default=0)
+    maximum = max((int(step.metric.value) for step in steps if step.metric.value is not None), default=0)
     lines: list[Text] = []
-    for label, metric, action in metrics:
+    for label, metric, action in steps:
         count = int(metric.value) if metric.value is not None else None
         bar_length = 0 if maximum == 0 or count is None else max(1, round(count / maximum * bar_width))
         lines.append(
@@ -614,17 +655,17 @@ def _failure_recovery_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *
     if validation is None:
         return []
     rows = (
-        (
+        _MetricRow(
             look.message(_TOOL_FAILURES.bind()),
             Text(f"{_format_count(validation.tool_failure_count)}/{_format_count(validation.tool_count)}"),
             validation.tool_failure_count,
         ),
-        (
+        _MetricRow(
             look.message(_MEDIAN_RECOVERY.bind()),
             Text(metric_value(validation.failure_recovery_median_ns)),
             validation.failure_recovery_median_ns,
         ),
-        (
+        _MetricRow(
             look.message(_RETRY_AMPLIFICATION.bind()),
             Text(
                 look.message(
@@ -633,26 +674,13 @@ def _failure_recovery_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *
             ),
             validation.retry_amplification_tokens,
         ),
-        (
+        _MetricRow(
             look.message(_REPEATED_SIGNATURES.bind()),
             Text(_format_count(validation.repeated_failure_signature_count)),
             validation.repeated_failure_signature_count,
         ),
     )
-    value_width = max(cell_len(value.plain) for _, value, _ in rows)
-    badge_width = max(cell_len(precision_badge(look, metric.precision).plain) for _, _, metric in rows)
-    return [
-        align_edges(
-            Text(label),
-            Text.assemble(
-                fit_text_right(value, value_width),
-                Text(" "),
-                fit_text_right(precision_badge(look, metric.precision), badge_width),
-            ),
-            width,
-        )
-        for label, value, metric in rows
-    ]
+    return _metric_row_lines(look, rows, width=width)
 
 
 def _token_usage_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, width: int) -> list[Text]:
@@ -661,7 +689,7 @@ def _token_usage_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, wid
         return []
     cache_hit = cache_hit_metric(usage)
     rows = [
-        (
+        _MetricRow(
             look.message(label.bind()),
             Text(format_tokens(usage.buckets[bucket].value)),
             usage.buckets[bucket],
@@ -674,25 +702,30 @@ def _token_usage_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, wid
         )
     ]
     rows.append(
-        (
+        _MetricRow(
             look.message(TOKEN_CACHE_HIT.bind()),
             Text("—" if cache_hit.value is None else f"{cache_hit.value}%"),
             cache_hit,
         )
     )
-    value_width = max(cell_len(value.plain) for _, value, _ in rows)
-    badge_width = max(cell_len(precision_badge(look, metric.precision).plain) for _, _, metric in rows)
+    return _metric_row_lines(look, rows, width=width)
+
+
+def _metric_row_lines(look: DashboardLook, rows: Sequence[_MetricRow], *, width: int) -> list[Text]:
+    """Right-align each row's value and badge in shared columns."""
+    value_width = max(cell_len(row.value.plain) for row in rows)
+    badge_width = max(cell_len(precision_badge(look, row.metric.precision).plain) for row in rows)
     return [
         align_edges(
-            Text(label),
+            Text(row.label),
             Text.assemble(
-                fit_text_right(value, value_width),
+                fit_text_right(row.value, value_width),
                 Text(" "),
-                fit_text_right(precision_badge(look, metric.precision), badge_width),
+                fit_text_right(precision_badge(look, row.metric.precision), badge_width),
             ),
             width,
         )
-        for label, value, metric in rows
+        for row in rows
     ]
 
 
@@ -787,7 +820,7 @@ def _change_verification_lines(look: DashboardLook, analysis: TrajectoryAnalysis
             )
             lines.append(
                 _align_path_edges_badged(
-                    surrogate_safe_text(row.path),
+                    surrogate_safe_text(_workspace_relative(row.path, change.workspace_root)),
                     style,
                     Text(look.message(states[row.state].bind()), style=style),
                     precision_badge(look, row.precision),
@@ -815,7 +848,7 @@ def _submission_latency_lines(look: DashboardLook, analysis: TrajectoryAnalysis,
             continue
         rendered_any = True
         label = look.message(bucket_labels[stats.bucket].bind())
-        aggregate_precision, _ = derived_metric_precision(stats.p50_ns, stats.p90_ns, stats.max_ns)
+        aggregate_precision = derived_metric_grade(stats.p50_ns, stats.p90_ns, stats.max_ns).precision
         lines.append(
             _align_edges_badged(
                 Text(label),
@@ -893,9 +926,9 @@ def _action_style(look: DashboardLook, action: ActionClass) -> Style:
     return look.semantic_style("secondary", "cyan", bold=True)
 
 
-def _metric_cell(look: DashboardLook, label: MessageDef, metric: Metric, *, tokens: bool = False) -> tuple[Text, Text]:
+def _metric_cell(look: DashboardLook, label: MessageDef, metric: Metric, *, tokens: bool = False) -> _LabeledValue:
     value = format_tokens(metric.value) if tokens else metric_value(metric)
-    return (
+    return _LabeledValue(
         Text(look.message(label.bind())),
         Text.assemble(Text(value), Text(" "), precision_badge(look, metric.precision)),
     )
@@ -908,8 +941,8 @@ def _percentage_cell(
     value: float | None,
     *,
     bucket: WallBucket,
-) -> tuple[Text, Text]:
-    return (
+) -> _LabeledValue:
+    return _LabeledValue(
         Text(look.message(label.bind()), style=_bucket_style(look, bucket)),
         Text.assemble(
             percentage_meter(value, width=8, style=_bucket_style(look, bucket)),
@@ -919,9 +952,9 @@ def _percentage_cell(
     )
 
 
-def _utilization_cell(look: DashboardLook, label: MessageDef, metric: Metric, bucket: WallBucket) -> tuple[Text, Text]:
+def _utilization_cell(look: DashboardLook, label: MessageDef, metric: Metric, bucket: WallBucket) -> _LabeledValue:
     value = None if metric.value is None else float(metric.value) * 100
-    return (
+    return _LabeledValue(
         Text(look.message(label.bind()), style=_bucket_style(look, bucket)),
         Text.assemble(
             percentage_meter(value, width=8, style=_bucket_style(look, bucket)),
@@ -975,6 +1008,22 @@ def _fit_path_tail(value: str, width: int) -> str:
     while tail and cell_len(tail) > usable - 1:
         tail = tail[1:]
     return f"…{tail}"
+
+
+def _workspace_relative(path: str, root: str | None) -> str:
+    """Show a path under the session's working folder relative to it.
+
+    Rows otherwise spend their narrow column on the folder every row shares.
+    Paths recorded on another OS keep their own separators, so both count. A
+    Windows folder matches in any case: it keeps the case it was typed in,
+    while change paths carry the case on disk.
+    """
+    trimmed = (root or "").rstrip("/\\")
+    head = path[: len(trimmed)]
+    same = ntpath.normcase(head) == ntpath.normcase(trimmed) if ntpath.splitdrive(trimmed)[0] else head == trimmed
+    if trimmed and same and path[len(trimmed) : len(trimmed) + 1] in {"/", "\\"}:
+        return path[len(trimmed) + 1 :]
+    return path
 
 
 def _fit_path_middle(value: str, width: int) -> str:
@@ -1031,7 +1080,7 @@ def _align_path_edges_badged(path: str, path_style: Style, value: Text, badge: T
 
 
 def _grouped_grid_lines(
-    groups: list[list[tuple[Text, Text]]],
+    groups: list[list[_LabeledValue]],
     *,
     width: int,
     columns: int,
@@ -1053,10 +1102,10 @@ def _grouped_grid_lines(
                 if column_index:
                     parts.append(Text(" " * gap))
                 if column_index < len(band) and row_index < len(band[column_index]):
-                    label, value = band[column_index][row_index]
+                    cell = band[column_index][row_index]
                 else:
-                    label, value = Text(), Text()
-                parts.append(align_edges(label, value, column_width))
+                    cell = _LabeledValue(Text(), Text())
+                parts.append(cell.aligned(column_width))
             lines.append(Text.assemble(*parts))
     return lines
 

@@ -108,6 +108,9 @@ class MainScreenPresenter:
     def set_terminal_title_for_cwd(self, cwd: str | None = None) -> None:
         self._view.set_terminal_title_for_cwd(cwd)
 
+    def set_terminal_title_for_user_message(self, text: str) -> None:
+        self._view.set_terminal_title_for_user_message(text)
+
     def set_status_profile(self, profile: str, *, description: str = "") -> None:
         self._view.set_status_profile(profile, description=description)
 

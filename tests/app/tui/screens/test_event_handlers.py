@@ -831,7 +831,8 @@ def _make_injection_outcome_screen(calls: list[object]) -> SimpleNamespace:
 
     return SimpleNamespace(
         query_one=query_one,
-        _state=MainScreenState(),
+        _state=MainScreenState(run=RunState(agent_running=True)),
+        _session_title=SimpleNamespace(set_terminal_title_for_user_message=lambda text: calls.append(("title", text))),
         _update_toc=lambda: None,
         _debug=lambda *_args: None,
     )
@@ -862,7 +863,7 @@ def test_stale_consumed_injection_result_renders_bubble_only() -> None:
         handler.on_injection_outcome(UserInjectResult(text="delivered anyway", consumed=True, injection_id="old-id"))
     )
 
-    assert calls == [("add_user_message", "delivered anyway", True)]
+    assert calls == [("title", "delivered anyway"), ("add_user_message", "delivered anyway", True)]
     assert screen._state.pending_injection.active is False
 
 
@@ -890,7 +891,7 @@ def test_matching_consumed_injection_result_unlocks_and_clears_pending() -> None
 
     asyncio.run(handler.on_injection_outcome(UserInjectResult(text="queued text", consumed=True, injection_id="inj-1")))
 
-    assert calls == [("add_user_message", "queued text", True), "unlock_and_clear"]
+    assert calls == [("title", "queued text"), ("add_user_message", "queued text", True), "unlock_and_clear"]
     assert screen._state.pending_injection.active is False
 
 

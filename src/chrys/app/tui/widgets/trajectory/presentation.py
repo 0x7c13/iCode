@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import NamedTuple
 
 from rich.cells import cell_len
 from rich.console import Console
@@ -20,7 +21,7 @@ from chrys.app.tui.util.rich_style import rich_style_from_textual_color
 from chrys.app.tui.widgets.trajectory.chartkit import bordered_section
 from chrys.foundation.i18n import Localizer, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
-from chrys.service.analytics import Metric, Precision, TokenUsage, UsageBucket
+from chrys.service.analytics import Grade, Metric, Precision, TokenUsage, UsageBucket
 
 UNAVAILABLE = msg("tui.trajectory.unavailable", fallback="No trajectory data is available for this session.")
 NO_TURNS = msg("tui.trajectory.no_turns", fallback="No completed turns are available.")
@@ -145,15 +146,19 @@ def identity_with_hook_id(identity: str, hook_id: str | None) -> str:
     return f"{displayed_identity} ({displayed_hook_id})"
 
 
-def bordered_section_row(
-    look: DashboardLook,
-    specs: tuple[tuple[MessageDef | MessageRef | Text, list[Text], int], ...],
-) -> list[Text]:
-    boxes = [section_box(look, title, lines, width=box_width) for title, lines, box_width in specs]
+class SectionSpec(NamedTuple):
+    """One boxed section of a row: its title, its content lines and the box's outer width."""
+
+    title: MessageDef | MessageRef | Text
+    lines: list[Text]
+    width: int
+
+
+def bordered_section_row(look: DashboardLook, specs: tuple[SectionSpec, ...]) -> list[Text]:
+    boxes = [section_box(look, spec.title, spec.lines, width=spec.width) for spec in specs]
     content_height = max(len(box) - 2 for box in boxes)
     boxes = [
-        section_box(look, title, lines, width=box_width, content_height=content_height)
-        for title, lines, box_width in specs
+        section_box(look, spec.title, spec.lines, width=spec.width, content_height=content_height) for spec in specs
     ]
     rows: list[Text] = []
     for index in range(len(boxes[0])):
@@ -292,16 +297,17 @@ def cache_hit_metric(usage: TokenUsage) -> Metric:
         return Metric(None, Precision.UNRESOLVED)
     percent = 100 * float(cache_read.value) / float(total_input.value)
     value = min(100, max(1, round(percent))) if cache_read.value else 0
-    precision, reason = derived_metric_precision(cache_read, total_input)
-    return Metric(value, precision, reason)
+    grade = derived_metric_grade(cache_read, total_input)
+    return Metric(value, grade.precision, grade.reason)
 
 
-def derived_metric_precision(*metrics: Metric) -> tuple[Precision, str | None]:
+def derived_metric_grade(*metrics: Metric) -> Grade:
+    """The weakest grade among *metrics*, which a value derived from them inherits."""
     for precision in (Precision.UNRESOLVED, Precision.MISSING, Precision.ESTIMATED):
         for metric in metrics:
             if metric.precision is precision:
-                return precision, metric.reason
-    return Precision.EXACT, None
+                return metric.grade
+    return Grade(Precision.EXACT)
 
 
 def format_tokens(value: int | float | None) -> str:

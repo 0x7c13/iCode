@@ -293,10 +293,10 @@ def test_cut_approval_and_mcp_wait_samples_follow_owner_activity(
         )
         == expected_approvals
     )
-    waits, unattributed = insights_module._mcp_connection_waits(
+    waits = insights_module._mcp_connection_waits(
         intermediate,
         inactive_ranges,
         cancel_event=None,
     )
-    assert waits == expected_waits
-    assert unattributed == 0
+    assert waits.by_server == expected_waits
+    assert waits.unattributed == 0

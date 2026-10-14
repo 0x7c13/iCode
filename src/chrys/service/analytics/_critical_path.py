@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from threading import Event
 from typing import Final
 
-from chrys.service.analytics.math import interval_length, interval_union
+from chrys.service.analytics.math import Interval, interval_length, interval_union
 from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelled
 
 _MAX_CRITICAL_PATH_CANDIDATES: Final = 4096
@@ -24,7 +24,7 @@ class _PathResolution:
 
 
 def _longest_interval_path(
-    intervals: dict[str, list[tuple[int, int]]],
+    intervals: dict[str, list[Interval]],
     edges: dict[str, set[str]],
     *,
     parents: dict[str, str] | None = None,
@@ -73,14 +73,14 @@ def _longest_interval_path(
     children: dict[str, list[str]] = defaultdict(list)
     for child, parent in displacing_parents.items():
         children[parent].append(child)
-    completions: dict[str, tuple[tuple[int, int], ...]] = {}
+    completions: dict[str, tuple[Interval, ...]] = {}
 
-    def carried(source: str, target: str) -> tuple[tuple[int, int], ...]:
+    def carried(source: str, target: str) -> tuple[Interval, ...]:
         if displacing_parents.get(target) == source or (source, target) in fork_edges:
             return ()
         completion = completions.get(source)
         if completion is None:
-            members: list[tuple[int, int]] = []
+            members: list[Interval] = []
             seen: set[str] = set()
             pending = list(children.get(source, ()))
             while pending:
@@ -112,7 +112,7 @@ def _longest_interval_path(
         return _PathResolution(0, True, True)
     if end not in sums:
         return _PathResolution(None, True, True)
-    witness: list[tuple[int, int]] = list(intervals.get(end, ()))
+    witness: list[Interval] = list(intervals.get(end, ()))
     cursor = end
     while cursor in predecessors:
         previous = predecessors[cursor]
@@ -122,7 +122,7 @@ def _longest_interval_path(
     if interval_length(interval_union(witness)) == sums[end]:
         return _PathResolution(sums[end], True, True)
 
-    paths: dict[str, set[tuple[tuple[int, int], ...]]] = defaultdict(set)
+    paths: dict[str, set[tuple[Interval, ...]]] = defaultdict(set)
     retained = 0
     for vertex in starts:
         paths[vertex].add(interval_union(intervals.get(vertex, ())))
@@ -155,8 +155,8 @@ def _longest_interval_path(
 
 
 def _retain_nondominated(
-    retained: set[tuple[tuple[int, int], ...]],
-    candidate: tuple[tuple[int, int], ...],
+    retained: set[tuple[Interval, ...]],
+    candidate: tuple[Interval, ...],
 ) -> int:
     if any(_intervals_subset(candidate, existing) for existing in retained):
         return 0
@@ -167,8 +167,8 @@ def _retain_nondominated(
 
 
 def _intervals_subset(
-    subset: tuple[tuple[int, int], ...],
-    superset: tuple[tuple[int, int], ...],
+    subset: tuple[Interval, ...],
+    superset: tuple[Interval, ...],
 ) -> bool:
     superset_index = 0
     for start, end in subset:

@@ -118,6 +118,7 @@ STATUS_SESSION_RESTORED = msg(
     fallback="Session restored: {session_id}",
 )
 STATUS_RESUMING = msg("tui.status.resuming", fallback="Resuming")
+STATUS_STILL_SENDING = msg("tui.status.still_sending", fallback="Still sending the previous message")
 STATUS_AGENT_STARTUP_FAILED = msg(
     "tui.status.agent_startup_failed",
     fallback="Agent startup failed: {message}",

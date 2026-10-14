@@ -181,7 +181,7 @@ Only the following events apply decisions that blocking hooks return in the resu
 
 | Event | Effect |
 | --- | --- |
-| `user_prompt_submit` | Reject a message or add a system reminder. |
+| `user_prompt_submit` | Reject a message or add a system reminder. A rejected message stays in the input box; if you sent it while the agent was running, the agent keeps working. |
 | `before_tool_call` | Reject a tool call or modify its arguments, but cannot approve a call or bypass approval. |
 | `after_tool_call` | Append context to the tool result, but cannot undo a call that has already occurred. |
 | `tool_error` | Append context to the tool error, but cannot undo a call that has already occurred. |
