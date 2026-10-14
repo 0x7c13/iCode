@@ -53,6 +53,10 @@ _NEVER_DISPATCHED_TOOL_OUTCOMES: Final = frozenset(
     }
 )
 _MODEL_OPERATION_FAMILIES: Final = frozenset({"model.run", "model.cycle", "model.exchange"})
+# An in-process sub-agent records no model.run: its sub_agent operation is
+# the run, so a compaction it runs between cycles names that operation as
+# its parent.
+_COMPACTION_PARENT_FAMILIES: Final = _MODEL_OPERATION_FAMILIES | {"sub_agent"}
 _RETRY_EXCHANGE_MODES: Final = frozenset(
     {RetryMode.WIRE, RetryMode.STALL_FALLBACK, RetryMode.VALIDATION, RetryMode.CONTEXT_OVERFLOW}
 )
@@ -358,7 +362,7 @@ def _displacing_parent(
             families = frozenset({"tool.operation"})
     elif node.family in {"preparation", "compaction"}:
         target = node.start.parent_operation_id
-        families = _MODEL_OPERATION_FAMILIES
+        families = _COMPACTION_PARENT_FAMILIES if node.family == "compaction" else _MODEL_OPERATION_FAMILIES
     elif node.family == "compaction.phase":
         target = node.start.parent_operation_id
         families = frozenset({"compaction"})
@@ -1077,6 +1081,14 @@ def _failed_tool_cp_contributions(
         for node in nodes
         if node.family == "tool.operation" and tool_failed(_payload_str(node.finish.payload, "outcome"))
     }
+    # Waiting on the user inside a failed call (its approval, or a question
+    # nobody answered) is not failed work; the approval rule reports approvals.
+    waits_on_user = frozenset(
+        node.node_id
+        for node in nodes
+        if (node.family == "wait" and _payload_str(node.start.payload, "category") == WaitCategory.USER_INPUT)
+        or ((attributes := _slice_attributes(node)) is not None and attributes[4] == "approval")
+    )
     return {
         operation_id: contribution
         for operation_id, contribution in _grouped_cp_contributions(
@@ -1084,6 +1096,7 @@ def _failed_tool_cp_contributions(
             slices,
             dependency,
             groups=groups,
+            kept=waits_on_user,
             response_cp=response_cp,
             cancel_event=cancel_event,
         ).items()
@@ -1126,10 +1139,14 @@ def _grouped_cp_contributions(
     dependency: _DependencyProof,
     *,
     groups: dict[str, frozenset[str]],
+    kept: frozenset[str] = frozenset(),
     response_cp: int,
     cancel_event: Event | None,
 ) -> dict[str, int]:
-    """Resolve one leave-one-group-out response path per supplied group."""
+    """Resolve one leave-one-group-out response path per supplied group.
+
+    Nodes in ``kept`` stay on the path when their ancestor leaves it.
+    """
     terminal_id = dependency.response_terminal_id
     root_id = dependency.turn_root_id
     if not groups or root_id is None or terminal_id is None or response_cp <= 0:
@@ -1146,10 +1163,10 @@ def _grouped_cp_contributions(
         _check_cancelled(cancel_event)
         without = dict(response_intervals)
         # A member's contribution spans everything it displaced: the approval
-        # and sub-agent inside a tool left with it.
+        # and sub-agent inside a tool left with it, unless the caller keeps them.
         for node_id in node_ids:
             without[node_id] = []
-            for descendant in _descendants(node_id, children):
+            for descendant in _descendants(node_id, children) - kept:
                 without[descendant] = []
         resolved = _longest_interval_path(
             without,

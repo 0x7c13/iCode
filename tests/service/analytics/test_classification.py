@@ -81,11 +81,52 @@ def test_shell_classification_is_heuristic_and_missing_text_degrades_honestly() 
     matched = classify_action("shell", command="pytest -q", verify_commands="pytest,npm test")
     unmatched = classify_action("shell", command="git status", verify_commands="pytest,npm test")
     absent = classify_action("shell", command=None, verify_commands="pytest,npm test")
+    commandless = classify_action("shell", command=None, verify_commands="pytest,npm test", runs_command=False)
 
     assert matched[:2] == (ActionClass.VERIFY, Precision.ESTIMATED)
     assert unmatched[:2] == (ActionClass.OTHER, Precision.ESTIMATED)
     assert absent[:2] == (ActionClass.OTHER, Precision.UNRESOLVED)
     assert "carrier" in (absent[2] or "")
+    assert commandless == (ActionClass.OTHER, Precision.EXACT, None)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "precision"),
+    [
+        # A shell-kind tool that runs no command, such as list_workspace_dirs;
+        # as for the kernel, an empty or omitted payload means no arguments.
+        ({"arguments": "{}"}, Precision.EXACT),
+        ({"arguments": ""}, Precision.EXACT),
+        ({}, Precision.EXACT),
+        # A command the record holds but that cannot be read as text.
+        ({"arguments": '{"command": 7}'}, Precision.UNRESOLVED),
+        # No call record at all.
+        (None, Precision.UNRESOLVED),
+    ],
+)
+def test_a_shell_kind_call_whose_arguments_name_no_command_is_exactly_other(
+    tmp_path: Path, arguments: dict[str, str] | None, precision: Precision
+) -> None:
+    path = _installed_log(tmp_path)
+    _write_shell_log(path)
+    calls = (
+        []
+        if arguments is None
+        else [
+            {
+                "type": "function_call",
+                **arguments,
+                "additional_properties": {ANALYTICS_ITEM_ID_KEY: _CALL_ITEM_ID},
+            }
+        ]
+    )
+    path.parents[1].joinpath("session.json").write_text(
+        json.dumps({"state": {"messages": [{"contents": calls}]}}), encoding="utf-8"
+    )
+
+    (action,) = analyze_trajectory(path).actions
+
+    assert (action.classification, action.classification_precision) == (ActionClass.OTHER, precision)
 
 
 def test_session_store_joins_content_level_call_identity_without_requiring_a_message_carrier(tmp_path: Path) -> None:

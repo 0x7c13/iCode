@@ -473,6 +473,10 @@ class ActionOperation:
     payload_original_bytes: int | None = None
     payload_truncated: bool | None = None
     payload_spilled: bool | None = None
+    actor_id: str | None = None
+    # The tool calls this action ran inside, nearest first: a sub-agent's
+    # actions sit under the parent's call that started the sub-agent.
+    enclosing_operation_ids: tuple[str, ...] = ()
 
     @property
     def duration_ns(self) -> int | None:
@@ -602,6 +606,12 @@ class ChangeVerification:
     deleted: Metric
     net_zero: Metric
     rows: tuple[ChangeVerificationRow, ...] = ()
+    # The session's primary working folder, so rows under it can be shown
+    # relative to it; None when the session document does not name one.
+    workspace_root: str | None = None
+    # Log sequence of the newest mutation summary, written after the save
+    # whose detail the rows read: an edit that started later is not in them.
+    saved_through_sequence: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

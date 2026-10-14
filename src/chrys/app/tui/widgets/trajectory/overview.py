@@ -5,6 +5,7 @@ waterfall, usage, action and change sections, and submission latency."""
 
 from __future__ import annotations
 
+import ntpath
 from datetime import datetime
 from pathlib import Path
 
@@ -110,6 +111,7 @@ _WATERFALL = msg(
     "tui.trajectory.waterfall",
     fallback="Per-turn time breakdown · turns {first}-{last}",
 )
+_WATERFALL_ONE_TURN = msg("tui.trajectory.waterfall_one_turn", fallback="Per-turn time breakdown · turn {turn}")
 _CHARTS_TOO_NARROW = msg(
     "tui.trajectory.charts_too_narrow",
     fallback="Terminal too narrow; widen it to display charts.",
@@ -338,7 +340,11 @@ def overview_lines(
         ]
     first = analysis.turns[0].turn_number if analysis.turns else "—"
     last = analysis.turns[-1].turn_number if analysis.turns else "—"
-    waterfall_title = _WATERFALL.bind(first=first or "—", last=last or "—")
+    waterfall_title = (
+        _WATERFALL_ONE_TURN.bind(turn=first or "—")
+        if len(analysis.turns) == 1
+        else _WATERFALL.bind(first=first or "—", last=last or "—")
+    )
     return [
         *session_info,
         *kpi,
@@ -787,7 +793,7 @@ def _change_verification_lines(look: DashboardLook, analysis: TrajectoryAnalysis
             )
             lines.append(
                 _align_path_edges_badged(
-                    surrogate_safe_text(row.path),
+                    surrogate_safe_text(_workspace_relative(row.path, change.workspace_root)),
                     style,
                     Text(look.message(states[row.state].bind()), style=style),
                     precision_badge(look, row.precision),
@@ -975,6 +981,22 @@ def _fit_path_tail(value: str, width: int) -> str:
     while tail and cell_len(tail) > usable - 1:
         tail = tail[1:]
     return f"…{tail}"
+
+
+def _workspace_relative(path: str, root: str | None) -> str:
+    """Show a path under the session's working folder relative to it.
+
+    Rows otherwise spend their narrow column on the folder every row shares.
+    Paths recorded on another OS keep their own separators, so both count. A
+    Windows folder matches in any case: it keeps the case it was typed in,
+    while change paths carry the case on disk.
+    """
+    trimmed = (root or "").rstrip("/\\")
+    head = path[: len(trimmed)]
+    same = ntpath.normcase(head) == ntpath.normcase(trimmed) if ntpath.splitdrive(trimmed)[0] else head == trimmed
+    if trimmed and same and path[len(trimmed) : len(trimmed) + 1] in {"/", "\\"}:
+        return path[len(trimmed) + 1 :]
+    return path
 
 
 def _fit_path_middle(value: str, width: int) -> str:

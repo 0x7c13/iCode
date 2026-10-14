@@ -24,6 +24,7 @@ from chrys.foundation.trajectory.event_types import TurnEndReason
 from chrys.service.analytics._context_evidence import _compaction_consumption_resolution, _RevisionResolution
 from chrys.service.analytics._facts import (
     _START_FAMILIES,
+    _UNREPORTED_FAILURE_USAGE_REASON,
     _active,
     _Endpoint,
     _ExchangeUsage,
@@ -94,7 +95,9 @@ def _turn_token_usage(
     verdict: Metric,
 ) -> TokenUsage:
     exchanges = [
-        item for item in intermediate.usage_by_turn.get(turn_id, ()) if _active(item.sequence, inactive_ranges)
+        item
+        for item in intermediate.usage_by_turn.get(turn_id, ())
+        if _active(item.sequence, inactive_ranges) and not item.unreported_failure
     ]
     return _interned_token_usage(tuple(_turn_bucket_usage(exchanges, bucket, verdict) for bucket in UsageBucket))
 
@@ -1162,9 +1165,8 @@ def _turn_usage(
             exchange_projection_exact = False
     if unclosed_start:
         return Metric(None, Precision.MISSING, "one or more model exchanges have no terminal usage")
-    exchanges = [
-        item for item in intermediate.usage_by_turn.get(turn_id, ()) if _active(item.sequence, inactive_ranges)
-    ]
+    active = [item for item in intermediate.usage_by_turn.get(turn_id, ()) if _active(item.sequence, inactive_ranges)]
+    exchanges = [item for item in active if not item.unreported_failure]
     if any(
         item.normalization_unavailable or item.input_total is None or item.output_total is None for item in exchanges
     ):
@@ -1172,7 +1174,7 @@ def _turn_usage(
     value = sum(cast("int", item.input_total) + cast("int", item.output_total) for item in exchanges)
     if not integrity_exact:
         return Metric(value, Precision.UNRESOLVED, integrity_reason or "turn sequence integrity is unresolved")
-    usage_terminals = [item.sequence for item in exchanges]
+    usage_terminals = [item.sequence for item in active]
     if (
         not turn_lifecycle_exact
         or not exchange_projection_exact
@@ -1185,6 +1187,8 @@ def _turn_usage(
         for item in exchanges
     ):
         return Metric(value, Precision.UNRESOLVED, "normalized usage provenance is incomplete")
+    if len(exchanges) < len(active):
+        return Metric(value, Precision.ESTIMATED, _UNREPORTED_FAILURE_USAGE_REASON)
     return Metric(value, Precision.EXACT)
 
 
@@ -1192,8 +1196,10 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
     """Split one turn's usage verdict into a per-bucket display metric.
 
     The turn-level verdict caps every bucket: a missing or unresolved turn can
-    never yield an exact bucket. Optional buckets additionally degrade on
-    partial reporting because providers normalize them inconsistently.
+    never yield an exact bucket, and an estimated one (failed requests that
+    reported no usage, already left out of *exchanges*) keeps every bucket a
+    lower bound. Optional buckets additionally degrade on partial reporting
+    because providers normalize them inconsistently.
     """
     if verdict.value is None:
         return Metric(None, verdict.precision, verdict.reason)
@@ -1201,7 +1207,7 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
     if bucket in _OPTIONAL_USAGE_BUCKETS and exchanges and not reported:
         return Metric(None, Precision.MISSING, "no exchange reported this bucket")
     value = sum(reported)
-    if verdict.precision is not Precision.EXACT:
+    if verdict.precision not in {Precision.EXACT, Precision.ESTIMATED}:
         return Metric(value, Precision.UNRESOLVED, verdict.reason)
     if bucket is UsageBucket.REASONING and any(
         item.extras is not None
@@ -1215,6 +1221,8 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
         return Metric(value, Precision.ESTIMATED, "not every exchange reported this bucket")
     if not all(item.bucket_has_provider_provenance(bucket) for item in exchanges):
         return Metric(value, Precision.UNRESOLVED, "normalized usage provenance is incomplete")
+    if verdict.precision is Precision.ESTIMATED:
+        return Metric(value, Precision.ESTIMATED, verdict.reason)
     return Metric(value, Precision.EXACT)
 
 

@@ -7,10 +7,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from typing import Final
 
 from chrys.foundation.trajectory.event_types import ToolOutcome
-from chrys.service.analytics.model import ActionClass, Precision
+from chrys.service.analytics.model import ActionClass, ActionOperation, Precision, verify_covers_edit
 
 _DIRECT_CLASSES = {
     "search": ActionClass.SEARCH,
@@ -68,12 +69,17 @@ def classify_action(
     *,
     command: str | None,
     verify_commands: str | tuple[str, ...],
+    runs_command: bool = True,
 ) -> tuple[ActionClass, Precision, str | None]:
-    """Classify one tool without using names, timing, or outcome as evidence."""
+    """Classify one tool without using names, timing, or outcome as evidence.
+
+    *runs_command* is False for a shell-kind call whose recorded arguments
+    name no command; *command* is None when the call's command is unknown.
+    """
     direct = _DIRECT_CLASSES.get(tool_kind or "")
     if direct is not None:
         return direct, Precision.EXACT, None
-    if tool_kind != "shell":
+    if tool_kind != "shell" or not runs_command:
         return ActionClass.OTHER, Precision.EXACT, None
     if command is None:
         return (
@@ -115,6 +121,20 @@ def tool_succeeded(outcome: str | None) -> bool:
     return outcome == ToolOutcome.SUCCESS
 
 
+def unverified_edits(actions: Iterable[ActionOperation], last_verify: ActionOperation | None) -> list[ActionOperation]:
+    """Edit calls that *last_verify*, the last successful verify, did not begin after.
+
+    A failed or refused edit call changed nothing, so it leaves nothing to test.
+    """
+    return [
+        action
+        for action in actions
+        if action.classification is ActionClass.EDIT
+        and not tool_failed(action.outcome)
+        and (last_verify is None or not verify_covers_edit(action, last_verify))
+    ]
+
+
 __all__ = [
     "FAILED_TOOL_OUTCOMES",
     "KNOWN_TOOL_OUTCOMES",
@@ -125,4 +145,5 @@ __all__ = [
     "parse_verify_commands",
     "tool_failed",
     "tool_succeeded",
+    "unverified_edits",
 ]

@@ -479,3 +479,20 @@ def _project_hook_sample(tmp_path, hook_event: HookEvent, execution_mode: str):
     assert sum(int(metric.value or 0) for metric in turn.wall_time_ns.values()) == int(turn.elapsed_ns.value or 0)
     assert set(turn.utilization) == {WallBucket.MODEL, WallBucket.TOOLS}
     return turn
+
+
+def test_compaction_inside_an_in_process_sub_agent_keeps_the_turn_exact(tmp_path) -> None:
+    # An in-process sub-agent records no model.run of its own, so a compaction
+    # it runs between cycles names the sub_agent operation as its parent.
+    log = _base_log()
+    log.span("sub_agent", "3" * 32, 3 * _NS, 8 * _NS, parent_operation_id="d" * 32)
+    log.span("compaction", "7" * 32, 4 * _NS, 6 * _NS, parent_operation_id="3" * 32)
+    log.add("turn.finished", 10 * _NS, payload={"end_reason": "cancelled", "duration_ms": 0})
+    path = tmp_path / "events.jsonl"
+    log.write(path)
+
+    turn = analyze_trajectory(path).turns[0]
+
+    assert "compaction parent operation is missing" not in turn.diagnostics
+    assert turn.elapsed_ns == Metric(10 * _NS, Precision.EXACT)
+    assert all(metric.precision is Precision.EXACT for metric in turn.wall_time_ns.values())

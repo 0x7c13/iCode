@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -33,15 +34,20 @@ from chrys.app.tui.widgets.trajectory.presentation import (
     cache_hit_metric,
     identity_with_hook_id,
 )
+from chrys.foundation.trajectory.envelope import SegmentedField
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.service.analytics import (
     AnalysisAvailability,
     ChangeVerification,
     ChangeVerificationRow,
     ChangeVerificationState,
+    FindingRow,
+    FindingSeverity,
     Metric,
     Precision,
     SubmissionLatencyBucket,
     TimelineDiagnosticCode,
+    TimeSlice,
     TokenUsage,
     TrajectoryAnalysis,
     TrajectoryAnalyzer,
@@ -49,6 +55,7 @@ from chrys.service.analytics import (
     UsageBucket,
 )
 from tests.app.tui.widgets._trajectory_fixtures import _NS, _write_p1_operations, _write_p2_operations, plain_look
+from tests.service.analytics._events import NS, EventLog, installed_events_path
 
 
 def test_coverage_bar_keeps_missing_distinct_from_unresolved() -> None:
@@ -252,6 +259,7 @@ def _change_verification_analysis(
     rows: tuple[ChangeVerificationRow, ...],
     *,
     modified: Metric | None = None,
+    workspace_root: str | None = None,
 ) -> TrajectoryAnalysis:
     """An available analysis whose change section holds *rows*, with exact counts unless overridden."""
     exact_zero = Metric(0, Precision.EXACT)
@@ -269,6 +277,7 @@ def _change_verification_analysis(
             deleted=exact_zero,
             net_zero=exact_zero,
             rows=rows,
+            workspace_root=workspace_root,
         ),
     )
 
@@ -429,3 +438,396 @@ def test_fit_text_cells_marks_a_crop_with_an_ellipsis_and_keeps_the_style() -> N
 
     assert fitted.plain == "abc…"
     assert fitted.get_style_at_offset(Console(), 0).bold is True
+
+
+def _finding_row(rule_id: str, severity: FindingSeverity, *, turn: int, **detail_args: int) -> FindingRow:
+    return FindingRow(
+        evidence_key=f"{rule_id}:{turn}",
+        occurrence_id=f"{rule_id}:{turn}",
+        rule_id=rule_id,
+        severity=severity,
+        deterministic=True,
+        detail_args=tuple(sorted(detail_args.items())),
+        precision=Precision.EXACT,
+        turn_id=f"turn-{turn}",
+        turn_number=turn,
+    )
+
+
+def test_findings_render_one_block_per_rule_ranked_by_impact(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    repeated = tuple(
+        _finding_row("repeated-read", FindingSeverity.WARNING, turn=turn, count=turn, duration_ms=turn * 1000)
+        for turn in range(1, 6)
+    )
+    unverified = _finding_row(
+        "unverified-change", FindingSeverity.ERROR, turn=5, count=4, verifies=0, verify_attempts=0, unclassified_shell=0
+    )
+
+    lines = [
+        line.plain
+        for line in trajectory_insights._finding_lines(
+            plain_look(), replace(analysis, findings=(*repeated, unverified)), width=200
+        )
+    ]
+
+    # The error-severity rule leads, and each rule gets one header however often it fired.
+    assert [line for line in lines if not line.startswith(" ")] == ["! Unverified changes  ✓", "△ Repeated reads  ✓"]
+    assert "4 edits were never followed by a test or check" in lines[1]
+    repeated_header = lines.index("△ Repeated reads  ✓")
+    assert lines[repeated_header + 1].startswith("    15 reads or searches repeated identical calls")
+    assert lines[-4:] == [
+        "    · Turn 5 · 5 repeats · 5.00 s",
+        "    · Turn 4 · 4 repeats · 4.00 s",
+        "    · Turn 3 · 3 repeats · 3.00 s",
+        "    · +2 more",
+    ]
+
+
+def test_finding_lines_wrap_under_their_indent(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    repeated = _finding_row(
+        "repeated-read", FindingSeverity.WARNING, turn=2, count=3, duration_ms=1500, result_tokens=7
+    )
+
+    lines = [
+        line.plain
+        for line in trajectory_insights._finding_lines(plain_look(), replace(analysis, findings=(repeated,)), width=24)
+    ]
+
+    assert lines[0] == "△ Repeated reads  ✓"
+    example_start = next(index for index, line in enumerate(lines) if line.startswith("    · "))
+    assert all(line.startswith("    ") and not line.startswith("    · ") for line in lines[1:example_start])
+    assert len(lines) > example_start + 1
+    assert all(line.startswith("      ") for line in lines[example_start + 1 :])
+    assert all(cell_len(line) <= 24 for line in lines)
+
+
+def test_unresolved_metrics_are_grouped_by_reason_with_capped_scopes(tmp_path: Path) -> None:
+    path = tmp_path / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p2_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    (turn,) = analysis.turns
+    turns = tuple(replace(turn, turn_number=number) for number in range(1, 9))
+
+    lines = [
+        line.plain
+        for line in trajectory_insights._unresolved_metric_lines(plain_look(), replace(analysis, turns=turns))
+    ]
+
+    # The overview ratios carry their turns' root reason, so one cause is one line.
+    assert len(lines) == 1
+    assert "unresolved in session, Turn 1, Turn 2, Turn 3, Turn 4, Turn 5, +3 more: " in lines[0]
+    assert "tool operation lacks parent_model_operation_id" in lines[0]
+
+
+@pytest.mark.parametrize(("right_height", "paired"), [(3, True), (40, False)])
+def test_section_pair_stacks_when_one_side_is_much_taller(right_height: int, paired: bool) -> None:
+    lines = trajectory_insights._adaptive_section_pair(
+        plain_look(),
+        Text("Left"),
+        lambda _: [Text("a")] * 3,
+        Text("Right"),
+        lambda _: [Text("b")] * right_height,
+        width=120,
+        paired=True,
+    )
+
+    assert any("Left" in line.plain and "Right" in line.plain for line in lines) is paired
+
+
+@pytest.mark.parametrize(
+    ("detail_args", "summary"),
+    [
+        (
+            {"count": 2, "verifies": 0, "verify_attempts": 0, "unclassified_shell": 0},
+            "2 edits were never followed by a test or check",
+        ),
+        (
+            {"count": 2, "verifies": 0, "verify_attempts": 1, "unclassified_shell": 0},
+            "2 edits never had a passing test or check",
+        ),
+        (
+            {"count": 2, "verifies": 1, "verify_attempts": 2, "unclassified_shell": 0, "last_verify_turn": 3},
+            (
+                "2 edits were not confirmed by a test or check: the record does not show the last successful one"
+                " (turn 3) starting after they finished"
+            ),
+        ),
+        # A later command whose text is unavailable may have been a passing
+        # check, whatever the recognized ones did.
+        *(
+            (
+                {"count": 2, "unclassified_shell": 1, **seen},
+                (
+                    "2 edits have no recognized passing test or check after them, but the text of some later shell"
+                    " commands is unavailable"
+                ),
+            )
+            for seen in (
+                {"verifies": 0, "verify_attempts": 0},
+                {"verifies": 0, "verify_attempts": 1},
+                {"verifies": 1, "verify_attempts": 1, "last_verify_turn": 3},
+            )
+        ),
+    ],
+)
+def test_unverified_change_summary_says_why_nothing_confirmed_the_edits(
+    tmp_path: Path, detail_args: dict[str, int], summary: str
+) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    row = _finding_row("unverified-change", FindingSeverity.ERROR, turn=5, **detail_args)
+
+    text = " ".join(
+        line.plain.strip()
+        for line in trajectory_insights._finding_lines(plain_look(), replace(analysis, findings=(row,)), width=400)
+    )
+
+    assert summary in text
+    # Only when every command was read and none was recognized as a test does the text point at the setting.
+    advises_setting = detail_args["verify_attempts"] == 0 and not detail_args["unclassified_shell"]
+    assert ("trajectory.verify_commands" in text) is advises_setting
+
+
+def test_costly_context_example_keeps_its_total_on_one_line(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    row = _finding_row("context-carrying-load", FindingSeverity.INFO, turn=1, load=114_000, tokens=8_100, requests=14)
+
+    for width in range(40, 121):
+        lines = [
+            line.plain.rstrip()
+            for line in trajectory_insights._finding_lines(
+                plain_look(), replace(analysis, findings=(row,)), width=width
+            )
+        ]
+        assert any("≈114.0k" in line for line in lines), width
+        assert not any(line.endswith("≈") for line in lines), width
+
+
+def test_finding_prose_breaks_between_cjk_characters() -> None:
+    sentence = "15 次读取或搜索与同一轮中更早的调用完全相同\uff0c且期间没有任何改动。"
+
+    lines = trajectory_insights._wrap_prose(sentence, 30)
+
+    # The number stays with the sentence instead of standing alone on a line.
+    assert lines[0].startswith("15 次读取")
+    assert "".join(lines) == sentence
+    assert all(cell_len(line) <= 30 for line in lines)
+    assert not any(line.startswith(("\uff0c", "。")) for line in lines)
+    # Words still break only at spaces, and a closing mark stays with its word.
+    assert trajectory_insights._wrap_prose("加入 trajectory.verify。", 20) == ["加入", "trajectory.verify。"]
+    # A word too long for the line is cut, but its closing mark does not start the last piece.
+    assert trajectory_insights._wrap_prose("加入 trajectory.verify_commands。", 26) == [
+        "加入",
+        "trajectory.verify_command",
+        "s。",
+    ]
+    # An opening bracket does not end a line.
+    assert trajectory_insights._wrap_prose("最后一次成功的测试或检查\uff08第 4 轮\uff09之后", 26) == [
+        "最后一次成功的测试或检查",
+        "\uff08第 4 轮\uff09之后",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "root", "shown"),
+    [
+        ("/home/me/proj/src/a.py", "/home/me/proj", "src/a.py"),
+        ("/home/me/proj/src/a.py", "/home/me/proj/", "src/a.py"),
+        ("/home/me/project2/a.py", "/home/me/proj", "/home/me/project2/a.py"),
+        ("/home/me/Proj/a.py", "/home/me/proj", "/home/me/Proj/a.py"),
+        # A Windows folder keeps the case it was typed in; the path has the case on disk.
+        ("C:\\Users\\Me\\proj\\src\\a.cs", "c:\\users\\me\\proj", "src\\a.cs"),
+        ("/a.py", None, "/a.py"),
+    ],
+)
+def test_change_verification_paths_are_shown_relative_to_the_working_folder(
+    path: str, root: str | None, shown: str
+) -> None:
+    analysis = _change_verification_analysis(
+        (ChangeVerificationRow(path, ChangeVerificationState.VERIFIED, 1, Precision.EXACT),), workspace_root=root
+    )
+
+    lines = trajectory_overview._change_verification_lines(plain_look(), analysis, width=80)
+
+    assert any(line.plain.lstrip().startswith(shown) for line in lines)
+
+
+def test_approval_finding_names_the_tools_waited_on_in_every_attempt_of_its_turn(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    turn = analysis.turns[0]
+    (first_attempt,) = turn.attempts
+    wait = TimeSlice(
+        family="approval",
+        slice_index=0,
+        turn_id="retried-attempt",
+        runtime_id=turn.runtime_id,
+        operation_id=None,
+        owner="approval",
+        start_ns=0,
+        end_ns=2_000_000_000,
+        wall_bucket=None,
+        counts_as_work=False,
+        compute_weight=False,
+        response_weight=False,
+        tool_name="run_shell",
+    )
+    # The finding names the turn by one attempt but measures the whole turn,
+    # so the waits of every attempt count; a turn it does not name does not.
+    other_wait = replace(wait, turn_id=first_attempt.turn_id, tool_name="edit_file", end_ns=20_000_000_000)
+    retried = replace(
+        turn,
+        attempts=(first_attempt, replace(first_attempt, turn_id="retried-attempt", is_retry=True)),
+        slices=(*turn.slices, other_wait, wait),
+    )
+    unnamed = replace(
+        turn,
+        turn_id="other-turn",
+        attempts=(replace(first_attempt, turn_id="other-turn"),),
+        slices=(replace(wait, turn_id="other-turn", tool_name="grep_files"),),
+    )
+    row = replace(
+        _finding_row("approval-blocking-share", FindingSeverity.WARNING, turn=1, duration_ms=2000, percentage=40),
+        turn_id="retried-attempt",
+    )
+
+    text = " ".join(
+        line.plain.strip()
+        for line in trajectory_insights._finding_lines(
+            plain_look(),
+            replace(analysis, turns=(retried, *analysis.turns[1:], unnamed), findings=(row,)),
+            width=400,
+        )
+    )
+
+    assert "Longest waits: edit_file 20.00 s, run_shell 2.00 s" in text
+    assert "grep_files" not in text
+
+
+def test_approval_finding_counts_a_tools_overlapping_waits_once(tmp_path: Path) -> None:
+    path = tmp_path / ".chrys" / "sessions" / "abcd1234" / "trajectory" / "events.jsonl"
+    path.parent.mkdir(parents=True)
+    _write_p1_operations(path)
+    analysis = TrajectoryAnalyzer().load(path)
+    turn = analysis.turns[0]
+    wait = TimeSlice(
+        family="approval",
+        slice_index=0,
+        turn_id=turn.turn_id,
+        runtime_id=turn.runtime_id,
+        operation_id=None,
+        owner="approval",
+        start_ns=0,
+        end_ns=2_000_000_000,
+        wall_bucket=None,
+        counts_as_work=False,
+        compute_weight=False,
+        response_weight=False,
+        tool_name="zsh",
+    )
+    # Parallel calls ask at the same time: waits from 0 to 2 s and from 1 to
+    # 3 s are 3 s of waiting, as the finding's total counts them.
+    overlapping = replace(wait, slice_index=1, start_ns=1_000_000_000, end_ns=3_000_000_000)
+    row = replace(
+        _finding_row("approval-blocking-share", FindingSeverity.WARNING, turn=1, duration_ms=3000, percentage=40),
+        turn_id=turn.turn_id,
+    )
+
+    text = " ".join(
+        line.plain.strip()
+        for line in trajectory_insights._finding_lines(
+            plain_look(),
+            replace(
+                analysis,
+                turns=(replace(turn, slices=(*turn.slices, wait, overlapping)), *analysis.turns[1:]),
+                findings=(row,),
+            ),
+            width=400,
+        )
+    )
+
+    assert "Longest waits: zsh 3.00 s" in text
+
+
+def test_costly_context_examples_pair_each_items_name_with_its_own_figures(tmp_path: Path) -> None:
+    # Every item still in context at the end was last carried by the same
+    # request; each example must still describe its own item.
+    call_item, result_item = "1" * 32, "2" * 32
+    revision_id, segment_id, exchange_id = "8" * 32, "9" * 32, "a" * 32
+    path = installed_events_path(tmp_path)
+    log = EventLog()
+    log.coverage()
+    log.add("turn.started", 0, payload={"turn_number": 1})
+    revision = log.add(
+        "context.revision.recorded",
+        NS,
+        operation_id=revision_id,
+        parent_operation_id=exchange_id,
+        payload={
+            "revision_id": revision_id,
+            "is_checkpoint": True,
+            "item_count": 2,
+            "untokenized_item_count": 0,
+            "unidentified_item_count": 0,
+        },
+        segmented_fields=(SegmentedField(field_pointer="/payload/refs", segment_group_id=segment_id, segment_count=1),),
+    )
+    log.add(
+        "event.segment",
+        NS,
+        operation_id=None,
+        payload={
+            "parent_event_id": revision.event_id,
+            "field_pointer": "/payload/refs",
+            "segment_group_id": segment_id,
+            "segment_index": 0,
+            "segment_count": 1,
+            "encoding": "array_slice",
+            "entries": [
+                {"item_id": item_id, "occurrence": 0, "position": position, "action": "add"}
+                for position, item_id in enumerate((call_item, result_item))
+            ],
+        },
+    )
+    log.span("model.exchange", exchange_id, 2 * NS, 3 * NS, start_payload={"context_revision_id": revision_id})
+    log.add("turn.finished", 4 * NS, payload={"end_reason": "cancelled", "duration_ms": 0})
+    log.write(path)
+    messages = [
+        {
+            "role": "assistant",
+            "additional_properties": {ANALYTICS_ITEM_ID_KEY: call_item, "_group": {"token_count": 150_000}},
+            "contents": [{"type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{}"}],
+        },
+        {
+            "role": "tool",
+            "additional_properties": {ANALYTICS_ITEM_ID_KEY: result_item, "_group": {"token_count": 120_000}},
+            "contents": [{"type": "function_result", "call_id": "call-1", "result": "ok"}],
+        },
+    ]
+    path.parents[1].joinpath("session.json").write_text(json.dumps({"state": {"messages": messages}}), encoding="utf-8")
+
+    lines = [
+        line.plain.strip()
+        for line in trajectory_insights._finding_lines(plain_look(), TrajectoryAnalyzer().load(path), width=400)
+    ]
+
+    examples = [line for line in lines if " tok " in line]
+    assert len(examples) == 2
+    assert any("assistant message" in line and "150" in line for line in examples), examples
+    assert any("tool result" in line and "120" in line for line in examples), examples

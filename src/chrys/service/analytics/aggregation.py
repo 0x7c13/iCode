@@ -21,6 +21,7 @@ from array import array
 from collections import Counter, defaultdict
 from dataclasses import replace
 from io import BufferedReader
+from itertools import pairwise
 from os import fstat
 from pathlib import Path
 from threading import Event
@@ -41,6 +42,7 @@ from chrys.service.analytics._actions import (
 )
 from chrys.service.analytics._context_evidence import _revision_memberships, _RevisionResolution
 from chrys.service.analytics._facts import (
+    _UNREPORTED_FAILURE_USAGE_REASON,
     _active,
     _closed_sequence_union,
     _Endpoint,
@@ -59,6 +61,7 @@ from chrys.service.analytics._insights import (
 )
 from chrys.service.analytics._metric_ops import (
     _cap_session_metric,
+    _merge_reasons,
     _percentile_metric,
     _sum_metrics,
     _sum_optional_bucket_metrics,
@@ -552,14 +555,21 @@ def _resolve(
         session_projection(),
         cancel_event=cancel_event,
     )
+    logical_turns = _fold_retry_turns(resolved_turns, cancel_event=cancel_event)
+    runs = workflow_runs(
+        intermediate, active_ranges, integrity_reason=session_integrity_reason, cancel_event=cancel_event
+    )
     findings = evaluate_findings(
         actions=actions,
-        turns=resolved_turns,
+        turns=logical_turns,
         validation=validation,
         change_verification=change_verification,
         retry_amplification_evidence=retry_evidence,
         retry_target=retry_target,
-        context_carrying_load=context_carrying_load,
+        # A workflow session shows no Insights, which is what names the
+        # items a costly-context finding is about.
+        context_carrying_load=() if runs else context_carrying_load,
+        outside_changes=(*_background_task_spans(intermediate), *_current_turn_drops(intermediate)),
         cancel_event=cancel_event,
     )
     span_mismatches, containment_violations = _timeline_diagnostics(
@@ -607,7 +617,6 @@ def _resolve(
         tool_kind="mcp",
         display_name=lambda action: action.tool_name,
     )
-    logical_turns = _fold_retry_turns(resolved_turns, cancel_event=cancel_event)
     diagnostics = replace(
         diagnostics,
         timeline_operations=_timeline_operation_diagnostics(logical_turns),
@@ -629,9 +638,6 @@ def _resolve(
         mcp_usage = _degrade_tool_usage_panel(mcp_usage, session_integrity_reason)
         insights = _degrade_insights(insights, session_integrity_reason)
         submission_latency = _degrade_submission_latency(submission_latency, session_integrity_reason)
-    runs = workflow_runs(
-        intermediate, active_ranges, integrity_reason=session_integrity_reason, cancel_event=cancel_event
-    )
     if runs:
         overview = include_workflow_overview(overview, runs)
     return TrajectoryAnalysis(
@@ -704,6 +710,54 @@ def _rollback_projection_unresolved(
     )
 
 
+def _background_task_spans(intermediate: _Intermediate) -> tuple[tuple[int, int | None], ...]:
+    """The start and finish sequences of each background task the log records.
+
+    A task whose start fell outside the log is taken as running from the
+    beginning. A task with no finish event may outlive a runtime that closed
+    the log properly (a rollback reopens the log in place and keeps
+    background commands running), but not one that ended without closing it:
+    the process is gone, and on Windows its job with it, while on POSIX a
+    later launch stops the task or leaves it running untracked. So the task
+    counts as running until the next runtime after such an end starts, or to
+    the end of the log.
+    """
+    runtime_starts = sorted(
+        (endpoint.sequence, runtime_id)
+        for runtime_id, endpoints in intermediate.runtime_starts.items()
+        for endpoint in endpoints
+    )
+    unclosed_ends = [
+        sequence
+        for (_previous_start, previous_id), (sequence, _runtime_id) in pairwise(runtime_starts)
+        if not intermediate.runtime_finishes.get(previous_id)
+    ]
+    spans: list[tuple[int, int | None]] = []
+    for started, finished in intermediate.background_tasks.values():
+        start = 0 if started is None else started
+        end = (
+            finished
+            if finished is not None
+            else next((sequence for sequence in unclosed_ends if sequence > start), None)
+        )
+        spans.append((start, end))
+    return tuple(spans)
+
+
+def _current_turn_drops(intermediate: _Intermediate) -> tuple[tuple[int, int], ...]:
+    """Where compaction dropped tool results of the turn it ran in.
+
+    Only phase 4 touches the running turn; the other phases rewrite earlier,
+    completed turns.
+    """
+    return tuple(
+        (finish.sequence, finish.sequence)
+        for node in intermediate.nodes.get("compaction.phase", {}).values()
+        for finish in node.finishes[-1:]
+        if _payload_str(finish.payload, "phase") == "phase4"
+    )
+
+
 def _timeline_operation_diagnostics(
     turns: list[TurnAnalysis],
 ) -> tuple[TimelineOperationDiagnostic, ...]:
@@ -755,6 +809,11 @@ def _overview(
         if elapsed.precision is Precision.EXACT and exclusive.precision is Precision.EXACT
         else Precision.UNRESOLVED
     )
+    ratio_reason = (
+        None
+        if ratio_precision is Precision.EXACT
+        else _merge_reasons(elapsed.reason, exclusive.reason) or f"one or more {metric_subject} are unresolved"
+    )
     elapsed_value = int(elapsed.value) if elapsed.value is not None else None
     exclusive_value = int(exclusive.value) if exclusive.value is not None else None
     wall = {
@@ -779,7 +838,7 @@ def _overview(
             if elapsed_value == 0
             else None,
             ratio_precision,
-            None if ratio_precision is Precision.EXACT else f"one or more {metric_subject} are unresolved",
+            ratio_reason,
         )
     return TrajectoryOverview(
         elapsed_ns=elapsed,
@@ -793,7 +852,7 @@ def _overview(
             if elapsed_value == 0 and exclusive_value is not None
             else None,
             ratio_precision,
-            None if ratio_precision is Precision.EXACT else f"one or more {metric_subject} are unresolved",
+            ratio_reason,
         ),
         overlap_gain_ns=overlap,
         wall_time_ns=wall,
@@ -1189,31 +1248,36 @@ def _retry_amplification(
             else Metric(None, Precision.UNRESOLVED, "retry exchange attribution is incomplete")
         )
         return metric, (), (None, None, None)
+    reported = [usage for usage in amplified if not usage.unreported_failure]
     missing = any(
-        usage.normalization_unavailable or usage.input_total is None or usage.output_total is None
-        for usage in amplified
+        usage.normalization_unavailable or usage.input_total is None or usage.output_total is None for usage in reported
     )
-    value = sum((usage.input_total or 0) + (usage.output_total or 0) for usage in amplified)
+    value = sum((usage.input_total or 0) + (usage.output_total or 0) for usage in reported)
     provenance_exact = all(
         usage.bucket_has_provider_provenance(UsageBucket.INPUT)
         and usage.bucket_has_provider_provenance(UsageBucket.OUTPUT)
-        for usage in amplified
+        for usage in reported
     )
+    unreported = len(reported) < len(amplified)
     precision = (
         Precision.MISSING
         if missing
-        else Precision.EXACT
-        if provenance_exact and attribution_exact
         else Precision.UNRESOLVED
+        if not (provenance_exact and attribution_exact)
+        else Precision.ESTIMATED
+        if unreported
+        else Precision.EXACT
     )
     reason = (
         "normalized usage is missing for one or more retried exchanges"
         if missing
-        else None
-        if provenance_exact and attribution_exact
         else "retry exchange attribution is incomplete"
         if not attribution_exact
         else "normalized retry usage provenance is incomplete"
+        if not provenance_exact
+        else _UNREPORTED_FAILURE_USAGE_REASON
+        if unreported
+        else None
     )
     stable_items: set[str] = set()
     target: tuple[str | None, str | None, str | None] = (None, None, None)

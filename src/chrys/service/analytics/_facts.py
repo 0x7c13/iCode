@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from chrys.foundation.trajectory.envelope import ActorKind, SegmentedField, TrajectoryEvent
-from chrys.foundation.trajectory.event_types import EventType
+from chrys.foundation.trajectory.event_types import EventType, ExchangeOutcome
 from chrys.service.analytics.model import CorruptLineDiagnostic, UnsupportedLineDiagnostic, UsageBucket
 from chrys.service.analytics.reader import PrefixViolation, ScanBatch
 from chrys.service.analytics.reader import plain_int_value as _plain_int_value
@@ -246,6 +246,11 @@ _USAGE_PROVENANCE_BITS: Final[dict[UsageBucket, int]] = {
     UsageBucket.CACHE_CREATION: 16,
 }
 _USAGE_NORMALIZATION_UNAVAILABLE_BIT: Final = 32
+# A request that failed, stalled or was interrupted before the provider sent
+# its usage block records no usage at all; totals count the requests that
+# reported and say they are a lower bound instead of going missing.
+_USAGE_UNREPORTED_FAILURE_BIT: Final = 64
+_UNREPORTED_FAILURE_USAGE_REASON: Final = "one or more model requests failed or were interrupted before reporting usage, so totals count reported requests only"
 
 _USAGE_BUCKET_KEYS: Final[dict[UsageBucket, str]] = {
     UsageBucket.INPUT: "input_total",
@@ -274,6 +279,10 @@ class _ExchangeUsage:
     @property
     def normalization_unavailable(self) -> bool:
         return bool(self.flags & _USAGE_NORMALIZATION_UNAVAILABLE_BIT)
+
+    @property
+    def unreported_failure(self) -> bool:
+        return bool(self.flags & _USAGE_UNREPORTED_FAILURE_BIT)
 
     def bucket_value(self, bucket: UsageBucket) -> int | None:
         if bucket is UsageBucket.INPUT:
@@ -352,6 +361,10 @@ class _Intermediate:
         self.turns: dict[str, _Turn] = {}
         self.usage_by_turn: dict[str, list[_ExchangeUsage]] = defaultdict(list)
         self.mutation_summaries: list[_Endpoint] = []
+        # Background shell tasks by id: the sequences of their start and
+        # finish events. A task keeps writing (its log, often files) between
+        # the two, outside any tool call.
+        self.background_tasks: dict[str, tuple[int | None, int | None]] = {}
         self.segments: dict[str, tuple[_Segment, ...]] = {}
         self.context_revisions: dict[str, tuple[_Endpoint, ...]] = {}
         self.context_revision_ids_by_turn: dict[str, list[str]] = defaultdict(list)
@@ -594,6 +607,9 @@ class _Intermediate:
                         flags |= _USAGE_PROVENANCE_BITS[bucket]
                 if isinstance(usage, dict) and usage.get("normalization_unavailable") is True:
                     flags |= _USAGE_NORMALIZATION_UNAVAILABLE_BIT
+                outcome = event.payload.get("outcome")
+                if usage is None and isinstance(outcome, str) and outcome != ExchangeOutcome.SUCCESS:
+                    flags |= _USAGE_UNREPORTED_FAILURE_BIT
                 self.usage_by_turn[turn_id].append(
                     _ExchangeUsage(
                         sequence=event.sequence,
@@ -659,6 +675,15 @@ class _Intermediate:
             if first is not None and last is not None:
                 self.explicit_gaps.append((first, last))
             self.dirty.full = True
+        elif event_type in {EventType.BACKGROUND_TASK_STARTED, EventType.BACKGROUND_TASK_FINISHED}:
+            task_id = event.payload.get("task")
+            if isinstance(task_id, str):
+                started, finished = self.background_tasks.get(task_id, (None, None))
+                if event_type == EventType.BACKGROUND_TASK_STARTED:
+                    started = endpoint.sequence if started is None else started
+                else:
+                    finished = endpoint.sequence
+                self.background_tasks[task_id] = (started, finished)
         elif event_type == EventType.COVERAGE_STARTED:
             self.coverage_starts[endpoint.coverage_id].append(endpoint)
             self.dirty.full = True

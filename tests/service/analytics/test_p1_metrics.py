@@ -100,6 +100,22 @@ def test_every_validation_loop_metric_uses_projected_turn_time_and_recorded_outc
     assert metrics.retry_amplification_tokens == Metric(100, Precision.EXACT)
 
 
+def test_an_edit_call_that_failed_is_not_counted_as_an_unverified_change() -> None:
+    # A failed or refused edit changed nothing; an interrupted one may have.
+    turns = [_turn("turn-1", 1, 0, 100)]
+    verify = _action(1, "turn-1", 1, 10, ActionClass.VERIFY)
+    retry = Metric(0, Precision.EXACT)
+
+    counts = {
+        outcome: _validation_metrics(
+            (verify, _action(2, "turn-1", 1, 20, ActionClass.EDIT, outcome=outcome)), turns, _empty_change(), retry
+        ).unverified_change_count.value
+        for outcome in ("success", "interrupted", "failed", "rejected")
+    }
+
+    assert counts == {"success": 1, "interrupted": 1, "failed": 0, "rejected": 0}
+
+
 def test_verify_started_before_the_edit_terminal_never_vouches_for_it() -> None:
     turns = [_turn("turn-1", 1, 0, 100)]
     edit = _action(1, "turn-1", 1, 10, ActionClass.EDIT, end_sequence=4)

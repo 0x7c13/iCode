@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
@@ -27,6 +28,13 @@ from chrys.kernel.exchanges import (
 from chrys.service.analytics.reader import plain_int_value as _plain_int_value
 from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelled
 from chrys.service.mutations.types import parse_skip_reason
+from chrys.service.session.sub_agent_logs import (
+    MAX_AUDIT_SCAN_TOTAL_BYTES,
+    MAX_SCANNED_AUDIT_FILES,
+    MAX_SUB_AGENT_AUDIT_BYTES,
+    scan_bounded_json_files,
+    sessions_dir,
+)
 
 _PROJECTION_PAIRING_POLICY: Final = PairingPolicy(
     call_types=TOOL_CALL_CONTENT_TYPES | {LEGACY_CALL_CONTENT_TYPE},
@@ -67,12 +75,16 @@ class _SessionProjection:
     mutation_detail_available: bool = False
     carriers: dict[str, str] = field(default_factory=dict)
     commands: dict[str, str] = field(default_factory=dict)
+    # Calls whose arguments were read and name no command: a shell-kind tool
+    # that runs none (``list_workspace_dirs``), unlike a missing call record.
+    commandless_calls: frozenset[str] = frozenset()
     skill_names: dict[str, str] = field(default_factory=dict)
     item_tokens: dict[str, int] = field(default_factory=dict)
     item_roles: dict[str, str] = field(default_factory=dict)
     item_tool_names: dict[str, tuple[str, ...]] = field(default_factory=dict)
     mutations: tuple[_SessionMutation, ...] = ()
     detection_truncated_turns: frozenset[int] = frozenset()
+    workspace_root: str | None = None
 
 
 def _lazy_session_projection(
@@ -103,22 +115,27 @@ def _session_document_path(path: Path) -> Path | None:
     return path.parents[1] / "session.json"
 
 
+# The session document's (device, inode, size, mtime), then each sub-agent
+# transcript's name and the same four fields.
+type _ProjectionSignature = tuple[tuple[int, int, int, int], tuple[tuple[str, int, int, int, int], ...]]
+
+
 class _SessionProjectionCache:
     """Reuse the parsed session document across analysis generations.
 
     The live dashboard refreshes twice a second; the events scan is
     incremental, but the companion ``session.json`` parse is not, so an
     unchanged document must not be reparsed on every append batch. The
-    store replaces the document whole, so one (device, inode, size,
-    mtime) signature identifies one written state; a stat failure or a
-    loose log disables reuse instead of trusting a stale parse. The stat
-    is taken before the read: a document replaced between the two pairs
-    the old signature with the newer parse, which the next generation's
-    mismatching stat corrects.
+    store replaces the document — and each sub-agent transcript beside it —
+    whole, so one (device, inode, size, mtime) signature per file
+    identifies one written state; a stat failure or a loose log disables
+    reuse instead of trusting a stale parse. The stat is taken before the
+    read: a document replaced between the two pairs the old signature with
+    the newer parse, which the next generation's mismatching stat corrects.
     """
 
     def __init__(self) -> None:
-        self._signature: tuple[int, int, int, int] | None = None
+        self._signature: _ProjectionSignature | None = None
         self._projection: _SessionProjection | None = None
 
     def lazy(self, path: Path, *, cancel_event: Event | None = None) -> Callable[[], _SessionProjection]:
@@ -153,7 +170,7 @@ class _SessionProjectionCache:
         return projection
 
     @staticmethod
-    def _stat_signature(path: Path) -> tuple[int, int, int, int] | None:
+    def _stat_signature(path: Path) -> _ProjectionSignature | None:
         document = _session_document_path(path)
         if document is None:
             return None
@@ -161,7 +178,79 @@ class _SessionProjectionCache:
             stat = document.stat()
         except OSError:
             return None
-        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        sub_agents: list[tuple[str, int, int, int, int]] = []
+        for transcript_path in _sub_agent_transcript_paths(document):
+            try:
+                sub_stat = transcript_path.stat()
+            except OSError:
+                continue
+            sub_agents.append(
+                (transcript_path.name, sub_stat.st_dev, sub_stat.st_ino, sub_stat.st_size, sub_stat.st_mtime_ns)
+            )
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns), tuple(sub_agents)
+
+
+def _state_transcripts(state: dict[Any, Any]) -> list[list[dict[Any, Any]]]:
+    """Every transcript one persisted agent state holds.
+
+    Compaction moves original messages into ``compressed_msgs[*].messages``
+    and leaves only a summary in the live list; each block is scanned as a
+    transcript of its own so compacted turns keep their carrier, argument,
+    and token joins.
+    """
+
+    def transcript(value: object) -> list[dict[Any, Any]]:
+        return [message for message in value if isinstance(message, dict)] if isinstance(value, list) else []
+
+    raw_blocks = state.get("compressed_msgs")
+    transcripts = [
+        transcript(block.get("messages"))
+        for block in (raw_blocks if isinstance(raw_blocks, list) else [])
+        if isinstance(block, dict)
+    ]
+    transcripts.append(transcript(state.get("messages")))
+    return transcripts
+
+
+def _session_transcripts(
+    state: dict[Any, Any],
+    document: Path,
+    *,
+    cancel_event: Event | None,
+) -> Iterator[list[dict[Any, Any]]]:
+    """The session's own transcripts, then each sub-agent's.
+
+    A sub-agent's calls — its shell commands, skill names and context items —
+    persist only in its own transcript under ``sub_agents/sessions``. Each one
+    is read when the walk reaches it, so only one sub-agent history is held at
+    a time; an unreadable one contributes no joins.
+    """
+    yield from _state_transcripts(state)
+    for transcript_path in _sub_agent_transcript_paths(document):
+        _check_cancelled(cancel_event)
+        try:
+            # Read like the session document itself: the joins only label
+            # analytics rows, and a session root copied or linked elsewhere
+            # must stay analyzable. The ceiling still bounds what one
+            # transcript can make the walk hold.
+            with transcript_path.open("rb") as handle:
+                if os.fstat(handle.fileno()).st_size > MAX_SUB_AGENT_AUDIT_BYTES:
+                    continue
+                envelope = json.load(handle)
+        except OSError, ValueError, RecursionError:
+            continue
+        sub_agent_state = envelope.get("state") if isinstance(envelope, dict) else None
+        if isinstance(sub_agent_state, dict):
+            yield from _state_transcripts(sub_agent_state)
+
+
+def _sub_agent_transcript_paths(document: Path) -> list[Path]:
+    paths, _truncated = scan_bounded_json_files(
+        sessions_dir(document.parent),
+        max_files=MAX_SCANNED_AUDIT_FILES,
+        max_total_bytes=MAX_AUDIT_SCAN_TOTAL_BYTES,
+    )
+    return paths
 
 
 def _read_session_projection(path: Path, *, cancel_event: Event | None = None) -> _SessionProjection:
@@ -183,24 +272,11 @@ def _read_session_projection(path: Path, *, cancel_event: Event | None = None) -
     if not isinstance(envelope, dict) or not isinstance((state := envelope.get("state")), dict):
         return _SessionProjection(available=False)
 
-    def transcript(value: object) -> list[dict[Any, Any]]:
-        return [message for message in value if isinstance(message, dict)] if isinstance(value, list) else []
-
-    # Compaction moves original messages into ``compressed_msgs[*].messages``
-    # and leaves only a summary in the live list; each block is scanned as a
-    # transcript of its own so compacted turns keep their carrier, argument,
-    # and token joins.
-    raw_blocks = state.get("compressed_msgs")
-    transcripts = [
-        transcript(block.get("messages"))
-        for block in (raw_blocks if isinstance(raw_blocks, list) else [])
-        if isinstance(block, dict)
-    ]
-    transcripts.append(transcript(state.get("messages")))
     carriers: dict[str, str] = {}
     ambiguous_carriers: set[str] = set()
     commands: dict[str, str] = {}
     ambiguous_commands: set[str] = set()
+    commandless: set[str] = set()
     skill_names: dict[str, str] = {}
     ambiguous_skill_names: set[str] = set()
     item_tokens: dict[str, int] = {}
@@ -209,7 +285,7 @@ def _read_session_projection(path: Path, *, cancel_event: Event | None = None) -
     ambiguous_item_roles: set[str] = set()
     tool_names: dict[str, tuple[str, ...]] = {}
     ambiguous_tool_names: set[str] = set()
-    for messages in transcripts:
+    for messages in _session_transcripts(state, document, cancel_event=cancel_event):
         carrier_by_index: dict[int, str] = {}
         transcript_tool_names: dict[str, list[str]] = {}
         for message_index, message in enumerate(messages):
@@ -267,6 +343,10 @@ def _read_session_projection(path: Path, *, cancel_event: Event | None = None) -
                     # Anthropic blocking responses persist the tool input as
                     # the decoded mapping rather than a JSON string.
                     decoded: object = arguments
+                elif arguments is None or arguments == "":
+                    # As for the kernel, an empty or omitted payload means no
+                    # arguments: a no-parameter tool's call may be stored so.
+                    decoded = {}
                 else:
                     try:
                         decoded = json.loads(arguments) if isinstance(arguments, str) else None
@@ -277,6 +357,8 @@ def _read_session_projection(path: Path, *, cancel_event: Event | None = None) -
                         # even when the outer document decoded fine.
                         decoded = None
                 command = decoded.get("command") if isinstance(decoded, dict) else None
+                if isinstance(decoded, dict) and "command" not in decoded:
+                    commandless.add(content_id)
                 if isinstance(command, str) and content_id not in ambiguous_commands:
                     existing_command = commands.get(content_id)
                     if existing_command is not None and existing_command != command:
@@ -451,10 +533,17 @@ def _read_session_projection(path: Path, *, cancel_event: Event | None = None) -
         mutation_detail_available=isinstance(turns, list) and detail_complete,
         carriers=carriers,
         commands=commands,
+        commandless_calls=frozenset(commandless - commands.keys() - ambiguous_commands),
         skill_names=skill_names,
         item_tokens=item_tokens,
         item_roles=item_roles,
         item_tool_names=tool_names,
         mutations=tuple(mutations),
         detection_truncated_turns=frozenset(detection_truncated),
+        workspace_root=_workspace_root(envelope.get("meta")),
     )
+
+
+def _workspace_root(meta: object) -> str | None:
+    root = meta.get("primary_cwd") if isinstance(meta, dict) else None
+    return root if isinstance(root, str) and root else None

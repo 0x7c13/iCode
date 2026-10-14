@@ -5,10 +5,9 @@
 Actions are projected from tool lifecycles; action counts, edit/verify
 cycles, validation metrics and file verification states are derived from them
 here. Action classes and tool-outcome predicates come from ``classification``.
-``findings``' unverified-change rule repeats this module's unverified-edit
-selection (``model.verify_covers_edit`` against the last successful verify)
-and takes its precision from the count here, so a change to which edits count
-as verified must change both. File verification states order differently: a
+``findings``' unverified-change rule shares this module's unverified-edit
+selection (``classification.unverified_edits``) and takes its precision from
+the count here. File verification states order differently: a
 verify in the file's last-change turn must start after every potential mutator
 in that turn.
 """
@@ -16,7 +15,7 @@ in that turn.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from statistics import median
 from threading import Event
@@ -35,7 +34,11 @@ from chrys.service.analytics._facts import (
     _payload_value,
     _ToolPayloadExtras,
 )
-from chrys.service.analytics._metric_ops import _cap_session_metric, _with_unresolved_precision
+from chrys.service.analytics._metric_ops import (
+    _cap_session_metric,
+    _graded_metric,
+    _with_unresolved_precision,
+)
 from chrys.service.analytics._session_projection import _SessionProjection
 from chrys.service.analytics._timeline import _tool_context_for_start
 from chrys.service.analytics.classification import (
@@ -45,6 +48,7 @@ from chrys.service.analytics.classification import (
     parse_verify_commands,
     tool_failed,
     tool_succeeded,
+    unverified_edits,
 )
 from chrys.service.analytics.model import (
     ActionClass,
@@ -78,7 +82,9 @@ def _resolve_actions(
     turns_by_id = {turn.turn_id: turn for turn in turns}
     commands = parse_verify_commands(verify_commands)
     actions: list[ActionOperation] = []
-    for node in intermediate.nodes.get("tool.operation", {}).values():
+    tool_operations = intermediate.nodes.get("tool.operation", {})
+    parents = _operation_parents(intermediate)
+    for node in tool_operations.values():
         _check_cancelled(cancel_event)
         starts = [event for event in node.starts if _active(event.sequence, inactive_ranges) and not event.side_call]
         finishes = [
@@ -95,11 +101,12 @@ def _resolve_actions(
             call_item_id=call_item_id,
             argument_fingerprint=argument_fingerprint,
         )
-        command = session_projection().commands.get(call_item_id or "") if tool_kind == "shell" else None
+        projection = session_projection() if tool_kind == "shell" else None
         classification, classification_precision, classification_reason = classify_action(
             tool_kind,
-            command=command,
+            command=projection.commands.get(call_item_id or "") if projection is not None else None,
             verify_commands=commands,
+            runs_command=projection is None or (call_item_id or "") not in projection.commandless_calls,
         )
         outcome, outcome_precision, outcome_reason, finish = _action_outcome(start, finishes)
         context = _tool_context_for_start(node, start)
@@ -115,6 +122,8 @@ def _resolve_actions(
                 evidence_key=stable_key,
                 occurrence_id=f"tool:{start.sequence}:{node.operation_id}",
                 operation_id=node.operation_id,
+                actor_id=start.actor_id,
+                enclosing_operation_ids=_enclosing_tool_operations(start.parent_operation_id, parents, tool_operations),
                 turn_id=turn.turn_id,
                 turn_number=turn.turn_number,
                 tool_name=tool_name,
@@ -147,6 +156,40 @@ def _resolve_actions(
             )
         )
     return tuple(sorted(actions, key=lambda action: (action.start_sequence, action.operation_id)))
+
+
+def _operation_parents(intermediate: _Intermediate) -> dict[str, str]:
+    """Each recorded operation's parent, as the first of its endpoints that names one says."""
+    parents: dict[str, str] = {}
+    for family_nodes in intermediate.nodes.values():
+        for operation_id, node in family_nodes.items():
+            parent = next(
+                (
+                    endpoint.parent_operation_id
+                    for endpoint in (*node.starts, *node.finishes)
+                    if endpoint.parent_operation_id
+                ),
+                None,
+            )
+            if parent is not None:
+                parents.setdefault(operation_id, parent)
+    return parents
+
+
+def _enclosing_tool_operations(
+    parent: str | None,
+    parents: dict[str, str],
+    tool_operations: Mapping[str, object],
+) -> tuple[str, ...]:
+    """The tool calls on the parent chain from *parent* up, nearest first."""
+    enclosing: list[str] = []
+    seen: set[str] = set()
+    while parent is not None and parent not in seen:
+        seen.add(parent)
+        if parent in tool_operations:
+            enclosing.append(parent)
+        parent = parents.get(parent)
+    return tuple(enclosing)
 
 
 def _action_outcome(
@@ -286,7 +329,10 @@ def _validation_metrics(
             turns,
             first_edit,
             first_verify,
-            precisions=(first_edit.classification_precision, first_verify.classification_precision),
+            precisions=(
+                (first_edit.classification_precision, first_edit.classification_reason),
+                (first_verify.classification_precision, first_verify.classification_reason),
+            ),
         )
         if degraded_shell:
             edit_to_verify = _with_unresolved_precision(edit_to_verify, verification_reason)
@@ -319,9 +365,9 @@ def _validation_metrics(
                     pending_edits[0],
                     action,
                     precisions=(
-                        *(edit.classification_precision for edit in pending_edits),
-                        action.classification_precision,
-                        action.outcome_precision,
+                        *((edit.classification_precision, edit.classification_reason) for edit in pending_edits),
+                        (action.classification_precision, action.classification_reason),
+                        (action.outcome_precision, action.outcome_reason),
                     ),
                 )
             )
@@ -346,11 +392,7 @@ def _validation_metrics(
     )
     successful_verifies = [action for action in verifies if tool_succeeded(action.outcome)]
     last_successful_verify = successful_verifies[-1] if successful_verifies else None
-    unverified = [
-        action
-        for action in edits
-        if last_successful_verify is None or not verify_covers_edit(action, last_successful_verify)
-    ]
+    unverified = unverified_edits(edits, last_successful_verify)
     unverified_precision = least_precision(action.classification_precision for action in (*edits, *verifies))
     unverified_reason = None
     if degraded_shell:
@@ -408,7 +450,10 @@ def _validation_metrics(
                 failure,
                 recovered,
                 from_end=True,
-                precisions=(failure.outcome_precision, recovered.outcome_precision),
+                precisions=(
+                    (failure.outcome_precision, failure.outcome_reason),
+                    (recovered.outcome_precision, recovered.outcome_reason),
+                ),
             )
             if passed_unknown_outcome:
                 metric = _with_unresolved_precision(
@@ -497,8 +542,9 @@ def _duration_between_actions(
     second: ActionOperation,
     *,
     from_end: bool = False,
-    precisions: tuple[Precision, ...],
+    precisions: tuple[tuple[Precision, str | None], ...],
 ) -> Metric:
+    """The time from *first* to *second*, graded by each (precision, reason) input."""
     start_ns = first.end_ns if from_end else first.start_ns
     if start_ns is None:
         return Metric(None, Precision.MISSING, "the starting tool outcome has no terminal timestamp")
@@ -506,7 +552,7 @@ def _duration_between_actions(
         duration = second.start_ns - start_ns
         if duration < 0:
             return Metric(None, Precision.UNRESOLVED, "action order yields a negative duration")
-        return Metric(duration, least_precision(precisions))
+        return _graded_metric(duration, precisions)
     turns_by_id = {turn.turn_id: index for index, turn in enumerate(turns)}
     first_index = turns_by_id.get(first.turn_id)
     second_index = turns_by_id.get(second.turn_id)
@@ -519,15 +565,15 @@ def _duration_between_actions(
     start_offset = start_ns - first_turn.axis_start_ns
     end_offset = second.start_ns - second_turn.axis_start_ns
     duration = first_turn.elapsed_ns.value - start_offset + end_offset
-    metric_precisions = [*precisions, first_turn.elapsed_ns.precision]
+    metric_precisions = [*precisions, (first_turn.elapsed_ns.precision, first_turn.elapsed_ns.reason)]
     for turn in turns[first_index + 1 : second_index]:
         if not isinstance(turn.elapsed_ns.value, int):
             return Metric(None, Precision.UNRESOLVED, "an intervening turn duration is unresolved")
         duration += turn.elapsed_ns.value
-        metric_precisions.append(turn.elapsed_ns.precision)
+        metric_precisions.append((turn.elapsed_ns.precision, turn.elapsed_ns.reason))
     if duration < 0:
         return Metric(None, Precision.UNRESOLVED, "action order yields a negative duration")
-    return Metric(duration, least_precision(metric_precisions))
+    return _graded_metric(duration, metric_precisions)
 
 
 def _degrade_validation_metrics(
@@ -875,15 +921,16 @@ def _resolve_change_verification(
         deleted=Metric(deleted, count_precision, count_reason),
         net_zero=Metric(net_zero, net_zero_precision, net_zero_reason),
         rows=tuple(sorted(rows, key=lambda row: row.path)),
+        workspace_root=projection.workspace_root,
+        saved_through_sequence=None if latest_summary is None else latest_summary.sequence,
     )
 
 
 def _degrade_change_verification(change: ChangeVerification, reason: str) -> ChangeVerification:
     """Cap every session-wide mutation result when the source log is incomplete."""
 
-    return ChangeVerification(
-        detail_available=change.detail_available,
-        detection_truncated=change.detection_truncated,
+    return replace(
+        change,
         files_touched=_cap_session_metric(change.files_touched, reason),
         created=_cap_session_metric(change.created, reason),
         modified=_cap_session_metric(change.modified, reason),

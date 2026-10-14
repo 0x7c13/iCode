@@ -634,7 +634,8 @@ def _context_carrying_load(
             ContextCarryingLoad(
                 load=token_count * carry_count,
                 item_id=item_id,
-                occurrence_id=f"context-load:{last.sequence}:{last.event_id or 'revision'}",
+                # One row per item: items still in context share their last revision.
+                occurrence_id=f"context-load:{item_id}",
                 turn_id=last.turn_id,
                 turn_number=turn.turn_number if turn is not None else None,
                 token_count=token_count,

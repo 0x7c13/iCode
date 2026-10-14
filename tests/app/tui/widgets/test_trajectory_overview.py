@@ -60,7 +60,8 @@ async def test_overview_renders_kpi_waterfall_coverage_and_structured_diagnostic
         assert "model" in text and "tools" in text and "wait" in text and "idle" in text
         assert "Busy share (model and tools independent; >100% = parallel work)" in text
         assert "data confidence" in text
-        assert "Per-turn time breakdown" in text
+        # A one-turn session names its turn instead of a range.
+        assert "Per-turn time breakdown · turn 1" in text
         overview_lines = [line.plain for line in dashboard.query_one(TrajectoryTextView)._lines]
         idle_row = next(index for index, line in enumerate(overview_lines) if line.startswith("│ idle"))
         # The waterfall closes with a time ruler on the lanes' cumulative scale.
@@ -223,11 +224,11 @@ async def test_p1_overview_renders_findings_bottom_panes_and_non_additive_submis
         assert "Findings" not in text
         assert "Unverified change" not in text
         assert "Action breakdown" in text
-        for label, value in (("search", "1"), ("read", "3"), ("edit", "2"), ("verify", "1")):
+        for label, value in (("search", "1"), ("read", "4"), ("edit", "2"), ("verify", "1")):
             row = next(line.plain for line in text_view._lines if line.plain.startswith(f"│ {label}"))
             assert value in row
         assert "Failure recovery" in text
-        assert any("tool failures" in line.plain and "2/7" in line.plain for line in text_view._lines)
+        assert any("tool failures" in line.plain and "2/8" in line.plain for line in text_view._lines)
         assert any("repeated identical failures" in line.plain and "1" in line.plain for line in text_view._lines)
         assert "Change verification" in text
         assert any("verified[bold].py" in line.plain and "verified" in line.plain for line in text_view._lines)
@@ -260,9 +261,10 @@ async def test_p1_overview_renders_findings_bottom_panes_and_non_additive_submis
         insights_view = dashboard.query_one(TrajectoryTextView)
         insights = page_text(insights_view)
         assert "Findings" in insights
-        assert "Unverified change" in insights
-        assert "Repeated tool fingerprint" in insights
-        assert "Changes cancelled out" in insights
+        assert "Unverified changes" in insights
+        assert "Repeated reads" in insights
+        assert "Turn 2 · read_file · 1 repeat" in insights
+        assert "Edits with no net effect" in insights
         assert " · deterministic" not in insights
         assert insights.index("Findings") < insights.index("Diagnostics")
         # The ignore interaction no longer exists, so no ignored-count footer.

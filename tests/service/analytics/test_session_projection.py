@@ -228,3 +228,73 @@ def test_session_projection_cache_reuses_the_unchanged_document(tmp_path) -> Non
     refreshed = cache.lazy(path)()
     assert refreshed is not first
     assert refreshed.mutation_detail_available
+
+
+def _shell_call_message(carrier_id: str, content_id: str, command: str) -> dict[str, object]:
+    return {
+        "role": "assistant",
+        "additional_properties": {ANALYTICS_ITEM_ID_KEY: carrier_id},
+        "contents": [
+            {
+                "type": "function_call",
+                "name": "run_shell_command",
+                "additional_properties": {ANALYTICS_ITEM_ID_KEY: content_id},
+                "arguments": json.dumps({"command": command}),
+            }
+        ],
+    }
+
+
+def test_sub_agent_transcripts_join_their_calls_and_refresh_the_cache(tmp_path) -> None:
+    """A sub-agent's shell commands persist only in its own transcript; the
+    projection reads them, and a transcript written later invalidates the
+    cached projection like a rewritten session document does."""
+    path = installed_events_path(tmp_path / ".chrys")
+    session_dir = path.parents[1]
+    session_dir.joinpath("session.json").write_text(json.dumps({"state": {"messages": []}}), encoding="utf-8")
+    sub_agents = session_dir / "sub_agents" / "sessions"
+    sub_agents.mkdir(parents=True)
+    compacted = {"compressed_msgs": [{"messages": [_shell_call_message("3" * 32, "4" * 32, "pytest -q")]}]}
+    sub_agents.joinpath("Explore_aaaa.json").write_text(
+        json.dumps({"state": {**compacted, "messages": [_shell_call_message("5" * 32, "6" * 32, "ruff check")]}}),
+        encoding="utf-8",
+    )
+    sub_agents.joinpath("General_bbbb.json").write_text("{not json", encoding="utf-8")
+
+    cache = session_projection_module._SessionProjectionCache()
+    first = cache.lazy(path)()
+    assert first.commands == {"4" * 32: "pytest -q", "6" * 32: "ruff check"}
+    assert first.item_tool_names["5" * 32] == ("run_shell_command",)
+    assert cache.lazy(path)() is first
+
+    sub_agents.joinpath("General_bbbb.json").write_text(
+        json.dumps({"state": {"messages": [_shell_call_message("7" * 32, "8" * 32, "make test")]}}),
+        encoding="utf-8",
+    )
+    refreshed = cache.lazy(path)()
+    assert refreshed is not first
+    assert refreshed.commands["8" * 32] == "make test"
+
+
+def test_sub_agent_transcript_over_the_size_ceiling_is_skipped(tmp_path, monkeypatch) -> None:
+    path = installed_events_path(tmp_path / ".chrys")
+    session_dir = path.parents[1]
+    session_dir.joinpath("session.json").write_text(json.dumps({"state": {"messages": []}}), encoding="utf-8")
+    sub_agents = session_dir / "sub_agents" / "sessions"
+    sub_agents.mkdir(parents=True)
+    at_ceiling = sub_agents / "Explore_aaaa.json"
+    at_ceiling.write_text(
+        json.dumps({"state": {"messages": [_shell_call_message("3" * 32, "4" * 32, "pytest -q")]}}),
+        encoding="utf-8",
+    )
+    over_ceiling = sub_agents / "General_bbbb.json"
+    over_ceiling.write_text(
+        json.dumps({"state": {"messages": [_shell_call_message("5" * 32, "6" * 32, "ruff check --fix")]}}),
+        encoding="utf-8",
+    )
+    ceiling = at_ceiling.stat().st_size
+    assert over_ceiling.stat().st_size > ceiling
+    monkeypatch.setattr(session_projection_module, "MAX_SUB_AGENT_AUDIT_BYTES", ceiling)
+
+    projection = session_projection_module._SessionProjectionCache().lazy(path)()
+    assert projection.commands == {"4" * 32: "pytest -q"}

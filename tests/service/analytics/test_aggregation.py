@@ -17,7 +17,7 @@ from chrys.service.analytics import (
     WallBucket,
     analyze_trajectory,
 )
-from chrys.service.analytics._metric_ops import _sum_metrics
+from chrys.service.analytics._metric_ops import _merge_reasons, _sum_metrics
 from tests.service.analytics._events import NS, EventLog, caused_by, operation_index
 
 
@@ -914,3 +914,24 @@ def test_turn_flow_never_fabricates_edges_from_sequence_adjacency(tmp_path) -> N
     assert flow.causal_edges() == ()
     assert flow.root_index is None
     assert not flow.has_terminal
+
+
+def test_merged_reasons_list_each_cause_once() -> None:
+    # A reason may itself be a merge; one cause listed twice would read as a
+    # different reason and split its diagnostics group.
+    assert _merge_reasons("a", "a; b", None, "", "b; c") == "a; b; c"
+    assert _merge_reasons("a; b") == "a; b"
+
+
+def test_a_total_names_only_the_causes_of_its_own_precision() -> None:
+    # The estimated part has another cause; listing it would split the total
+    # from the unresolved turn's diagnostics group.
+    total = _sum_metrics(
+        [
+            Metric(100, Precision.ESTIMATED, "usage counts only reported requests"),
+            Metric(200, Precision.UNRESOLVED, "turn sequence integrity is unresolved"),
+            Metric(300, Precision.EXACT),
+        ]
+    )
+
+    assert total == Metric(600, Precision.UNRESOLVED, "turn sequence integrity is unresolved")
