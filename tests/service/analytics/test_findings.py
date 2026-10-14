@@ -12,7 +12,7 @@ import pytest
 from chrys.foundation.trajectory.envelope import Actor, SegmentedField, measurement
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.service.analytics import analyze_trajectory
-from chrys.service.analytics.findings import ContextCarryingLoad, evaluate_findings
+from chrys.service.analytics.findings import ContextCarryingLoad, RetriedExchange, SequenceSpan, evaluate_findings
 from chrys.service.analytics.model import (
     ActionClass,
     ActionFunnel,
@@ -250,14 +250,12 @@ def test_repeated_read_rule_counts_a_change_that_ran_inside_the_first_read() -> 
 @pytest.mark.parametrize(
     ("task", "reported"),
     [
-        ((1, None), False),  # still running: its log, or files, may have changed
-        ((1, 5), False),  # finished between the reads
-        ((1, 2), True),  # finished before the first read
+        (SequenceSpan(1, None), False),  # still running: its log, or files, may have changed
+        (SequenceSpan(1, 5), False),  # finished between the reads
+        (SequenceSpan(1, 2), True),  # finished before the first read
     ],
 )
-def test_repeated_read_rule_counts_a_running_background_task_as_a_change(
-    task: tuple[int, int | None], reported: bool
-) -> None:
+def test_repeated_read_rule_counts_a_running_background_task_as_a_change(task: SequenceSpan, reported: bool) -> None:
     first = _action(3, fingerprint="same", tool_name="read_file", tool_kind="filesystem.read")
     repeated = _action(6, fingerprint="same", tool_name="read_file", tool_kind="filesystem.read")
 
@@ -557,13 +555,16 @@ def test_waiting_on_the_user_inside_a_failed_call_is_not_reported_as_failed_work
 
 def test_retry_token_amplification_rule_has_positive_and_negative_paths() -> None:
     action = _action(1)
+    exchange = RetriedExchange(action.turn_id, action.operation_id, finish_sequence=7)
     positive = _evaluate(
         actions=(action,),
         retry=Metric(500, Precision.EXACT),
         retry_evidence=("item:stable",),
-        retry_target=(action.turn_id, action.operation_id, "occurrence"),
+        retried_exchange=exchange,
     )
-    negative = _evaluate(actions=(action,), retry=Metric(0, Precision.EXACT), retry_evidence=("item:stable",))
+    negative = _evaluate(
+        actions=(action,), retry=Metric(0, Precision.EXACT), retry_evidence=("item:stable",), retried_exchange=exchange
+    )
 
     assert "retry-token-amplification" in _rule_ids(positive)
     assert "retry-token-amplification" not in _rule_ids(negative)
@@ -674,10 +675,10 @@ def _evaluate(
     turn: TurnAnalysis | None = None,
     retry: Metric | None = None,
     retry_evidence: tuple[str, ...] = (),
-    retry_target: tuple[str | None, str | None, str | None] = (None, None, None),
+    retried_exchange: RetriedExchange | None = None,
     change: ChangeVerification | None = None,
     context: tuple[ContextCarryingLoad, ...] = (),
-    outside_changes: tuple[tuple[int, int | None], ...] = (),
+    outside_changes: tuple[SequenceSpan, ...] = (),
 ) -> tuple[FindingRow, ...]:
     selected_turn = turn or _turn()
     return evaluate_findings(
@@ -686,7 +687,7 @@ def _evaluate(
         validation=_validation(actions, retry or Metric(0, Precision.EXACT)),
         change_verification=change or _change(),
         retry_amplification_evidence=retry_evidence,
-        retry_target=retry_target,
+        retried_exchange=retried_exchange,
         context_carrying_load=context,
         outside_changes=outside_changes,
     )

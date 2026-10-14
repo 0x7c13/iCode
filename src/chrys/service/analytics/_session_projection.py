@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.kernel.exchanges import (
@@ -115,9 +115,32 @@ def _session_document_path(path: Path) -> Path | None:
     return path.parents[1] / "session.json"
 
 
-# The session document's (device, inode, size, mtime), then each sub-agent
-# transcript's name and the same four fields.
-type _ProjectionSignature = tuple[tuple[int, int, int, int], tuple[tuple[str, int, int, int, int], ...]]
+class _FileStamp(NamedTuple):
+    """One written state of a file the store replaces whole."""
+
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+
+    @classmethod
+    def of(cls, stat: os.stat_result) -> _FileStamp:
+        return cls(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+class _TranscriptStamp(NamedTuple):
+    """A sub-agent transcript's file name and written state."""
+
+    name: str
+    stamp: _FileStamp
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionSignature:
+    """The written state of the session document and of each sub-agent transcript beside it."""
+
+    document: _FileStamp
+    sub_agents: tuple[_TranscriptStamp, ...]
 
 
 class _SessionProjectionCache:
@@ -178,16 +201,14 @@ class _SessionProjectionCache:
             stat = document.stat()
         except OSError:
             return None
-        sub_agents: list[tuple[str, int, int, int, int]] = []
+        sub_agents: list[_TranscriptStamp] = []
         for transcript_path in _sub_agent_transcript_paths(document):
             try:
                 sub_stat = transcript_path.stat()
             except OSError:
                 continue
-            sub_agents.append(
-                (transcript_path.name, sub_stat.st_dev, sub_stat.st_ino, sub_stat.st_size, sub_stat.st_mtime_ns)
-            )
-        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns), tuple(sub_agents)
+            sub_agents.append(_TranscriptStamp(transcript_path.name, _FileStamp.of(sub_stat)))
+        return _ProjectionSignature(_FileStamp.of(stat), tuple(sub_agents))
 
 
 def _state_transcripts(state: dict[Any, Any]) -> list[list[dict[Any, Any]]]:

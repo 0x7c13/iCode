@@ -11,8 +11,9 @@ import pytest
 
 from chrys.foundation.config.settings import DEFAULT_TRAJECTORY_VERIFY_COMMANDS
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
-from chrys.service.analytics import ActionClass, Precision, analyze_trajectory
+from chrys.service.analytics import ActionClass, Grade, Precision, analyze_trajectory
 from chrys.service.analytics.classification import (
+    ActionClassification,
     classification_evidence_key,
     classify_action,
     command_matches_verify,
@@ -35,15 +36,13 @@ _CALL_ITEM_ID = "7" * 32
     ],
 )
 def test_structured_tool_kinds_map_directly_and_exactly(tool_kind: str | None, expected: ActionClass) -> None:
-    action, precision, reason = classify_action(
+    classification = classify_action(
         tool_kind,
         command=None,
         verify_commands=DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
     )
 
-    assert action is expected
-    assert precision is Precision.EXACT
-    assert reason is None
+    assert classification == ActionClassification(expected, Grade(Precision.EXACT))
 
 
 @pytest.mark.parametrize(
@@ -83,11 +82,11 @@ def test_shell_classification_is_heuristic_and_missing_text_degrades_honestly() 
     absent = classify_action("shell", command=None, verify_commands="pytest,npm test")
     commandless = classify_action("shell", command=None, verify_commands="pytest,npm test", runs_command=False)
 
-    assert matched[:2] == (ActionClass.VERIFY, Precision.ESTIMATED)
-    assert unmatched[:2] == (ActionClass.OTHER, Precision.ESTIMATED)
-    assert absent[:2] == (ActionClass.OTHER, Precision.UNRESOLVED)
-    assert "carrier" in (absent[2] or "")
-    assert commandless == (ActionClass.OTHER, Precision.EXACT, None)
+    assert (matched.action_class, matched.grade.precision) == (ActionClass.VERIFY, Precision.ESTIMATED)
+    assert (unmatched.action_class, unmatched.grade.precision) == (ActionClass.OTHER, Precision.ESTIMATED)
+    assert (absent.action_class, absent.grade.precision) == (ActionClass.OTHER, Precision.UNRESOLVED)
+    assert "carrier" in (absent.grade.reason or "")
+    assert commandless == ActionClassification(ActionClass.OTHER, Grade(Precision.EXACT))
 
 
 @pytest.mark.parametrize(

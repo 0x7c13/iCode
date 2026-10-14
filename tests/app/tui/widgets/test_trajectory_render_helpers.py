@@ -16,6 +16,8 @@ from rich.text import Text
 from chrys.app.tui.widgets.trajectory import insights as trajectory_insights
 from chrys.app.tui.widgets.trajectory import overview as trajectory_overview
 from chrys.app.tui.widgets.trajectory.chartkit import (
+    WaterfallLane,
+    WaterfallTurn,
     bordered_section,
     coverage_bar,
     fit_cells,
@@ -85,7 +87,10 @@ def test_operation_reason_messages_cover_every_timeline_diagnostic_code() -> Non
 
 
 def test_grouped_grid_lines_keeps_each_semantic_group_in_one_column() -> None:
-    groups = [[(Text(f"g{group}r{row}"), Text(str(row))) for row in range(3)] for group in range(4)]
+    groups = [
+        [trajectory_overview._LabeledValue(Text(f"g{group}r{row}"), Text(str(row))) for row in range(3)]
+        for group in range(4)
+    ]
 
     lines = trajectory_overview._grouped_grid_lines(groups, width=120, columns=4)
 
@@ -180,14 +185,14 @@ def test_bordered_section_pads_one_cell_inside_each_vertical_border() -> None:
 def test_waterfall_lanes_paint_each_cell_in_exactly_one_lane() -> None:
     # One turn, 10 cells: the model covers everything except a tool window that
     # owns most of cells 4-5; model slivers around it must not repaint them.
-    turn = (
+    turn = WaterfallTurn(
         1000,
         {
             "model": [(0, 420), (421, 430), (580, 1000)],
             "tool": [(430, 580)],
         },
     )
-    lanes = waterfall_lanes([turn], width=10, lanes=[("tool", "▬", ""), ("model", "█", "")])
+    lanes = waterfall_lanes([turn], width=10, lanes=[WaterfallLane("tool", "▬", ""), WaterfallLane("model", "█", "")])
 
     assert lanes["model"].plain == "████  ████"
     assert lanes["tool"].plain == "    ▬▬    "
@@ -199,13 +204,13 @@ def test_waterfall_lanes_paint_each_cell_in_exactly_one_lane() -> None:
 
 def test_waterfall_lanes_keep_turn_separators_and_empty_canvas() -> None:
     lanes = waterfall_lanes(
-        [(100, {"model": [(0, 100)]}), (100, {"model": [(0, 100)]})],
+        [WaterfallTurn(100, {"model": [(0, 100)]}), WaterfallTurn(100, {"model": [(0, 100)]})],
         width=9,
-        lanes=[("model", "█", "")],
+        lanes=[WaterfallLane("model", "█", "")],
     )
 
     assert lanes["model"].plain == "████┊████"
-    assert waterfall_lanes([], width=4, lanes=[("model", "█", "")])["model"].plain == "    "
+    assert waterfall_lanes([], width=4, lanes=[WaterfallLane("model", "█", "")])["model"].plain == "    "
 
 
 def test_two_edge_alignment_is_cell_width_safe_for_cjk_labels() -> None:

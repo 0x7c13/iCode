@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import NamedTuple
 
 
 class Precision(StrEnum):
@@ -32,6 +33,14 @@ def least_precision(values: Iterable[Precision]) -> Precision:
     """The least precise of *values*, in the order exact, estimated, missing, unresolved; exact when empty."""
     precisions = list(values)
     return max(precisions, key=_PRECISION_ORDER.__getitem__) if precisions else Precision.EXACT
+
+
+@dataclass(frozen=True, slots=True)
+class Grade:
+    """How far a value can be trusted, and why when it is not exact."""
+
+    precision: Precision
+    reason: str | None = None
 
 
 class TimelineDiagnosticCode(StrEnum):
@@ -188,6 +197,10 @@ class Metric:
     precision: Precision
     reason: str | None = None
 
+    @property
+    def grade(self) -> Grade:
+        return Grade(self.precision, self.reason)
+
 
 @dataclass(frozen=True, slots=True)
 class TimeSlice:
@@ -226,9 +239,16 @@ FLOW_TERMINAL_INDEX = 0xFFFF_FFFF
 """Sentinel edge endpoint for the synthetic response terminal, which has no operations row."""
 
 
-def _decode_edge_pairs(packed: bytes) -> tuple[tuple[int, int], ...]:
+class FlowEdge(NamedTuple):
+    """One dependency edge between two operations of a turn, by index (see ``TurnFlow``)."""
+
+    source: int
+    target: int
+
+
+def _decode_edge_pairs(packed: bytes) -> tuple[FlowEdge, ...]:
     values = array("I", packed)
-    return tuple((values[index], values[index + 1]) for index in range(0, len(values), 2))
+    return tuple(FlowEdge(values[index], values[index + 1]) for index in range(0, len(values), 2))
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,12 +271,12 @@ class TurnFlow:
     causal_pairs: bytes
     acyclic: bool
 
-    def parent_edges(self) -> tuple[tuple[int, int], ...]:
-        """Decode the displacing containment edges as (source, target) index pairs."""
+    def parent_edges(self) -> tuple[FlowEdge, ...]:
+        """Decode the displacing containment edges."""
         return _decode_edge_pairs(self.parent_pairs)
 
-    def causal_edges(self) -> tuple[tuple[int, int], ...]:
-        """Decode the producer-declared causal edges as (source, target) index pairs."""
+    def causal_edges(self) -> tuple[FlowEdge, ...]:
+        """Decode the producer-declared causal edges."""
         return _decode_edge_pairs(self.causal_pairs)
 
 
@@ -483,6 +503,14 @@ class ActionOperation:
         if self.end_ns is None:
             return None
         return self.end_ns - self.start_ns
+
+    @property
+    def classification_grade(self) -> Grade:
+        return Grade(self.classification_precision, self.classification_reason)
+
+    @property
+    def outcome_grade(self) -> Grade:
+        return Grade(self.outcome_precision, self.outcome_reason)
 
 
 def verify_covers_edit(edit: ActionOperation, verify: ActionOperation) -> bool:

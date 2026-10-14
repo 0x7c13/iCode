@@ -62,6 +62,7 @@ from chrys.foundation.trajectory.envelope import (
     malformed_id_pointers,
 )
 from chrys.foundation.trajectory.event_types import EventType, GapReason
+from chrys.foundation.trajectory.sequences import SequenceRange
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +189,7 @@ class TrajectoryWriter:
         branch_id: str,
         initial_sequence: int = 0,
         initial_offset: int = 0,
-        recovered_gap: tuple[int, int] | None = None,
+        recovered_gap: SequenceRange | None = None,
         write_ack_timeout: float = DEFAULT_WRITE_ACK_TIMEOUT_SECONDS,
         on_degraded: Callable[[str], None] | None = None,
         on_worker_exit: Callable[[], None] | None = None,

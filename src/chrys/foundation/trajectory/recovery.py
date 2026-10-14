@@ -22,6 +22,7 @@ from chrys.foundation.trajectory.envelope import (
     decode_event_line,
     peek_envelope_header,
 )
+from chrys.foundation.trajectory.sequences import SequenceRange
 
 _INITIAL_TAIL_BYTES = 64 * 1024
 
@@ -43,8 +44,8 @@ class RecoveryScan:
     last_event: TrajectoryEvent | None
     newer_schema_version: int | None = None
     """Set when the tail was written under a schema this build must not append after."""
-    unreadable_slots: tuple[int, int] | None = None
-    """Inclusive slot range the file spent on lines no reader can show, if any.
+    unreadable_slots: SequenceRange | None = None
+    """The slots the file spent on lines no reader can show, if any.
 
     A damaged line keeps its bytes and its slot but never reaches a reader,
     so resuming past it leaves a hole in the sequence that nothing explains.
@@ -136,11 +137,11 @@ def scan_open_file(fd: int) -> RecoveryScan:
         window = min(size, window * 2)
 
 
-def _range_after(last_readable: int, last_claimed: int) -> tuple[int, int] | None:
+def _range_after(last_readable: int, last_claimed: int) -> SequenceRange | None:
     """The slots between the last readable event and the last claimed one, if any."""
     if last_claimed <= last_readable:
         return None
-    return last_readable + 1, last_claimed
+    return SequenceRange(last_readable + 1, last_claimed)
 
 
 def _read_at(fd: int, offset: int, length: int) -> bytes:

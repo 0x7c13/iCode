@@ -6,10 +6,11 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections.abc import Iterable
+from dataclasses import dataclass
 from itertools import accumulate
 from math import inf
 from threading import Event
-from typing import Final
+from typing import Final, NamedTuple
 
 from chrys.foundation.tool_kinds import (
     KIND_FILESYSTEM_READ,
@@ -54,6 +55,32 @@ _STATE_NEUTRAL_KINDS: Final = _REPEATABLE_READ_KINDS | {KIND_TODO}
 _NS_PER_MS: Final = 1_000_000
 
 
+class SequenceSpan(NamedTuple):
+    """The event sequence numbers from *first* to *last*, both included; *last* is None while the span is open."""
+
+    first: int
+    last: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class RetriedExchange:
+    """The retried model exchange a retry-amplification finding points at."""
+
+    turn_id: str | None
+    operation_id: str
+    finish_sequence: int
+    """The sequence of the exchange's finish event."""
+
+
+class _ReadKey(NamedTuple):
+    """What makes two read-only calls identical: who made them, in which turn, and the call itself."""
+
+    actor_id: str | None
+    turn_id: str | None
+    tool_name: str
+    argument_fingerprint: str
+
+
 def evaluate_findings(
     *,
     actions: tuple[ActionOperation, ...],
@@ -61,17 +88,17 @@ def evaluate_findings(
     validation: ValidationMetrics,
     change_verification: ChangeVerification,
     retry_amplification_evidence: tuple[str, ...],
-    retry_target: tuple[str | None, str | None, str | None],
+    retried_exchange: RetriedExchange | None,
     context_carrying_load: tuple[ContextCarryingLoad, ...],
-    outside_changes: tuple[tuple[int, int | None], ...] = (),
+    outside_changes: tuple[SequenceSpan, ...] = (),
     cancel_event: Event | None = None,
 ) -> tuple[FindingRow, ...]:
     """Evaluate the frozen first rule batch using rollback-stable evidence only.
 
     *turns* are logical: a retried turn's attempts share one elapsed and
     response time, while each action names the attempt it ran in.
-    *outside_changes* are the (start, end) sequences of state changes no tool
-    call made: background tasks and context compaction.
+    *outside_changes* are where state changed outside any tool call:
+    background tasks and context compaction.
     """
     _check_cancelled(cancel_event)
     findings: list[FindingRow] = []
@@ -134,7 +161,7 @@ def evaluate_findings(
             )
         )
 
-    for tool_name, calls in _repeated_reads(actions, outside_changes=outside_changes, cancel_event=cancel_event):
+    for key, calls in _repeated_reads(actions, outside_changes=outside_changes, cancel_event=cancel_event).items():
         _check_cancelled(cancel_event)
         repeats = calls[1:]
         target = repeats[-1]
@@ -148,7 +175,7 @@ def evaluate_findings(
         findings.append(
             _finding(
                 "repeated-read",
-                (f"tool:{tool_name}", *_action_evidence_set(calls)),
+                (f"tool:{key.tool_name}", *_action_evidence_set(calls)),
                 occurrence_id=f"repeated:{target.occurrence_id}",
                 severity=FindingSeverity.WARNING,
                 detail_args=tuple(repeat_args),
@@ -196,21 +223,20 @@ def evaluate_findings(
             )
         )
 
-    if validation.retry_amplification_tokens.value and retry_amplification_evidence:
-        retry_turn_id, retry_operation_id, retry_occurrence = retry_target
-        retry_turn = turn_of.get(retry_turn_id or "")
+    if validation.retry_amplification_tokens.value and retry_amplification_evidence and retried_exchange is not None:
+        retry_turn = turn_of.get(retried_exchange.turn_id or "")
         findings.append(
             FindingRow(
                 evidence_key=evidence_key("retry-token-amplification", 1, retry_amplification_evidence),
-                occurrence_id=f"retry-amplification:{retry_occurrence or 'current'}",
+                occurrence_id=f"retry-amplification:{retried_exchange.finish_sequence}",
                 rule_id="retry-token-amplification",
                 severity=FindingSeverity.WARNING,
                 deterministic=True,
                 detail_args=(("tokens", int(validation.retry_amplification_tokens.value)),),
                 precision=validation.retry_amplification_tokens.precision,
-                turn_id=retry_turn_id,
+                turn_id=retried_exchange.turn_id,
                 turn_number=retry_turn.turn_number if retry_turn is not None else None,
-                operation_id=retry_operation_id,
+                operation_id=retried_exchange.operation_id,
             )
         )
 
@@ -313,10 +339,10 @@ def evaluate_findings(
 def _repeated_reads(
     actions: tuple[ActionOperation, ...],
     *,
-    outside_changes: tuple[tuple[int, int | None], ...],
+    outside_changes: tuple[SequenceSpan, ...],
     cancel_event: Event | None,
-) -> list[tuple[str, list[ActionOperation]]]:
-    """Read-only calls, by tool name, that repeated an identical call nothing could have changed.
+) -> dict[_ReadKey, list[ActionOperation]]:
+    """Read-only calls that repeated an identical call nothing could have changed.
 
     A repeat must come from the same agent in the same turn, succeed, and
     start after the last earlier identical call that succeeded had finished; a
@@ -336,7 +362,7 @@ def _repeated_reads(
     by_turn: dict[str | None, list[ActionOperation]] = {}
     for action in sorted(actions, key=lambda action: action.start_sequence):
         by_turn.setdefault(action.turn_id, []).append(action)
-    groups: dict[tuple[str | None, str | None, str, str], list[ActionOperation]] = {}
+    groups: dict[_ReadKey, list[ActionOperation]] = {}
     for ordered in by_turn.values():
         # Possible changes by start; the running maximum of their ends answers
         # "did any change that began before this repeat end after the earlier
@@ -344,20 +370,20 @@ def _repeated_reads(
         changes = sorted(
             [
                 *(
-                    (action.start_sequence, action.end_sequence)
+                    SequenceSpan(action.start_sequence, action.end_sequence)
                     for action in ordered
                     if action.tool_kind not in _STATE_NEUTRAL_KINDS and action.tool_kind != KIND_SUB_AGENT
                 ),
                 *outside_changes,
             ],
-            key=lambda change: change[0],
+            key=lambda change: change.first,
         )
-        change_starts = [start for start, _end in changes]
-        latest_change_end = list(accumulate((end if end is not None else inf for _start, end in changes), max))
+        change_starts = [change.first for change in changes]
+        latest_change_end = list(accumulate((inf if change.last is None else change.last for change in changes), max))
         # Sub-agent calls are checked one by one: a repeat inside one is exempt
         # from the calls enclosing it.
         sub_agent_calls = [action for action in ordered if action.tool_kind == KIND_SUB_AGENT]
-        previous_by_key: dict[tuple[str | None, str | None, str, str], ActionOperation] = {}
+        previous_by_key: dict[_ReadKey, ActionOperation] = {}
         for action in ordered:
             _check_cancelled(cancel_event)
             if (
@@ -367,7 +393,7 @@ def _repeated_reads(
                 or not tool_succeeded(action.outcome)
             ):
                 continue
-            key = (action.actor_id, action.turn_id, action.tool_name, action.argument_fingerprint)
+            key = _ReadKey(action.actor_id, action.turn_id, action.tool_name, action.argument_fingerprint)
             previous = previous_by_key.get(key)
             previous_by_key[key] = action
             if previous is None or previous.end_sequence is None or previous.end_sequence >= action.start_sequence:
@@ -383,7 +409,7 @@ def _repeated_reads(
             ):
                 continue
             groups.setdefault(key, [previous]).append(action)
-    return [(key[2], calls) for key, calls in groups.items()]
+    return groups
 
 
 def _approval_wait_ns(slices: Iterable[TimeSlice]) -> int:
@@ -435,4 +461,4 @@ def _finding(
     )
 
 
-__all__ = ["ContextCarryingLoad", "evaluate_findings"]
+__all__ = ["ContextCarryingLoad", "RetriedExchange", "SequenceSpan", "evaluate_findings"]

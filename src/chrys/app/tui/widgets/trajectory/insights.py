@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len, chop_cells
@@ -26,12 +27,13 @@ from chrys.app.tui.widgets.trajectory.presentation import (
     DashboardLook,
     RenderContext,
     ResponsiveTier,
+    SectionSpec,
     align_edges,
     badged_section_title,
     bordered_section_row,
     cache_hit_metric,
     callsite,
-    derived_metric_precision,
+    derived_metric_grade,
     format_duration,
     format_tokens,
     identity_with_hook_id,
@@ -64,7 +66,7 @@ from chrys.service.analytics import (
     UsageBucket,
     least_precision,
 )
-from chrys.service.analytics.math import interval_length
+from chrys.service.analytics.math import Interval, interval_length
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -609,8 +611,8 @@ def _adaptive_section_pair(
             return bordered_section_row(
                 look,
                 (
-                    (left_title, left_lines, halves[0]),
-                    (right_title, right_lines, halves[1]),
+                    SectionSpec(left_title, left_lines, halves[0]),
+                    SectionSpec(right_title, right_lines, halves[1]),
                 ),
             )
     interior = section_interior_width(width)
@@ -1020,10 +1022,10 @@ def _finding_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, width: 
                 precision_badge(look, least_precision(row.precision for row in rows)),
             )
         )
-        summary, examples = _finding_block(look, analysis, rule_id, rows, actions)
-        for sentence in summary:
+        text = _finding_block(look, analysis, rule_id, rows, actions)
+        for sentence in text.summary:
             lines.extend(_hanging_lines("    ", "    ", sentence, width=width))
-        for example in examples:
+        for example in text.examples:
             lines.extend(_hanging_lines("    · ", "      ", example, width=width))
     return lines
 
@@ -1064,13 +1066,21 @@ def _chop(unit: str, width: int) -> list[str]:
     return pieces
 
 
+@dataclass(frozen=True, slots=True)
+class _FindingText:
+    """A finding block's summary sentences and the example lines listed under them."""
+
+    summary: list[str]
+    examples: list[str] = field(default_factory=list)
+
+
 def _finding_block(
     look: DashboardLook,
     analysis: TrajectoryAnalysis,
     rule_id: str,
     rows: list[FindingRow],
     actions: dict[str, ActionOperation],
-) -> tuple[list[str], list[str]]:
+) -> _FindingText:
     """The summary sentences and example lines for one rule's findings."""
     args = [dict(row.detail_args) for row in rows]
     if rule_id == "unverified-change":
@@ -1078,13 +1088,13 @@ def _finding_block(
         # A later command whose text is unavailable may have been a passing
         # check, so no message may claim that none passed.
         if first["unclassified_shell"]:
-            return [look.message(_FINDING_UNVERIFIED_UNKNOWN.bind(count=first["count"]))], []
+            return _FindingText([look.message(_FINDING_UNVERIFIED_UNKNOWN.bind(count=first["count"]))])
         if first["verifies"] == 0:
             if first["verify_attempts"]:
-                return [look.message(_FINDING_UNVERIFIED_FAILED.bind(count=first["count"]))], []
-            return [look.message(_FINDING_UNVERIFIED_NEVER.bind(count=first["count"]))], []
+                return _FindingText([look.message(_FINDING_UNVERIFIED_FAILED.bind(count=first["count"]))])
+            return _FindingText([look.message(_FINDING_UNVERIFIED_NEVER.bind(count=first["count"]))])
         turn = first.get("last_verify_turn", "—")
-        return [look.message(_FINDING_UNVERIFIED_AFTER.bind(count=first["count"], turn=turn))], []
+        return _FindingText([look.message(_FINDING_UNVERIFIED_AFTER.bind(count=first["count"], turn=turn))])
     if rule_id == "repeated-read":
         repeats = sum(item["count"] for item in args)
         ranked = sorted(
@@ -1109,7 +1119,9 @@ def _finding_block(
             )
             for row, item in ranked[:_FINDING_EXAMPLE_LIMIT]
         ]
-        return [look.message(_FINDING_REPEATED_SUMMARY.bind(count=repeats))], _with_more(look, examples, len(ranked))
+        return _FindingText(
+            [look.message(_FINDING_REPEATED_SUMMARY.bind(count=repeats))], _with_more(look, examples, len(ranked))
+        )
     if rule_id == "failed-attempt-critical-path":
         ranked = sorted(zip(rows, args, strict=True), key=lambda pair: pair[1]["duration_ms"], reverse=True)
         examples = [
@@ -1122,14 +1134,18 @@ def _finding_block(
             )
             for row, item in ranked[:_FINDING_EXAMPLE_LIMIT]
         ]
-        return [look.message(_FINDING_FAILED_CP_SUMMARY.bind(count=len(rows)))], _with_more(look, examples, len(ranked))
+        return _FindingText(
+            [look.message(_FINDING_FAILED_CP_SUMMARY.bind(count=len(rows)))], _with_more(look, examples, len(ranked))
+        )
     if rule_id == "retry-token-amplification":
         tokens = args[0]["tokens"]
         turn = rows[0].turn_number or "—"
-        return [look.message(_FINDING_RETRY_SUMMARY.bind(count=tokens, tokens=format_tokens(tokens), turn=turn))], []
+        return _FindingText(
+            [look.message(_FINDING_RETRY_SUMMARY.bind(count=tokens, tokens=format_tokens(tokens), turn=turn))]
+        )
     if rule_id == "net-zero-churn":
         turn = rows[0].turn_number or "—"
-        return [look.message(_FINDING_NET_ZERO_SUMMARY.bind(count=args[0]["count"], turn=turn))], []
+        return _FindingText([look.message(_FINDING_NET_ZERO_SUMMARY.bind(count=args[0]["count"], turn=turn))])
     if rule_id == "approval-blocking-share":
         total_ms = sum(item["duration_ms"] for item in args)
         summary = [
@@ -1151,7 +1167,7 @@ def _finding_block(
             )
             for row, item in ranked[:_FINDING_EXAMPLE_LIMIT]
         ]
-        return summary, _with_more(look, examples, len(ranked))
+        return _FindingText(summary, _with_more(look, examples, len(ranked)))
     # context-carrying-load: the Insights table beside it lists more items;
     # the finding names the heaviest ones and what to do about them.
     carrying = {
@@ -1175,7 +1191,9 @@ def _finding_block(
             _INSIGHTS_CARRYING_ROW_DETAIL.bind(tokens=format_tokens(item["tokens"]), count=item["requests"])
         )
         examples.append(" · ".join(part for part in (label, cost, f"≈{format_tokens(item['load'])}") if part))
-    return [look.message(_FINDING_CONTEXT_LOAD_SUMMARY.bind())], _with_more(look, examples, len(ranked_rows))
+    return _FindingText(
+        [look.message(_FINDING_CONTEXT_LOAD_SUMMARY.bind())], _with_more(look, examples, len(ranked_rows))
+    )
 
 
 def _finding_example(
@@ -1210,7 +1228,7 @@ def _approval_wait_tools(analysis: TrajectoryAnalysis, turn_ids: set[str | None]
     for turn in named.values():
         # Parallel calls wait for approval at the same time: like the finding's
         # total, a tool's time is the union of its waits, not their sum.
-        waits: dict[str, list[tuple[int, int]]] = {}
+        waits: dict[str, list[Interval]] = {}
         for item in turn.slices:
             if item.owner == "approval" and item.tool_name:
                 waits.setdefault(item.tool_name, []).append((item.start_ns, item.end_ns))
@@ -1477,8 +1495,8 @@ def _input_share_metric(usage: TokenUsage, session: TokenUsage | None) -> Metric
     ):
         return Metric(None, Precision.UNRESOLVED)
     percent = 100 * float(turn_input.value) / float(total_input.value)
-    precision, reason = derived_metric_precision(turn_input, total_input)
-    return Metric(percent, precision, reason)
+    grade = derived_metric_grade(turn_input, total_input)
+    return Metric(percent, grade.precision, grade.reason)
 
 
 def _format_metric_duration(metric: Metric) -> str:

@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from statistics import median
 from threading import Event
-from typing import cast
+from typing import NamedTuple, cast
 
 from chrys.foundation.tool_kinds import TOOL_KINDS
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._context_evidence import _RevisionResolution
 from chrys.service.analytics._facts import (
     _active,
@@ -29,12 +30,13 @@ from chrys.service.analytics._facts import (
     _LifecycleCut,
     _payload_str,
 )
-from chrys.service.analytics._metric_ops import _cap_session_metric, _cap_session_precision, _percentile_metric
+from chrys.service.analytics._metric_ops import _cap_session_grade, _cap_session_metric, _percentile_metric
 from chrys.service.analytics._session_projection import _SessionProjection
 from chrys.service.analytics._timeline import _exclusively_inactive, _node_owner_membership
 from chrys.service.analytics.model import (
     ActionOperation,
     ContextCarryingLoad,
+    Grade,
     InsightsAnalysis,
     McpInsights,
     McpRemoteRow,
@@ -55,7 +57,7 @@ from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelle
 
 def _insights_analysis(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     turns: list[TurnAnalysis],
     logical_turns: list[TurnAnalysis],
     actions: tuple[ActionOperation, ...],
@@ -102,19 +104,19 @@ def _tool_insights(actions: tuple[ActionOperation, ...], turns: list[TurnAnalysi
             ),
         )
     )
-    precision, reason = _action_panel_precision(turns)
+    grade = _action_panel_grade(turns)
     return ToolInsights(
         total=len(actions),
         rows=rows,
         unclassified=unclassified,
-        precision=precision,
-        reason=reason,
+        precision=grade.precision,
+        reason=grade.reason,
     )
 
 
 def _mcp_insights(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     actions: tuple[ActionOperation, ...],
     turns: list[TurnAnalysis],
     *,
@@ -130,7 +132,7 @@ def _mcp_insights(
             grouped[action.server_name].append(action)
     total_duration = _complete_duration_total(actions)
     approval_by_tool = _approval_durations_by_tool(intermediate, inactive_ranges, cancel_event=cancel_event)
-    waits_by_server, unattributed_waits = _mcp_connection_waits(
+    connection_waits = _mcp_connection_waits(
         intermediate,
         inactive_ranges,
         cancel_event=cancel_event,
@@ -144,7 +146,7 @@ def _mcp_insights(
                     group,
                     total_duration=total_duration,
                     approval_by_tool=approval_by_tool,
-                    connection_waits=waits_by_server.get(server_name, ()),
+                    connection_waits=connection_waits.by_server.get(server_name, ()),
                     turns_by_id=turns_by_id,
                 )
                 for server_name, group in grouped.items()
@@ -156,14 +158,14 @@ def _mcp_insights(
             ),
         )
     )
-    precision, reason = _action_panel_precision(turns)
+    grade = _action_panel_grade(turns)
     return McpInsights(
         total=len(selected),
         rows=rows,
         unattributed=unattributed,
-        unattributed_connection_waits=unattributed_waits,
-        precision=precision,
-        reason=reason,
+        unattributed_connection_waits=connection_waits.unattributed,
+        precision=grade.precision,
+        reason=grade.reason,
     )
 
 
@@ -201,7 +203,6 @@ def _mcp_server_row(
         # operation durations already contain the approval time; adding the
         # approval total to the denominator would count that wait twice.
         approval_share = Metric(approval_total / action_duration if action_duration else 0.0, Precision.EXACT)
-    wait_count, wait_duration = _connection_wait_metrics(connection_waits)
     return McpServerRow(
         server_name=server_name,
         calls=len(actions),
@@ -215,8 +216,8 @@ def _mcp_server_row(
         truncated_count=_payload_sum_metric(actions, "truncated"),
         spill_count=_payload_sum_metric(actions, "spill"),
         critical_path_exclusive_ns=_server_cp_metric(server_name, actions, turns_by_id),
-        connection_wait_count=wait_count,
-        connection_wait_ns=wait_duration,
+        connection_wait_count=Metric(len(connection_waits), Precision.EXACT),
+        connection_wait_ns=_connection_wait_duration(connection_waits),
         remotes=remotes,
     )
 
@@ -250,7 +251,7 @@ def _skill_insights(
             key=lambda row: (-row.load_count, -row.script_count - row.resource_count, row.skill_name),
         )
     )
-    precision, reason = _action_panel_precision(turns)
+    grade = _action_panel_grade(turns)
     return SkillInsights(
         total=len(selected),
         rows=rows,
@@ -259,8 +260,8 @@ def _skill_insights(
             for name, count in sorted(not_found.items(), key=lambda item: (-item[1], item[0]))
         ),
         unattributed=unattributed,
-        precision=precision,
-        reason=reason,
+        precision=grade.precision,
+        reason=grade.reason,
     )
 
 
@@ -306,11 +307,11 @@ def _skill_row(
     )
 
 
-def _action_panel_precision(turns: list[TurnAnalysis]) -> tuple[Precision, str | None]:
+def _action_panel_grade(turns: list[TurnAnalysis]) -> Grade:
     degraded = next((turn for turn in turns if turn.action_projection_precision is not Precision.EXACT), None)
     if degraded is None:
-        return Precision.EXACT, None
-    return Precision.UNRESOLVED, degraded.action_projection_reason or "tool action projection is incomplete"
+        return Grade(Precision.EXACT)
+    return Grade(Precision.UNRESOLVED, degraded.action_projection_reason or "tool action projection is incomplete")
 
 
 def _complete_duration_total(actions: Iterable[ActionOperation]) -> int | None:
@@ -394,7 +395,7 @@ def _payload_sum_metric(
 
 def _approval_durations_by_tool(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     cancel_event: Event | None,
 ) -> dict[str, tuple[int | None, ...]]:
@@ -441,12 +442,22 @@ def _approval_durations_by_tool(
     return durations
 
 
+@dataclass(frozen=True, slots=True)
+class _ConnectionWaits:
+    """The MCP connection waits the log records."""
+
+    by_server: dict[str, tuple[int | None, ...]]
+    """Each server's wait durations; None for a wait that cannot be measured."""
+    unattributed: int
+    """Waits that name no single server."""
+
+
 def _mcp_connection_waits(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     cancel_event: Event | None,
-) -> tuple[dict[str, tuple[int | None, ...]], int]:
+) -> _ConnectionWaits:
     grouped: dict[str, tuple[int | None, ...]] = {}
     unattributed = 0
     for node in intermediate.nodes.get("wait", {}).values():
@@ -491,18 +502,13 @@ def _mcp_connection_waits(
         ):
             duration = finishes[0].monotonic_ns - starts[0].monotonic_ns
         grouped[server_name] = (*grouped.get(server_name, ()), duration)
-    return grouped, unattributed
+    return _ConnectionWaits(grouped, unattributed)
 
 
-def _connection_wait_metrics(samples: tuple[int | None, ...]) -> tuple[Metric, Metric]:
-    if not samples:
-        return Metric(0, Precision.EXACT), Metric(0, Precision.EXACT)
+def _connection_wait_duration(samples: tuple[int | None, ...]) -> Metric:
     if any(sample is None for sample in samples):
-        reason = "one or more MCP connection waits are unresolved"
-        return Metric(len(samples), Precision.EXACT), Metric(None, Precision.UNRESOLVED, reason)
-    return Metric(len(samples), Precision.EXACT), Metric(
-        sum(cast("int", sample) for sample in samples), Precision.EXACT
-    )
+        return Metric(None, Precision.UNRESOLVED, "one or more MCP connection waits are unresolved")
+    return Metric(sum(cast("int", sample) for sample in samples), Precision.EXACT)
 
 
 def _server_cp_metric(
@@ -563,9 +569,24 @@ def _skill_first_action_latency(
     return Metric(value, Precision.EXACT)
 
 
+class _RevisionClaim(NamedTuple):
+    """The model exchange that sent a context revision, and the event that started it."""
+
+    exchange_operation_id: str
+    start: _Endpoint
+
+
+class _CarriedItem(NamedTuple):
+    """How many requests carried a context item, and the revisions of the first and the last."""
+
+    carry_count: int
+    first: _Endpoint
+    last: _Endpoint
+
+
 def _context_carrying_load(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     turns: list[TurnAnalysis],
     revisions: _RevisionResolution,
     projection: _SessionProjection,
@@ -575,7 +596,7 @@ def _context_carrying_load(
     if not projection.item_tokens:
         return ()
     turns_by_id = {turn.turn_id: turn for turn in turns}
-    claims: dict[str, tuple[str, _Endpoint]] = {}
+    claims: dict[str, _RevisionClaim] = {}
     ambiguous_claims: set[str] = set()
     for node in intermediate.nodes.get("model.exchange", {}).values():
         _check_cancelled(cancel_event)
@@ -589,11 +610,12 @@ def _context_carrying_load(
                 claims.pop(revision_id)
                 ambiguous_claims.add(revision_id)
             else:
-                claims[revision_id] = (node.operation_id, start)
+                claims[revision_id] = _RevisionClaim(node.operation_id, start)
 
-    carried: dict[str, tuple[int, _Endpoint, _Endpoint]] = {}
-    for revision_id, (exchange_operation_id, start) in sorted(claims.items(), key=lambda item: item[1][1].sequence):
+    carried: dict[str, _CarriedItem] = {}
+    for revision_id, claim in sorted(claims.items(), key=lambda item: item[1].start.sequence):
         _check_cancelled(cancel_event)
+        start = claim.start
         revision = revisions.endpoints.get(revision_id)
         membership = revisions.memberships.get(revision_id)
         if (
@@ -601,7 +623,7 @@ def _context_carrying_load(
             or membership is None
             or revision_id in revisions.errors
             or revision.side_call
-            or revision.parent_operation_id != exchange_operation_id
+            or revision.parent_operation_id != claim.exchange_operation_id
             or revision.runtime_id != start.runtime_id
             or revision.branch_id != start.branch_id
             or revision.coverage_id != start.coverage_id
@@ -617,29 +639,29 @@ def _context_carrying_load(
             counted.add(item_id)
             previous = carried.get(item_id)
             carried[item_id] = (
-                (previous[0] + 1) if previous is not None else 1,
-                previous[1] if previous is not None else revision,
-                revision,
+                _CarriedItem(previous.carry_count + 1, previous.first, revision)
+                if previous is not None
+                else _CarriedItem(1, revision, revision)
             )
 
     rows: list[ContextCarryingLoad] = []
-    for item_id, (carry_count, first, last) in carried.items():
+    for item_id, item in carried.items():
         _check_cancelled(cancel_event)
         token_count = projection.item_tokens[item_id]
         if token_count <= 0:
             continue
-        turn = turns_by_id.get(last.turn_id or "")
-        origin_turn = turns_by_id.get(first.turn_id or "")
+        turn = turns_by_id.get(item.last.turn_id or "")
+        origin_turn = turns_by_id.get(item.first.turn_id or "")
         rows.append(
             ContextCarryingLoad(
-                load=token_count * carry_count,
+                load=token_count * item.carry_count,
                 item_id=item_id,
                 # One row per item: items still in context share their last revision.
                 occurrence_id=f"context-load:{item_id}",
-                turn_id=last.turn_id,
+                turn_id=item.last.turn_id,
                 turn_number=turn.turn_number if turn is not None else None,
                 token_count=token_count,
-                carry_count=carry_count,
+                carry_count=item.carry_count,
                 origin_turn_number=origin_turn.turn_number if origin_turn is not None else None,
                 role=projection.item_roles.get(item_id),
                 tool_names=projection.item_tool_names.get(item_id, ()),
@@ -681,11 +703,7 @@ def _tool_usage_panel(
 
 
 def _degrade_insights(insights: InsightsAnalysis, reason: str) -> InsightsAnalysis:
-    tools_precision, tools_reason = _cap_session_precision(
-        insights.tools.precision,
-        insights.tools.reason,
-        reason,
-    )
+    tools_grade = _cap_session_grade(Grade(insights.tools.precision, insights.tools.reason), reason)
     tools = replace(
         insights.tools,
         rows=tuple(
@@ -697,21 +715,17 @@ def _degrade_insights(insights: InsightsAnalysis, reason: str) -> InsightsAnalys
             )
             for row in insights.tools.rows
         ),
-        precision=tools_precision,
-        reason=tools_reason,
+        precision=tools_grade.precision,
+        reason=tools_grade.reason,
     )
-    mcp_precision, mcp_reason = _cap_session_precision(insights.mcp.precision, insights.mcp.reason, reason)
+    mcp_grade = _cap_session_grade(Grade(insights.mcp.precision, insights.mcp.reason), reason)
     mcp = replace(
         insights.mcp,
         rows=tuple(_degrade_mcp_server_row(row, reason) for row in insights.mcp.rows),
-        precision=mcp_precision,
-        reason=mcp_reason,
+        precision=mcp_grade.precision,
+        reason=mcp_grade.reason,
     )
-    skills_precision, skills_reason = _cap_session_precision(
-        insights.skills.precision,
-        insights.skills.reason,
-        reason,
-    )
+    skills_grade = _cap_session_grade(Grade(insights.skills.precision, insights.skills.reason), reason)
     skills = replace(
         insights.skills,
         rows=tuple(
@@ -722,21 +736,19 @@ def _degrade_insights(insights: InsightsAnalysis, reason: str) -> InsightsAnalys
             )
             for row in insights.skills.rows
         ),
-        precision=skills_precision,
-        reason=skills_reason,
+        precision=skills_grade.precision,
+        reason=skills_grade.reason,
     )
-    context_carrying_precision, context_carrying_reason = _cap_session_precision(
-        insights.context_carrying_precision,
-        insights.context_carrying_reason,
-        reason,
+    context_carrying_grade = _cap_session_grade(
+        Grade(insights.context_carrying_precision, insights.context_carrying_reason), reason
     )
     return replace(
         insights,
         tools=tools,
         mcp=mcp,
         skills=skills,
-        context_carrying_precision=context_carrying_precision,
-        context_carrying_reason=context_carrying_reason,
+        context_carrying_precision=context_carrying_grade.precision,
+        context_carrying_reason=context_carrying_grade.reason,
     )
 
 
@@ -766,5 +778,5 @@ def _degrade_mcp_server_row(row: McpServerRow, reason: str) -> McpServerRow:
 
 
 def _degrade_tool_usage_panel(panel: ToolUsagePanel, reason: str) -> ToolUsagePanel:
-    precision, combined_reason = _cap_session_precision(panel.precision, panel.reason, reason)
-    return replace(panel, precision=precision, reason=combined_reason)
+    grade = _cap_session_grade(Grade(panel.precision, panel.reason), reason)
+    return replace(panel, precision=grade.precision, reason=grade.reason)

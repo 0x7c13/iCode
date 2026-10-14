@@ -35,6 +35,7 @@ from chrys.foundation.trajectory.envelope import (
 from chrys.foundation.trajectory.event_types import EventType, GapReason, RuntimeFinishReason
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.reader import read_trajectory
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.foundation.trajectory.writer import (
     EmitResult,
     FdWriteBackend,
@@ -675,7 +676,7 @@ async def test_a_failed_recovered_gap_keeps_its_interval_for_degraded_close(tmp_
     writer = _writer(
         backend,
         initial_sequence=recovered_last,
-        recovered_gap=(1, recovered_last),
+        recovered_gap=SequenceRange(1, recovered_last),
     )
 
     assert await writer.emit(_draft(1)) is EmitResult.DEGRADED

@@ -18,6 +18,7 @@ from typing import cast
 
 from chrys.foundation.trajectory.ids import is_valid_analytics_id
 from chrys.foundation.trajectory.revisions import MembershipRef, membership_hash
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._facts import (
     _active,
     _Endpoint,
@@ -57,7 +58,7 @@ class _CompactionConsumptionResolution:
 
 def _revision_memberships(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     fingerprint_key: bytes | None,
     cancel_event: Event | None,
@@ -158,7 +159,7 @@ def _revision_memberships(
 def _segmented_revision_entries(
     intermediate: _Intermediate,
     endpoint: _Endpoint,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     cancel_event: Event | None,
 ) -> tuple[_RevisionEntry, ...] | None:
@@ -257,7 +258,7 @@ def _valid_membership_occurrences(membership: tuple[MembershipRef, ...]) -> bool
 def _compaction_consumption_resolution(
     intermediate: _Intermediate,
     nodes: list[_ResolvedNode],
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     cancel_event: Event | None,
     diagnostics: list[str],
@@ -310,7 +311,7 @@ def _compaction_consumption_resolution(
 def _segmented_string_entries(
     intermediate: _Intermediate,
     endpoint: _Endpoint,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     field_pointer: str,
     cancel_event: Event | None,

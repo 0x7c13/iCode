@@ -69,11 +69,11 @@ def collect_session_storage(session_dir: Path, *, cancel_event: Event | None = N
                 continue
         except OSError:
             continue
-        subtree_bytes, subtree_files = _tree_size(entry.path, cancel_event)
-        total += subtree_bytes
-        count += subtree_files
+        subtree = _tree_size(entry.path, cancel_event)
+        total += subtree.total_bytes
+        count += subtree.file_count
         if entry.name in members:
-            members[entry.name] = subtree_bytes
+            members[entry.name] = subtree.total_bytes
         elif entry.name == TRAJECTORY_DIR_NAME:
             events = _file_size(os.path.join(entry.path, EVENTS_LOG_NAME))
     return SessionStorage(
@@ -93,7 +93,13 @@ def _check_cancelled(cancel_event: Event | None) -> None:
         raise TrajectoryScanCancelled
 
 
-def _tree_size(root: str, cancel_event: Event | None) -> tuple[int, int]:
+@dataclass(frozen=True, slots=True)
+class _TreeSize:
+    total_bytes: int
+    file_count: int
+
+
+def _tree_size(root: str, cancel_event: Event | None) -> _TreeSize:
     total = 0
     count = 0
     pending = [root]
@@ -114,7 +120,7 @@ def _tree_size(root: str, cancel_event: Event | None) -> tuple[int, int]:
                         continue
         except OSError:
             continue
-    return total, count
+    return _TreeSize(total, count)
 
 
 def _file_size(path: str) -> int:

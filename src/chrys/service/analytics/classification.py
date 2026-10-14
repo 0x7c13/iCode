@@ -8,10 +8,11 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Final
 
 from chrys.foundation.trajectory.event_types import ToolOutcome
-from chrys.service.analytics.model import ActionClass, ActionOperation, Precision, verify_covers_edit
+from chrys.service.analytics.model import ActionClass, ActionOperation, Grade, Precision, verify_covers_edit
 
 _DIRECT_CLASSES = {
     "search": ActionClass.SEARCH,
@@ -64,13 +65,21 @@ def command_matches_verify(command: str, verify_commands: str | tuple[str, ...])
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class ActionClassification:
+    """The class of one tool call, and how sure that class is."""
+
+    action_class: ActionClass
+    grade: Grade
+
+
 def classify_action(
     tool_kind: str | None,
     *,
     command: str | None,
     verify_commands: str | tuple[str, ...],
     runs_command: bool = True,
-) -> tuple[ActionClass, Precision, str | None]:
+) -> ActionClassification:
     """Classify one tool without using names, timing, or outcome as evidence.
 
     *runs_command* is False for a shell-kind call whose recorded arguments
@@ -78,18 +87,21 @@ def classify_action(
     """
     direct = _DIRECT_CLASSES.get(tool_kind or "")
     if direct is not None:
-        return direct, Precision.EXACT, None
+        return ActionClassification(direct, Grade(Precision.EXACT))
     if tool_kind != "shell" or not runs_command:
-        return ActionClass.OTHER, Precision.EXACT, None
+        return ActionClassification(ActionClass.OTHER, Grade(Precision.EXACT))
     if command is None:
-        return (
+        return ActionClassification(
             ActionClass.OTHER,
-            Precision.UNRESOLVED,
-            "shell command carrier is unavailable; classification is heuristic-degraded",
+            Grade(Precision.UNRESOLVED, "shell command carrier is unavailable; classification is heuristic-degraded"),
         )
     if command_matches_verify(command, verify_commands):
-        return ActionClass.VERIFY, Precision.ESTIMATED, "matched the configured verification word list"
-    return ActionClass.OTHER, Precision.ESTIMATED, "did not match the configured verification word list"
+        return ActionClassification(
+            ActionClass.VERIFY, Grade(Precision.ESTIMATED, "matched the configured verification word list")
+        )
+    return ActionClassification(
+        ActionClass.OTHER, Grade(Precision.ESTIMATED, "did not match the configured verification word list")
+    )
 
 
 KNOWN_TOOL_OUTCOMES: Final = frozenset(
@@ -138,6 +150,7 @@ def unverified_edits(actions: Iterable[ActionOperation], last_verify: ActionOper
 __all__ = [
     "FAILED_TOOL_OUTCOMES",
     "KNOWN_TOOL_OUTCOMES",
+    "ActionClassification",
     "classification_evidence_key",
     "classify_action",
     "command_matches_verify",

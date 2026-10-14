@@ -16,13 +16,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from statistics import median
 from threading import Event
-from typing import Final, cast
+from typing import Final, NamedTuple, cast
 
 from chrys.foundation.trajectory.event_types import SourceRefKind, ToolOutcome
 from chrys.foundation.trajectory.ids import is_valid_analytics_id
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._facts import (
     _active,
     _Endpoint,
@@ -57,6 +58,7 @@ from chrys.service.analytics.model import (
     ChangeVerification,
     ChangeVerificationRow,
     ChangeVerificationState,
+    Grade,
     Metric,
     Precision,
     TurnAnalysis,
@@ -72,7 +74,7 @@ _WORD_LIST_HEURISTIC_REASON: Final = "one or more shell actions use the verifica
 
 def _resolve_actions(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     turns: list[TurnAnalysis],
     *,
     session_projection: Callable[[], _SessionProjection],
@@ -102,21 +104,23 @@ def _resolve_actions(
             argument_fingerprint=argument_fingerprint,
         )
         projection = session_projection() if tool_kind == "shell" else None
-        classification, classification_precision, classification_reason = classify_action(
+        classification = classify_action(
             tool_kind,
             command=projection.commands.get(call_item_id or "") if projection is not None else None,
             verify_commands=commands,
             runs_command=projection is None or (call_item_id or "") not in projection.commandless_calls,
         )
-        outcome, outcome_precision, outcome_reason, finish = _action_outcome(start, finishes)
+        resolved = _action_outcome(start, finishes)
         context = _tool_context_for_start(node, start)
         payload = _tool_payload_for_node(node, inactive_ranges, start.scope)
         turn = turns_by_id[cast("str", start.turn_id)]
         if turn.action_projection_precision is not Precision.EXACT:
-            outcome = None
-            outcome_precision = Precision.UNRESOLVED
-            outcome_reason = turn.action_projection_reason or "tool action projection is incomplete"
-            finish = None
+            resolved = _ActionOutcome(
+                None,
+                Grade(Precision.UNRESOLVED, turn.action_projection_reason or "tool action projection is incomplete"),
+                None,
+            )
+        finish = resolved.finish
         actions.append(
             ActionOperation(
                 evidence_key=stable_key,
@@ -130,16 +134,16 @@ def _resolve_actions(
                 tool_kind=tool_kind,
                 call_item_id=call_item_id,
                 argument_fingerprint=argument_fingerprint,
-                classification=classification,
-                classification_precision=classification_precision,
-                classification_reason=classification_reason,
-                outcome=outcome,
-                outcome_precision=outcome_precision,
+                classification=classification.action_class,
+                classification_precision=classification.grade.precision,
+                classification_reason=classification.grade.reason,
+                outcome=resolved.outcome,
+                outcome_precision=resolved.grade.precision,
                 start_sequence=start.sequence,
                 start_ns=start.monotonic_ns,
                 end_ns=finish.monotonic_ns if finish is not None and finish.monotonic_measurement else None,
                 end_sequence=finish.sequence if finish is not None else None,
-                outcome_reason=outcome_reason,
+                outcome_reason=resolved.grade.reason,
                 server_name=context.server_name if context is not None else None,
                 remote_name=context.remote_name if context is not None else None,
                 skill_name=context.skill_name if context is not None else None,
@@ -192,25 +196,33 @@ def _enclosing_tool_operations(
     return tuple(enclosing)
 
 
-def _action_outcome(
-    start: _Endpoint,
-    finishes: list[_Endpoint],
-) -> tuple[str | None, Precision, str | None, _Endpoint | None]:
+@dataclass(frozen=True, slots=True)
+class _ActionOutcome:
+    """A tool call's recorded outcome, how far it holds, and the terminal event it came from."""
+
+    outcome: str | None
+    grade: Grade
+    finish: _Endpoint | None
+
+
+def _action_outcome(start: _Endpoint, finishes: list[_Endpoint]) -> _ActionOutcome:
     if not finishes:
-        return None, Precision.MISSING, "tool operation has no terminal event", None
+        return _ActionOutcome(None, Grade(Precision.MISSING, "tool operation has no terminal event"), None)
     if len(finishes) != 1:
-        return None, Precision.UNRESOLVED, "tool operation has more than one terminal event", None
+        return _ActionOutcome(
+            None, Grade(Precision.UNRESOLVED, "tool operation has more than one terminal event"), None
+        )
     finish = finishes[0]
     if finish.scope != start.scope:
-        return None, Precision.UNRESOLVED, "tool lifecycle endpoints cross scope", None
+        return _ActionOutcome(None, Grade(Precision.UNRESOLVED, "tool lifecycle endpoints cross scope"), None)
     if finish.sequence <= start.sequence or finish.monotonic_ns < start.monotonic_ns:
-        return None, Precision.UNRESOLVED, "tool lifecycle endpoints are not ordered", None
+        return _ActionOutcome(None, Grade(Precision.UNRESOLVED, "tool lifecycle endpoints are not ordered"), None)
     outcome = _payload_str(finish.payload, "outcome")
     if outcome is None:
-        return None, Precision.MISSING, "tool terminal outcome is missing", finish
+        return _ActionOutcome(None, Grade(Precision.MISSING, "tool terminal outcome is missing"), finish)
     if outcome not in KNOWN_TOOL_OUTCOMES:
-        return outcome, Precision.UNRESOLVED, "tool terminal outcome is invalid", finish
-    return outcome, Precision.EXACT, None, finish
+        return _ActionOutcome(outcome, Grade(Precision.UNRESOLVED, "tool terminal outcome is invalid"), finish)
+    return _ActionOutcome(outcome, Grade(Precision.EXACT), finish)
 
 
 def _scope_matches(observed_scope: _EventScope, node_scope: _EventScope) -> bool:
@@ -225,7 +237,7 @@ def _scope_matches(observed_scope: _EventScope, node_scope: _EventScope) -> bool
 
 def _tool_payload_for_node(
     node: _Node,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     scope: _EventScope,
 ) -> _ToolPayloadExtras | None:
     extras = node.extras
@@ -329,10 +341,7 @@ def _validation_metrics(
             turns,
             first_edit,
             first_verify,
-            precisions=(
-                (first_edit.classification_precision, first_edit.classification_reason),
-                (first_verify.classification_precision, first_verify.classification_reason),
-            ),
+            grades=(first_edit.classification_grade, first_verify.classification_grade),
         )
         if degraded_shell:
             edit_to_verify = _with_unresolved_precision(edit_to_verify, verification_reason)
@@ -364,10 +373,10 @@ def _validation_metrics(
                     turns,
                     pending_edits[0],
                     action,
-                    precisions=(
-                        *((edit.classification_precision, edit.classification_reason) for edit in pending_edits),
-                        (action.classification_precision, action.classification_reason),
-                        (action.outcome_precision, action.outcome_reason),
+                    grades=(
+                        *(edit.classification_grade for edit in pending_edits),
+                        action.classification_grade,
+                        action.outcome_grade,
                     ),
                 )
             )
@@ -450,10 +459,7 @@ def _validation_metrics(
                 failure,
                 recovered,
                 from_end=True,
-                precisions=(
-                    (failure.outcome_precision, failure.outcome_reason),
-                    (recovered.outcome_precision, recovered.outcome_reason),
-                ),
+                grades=(failure.outcome_grade, recovered.outcome_grade),
             )
             if passed_unknown_outcome:
                 metric = _with_unresolved_precision(
@@ -542,9 +548,9 @@ def _duration_between_actions(
     second: ActionOperation,
     *,
     from_end: bool = False,
-    precisions: tuple[tuple[Precision, str | None], ...],
+    grades: tuple[Grade, ...],
 ) -> Metric:
-    """The time from *first* to *second*, graded by each (precision, reason) input."""
+    """The time from *first* to *second*, no more precise than any of *grades* or the turns it spans."""
     start_ns = first.end_ns if from_end else first.start_ns
     if start_ns is None:
         return Metric(None, Precision.MISSING, "the starting tool outcome has no terminal timestamp")
@@ -552,7 +558,7 @@ def _duration_between_actions(
         duration = second.start_ns - start_ns
         if duration < 0:
             return Metric(None, Precision.UNRESOLVED, "action order yields a negative duration")
-        return _graded_metric(duration, precisions)
+        return _graded_metric(duration, grades)
     turns_by_id = {turn.turn_id: index for index, turn in enumerate(turns)}
     first_index = turns_by_id.get(first.turn_id)
     second_index = turns_by_id.get(second.turn_id)
@@ -565,15 +571,15 @@ def _duration_between_actions(
     start_offset = start_ns - first_turn.axis_start_ns
     end_offset = second.start_ns - second_turn.axis_start_ns
     duration = first_turn.elapsed_ns.value - start_offset + end_offset
-    metric_precisions = [*precisions, (first_turn.elapsed_ns.precision, first_turn.elapsed_ns.reason)]
+    span_grades = [*grades, first_turn.elapsed_ns.grade]
     for turn in turns[first_index + 1 : second_index]:
         if not isinstance(turn.elapsed_ns.value, int):
             return Metric(None, Precision.UNRESOLVED, "an intervening turn duration is unresolved")
         duration += turn.elapsed_ns.value
-        metric_precisions.append((turn.elapsed_ns.precision, turn.elapsed_ns.reason))
+        span_grades.append(turn.elapsed_ns.grade)
     if duration < 0:
         return Metric(None, Precision.UNRESOLVED, "action order yields a negative duration")
-    return _graded_metric(duration, metric_precisions)
+    return _graded_metric(duration, span_grades)
 
 
 def _degrade_validation_metrics(
@@ -608,9 +614,16 @@ def _degrade_validation_metrics(
     )
 
 
+class _FoldedChange(NamedTuple):
+    """One file's changes folded across turns, and the last turn that changed it."""
+
+    diff: FileHashDiff
+    last_turn: int
+
+
 def _resolve_change_verification(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     turns: list[TurnAnalysis],
     actions: tuple[ActionOperation, ...],
     projection: _SessionProjection,
@@ -699,7 +712,7 @@ def _resolve_change_verification(
         ),
         key=lambda mutation: mutation.turn_number,
     )
-    folded: dict[str, tuple[FileHashDiff, int]] = {}
+    folded: dict[str, _FoldedChange] = {}
 
     def fold(
         path: str,
@@ -712,17 +725,15 @@ def _resolve_change_verification(
         inferred: bool,
         contested: bool,
     ) -> None:
-        previous = folded.get(path)
-        before = previous[0].before if previous is not None else before_hash
-        folded_before_skip = previous[0].before_skip if previous is not None else parse_skip_reason(before_skip)
-        folded[path] = (
+        previous = folded[path].diff if path in folded else None
+        folded[path] = _FoldedChange(
             FileHashDiff(
-                before=before,
+                before=previous.before if previous is not None else before_hash,
                 after=after_hash,
-                before_skip=folded_before_skip,
+                before_skip=previous.before_skip if previous is not None else parse_skip_reason(before_skip),
                 after_skip=parse_skip_reason(after_skip),
-                contested=(previous is not None and previous[0].contested) or contested,
-                inferred=(previous is not None and previous[0].inferred) or inferred,
+                contested=(previous is not None and previous.contested) or contested,
+                inferred=(previous is not None and previous.inferred) or inferred,
             ),
             turn_number,
         )
@@ -899,7 +910,7 @@ def _resolve_change_verification(
         )
     diagnostics = [metric_reason] if metric_reason is not None else []
     count_precision = metric_precision
-    if any(diff.inferred or diff.contested for diff, _ in folded.values()):
+    if any(change.diff.inferred or change.diff.contested for change in folded.values()):
         # The counts then include folds that may describe another writer's
         # change, so they cannot pass for exact per-session totals.
         count_precision = least_precision((count_precision, Precision.ESTIMATED))

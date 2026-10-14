@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from chrys.service.analytics.model import Metric, Precision, least_precision
+from chrys.service.analytics.model import Grade, Metric, Precision, least_precision
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -32,26 +32,28 @@ def _sum_metrics(
     # only pointing back at the parts.
     return _graded_metric(
         sum(values),
-        ((metric.precision, metric.reason) for metric in metrics),
+        (metric.grade for metric in metrics),
         fallback=f"one or more {metric_subject} are not exact",
     )
 
 
 def _graded_metric(
     value: int | float,
-    grades: Iterable[tuple[Precision, str | None]],
+    grades: Iterable[Grade],
     *,
     fallback: str | None = None,
 ) -> Metric:
     """*value* at the least precision among *grades*, with the reasons of the grades that set it."""
     grades = tuple(grades)
-    precision = least_precision(grade for grade, _reason in grades)
+    precision = least_precision(grade.precision for grade in grades)
     if precision is Precision.EXACT:
         return Metric(value, precision)
     # A part at a better grade has another cause; naming it here would split
     # this metric's diagnostics group from the parts that share its cause.
     return Metric(
-        value, precision, _merge_reasons(*(reason for grade, reason in grades if grade is precision)) or fallback
+        value,
+        precision,
+        _merge_reasons(*(grade.reason for grade in grades if grade.precision is precision)) or fallback,
     )
 
 
@@ -94,16 +96,12 @@ def _cap_session_metric(metric: Metric, reason: str) -> Metric:
     return Metric(metric.value, Precision.UNRESOLVED, _merge_reasons(metric.reason, reason))
 
 
-def _cap_session_precision(
-    precision: Precision,
-    existing_reason: str | None,
-    integrity_reason: str,
-) -> tuple[Precision, str | None]:
-    if precision is Precision.MISSING:
-        return precision, existing_reason
-    if precision is Precision.UNRESOLVED and existing_reason is not None:
-        return precision, existing_reason
-    return Precision.UNRESOLVED, _merge_reasons(existing_reason, integrity_reason)
+def _cap_session_grade(grade: Grade, integrity_reason: str) -> Grade:
+    if grade.precision is Precision.MISSING:
+        return grade
+    if grade.precision is Precision.UNRESOLVED and grade.reason is not None:
+        return grade
+    return Grade(Precision.UNRESOLVED, _merge_reasons(grade.reason, integrity_reason))
 
 
 def _merge_reasons(*reasons: str | None) -> str:

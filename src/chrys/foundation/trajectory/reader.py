@@ -16,6 +16,7 @@ from bisect import bisect_left
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 from chrys.foundation.trajectory.envelope import (
     SCHEMA_VERSION,
@@ -26,6 +27,7 @@ from chrys.foundation.trajectory.envelope import (
     peek_envelope_header,
 )
 from chrys.foundation.trajectory.event_types import KNOWN_EVENT_TYPES, EventType
+from chrys.foundation.trajectory.sequences import SequenceRange
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,12 +92,18 @@ class TrajectoryReadResult:
         return gaps
 
 
-def iter_file_lines(path: Path, *, chunk_size: int = 1 << 16) -> Iterator[tuple[int, bytes, bool]]:
-    """Yield ``(byte_offset, line_without_newline, complete)`` for each line.
+class FileLine(NamedTuple):
+    """One line of a file, without its newline."""
 
-    The final tuple has ``complete=False`` only when the file ends without a
-    newline (a torn tail); its bytes are the partial line.
-    """
+    offset: int
+    """Byte offset of the line's first byte."""
+    data: bytes
+    complete: bool
+    """False only for a last line the file ends without a newline (a torn tail)."""
+
+
+def iter_file_lines(path: Path, *, chunk_size: int = 1 << 16) -> Iterator[FileLine]:
+    """Yield each line of *path*; the last one is incomplete when the file ends mid-line."""
     offset = 0
     pending = b""
     with path.open("rb") as handle:
@@ -105,10 +113,10 @@ def iter_file_lines(path: Path, *, chunk_size: int = 1 << 16) -> Iterator[tuple[
                 break
             lines, pending = iter_complete_lines(pending + chunk)
             for line in lines:
-                yield offset, line, True
+                yield FileLine(offset, line, True)
                 offset += len(line) + 1
     if pending:
-        yield offset, pending, False
+        yield FileLine(offset, pending, False)
 
 
 def read_trajectory(
@@ -224,7 +232,7 @@ class CoveredSequenceRanges:
     __slots__ = ("_ranges",)
 
     def __init__(self) -> None:
-        self._ranges: list[tuple[int, int]] = []
+        self._ranges: list[SequenceRange] = []
 
     def add(self, first: int, last: int) -> None:
         """Record that a gap accounts for every sequence in ``[first, last]``."""
@@ -236,9 +244,9 @@ class CoveredSequenceRanges:
         lo = bisect_left(ranges, first - 1, key=_range_end)
         hi = bisect_left(ranges, (last + 2,))
         if lo < hi:
-            first = min(first, ranges[lo][0])
-            last = max(last, ranges[hi - 1][1])
-        ranges[lo:hi] = [(first, last)]
+            first = min(first, ranges[lo].first)
+            last = max(last, ranges[hi - 1].last)
+        ranges[lo:hi] = [SequenceRange(first, last)]
 
     def first_uncovered(self, first: int, last: int) -> int | None:
         """The lowest sequence in ``[first, last]`` no gap accounts for, if any.
@@ -251,16 +259,16 @@ class CoveredSequenceRanges:
             return None
         ranges = self._ranges
         index = bisect_left(ranges, (first + 1,)) - 1
-        if index < 0 or ranges[index][1] < first:
+        if index < 0 or ranges[index].last < first:
             return first
         # Merged ranges are disjoint with a break between neighbours, so the
         # first sequence past the covering range is uncovered.
-        cursor = ranges[index][1] + 1
+        cursor = ranges[index].last + 1
         return cursor if cursor <= last else None
 
 
-def _range_end(covered_range: tuple[int, int]) -> int:
-    return covered_range[1]
+def _range_end(covered_range: SequenceRange) -> int:
+    return covered_range.last
 
 
 def last_event_of_type(events: Sequence[TrajectoryEvent], event_type: str) -> TrajectoryEvent | None:

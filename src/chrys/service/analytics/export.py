@@ -15,6 +15,7 @@ import csv
 import io
 from dataclasses import replace
 from hashlib import sha256
+from typing import NamedTuple
 
 from chrys.service.analytics.model import (
     FLOW_TERMINAL_INDEX,
@@ -37,6 +38,15 @@ from chrys.service.analytics.model import (
 )
 
 EXPORT_SCHEMA = "chrys.trajectory.export/1"
+
+
+class _TraceAnchor(NamedTuple):
+    """Where an operation's slice sits in the trace, in microseconds."""
+
+    pid: int
+    tid: int
+    start_us: float
+    end_us: float
 
 
 def _redacted(value: str) -> str:
@@ -486,16 +496,13 @@ def findings_csv(analysis: TrajectoryAnalysis, *, include_sensitive: bool = Fals
 def _packed_lanes(operations: tuple[TimelineOperation, ...]) -> tuple[dict[int, int], int]:
     """Assign overlap-free lanes so every slice imports losslessly."""
     placeable = sorted(
-        (
-            (index, operation.start_ns, operation.end_ns)
-            for index, operation in enumerate(operations)
-            if operation.start_ns is not None and operation.end_ns is not None
-        ),
-        key=lambda item: (item[1], item[2], item[0]),
+        (operation.start_ns, operation.end_ns, index)
+        for index, operation in enumerate(operations)
+        if operation.start_ns is not None and operation.end_ns is not None
     )
     lane_ends: list[int] = []
     lane_by_index: dict[int, int] = {}
-    for index, start_ns, end_ns in placeable:
+    for start_ns, end_ns, index in placeable:
         for lane, end in enumerate(lane_ends):
             if end <= start_ns:
                 lane_ends[lane] = end_ns
@@ -575,7 +582,7 @@ def perfetto_trace(
     next_tid_by_pid = dict.fromkeys(pid_by_runtime.values(), 1)
     for turn in turns:
         turn_label = f"turn {turn.turn_number}" if turn.turn_number is not None else f"turn {turn.turn_id[:8]}"
-        anchors: dict[int, tuple[int, int, float, float]] = {}
+        anchors: dict[int, _TraceAnchor] = {}
         base_tid_by_runtime: dict[str, int] = {}
         # One logical turn is one track per runtime, not one per attempt.
         # Attempts sharing a runtime share its clock, so their slices lane-pack
@@ -628,7 +635,7 @@ def perfetto_trace(
                     continue
                 tid = base_tid + lane
                 ts = us(physical.start_ns, runtime)
-                anchors[operation_index] = (pid, tid, ts, us(physical.end_ns, runtime))
+                anchors[operation_index] = _TraceAnchor(pid, tid, ts, us(physical.end_ns, runtime))
                 events.append(
                     {
                         "ph": "X",
@@ -644,14 +651,14 @@ def perfetto_trace(
         flow = turn.flow
         if flow is None:
             continue
-        terminal_anchor: tuple[int, int, float, float] | None = None
+        terminal_anchor: _TraceAnchor | None = None
         if flow.has_terminal:
             terminal_attempt = turn.attempts[-1]
             runtime = terminal_attempt.runtime_id
             pid = pid_by_runtime[runtime]
             tid = base_tid_by_runtime[runtime]
             terminal_ts = us(terminal_attempt.physical_axis_end_ns, runtime)
-            terminal_anchor = (pid, tid, terminal_ts, terminal_ts)
+            terminal_anchor = _TraceAnchor(pid, tid, terminal_ts, terminal_ts)
             events.append(
                 {
                     "ph": "X",
@@ -669,16 +676,16 @@ def perfetto_trace(
             target_anchor = terminal_anchor if target == FLOW_TERMINAL_INDEX else anchors.get(target)
             if source_anchor is None or target_anchor is None:
                 continue
-            if source_anchor[0] == target_anchor[0] and source_anchor[3] > target_anchor[2]:
+            if source_anchor.pid == target_anchor.pid and source_anchor.end_us > target_anchor.start_us:
                 continue
             flow_id += 1
             events.append(
                 {
                     "ph": "s",
                     "id": flow_id,
-                    "pid": source_anchor[0],
-                    "tid": source_anchor[1],
-                    "ts": source_anchor[3],
+                    "pid": source_anchor.pid,
+                    "tid": source_anchor.tid,
+                    "ts": source_anchor.end_us,
                     "name": "causal",
                     "cat": "flow",
                 }
@@ -688,9 +695,9 @@ def perfetto_trace(
                     "ph": "f",
                     "bp": "e",
                     "id": flow_id,
-                    "pid": target_anchor[0],
-                    "tid": target_anchor[1],
-                    "ts": target_anchor[2],
+                    "pid": target_anchor.pid,
+                    "tid": target_anchor.tid,
+                    "ts": target_anchor.start_us,
                     "name": "causal",
                     "cat": "flow",
                 }
