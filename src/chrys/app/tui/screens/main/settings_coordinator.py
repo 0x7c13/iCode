@@ -102,9 +102,14 @@ class _SessionStoragePortsImpl:
         return resolve_sessions_dir()
 
     def default_sessions_dir(self) -> Path:
+        from chrys.foundation.config.settings import default_sessions_dir
+
+        return default_sessions_dir()
+
+    def default_root_dir(self) -> Path:
         from chrys.foundation.config.settings import default_session_root_dir
 
-        return default_session_root_dir() / "sessions"
+        return default_session_root_dir()
 
     def probe_root(self, raw: str) -> Path | None:
         return probe_session_root(raw)

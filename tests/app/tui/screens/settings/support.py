@@ -58,6 +58,9 @@ class StubSessionStorage:
     def default_sessions_dir(self) -> Path:
         return self.default_root / "sessions"
 
+    def default_root_dir(self) -> Path:
+        return self.default_root
+
     def probe_root(self, raw: str) -> Path | None:
         self.probed.append(raw)
         if raw.strip().endswith("bad"):

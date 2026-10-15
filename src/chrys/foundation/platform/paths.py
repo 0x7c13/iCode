@@ -17,6 +17,28 @@ from pathlib import Path
 _MAX_WHITESPACE_SUBSTITUTION_POSITIONS = 100
 
 
+def real_path(path: str | Path) -> Path:
+    """*path* with every link on the way to it followed; as given when that cannot be worked out.
+
+    A missing tail is fine, but not one behind a link whose target is missing
+    (a disk that is not mounted): followed, it would name a folder on the disk
+    beneath, which writers would then create. Non-strict ``realpath`` also still
+    raises on Windows for some failures, such as a network share that cannot be
+    reached. In both cases the path as given is the best answer: whatever opens
+    it later reports the failure where that is handled.
+    """
+    given = Path(path)
+    reached = given
+    while not os.path.lexists(reached) and reached.parent != reached:
+        reached = reached.parent
+    if not os.path.exists(reached):
+        return given
+    try:
+        return Path(os.path.realpath(path))
+    except OSError, ValueError:
+        return given
+
+
 def is_absolute_path(p: str) -> bool:
     """Return whether *p* is absolute under POSIX or Windows path rules."""
     return posixpath.isabs(p) or ntpath.isabs(p)

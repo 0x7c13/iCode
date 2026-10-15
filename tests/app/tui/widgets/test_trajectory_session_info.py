@@ -12,7 +12,6 @@ from threading import Event
 import pytest
 
 from chrys.app.tui.widgets.trajectory.overview import _fit_path_tail
-from chrys.app.tui.widgets.trajectory.panel import _session_directory
 from chrys.app.tui.widgets.trajectory.session_info import SessionStorage, collect_session_storage
 from chrys.service.analytics import TrajectoryScanCancelled
 
@@ -70,24 +69,6 @@ def test_collect_session_storage_stops_when_cancelled(tmp_path: Path) -> None:
 
     with pytest.raises(TrajectoryScanCancelled):
         collect_session_storage(session_dir, cancel_event=cancelled)
-
-
-@pytest.mark.parametrize(
-    ("path", "expected_parent"),
-    [
-        (Path("root/sessions/abc/trajectory/events.jsonl"), True),
-        (Path("root/sessions/abc/trajectory/other.jsonl"), False),
-        (Path("root/elsewhere/abc/trajectory/events.jsonl"), False),
-        (Path("root/sessions/abc/other/events.jsonl"), False),
-        (Path("events.jsonl"), False),
-    ],
-)
-def test_session_directory_requires_the_store_layout(path: Path, expected_parent: bool) -> None:
-    resolved = _session_directory(path)
-    if expected_parent:
-        assert resolved == Path("root/sessions/abc")
-    else:
-        assert resolved is None
 
 
 def test_fit_path_tail_keeps_the_end_of_a_cropped_path() -> None:

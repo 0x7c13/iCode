@@ -33,7 +33,8 @@ from chrys.app.installer import (
     _require_no_running_chrys_instances,
 )
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
-from chrys.foundation.platform import get_platform
+from chrys.foundation.platform import conventional_config_dir, get_platform
+from chrys.foundation.platform.paths import real_path
 
 # Drops the folder named by ICODE_UNINSTALL_DIR from the user PATH and prints "removed" when it
 # was there. Like `icode install`, it goes through .NET, which writes the other entries back with
@@ -181,12 +182,23 @@ def _find_offline_install() -> _OfflineInstall:
     return found
 
 
-def _data_folders() -> tuple[list[Path], Path | None]:
+def _config_dir_entry() -> Path:
+    """The data folder under the name the user knows, which may be a link to it.
+
+    The platform hands out the folder's real path; removing a link a dotfiles
+    manager placed must remove only that link, so the conventional name is used
+    whenever it leads to this very folder.
+    """
+    config_dir = get_platform().config_dir
+    named = conventional_config_dir()
+    return named if real_path(named) == config_dir else config_dir
+
+
+def _data_folders(config_dir: Path) -> tuple[list[Path], Path | None]:
     """The data folder and, when sessions are saved elsewhere, that sessions folder.
 
     Also the sessions folder of a relative session root, which is not taken.
     """
-    config_dir = get_platform().config_dir
     folders = [config_dir] if config_dir.exists() or config_dir.is_symlink() else []
     try:
         from chrys.foundation.config.env_layers import freeze_process_env
@@ -297,7 +309,7 @@ def _describe(offline: _OfflineInstall | None, data: list[Path], config_dir: Pat
         if offline.path_entry is not None:
             _print_line(f"  {offline.path_entry} from your user PATH, if it is there")
     for folder in data:
-        if folder.is_symlink():
+        if folder.is_symlink() or folder.is_junction():
             # Removing a link leaves what it points to, and deleting a folder elsewhere, perhaps
             # one a dotfiles manager keeps, is not for this command to decide.
             _print_line(f"  {folder} (only the link: {folder.resolve()}, the folder it points to, stays)")
@@ -345,7 +357,8 @@ def uninstall(*, purge: bool, assume_yes: bool) -> int:
     """Run ``icode uninstall``; returns the exit status."""
     flavor = detect_install_flavor()
     offline = _find_offline_install() if flavor is InstallFlavor.OFFLINE else None
-    kept, relative_sessions = _data_folders()
+    config_dir = _config_dir_entry()
+    kept, relative_sessions = _data_folders(config_dir)
     data = kept if purge else []
     if purge and relative_sessions is not None:
         _print_warning(
@@ -362,12 +375,11 @@ def uninstall(*, purge: bool, assume_yes: bool) -> int:
     if offline is None and not data:
         _explain_flavor(flavor)
         if purge:
-            _print_line(f"There are no settings or sessions to delete in {get_platform().config_dir}.")
+            _print_line(f"There are no settings or sessions to delete in {config_dir}.")
         else:
             _print_kept_data(kept, command_remains=True)
         return 0
 
-    config_dir = get_platform().config_dir
     # Without a terminal, only --yes can confirm, so every command suggested from here has it.
     unattended = f"{APP_COMMAND} uninstall{' --purge' if purge else ''} --yes"
     if not assume_yes and not sys.stdin.isatty():

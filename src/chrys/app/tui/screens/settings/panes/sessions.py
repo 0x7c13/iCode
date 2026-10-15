@@ -117,8 +117,10 @@ class SessionRootRow(InputRow):
         event.stop()
         from chrys.app.tui.screens.dialogs.file_picker import FilePicker, FilePickerMode
 
-        current = self.query_one(Input).value.strip()
-        initial = current or str(self._ports.session_storage().in_force_sessions_dir().parent)
+        # A blank root is the default one, the folder the hint names. Not the
+        # sessions folder's parent: that folder is handed out by its real path,
+        # which for a ``sessions`` folder linked elsewhere is not in the root.
+        initial = self.query_one(Input).value.strip() or str(self._ports.session_storage().default_root_dir())
 
         def _on_result(result: str | None) -> None:
             if result:

@@ -65,6 +65,7 @@ from chrys.service.analytics import (
     TrajectoryScanCancelled,
     TurnAnalysis,
 )
+from chrys.service.analytics.session_paths import session_directory_for_events
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -201,6 +202,9 @@ class TrajectoryDashboard(Container):
         self._analyzer: TrajectoryAnalyzer | None = None
         self._analysis: TrajectoryAnalysis | None = None
         self._session_storage: SessionStorage | None = None
+        # Worked out with the load: recognizing a session store can touch the
+        # disk, which a render, run on the UI thread, must not.
+        self._session_folder: Path | None = None
         self._can_open_session_folder = can_open_in_file_manager()
         self._storage_collected_at = -_STORAGE_REFRESH_INTERVAL_S
         self._load_generation = 0
@@ -558,12 +562,13 @@ class TrajectoryDashboard(Container):
         path: Path | None,
         cancel_event: Event,
     ) -> None:
+        folder: Path | None = None
         storage: SessionStorage | None = None
         if path is None:
             analysis = None
         else:
             try:
-                analysis, storage = await asyncio.to_thread(
+                analysis, folder, storage = await asyncio.to_thread(
                     partial(_load_with_storage, analyzer, path, cancel_event=cancel_event)
                 )
             except TrajectoryScanCancelled:
@@ -571,6 +576,7 @@ class TrajectoryDashboard(Container):
         if generation != self._load_generation or analyzer is not self._analyzer or not self.foreground:
             return
         self._analysis = analysis
+        self._session_folder = folder
         self._session_storage = storage
         if storage is not None:
             self._storage_collected_at = monotonic()
@@ -651,6 +657,7 @@ class TrajectoryDashboard(Container):
             analyzer.release()
         self._analyzer = None
         self._analysis = None
+        self._session_folder = None
         self._session_storage = None
         self._storage_collected_at = -_STORAGE_REFRESH_INTERVAL_S
         self._presentation_key = None
@@ -744,7 +751,7 @@ class TrajectoryDashboard(Container):
                 self._look(),
                 context,
                 analysis,
-                folder=self._displayed_folder(),
+                folder=self._session_folder,
                 storage=self._session_storage,
                 can_open_folder=self._can_open_session_folder,
             )
@@ -886,18 +893,9 @@ class TrajectoryDashboard(Container):
         self._render_identity = identity
         self.query_one(TrajectoryTextView).set_lines(lines, reset_scroll=reset_scroll, min_width=scroll_width)
 
-    def _displayed_folder(self) -> Path | None:
-        """The folder the session info section names: the session directory when
-        the events log sits in the store layout, otherwise the log's own parent."""
-        path = self._path
-        if path is None:
-            return None
-        session_dir = _session_directory(path)
-        return session_dir if session_dir is not None else path.parent
-
     def open_session_folder(self) -> None:
         """Reveal the displayed session folder in the desktop file manager."""
-        folder = self._displayed_folder()
+        folder = self._session_folder
         if folder is None:
             return
         if not can_open_in_file_manager():
@@ -916,7 +914,7 @@ class TrajectoryDashboard(Container):
 
     def copy_session_path(self) -> None:
         """Copy the displayed session folder path to the available clipboards."""
-        folder = self._displayed_folder()
+        folder = self._session_folder
         if folder is None:
             return
         copy_text_to_clipboards(self.app, str(folder))
@@ -974,34 +972,23 @@ class TrajectoryDashboard(Container):
         return render_message(self._localizer(), reference)
 
 
-def _session_directory(path: Path) -> Path | None:
-    """The session folder owning *path*, only when it sits in the store layout.
-
-    Anything else (a loose events file under a scratch directory) has no
-    session folder to size or open; walking its parent would measure an
-    unrelated tree.
-    """
-    if (
-        len(path.parents) < 3
-        or path.name != "events.jsonl"
-        or path.parent.name != "trajectory"
-        or path.parents[2].name != "sessions"
-    ):
-        return None
-    return path.parents[1]
-
-
 def _load_with_storage(
     analyzer: TrajectoryAnalyzer,
     path: Path,
     *,
     cancel_event: Event,
-) -> tuple[TrajectoryAnalysis, SessionStorage | None]:
+) -> tuple[TrajectoryAnalysis, Path, SessionStorage | None]:
+    """The analysis, the folder the session info section names, and its sizes.
+
+    The folder is the session directory when the log sits in a session store,
+    otherwise the log's own parent; only a session directory is measured, as
+    walking a loose log's parent would size an unrelated tree.
+    """
     analysis = analyzer.load(path, cancel_event=cancel_event)
-    session_dir = _session_directory(path)
+    session_dir = session_directory_for_events(path)
     if session_dir is None:
-        return analysis, None
-    return analysis, collect_session_storage(session_dir, cancel_event=cancel_event)
+        return analysis, path.parent, None
+    return analysis, session_dir, collect_session_storage(session_dir, cancel_event=cancel_event)
 
 
 def _refresh_with_storage(
@@ -1016,7 +1003,7 @@ def _refresh_with_storage(
         # the log is appending, or a busy session walks the directory tree on
         # every poll tick; the panel keeps the previous figures meanwhile.
         return analysis, None
-    session_dir = _session_directory(analysis.path)
+    session_dir = session_directory_for_events(analysis.path)
     if session_dir is None:
         return analysis, None
     return analysis, collect_session_storage(session_dir, cancel_event=cancel_event)

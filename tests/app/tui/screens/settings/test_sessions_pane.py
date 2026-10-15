@@ -181,6 +181,27 @@ async def test_session_root_browse_and_migrate_open_their_dialogs(tmp_path: Path
         assert migrate.query_one("#migrate-to", Input).value == str(tmp_path / "picked" / "sessions")
 
 
+@pytest.mark.asyncio
+async def test_session_root_browse_from_a_blank_root_opens_the_default_root(tmp_path: Path) -> None:
+    """Not the parent of the sessions folder in force: that one comes by its real
+    path, and a ``sessions`` folder linked elsewhere has a parent outside the root,
+    which picked as it opened would move storage there."""
+    default_root = tmp_path / "default-root"
+    default_root.mkdir()
+    # The folder in force comes by a real path outside the root.
+    ports = StubPorts(root=tmp_path / "disk", default_root=default_root)
+    app = Host()
+    async with app.run_test(size=(100, 40)) as pilot:
+        row = await _open_sessions_tab(app, ports)
+        await pilot.pause()
+
+        row.query_one(".session-root-browse", Button).press()
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, FilePicker)
+        assert picker._initial_path == str(default_root)
+
+
 def _plan(tmp_path: Path, *ids: str) -> MigrationPlan:
     return MigrationPlan(
         source_dir=tmp_path / "sessions",

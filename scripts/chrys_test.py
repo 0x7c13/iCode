@@ -112,6 +112,7 @@ ARCHITECTURE_RULES = (
         "tests/architecture/test_chrys_test.py",
         ("AGENTS.md", "README.md", "scripts/chrys_test.py", "tests/architecture/**", ".github/workflows/**"),
     ),
+    TestRule("tests/architecture/test_chrys_test_summary.py", ("scripts/chrys_test.py",)),
     TestRule("tests/architecture/test_ci_test_partitions.py", (".github/workflows/ci.yml", "tests/**")),
     TestRule("tests/architecture/test_copy_freshness.py"),
     TestRule("tests/architecture/test_engine_fixture.py"),
@@ -309,8 +310,19 @@ class _ObservedFixtureDefinitions:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Private collection subprocess option; unrelated to the public CLI."""
+    """Private subprocess options; unrelated to the public CLI."""
     parser.addoption("--chrys-smart-collection", help="write smart-test fixture consumers after full collection")
+    parser.addoption("--chrys-result-line", help="write pytest's final result line for the closing summary")
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter, config: pytest.Config) -> None:
+    """Keep pytest's own result line ("1 failed, 9 passed, ...") for the closing summary."""
+    destination = config.getoption("--chrys-result-line")
+    # xdist workers get the same options; only the controller holds every result.
+    if destination is None or hasattr(config, "workerinput"):
+        return
+    parts, _color = terminalreporter.build_summary_stats_line()
+    Path(destination).write_text(", ".join(text for text, _markup in parts), encoding="utf-8")
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
@@ -1817,9 +1829,11 @@ def _print_selection_counts(initial: Selection, final: Selection, graph: ImportG
     )
 
 
-def _execute_targets(targets: list[str], *, architecture: bool) -> subprocess.CompletedProcess[bytes]:
+def _execute_targets(
+    targets: list[str], *, architecture: bool, report: Path | None = None
+) -> subprocess.CompletedProcess[bytes]:
     """Transport exact targets, keeping the argument file alive through worker shutdown."""
-    command = _pytest_command(targets, architecture=architecture)
+    command = _pytest_command(targets, architecture=architecture, report=report)
     if len(targets) <= _MAX_TARGET_ARGUMENTS and sum(len(target) + 1 for target in targets) <= _MAX_TARGET_CHARACTERS:
         return _run_process(command)
     # pytest/argparse reads one argument per physical line. Never silently
@@ -1853,8 +1867,8 @@ def _prune_covered_targets(targets: list[str]) -> list[str]:
     return pruned
 
 
-def _pytest_command(targets: list[str], *, architecture: bool) -> list[str]:
-    command = [sys.executable, "-m", "pytest", "-q", "--tb=short", "-m", _EXCLUDED_MARKERS]
+def _pytest_command(targets: list[str], *, architecture: bool, report: Path | None = None) -> list[str]:
+    command = [sys.executable, "-m", "pytest", "-q", "--tb=short", *_report_options(report), "-m", _EXCLUDED_MARKERS]
     directory_selected = any("::" not in target and not target.endswith(".py") for target in targets)
     if architecture or (len(targets) <= 2 and not directory_selected):
         command.extend(("-n", "0"))
@@ -1869,58 +1883,117 @@ def _pytest_command(targets: list[str], *, architecture: bool) -> list[str]:
     return command
 
 
+@dataclass(frozen=True, slots=True)
+class SuiteOutcome:
+    """One pytest suite for the closing summary; a ``None`` exit code means it never ran."""
+
+    name: str
+    returncode: int | None
+    result_line: str | None = None
+
+
+def _report_options(report: Path | None) -> list[str]:
+    return [] if report is None else ["-p", "scripts.chrys_test", f"--chrys-result-line={report}"]
+
+
+def _suite_outcome(name: str, returncode: int, report: Path) -> SuiteOutcome:
+    try:
+        result_line = report.read_text(encoding="utf-8")
+    except OSError:
+        result_line = None
+    return SuiteOutcome(name, returncode, result_line)
+
+
+def _describe_outcome(outcome: SuiteOutcome) -> str:
+    if outcome.returncode is None:
+        return "not run: the suite above failed"
+    if outcome.returncode == _PYTEST_NO_TESTS_COLLECTED:
+        return f"no tests collected (exit {outcome.returncode})"
+    return f"{outcome.result_line or 'no result line'} (exit {outcome.returncode})"
+
+
+def _print_summary(outcomes: Sequence[SuiteOutcome], returncode: int) -> None:
+    """End with every suite's result: each pytest summary scrolls away under the next suite's output."""
+
+    _write()
+    _write(f"Summary: {'PASSED' if returncode == 0 else 'FAILED'} (exit {returncode})")
+    width = max((len(outcome.name) for outcome in outcomes), default=0)
+    for outcome in outcomes:
+        _write(f"  {outcome.name.ljust(width)}  {_describe_outcome(outcome)}")
+
+
 def _run_pytest_targets(selection: Selection) -> int:
     regular = _prune_covered_targets(sorted(selection.regular))
     architecture = _prune_covered_targets(sorted(selection.architecture))
-    if regular:
-        result = _execute_targets(regular, architecture=False)
-        if result.returncode not in {0, _PYTEST_NO_TESTS_COLLECTED}:
-            return result.returncode
-        if result.returncode == _PYTEST_NO_TESTS_COLLECTED:
-            _write(
-                "No selected regular tests matched the non-integration marker scope; continuing with architecture tests."
-            )
-    if architecture:
-        result = _execute_targets(architecture, architecture=True)
-        if result.returncode != 0:
-            return result.returncode
-    return 0
+    outcomes: list[SuiteOutcome] = []
+    returncode = 0
+    with tempfile.TemporaryDirectory(prefix="chrys-pytest-reports-") as directory:
+        reports = Path(directory)
+        if regular:
+            result = _execute_targets(regular, architecture=False, report=reports / "tests.txt")
+            outcomes.append(_suite_outcome("tests", result.returncode, reports / "tests.txt"))
+            if result.returncode == _PYTEST_NO_TESTS_COLLECTED:
+                _write(
+                    "No selected regular tests matched the non-integration marker scope; "
+                    "continuing with architecture tests."
+                )
+            elif result.returncode != 0:
+                returncode = result.returncode
+        if architecture:
+            if returncode != 0:
+                outcomes.append(SuiteOutcome("architecture", None))
+            else:
+                result = _execute_targets(architecture, architecture=True, report=reports / "architecture.txt")
+                outcomes.append(_suite_outcome("architecture", result.returncode, reports / "architecture.txt"))
+                returncode = result.returncode
+    _print_summary(outcomes, returncode)
+    return returncode
 
 
 def _run_full() -> int:
     _write("Running the complete local non-integration pytest scope (integration and gc_calibration excluded).")
-    regular = _run_process(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--tb=short",
-            "--dist",
-            "worksteal",
-            "-m",
-            _EXCLUDED_MARKERS,
-            "tests",
-            "--ignore=tests/architecture",
-        ]
-    )
-    if regular.returncode != 0:
-        return regular.returncode
-    architecture = _run_process(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--tb=short",
-            "-m",
-            _EXCLUDED_MARKERS,
-            "-n",
-            "0",
-            "tests/architecture",
-        ]
-    )
-    return architecture.returncode
+    with tempfile.TemporaryDirectory(prefix="chrys-pytest-reports-") as directory:
+        reports = Path(directory)
+        regular = _run_process(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--tb=short",
+                *_report_options(reports / "tests.txt"),
+                "--dist",
+                "worksteal",
+                "-m",
+                _EXCLUDED_MARKERS,
+                "tests",
+                "--ignore=tests/architecture",
+            ]
+        )
+        outcomes = [_suite_outcome("tests", regular.returncode, reports / "tests.txt")]
+        returncode = regular.returncode
+        if returncode != 0:
+            outcomes.append(SuiteOutcome("architecture", None))
+        else:
+            architecture = _run_process(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-q",
+                    "--tb=short",
+                    *_report_options(reports / "architecture.txt"),
+                    "-m",
+                    _EXCLUDED_MARKERS,
+                    "-n",
+                    "0",
+                    "tests/architecture",
+                ]
+            )
+            outcomes.append(_suite_outcome("architecture", architecture.returncode, reports / "architecture.txt"))
+            returncode = architecture.returncode
+    _print_summary(outcomes, returncode)
+    return returncode
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -961,6 +961,87 @@ async def test_input_bar_keeps_arrow_keys_while_agent_running(monkeypatch: pytes
         assert text_area.cursor_location == (0, 2)
 
 
+_WRAPPED_LINES = {"latin": " ".join(["word"] * 40), "cjk": "很长的一句话没有换行符" * 8}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", list(_WRAPPED_LINES))
+async def test_up_moves_through_a_wrapped_line_before_recalling_history(
+    monkeypatch: pytest.MonkeyPatch, script: str
+) -> None:
+    """A line too long for the box wraps onto several rows but is one line:
+    up moves row by row and recalls the previous prompt only from the first."""
+    monkeypatch.setattr(
+        input_bar_module,
+        "append_history",
+        lambda text, *, session_id=None, instance_id=None, cwd=None: None,
+    )
+    draft = _WRAPPED_LINES[script]
+    app = _InputBarApp()
+
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause()
+        input_bar = app.query_one(InputBar)
+        text_area = input_bar.query_one("#chat-input", TextArea)
+        input_bar.add_to_history("old prompt")
+        input_bar.value = draft
+        text_area.focus()
+        await wait_for(
+            lambda: text_area.has_focus and text_area.wrapped_document.height >= 3,
+            pilot=pilot,
+            description="a focused draft wrapped onto three rows or more",
+        )
+        rows = text_area.wrapped_document.height
+
+        for _ in range(rows - 1):
+            await pilot.press("up")
+        assert input_bar.value == draft
+        assert text_area.navigator.is_first_wrapped_line(text_area.cursor_location)
+
+        await pilot.press("up")
+        assert input_bar.value == "old prompt"
+
+
+@pytest.mark.asyncio
+async def test_down_moves_through_a_wrapped_history_entry_before_the_next_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        input_bar_module,
+        "append_history",
+        lambda text, *, session_id=None, instance_id=None, cwd=None: None,
+    )
+    entry = _WRAPPED_LINES["latin"]
+    app = _InputBarApp()
+
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause()
+        input_bar = app.query_one(InputBar)
+        text_area = input_bar.query_one("#chat-input", TextArea)
+        input_bar.add_to_history(entry)
+        input_bar.add_to_history("newer prompt")
+        text_area.focus()
+        await wait_for(lambda: text_area.has_focus, pilot=pilot, description="composer focus before interaction")
+        await pilot.press("up")
+        await pilot.press("up")
+        assert input_bar.value == entry
+        await wait_for(
+            lambda: text_area.wrapped_document.height >= 3,
+            pilot=pilot,
+            description="the recalled prompt wrapped onto three rows or more",
+        )
+        rows = text_area.wrapped_document.height
+        for _ in range(rows - 1):
+            await pilot.press("up")
+        assert text_area.navigator.is_first_wrapped_line(text_area.cursor_location)
+
+        for _ in range(rows - 1):
+            await pilot.press("down")
+        assert input_bar.value == entry
+        assert text_area.navigator.is_last_wrapped_line(text_area.cursor_location)
+
+        await pilot.press("down")
+        assert input_bar.value == "newer prompt"
+
+
 @pytest.mark.asyncio
 async def test_input_bar_suppresses_arrow_keys_for_queued_injection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Once an injection is queued, disabling the input must block arrow edits."""

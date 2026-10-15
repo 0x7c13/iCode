@@ -127,7 +127,10 @@ HINT_PROJECT_CONFIG_DORMANT = msg(
 )
 _HINT_LOG_RAW_HTTP_CAPTURE = msg(
     "tui.settings.hint.log.raw_http_capture",
-    fallback="Writes API keys and full prompts in clear text to <session>/llm_raw_http.jsonl.",
+    fallback=(
+        "Writes raw model HTTP requests and responses in plain text to <session>/llm_raw_http.jsonl,"
+        " including sensitive data in the requests such as API keys."
+    ),
 )
 _HINT_OTEL_ENABLED = msg(
     "tui.settings.hint.otel.enabled",
@@ -139,7 +142,7 @@ _HINT_OTEL_ENDPOINT = msg(
 )
 _HINT_OTEL_SENSITIVE_DATA = msg(
     "tui.settings.hint.otel.sensitive_data",
-    fallback="Include prompts and tool payloads in telemetry.",
+    fallback="Records prompts, model responses, tool arguments, and tool results in telemetry.",
 )
 _HINT_STORAGE_SESSION_ROOT_DIR = msg(
     "tui.settings.hint.storage.session_root_dir",

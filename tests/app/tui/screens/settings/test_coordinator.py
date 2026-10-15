@@ -512,7 +512,10 @@ async def test_confirm_pushes_a_warning_confirm_dialog_and_relays_the_answer(mon
 
     message = msg(
         "tui.settings.confirm.raw_http_capture",
-        fallback="This writes API keys and full prompts in clear text to <session>/llm_raw_http.jsonl. Continue?",
+        fallback=(
+            "This writes raw model HTTP requests and responses in plain text to <session>/llm_raw_http.jsonl,"
+            " including sensitive data in the requests such as API keys. Continue?"
+        ),
     ).bind()
     h.coordinator.confirm(message, answers.append)
 
@@ -520,7 +523,9 @@ async def test_confirm_pushes_a_warning_confirm_dialog_and_relays_the_answer(mon
     dialog, callback = h.view.pushed[0]
     assert isinstance(dialog, ConfirmDialog)
     assert dialog._title == "确认设置"
-    assert dialog._message == "这会将 API 密钥和完整提示词以明文写入 <session>/llm_raw_http.jsonl。是否继续？"  # noqa: RUF001
+    assert dialog._message == (
+        "这会将模型的原始 HTTP 请求和响应以明文写入 <session>/llm_raw_http.jsonl，包括请求中的 API 密钥等敏感信息。是否继续？"  # noqa: RUF001
+    )
     assert dialog._confirm_label == "继续"
     assert dialog._cancel_label == "取消"
     assert callable(callback)

@@ -23,6 +23,7 @@ from chrys.app.install_flavor import InstallFlavor
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
 from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR
 from chrys.foundation.platform import get_platform
+from tests.support.symlinks import junction_or_skip
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
@@ -211,6 +212,44 @@ def test_purge_also_deletes_the_data_and_only_the_sessions_of_a_custom_root(
     assert "are kept in" not in out
 
 
+def test_a_junctioned_data_folder_is_described_as_only_the_link(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Removing a junction, like a link, leaves the folder it leads to; the prompt says so."""
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    entry = tmp_path / "chrys"
+    junction_or_skip(entry, target)
+
+    uninstaller._describe(None, [entry], entry)
+
+    out = capsys.readouterr().out
+    assert "(only the link:" in out
+    assert "everything in it" not in out
+
+
+def test_a_data_folder_whose_real_path_cannot_be_worked_out_is_kept_by_its_name(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Windows ``realpath`` raises for a network share that cannot be reached;
+    uninstall still runs and names the data folder as given."""
+    named = get_platform().config_dir
+    named.mkdir(parents=True, exist_ok=True)
+    resolve = os.path.realpath
+
+    def unreachable(path: str | os.PathLike[str], *, strict: bool = False) -> str:
+        if Path(path) == named:
+            raise OSError(0, "The specified network name is no longer available", None, 64)
+        return resolve(path, strict=strict)
+
+    monkeypatch.setattr(os.path, "realpath", unreachable)
+    monkeypatch.setattr(uninstaller, "conventional_config_dir", lambda: named)
+    monkeypatch.setattr(uninstaller, "detect_install_flavor", lambda: InstallFlavor.UV)
+
+    assert uninstaller.uninstall(purge=False, assume_yes=True) == 0
+    assert f"are kept in {named}.\n" in capsys.readouterr().out
+
+
 @_POSIX_ONLY
 def test_purge_of_a_linked_data_folder_removes_only_the_link(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -219,14 +258,19 @@ def test_purge_of_a_linked_data_folder_removes_only_the_link(
     dotfiles = tmp_path / "dotfiles" / "chrys"
     dotfiles.parent.mkdir()
     machine.config_dir.rename(dotfiles)
-    machine.config_dir.symlink_to(dotfiles)
+    link = machine.home / ".chrys"
+    link.symlink_to(dotfiles)
+    # As the platform reports it: the folder the link leads to, not the link.
+    monkeypatch.setattr(
+        uninstaller, "get_platform", lambda: SimpleNamespace(is_windows=False, config_dir=dotfiles.resolve())
+    )
 
     assert uninstaller.uninstall(purge=True, assume_yes=True) == 0
 
-    assert not machine.config_dir.is_symlink()
+    assert not link.is_symlink()
     assert (dotfiles / "sessions").is_dir()
     out = capsys.readouterr().out
-    assert f"  {machine.config_dir} (only the link: {dotfiles.resolve()}, the folder it points to, stays)" in out
+    assert f"  {link} (only the link: {dotfiles.resolve()}, the folder it points to, stays)" in out
     assert "everything in it" not in out
 
 

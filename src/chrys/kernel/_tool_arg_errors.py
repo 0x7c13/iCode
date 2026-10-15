@@ -212,6 +212,8 @@ def _schema_type_text(
         properties = resolved.get("properties")
         if not isinstance(properties, Mapping) or not properties:
             additional = resolved.get("additionalProperties")
+            if additional is False and not resolved.get("patternProperties"):
+                return "{}"
             if isinstance(additional, Mapping):
                 return _bounded_schema_text(
                     f"{{string: {_schema_type_text(additional, root_schema, depth=depth + 1)}}}"
