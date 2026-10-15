@@ -47,7 +47,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 在磁盘上编辑钩子配置文件不会实时生效。修改后，需要切换会话或重启 iCode，让 iCode 重新加载配置。仅修改钩子脚本则不需要重新加载；脚本会在下次触发钩子时使用新内容。
 
-在 TUI 中输入 `/runtime`，打开“钩子”标签页，可以查看当前加载的项目钩子和全局钩子。
+在 TUI 中输入 `/runtime`，打开“钩子”标签页，可以查看当前加载的项目钩子和全局钩子。在终端中，[`icode hook list`](#icode-hook-list) 显示在当前目录启动的会话会加载哪些钩子，[`icode hook validate`](#icode-hook-validate) 检查配置文件。
 
 ## 配置文件结构
 
@@ -181,7 +181,7 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 | 事件 | 影响 |
 | --- | --- |
-| `user_prompt_submit` | 拒绝消息或添加系统提醒。 |
+| `user_prompt_submit` | 拒绝消息或添加系统提醒。被拒绝的消息会留在输入框中；如果是在智能体运行期间提交的，智能体会继续工作。 |
 | `before_tool_call` | 拒绝工具调用或修改参数，但不能批准调用或绕过审批。 |
 | `after_tool_call` | 向工具结果追加上下文，但不能撤销已经发生的调用。 |
 | `tool_error` | 向工具错误追加上下文，但不能撤销已经发生的调用。 |
@@ -603,4 +603,101 @@ execution:
 
 项目配置和全局配置中的 `settings` 按字段合并：项目配置中明确设置的值优先，其次使用全局配置中的值；两处都没有设置时使用默认值。
 
-任一配置文件无效时，iCode 会显示警告，并停用该文件定义的所有钩子；另一处有效配置文件仍然生效。未找到配置文件不会产生警告。
+任一配置文件无效时，iCode 会显示警告，并停用该文件定义的所有钩子；另一处有效配置文件仍然生效。未找到配置文件不会产生警告。如需查看文件中的全部问题，运行 [`icode hook validate`](#icode-hook-validate)。
+
+## 命令行
+
+### `icode hook list`
+
+列出在当前目录启动的会话会加载的钩子，不运行任何钩子。不带命令运行 `icode hook` 效果相同。
+
+```shell
+icode hook list [--json]
+```
+
+命令依次列出找到的每个配置文件，先列项目配置文件，再列全局配置文件。每个文件的第一行显示其路径和以下状态之一：
+
+| 状态 | 含义 |
+| --- | --- |
+| `loaded` | 在此目录启动的会话会运行该文件中的钩子 |
+| `not loaded` | 项目钩子未开启，参见[加载配置文件](#加载配置文件)。如果文件同时有错误，也会显示第一个错误 |
+| `invalid, not loaded` | 文件有错误，会话不会运行其中任何钩子。此处只显示第一个错误；运行 `icode hook validate` 可查看全部错误 |
+
+随后按顺序列出该文件中的钩子。每个钩子先显示 ID，括号中为事件和运行模式，`enabled` 为 `false` 时另加 `turned off`。有匹配条件时，下一行 `match:` 列出匹配条件；之后的 `run:` 行为 `script` 加脚本路径、`command` 加程序名，或 `shell`。命令参数、环境变量的值和 Shell 片段不会显示，因为其中可能含有密码或令牌。只有从运行命令的文件夹能找到脚本路径和程序时（文件存在，或程序在 `PATH` 中），才会显示它们；否则显示 `…`，因为其中可能还写了别的内容，例如 `"notify --token abc"`。只能通过钩子自己的 `cwd` 或 `PATH` 设置找到的程序，也显示为 `…`。`icode hook validate` 会报告它能确定不存在的脚本和程序。因匹配条件中的正则表达式无效而被跳过的钩子，显示在 `skipped` 行中。
+
+```text
+Project hooks: ./.chrys/hooks/hooks.yaml (loaded)
+  record-turn (after_turn, fire_and_forget)
+    run: script scripts/record_turn.py
+  protect-env (before_tool_call, blocking)
+    match: tool_kind=filesystem.write, args.path matches '(^|[\\/])\.env$'
+    run: script scripts/protect_env.py
+```
+
+即使有文件无效，该命令的退出码也为 0；如需检查文件，请使用 `icode hook validate`。
+
+添加 `--json` 后，stdout 输出一个对象：`version`（当前为 `1`）、`files` 和 `searched`（查找过的文件夹）。`files` 中每项包含 `scope`（`project` 或 `global`）、`path`、`state`（`loaded`、`not_loaded` 或 `invalid`；项目钩子未开启时总是 `not_loaded`）、`error`（使会话不加载该文件的错误，格式与 `validate` 的诊断项相同，没有时为 `null`；其他错误，例如脚本不存在，只由 `validate` 报告）、`hooks`，以及 `skipped`（每项包含 `id` 和 `reason`）。每个钩子包含 `id`、`event`、`enabled`、`description`、`execution`、`match` 和 `run`；`run` 中的 `type` 为 `script`、`command` 或 `shell`，`path` 为脚本路径，`program` 为命令的程序；钩子为其他类型或列表中显示为 `…` 时为 `null`。
+
+### `icode hook validate`
+
+按会话加载的方式检查钩子配置文件，并报告每个问题及其所在文件和行号。不运行任何钩子。
+
+```shell
+icode hook validate [<path>] [--json]
+```
+
+不指定 `<path>` 时，命令检查当前目录的项目配置文件和全局配置文件；即使项目钩子未开启，也会检查项目配置文件。`<path>` 可以是钩子配置文件（文件名和位置不限），也可以是文件夹；指定文件夹时，检查会话会在该文件夹中读取的那个文件。
+
+会话遇到第一个错误就停止，并忽略整个文件；校验则会继续，报告每个有问题的钩子。对于能被接受、但很可能达不到预期效果的配置，校验也会给出警告。
+
+每个问题显示为 `文件:行号: 严重程度: 说明 [代码]`，最后一行是结果：
+
+```text
+./my-hooks.yaml:2: warning: hook 'record-turn': match.tool_kind never matches on after_turn, which has no tool [match_never_fires]
+./my-hooks.yaml:9: error: hook 'protect-env': execution.mode must be 'blocking' / 'async' / 'fire_and_forget', got 'block' [schema]
+FAIL 1 file · 2 hooks: 1 error, 1 warning
+```
+
+没有错误时，结果为 `PASS`，例如 `PASS 2 files · 5 hooks · 1 warning`。警告不会导致校验失败。结果为 `PASS` 时退出码为 `0`，为 `FAIL` 时为 `1`。
+
+以下问题属于错误：
+
+| 代码 | 含义 |
+| --- | --- |
+| `syntax` | 文件不是有效的 YAML 或 JSON |
+| `decode` | 无法识别文件的文本编码 |
+| `unreadable` | 无法读取文件，例如没有读取权限 |
+| `schema` | 缺少字段、字段未知或取值无效，或同一文件中 `id` 重复 |
+| `regex_invalid` | `match.args` 中的正则表达式无效。会话会跳过该钩子，其他钩子照常加载。已停用的钩子也会检查 |
+| `script_missing` | 已启用钩子的脚本不存在 |
+| `no_config` | 在命令查找的位置没有找到钩子配置文件 |
+| `not_found` | `<path>` 不存在 |
+
+出现 `syntax`、`decode`、`unreadable` 或 `schema` 错误时，会话不会加载该文件中的任何钩子。
+
+以下问题属于警告：
+
+| 代码 | 含义 |
+| --- | --- |
+| `match_never_fires` | 为没有工具调用的事件设置了 `match.tool_kind`、`match.tool_name` 或 `match.args`，钩子永远不会运行 |
+| `unknown_tool_kind` | `match.tool_kind` 不是已知的工具类别，参见[工具类别和名称](tool-kinds-and-names.md) |
+| `unknown_profile` | `match.profile` 或 `match.profiles` 指定的智能体在本机不存在 |
+| `on_error_block_ignored` | 为不能阻塞的钩子设置了 `on_error: block`，其失败按 `warn` 处理 |
+| `durable_blocking` | 为阻塞式钩子设置了 `delivery: durable`，阻塞式钩子不使用该设置 |
+| `broad_before_tool_call` | `before_tool_call` 钩子没有匹配条件，会在每次工具调用时运行 |
+| `duplicate_id_across_files` | 项目和全局配置文件都定义了该 `id`，两个钩子都会运行 |
+| `shadowed_file` | 文件夹中有多个钩子配置文件，只读取第一个（参见[配置文件位置](#配置文件位置)） |
+| `program_not_found` | 在 `PATH` 中找不到运行已启用钩子的命令或脚本所需的程序 |
+| `unknown_template_var` | `run.cwd` 或 `run.env` 使用了 iCode 不会替换的 `${...}` 变量，或者 `run.argv` 或 `run.args` 使用了任何 `${...}` 变量（iCode 只替换 `cwd` 和 `env` 值中的变量），该变量会按原样传递 |
+
+只对已启用的钩子检查脚本和程序是否存在。`run.env` 中设置了 `PATH` 的钩子不检查程序是否存在。
+
+添加 `--json` 后，stdout 输出一个对象。所有字段始终存在；未知值为 `null`。
+
+| 字段 | 类型与含义 |
+| --- | --- |
+| `version` | 整数：报告格式版本，当前为 `1` |
+| `status` | 字符串：`pass` 或 `fail` |
+| `files` | 对象数组：检查过的每个文件，包含 `scope`（`project`、`global`，或在命令行中指定的文件为 `path`）、`path`、`loaded`（在此目录启动的会话是否加载该文件；`path` 时为 `null`）和 `hook_count`（钩子条目数） |
+| `searched` | 字符串数组：命令查找过的文件夹或路径 |
+| `diagnostics` | 对象数组：每个问题的 `severity`（`error` 或 `warning`）、`code`、`message`、`file`、`line` 和 `column`（从 1 开始）、`hook_id`，以及 `entry`（钩子在 `hooks` 中的位置，从 0 开始） |

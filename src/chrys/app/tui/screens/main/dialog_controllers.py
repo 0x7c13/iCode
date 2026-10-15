@@ -202,6 +202,21 @@ class ApprovalQueueController:
         self.reviewed_dismissed_requests: set[str] = set()
         self.cancelled_requests: set[str] = set()
         self.deferred: dict[str, ApprovalRequest] = {}
+        # Requests whose open dialog waits for a person: manual, or flagged by the judge.
+        self._awaiting_user: set[str] = set()
+
+    @property
+    def awaiting_user(self) -> bool:
+        """An open approval dialog waits for the user's decision."""
+        for request_id in self._awaiting_user:
+            dialog = self.open_dialogs.get(request_id)
+            if dialog is not None and not dialog.is_dismissed and not dialog.user_decision_submitted:
+                return True
+        return False
+
+    def _require_user(self, request_id: str) -> None:
+        self._awaiting_user.add(request_id)
+        self._port.notify_approval_required()
 
     def close(self) -> None:
         """Stop UI-owned timers when the main screen is removed."""
@@ -245,6 +260,7 @@ class ApprovalQueueController:
         if self._closed or dialog is None or dialog.is_dismissed or dialog.user_decision_submitted:
             return
         self.open_dialogs.pop(request_id)
+        self._awaiting_user.discard(request_id)
         # Publish the rejection even if another modal covers this one. Its
         # eventual dismissal callback must not publish a second response.
         self.cancelled_requests.add(request_id)
@@ -302,6 +318,7 @@ class ApprovalQueueController:
             ) -> None:
                 self._cancel_timeout(_req)
                 dialog = self.open_dialogs.pop(_req, None)
+                self._awaiting_user.discard(_req)
                 if _req in self.cancelled_requests:
                     self.cancelled_requests.discard(_req)
                     return
@@ -341,7 +358,7 @@ class ApprovalQueueController:
             if not event.judging or cached is not None:
                 self._start_timeout(event.request_id)
             if not event.judging:
-                self._port.notify_approval_required()
+                self._require_user(event.request_id)
 
             self._port.debug(
                 "ApprovalRequest",
@@ -353,7 +370,7 @@ class ApprovalQueueController:
                     "ApprovalJudge",
                     f"{event.tool_name} (flagged pre-mount: {cached.reason[:60]})",
                 )
-                self._port.notify_approval_required()
+                self._require_user(event.request_id)
             return
 
         self.dialog_open = False
@@ -378,6 +395,7 @@ class ApprovalQueueController:
                 return
 
             dialog = self.open_dialogs.pop(event.request_id, None)
+            self._awaiting_user.discard(event.request_id)
             if dialog is None:
                 return
             # Set the marker before dismissing. Textual normally schedules the
@@ -433,7 +451,7 @@ class ApprovalQueueController:
                 self._start_timeout(event.request_id)
             self._port.debug("ApprovalJudge", f"{self._port.approval_dialog_tool_name(dialog)} ({label})")
             if not event.approved:
-                self._port.notify_approval_required()
+                self._require_user(event.request_id)
             return
 
         for queued in self.queue:
@@ -507,6 +525,22 @@ class QuestionQueueController:
         self.inline_call_ids: dict[str, str] = {}
         self.inline_request_ids: dict[str, str] = {}
         self.drafts: dict[str, PromptDraft] = {}
+        # Shown questions that no longer wait for the user: a modal that timed
+        # out while covered (it stays open until uncovered), or an inline
+        # answer sent before its tool result arrives.
+        self._settled: set[str] = set()
+
+    @property
+    def awaiting_user(self) -> bool:
+        """A question waits for the user's answer: shown (modal or inline) or queued behind a modal."""
+        if self.queue:
+            return True
+        return any(request_id not in self._settled for request_id in (*self.open_dialogs, *self.inline_call_ids))
+
+    def inline_answered(self, request_id: str) -> None:
+        """The user sent an inline answer; its tool card clears when the result lands."""
+        if request_id in self.inline_call_ids:
+            self._settled.add(request_id)
 
     async def on_question(self, event: QuestionToUser) -> None:
         self.queue.append(event)
@@ -521,6 +555,7 @@ class QuestionQueueController:
         self.inline_call_ids.clear()
         self.inline_request_ids.clear()
         self.drafts.clear()
+        self._settled.clear()
         self.dialog_open = False
         for dialog in dialogs:
             dialog.dismiss_due_to_timeout()
@@ -546,6 +581,7 @@ class QuestionQueueController:
 
         def _on_result(result: object, _req: str = event.request_id, _event: QuestionToUser = event) -> None:
             self.open_dialogs.pop(_req, None)
+            self._settled.discard(_req)
             parsed = self._port.parse_question_dialog_result(result)
             if parsed is None:
                 self.show_next()
@@ -581,7 +617,7 @@ class QuestionQueueController:
         )
 
     async def on_timed_out(self, event: AskUserTimedOut) -> None:
-        """Dismiss or dequeue an ask_user dialog after backend timeout."""
+        """Dismiss or dequeue an ask_user dialog the backend timed out or withdrew."""
         queued_count = len(self.queue)
         self.queue = deque(q for q in self.queue if q.request_id != event.request_id)
         self.drafts.pop(event.request_id, None)
@@ -590,6 +626,7 @@ class QuestionQueueController:
             return
 
         if call_id := self.inline_call_ids.pop(event.request_id, ""):
+            self._settled.discard(event.request_id)
             if self.inline_request_ids.get(call_id) == event.request_id:
                 self._port.clear_question_inline(call_id, event.request_id)
                 self.inline_request_ids.pop(call_id, None)
@@ -602,6 +639,8 @@ class QuestionQueueController:
         dialog = self.open_dialogs.get(event.request_id)
         if dialog is None:
             return
+        # A covered dialog closes, and leaves ``open_dialogs``, only once uncovered.
+        self._settled.add(event.request_id)
         dialog.dismiss_due_to_timeout()
         self._port.debug("AskUserTimedOut", event.request_id)
 
@@ -610,6 +649,7 @@ class QuestionQueueController:
         if request_id := self.inline_request_ids.pop(call_id, ""):
             self.inline_call_ids.pop(request_id, None)
             self.drafts.pop(request_id, None)
+            self._settled.discard(request_id)
             # Another card may still be waiting for its answer; only the last
             # one hands the keyboard back to the composer.
             if not self.inline_request_ids:

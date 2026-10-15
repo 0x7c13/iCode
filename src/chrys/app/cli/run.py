@@ -25,6 +25,7 @@ from chrys.foundation.errors.display import DISPLAY_WITH_HINT
 from chrys.foundation.i18n import DisplaySequence, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_terminal_block
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.platform.signals import hangup_as_interrupt
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.orchestration.session_host import (
     AgentProfileNotFoundError,
@@ -49,6 +50,11 @@ _HEADLESS_RUN_TIMEOUT = msg(
 _INTERRUPTED = msg(
     "run.interrupted",
     fallback="Interrupted by user.",
+)
+_BACKGROUND_TASKS_STOPPING = msg(
+    "run.background_tasks_stopping",
+    fallback="Stopping {count} background command the run left running.",
+    plural_fallback="Stopping {count} background commands the run left running.",
 )
 _SESSION_CWD_MISSING_HINT = msg(
     "run.session_cwd_missing_hint",
@@ -304,7 +310,18 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
         _write_result(result, as_json=args.json, duration=duration)
         return 0
     finally:
-        await host.shutdown()
+        try:
+            # Also when the run failed: shutting down stops them all the same.
+            if count := host.running_background_tasks:
+                headless.write_warning(
+                    _localized_or_english(
+                        _BACKGROUND_TASKS_STOPPING.bind(count=count), as_json=args.json, runtime=prepared
+                    ),
+                    as_json=args.json,
+                    code="background_tasks_stopping",
+                )
+        finally:
+            await host.shutdown()
 
 
 def _localized_or_english(
@@ -342,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     holder = PreparedRuntimeHolder()
     try:
-        return asyncio.run(run_command(args, holder))
+        with hangup_as_interrupt():
+            return asyncio.run(run_command(args, holder))
     except TaskFileError as exc:
         headless.write_error(str(exc), as_json=args.json, code=exc.code)
         return 1

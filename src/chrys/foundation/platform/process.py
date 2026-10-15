@@ -149,6 +149,18 @@ class _ExtendedLimitInformation(ctypes.Structure):
     )
 
 
+_JOB_LISTED_PROCESSES = 256
+
+
+class _JobProcessIdList(ctypes.Structure):
+    """``JOBOBJECT_BASIC_PROCESS_ID_LIST``, with room for the first processes of a job."""
+
+    _fields_ = struct_fields(
+        (wintypes.DWORD, "NumberOfAssignedProcesses NumberOfProcessIdsInList"),
+        (ctypes.c_size_t * _JOB_LISTED_PROCESSES, "ProcessIdList"),
+    )
+
+
 @functools.cache
 def _windows_uses_utf8() -> bool:
     """Return True if the Windows console output code page is UTF-8.
@@ -345,6 +357,18 @@ class ManagedStdioProcess:
             return
         _terminate_windows_retained_process(self._windows_job_handle, self._windows_process_handle, exit_code=9)
 
+    def live_processes(self) -> dict[int, float]:
+        """The processes of the owned tree still alive, each with the CPU seconds it used so far.
+
+        Those of its Job on Windows, but the console hosts the system started
+        for them; those of its session elsewhere. Blocking: run it in a thread.
+        """
+        if self._process is not None:
+            return session_processes(self.pid)
+        if self._windows_job_handle is None:
+            return {}
+        return _windows_job_processes(self._windows_job_handle)
+
     def close_transports(self) -> None:
         """Close owned stream transports and release retained process handles."""
         self.stdin.close()
@@ -504,6 +528,10 @@ def _windows_process_api() -> _WindowsProcessAPI:
                 ],
             ),
             "SetHandleInformation": (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]),
+            "QueryInformationJobObject": (
+                wintypes.BOOL,
+                [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD],
+            ),
             "TerminateJobObject": (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
             "TerminateProcess": (wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT]),
             "GetExitCodeProcess": (wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
@@ -1026,18 +1054,101 @@ def kill_process_group(process_group_id: int) -> bool:
     return True
 
 
-def kill_process_session(process_session_id: int) -> bool:
-    """Kill all known POSIX process groups in a session owned by Chrys."""
+def signal_process_session(process_session_id: int, signum: int) -> bool:
+    """Send *signum* to every process group in a POSIX session owned by Chrys.
+
+    macOS can refuse a signal to a whole group (EPERM) even when each member
+    accepts one on its own, so a refused group is signalled member by member.
+    """
     if sys.platform == "win32" or process_session_id <= 0:
         return False
     with contextlib.suppress(OSError):
         if process_session_id == os.getsid(0):
             return False
+    members = [
+        status
+        for status in _iter_posix_process_statuses()
+        if status.session_id == process_session_id and status.pgid > 0
+    ]
+    own_group = os.getpgrp()
+    sent = False
+    for process_group_id in sorted({status.pgid for status in members} - {own_group}):
+        try:
+            os.killpg(process_group_id, signum)
+        except PermissionError:
+            for status in members:
+                if status.pgid == process_group_id:
+                    with contextlib.suppress(OSError):
+                        os.kill(status.pid, signum)
+                        sent = True
+        except OSError:
+            continue
+        else:
+            sent = True
+    return sent
 
-    killed = False
-    for process_group_id in sorted(_process_groups_in_session(process_session_id)):
-        killed = kill_process_group(process_group_id) or killed
-    return killed
+
+def session_processes(session_id: int) -> dict[int, float]:
+    """The live processes of the POSIX session *session_id*, each with the CPU seconds it used so far.
+
+    A zombie is no longer alive. A process of another user counts, with no CPU
+    time: that is not ours to read. Blocking: run it in a thread.
+    """
+    if sys.platform == "win32" or session_id <= 0:
+        return {}
+    import psutil
+
+    found: dict[int, float] = {}
+    for pid in psutil.pids():
+        try:
+            if os.getsid(pid) != session_id:
+                continue
+            cpu = _cpu_seconds(psutil.Process(pid))
+        except OSError, psutil.NoSuchProcess:
+            continue
+        if cpu is not None:
+            found[pid] = cpu
+    return found
+
+
+def _windows_job_processes(job_handle: int) -> dict[int, float]:
+    import psutil
+
+    api = _windows_process_api()
+    listing = _JobProcessIdList()
+    listed = api.kernel32.QueryInformationJobObject(job_handle, 3, ctypes.byref(listing), ctypes.sizeof(listing), None)
+    # A job with more processes than the list holds fills it and fails with ERROR_MORE_DATA.
+    if not listed and cast(Any, ctypes).get_last_error() != 234:
+        return {}
+    found: dict[int, float] = {}
+    for pid in listing.ProcessIdList[: listing.NumberOfProcessIdsInList]:
+        try:
+            process = psutil.Process(pid)
+            # conhost.exe serves the console a process of the job opened, and outlives it a little.
+            if process.name().casefold() == "conhost.exe":
+                continue
+            cpu = _cpu_seconds(process)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.AccessDenied:
+            cpu = 0.0
+        if cpu is not None:
+            found[pid] = cpu
+    return found
+
+
+def _cpu_seconds(process: Any) -> float | None:
+    """The CPU seconds the psutil *process* and the children it reaped used, or None once it is a zombie."""
+    import psutil
+
+    with process.oneshot():
+        try:
+            if process.status() == psutil.STATUS_ZOMBIE:
+                return None
+            times = process.cpu_times()
+        except psutil.AccessDenied:
+            return 0.0
+    return times.user + times.system + times.children_user + times.children_system
 
 
 async def kill_windows_process_tree(pid: int) -> bool:
@@ -1175,18 +1286,8 @@ def _process_session_has_stopped_member(process_session_id: int) -> bool:
     return _process_statuses_have_stopped_session_member(_iter_posix_process_statuses(), process_session_id)
 
 
-def _process_groups_in_session(process_session_id: int) -> set[int]:
-    if sys.platform == "win32" or process_session_id <= 0:
-        return set()
-    return _process_statuses_session_groups(_iter_posix_process_statuses(), process_session_id)
-
-
 def _process_statuses_have_stopped_session_member(statuses: Iterable[_ProcessStatus], process_session_id: int) -> bool:
     return any(status.session_id == process_session_id and status.state[:1] in {"T", "t"} for status in statuses)
-
-
-def _process_statuses_session_groups(statuses: Iterable[_ProcessStatus], process_session_id: int) -> set[int]:
-    return {status.pgid for status in statuses if status.session_id == process_session_id and status.pgid > 0}
 
 
 def _iter_posix_process_statuses() -> Iterator[_ProcessStatus]:
@@ -1347,6 +1448,22 @@ def _is_subprocess_text(decoded: str) -> bool:
         return False
 
     return is_mostly_text("".join(parts))
+
+
+def subprocess_output_utf16_codec(raw: bytes | bytearray) -> str | None:
+    """The UTF-16 codec :func:`decode_subprocess_output` reads *raw* with, or None when it reads bytes.
+
+    *raw* may be the start of a stream and end inside a code unit. ``"utf-16"``
+    (which drops the BOM) when *raw* starts with one.
+    """
+    data = bytes(raw[: len(raw) - len(raw) % 2])
+    if sys.platform != "win32" or _decode_utf16_output(data) is None:
+        return None
+    layout = _utf16_layout(data)
+    if layout is None:
+        return None
+    codec, bom_length = layout
+    return "utf-16" if bom_length else codec
 
 
 def _decode_utf16_output(raw: bytes | bytearray) -> str | None:

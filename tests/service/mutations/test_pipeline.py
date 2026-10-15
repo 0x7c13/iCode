@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from types import SimpleNamespace
 
 from chrys.service.mutations.pipeline import (
@@ -23,6 +24,7 @@ from chrys.service.mutations.types import (
     MutationOp,
     MutationSource,
 )
+from chrys.service.tools.background import BACKGROUND_DIR_NAME
 
 # ──────────────── _read_file_snapshot ─────────────────────────────────
 
@@ -292,3 +294,26 @@ async def test_shell_detected_mutations_keep_the_tool_operation_from_prepare_to_
     assert turn is not None
     assert str(target) in {m.path for m in turn.mutations}
     assert {m.tool_operation_id for m in turn.mutations} == {operation_id}
+
+
+async def test_background_task_files_are_never_tracked(tmp_path) -> None:
+    session = tmp_path / "session"
+    tracker = MutationTracker(SnapshotStore(session))
+    tracker.start_turn(1)
+    stop_file = session / BACKGROUND_DIR_NAME / "bg-abcdef.stop"
+    stop_file.parent.mkdir(parents=True)
+    other = tmp_path / "bg-abcdef.stop"
+
+    for index, path in enumerate((stop_file, other)):
+        command = {"command": f"touch {shlex.quote(str(path))}"}
+        context = await prepare_mutation_tracking(tracker, "shell", command, f"shell-{index}", True, str(tmp_path))
+        path.touch()
+        await finalize_mutation_tracking(tracker, context, f"shell-{index}")
+    log = {"path": str(stop_file.with_suffix(".log")), "content": "x"}
+    assert (
+        await prepare_mutation_tracking(tracker, "write_file", log, "log", False, str(tmp_path))
+    ).file_mutation is None
+
+    turn = tracker.get_turn_mutations(1)
+    assert turn is not None
+    assert [mutation.path for mutation in turn.mutations] == [str(other)]

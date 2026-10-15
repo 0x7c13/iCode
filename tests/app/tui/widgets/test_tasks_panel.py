@@ -187,7 +187,7 @@ async def test_tasks_panel_empty_state_clears_previous_items() -> None:
         assert not pilot.app.query_one("#tasks-list", VerticalScroll).display
         empty = pilot.app.query_one("#tasks-empty", Static)
         assert empty.display
-        assert str(empty.render()) == "No tasks yet"
+        assert str(empty.render()) == "No todos yet"
         assert _label(panel) == "Todos"
 
 

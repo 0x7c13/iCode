@@ -19,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -43,8 +44,9 @@ from chrys.service.tools.builtins.shell import (
     _PIPEFAIL_SHELLS,
     SHELL_TOOL_NAMES,
     ShellTools,
-    _kill_pty_process,
+    _Command,
     _shell_argv_variants,
+    _signal_command,
     _Timeout,
     shell_progress_callback,
     shell_result_metadata,
@@ -186,11 +188,13 @@ async def test_execute_records_exit_code_metadata(runtime: SessionEnvironment, m
     shell = ShellTools(runtime)
     metadata: dict[str, object] = {}
 
-    async def _pty_done(command: str, shell: ShellInfo, cwd: str, timeout: int | float) -> tuple[CapturedOutput, int]:
+    async def _pty_done(
+        command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+    ) -> tuple[CapturedOutput, int]:
         return CapturedOutput(b"boom", b"", 4), 7
 
     async def _pipe_done(
-        command: str, shell: ShellInfo, cwd: str, timeout: int | float
+        command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
     ) -> tuple[CapturedOutput, int, CapturedOutput]:
         return CapturedOutput(b"boom", b"", 4), 7, CapturedOutput(b"", b"", 0)
 
@@ -214,8 +218,10 @@ async def test_execute_records_timeout_metadata(runtime: SessionEnvironment, mon
     shell = ShellTools(runtime)
     metadata: dict[str, object] = {}
 
-    async def _timeout(command: str, shell: ShellInfo, cwd: str, timeout: int | float) -> tuple[CapturedOutput, int]:
-        raise _Timeout(output=CapturedOutput(b"before", b"", 6))
+    async def _timeout(
+        command: str, shell: ShellInfo, cwd: str, timeout: int | float, reason: str = ""
+    ) -> tuple[CapturedOutput, int]:
+        raise _Timeout((CapturedOutput(b"before", b"", 6),))
 
     if IS_UNIX:
         monkeypatch.setattr(shell, "_execute_pty", _timeout)
@@ -361,68 +367,82 @@ async def test_pty_streams_blank_progress_lines(runtime: SessionEnvironment) -> 
 
 
 @pytest.mark.skipif(not IS_UNIX, reason="PTY process groups are Unix-only")
-def test_kill_pty_process_skips_group_when_child_shares_parent_group(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Defense-in-depth: never kill Chrys's own process group."""
+def test_signal_command_skips_group_when_child_shares_parent_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defense-in-depth: never signal Chrys's own process group."""
     calls: list[tuple[str, int, int]] = []
 
     class Proc:
         returncode = None
         pid = 1234
 
+    monkeypatch.setattr(shell_mod, "signal_process_session", lambda _sid, _signum: False)
     monkeypatch.setattr(os, "getpgid", lambda _pid: 999)
     monkeypatch.setattr(os, "getpgrp", lambda: 999)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append(("killpg", pgid, sig)))
     monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("kill", pid, sig)))
 
-    _kill_pty_process(Proc())  # type: ignore[arg-type]
+    _signal_command(Proc(), signal.SIGKILL)  # type: ignore[arg-type]
 
-    assert [call[0] for call in calls] == ["kill"]
-    assert calls[0][1] == 1234
+    assert calls == [("kill", 1234, signal.SIGKILL)]
 
 
 @pytest.mark.skipif(not IS_UNIX, reason="PTY process groups are Unix-only")
-def test_kill_pty_process_kills_verified_child_group(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_signal_command_signals_verified_child_group(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, int, int]] = []
 
     class Proc:
         returncode = None
         pid = 1234
 
+    monkeypatch.setattr(shell_mod, "signal_process_session", lambda _sid, _signum: False)
     monkeypatch.setattr(os, "getpgid", lambda _pid: 1234)
     monkeypatch.setattr(os, "getpgrp", lambda: 999)
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append(("killpg", pgid, sig)))
     monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("kill", pid, sig)))
 
-    _kill_pty_process(Proc())  # type: ignore[arg-type]
+    _signal_command(Proc(), signal.SIGTERM)  # type: ignore[arg-type]
 
-    assert [call[0] for call in calls] == ["killpg"]
-    assert calls[0][1] == 1234
+    assert calls == [("killpg", 1234, signal.SIGTERM)]
 
 
 @pytest.mark.skipif(not IS_UNIX, reason="PTY process groups are Unix-only")
-def test_kill_pty_process_prefers_session_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    from chrys.service.tools.builtins import shell as shell_mod
+def test_signal_command_leaves_a_reaped_shells_pid_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once the shell was reaped, its pid may already name an unrelated process group."""
+    calls: list[tuple[str, int, int]] = []
 
-    calls: list[tuple[str, int]] = []
+    class Proc:
+        returncode = 0
+        pid = 1234
+
+    monkeypatch.setattr(shell_mod, "signal_process_session", lambda _sid, _signum: False)
+    monkeypatch.setattr(os, "getpgid", lambda _pid: 1234)
+    monkeypatch.setattr(os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append(("killpg", pgid, sig)))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: calls.append(("kill", pid, sig)))
+
+    _signal_command(Proc(), signal.SIGKILL)  # type: ignore[arg-type]
+
+    assert calls == []
+
+
+@pytest.mark.skipif(not IS_UNIX, reason="PTY process groups are Unix-only")
+def test_signal_command_prefers_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, int, int]] = []
 
     class Proc:
         returncode = None
         pid = 1234
 
-    def fake_kill_process_session(process_session_id: int) -> bool:
-        calls.append(("session", process_session_id))
+    def fake_signal_process_session(process_session_id: int, signum: int) -> bool:
+        calls.append(("session", process_session_id, signum))
         return True
 
-    def fake_kill_process_group(process_group_id: int) -> bool:
-        calls.append(("group", process_group_id))
-        return True
+    monkeypatch.setattr(shell_mod, "signal_process_session", fake_signal_process_session)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append(("killpg", pgid, sig)))
 
-    monkeypatch.setattr(shell_mod, "kill_process_session", fake_kill_process_session)
-    monkeypatch.setattr(shell_mod, "kill_process_group", fake_kill_process_group)
+    _signal_command(Proc(), signal.SIGKILL)  # type: ignore[arg-type]
 
-    _kill_pty_process(Proc(), process_group_id=1234, process_session_id=1234)  # type: ignore[arg-type]
-
-    assert calls == [("session", 1234)]
+    assert calls == [("session", 1234, signal.SIGKILL)]
 
 
 # ───────────────────────── Windows pipe branch (mocked) ───────────────
@@ -453,25 +473,43 @@ class _FakeStream:
 
 
 class _FakeWinProc:
-    """Minimal stand-in for asyncio.subprocess.Process used by _execute_pipe."""
+    """Minimal stand-in for the managed process _execute_pipe spawns."""
+
+    pid = 0
 
     def __init__(self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> None:
-        self._stdout = stdout
-        self._stderr = stderr
         self.returncode = returncode
         self.stdout = _FakeStream([], tail=stdout)
         self.stderr = _FakeStream([], tail=stderr)
-
-    async def communicate(self) -> tuple[bytes, bytes]:
-        return self._stdout, self._stderr
+        self.stdin_closed = False
 
     async def wait(self) -> int:
         return self.returncode
 
+    def close_stdin(self) -> None:
+        self.stdin_closed = True
 
-@contextlib.asynccontextmanager
-async def _fake_managed(*_args: Any, **_kwargs: Any):
-    yield _FakeWinProc(stdout=b"hello from win\n", stderr=b"warn\n", returncode=0)
+    def close_transports(self) -> None:
+        pass
+
+    def kill_tree(self) -> None:
+        pass
+
+    def live_processes(self) -> dict[int, float]:
+        # No real process: none of its tree is left once its shell exited.
+        return {}
+
+
+def _spawning(make: Callable[[], _FakeWinProc]) -> Callable[..., Awaitable[_FakeWinProc]]:
+    """A stand-in for spawn_managed_stdio_process that starts the process *make* returns."""
+
+    async def spawn(*_args: Any, **_kwargs: Any) -> _FakeWinProc:
+        return make()
+
+    return spawn
+
+
+_fake_managed = _spawning(lambda: _FakeWinProc(stdout=b"hello from win\n", stderr=b"warn\n", returncode=0))
 
 
 @contextlib.contextmanager
@@ -486,7 +524,7 @@ async def test_windows_execute_pipe_path(runtime: SessionEnvironment, monkeypatc
     # Pretend we're on Windows (the compile-time imports at top of shell.py
     # guard fcntl/pty — those modules are NOT referenced on this code path)
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _fake_managed)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _fake_managed)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     shell = ShellTools(runtime)
@@ -505,12 +543,10 @@ async def test_windows_execute_pipe_no_stderr(runtime: SessionEnvironment, monke
     """Windows path with empty stderr omits the ``[stderr]`` label."""
     from chrys.service.tools.builtins import shell as shell_mod
 
-    @contextlib.asynccontextmanager
-    async def _no_stderr(*_a: Any, **_kw: Any):
-        yield _FakeWinProc(stdout=b"ok\n", stderr=b"", returncode=0)
+    _no_stderr = _spawning(lambda: _FakeWinProc(stdout=b"ok\n", stderr=b"", returncode=0))
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _no_stderr)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _no_stderr)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     out = await ShellTools(runtime).execute("echo x", reason="test")
@@ -538,12 +574,10 @@ async def test_windows_execute_pipe_timeout(runtime: SessionEnvironment, monkeyp
             await asyncio.sleep(5)
             return 0
 
-    @contextlib.asynccontextmanager
-    async def _slow(*_a: Any, **_kw: Any):
-        yield _SlowProc()
+    _slow = _spawning(_SlowProc)
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _slow)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _slow)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     out = await ShellTools(runtime).execute("sleep 5", reason="test", timeout=1)
@@ -564,12 +598,10 @@ async def test_windows_execute_pipe_timeout_includes_partial_output_without_prog
             await asyncio.sleep(5)
             return 0
 
-    @contextlib.asynccontextmanager
-    async def _hanging(*_a: Any, **_kw: Any):
-        yield _HangingProc()
+    _hanging = _spawning(_HangingProc)
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _hanging)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _hanging)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     out = await ShellTools(runtime).execute("anything", reason="test", timeout=1)
@@ -595,12 +627,10 @@ async def test_windows_execute_pipe_timeout_includes_partial_stderr_with_progres
             await asyncio.sleep(5)
             return 0
 
-    @contextlib.asynccontextmanager
-    async def _hanging(*_a: Any, **_kw: Any):
-        yield _HangingProc()
+    _hanging = _spawning(_HangingProc)
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _hanging)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _hanging)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     received: list[list[str]] = []
@@ -620,21 +650,38 @@ async def test_windows_execute_pipe_timeout_includes_partial_stderr_with_progres
     assert [line for batch in received for line in batch] == ["stdout-before"]
 
 
-# ───────────────────────── _stream_pipe (Windows streaming path) ──────
+# ───────────────────────── pipe streaming (Windows path) ───────────────
 
 
-class _StreamingProc:
+class _StreamingProc(_FakeWinProc):
     def __init__(self, out_lines: list[bytes], err: bytes = b"") -> None:
+        super().__init__()
         self.stdout = _FakeStream(out_lines)
         self.stderr = _FakeStream([], tail=err)
-        self.returncode = 0
 
-    async def wait(self) -> int:
-        return self.returncode
+
+async def _follow_pipes(proc: _StreamingProc, show: Any) -> tuple[CapturedOutput, ...]:
+    """Run *proc* through the command reader as the pipe backend does, returning what each stream kept."""
+    token = shell_progress_callback.set(show)
+    try:
+        run = _Command(
+            proc,
+            (proc.stdout, proc.stderr),  # type: ignore[arg-type]
+            contextlib.AsyncExitStack(),
+            live=proc.live_processes,
+            stop=lambda _force: None,
+        )
+        try:
+            await run.follow(show, idle=False)
+            return run.captured()
+        finally:
+            await run.close()
+    finally:
+        shell_progress_callback.reset(token)
 
 
 async def test_stream_pipe_emits_progress(runtime: SessionEnvironment) -> None:
-    """``_stream_pipe`` reads stdout line-by-line and fires the progress callback."""
+    """The pipe reader passes stdout line by line to the progress callback."""
     received: list[list[str]] = []
 
     async def cb(lines: list[str]) -> None:
@@ -645,7 +692,7 @@ async def test_stream_pipe_emits_progress(runtime: SessionEnvironment) -> None:
         err=b"some stderr\n",
     )
 
-    stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
+    stdout, stderr = await _follow_pipes(proc, cb)
 
     # All three lines concatenated into the stdout capture
     assert stdout == CapturedOutput(b"line-one\nline-two\nline-three\n", b"", 29)
@@ -673,7 +720,7 @@ async def test_stream_pipe_progress_uses_subprocess_decoder(monkeypatch: pytest.
     monkeypatch.setattr(shell_mod, "decode_subprocess_output", decode_cp1252)
     proc = _StreamingProc(out_lines=[b"caf\xe9\n"], err=b"")
 
-    stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
+    stdout, stderr = await _follow_pipes(proc, cb)
 
     assert stdout == CapturedOutput(b"caf\xe9\n", b"", 5)
     assert stderr == CapturedOutput(b"", b"", 0)
@@ -692,7 +739,7 @@ async def test_stream_pipe_preserves_blank_progress_lines(runtime: SessionEnviro
         err=b"",
     )
 
-    stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
+    stdout, stderr = await _follow_pipes(proc, cb)
 
     assert stdout.head == b"[line 1]\r\n\r\n[line 2]\r\n\n[line 3]\r\n"
     assert stderr.seen == 0
@@ -709,7 +756,7 @@ async def test_stream_pipe_bare_carriage_return_is_not_blank_line(runtime: Sessi
 
     proc = _StreamingProc(out_lines=[b"\r"], err=b"")
 
-    stdout, stderr = await ShellTools._stream_pipe(proc, cb)  # type: ignore[arg-type]
+    stdout, stderr = await _follow_pipes(proc, cb)
 
     assert stdout == CapturedOutput(b"\r", b"", 1)
     assert stderr.seen == 0
@@ -719,15 +766,13 @@ async def test_stream_pipe_bare_carriage_return_is_not_blank_line(runtime: Sessi
 async def test_windows_pipe_progress_path_end_to_end(
     runtime: SessionEnvironment, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: with progress_cb set, Windows branch routes through _stream_pipe."""
+    """End-to-end: with progress_cb set, the Windows branch streams progress lines."""
     from chrys.service.tools.builtins import shell as shell_mod
 
-    @contextlib.asynccontextmanager
-    async def _streaming(*_a: Any, **_kw: Any):
-        yield _StreamingProc(out_lines=[b"alpha\n", b"beta\n"], err=b"")
+    _streaming = _spawning(lambda: _StreamingProc(out_lines=[b"alpha\n", b"beta\n"], err=b""))
 
     monkeypatch.setattr(shell_mod.sys, "platform", "win32")
-    monkeypatch.setattr(shell_mod, "managed_subprocess", _streaming)
+    monkeypatch.setattr(shell_mod, "spawn_managed_stdio_process", _streaming)
     monkeypatch.setattr(shell_mod, "preserve_console_mode", _fake_preserve_console_mode)
 
     received: list[list[str]] = []

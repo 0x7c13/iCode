@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -321,17 +323,18 @@ def test_image_attachment_error_from_backend_uses_modal_and_restores_prompt() ->
     handler = make_backend_handler(screen)
     handler._agent_load_dialog = None
 
-    asyncio.run(
+    _refuse_during_submit(
+        handler,
         handler.on_error(
             Error(
                 code="vision_unsupported",
                 message='The active model profile "Model" does not support image input.',
             )
-        )
+        ),
     )
 
     assert handler._state.submit.blocked is True
-    assert running == [False]
+    assert running == []
     assert input_bar.value == "describe @shot.png"
     assert input_bar.unlocked is True
     assert len(pushed) == 1
@@ -349,13 +352,14 @@ def test_image_rejection_dialog_action_rewrites_image_mentions_to_paths(tmp_path
     handler = make_backend_handler(screen)
     handler._agent_load_dialog = None
 
-    asyncio.run(
+    _refuse_during_submit(
+        handler,
         handler.on_error(
             Error(
                 code="vision_unsupported",
                 message='The active model profile "Model" does not support image input.',
             )
-        )
+        ),
     )
 
     from chrys.app.tui.screens.dialogs.vision_unsupported import USE_IMAGE_PATHS_RESULT
@@ -364,7 +368,7 @@ def test_image_rejection_dialog_action_rewrites_image_mentions_to_paths(tmp_path
     assert callback is not None
     callback(USE_IMAGE_PATHS_RESULT)
 
-    assert running == [False]
+    assert running == []
     assert input_bar.value == f"inspect {first} and {second} but keep @notes.txt"
     assert len(pushed) == 1
     dialog = pushed[0]
@@ -381,16 +385,26 @@ def test_image_attachment_timeout_error_uses_modal_and_restores_prompt() -> None
         "Resize oversized images or send fewer images, then try again."
     )
 
-    asyncio.run(handler.on_error(Error(code="image_attachment_error", message=message)))
+    _refuse_during_submit(handler, handler.on_error(Error(code="image_attachment_error", message=message)))
 
     assert handler._state.submit.blocked is True
-    assert running == [False]
+    assert running == []
     assert input_bar.value == "describe @huge.png"
     assert input_bar.unlocked is True
     assert len(pushed) == 1
     dialog = pushed[0]
     assert dialog._title == "Image Not Attached"
     assert "Image preparation took longer than 1 second" in dialog._message
+
+
+def _refuse_during_submit(handler: BackendEventHandler, delivery: Coroutine[Any, Any, None]) -> None:
+    """Deliver *delivery* as the backend refuses a submit: inside the submit's own publish."""
+
+    async def publish() -> None:
+        handler._state.submit.publish_from_current_task()
+        await delivery
+
+    asyncio.run(publish())
 
 
 def _blocked_prompt_state() -> MainScreenState:
@@ -442,10 +456,10 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
     handler = make_backend_handler(screen)
     handler._agent_load_dialog = None
 
-    asyncio.run(handler.on_error(Error(code="hook_blocked", message="Prompt denied")))
+    _refuse_during_submit(handler, handler.on_error(Error(code="hook_blocked", message="Prompt denied")))
 
     assert handler._state.submit.blocked is True
-    assert running == [False]
+    assert running == []
     assert input_bar.value == "blocked prompt"
     assert input_bar.unlocked is True
     assert chat_errors == [("Prompt denied", None)]
@@ -492,14 +506,15 @@ def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_en
     handler = make_backend_handler(screen, locale_controller=LocaleController(Settings(locale="zh-Hans")))
     handler._agent_load_dialog = None
 
-    asyncio.run(
+    _refuse_during_submit(
+        handler,
         handler.on_error(
             Error(
                 code="hook_blocked",
                 message="Prompt blocked by hook.",
                 display_message=_TURN_HOOKS_PROMPT_BLOCKED.bind(),
             )
-        )
+        ),
     )
 
     assert chat_errors == [("提示已被钩子阻止。", None)]
@@ -688,13 +703,14 @@ def test_image_attachment_warning_from_backend_uses_modal_and_restores_prompt() 
         )
     }
 
-    asyncio.run(
+    _refuse_during_submit(
+        handler,
         handler.on_warning(
             Warning(
                 code="image_attachment_retry_unsupported",
                 message=message,
             )
-        )
+        ),
     )
 
     assert handler._state.submit.blocked is True
@@ -742,13 +758,14 @@ def test_submit_blocking_warning_restores_prompt_without_modal() -> None:
     handler = make_backend_handler(screen)
     handler._seen_warnings = set()
 
-    asyncio.run(
+    _refuse_during_submit(
+        handler,
         handler.on_warning(
             Warning(
                 code="sub_agent_paused",
                 message="Resolve paused sub-agent(s) first.",
             )
-        )
+        ),
     )
 
     assert handler._state.submit.blocked is True

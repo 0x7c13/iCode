@@ -1474,7 +1474,9 @@ class ChrysAcpServer:
         client = self._client_or_error()
         event_bus = self._manager.get(session_id).host.event_bus
         tool_call = acp_schema.ToolCallUpdate(
-            toolCallId=event.request_id,
+            # Approval responses correlate by request_id; the permission card
+            # identifies the invocation call that owns its progress updates.
+            toolCallId=event.call_id or event.request_id,
             title=tool_call_title(event.tool_name, event.tool_kind, event.args, intent_summary=event.intent_summary),
             kind=acp_tool_kind(event.tool_kind),
             status="pending",

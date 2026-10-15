@@ -9,10 +9,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, NamedTuple, cast
 
 from chrys.foundation.trajectory.envelope import ActorKind, SegmentedField, TrajectoryEvent
-from chrys.foundation.trajectory.event_types import EventType
+from chrys.foundation.trajectory.event_types import EventType, ExchangeOutcome
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics.model import CorruptLineDiagnostic, UnsupportedLineDiagnostic, UsageBucket
 from chrys.service.analytics.reader import PrefixViolation, ScanBatch
 from chrys.service.analytics.reader import plain_int_value as _plain_int_value
@@ -140,6 +141,13 @@ class _EventScope:
     turn_id: str | None
 
 
+class _Link(NamedTuple):
+    """A pointer an event declares to another operation, and how they relate."""
+
+    relation: str
+    target_operation_id: str
+
+
 @dataclass(frozen=True, slots=True)
 class _Endpoint:
     event_id: str | None
@@ -149,7 +157,7 @@ class _Endpoint:
     parent_operation_id: str | None
     side_call: bool
     payload: _Payload
-    links: tuple[tuple[str, str], ...]
+    links: tuple[_Link, ...]
     segmented_fields: tuple[SegmentedField, ...]
     monotonic_measurement: bool
 
@@ -246,6 +254,11 @@ _USAGE_PROVENANCE_BITS: Final[dict[UsageBucket, int]] = {
     UsageBucket.CACHE_CREATION: 16,
 }
 _USAGE_NORMALIZATION_UNAVAILABLE_BIT: Final = 32
+# A request that failed, stalled or was interrupted before the provider sent
+# its usage block records no usage at all; totals count the requests that
+# reported and say they are a lower bound instead of going missing.
+_USAGE_UNREPORTED_FAILURE_BIT: Final = 64
+_UNREPORTED_FAILURE_USAGE_REASON: Final = "one or more model requests failed or were interrupted before reporting usage, so totals count reported requests only"
 
 _USAGE_BUCKET_KEYS: Final[dict[UsageBucket, str]] = {
     UsageBucket.INPUT: "input_total",
@@ -274,6 +287,10 @@ class _ExchangeUsage:
     @property
     def normalization_unavailable(self) -> bool:
         return bool(self.flags & _USAGE_NORMALIZATION_UNAVAILABLE_BIT)
+
+    @property
+    def unreported_failure(self) -> bool:
+        return bool(self.flags & _USAGE_UNREPORTED_FAILURE_BIT)
 
     def bucket_value(self, bucket: UsageBucket) -> int | None:
         if bucket is UsageBucket.INPUT:
@@ -340,6 +357,36 @@ class DirtySet:
     full: bool = False
 
 
+class _BranchSwitch(NamedTuple):
+    """The event at *sequence* says *old_branch* was superseded by *new_branch*."""
+
+    sequence: int
+    old_branch: str | None
+    new_branch: str | None
+
+
+class _Rollback(NamedTuple):
+    """The rollback event at *sequence* moved history from *old_branch* to *new_branch*."""
+
+    sequence: int
+    old_branch: str | None
+    new_branch: str
+
+
+class _BackgroundTask(NamedTuple):
+    """The sequences of a background task's start and finish events, when recorded."""
+
+    started: int | None = None
+    finished: int | None = None
+
+
+class _Membership(NamedTuple):
+    """Whether some evidence lies in the active projection, and whether some was rolled back."""
+
+    active: bool
+    inactive: bool
+
+
 class _Intermediate:
     """Compact facts retained between the physical scan and logical resolves."""
 
@@ -352,14 +399,17 @@ class _Intermediate:
         self.turns: dict[str, _Turn] = {}
         self.usage_by_turn: dict[str, list[_ExchangeUsage]] = defaultdict(list)
         self.mutation_summaries: list[_Endpoint] = []
+        # Background shell tasks by id. A task keeps writing (its log, often
+        # files) between its start and finish, outside any tool call.
+        self.background_tasks: dict[str, _BackgroundTask] = {}
         self.segments: dict[str, tuple[_Segment, ...]] = {}
         self.context_revisions: dict[str, tuple[_Endpoint, ...]] = {}
         self.context_revision_ids_by_turn: dict[str, list[str]] = defaultdict(list)
-        self.rollback_ranges: list[tuple[int, int]] = []
+        self.rollback_ranges: list[SequenceRange] = []
         self.rollback_errors: list[int] = []
-        self.rollback_branch_pairs: list[tuple[int, str | None, str]] = []
-        self.branch_supersessions: list[tuple[int, str | None, str | None]] = []
-        self.explicit_gaps: list[tuple[int, int]] = []
+        self.rollback_branch_pairs: list[_Rollback] = []
+        self.branch_supersessions: list[_BranchSwitch] = []
+        self.explicit_gaps: list[SequenceRange] = []
         self.coverage_starts: dict[str, list[_Endpoint]] = defaultdict(list)
         self.coverage_ends: dict[str, list[_Endpoint]] = defaultdict(list)
         self.runtime_starts: dict[str, list[_Endpoint]] = defaultdict(list)
@@ -594,6 +644,9 @@ class _Intermediate:
                         flags |= _USAGE_PROVENANCE_BITS[bucket]
                 if isinstance(usage, dict) and usage.get("normalization_unavailable") is True:
                     flags |= _USAGE_NORMALIZATION_UNAVAILABLE_BIT
+                outcome = event.payload.get("outcome")
+                if usage is None and isinstance(outcome, str) and outcome != ExchangeOutcome.SUCCESS:
+                    flags |= _USAGE_UNREPORTED_FAILURE_BIT
                 self.usage_by_turn[turn_id].append(
                     _ExchangeUsage(
                         sequence=event.sequence,
@@ -639,14 +692,14 @@ class _Intermediate:
             ):
                 self.rollback_errors.append(event.sequence)
             else:
-                self.rollback_ranges.append((first, last))
-                self.rollback_branch_pairs.append((event.sequence, old_branch, new_branch))
+                self.rollback_ranges.append(SequenceRange(first, last))
+                self.rollback_branch_pairs.append(_Rollback(event.sequence, old_branch, new_branch))
             self.dirty.full = True
         elif event_type == EventType.BRANCH_SUPERSEDED:
             branch_value = event.payload.get("branch_id")
             superseded_by_value = event.payload.get("superseded_by")
             self.branch_supersessions.append(
-                (
+                _BranchSwitch(
                     event.sequence,
                     self._identity(branch_value if isinstance(branch_value, str) else None),
                     self._identity(superseded_by_value if isinstance(superseded_by_value, str) else None),
@@ -657,8 +710,17 @@ class _Intermediate:
             first = _plain_int_value(event.payload.get("first_sequence"))
             last = _plain_int_value(event.payload.get("last_sequence"))
             if first is not None and last is not None:
-                self.explicit_gaps.append((first, last))
+                self.explicit_gaps.append(SequenceRange(first, last))
             self.dirty.full = True
+        elif event_type in {EventType.BACKGROUND_TASK_STARTED, EventType.BACKGROUND_TASK_FINISHED}:
+            task_id = event.payload.get("task")
+            if isinstance(task_id, str):
+                task = self.background_tasks.get(task_id, _BackgroundTask())
+                if event_type != EventType.BACKGROUND_TASK_STARTED:
+                    task = task._replace(finished=endpoint.sequence)
+                elif task.started is None:
+                    task = task._replace(started=endpoint.sequence)
+                self.background_tasks[task_id] = task
         elif event_type == EventType.COVERAGE_STARTED:
             self.coverage_starts[endpoint.coverage_id].append(endpoint)
             self.dirty.full = True
@@ -760,7 +822,7 @@ def _endpoint(
         side_call=event.actor.kind == ActorKind.SIDE_CALL,
         payload=payload,
         links=tuple(
-            (cast("str", identity(link.relation)), cast("str", identity(link.target_operation_id)))
+            _Link(cast("str", identity(link.relation)), cast("str", identity(link.target_operation_id)))
             for link in event.links
         ),
         segmented_fields=segmented_fields,
@@ -842,11 +904,11 @@ def _derived_start(finish: _Endpoint, duration_ms: int) -> _Endpoint:
     )
 
 
-def _active(sequence: int, inactive_ranges: tuple[tuple[int, int], ...]) -> bool:
+def _active(sequence: int, inactive_ranges: tuple[SequenceRange, ...]) -> bool:
     return not any(first <= sequence <= last for first, last in inactive_ranges)
 
 
-def _lifecycle_cut(node: _Node, inactive_ranges: tuple[tuple[int, int], ...]) -> _LifecycleCut:
+def _lifecycle_cut(node: _Node, inactive_ranges: tuple[SequenceRange, ...]) -> _LifecycleCut:
     """Classify one raw start/finish pair cut by rollback projection.
 
     Cardinality is deliberately part of the predicate: missing or duplicate
@@ -864,8 +926,8 @@ def _lifecycle_cut(node: _Node, inactive_ranges: tuple[tuple[int, int], ...]) ->
 
 def _projection_membership(
     endpoints: tuple[_Endpoint, ...] | list[_Endpoint],
-    inactive_ranges: tuple[tuple[int, int], ...],
-) -> tuple[bool, bool]:
+    inactive_ranges: tuple[SequenceRange, ...],
+) -> _Membership:
     """Return whether *endpoints* contain active and inactive evidence."""
     active = False
     inactive = False
@@ -874,18 +936,18 @@ def _projection_membership(
             active = True
         else:
             inactive = True
-    return active, inactive
+    return _Membership(active, inactive)
 
 
-def _closed_sequence_union(ranges: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+def _closed_sequence_union(ranges: list[SequenceRange]) -> tuple[SequenceRange, ...]:
     """Merge inclusive sequence ranges without dropping a one-slot rollback."""
-    ordered = sorted((first, last) for first, last in ranges if last >= first)
-    merged: list[tuple[int, int]] = []
+    ordered = sorted(item for item in ranges if item.last >= item.first)
+    merged: list[SequenceRange] = []
     for first, last in ordered:
-        if merged and first <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+        if merged and first <= merged[-1].last + 1:
+            merged[-1] = SequenceRange(merged[-1].first, max(merged[-1].last, last))
         else:
-            merged.append((first, last))
+            merged.append(SequenceRange(first, last))
     return tuple(merged)
 
 

@@ -57,6 +57,22 @@ def test_cli_lists_commands_as_shell_text(grants, capsys):
     assert all(line.endswith("  exact npm run test") for line in lines)
 
 
+@pytest.mark.parametrize("argv", [[], ["--json"]])
+def test_cli_lists_when_no_action_is_given(grants, capsys, argv):
+    assert approvals.main(argv) == 0
+    out = capsys.readouterr().out
+    if argv:
+        assert {row["scope"] for row in json.loads(out)} == {"SESSION", "PROJECT"}
+    else:
+        assert len(out.splitlines()) == 2
+
+
+def test_cli_usage_names_the_singular_command(capsys):
+    with pytest.raises(SystemExit):
+        approvals.main(["--help"])
+    assert capsys.readouterr().out.startswith("usage: icode approval ")
+
+
 @pytest.mark.parametrize("filter_args", [["--session", "session-a"], ["--project"], ["--all"]])
 def test_cli_selectively_clears_grants(grants, filter_args):
     binding, candidate = grants

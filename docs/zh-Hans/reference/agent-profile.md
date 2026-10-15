@@ -64,7 +64,7 @@ tools:
 将上述配置保存为[用户智能体配置目录](#用户智能体配置目录)中的 `Reviewer.yaml`。运行以下命令，确认配置能够加载：
 
 ```bash
-icode agents
+icode agent list
 ```
 
 列表中出现“代码审查”，说明配置已加载。如果未出现，请检查启动时显示的 YAML 解析或字段校验警告，并确认文件位于用户智能体配置目录中。
@@ -103,7 +103,7 @@ model:
 
 省略 `profile_id`、将其留空，或者填写的 ID 在已加载的模型配置中找不到时，主智能体使用会话中当前生效的模型配置，子智能体继承父智能体实际使用的模型配置。ID 找不到时，iCode 还会记录警告。
 
-运行 `icode models` 可以在 `ID` 列查看模型配置的稳定 ID。模型配置方法参阅[配置模型](../guides/configuration/models.md)。
+运行 `icode model list` 可以在 `ID` 列查看模型配置的稳定 ID。模型配置方法参阅[配置模型](../guides/configuration/models.md)。
 
 ## tools
 
@@ -191,7 +191,7 @@ tools:
 
 `shell_filter` 只对 `shell` 类别中的工具生效。省略此字段或设置为 `unrestricted` 时，iCode 不过滤 Shell 命令。
 
-Shell 工具调用先经过[审批](#approval)，放行后再由 `shell_filter` 检查具体命令；两项检查都通过后，命令才会执行。若命令被过滤器阻止，iCode 不会启动 Shell 进程，而是返回“命令被阻止”的工具错误。
+Shell 工具调用先经过[审批](#approval)，放行后再由 `shell_filter` 检查具体命令；两项检查都通过后，命令才会执行。若命令被过滤器阻止，iCode 不会启动 Shell 进程，而是返回“命令被阻止”的工具错误。iCode 告诉智能体用来停止[后台命令](../guides/configuration/tools.md#在后台继续运行的命令)的那条命令始终会被过滤器放行，因此只读的智能体也能停止自己的后台命令。
 
 `shell_filter` 可以使用预设，也可以自定义允许或阻止的命令。使用预设时，可以直接填写预设名称，也可以在对象中通过 `preset` 选择；两种写法效果相同：
 

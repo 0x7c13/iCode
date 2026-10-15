@@ -460,7 +460,8 @@ def test_missing_or_unknown_tool_identity_uses_only_frozen_fallback_buckets(tmp_
     assert analysis.turns[0].action_projection_precision is Precision.EXACT
 
 
-def test_context_carrying_load_is_surfaced_without_changing_finding_identity(tmp_path) -> None:
+@pytest.mark.parametrize("workflow_run", [False, True], ids=["chat", "workflow-session"])
+def test_context_carrying_load_is_surfaced_without_changing_finding_identity(tmp_path, workflow_run: bool) -> None:
     item_id = "7" * 32
     revision_id = "8" * 32
     segment_id = "9" * 32
@@ -549,6 +550,16 @@ def test_context_carrying_load_is_surfaced_without_changing_finding_identity(tmp
         start_payload={"context_revision_id": side_revision_id},
     )
     log.add("turn.finished", 6 * NS, payload={"end_reason": "cancelled", "duration_ms": 0})
+    if workflow_run:
+        log.span(
+            "workflow.run",
+            "e" * 32,
+            7 * NS,
+            8 * NS,
+            turn_id=None,
+            start_payload={"workflow": "demo-workflow", "run_id": "e" * 32},
+            finish_payload={"outcome": "completed"},
+        )
     log.write(path)
     path.parents[1].joinpath("session.json").write_text(
         json.dumps(
@@ -559,7 +570,7 @@ def test_context_carrying_load_is_surfaced_without_changing_finding_identity(tmp
                             "role": "assistant",
                             "additional_properties": {
                                 ANALYTICS_ITEM_ID_KEY: item_id,
-                                "_group": {"token_count": 10},
+                                "_group": {"token_count": 100_000},
                             },
                             "contents": [
                                 {"type": "text_reasoning", "text": "…"},
@@ -583,11 +594,18 @@ def test_context_carrying_load_is_surfaced_without_changing_finding_identity(tmp
     )
 
     analysis = analyze_trajectory(path)
+    if workflow_run:
+        # A workflow session shows no Insights to name the item by, so no
+        # finding points at it.
+        assert analysis.workflow_runs
+        assert analysis.insights is None
+        assert all(row.rule_id != "context-carrying-load" for row in analysis.findings)
+        return
     assert analysis.insights is not None
     carrying = analysis.insights.context_carrying_load
     assert len(carrying) == 1
-    assert (carrying[0].item_id, carrying[0].load, carrying[0].turn_number) == (item_id, 10, 1)
-    assert (carrying[0].token_count, carrying[0].carry_count, carrying[0].origin_turn_number) == (10, 1, 1)
+    assert (carrying[0].item_id, carrying[0].load, carrying[0].turn_number) == (item_id, 100_000, 1)
+    assert (carrying[0].token_count, carrying[0].carry_count, carrying[0].origin_turn_number) == (100_000, 1, 1)
     assert (carrying[0].role, carrying[0].tool_names) == ("assistant", ("zsh", "zsh"))
     finding = next(row for row in analysis.findings if row.rule_id == "context-carrying-load")
     assert finding.evidence_key == evidence_key("context-carrying-load", 1, (f"item:{item_id}",))

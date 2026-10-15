@@ -10,5 +10,6 @@ NoticeDialog #confirm-inner {
 
 NoticeDialog #notice-scroll {
     height: auto;
-    max-height: 60vh;
+    max-height: 100%;
+    scrollbar-size-vertical: 1;
 }

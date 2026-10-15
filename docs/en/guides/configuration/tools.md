@@ -58,3 +58,33 @@ Enabling a tool only makes that capability available to the agent; operations th
 For filesystem, search, and Shell tools, relative paths are resolved against the current [working directory](../daily-use/workspaces.md), and shell commands run in the current working directory by default. Switching working directories changes the base for these relative paths and the default working directory for commands. The working directory is the default location for operations; it does not restrict tools to paths within it. Whether an operation can run also depends on its tool arguments, whether approval is granted when required, and the permissions of the system user running iCode.
 
 When a command prints a lot, the agent sees the beginning and the end of its output, and iCode saves the output in the session directory when it can. If a command prints more than 32 MiB, iCode keeps only the first and last parts; the middle is not saved anywhere, and the result tells the agent how much was left out.
+
+## Commands that keep running in the background
+
+A shell command that is still running when its time limit is reached moves to the background instead of being stopped, so a development server or a file watcher keeps running while the agent goes on with its work. The agent is told where the command's output is saved and how to stop the command. A session runs at most 32 commands in the background: when 32 already run, a command that reaches its time limit is stopped, and so are programs a finished command left running. To wait for a background command, the agent uses `sleep`, which ends early when one of its background commands ends; the main agent's `sleep` also ends early when you send a new message.
+
+A command can also move to the background before its time limit:
+
+- When it prints nothing and uses almost no CPU for 60 seconds, for example a login command waiting for you to finish signing in with a browser. This happens only when the command's time limit is longer than 60 seconds.
+- When its shell has finished but programs it started are still running, for example a server started with `&`. The agent also gets the command's exit code.
+
+A command counts as finished only when every program it started has ended. So a command whose tool leaves a helper running, such as a build server, also moves to the background, and the helper stops when the command is stopped. On Windows, a browser or an editor that a command opened when it was not already running also closes when the command is stopped.
+
+When background commands stop:
+
+- In the TUI and through an ACP client, commands the main agent moved to the background keep running across turns, and the agent is reminded each turn which ones are still running. Commands a sub-agent or a workflow node moved to the background stop when it finishes.
+- All of them stop when the session ends: when you start a new session, switch to another session, delete the session, or quit iCode, including by closing the terminal window. With `icode run`, they stop when the run ends.
+- Interrupting the agent stops the command it is waiting on, but not the commands already in the background.
+- `/rollback` stops the commands that the discarded turns started. It may not restore files that a command changed after it moved to the background.
+
+iCode cannot stop programs that detach themselves from the command that started them, such as services that some tools start with a `-d` option; they keep running after the session ends.
+
+If iCode ends before it can stop its background commands, for example when it crashes or an ACP client ends it outright, the commands keep running on macOS and Linux. The next time you open the TUI, iCode lists the ones still running and asks whether to **Stop** them; choose **Ignore** to leave them running. When an ACP client starts iCode again, iCode stops the ones that earlier ACP sessions left running, without asking. On Windows, the commands end together with iCode.
+
+### See and stop background commands in the TUI
+
+While the main agent waits on a shell command, the command's card shows "ctrl+t moves it to the background". Press **Ctrl+T** to move the main agent's running shell commands to the background right away. If the session already has 32 commands running in the background, iCode tells you, and the command keeps running as before.
+
+The **Tasks** tab of the sidebar shows the todos at the top and the main agent's background commands under **Background Tasks** below them, with how long each one has been in the background; the status bar shows how many are running. Click a command to see what it runs, why it moved to the background, and its output as it grows. There you can **Stop** it, or copy its output or the path of its log file. **Clear ended** removes the commands that have ended from the list.
+
+Before you start a new session (also with `/clear`), switch to another session, quit iCode, or roll back turns that started background commands, iCode lists the commands that would stop and asks first. Choose **Stop and continue** (**Stop and exit** when quitting) to go ahead. If you quit again while iCode is asking, it quits at once. Closing the terminal window stops them without asking.

@@ -18,6 +18,7 @@ from textual.strip import Strip
 from chrys.app.tui.binding_display import localized_binding
 from chrys.app.tui.util.formatting import format_elapsed
 from chrys.app.tui.util.invocation_progress import invocation_progress_parts
+from chrys.app.tui.util.spinner import SPINNER_FRAMES, STATIC_SPINNER
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.markdown.diagram.canvas import CellRow, CellStyleSpan, crop_cell_text
 from chrys.app.tui.widgets.markdown.diagram.layout import compile_ir_with_geometry
@@ -42,7 +43,6 @@ from chrys.service.workflows.transcript import NodeUsage
 if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
 
-_RUNNING_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _DEFAULT_NODE = NodeView()
 
 
@@ -477,9 +477,9 @@ class WorkflowGraph(DiagramViewport):
 
     def _spinner(self) -> str:
         return (
-            "●"
+            STATIC_SPINNER
             if self.app.animation_level == "none"
-            else _RUNNING_FRAMES[(self._animation_frame // 2) % len(_RUNNING_FRAMES)]
+            else SPINNER_FRAMES[(self._animation_frame // 2) % len(SPINNER_FRAMES)]
         )
 
     def advance_animation(self) -> None:

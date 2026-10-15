@@ -35,12 +35,14 @@ from chrys.foundation.trajectory.envelope import (
 from chrys.foundation.trajectory.event_types import EventType, GapReason, RuntimeFinishReason
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.reader import read_trajectory
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.foundation.trajectory.writer import (
     EmitResult,
     FdWriteBackend,
     TrajectoryWriter,
     WriterState,
 )
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 from tests.support.trajectory_invariants import assert_trajectory_accounted
 from tests.support.waiting import DEFAULT_WAIT_TIMEOUT as WAIT_TIMEOUT
 from tests.support.waiting import wait_until
@@ -514,9 +516,11 @@ async def test_write_failure_degrades_with_warning_and_session_continues(
     assert degraded_reasons == [GapReason.WRITE_FAILURE]
     assert any("TERMINAL_DEGRADED" in record.getMessage() for record in caplog.records)
     # Later emits get slots only, never an ack; the session is not blocked.
-    started = time.monotonic()
-    later = [await writer.emit(_draft(n)) for n in range(3, 8)]
-    assert time.monotonic() - started < 1.0
+    with earlier_tests_heap_frozen():
+        started = time.monotonic()
+        later = [await writer.emit(_draft(n)) for n in range(3, 8)]
+        elapsed = time.monotonic() - started
+    assert elapsed < 1.0
     assert later == [EmitResult.DEGRADED] * 5
     # The writer recovered (backend works again) and wrote the gap for slot 2 on its own.
     assert await wait_until(lambda: any(e.event_type == EventType.GAP for e in read_trajectory(path).events))
@@ -620,14 +624,15 @@ async def test_hung_backend_bounded_wait_and_terminal_degraded(tmp_path: Path) -
     block = threading.Event()
     backend.block_writes = block
     writer = _writer(backend, write_ack_timeout=0.3)
-    started = time.monotonic()
-    first = asyncio.ensure_future(writer.emit(_draft(1)))
-    await asyncio.to_thread(backend.block_entered.wait)
-    # Queued-not-started events: enqueued while the first batch hangs in write().
-    queued = [asyncio.ensure_future(writer.emit(_draft(n))) for n in (2, 3, 4)]
-    await asyncio.sleep(0.02)
-    assert await first is EmitResult.DEGRADED  # ① bounded by write_ack_timeout
-    elapsed = time.monotonic() - started
+    with earlier_tests_heap_frozen():
+        started = time.monotonic()
+        first = asyncio.ensure_future(writer.emit(_draft(1)))
+        await asyncio.to_thread(backend.block_entered.wait)
+        # Queued-not-started events: enqueued while the first batch hangs in write().
+        queued = [asyncio.ensure_future(writer.emit(_draft(n))) for n in (2, 3, 4)]
+        await asyncio.sleep(0.02)
+        assert await first is EmitResult.DEGRADED  # ① bounded by write_ack_timeout
+        elapsed = time.monotonic() - started
     assert 0.25 <= elapsed < 2.0
     assert writer.state is WriterState.TERMINAL_DEGRADED
     # ②a: the queued events resolved immediately with the transition, payload released.
@@ -637,9 +642,11 @@ async def test_hung_backend_bounded_wait_and_terminal_degraded(tmp_path: Path) -
     assert snap.inflight_sequences == (1,)
     assert snap.uncovered_slots == (2, 3, 4)
     # ②: later emits do not wait the timeout again; ④ the caller is never blocked.
-    started = time.monotonic()
-    assert await writer.emit(_draft(5)) is EmitResult.DEGRADED
-    assert time.monotonic() - started < 0.1
+    with earlier_tests_heap_frozen():
+        started = time.monotonic()
+        assert await writer.emit(_draft(5)) is EmitResult.DEGRADED
+        elapsed = time.monotonic() - started
+    assert elapsed < 0.1
     # ③ no second writer / fd: still exactly one backend, one worker thread.
     assert len(_writer_threads()) == 1
     assert writer.thread_alive
@@ -669,7 +676,7 @@ async def test_a_failed_recovered_gap_keeps_its_interval_for_degraded_close(tmp_
     writer = _writer(
         backend,
         initial_sequence=recovered_last,
-        recovered_gap=(1, recovered_last),
+        recovered_gap=SequenceRange(1, recovered_last),
     )
 
     assert await writer.emit(_draft(1)) is EmitResult.DEGRADED
@@ -698,10 +705,12 @@ async def test_hung_backend_close_does_not_write_runtime_finished_and_joins_boun
     await asyncio.to_thread(backend.block_entered.wait)
     assert await first is EmitResult.DEGRADED
     assert await writer.emit(_draft(2)) is EmitResult.DEGRADED
-    started = time.monotonic()
-    closed = await writer.close(reason=RuntimeFinishReason.GRACEFUL_SHUTDOWN, join_timeout=0.2)
+    with earlier_tests_heap_frozen():
+        started = time.monotonic()
+        closed = await writer.close(reason=RuntimeFinishReason.GRACEFUL_SHUTDOWN, join_timeout=0.2)
+        elapsed = time.monotonic() - started
     assert closed is False
-    assert time.monotonic() - started < 3.0
+    assert elapsed < 3.0
     assert writer.state is WriterState.CLOSED
     assert writer.runtime_closed is False
     # The worker is stuck in the backend: the fd is deliberately left open (no close underneath write()).

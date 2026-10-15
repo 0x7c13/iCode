@@ -50,6 +50,8 @@ icode run "修复登录表单的验证错误，并运行相关测试" --agent Co
 
 这类任务可能修改工作目录中的文件并执行命令；运行前应确认提示词、智能体和当前目录都符合预期。
 
+智能体转到后台的 Shell 命令（例如开发服务器）会在本次运行结束时停止，iCode 会显示一条警告，说明停止了多少条命令。详见[在后台继续运行的命令](../configuration/tools.md#在后台继续运行的命令)。
+
 运行 `icode run -h` 或 `icode run --help` 可以查看当前版本支持的参数。
 
 ## 查看运行进度
@@ -104,7 +106,7 @@ icode run --task prompts/review.md --agent Code --workdir <project-directory>
 
 ## 选择智能体和模型
 
-`icode run` 必须通过 `--agent` 指定智能体。运行 `icode agents` 可以查看可用的智能体配置：
+`icode run` 必须通过 `--agent` 指定智能体。运行 `icode agent list` 可以查看可用的智能体配置：
 
 ```text
 Default  Name  Display Name  ID            Model
@@ -118,7 +120,7 @@ Default  Name  Display Name  ID            Model
 
 对于使用 `active` 模型的智能体，可以通过 `-m` 或 `--model` 为本次运行指定模型配置；对于已绑定模型的智能体，`--model` 不生效。
 
-运行 `icode models` 可以查看可用的模型配置：
+运行 `icode model list` 可以查看可用的模型配置：
 
 ```text
 Active  ID            Name           Provider  API   Model          Context  Flags

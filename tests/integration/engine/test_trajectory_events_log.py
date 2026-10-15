@@ -856,6 +856,8 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
         session_id=None,
         session_dir=None,
         web=None,
+        background_tasks=None,
+        session_wide_background=False,
     ):
         registry.register(echo_tool)
         return [echo_tool]

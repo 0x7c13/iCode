@@ -95,6 +95,10 @@ class EventType:
     HOOK_OPERATION_FINISHED = "hook.operation.finished"
     TOOL_MUTATION_BATCH_SUMMARY = "tool.mutation_batch.summary"
 
+    # Shell commands that kept running after their tool call returned.
+    BACKGROUND_TASK_STARTED = "background.task.started"
+    BACKGROUND_TASK_FINISHED = "background.task.finished"
+
 
 KNOWN_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     value for name, value in vars(EventType).items() if not name.startswith("_") and isinstance(value, str)

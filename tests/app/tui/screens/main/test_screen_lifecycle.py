@@ -91,6 +91,12 @@ def _make_screen_for_running_toggle() -> SimpleNamespace:
         workspace_actions.after_turn_checks += 1
 
     workspace_actions.check_after_turn = check_after_turn
+    events = SimpleNamespace(attention_resets=0)
+
+    def reset_chat_attention() -> None:
+        events.attention_resets += 1
+
+    events.reset_chat_attention = reset_chat_attention
 
     def query_one(cls):
         if cls is InputBar:
@@ -102,6 +108,7 @@ def _make_screen_for_running_toggle() -> SimpleNamespace:
     return SimpleNamespace(
         _state=MainScreenState(),
         _session_title=SimpleNamespace(run_started=lambda: None, sync_activity=lambda: None),
+        _events=events,
         _live_diff=LiveDiffTracker(),
         _suggestions=SimpleNamespace(file_cache=None),
         _workflow=SimpleNamespace(workflow_mode=False),
@@ -186,11 +193,13 @@ def test_running_generation_changes_only_when_a_new_turn_starts() -> None:
     assert screen._state.run.generation == 1
     assert "/repo/live.py" in screen._live_diff.file_mutations
     assert screen._suggestions.file_cache is cached
+    assert screen._events.attention_resets == 1
 
     MainScreen._set_agent_running(screen, False)
     MainScreen._set_agent_running(screen, True)
     assert screen._state.run.generation == 2
     assert screen._live_diff.file_mutations == {}
+    assert screen._events.attention_resets == 2
 
 
 def test_inline_ask_user_submit_publishes_response() -> None:
@@ -199,13 +208,17 @@ def test_inline_ask_user_submit_publishes_response() -> None:
 
     bus = EventBus()
     responses: list[AskUserResponse] = []
+    answered: list[str] = []
     screen = object.__new__(MainScreen)
     screen._workflow = SimpleNamespace(workflow_mode=False)
     screen._services = MainScreenServices(bus=EventBus())
+    screen._events = SimpleNamespace(inline_question_answered=answered.append)
     screen._debug = lambda *_args: None
     screen._tool_actions = ToolActionBridge(publisher=bus, debug=screen._debug)
 
     async def _collect(event: AskUserResponse) -> None:
+        # The terminal tab stops asking for an answer before it is sent.
+        assert answered == [event.request_id]
         responses.append(event)
 
     async def _run() -> None:
@@ -264,8 +277,7 @@ def test_prompt_history_uses_hidden_ctrl_r_binding() -> None:
     assert binding.show is False
     assert binding.priority is True
     assert "ctrl+r" in screen._bindings.key_to_bindings
-    assert all(binding.key != "ctrl+t" for binding in MainScreen.BINDINGS)
-    assert "ctrl+t" not in screen._bindings.key_to_bindings
+    assert [binding.key for binding in MainScreen.BINDINGS if binding.action == "prompt_history"] == ["ctrl+r"]
     assert "action_toggle_toc" not in MainScreen.__dict__
 
 

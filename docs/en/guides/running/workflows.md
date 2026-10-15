@@ -37,6 +37,8 @@ During execution, watch the graph to see which nodes are running, completed, or 
 
 If an error puts a node in the “awaiting retry” state, click it to inspect the error details, resolve the issue, and click “Retry”. You can also close the node details and cancel the entire run. Manual retry applies only to nodes awaiting retry in the current run; it cannot rerun completed nodes or resume a run that has ended. Retrying may repeat file writes or external requests, and changes already made are not automatically undone.
 
+While you work with a workflow, the terminal tab shows the workflow's title. Spinning dots before it, such as `⠋`, mean the run is in progress; `!` means a node is awaiting retry, and `?` means the workflow or one of its agents is waiting for you to answer a question or approve a tool call. When the run ends, `✓` marks a completed run and `✗` a failed one; a cancelled run shows no mark. When you switch back to chat, the tab shows the chat session again.
+
 After generating a project introduction, the example includes the draft in a question for review. Answer `ok` to accept it, or provide specific revision requests. The example performs at most two writing rounds and outputs the final introduction. The `deep` path also outputs suggestions for further reading.
 
 When the run ends with a result, click “Result” to the right of “■ Cancel” to read the final output. If the workflow has several outputs, each one gets its own tab, named after its output node. “Output” still shows the full record, including node states and progress messages. Click “▶ Start” again to enter new input and run again.
@@ -225,11 +227,11 @@ Input → prepare (Python) → plan (agent) → Workflow output
 Use `wf.agent()` to define an agent node. In `wf.agent("plan", profile="QA")`, `"plan"` is the node name and `profile="QA"` selects the agent profile. List available profiles with:
 
 ```shell
-icode agents
-icode models
+icode agent list
+icode model list
 ```
 
-For `profile`, use a `Name` from `icode agents`; for the optional `model` parameter, use a `Name` from `icode models`. To specify a model for this node, replace the registration below, substituting an actual model profile name for `My model`:
+For `profile`, use a `Name` from `icode agent list`; for the optional `model` parameter, use a `Name` from `icode model list`. To specify a model for this node, replace the registration below, substituting an actual model profile name for `My model`:
 
 ```python
 plan = wf.agent("plan", profile="QA", model="My model")
@@ -263,7 +265,7 @@ If you have [configured an external Agent Client Protocol (ACP) agent](../extens
 plan = wf.agent("plan", profile="My ACP agent")
 ```
 
-Replace `My ACP agent` with an existing ACP profile name from `icode agents`, and make sure the external program specified in that profile can start.
+Replace `My ACP agent` with an existing ACP profile name from `icode agent list`, and make sure the external program specified in that profile can start.
 
 By default, ACP nodes use the model configured for the external agent, not the workflow's default model.
 
@@ -296,6 +298,8 @@ Each attempt is limited to 120 seconds, with at most three attempts including th
 Set `timeout=None` for no execution deadline. Time spent waiting for user answers or tool approval counts toward the timeout, which is why the earlier question example uses `timeout=None`.
 
 Retrying may repeat model calls, file writes, or an external ACP agent's tool calls. When a non-ACP agent's attempt fails or times out, the retry continues its conversation, so tool calls that already finished do not run again. Operations that have already occurred are not automatically undone. Not every error is retried automatically; see [Workflow reference: Timeouts and retries](../../reference/workflows.md#timeouts-and-retries).
+
+Shell commands that an agent node moved to the background stop when its attempt ends, so a retry does not inherit them. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
 
 ## Define conditional branches
 

@@ -9,6 +9,7 @@ import os
 import sys
 import unicodedata
 from collections.abc import Callable
+from dataclasses import dataclass
 
 BASE_TERMINAL_TITLE = ""
 
@@ -35,20 +36,13 @@ def set_terminal_title(title: str, *, writer: _TitleWriter | None = None) -> Non
             sys.stderr.flush()
 
 
-def set_app_terminal_title_for_cwd(
-    app: object,
-    cwd: str | os.PathLike[str],
-    *,
-    indicator: str = "",
-) -> None:
-    """Set the terminal title for a Textual app's active workspace directory."""
+def set_app_terminal_title(app: object, title: str) -> bool:
+    """Write a built title through a Textual app's driver; False when it has none."""
     writer = _app_terminal_title_writer(app)
     if writer is None:
-        return
-    title = terminal_title_for_cwd(cwd)
-    if indicator:
-        title = f"{indicator} {title}" if title else indicator
+        return False
     set_terminal_title(title, writer=writer)
+    return True
 
 
 def set_app_terminal_title_for_current_cwd(app: object) -> None:
@@ -57,22 +51,6 @@ def set_app_terminal_title_for_current_cwd(app: object) -> None:
     if writer is None:
         return
     set_terminal_title_for_current_cwd(writer=writer)
-
-
-def set_app_terminal_title_for_user_message(app: object, text: str) -> None:
-    """Set the terminal title for a Textual app using a user prompt preview."""
-    writer = _app_terminal_title_writer(app)
-    if writer is None:
-        return
-    set_terminal_title_for_user_message(text, writer=writer)
-
-
-def set_app_terminal_title_for_session_title(app: object, title: str) -> None:
-    """Set the terminal title for a Textual app using the session display title."""
-    writer = _app_terminal_title_writer(app)
-    if writer is None:
-        return
-    set_terminal_title_for_session_title(title, writer=writer)
 
 
 def set_terminal_title_for_cwd(cwd: str | os.PathLike[str], *, writer: _TitleWriter | None = None) -> None:
@@ -90,16 +68,6 @@ def set_terminal_title_for_current_cwd(*, writer: _TitleWriter | None = None) ->
     set_terminal_title_for_cwd(cwd, writer=writer)
 
 
-def set_terminal_title_for_user_message(text: str, *, writer: _TitleWriter | None = None) -> None:
-    """Set the title to a prompt preview."""
-    set_terminal_title(terminal_title_for_user_message(text), writer=writer)
-
-
-def set_terminal_title_for_session_title(title: str, *, writer: _TitleWriter | None = None) -> None:
-    """Set the title to the session title."""
-    set_terminal_title(terminal_title_for_session_title(title), writer=writer)
-
-
 def terminal_title_for_cwd(cwd: str | os.PathLike[str]) -> str:
     """Build the terminal title for a workspace directory."""
     raw_path = os.fspath(cwd)
@@ -111,21 +79,32 @@ def terminal_title_for_cwd(cwd: str | os.PathLike[str]) -> str:
     return path
 
 
-def terminal_title_for_user_message(text: str) -> str:
-    """Build the terminal title for a submitted user message."""
-    fragment = _message_title_fragment(text)
-    return fragment or BASE_TERMINAL_TITLE
+@dataclass(frozen=True, slots=True)
+class TerminalTabText:
+    """A tab's text, cleaned once when it is set; each repaint only adds a mark.
 
+    ``clipped`` texts (prompt previews and titles) keep the marked title
+    within the title length; a directory path is never clipped.
+    """
 
-def terminal_title_for_session_title(title: str) -> str:
-    """Build the terminal title for a session display title."""
-    fragment = _message_title_fragment(title)
-    return fragment or BASE_TERMINAL_TITLE
+    text: str
+    clipped: bool = False
 
+    @classmethod
+    def for_cwd(cls, cwd: str | os.PathLike[str]) -> TerminalTabText:
+        return cls(terminal_title_for_cwd(cwd))
 
-def _message_title_fragment(text: str) -> str:
-    safe_text = _title_safe_text(text)
-    return safe_text[:_MESSAGE_TITLE_CHARS]
+    @classmethod
+    def for_message(cls, text: str) -> TerminalTabText:
+        """A submitted prompt's preview, or a session or workflow title."""
+        return cls(_title_safe_text(text)[:_MESSAGE_TITLE_CHARS], clipped=True)
+
+    def with_mark(self, mark: str) -> str:
+        """The title with ``mark`` (a spinner frame or status mark) before it."""
+        if not mark:
+            return self.text
+        title = f"{mark} {self.text}" if self.text else mark
+        return title[:_MESSAGE_TITLE_CHARS] if self.clipped else title
 
 
 def _title_safe_text(text: str) -> str:

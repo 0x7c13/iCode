@@ -11,8 +11,9 @@ import pytest
 
 from chrys.foundation.config.settings import DEFAULT_TRAJECTORY_VERIFY_COMMANDS
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
-from chrys.service.analytics import ActionClass, Precision, analyze_trajectory
+from chrys.service.analytics import ActionClass, Grade, Precision, analyze_trajectory
 from chrys.service.analytics.classification import (
+    ActionClassification,
     classification_evidence_key,
     classify_action,
     command_matches_verify,
@@ -35,15 +36,13 @@ _CALL_ITEM_ID = "7" * 32
     ],
 )
 def test_structured_tool_kinds_map_directly_and_exactly(tool_kind: str | None, expected: ActionClass) -> None:
-    action, precision, reason = classify_action(
+    classification = classify_action(
         tool_kind,
         command=None,
         verify_commands=DEFAULT_TRAJECTORY_VERIFY_COMMANDS,
     )
 
-    assert action is expected
-    assert precision is Precision.EXACT
-    assert reason is None
+    assert classification == ActionClassification(expected, Grade(Precision.EXACT))
 
 
 @pytest.mark.parametrize(
@@ -81,11 +80,52 @@ def test_shell_classification_is_heuristic_and_missing_text_degrades_honestly() 
     matched = classify_action("shell", command="pytest -q", verify_commands="pytest,npm test")
     unmatched = classify_action("shell", command="git status", verify_commands="pytest,npm test")
     absent = classify_action("shell", command=None, verify_commands="pytest,npm test")
+    commandless = classify_action("shell", command=None, verify_commands="pytest,npm test", runs_command=False)
 
-    assert matched[:2] == (ActionClass.VERIFY, Precision.ESTIMATED)
-    assert unmatched[:2] == (ActionClass.OTHER, Precision.ESTIMATED)
-    assert absent[:2] == (ActionClass.OTHER, Precision.UNRESOLVED)
-    assert "carrier" in (absent[2] or "")
+    assert (matched.action_class, matched.grade.precision) == (ActionClass.VERIFY, Precision.ESTIMATED)
+    assert (unmatched.action_class, unmatched.grade.precision) == (ActionClass.OTHER, Precision.ESTIMATED)
+    assert (absent.action_class, absent.grade.precision) == (ActionClass.OTHER, Precision.UNRESOLVED)
+    assert "carrier" in (absent.grade.reason or "")
+    assert commandless == ActionClassification(ActionClass.OTHER, Grade(Precision.EXACT))
+
+
+@pytest.mark.parametrize(
+    ("arguments", "precision"),
+    [
+        # A shell-kind tool that runs no command, such as list_workspace_dirs;
+        # as for the kernel, an empty or omitted payload means no arguments.
+        ({"arguments": "{}"}, Precision.EXACT),
+        ({"arguments": ""}, Precision.EXACT),
+        ({}, Precision.EXACT),
+        # A command the record holds but that cannot be read as text.
+        ({"arguments": '{"command": 7}'}, Precision.UNRESOLVED),
+        # No call record at all.
+        (None, Precision.UNRESOLVED),
+    ],
+)
+def test_a_shell_kind_call_whose_arguments_name_no_command_is_exactly_other(
+    tmp_path: Path, arguments: dict[str, str] | None, precision: Precision
+) -> None:
+    path = _installed_log(tmp_path)
+    _write_shell_log(path)
+    calls = (
+        []
+        if arguments is None
+        else [
+            {
+                "type": "function_call",
+                **arguments,
+                "additional_properties": {ANALYTICS_ITEM_ID_KEY: _CALL_ITEM_ID},
+            }
+        ]
+    )
+    path.parents[1].joinpath("session.json").write_text(
+        json.dumps({"state": {"messages": [{"contents": calls}]}}), encoding="utf-8"
+    )
+
+    (action,) = analyze_trajectory(path).actions
+
+    assert (action.classification, action.classification_precision) == (ActionClass.OTHER, precision)
 
 
 def test_session_store_joins_content_level_call_identity_without_requiring_a_message_carrier(tmp_path: Path) -> None:

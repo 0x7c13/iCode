@@ -271,8 +271,6 @@ class AskUserToolCall(BaseToolCard):
 
     COMPONENT_CLASSES: ClassVar[set[str]] = BaseToolCard.COMPONENT_CLASSES | {"askuser-answer--question"}
 
-    _SPINNERS: ClassVar[str] = "◐◓◑◒"
-
     def __init__(
         self,
         call_id: str,

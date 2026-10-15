@@ -144,9 +144,10 @@ async def test_insights_renders_all_p2_sections_on_one_page(tmp_path: Path) -> N
             < page.index("Findings")
             < page.index("Diagnostics")
         )
-        # The tall diagnostics wall exceeds the pair height gap, so this pair
-        # falls back to stacked full-width boxes instead of a padded column.
-        assert not any("Findings" in line.plain and "Diagnostics" in line.plain for line in view._lines)
+        # One shared root cause unresolves many metrics; diagnostics say it once
+        # instead of a line per metric, so the pair stays side by side.
+        assert any("Findings" in line.plain and "Diagnostics" in line.plain for line in view._lines)
+        assert sum("metrics unresolved in session, Turn 1" in line.plain for line in view._lines) == 1
         assert any("Skills" in line.plain and "MCP servers" in line.plain for line in view._lines)
         assert any(
             "Tool activity" in line.plain and "Context re-send cost · top 5" in line.plain for line in view._lines
@@ -259,7 +260,7 @@ def test_insights_describes_context_re_send_rows_by_message_kind(tmp_path: Path)
 
     page = insights_lines(plain_look(), _WIDE_PAGE, TrajectoryAnalyzer().load(path))
 
-    assert _in_any_box(page, "tokens × model requests that re-sent the item")  # noqa: RUF001
+    assert _in_any_box(page, "tokens × model requests that carried the item")  # noqa: RUF001
     head_index = next(
         index
         for index, line in enumerate(page)
@@ -269,7 +270,7 @@ def test_insights_describes_context_re_send_rows_by_message_kind(tmp_path: Path)
     # units, the cost formula and relative bar follow on the next line.
     assert page[head_index].plain.rstrip(" │").endswith("1.2k")
     detail = page[head_index + 1].plain
-    assert "1.2k tok × 1 re-sends" in detail  # noqa: RUF001
+    assert "1.2k tok × 1 request" in detail  # noqa: RUF001
     assert "▬" in detail
     assert not any(item_id[:12] in line.plain for line in page)
 

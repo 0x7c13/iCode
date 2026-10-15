@@ -48,6 +48,8 @@ Session data is saved in iCode's session storage directory, rather than the work
 
 Sessions used through an ACP client also appear in the TUI's "Chat Sessions" window once you check "ACP" there. See [Resume an existing session](../daily-use/sessions.md#resume-an-existing-session).
 
+Shell commands that the agent moved to the background keep running across turns, and stop when the client closes the session or iCode exits. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 ## Interact through the client
 
 iCode sends agent replies and tool call status to the client. When the client cancels a task, iCode interrupts the current task.
@@ -57,6 +59,8 @@ If the current model supports image input, a prompt can include images in PNG, J
 If the client supports session management, a closed session can still be restored in the same working directory. Deleting a session removes the session record saved by iCode, and the session can no longer be restored in iCode.
 
 To use the question feature through an ACP client, the client must support iCode's `_chrys/request_input` extension request (shown as `chrys/request_input` in ACP SDKs that add the underscore prefix automatically). iCode uses this request to send the agent's questions to the client and receive the user's answers; a client that does not support it cannot complete tasks that require user answers. Use `--ask-user-timeout` to limit how long iCode waits for an answer.
+
+When a tool call from the main agent needs approval, the approval request refers to the tool call the client is already showing, so the client can show the approval on that tool call.
 
 Approval requests sent to the client wait without a time limit by default. To decline requests that stay unanswered, set a human approval timeout; see [Set the human approval timeout](../configuration/approval.md#set-the-human-approval-timeout).
 

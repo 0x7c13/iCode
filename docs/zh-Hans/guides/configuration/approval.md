@@ -53,6 +53,7 @@
 - 拒绝时可以填写原因，原因会发送给智能体，帮助其调整后续行为。填写原因后，批准按钮不可用。
 - 自动模式下，审批裁判模型评估调用期间不弹出对话框，界面右上角审批模式标签的左侧会显示“审查中”，前面带一个转动的图标。模型判定安全的调用直接执行，不弹对话框；模型判定可疑时，弹出标题为“自动审查已标记”的对话框，展示理由并等待人工决定。为避免误按按键直接批准，光标先停在原因输入框：可以填写原因后拒绝，也可以按 **Tab** 移到按钮上。如果审批裁判模型不可用、评估失败或超时，iCode 不会自动批准工具调用，而是弹出审批对话框，等待人工决定。
 - 如果想在评估期间就看到每个调用，按 **F10** 打开“设置”窗口，在“安全”标签页中关闭“仅在自动审查标记后弹出审批对话框”。之后对话框会立即弹出并显示“正在评估”：模型判定安全后自动关闭，评估完成前也可以直接批准或拒绝。
+- 对话框等待你决定期间，终端标签页的标题前显示 `?`，在其他标签页也能看出 iCode 在等你。详见[在终端标签页查看任务进度](../daily-use/sessions.md#在终端标签页查看任务进度)。
 
 ## 记住审批
 
@@ -77,16 +78,16 @@
 
 ### 管理已记住的审批
 
-使用 `icode approvals` 命令查看和删除已记住的审批：
+使用 `icode approval` 命令查看和删除已记住的审批：
 
 ```bash
-icode approvals list                         # 列出所有已记住的审批
-icode approvals list --project /work/demo    # 只看某个项目
-icode approvals list --session SESSION_ID --json
-icode approvals revoke GRANT_ID              # 按列表中的 ID 删除一条
-icode approvals clear --project /work/demo   # 删除某个项目的全部审批
-icode approvals clear --session SESSION_ID   # 删除某个会话的全部审批
-icode approvals clear --all                  # 全部删除
+icode approval list                          # 列出所有已记住的审批
+icode approval list --project /work/demo     # 只看某个项目
+icode approval list --session SESSION_ID --json
+icode approval revoke GRANT_ID               # 按列表中的 ID 删除一条
+icode approval clear --project /work/demo    # 删除某个项目的全部审批
+icode approval clear --session SESSION_ID    # 删除某个会话的全部审批
+icode approval clear --all                   # 全部删除
 ```
 
 会话的审批会随该会话一起删除，用 `/fork` 创建分支时不会被复制到分支。项目的审批会一直保留，直到你删除。

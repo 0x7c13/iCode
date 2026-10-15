@@ -5,25 +5,17 @@ per-turn token load, findings and the diagnostics wall."""
 
 from __future__ import annotations
 
+import re
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len, chop_cells
 from rich.style import Style
 from rich.text import Text
 
 from chrys.app.tui.widgets.trajectory.chartkit import percentage_meter, section_interior_width
 from chrys.app.tui.widgets.trajectory.presentation import (
-    BUCKET_IDLE,
-    BUCKET_MODEL,
-    BUCKET_TOOLS,
-    BUCKET_WAIT,
-    METRIC_CP_COMPUTE,
-    METRIC_CP_RESPONSE,
-    METRIC_ELAPSED,
-    METRIC_OVERLAP,
-    METRIC_PARALLELISM,
-    METRIC_USAGE,
-    METRIC_WORK,
     PRECISION_SYMBOLS,
     TOKEN_CACHE_HIT,
     TOKEN_CACHE_READ,
@@ -35,12 +27,13 @@ from chrys.app.tui.widgets.trajectory.presentation import (
     DashboardLook,
     RenderContext,
     ResponsiveTier,
+    SectionSpec,
     align_edges,
     badged_section_title,
     bordered_section_row,
     cache_hit_metric,
     callsite,
-    derived_metric_precision,
+    derived_metric_grade,
     format_duration,
     format_tokens,
     identity_with_hook_id,
@@ -53,6 +46,7 @@ from chrys.app.tui.widgets.trajectory.presentation import (
 )
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.service.analytics import (
+    ActionOperation,
     ContextCarryingLoad,
     FindingRow,
     FindingSeverity,
@@ -70,8 +64,9 @@ from chrys.service.analytics import (
     TrajectoryOverview,
     TurnAnalysis,
     UsageBucket,
-    WallBucket,
+    least_precision,
 )
+from chrys.service.analytics.math import Interval, interval_length
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -102,10 +97,12 @@ _ACCOUNTED_PREFIX = msg(
     "tui.trajectory.diagnostics.accounted_prefix",
     fallback="Accounted-prefix seq {first}-{last}: {reason}",
 )
-_UNRESOLVED_METRIC = msg(
-    "tui.trajectory.diagnostics.unresolved_metric",
-    fallback="{metric} unresolved: {reason}",
+_UNRESOLVED_GROUP = msg(
+    "tui.trajectory.diagnostics.unresolved_group",
+    fallback="{count} metric unresolved in {scope}: {reason}",
+    plural_fallback="{count} metrics unresolved in {scope}: {reason}",
 )
+_DIAGNOSTIC_SCOPE_SESSION = msg("tui.trajectory.diagnostics.scope_session", fallback="session")
 _OPERATION_DIAGNOSTIC = msg(
     "tui.trajectory.diagnostics.operation",
     fallback="Turn {turn} · {operation}: {reason}",
@@ -203,92 +200,189 @@ _UNIDENTIFIED_MEMBERSHIP = msg(
         " seed prompts); token re-send cost is unknown for such items, timing is unaffected."
     ),
 )
-_WALL_METRIC = msg("tui.trajectory.diagnostics.wall_metric", fallback="{bucket} wall time")
-_UTILIZATION_METRIC = msg(
-    "tui.trajectory.diagnostics.utilization_metric",
-    fallback="{bucket} busy share",
-)
 _FINDINGS = msg("tui.trajectory.findings.title", fallback="Findings")
 _NO_FINDINGS = msg("tui.trajectory.findings.none", fallback="No active findings.")
 _FINDING_TITLE_UNVERIFIED = msg(
     "tui.trajectory.finding.unverified_change.title",
-    fallback="Unverified change",
+    fallback="Unverified changes",
 )
-_FINDING_DETAIL_UNVERIFIED = msg(
-    "tui.trajectory.finding.unverified_change.detail",
-    fallback="{count} edit action occurred after the last successful verification.",
-    plural_fallback="{count} edit actions occurred after the last successful verification.",
+_FINDING_UNVERIFIED_NEVER = msg(
+    "tui.trajectory.finding.unverified_change.never_verified",
+    fallback=(
+        "{count} edit was never followed by a test or check: no shell command matched the verification"
+        " command list. If this project tests or builds with its own commands, add them to"
+        " trajectory.verify_commands."
+    ),
+    plural_fallback=(
+        "{count} edits were never followed by a test or check: no shell command matched the verification"
+        " command list. If this project tests or builds with its own commands, add them to"
+        " trajectory.verify_commands."
+    ),
+)
+_FINDING_UNVERIFIED_FAILED = msg(
+    "tui.trajectory.finding.unverified_change.verify_failed",
+    fallback=(
+        "{count} edit never had a passing test or check: every test or check run in this session failed or"
+        " has no recorded result."
+    ),
+    plural_fallback=(
+        "{count} edits never had a passing test or check: every test or check run in this session failed or"
+        " has no recorded result."
+    ),
+)
+_FINDING_UNVERIFIED_UNKNOWN = msg(
+    "tui.trajectory.finding.unverified_change.commands_unavailable",
+    fallback=(
+        "{count} edit has no recognized passing test or check after it, but the text of some later shell commands"
+        " is unavailable, so one of them may have been a passing test or check."
+    ),
+    plural_fallback=(
+        "{count} edits have no recognized passing test or check after them, but the text of some later shell"
+        " commands is unavailable, so one of them may have been a passing test or check."
+    ),
+)
+_FINDING_UNVERIFIED_AFTER = msg(
+    "tui.trajectory.finding.unverified_change.after_last_verify",
+    fallback=(
+        "{count} edit was not confirmed by a test or check: the record does not show the last successful one"
+        " (turn {turn}) starting after the edit finished."
+    ),
+    plural_fallback=(
+        "{count} edits were not confirmed by a test or check: the record does not show the last successful one"
+        " (turn {turn}) starting after they finished."
+    ),
 )
 _FINDING_TITLE_REPEATED = msg(
-    "tui.trajectory.finding.repeated_tool_fingerprint.title",
-    fallback="Repeated tool fingerprint",
+    "tui.trajectory.finding.repeated_read.title",
+    fallback="Repeated reads",
 )
-_FINDING_DETAIL_REPEATED = msg(
-    "tui.trajectory.finding.repeated_tool_fingerprint.detail",
-    fallback="The same argument fingerprint occurred {count} time.",
-    plural_fallback="The same argument fingerprint occurred {count} times.",
+_FINDING_REPEATED_SUMMARY = msg(
+    "tui.trajectory.finding.repeated_read.summary",
+    fallback=(
+        "{count} read or search repeated an identical call made earlier in the same turn, with nothing"
+        " changed in between, so it fetched a result the agent already had."
+    ),
+    plural_fallback=(
+        "{count} reads or searches repeated identical calls made earlier in the same turn, with nothing"
+        " changed in between, so they fetched results the agent already had."
+    ),
 )
 _FINDING_TITLE_FAILED_CP = msg(
     "tui.trajectory.finding.failed_attempt_critical_path.title",
-    fallback="Failed attempt dominates the critical path",
+    fallback="Failed calls held up turns",
 )
-_FINDING_DETAIL_FAILED_CP = msg(
-    "tui.trajectory.finding.failed_attempt_critical_path.detail",
-    fallback="One failed tool attempt accounts for {percentage}% of response critical-path time.",
+_FINDING_FAILED_CP_SUMMARY = msg(
+    "tui.trajectory.finding.failed_attempt_critical_path.summary",
+    fallback=(
+        "{count} failed tool call took at least a quarter of its turn's response time: the turn waited on"
+        " work that did not succeed."
+    ),
+    plural_fallback=(
+        "{count} failed tool calls each took at least a quarter of their turn's response time: those turns"
+        " waited on work that did not succeed."
+    ),
 )
 _FINDING_TITLE_RETRY_AMPLIFICATION = msg(
     "tui.trajectory.finding.retry_token_amplification.title",
-    fallback="Retry token amplification",
+    fallback="Tokens spent on retries",
 )
-_FINDING_DETAIL_RETRY_AMPLIFICATION = msg(
-    "tui.trajectory.finding.retry_token_amplification.detail",
-    fallback="Retries added {tokens} normalized token.",
-    plural_fallback="Retries added {tokens} normalized tokens.",
+_FINDING_RETRY_SUMMARY = msg(
+    "tui.trajectory.finding.retry_token_amplification.summary",
+    fallback=(
+        "Retried model requests used {tokens} token (first retry in turn {turn}). A request is retried"
+        " after a provider or network error and sent again in full."
+    ),
+    plural_fallback=(
+        "Retried model requests used {tokens} tokens (first retry in turn {turn}). A request is retried"
+        " after a provider or network error and sent again in full."
+    ),
 )
 _FINDING_TITLE_NET_ZERO = msg(
     "tui.trajectory.finding.net_zero_churn.title",
-    fallback="Changes cancelled out",
+    fallback="Edits with no net effect",
 )
-_FINDING_DETAIL_NET_ZERO = msg(
-    "tui.trajectory.finding.net_zero_churn.detail",
-    fallback="{count} file returned to its original state.",
-    plural_fallback="{count} files returned to their original state.",
+_FINDING_NET_ZERO_SUMMARY = msg(
+    "tui.trajectory.finding.net_zero_churn.summary",
+    fallback=(
+        "{count} file ended up with the content it had before it was edited (last edit in turn {turn}):"
+        " the edits were undone later or never took effect."
+    ),
+    plural_fallback=(
+        "{count} files ended up with the content they had before they were edited (last edit in turn"
+        " {turn}): the edits were undone later or never took effect."
+    ),
 )
 _FINDING_TITLE_APPROVAL_SHARE = msg(
     "tui.trajectory.finding.approval_blocking_share.title",
-    fallback="Approval blocking share is high",
+    fallback="Long approval waits",
 )
-_FINDING_DETAIL_APPROVAL_SHARE = msg(
-    "tui.trajectory.finding.approval_blocking_share.detail",
-    fallback="Approval waits occupied {percentage}% of this turn.",
+_FINDING_APPROVAL_SUMMARY = msg(
+    "tui.trajectory.finding.approval_blocking_share.summary",
+    fallback="Waiting for approval took at least a quarter of {count} turn ({duration} in total).",
+    plural_fallback="Waiting for approval took at least a quarter of {count} turns ({duration} in total).",
+)
+_FINDING_APPROVAL_TOOLS = msg(
+    "tui.trajectory.finding.approval_blocking_share.tools",
+    fallback="Longest waits: {tools}.",
+)
+_FINDING_APPROVAL_HINT = msg(
+    "tui.trajectory.finding.approval_blocking_share.hint",
+    fallback=(
+        "To shorten these waits, check Don't ask again in the Remember Approval box when you approve routine"
+        " commands or file changes; in automatic mode, a faster Approval judge model also helps"
+        " (F10 → Models & Agents)."
+    ),
 )
 _FINDING_TITLE_CONTEXT_LOAD = msg(
     "tui.trajectory.finding.context_carrying_load.title",
-    fallback="Heavily re-sent context item",
+    fallback="Costly context",
 )
-_FINDING_DETAIL_CONTEXT_LOAD = msg(
-    "tui.trajectory.finding.context_carrying_load.detail",
-    fallback="One context item cost an estimated {load} token across the model requests that re-sent it.",
-    plural_fallback="One context item cost an estimated {load} tokens across the model requests that re-sent it.",
+_FINDING_CONTEXT_LOAD_SUMMARY = msg(
+    "tui.trajectory.finding.context_carrying_load.summary",
+    fallback=(
+        "Each item below took up a large share of context across model requests: its size counts once for every"
+        " request that carried it. Compacting sooner, or keeping tool output smaller, reduces this cost."
+    ),
+)
+_FINDING_EXAMPLE_REPEATS = msg(
+    "tui.trajectory.finding.example.repeats",
+    fallback="{count} repeat",
+    plural_fallback="{count} repeats",
+)
+_FINDING_EXAMPLE_RESULT_TOKENS = msg(
+    "tui.trajectory.finding.example.result_tokens",
+    fallback="~{tokens} result token",
+    plural_fallback="~{tokens} result tokens",
+)
+_FINDING_EXAMPLE_TURN_SHARE = msg(
+    "tui.trajectory.finding.example.turn_share",
+    fallback="{percentage}% of the turn",
 )
 _FINDING_TITLES = {
     "unverified-change": _FINDING_TITLE_UNVERIFIED,
-    "repeated-tool-fingerprint": _FINDING_TITLE_REPEATED,
+    "repeated-read": _FINDING_TITLE_REPEATED,
     "failed-attempt-critical-path": _FINDING_TITLE_FAILED_CP,
     "retry-token-amplification": _FINDING_TITLE_RETRY_AMPLIFICATION,
     "net-zero-churn": _FINDING_TITLE_NET_ZERO,
     "approval-blocking-share": _FINDING_TITLE_APPROVAL_SHARE,
     "context-carrying-load": _FINDING_TITLE_CONTEXT_LOAD,
 }
-_FINDING_DETAILS = {
-    "unverified-change": _FINDING_DETAIL_UNVERIFIED,
-    "repeated-tool-fingerprint": _FINDING_DETAIL_REPEATED,
-    "failed-attempt-critical-path": _FINDING_DETAIL_FAILED_CP,
-    "retry-token-amplification": _FINDING_DETAIL_RETRY_AMPLIFICATION,
-    "net-zero-churn": _FINDING_DETAIL_NET_ZERO,
-    "approval-blocking-share": _FINDING_DETAIL_APPROVAL_SHARE,
-    "context-carrying-load": _FINDING_DETAIL_CONTEXT_LOAD,
-}
+_FINDING_EXAMPLE_LIMIT = 3
+# Line-break units for finding prose: runs of spaces, or one double-width
+# character or a run of anything else (a word, a number), with any opening
+# bracket before it, which must not end a line, and any closing punctuation
+# after it, which must not start one.
+_WIDE = "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
+# Fullwidth comma, colon, semicolon, !, ?, ), the ideographic full stop and
+# comma, and the closing CJK brackets.
+_NO_LINE_START = "\uff0c\uff1a\uff1b\uff01\uff1f\uff09\u3002\u3001\u300d\u300f\u3011\u300b\u3009"
+# Fullwidth ( and the opening CJK brackets.
+_NO_LINE_END = "\uff08\u300c\u300e\u3010\u300a\u3008"
+_WRAP_UNIT = re.compile(rf"\s+|[{_NO_LINE_END}]*(?:[{_WIDE}]|[^\s{_WIDE}]+)[{_NO_LINE_START}]*")
+_FINDING_APPROVAL_TOOL_LIMIT = 3
+_SEVERITY_ORDER = {FindingSeverity.ERROR: 0, FindingSeverity.WARNING: 1, FindingSeverity.INFO: 2}
+_NS_PER_MS = 1_000_000
+_DIAGNOSTIC_SCOPE_LIMIT = 6
 _TOKEN_CACHE_CREATION = msg("tui.trajectory.token_usage.cache_creation", fallback="cache creation")
 _INSIGHTS_TOOLS = msg("tui.trajectory.insights.tools.title", fallback="Tool activity")
 _INSIGHTS_INTEGRATIONS_MCP = msg("tui.trajectory.insights.integrations.mcp", fallback="MCP servers")
@@ -322,7 +416,7 @@ _INSIGHTS_CARRYING_LOAD = msg(
 )
 _INSIGHTS_CARRYING_EXPLAINER = msg(
     "tui.trajectory.insights.tokens.carrying_explainer",
-    fallback="tokens × model requests that re-sent the item",  # noqa: RUF001
+    fallback="tokens × model requests that carried the item",  # noqa: RUF001
 )
 _INSIGHTS_CARRYING_ROW_HEAD = msg(
     "tui.trajectory.insights.tokens.carrying_row_head",
@@ -330,7 +424,8 @@ _INSIGHTS_CARRYING_ROW_HEAD = msg(
 )
 _INSIGHTS_CARRYING_ROW_DETAIL = msg(
     "tui.trajectory.insights.tokens.carrying_row_detail",
-    fallback="{tokens} tok × {carries} re-sends",  # noqa: RUF001
+    fallback="{tokens} tok × {count} request",  # noqa: RUF001
+    plural_fallback="{tokens} tok × {count} requests",  # noqa: RUF001
 )
 _INSIGHTS_CARRYING_USER = msg("tui.trajectory.insights.tokens.carrying_user", fallback="user message")
 _INSIGHTS_CARRYING_ASSISTANT = msg("tui.trajectory.insights.tokens.carrying_assistant", fallback="assistant message")
@@ -479,7 +574,7 @@ def insights_lines(look: DashboardLook, context: RenderContext, analysis: Trajec
         _adaptive_section_pair(
             look,
             _FINDINGS,
-            lambda _: _finding_lines(look, analysis),
+            lambda box_width: _finding_lines(look, analysis, width=box_width),
             _DIAGNOSTICS,
             lambda _: _diagnostic_lines(look, analysis),
             width=width,
@@ -516,8 +611,8 @@ def _adaptive_section_pair(
             return bordered_section_row(
                 look,
                 (
-                    (left_title, left_lines, halves[0]),
-                    (right_title, right_lines, halves[1]),
+                    SectionSpec(left_title, left_lines, halves[0]),
+                    SectionSpec(right_title, right_lines, halves[1]),
                 ),
             )
     interior = section_interior_width(width)
@@ -858,7 +953,7 @@ def _carrying_load_lines(
         detail = look.message(
             _INSIGHTS_CARRYING_ROW_DETAIL.bind(
                 tokens=format_tokens(row.token_count),
-                carries=row.carry_count,
+                count=row.carry_count,
             )
         )
         lines.append(
@@ -898,45 +993,250 @@ def _carrying_item_label(look: DashboardLook, row: ContextCarryingLoad) -> str:
     return f"{label} ({names})"
 
 
-def _finding_lines(look: DashboardLook, analysis: TrajectoryAnalysis) -> list[Text]:
-    lines: list[Text] = []
+def _finding_lines(look: DashboardLook, analysis: TrajectoryAnalysis, *, width: int) -> list[Text]:
+    """One block per rule: what happened and what it cost, then the largest cases.
+
+    Rules can fire many times in one session; repeating the same sentence per
+    occurrence buries the cause, so each rule is summarized once with its
+    totals and its examples ranked by impact.
+    """
     if not analysis.findings:
-        lines.append(Text(look.message(_NO_FINDINGS.bind()), style="dim"))
-    else:
-        for finding in analysis.findings:
-            severity_style = _finding_style(look, finding.severity)
-            lines.append(
-                Text.assemble(
-                    Text(f"{_finding_glyph(finding.severity)} ", style=severity_style),
-                    Text(
-                        look.message(_FINDING_TITLES[finding.rule_id].bind()),
-                        style=severity_style,
-                    ),
-                    Text("  "),
-                    precision_badge(look, finding.precision),
-                )
+        return [Text(look.message(_NO_FINDINGS.bind()), style="dim")]
+    by_rule: dict[str, list[FindingRow]] = {}
+    for finding in analysis.findings:
+        by_rule.setdefault(finding.rule_id, []).append(finding)
+    ordered = sorted(
+        by_rule.items(),
+        key=lambda item: (_SEVERITY_ORDER[item[1][0].severity], list(_FINDING_TITLES).index(item[0])),
+    )
+    actions = {action.operation_id: action for action in analysis.actions}
+    lines: list[Text] = []
+    for rule_id, rows in ordered:
+        severity = rows[0].severity
+        severity_style = _finding_style(look, severity)
+        lines.append(
+            Text.assemble(
+                Text(f"{_finding_glyph(severity)} ", style=severity_style),
+                Text(look.message(_FINDING_TITLES[rule_id].bind()), style=severity_style),
+                Text("  "),
+                precision_badge(look, least_precision(row.precision for row in rows)),
             )
-            lines.append(
-                Text.assemble(
-                    Text("    "),
-                    Text(_finding_detail(look, finding), style="dim"),
-                )
-            )
+        )
+        text = _finding_block(look, analysis, rule_id, rows, actions)
+        for sentence in text.summary:
+            lines.extend(_hanging_lines("    ", "    ", sentence, width=width))
+        for example in text.examples:
+            lines.extend(_hanging_lines("    · ", "      ", example, width=width))
     return lines
 
 
-def _finding_detail(look: DashboardLook, finding: FindingRow) -> str:
-    definition = _FINDING_DETAILS[finding.rule_id]
-    args = dict(finding.detail_args)
-    if finding.rule_id in {"unverified-change", "repeated-tool-fingerprint", "net-zero-churn"}:
-        return look.message(definition.bind(count=args["count"]))
-    if finding.rule_id == "retry-token-amplification":
-        tokens = args["tokens"]
-        return look.message(definition.bind(count=tokens, tokens=format_tokens(tokens)))
-    if finding.rule_id == "context-carrying-load":
-        load = args["load"]
-        return look.message(definition.bind(count=load, load=format_tokens(load)))
-    return look.message(definition.bind(**args))
+def _hanging_lines(first: str, rest: str, body: str, *, width: int) -> list[Text]:
+    """Wrap *body* under its prefix so continuation lines keep the indent."""
+    wrapped = _wrap_prose(body, max(1, width - cell_len(first)))
+    return [
+        Text.assemble(Text(first if index == 0 else rest), Text(line, style="dim"))
+        for index, line in enumerate(wrapped)
+    ]
+
+
+def _wrap_prose(body: str, width: int) -> list[str]:
+    """Greedy-wrap *body* to *width* cells.
+
+    Rich breaks lines only at spaces, so it moves a whole Chinese sentence to
+    the next line and strands what came before it, often a lone number; here
+    a line may also break before any double-width character.
+    """
+    lines: list[str] = []
+    line = ""
+    for unit in _WRAP_UNIT.findall(body):
+        if not line.strip() or cell_len((line + unit).rstrip()) <= width:
+            line += unit
+        else:
+            lines.append(line.rstrip())
+            line = "" if unit.isspace() else unit
+    lines.append(line.rstrip())
+    return [piece for line in lines for piece in (_chop(line, width) if cell_len(line) > width else [line])]
+
+
+def _chop(unit: str, width: int) -> list[str]:
+    """Split a unit wider than *width*, keeping its closing mark off the start of the last piece."""
+    pieces = chop_cells(unit, width)
+    if len(pieces) > 1 and pieces[-1][:1] in _NO_LINE_START and len(pieces[-2]) > 1:
+        pieces[-2:] = [pieces[-2][:-1], pieces[-2][-1] + pieces[-1]]
+    return pieces
+
+
+@dataclass(frozen=True, slots=True)
+class _FindingText:
+    """A finding block's summary sentences and the example lines listed under them."""
+
+    summary: list[str]
+    examples: list[str] = field(default_factory=list)
+
+
+def _finding_block(
+    look: DashboardLook,
+    analysis: TrajectoryAnalysis,
+    rule_id: str,
+    rows: list[FindingRow],
+    actions: dict[str, ActionOperation],
+) -> _FindingText:
+    """The summary sentences and example lines for one rule's findings."""
+    args = [dict(row.detail_args) for row in rows]
+    if rule_id == "unverified-change":
+        first = args[0]
+        # A later command whose text is unavailable may have been a passing
+        # check, so no message may claim that none passed.
+        if first["unclassified_shell"]:
+            return _FindingText([look.message(_FINDING_UNVERIFIED_UNKNOWN.bind(count=first["count"]))])
+        if first["verifies"] == 0:
+            if first["verify_attempts"]:
+                return _FindingText([look.message(_FINDING_UNVERIFIED_FAILED.bind(count=first["count"]))])
+            return _FindingText([look.message(_FINDING_UNVERIFIED_NEVER.bind(count=first["count"]))])
+        turn = first.get("last_verify_turn", "—")
+        return _FindingText([look.message(_FINDING_UNVERIFIED_AFTER.bind(count=first["count"], turn=turn))])
+    if rule_id == "repeated-read":
+        repeats = sum(item["count"] for item in args)
+        ranked = sorted(
+            zip(rows, args, strict=True),
+            key=lambda pair: (pair[1].get("duration_ms", 0), pair[1]["count"]),
+            reverse=True,
+        )
+        examples = [
+            _finding_example(
+                look,
+                row,
+                actions,
+                look.message(_FINDING_EXAMPLE_REPEATS.bind(count=item["count"])),
+                format_duration(item["duration_ms"] * _NS_PER_MS) if "duration_ms" in item else None,
+                look.message(
+                    _FINDING_EXAMPLE_RESULT_TOKENS.bind(
+                        count=item["result_tokens"], tokens=format_tokens(item["result_tokens"])
+                    )
+                )
+                if "result_tokens" in item
+                else None,
+            )
+            for row, item in ranked[:_FINDING_EXAMPLE_LIMIT]
+        ]
+        return _FindingText(
+            [look.message(_FINDING_REPEATED_SUMMARY.bind(count=repeats))], _with_more(look, examples, len(ranked))
+        )
+    if rule_id == "failed-attempt-critical-path":
+        ranked = sorted(zip(rows, args, strict=True), key=lambda pair: pair[1]["duration_ms"], reverse=True)
+        examples = [
+            _finding_example(
+                look,
+                row,
+                actions,
+                format_duration(item["duration_ms"] * _NS_PER_MS),
+                look.message(_FINDING_EXAMPLE_TURN_SHARE.bind(percentage=item["percentage"])),
+            )
+            for row, item in ranked[:_FINDING_EXAMPLE_LIMIT]
+        ]
+        return _FindingText(
+            [look.message(_FINDING_FAILED_CP_SUMMARY.bind(count=len(rows)))], _with_more(look, examples, len(ranked))
+        )
+    if rule_id == "retry-token-amplification":
+        tokens = args[0]["tokens"]
+        turn = rows[0].turn_number or "—"
+        return _FindingText(
+            [look.message(_FINDING_RETRY_SUMMARY.bind(count=tokens, tokens=format_tokens(tokens), turn=turn))]
+        )
+    if rule_id == "net-zero-churn":
+        turn = rows[0].turn_number or "—"
+        return _FindingText([look.message(_FINDING_NET_ZERO_SUMMARY.bind(count=args[0]["count"], turn=turn))])
+    if rule_id == "approval-blocking-share":
+        total_ms = sum(item["duration_ms"] for item in args)
+        summary = [
+            look.message(
+                _FINDING_APPROVAL_SUMMARY.bind(count=len(rows), duration=format_duration(total_ms * _NS_PER_MS))
+            )
+        ]
+        tools = _approval_wait_tools(analysis, {row.turn_id for row in rows})
+        if tools:
+            summary.append(look.message(_FINDING_APPROVAL_TOOLS.bind(tools=tools)))
+        summary.append(look.message(_FINDING_APPROVAL_HINT.bind()))
+        ranked = sorted(zip(rows, args, strict=True), key=lambda pair: pair[1]["duration_ms"], reverse=True)
+        examples = [
+            _example_line(
+                look,
+                row,
+                format_duration(item["duration_ms"] * _NS_PER_MS),
+                look.message(_FINDING_EXAMPLE_TURN_SHARE.bind(percentage=item["percentage"])),
+            )
+            for row, item in ranked[:_FINDING_EXAMPLE_LIMIT]
+        ]
+        return _FindingText(summary, _with_more(look, examples, len(ranked)))
+    # context-carrying-load: the Insights table beside it lists more items;
+    # the finding names the heaviest ones and what to do about them.
+    carrying = {
+        item.occurrence_id: item
+        for item in (analysis.insights.context_carrying_load if analysis.insights is not None else ())
+    }
+    ranked_rows = sorted(zip(rows, args, strict=True), key=lambda pair: pair[1]["load"], reverse=True)
+    examples = []
+    for row, item in ranked_rows[:_FINDING_EXAMPLE_LIMIT]:
+        carried = carrying.get(row.occurrence_id)
+        label = (
+            look.message(
+                _INSIGHTS_CARRYING_ROW_HEAD.bind(
+                    item=_carrying_item_label(look, carried), turn=carried.origin_turn_number or "—"
+                )
+            )
+            if carried is not None
+            else look.message(_INSIGHTS_CARRYING_ITEM.bind())
+        )
+        cost = look.message(
+            _INSIGHTS_CARRYING_ROW_DETAIL.bind(tokens=format_tokens(item["tokens"]), count=item["requests"])
+        )
+        examples.append(" · ".join(part for part in (label, cost, f"≈{format_tokens(item['load'])}") if part))
+    return _FindingText(
+        [look.message(_FINDING_CONTEXT_LOAD_SUMMARY.bind())], _with_more(look, examples, len(ranked_rows))
+    )
+
+
+def _finding_example(
+    look: DashboardLook,
+    row: FindingRow,
+    actions: dict[str, ActionOperation],
+    *details: str | None,
+) -> str:
+    action = actions.get(row.operation_id or "")
+    return _example_line(look, row, action.tool_name if action is not None else None, *details)
+
+
+def _example_line(look: DashboardLook, row: FindingRow, *details: str | None) -> str:
+    return " · ".join(part for part in (look.message(TURN_LABEL.bind(turn=row.turn_number or "—")), *details) if part)
+
+
+def _with_more(look: DashboardLook, examples: list[str], total: int) -> list[str]:
+    """*examples*, the first of *total* ranked items, then how many were left out."""
+    hidden = total - len(examples)
+    return [*examples, look.message(TOOL_USAGE_MORE.bind(value=hidden))] if hidden > 0 else examples
+
+
+def _approval_wait_tools(analysis: TrajectoryAnalysis, turn_ids: set[str | None]) -> str:
+    """The tools whose approval waits were longest in the turns *turn_ids* name.
+
+    A finding names a turn by one of its attempts and measures the whole turn,
+    so every attempt of a retried turn counts.
+    """
+    turn_of = {attempt.turn_id: turn for turn in analysis.turns for attempt in turn.attempts}
+    named = {turn.turn_id: turn for turn_id in turn_ids if (turn := turn_of.get(turn_id or "")) is not None}
+    waited: Counter[str] = Counter()
+    for turn in named.values():
+        # Parallel calls wait for approval at the same time: like the finding's
+        # total, a tool's time is the union of its waits, not their sum.
+        waits: dict[str, list[Interval]] = {}
+        for item in turn.slices:
+            if item.owner == "approval" and item.tool_name:
+                waits.setdefault(item.tool_name, []).append((item.start_ns, item.end_ns))
+        for name, intervals in waits.items():
+            waited[name] += interval_length(intervals)
+    return ", ".join(
+        f"{name} {format_duration(duration)}" for name, duration in waited.most_common(_FINDING_APPROVAL_TOOL_LIMIT)
+    )
 
 
 def _finding_style(look: DashboardLook, severity: FindingSeverity) -> Style:
@@ -989,14 +1289,7 @@ def _diagnostic_lines(look: DashboardLook, analysis: TrajectoryAnalysis) -> list
         )
         for item in diagnostics.accounted_prefix_violation_details
     )
-    for label, metric in _overview_metric_items(look, analysis.overview):
-        if metric.precision is Precision.UNRESOLVED:
-            problems.append(_unresolved_metric_line(look, label, metric))
-    for turn in analysis.turns:
-        turn_label = look.message(TURN_LABEL.bind(turn=turn.turn_number or "—"))
-        for label, metric in _turn_metric_items(look, turn):
-            if metric.precision is Precision.UNRESOLVED:
-                problems.append(_unresolved_metric_line(look, f"{turn_label} {label}", metric))
+    problems.extend(_unresolved_metric_lines(look, analysis))
     problems.extend(_operation_diagnostic_line(look, item) for item in diagnostics.timeline_operations)
     problems.extend(
         Text(
@@ -1091,11 +1384,45 @@ def _diagnostic_lines(look: DashboardLook, analysis: TrajectoryAnalysis) -> list
     return lines
 
 
-def _unresolved_metric_line(look: DashboardLook, label: str, metric: Metric) -> Text:
-    return Text(
-        look.message(_UNRESOLVED_METRIC.bind(metric=label, reason=metric.reason or _precision(look, metric))),
-        style=look.semantic_style("warning", "yellow"),
-    )
+def _unresolved_metric_lines(look: DashboardLook, analysis: TrajectoryAnalysis) -> list[Text]:
+    """One line per root reason, naming how many metrics it left unresolved and where.
+
+    A single cause (a missing parent operation, a damaged log range) usually
+    unresolves every timing metric of the turns it touches; listing each
+    metric separately repeats that cause dozens of times.
+    """
+    counts: dict[str, int] = {}
+    scopes: dict[str, list[str]] = {}
+
+    def add(scope: str, metric: Metric) -> None:
+        reason = metric.reason or _precision(look, metric)
+        counts[reason] = counts.get(reason, 0) + 1
+        reason_scopes = scopes.setdefault(reason, [])
+        if scope not in reason_scopes:
+            reason_scopes.append(scope)
+
+    session_scope = look.message(_DIAGNOSTIC_SCOPE_SESSION.bind())
+    for metric in _metrics(analysis.overview) if analysis.overview is not None else ():
+        if metric.precision is Precision.UNRESOLVED:
+            add(session_scope, metric)
+    for turn in analysis.turns:
+        turn_scope = look.message(TURN_LABEL.bind(turn=turn.turn_number or "—"))
+        for metric in _metrics(turn):
+            if metric.precision is Precision.UNRESOLVED:
+                add(turn_scope, metric)
+    lines: list[Text] = []
+    for reason, count in counts.items():
+        reason_scopes = scopes[reason]
+        shown = reason_scopes[:_DIAGNOSTIC_SCOPE_LIMIT]
+        if len(reason_scopes) > len(shown):
+            shown.append(look.message(TOOL_USAGE_MORE.bind(value=len(reason_scopes) - len(shown))))
+        lines.append(
+            Text(
+                look.message(_UNRESOLVED_GROUP.bind(count=count, scope=", ".join(shown), reason=reason)),
+                style=look.semantic_style("warning", "yellow"),
+            )
+        )
+    return lines
 
 
 def _operation_diagnostic_line(look: DashboardLook, diagnostic: TimelineOperationDiagnostic) -> Text:
@@ -1115,80 +1442,18 @@ def _operation_diagnostic_line(look: DashboardLook, diagnostic: TimelineOperatio
     )
 
 
-def _overview_metric_items(look: DashboardLook, overview: TrajectoryOverview | None) -> list[tuple[str, Metric]]:
-    if overview is None:
-        return []
-    return _metric_items(
-        look,
-        overview.elapsed_ns,
-        overview.response_cp_ns,
-        overview.compute_cp_ns,
-        overview.exclusive_work_ns,
-        overview.parallelism,
-        overview.overlap_gain_ns,
-        overview.usage_tokens,
-        overview.wall_time_ns,
-        overview.utilization,
-    )
-
-
-def _turn_metric_items(look: DashboardLook, turn: TurnAnalysis) -> list[tuple[str, Metric]]:
-    return _metric_items(
-        look,
-        turn.elapsed_ns,
-        turn.response_cp_ns,
-        turn.compute_cp_ns,
-        turn.exclusive_work_ns,
-        turn.parallelism,
-        turn.overlap_gain_ns,
-        turn.usage_tokens,
-        turn.wall_time_ns,
-        turn.utilization,
-    )
-
-
-def _metric_items(
-    look: DashboardLook,
-    elapsed: Metric,
-    response_cp: Metric,
-    compute_cp: Metric,
-    work: Metric,
-    parallelism: Metric,
-    overlap: Metric,
-    usage: Metric,
-    wall: dict[WallBucket, Metric],
-    utilization: dict[WallBucket, Metric],
-) -> list[tuple[str, Metric]]:
-    items = [
-        (look.message(METRIC_ELAPSED.bind()), elapsed),
-        (look.message(METRIC_CP_RESPONSE.bind()), response_cp),
-        (look.message(METRIC_CP_COMPUTE.bind()), compute_cp),
-        (look.message(METRIC_WORK.bind()), work),
-        (look.message(METRIC_PARALLELISM.bind()), parallelism),
-        (look.message(METRIC_OVERLAP.bind()), overlap),
-        (look.message(METRIC_USAGE.bind()), usage),
+def _metrics(source: TrajectoryOverview | TurnAnalysis) -> list[Metric]:
+    return [
+        source.elapsed_ns,
+        source.response_cp_ns,
+        source.compute_cp_ns,
+        source.exclusive_work_ns,
+        source.parallelism,
+        source.overlap_gain_ns,
+        source.usage_tokens,
+        *source.wall_time_ns.values(),
+        *source.utilization.values(),
     ]
-    bucket_labels = {
-        WallBucket.MODEL: look.message(BUCKET_MODEL.bind()),
-        WallBucket.TOOLS: look.message(BUCKET_TOOLS.bind()),
-        WallBucket.WAIT: look.message(BUCKET_WAIT.bind()),
-        WallBucket.IDLE: look.message(BUCKET_IDLE.bind()),
-    }
-    items.extend(
-        (
-            look.message(_WALL_METRIC.bind(bucket=bucket_labels[bucket])),
-            wall[bucket],
-        )
-        for bucket in WallBucket
-    )
-    items.extend(
-        (
-            look.message(_UTILIZATION_METRIC.bind(bucket=bucket_labels[bucket])),
-            utilization[bucket],
-        )
-        for bucket in (WallBucket.MODEL, WallBucket.TOOLS)
-    )
-    return items
 
 
 def _cache_hit_style(look: DashboardLook, value: int | float | None) -> Style:
@@ -1230,8 +1495,8 @@ def _input_share_metric(usage: TokenUsage, session: TokenUsage | None) -> Metric
     ):
         return Metric(None, Precision.UNRESOLVED)
     percent = 100 * float(turn_input.value) / float(total_input.value)
-    precision, reason = derived_metric_precision(turn_input, total_input)
-    return Metric(percent, precision, reason)
+    grade = derived_metric_grade(turn_input, total_input)
+    return Metric(percent, grade.precision, grade.reason)
 
 
 def _format_metric_duration(metric: Metric) -> str:

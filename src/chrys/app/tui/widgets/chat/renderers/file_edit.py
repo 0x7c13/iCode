@@ -18,7 +18,7 @@ import os
 import re
 from contextlib import suppress
 from difflib import unified_diff
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 from textual.timer import Timer
@@ -292,8 +292,6 @@ class _FileToolCall(BaseToolCard):
         display: block;
     }
     """
-
-    _SPINNERS: ClassVar[str] = "◐◓◑◒"
 
     def __init__(
         self,

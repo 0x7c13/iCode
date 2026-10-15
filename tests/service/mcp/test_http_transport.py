@@ -27,6 +27,7 @@ from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.owned import LOCAL_HTTP_FAILURE_ERROR_DATA, MCPStreamableHTTPTool
 from chrys.service.profiles.agents.schema import MCPServerConfig
 from tests.service.mcp._helpers import block_import
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 
 # ---------------------------------------------------------------------------
 # _chrys_streamable_http_client — POST-failure wake-up and stock-client fallbacks
@@ -816,9 +817,10 @@ async def test_http_connect_to_silent_server_fails_without_hanging() -> None:
             request_timeout=1,
         )
 
-        start = time.monotonic()
-        tools = await asyncio.wait_for(adapter.connect_all([config]), timeout=10)
-        elapsed = time.monotonic() - start
+        with earlier_tests_heap_frozen():
+            start = time.monotonic()
+            tools = await asyncio.wait_for(adapter.connect_all([config]), timeout=10)
+            elapsed = time.monotonic() - start
 
         assert tools == []
         assert "silent-http" in adapter.failures

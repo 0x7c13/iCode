@@ -36,6 +36,7 @@ from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.profiles.models.resolver import resolve_active_profile, resolve_judge_profile
 from chrys.service.session.runtime_metadata import SessionUsageMetadata
 from chrys.service.state.workflow import WorkflowSessionState
+from chrys.service.tools.background import BackgroundTasks
 from chrys.service.trajectory.session import SessionStartInfo, SessionTrajectory
 from chrys.service.workflows.orphans import reconcile_orphaned_runs
 
@@ -204,6 +205,11 @@ class WorkflowSessionOwner:
                 session_id=session_id,
             )
         self._resources.own(self._close_mutations)
+        if session.background_tasks is None:
+            session.background_tasks = BackgroundTasks(
+                session_dir, trajectory=lambda: self.trajectory.context() if self.trajectory is not None else None
+            )
+            self._resources.own(session.background_tasks.close)
         session.hook_manager = await hooks(
             project_root=workspace.primary_cwd,
             project_hooks_enabled=settings.project_hooks_enabled,

@@ -15,11 +15,11 @@ msgstr ""
 "Generated-By: Babel 2.18.0\n"
 
 #. English: Allowed once, but the approval could not be remembered. Check
-#. storage permissions or manage grants with icode approvals.
-#. chrys-meta={"fingerprint":"c91616456df496f2e172de04a6f110be536221689f8ab1922238c4949e6e2d3d","multiline":false,"placeholders":[]}
+#. storage permissions or manage grants with icode approval.
+#. chrys-meta={"fingerprint":"279b7064d529d04e14050b066cbe8ee9e05790fabd5087cea79846cb7f5f8c61","multiline":false,"placeholders":[]}
 #: src/chrys/service/agent_middleware/control/approval.py
 msgid "approval.reuse.save_failed"
-msgstr "本次已允许，但未能记住授权。请检查存储权限，或使用 icode approvals 管理授权。"
+msgstr "本次已允许，但未能记住授权。请检查存储权限，或使用 icode approval 管理授权。"
 
 #. English: We couldn't attach this image.  {items}
 #. English-plural: We couldn't attach these images.  {items}
@@ -774,6 +774,14 @@ msgstr "无法回滚到第 {target_turn} 轮；可用轮次：{available}"
 #: src/chrys/orchestration/engine/rollback.py
 msgid "rollback.turns_unavailable"
 msgstr "无法回滚 {requested_turns} 轮；会话当前有 {current_turns} 轮。"
+
+#. English: Stopping {count} background command the run left running.
+#. English-plural: Stopping {count} background commands the run left running.
+#. chrys-meta={"fingerprint":"9bc636de543ae587a325b23a479276dd2b0f2e9684839a1ddccb0e7f5305264c","multiline":false,"placeholders":[]}
+#: src/chrys/app/cli/run.py
+msgid "run.background_tasks_stopping"
+msgid_plural "run.background_tasks_stopping#plural"
+msgstr[0] "正在停止本次运行留下的 {count} 个后台命令。"
 
 #. English: Agent run timed out.
 #. chrys-meta={"fingerprint":"18a94dffc4256d5aa72665048a05efb6b5f832b8b21fe30f3e50fde6d829b906","multiline":false,"placeholders":[]}
@@ -4163,6 +4171,205 @@ msgstr "问题 {index}/{total} · {header}"
 msgid "tui.ask_user.title.review"
 msgstr "问题 · 检查"
 
+#. English: The command keeps running here. Stop a background task in the Tasks
+#. tab, then try again.
+#. chrys-meta={"fingerprint":"7f87bebe56cbefcaa134dd5fb63b45f789ed424568270d86739b9e46dab14af1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.background.full.message"
+msgstr "命令会继续在这里运行。请先在“任务”标签页停止一个后台任务，再试一次。"
+
+#. English: Too many background tasks
+#. chrys-meta={"fingerprint":"f01712ec4f4a175369de9729c274fcbab6a9fd28c4b3e01908b490f4e4599041","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.background.full.title"
+msgstr "后台任务过多"
+
+#. English: Copy log path
+#. chrys-meta={"fingerprint":"20b9a1cb4b4910e8ff4d8ba89fb01b77f436b044505270413ba66810f4f7161d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.copy_log_path"
+msgstr "复制日志路径"
+
+#. English: Copy output
+#. chrys-meta={"fingerprint":"4d7003904918ca81f464d2cdefc25e74e20d309c53b514b8a178ecfa34c1862f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.copy_output"
+msgstr "复制输出"
+
+#. English: Ignore
+#. chrys-meta={"fingerprint":"5265b1512bfcc4ddc880ceffbada08642e7476bf7d77bd07d89c8ad25d11e1a8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.ignore"
+msgstr "忽略"
+
+#. English: Stop
+#. chrys-meta={"fingerprint":"2daa1a836bbe1f64cc789345cc84a4d878b90c6aae2d9e5cd4717190db2d28db","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.stop"
+msgstr "停止"
+
+#. English: Stop and continue
+#. chrys-meta={"fingerprint":"22e87f05c52bb995a73b1cc89484f900d6bcdfe96aaef7f76dad74f0f92bb121","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.stop_and_continue"
+msgstr "停止并继续"
+
+#. English: Stop and exit
+#. chrys-meta={"fingerprint":"d72938e49ecbb2b595bab2e2d3c7a659174b8380d349f5212086d022fa0a1491","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.button.stop_and_exit"
+msgstr "停止并退出"
+
+#. English: Copied log path
+#. chrys-meta={"fingerprint":"87ede8461a4168c6439cb0814da6124fe28d8193222a81286dfe86a8836bccfb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.copy.log_path"
+msgstr "已复制日志路径"
+
+#. English: Copied log path (terminal clipboard unavailable)
+#. chrys-meta={"fingerprint":"bc849068d0b31f404bdfa13b9d4337afa1f8ec555b9d2396b95c9986f152f7af","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.copy.log_path_unavailable"
+msgstr "已复制日志路径（终端剪贴板不可用）"
+
+#. English: Folder
+#. chrys-meta={"fingerprint":"0f9c65141e8489266ba992a732ea7f44d47b66a0a1f8c62d88fe0526bb649ea4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.cwd"
+msgstr "文件夹"
+
+#. English: Log
+#. chrys-meta={"fingerprint":"33b400523094269b6e91c373570d3cf8cdc52c0149345e6e0dd08569f775276c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.log"
+msgstr "日志"
+
+#. English: Processes
+#. chrys-meta={"fingerprint":"a79373213538982d5211abb876ce0a66519291e420a585eea81ead06ac864f4b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.processes"
+msgstr "进程"
+
+#. English: Reason
+#. chrys-meta={"fingerprint":"66f811712c4e6a2d77c47f15e589a963b929b30563b6dc38faab0fd8914647d2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.reason"
+msgstr "原因"
+
+#. English: In background since
+#. chrys-meta={"fingerprint":"d144fc448f0f08883182a12e2c8e6d4e2f3b3a3dd1c36f388c2b1f68f7b08930","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.started"
+msgstr "转入后台时间"
+
+#. English: Moved there because
+#. chrys-meta={"fingerprint":"ec97fb90b09c06106d6ca62a53b049e33ab571ed4bcc525beca7ec10f5063208","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.field.trigger"
+msgstr "转入后台原因"
+
+#. English: {app} closed unexpectedly while these commands ran in the
+#. background. They are still running:
+#. chrys-meta={"fingerprint":"d98880c2daf57d5ac0cbd8e1d734bb0891c7c17073294c675b442f2c7a0153e2","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.left_behind.message"
+msgstr "{app} 意外关闭时，这些命令正在后台运行，现在仍在运行："
+
+#. English: Commands still running
+#. chrys-meta={"fingerprint":"66e49502823976e40d6bc6d9f6ea807fd6d2e4efed2f90bbb5c1d3076857cf05","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.left_behind.title"
+msgstr "仍在运行的命令"
+
+#. English: The log can't be read.
+#. chrys-meta={"fingerprint":"d1aa83e2df4991c2c95f944d638bf6b1b00299fc24dd66eca8b0145e203ef46a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.log_unreadable"
+msgstr "无法读取日志。"
+
+#. English: running
+#. chrys-meta={"fingerprint":"30a70ec2e1543266fdf8c3d3507853a36b54e6a70feed23c5ae22fd78476fa4a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.running"
+msgstr "运行中"
+
+#. English: {command}  This stops every process the command started.
+#. chrys-meta={"fingerprint":"7576990b36584d42dd4d127cf967f043fecd2688b5b3469abdd682ce9b631497","multiline":true,"placeholders":["command"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop.message"
+msgstr ""
+"{command}\n"
+"\n"
+"这会停止该命令启动的所有进程。"
+
+#. English: Stop this background task?
+#. chrys-meta={"fingerprint":"9d94da6a955b2dea2b8daad7d64f18bde74f54e13f8adf43d514d15ab1c9f1e7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop.title"
+msgstr "停止这个后台任务？"
+
+#. English: This stops the background task:
+#. English-plural: This stops {count} background tasks:
+#. chrys-meta={"fingerprint":"3036ec200520dc552d06e304e31c8d245070ca71fc270650dcdfd5516697bf12","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop_all.message"
+msgid_plural "tui.background_task.stop_all.message#plural"
+msgstr[0] "这会停止 {count} 个后台任务："
+
+#. English: Rollback may not restore what they changed while in the background.
+#. chrys-meta={"fingerprint":"82a83ccc4ba8fceb3138a419730efcd97e7b6b66bde2179d2ff0c936f5f5f70f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop_all.rollback_note"
+msgstr "它们在后台期间所做的改动，回滚可能无法恢复。"
+
+#. English: Stop background tasks?
+#. chrys-meta={"fingerprint":"54c5bb51b3823d38f647f27f3188527f60bfc379c5aefeb3468bbbc48269fe48","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.stop_all.title"
+msgstr "停止后台任务？"
+
+#. English: Input
+#. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.tab.input"
+msgstr "输入"
+
+#. English: Output
+#. chrys-meta={"fingerprint":"05859c2cb178f6b52e68ea789358b4f6d9958c27ad628104ccee05f67586426d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.tab.output"
+msgstr "输出"
+
+#. English: Background task · {command}
+#. chrys-meta={"fingerprint":"d5b11fe0b0eeed558f6e3ef6eec3cbdd381bf4b4f362b2e433b477a378dac58f","multiline":false,"placeholders":["command"]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.title"
+msgstr "后台任务 · {command}"
+
+#. English: it printed nothing and was nearly idle for a minute
+#. chrys-meta={"fingerprint":"043cbb2a5b0cad284c84dc0d7409557717dbbac89f670ec6ff051bb77ff19f75","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.idle"
+msgstr "一分钟内没有输出，且几乎空闲"
+
+#. English: its shell exited while processes it started kept running
+#. chrys-meta={"fingerprint":"985c05fd758812ae7b9fd913d2d05929b99f0917ce03b9f8a6aa96aefacd438d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.shell_exited"
+msgstr "它的 shell 已退出，但它启动的进程仍在运行"
+
+#. English: it ran past its timeout
+#. chrys-meta={"fingerprint":"f4abae5c9e8c28090c31950431d52bc9a078461c5b52eb2f67e96fd432f5c90b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.timeout"
+msgstr "运行超过了超时时间"
+
+#. English: you moved it there
+#. chrys-meta={"fingerprint":"7a54278da2ff9ab359a61d8976548cec7acfdd3133341fa3b20c7b53bdaef20f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/background_task.py
+msgid "tui.background_task.trigger.user"
+msgstr "你把它转到了后台"
+
 #. English: Agents
 #. chrys-meta={"fingerprint":"a5bb9560e9ea162c7ee9c240168ee643410fbf17779975cc28a71308ea717fb7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/screen.py
@@ -4270,6 +4477,12 @@ msgstr "会话"
 #: src/chrys/app/tui/screens/main/screen.py
 msgid "tui.binding.settings"
 msgstr "设置"
+
+#. English: Move to background
+#. chrys-meta={"fingerprint":"740536b16bdb15ac0444abc6dea48257a9b4a5cf23efc900066b01919d426faf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/screen.py
+msgid "tui.binding.shell_to_background"
+msgstr "转到后台"
 
 #. English: Sidebar
 #. chrys-meta={"fingerprint":"6a6db5bf6c1bc4ac2deeff354ee581dca36bc9bd386cf64700365b2c7ea1ab83","multiline":false,"placeholders":[]}
@@ -6322,6 +6535,12 @@ msgstr "正在准备图像"
 msgid "tui.image_compression.title"
 msgid_plural "tui.image_compression.title#plural"
 msgstr[0] "正在准备图片"
+
+#. English: Message not sent
+#. chrys-meta={"fingerprint":"e4d0c7dae748bdeecd18b664e00b4552f296abe6a27e40d5c8850ef9ada16f51","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/event_handlers.py
+msgid "tui.injection.not_sent"
+msgstr "消息未发送"
 
 #. English: Continue
 #. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
@@ -10344,6 +10563,68 @@ msgstr "工具"
 msgid "tui.settings.title"
 msgstr "设置"
 
+#. English: Clear ended
+#. chrys-meta={"fingerprint":"dcb6a0d30ef78d850aaba51180142bacbdaa9a48b7a3679ec9f128ff97c7a0ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.clear_ended"
+msgstr "清除已结束"
+
+#. English: No background tasks
+#. chrys-meta={"fingerprint":"7a5b99198c3c51ff1189c15d7b408e6990fdf6f1788f29f50f2d51b37d37ce07","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.empty"
+msgstr "暂无后台任务"
+
+#. English: ended
+#. chrys-meta={"fingerprint":"1f7f91bb0d6987e916d8aa11277fba59dc1d0bbc23c1d3d7e724085d9fc4b037","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.ended"
+msgstr "已结束"
+
+#. English: exit {code}
+#. chrys-meta={"fingerprint":"19d84c7da6f00031ba6efcaf7ea40ad59766c004b4654ac15b6e4c82aa079b64","multiline":false,"placeholders":["code"]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.exit"
+msgstr "退出码 {code}"
+
+#. English: pid {pid}
+#. chrys-meta={"fingerprint":"3babd4d004f0ea774f982e8ac31390c174964f3b62ca3cf016fc35471eaa9631","multiline":false,"placeholders":["pid"]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.pid"
+msgstr "pid {pid}"
+
+#. English: pid {pid}, shell exit {code}
+#. chrys-meta={"fingerprint":"dcc87f20a73b484ac22955d703f6abc35821ddaf417ec3bd84bd9bf662457d8a","multiline":false,"placeholders":["code","pid"]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.shell_exited"
+msgstr "pid {pid}，shell 退出码 {code}"
+
+#. English: stopped
+#. chrys-meta={"fingerprint":"03a8071b3a8834f3aba1eea0b87550435dafcc28882bde8db593f5e66d84ac3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.stopped"
+msgstr "已停止"
+
+#. English: stopping
+#. chrys-meta={"fingerprint":"3113865edb78b210cabca86ca91390aa545776b64c53f4f5015db54f0e5573bb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.stopping"
+msgstr "正在停止"
+
+#. English: Background Tasks
+#. chrys-meta={"fingerprint":"fcace1cd695b3ef74b8e965538ffcdaeff022dfc2a17f3127c3f36c90b124fc2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.title"
+msgstr "后台任务"
+
+#. English: Background Tasks ({count})
+#. English-plural: Background Tasks ({count})
+#. chrys-meta={"fingerprint":"7ba8469b4764cf05848d619a1f911b8641adc888528069e39ba98d6f534c9263","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
+msgid "tui.sidebar.background.title_running"
+msgid_plural "tui.sidebar.background.title_running#plural"
+msgstr[0] "后台任务（{count} 个运行中）"
+
 #. English: Click to pet!
 #. chrys-meta={"fingerprint":"6a22a07c91607b4cef9061c6cf44da0b0ca5c3297d0da64e662bd6383e984dec","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/buddy.py
@@ -10502,11 +10783,11 @@ msgstr "任务"
 msgid "tui.sidebar.tasks.counter"
 msgstr "待办 ({done}/{total})"
 
-#. English: No tasks yet
-#. chrys-meta={"fingerprint":"6dd1d5424c4fc9b2a69d03a1fc02230a399bbace32d650f6339ccf926b24adb8","multiline":false,"placeholders":[]}
+#. English: No todos yet
+#. chrys-meta={"fingerprint":"96912ccb22d97745c96454869fe0a57d69723f001201092b8997b54d9d24b451","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/tasks.py
 msgid "tui.sidebar.tasks.empty"
-msgstr "暂无任务"
+msgstr "暂无待办"
 
 #. English: Todos
 #. chrys-meta={"fingerprint":"f19a32d373f8db6aa0a2c27538683a0822d0d993ffe41638b913760ee3e891c8","multiline":false,"placeholders":[]}
@@ -10671,6 +10952,22 @@ msgstr "正在重试（{attempt}/{max_attempts}）..."
 msgid "tui.status.running_tool"
 msgstr "正在运行：{tool_name}"
 
+#. English: {count} background task
+#. English-plural: {count} background tasks
+#. chrys-meta={"fingerprint":"b73c7e3776a1c82c287b1ce1bb7e8eaf8af1927db9f6d8022e1699b0fd266a84","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/runtime_info.py
+msgid "tui.status.runtime_background"
+msgid_plural "tui.status.runtime_background#plural"
+msgstr[0] "{count} 个后台任务"
+
+#. English: {count} task
+#. English-plural: {count} tasks
+#. chrys-meta={"fingerprint":"a0e02502a6d4b53b2eb410fdd4640438b4d62dc93f5e357cb1b0d2f30dce8fb6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/runtime_info.py
+msgid "tui.status.runtime_background_short"
+msgid_plural "tui.status.runtime_background_short#plural"
+msgstr[0] "{count} 个任务"
+
 #. English: {count} file
 #. English-plural: {count} files
 #. chrys-meta={"fingerprint":"4339e9fb7957b389de563381810b48011a4074e2e1d2d3cef5cc41b323398e5a","multiline":false,"placeholders":[]}
@@ -10720,6 +11017,12 @@ msgstr "会话标题已更新"
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
 msgid "tui.status.shell_mode"
 msgstr "终端模式 — 连按两次 Esc 或输入 exit 退出"
+
+#. English: Still sending the previous message
+#. chrys-meta={"fingerprint":"7dbd5988de3703b2875598add0d9fabd762db699546932e140a3e45bdce2dd6d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.still_sending"
+msgstr "上一条消息仍在发送中"
 
 #. English: streaming...
 #. chrys-meta={"fingerprint":"8ae58c7af153c48d15b5a3ca0dec78fb2407ef03d4fc4ac04033c005afea7cf6","multiline":false,"placeholders":[]}
@@ -11209,6 +11512,18 @@ msgstr "问题"
 #: src/chrys/app/tui/widgets/chat/renderers/ask_user.py
 msgid "tui.tool_card.ask_user.waiting"
 msgstr "等待中"
+
+#. English: {key} moves it to the background
+#. chrys-meta={"fingerprint":"9ad0cd2eca9beb6b0389b05f76b326964aa6019c4e9d363d5ad598d18752f807","multiline":false,"placeholders":["key"]}
+#: src/chrys/app/tui/widgets/chat/renderers/execute.py
+msgid "tui.tool_card.execute.background_hint"
+msgstr "{key} 转到后台"
+
+#. English: → in the background as {task}, pid {pid}
+#. chrys-meta={"fingerprint":"7c064536aa0fc52ff1fe54f91becfe156785983e7ad3fac05abf1c9877051d70","multiline":false,"placeholders":["pid","task"]}
+#: src/chrys/app/tui/widgets/chat/renderers/execute.py
+msgid "tui.tool_card.execute.backgrounded"
+msgstr "→ 已转到后台：{task}，pid {pid}"
 
 #. English: (no command)
 #. chrys-meta={"fingerprint":"ab9a0bf0c4af06c4ae35625dfc29f81d7ce5488ec4ce892fa22035e3053bd589","multiline":false,"placeholders":[]}
@@ -12232,6 +12547,12 @@ msgstr "生命周期跨越回滚投影；仅终止端点仍然有效"
 msgid "tui.trajectory.diagnostics.rollback"
 msgstr "回滚后的实时历史投影无法解析。"
 
+#. English: session
+#. chrys-meta={"fingerprint":"ed133cd93c6eea4c2d1386123756bfd0c51ea7b5c30e9a62d5aeeb604a07a941","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.diagnostics.scope_session"
+msgstr "会话"
+
 #. English: seq {sequence}
 #. chrys-meta={"fingerprint":"605f81826802fc6bb2fcdad8b2a403cde3df784b0e694ed9f8de35929fcbd76f","multiline":false,"placeholders":["sequence"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
@@ -12274,11 +12595,13 @@ msgid "tui.trajectory.diagnostics.unidentified_membership"
 msgid_plural "tui.trajectory.diagnostics.unidentified_membership#plural"
 msgstr[0] "{value} 个上下文快照含无分析身份的条目（如子代理的种子提示）；此类条目的重复发送 token 开销未知，不影响计时。"
 
-#. English: {metric} unresolved: {reason}
-#. chrys-meta={"fingerprint":"c331e892aafc66829527d8f48fa1b6b95edb0936fc82929d370309ffedff014e","multiline":false,"placeholders":["metric","reason"]}
+#. English: {count} metric unresolved in {scope}: {reason}
+#. English-plural: {count} metrics unresolved in {scope}: {reason}
+#. chrys-meta={"fingerprint":"43bc93bcce75b1e803635e356a8a88d8deb88879eaa4bdf8299d1b560c0c831b","multiline":false,"placeholders":["reason","scope"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.diagnostics.unresolved_metric"
-msgstr "{metric} 无法解析：{reason}"
+msgid "tui.trajectory.diagnostics.unresolved_group"
+msgid_plural "tui.trajectory.diagnostics.unresolved_group#plural"
+msgstr[0] "{count} 项指标无法解析（{scope}）：{reason}"
 
 #. English: Unsupported line {count} ({sequences}); metrics in the affected
 #. range degrade to unresolved.
@@ -12289,18 +12612,6 @@ msgstr "{metric} 无法解析：{reason}"
 msgid "tui.trajectory.diagnostics.unsupported"
 msgid_plural "tui.trajectory.diagnostics.unsupported#plural"
 msgstr[0] "不支持行 {count}（{sequences}）；受影响区间的指标降级为无法解析。"
-
-#. English: {bucket} busy share
-#. chrys-meta={"fingerprint":"e80ee1a0a4655a60e658708485a916676f21fb8d90866a47a75533bb8566be6e","multiline":false,"placeholders":["bucket"]}
-#: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.diagnostics.utilization_metric"
-msgstr "{bucket}忙碌占比"
-
-#. English: {bucket} wall time
-#. chrys-meta={"fingerprint":"bc74bd3fc70e6337510001467023fe6107bacaffbc34b39b26116607cfba725a","multiline":false,"placeholders":["bucket"]}
-#: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.diagnostics.wall_metric"
-msgstr "{bucket}墙钟时间"
 
 #. English: Total time excludes preparation between submission and the start of
 #. the turn.
@@ -12339,104 +12650,193 @@ msgstr "同类错误重复"
 msgid "tui.trajectory.failure_recovery.title"
 msgstr "失败恢复"
 
-#. English: Approval waits occupied {percentage}% of this turn.
-#. chrys-meta={"fingerprint":"04fe16c1f9a6ec4b4108a100f1a95090ebf713435c4b60e10c75bbe8ad5d3b00","multiline":false,"placeholders":["percentage"]}
+#. English: To shorten these waits, check Don't ask again in the Remember
+#. Approval box when you approve routine commands or file changes; in automatic
+#. mode, a faster Approval judge model also helps (F10 → Models & Agents).
+#. chrys-meta={"fingerprint":"27ab8ae44e9fba15508536b953e827cb46b62124d5b7dc223e06363ea25b02a2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.approval_blocking_share.detail"
-msgstr "审批等待占本轮的 {percentage}%。"
+msgid "tui.trajectory.finding.approval_blocking_share.hint"
+msgstr "要缩短这些等待：批准常用命令或文件修改时，在“记住审批”框中勾选不再询问；自动模式下也可以改用更快的审批裁判模型（F10 → 模型与智能体）。"
 
-#. English: Approval blocking share is high
-#. chrys-meta={"fingerprint":"52f0bb85814b8ee587253d60c06fc132a1cf2f2188a64110bfb9630319ff32a0","multiline":false,"placeholders":[]}
+#. English: Waiting for approval took at least a quarter of {count} turn
+#. ({duration} in total).
+#. English-plural: Waiting for approval took at least a quarter of {count}
+#. turns ({duration} in total).
+#. chrys-meta={"fingerprint":"f7cdc8581935265a3cca6685b56bfc714e0a41278546e5d04610b1742367aa4e","multiline":false,"placeholders":["duration"]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.approval_blocking_share.summary"
+msgid_plural "tui.trajectory.finding.approval_blocking_share.summary#plural"
+msgstr[0] "有 {count} 轮的审批等待至少占该轮时间的四分之一（共 {duration}）。"
+
+#. English: Long approval waits
+#. chrys-meta={"fingerprint":"098c3ba2e7f08595148256b71a8f8c5dd048338f9acacf29debbce4f1bfe8ead","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.approval_blocking_share.title"
-msgstr "审批阻塞占比过高"
+msgstr "审批等待过长"
 
-#. English: One context item cost an estimated {load} token across the model
-#. requests that re-sent it.
-#. English-plural: One context item cost an estimated {load} tokens across the
-#. model requests that re-sent it.
-#. chrys-meta={"fingerprint":"3262f62b74a6b3e45a3986e886a5ca1f9f6b5b606b8b2bffa9919eb64158cd5c","multiline":false,"placeholders":["load"]}
+#. English: Longest waits: {tools}.
+#. chrys-meta={"fingerprint":"629b8a4aa996fec5019281fb66d245536e3c2036375211f79843937a2eeade15","multiline":false,"placeholders":["tools"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.context_carrying_load.detail"
-msgid_plural "tui.trajectory.finding.context_carrying_load.detail#plural"
-msgstr[0] "一个上下文条目在重复发送它的模型请求中累计消耗约 {load} 个词元。"
+msgid "tui.trajectory.finding.approval_blocking_share.tools"
+msgstr "等待最长的工具：{tools}。"
 
-#. English: Heavily re-sent context item
-#. chrys-meta={"fingerprint":"47647bcdd91166e2aa6283b2367094742327eac57f32f49a1cd8cda96d86c6d6","multiline":false,"placeholders":[]}
+#. English: Each item below took up a large share of context across model
+#. requests: its size counts once for every request that carried it. Compacting
+#. sooner, or keeping tool output smaller, reduces this cost.
+#. chrys-meta={"fingerprint":"1ad501a43b77071db8ac2a4ce4b39874d01e4ff2edf4b858edb4f0cbb5178109","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.context_carrying_load.summary"
+msgstr "下列每个条目在各次模型请求中都占用了大量上下文：其大小按携带它的请求数逐次累计。更早压缩上下文或缩小工具输出可以降低这部分开销。"
+
+#. English: Costly context
+#. chrys-meta={"fingerprint":"3ca95d59c28db96a2f3ce519419cc0d1cee2ce27895a8bf2c0a9ab75edd941cf","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.context_carrying_load.title"
-msgstr "重复发送开销高的上下文条目"
+msgstr "开销大的上下文"
 
-#. English: One failed tool attempt accounts for {percentage}% of response
-#. critical-path time.
-#. chrys-meta={"fingerprint":"abb4d777ee66417f7ca3e6161229d25b84b2ea2d0028e82459a24232809334ba","multiline":false,"placeholders":["percentage"]}
+#. English: {count} repeat
+#. English-plural: {count} repeats
+#. chrys-meta={"fingerprint":"46e8d5e952426c248a6e5af3d7d551a5c036c406c95fdbb64be8371ce2f0dac5","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.failed_attempt_critical_path.detail"
-msgstr "一次失败的工具尝试占响应关键路径时间的 {percentage}%。"
+msgid "tui.trajectory.finding.example.repeats"
+msgid_plural "tui.trajectory.finding.example.repeats#plural"
+msgstr[0] "重复 {count} 次"
 
-#. English: Failed attempt dominates the critical path
-#. chrys-meta={"fingerprint":"bf2fe71d6eb51c1d205711a8a12d80c23ded644d441be21dcb58433d645089ce","multiline":false,"placeholders":[]}
+#. English: ~{tokens} result token
+#. English-plural: ~{tokens} result tokens
+#. chrys-meta={"fingerprint":"c1672dcd92b446fe3468bb7c1ce46b659cd149b7d2f94d1b41e891aeffcf32d4","multiline":false,"placeholders":["tokens"]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.example.result_tokens"
+msgid_plural "tui.trajectory.finding.example.result_tokens#plural"
+msgstr[0] "结果约 {tokens} 词元"
+
+#. English: {percentage}% of the turn
+#. chrys-meta={"fingerprint":"4d1366a5973da324d8eabbd9ac5a4ae9c4968fedcaef35d99bbc6acb217bc4c4","multiline":false,"placeholders":["percentage"]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.example.turn_share"
+msgstr "占该轮 {percentage}%"
+
+#. English: {count} failed tool call took at least a quarter of its turn's
+#. response time: the turn waited on work that did not succeed.
+#. English-plural: {count} failed tool calls each took at least a quarter of
+#. their turn's response time: those turns waited on work that did not succeed.
+#. chrys-meta={"fingerprint":"02cdbee35651fbc5a721b3e9ec603f30af511c9ee4cfd7d861989654d0a852e8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.failed_attempt_critical_path.summary"
+msgid_plural "tui.trajectory.finding.failed_attempt_critical_path.summary#plural"
+msgstr[0] "{count} 次失败的工具调用单次就占用了所在轮次至少四分之一的响应时间：所在轮次在等待没有成功的工作。"
+
+#. English: Failed calls held up turns
+#. chrys-meta={"fingerprint":"d9faefbc0a973d62ddf9e8252524c8a0e391e5da1535e0ba0f5d0e62805cf860","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.failed_attempt_critical_path.title"
-msgstr "失败尝试主导关键路径"
+msgstr "失败的调用拖慢了轮次"
 
-#. English: {count} file returned to its original state.
-#. English-plural: {count} files returned to their original state.
-#. chrys-meta={"fingerprint":"2385034e7a845a065ae168b83a6df231748504d94820a555843eed27b69b814a","multiline":false,"placeholders":[]}
+#. English: {count} file ended up with the content it had before it was edited
+#. (last edit in turn {turn}): the edits were undone later or never took
+#. effect.
+#. English-plural: {count} files ended up with the content they had before they
+#. were edited (last edit in turn {turn}): the edits were undone later or never
+#. took effect.
+#. chrys-meta={"fingerprint":"9e17389316aa68f40275c818278cf446db1d8da5af7e71929bbcd90c953beeea","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.net_zero_churn.detail"
-msgid_plural "tui.trajectory.finding.net_zero_churn.detail#plural"
-msgstr[0] "{count} 个文件恢复到原始状态。"
+msgid "tui.trajectory.finding.net_zero_churn.summary"
+msgid_plural "tui.trajectory.finding.net_zero_churn.summary#plural"
+msgstr[0] "{count} 个文件的内容与编辑前相同（最后一次编辑在第 {turn} 轮）：这些编辑后来被撤销了，或者没有生效。"
 
-#. English: Changes cancelled out
-#. chrys-meta={"fingerprint":"b180daaad2d705ce3f424ad36066b409e57997384f1d1605c0c31c15501f86b1","multiline":false,"placeholders":[]}
+#. English: Edits with no net effect
+#. chrys-meta={"fingerprint":"27fd3836138f41e35785c0a5bc84998690401c3c537fa7e1d567174d4648a4b2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.net_zero_churn.title"
-msgstr "改动抵消"
+msgstr "没有净效果的编辑"
 
-#. English: The same argument fingerprint occurred {count} time.
-#. English-plural: The same argument fingerprint occurred {count} times.
-#. chrys-meta={"fingerprint":"d1e8515470a66864163f3c2bd57e665a61366dcbacbd97e4c56b6abe0474a544","multiline":false,"placeholders":[]}
+#. English: {count} read or search repeated an identical call made earlier in
+#. the same turn, with nothing changed in between, so it fetched a result the
+#. agent already had.
+#. English-plural: {count} reads or searches repeated identical calls made
+#. earlier in the same turn, with nothing changed in between, so they fetched
+#. results the agent already had.
+#. chrys-meta={"fingerprint":"2cffe25024b9ceeed4429fbb903e3ed5c0057ea4ce8071f1d4dbfb52f540733a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.repeated_tool_fingerprint.detail"
-msgid_plural "tui.trajectory.finding.repeated_tool_fingerprint.detail#plural"
-msgstr[0] "同一参数指纹出现了 {count} 次。"
+msgid "tui.trajectory.finding.repeated_read.summary"
+msgid_plural "tui.trajectory.finding.repeated_read.summary#plural"
+msgstr[0] "{count} 次读取或搜索与同一轮中更早的调用完全相同，且期间没有任何改动，取回的是智能体已有的结果。"
 
-#. English: Repeated tool fingerprint
-#. chrys-meta={"fingerprint":"cf396922b467811d533de8a63191684284ad311df11779258880711c35a7dea7","multiline":false,"placeholders":[]}
+#. English: Repeated reads
+#. chrys-meta={"fingerprint":"b28588f2e19bccbed31df4b9568ea9a5c04636132d76d4fc8f3b9eadc3dc6f3a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.repeated_tool_fingerprint.title"
-msgstr "重复的工具参数指纹"
+msgid "tui.trajectory.finding.repeated_read.title"
+msgstr "重复读取"
 
-#. English: Retries added {tokens} normalized token.
-#. English-plural: Retries added {tokens} normalized tokens.
-#. chrys-meta={"fingerprint":"cd393576fc375a6ac43f0b8017f711ae230f1552185f2286a0302a6d628e6183","multiline":false,"placeholders":["tokens"]}
+#. English: Retried model requests used {tokens} token (first retry in turn
+#. {turn}). A request is retried after a provider or network error and sent
+#. again in full.
+#. English-plural: Retried model requests used {tokens} tokens (first retry in
+#. turn {turn}). A request is retried after a provider or network error and
+#. sent again in full.
+#. chrys-meta={"fingerprint":"4652c5f20e5e27b8456ac57ee1e3f94a30eda7a29d38d1bfc109c0bedfbb7101","multiline":false,"placeholders":["tokens","turn"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.retry_token_amplification.detail"
-msgid_plural "tui.trajectory.finding.retry_token_amplification.detail#plural"
-msgstr[0] "重试增加了 {tokens} 个标准化 token。"
+msgid "tui.trajectory.finding.retry_token_amplification.summary"
+msgid_plural "tui.trajectory.finding.retry_token_amplification.summary#plural"
+msgstr[0] "重试的模型请求共用了 {tokens} 词元（首次重试在第 {turn} 轮）。请求在遇到服务商或网络错误后会被完整地重新发送。"
 
-#. English: Retry token amplification
-#. chrys-meta={"fingerprint":"7fb57d6cbb43730109163c2f1197454400070af68b7e12f178019f0852b3e836","multiline":false,"placeholders":[]}
+#. English: Tokens spent on retries
+#. chrys-meta={"fingerprint":"0afb754fc6a16db588ae5a9b16a65ca2993f16a34c9fbad3c7ad64f764452cd2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.retry_token_amplification.title"
-msgstr "重试 token 放大"
+msgstr "重试消耗的词元"
 
-#. English: {count} edit action occurred after the last successful
-#. verification.
-#. English-plural: {count} edit actions occurred after the last successful
-#. verification.
-#. chrys-meta={"fingerprint":"560dc335d6fef9b5d9088481df82634e146cd3b0a8b7c061935f1dba054e370e","multiline":false,"placeholders":[]}
+#. English: {count} edit was not confirmed by a test or check: the record does
+#. not show the last successful one (turn {turn}) starting after the edit
+#. finished.
+#. English-plural: {count} edits were not confirmed by a test or check: the
+#. record does not show the last successful one (turn {turn}) starting after
+#. they finished.
+#. chrys-meta={"fingerprint":"0c2681812aa5ceaaea9ce0d40a89974f992e474de538fb304e6df4b0e2eb2550","multiline":false,"placeholders":["turn"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
-msgid "tui.trajectory.finding.unverified_change.detail"
-msgid_plural "tui.trajectory.finding.unverified_change.detail#plural"
-msgstr[0] "最后一次成功验证后发生了 {count} 次编辑操作。"
+msgid "tui.trajectory.finding.unverified_change.after_last_verify"
+msgid_plural "tui.trajectory.finding.unverified_change.after_last_verify#plural"
+msgstr[0] "{count} 处编辑没有得到测试或检查的确认：记录中看不出最后一次成功的测试或检查（第 {turn} 轮）是在编辑完成之后开始的。"
 
-#. English: Unverified change
-#. chrys-meta={"fingerprint":"965e0e25b178ff6cb00fde42755810843df150dc69f85afa79016180c9885732","multiline":false,"placeholders":[]}
+#. English: {count} edit has no recognized passing test or check after it, but
+#. the text of some later shell commands is unavailable, so one of them may
+#. have been a passing test or check.
+#. English-plural: {count} edits have no recognized passing test or check after
+#. them, but the text of some later shell commands is unavailable, so one of
+#. them may have been a passing test or check.
+#. chrys-meta={"fingerprint":"9ea9ac5d02d2e6e324bd8e2660147bc079675079a098ced9873864074f3f295b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.unverified_change.commands_unavailable"
+msgid_plural "tui.trajectory.finding.unverified_change.commands_unavailable#plural"
+msgstr[0] "{count} 处编辑之后没有识别到通过的测试或检查，但之后部分 shell 命令的内容不可用，其中可能有通过的测试或检查。"
+
+#. English: {count} edit was never followed by a test or check: no shell
+#. command matched the verification command list. If this project tests or
+#. builds with its own commands, add them to trajectory.verify_commands.
+#. English-plural: {count} edits were never followed by a test or check: no
+#. shell command matched the verification command list. If this project tests
+#. or builds with its own commands, add them to trajectory.verify_commands.
+#. chrys-meta={"fingerprint":"457d945bb0b6bcb2c7f2a9a29f32e4ba2117c54009c27b3d3c98d6030023be42","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.unverified_change.never_verified"
+msgid_plural "tui.trajectory.finding.unverified_change.never_verified#plural"
+msgstr[0] "{count} 处编辑之后从未运行测试或检查：没有 shell 命令匹配验证命令列表。如果此项目用自己的命令测试或构建，请把这些命令加入 trajectory.verify_commands。"
+
+#. English: Unverified changes
+#. chrys-meta={"fingerprint":"cde0763bcbdf366bfe7d4aaec8afdf1821ea2988cc1341caa57e07b5ee7fc060","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.finding.unverified_change.title"
 msgstr "未验证的变更"
+
+#. English: {count} edit never had a passing test or check: every test or check
+#. run in this session failed or has no recorded result.
+#. English-plural: {count} edits never had a passing test or check: every test
+#. or check run in this session failed or has no recorded result.
+#. chrys-meta={"fingerprint":"a47a55c969f63eee01c66a843687461a938138e5e17623cd4b7f8c6e2bebc634","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/insights.py
+msgid "tui.trajectory.finding.unverified_change.verify_failed"
+msgid_plural "tui.trajectory.finding.unverified_change.verify_failed#plural"
+msgstr[0] "{count} 处编辑从未通过测试或检查：本会话中运行的测试或检查全部失败或没有记录结果。"
 
 #. English: No active findings.
 #. chrys-meta={"fingerprint":"72c86b99072d84a9641f0254d43772a92c0cb6b6ef349d86c728c5677c52a35a","multiline":false,"placeholders":[]}
@@ -12655,11 +13055,11 @@ msgstr "未分类 {value} 项"
 msgid "tui.trajectory.insights.tokens.carrying_assistant"
 msgstr "助手消息"
 
-#. English: tokens × model requests that re-sent the item
-#. chrys-meta={"fingerprint":"b789d1d791cddaf2eab8df5ef7bfbc0a9a2dbe92e3cb76df431337fa92e5272c","multiline":false,"placeholders":[]}
+#. English: tokens × model requests that carried the item
+#. chrys-meta={"fingerprint":"eaa4ae74ed2e7db900695ae0bfc6a63a06bfe25223da9290dcd4fe680ffdb69d","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_explainer"
-msgstr "词元数 × 重复发送该条目的模型请求数"
+msgstr "词元数 × 携带该条目的模型请求数"
 
 #. English: context item
 #. chrys-meta={"fingerprint":"4cecddff9a13392f9d8acb0c42f3be268a33662cfab0c3bae8984aca9c304a39","multiline":false,"placeholders":[]}
@@ -12673,11 +13073,13 @@ msgstr "上下文条目"
 msgid "tui.trajectory.insights.tokens.carrying_load"
 msgstr "上下文重复发送开销 · Top {value}"
 
-#. English: {tokens} tok × {carries} re-sends
-#. chrys-meta={"fingerprint":"262b76278d26e71322afb2faf99189adaee379e542d5b1eec4aeadcab151f670","multiline":false,"placeholders":["carries","tokens"]}
+#. English: {tokens} tok × {count} request
+#. English-plural: {tokens} tok × {count} requests
+#. chrys-meta={"fingerprint":"e31cd60d719c7f87ec0635dc04caf961d306223972058bc5ee148ed7f7d99910","multiline":false,"placeholders":["tokens"]}
 #: src/chrys/app/tui/widgets/trajectory/insights.py
 msgid "tui.trajectory.insights.tokens.carrying_row_detail"
-msgstr "{tokens} tok × {carries} 次重发"
+msgid_plural "tui.trajectory.insights.tokens.carrying_row_detail#plural"
+msgstr[0] "{tokens} tok × {count} 次请求"
 
 #. English: {item} · since turn {turn}
 #. chrys-meta={"fingerprint":"c4d83880177ea94e5fa9b0a0fcfdcb6c8cce59da8cc0af8ec8bf8e2271bc0d72","multiline":false,"placeholders":["item","turn"]}
@@ -13251,6 +13653,12 @@ msgstr "忙碌占比（模型/工具各自独立；>100% 即并行）"
 #: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.waterfall"
 msgstr "各轮时间分布 · 第 {first}-{last} 轮"
+
+#. English: Per-turn time breakdown · turn {turn}
+#. chrys-meta={"fingerprint":"d1276bfd82bc536631912f3ad68dec5552817842a734f78212e1321020c38395","multiline":false,"placeholders":["turn"]}
+#: src/chrys/app/tui/widgets/trajectory/overview.py
+msgid "tui.trajectory.waterfall_one_turn"
+msgstr "各轮时间分布 · 第 {turn} 轮"
 
 #. English: Compressed
 #. chrys-meta={"fingerprint":"bc006f980ad45002214982b17d9c68070fd6837d7982f1173320db7ecb3ae566","multiline":false,"placeholders":[]}
@@ -14599,6 +15007,44 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.tool_card.sub_agent.tool_skipped"
 #~ msgstr "{tool} 已跳过"
+
+#~ msgid "tui.trajectory.diagnostics.unresolved_metric"
+#~ msgstr "{metric} 无法解析：{reason}"
+
+#~ msgid "tui.trajectory.diagnostics.utilization_metric"
+#~ msgstr "{bucket}忙碌占比"
+
+#~ msgid "tui.trajectory.diagnostics.wall_metric"
+#~ msgstr "{bucket}墙钟时间"
+
+#~ msgid "tui.trajectory.finding.approval_blocking_share.detail"
+#~ msgstr "审批等待占本轮的 {percentage}%。"
+
+#~ msgid "tui.trajectory.finding.context_carrying_load.detail"
+#~ msgid_plural "tui.trajectory.finding.context_carrying_load.detail#plural"
+#~ msgstr[0] "一个上下文条目在重复发送它的模型请求中累计消耗约 {load} 个词元。"
+
+#~ msgid "tui.trajectory.finding.failed_attempt_critical_path.detail"
+#~ msgstr "一次失败的工具尝试占响应关键路径时间的 {percentage}%。"
+
+#~ msgid "tui.trajectory.finding.net_zero_churn.detail"
+#~ msgid_plural "tui.trajectory.finding.net_zero_churn.detail#plural"
+#~ msgstr[0] "{count} 个文件恢复到原始状态。"
+
+#~ msgid "tui.trajectory.finding.repeated_tool_fingerprint.detail"
+#~ msgid_plural "tui.trajectory.finding.repeated_tool_fingerprint.detail#plural"
+#~ msgstr[0] "同一参数指纹出现了 {count} 次。"
+
+#~ msgid "tui.trajectory.finding.repeated_tool_fingerprint.title"
+#~ msgstr "重复的工具参数指纹"
+
+#~ msgid "tui.trajectory.finding.retry_token_amplification.detail"
+#~ msgid_plural "tui.trajectory.finding.retry_token_amplification.detail#plural"
+#~ msgstr[0] "重试增加了 {tokens} 个标准化 token。"
+
+#~ msgid "tui.trajectory.finding.unverified_change.detail"
+#~ msgid_plural "tui.trajectory.finding.unverified_change.detail#plural"
+#~ msgstr[0] "最后一次成功验证后发生了 {count} 次编辑操作。"
 
 #~ msgid "tui.trajectory.operation_unresolved"
 #~ msgstr "{precision}：{reason}"

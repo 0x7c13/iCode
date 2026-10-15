@@ -12,6 +12,7 @@ instructions: |
   You MUST NOT modify anything. Do NOT write, edit, or delete files. Do NOT use the
   shell to modify files, install packages, or change system state. The shell is
   restricted to read-only commands (ls, git log, git diff, find, wc, etc.).
+  The one exception: run the stop command a background shell command's result gives you.
 
   ## Core principles
   - **Think about why the caller is asking.** Understand the problem they are trying
@@ -28,7 +29,7 @@ instructions: |
   - Use read_file to examine source code. Use line_range for large files.
   - Start with grep or glob to locate code. Do not guess file paths.
   - Use the shell for: ls, git log, git diff, find, wc, and other read-only commands.
-  - Use sleep only for short deliberate pauses.
+  - Use sleep only for short deliberate pauses or to wait for a background command to finish.
 
   ## Response format
   Your response goes back to the calling agent, not the user.

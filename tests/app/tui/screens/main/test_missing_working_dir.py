@@ -557,7 +557,8 @@ async def test_refused_submit_restores_the_draft_then_asks_for_a_folder(
 
     state = MainScreenState()
     state.submit.begin("hello")
-    state.run.agent_running = True
+    # The backend refuses the submit inside its publish, on this task.
+    state.submit.publish_from_current_task()
     screen = SimpleNamespace(
         _state=state,
         _set_agent_running=running.append,
@@ -578,7 +579,8 @@ async def test_refused_submit_restores_the_draft_then_asks_for_a_folder(
     assert composer.value == expected_text
     assert composer.locked is False
     assert state.submit.blocked is True
-    assert running == [False]
+    # The refusal is the message's: no run started, and none ends.
+    assert running == []
     assert debug == [("Error", "[working_dir_missing] Working directory no longer exists: /gone")]
 
 

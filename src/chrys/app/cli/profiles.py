@@ -44,37 +44,41 @@ class _ModelRow:
 
 
 def build_agents_parser() -> argparse.ArgumentParser:
-    """Build the ``chrys agents`` parser."""
+    """Build the ``chrys agent`` parser."""
     parser = argparse.ArgumentParser(
-        prog=f"{APP_COMMAND} agents",
+        prog=f"{APP_COMMAND} agent",
         description=f"List {APP_DISPLAY_NAME} agent profiles that can be selected with --agent.",
         add_help=False,
     )
     parser.add_argument(
         "-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit"
     )
-    parser.add_argument("command", nargs="?", choices=["list"], default="list", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "command", nargs="?", choices=["list"], default="list", help="List the agent profiles (the default)"
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     return parser
 
 
 def build_models_parser() -> argparse.ArgumentParser:
-    """Build the ``chrys models`` parser."""
+    """Build the ``chrys model`` parser."""
     parser = argparse.ArgumentParser(
-        prog=f"{APP_COMMAND} models",
+        prog=f"{APP_COMMAND} model",
         description=f"List {APP_DISPLAY_NAME} model profiles that can be selected with --model.",
         add_help=False,
     )
     parser.add_argument(
         "-h", "--help", action="help", default=argparse.SUPPRESS, help="Show this help message and exit"
     )
-    parser.add_argument("command", nargs="?", choices=["list"], default="list", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "command", nargs="?", choices=["list"], default="list", help="List the model profiles (the default)"
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     return parser
 
 
 def agents_main(argv: list[str] | None = None) -> int:
-    """Entry point for ``chrys agents``."""
+    """Entry point for ``chrys agent``."""
     parser = build_agents_parser()
     args = parser.parse_args(argv)
     _ = args.command
@@ -111,7 +115,7 @@ def agents_main(argv: list[str] | None = None) -> int:
 
 
 def models_main(argv: list[str] | None = None) -> int:
-    """Entry point for ``chrys models``."""
+    """Entry point for ``chrys model``."""
     parser = build_models_parser()
     args = parser.parse_args(argv)
     _ = args.command

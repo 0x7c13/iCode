@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
+    from chrys.service.tools.background import BackgroundTasks
     from chrys.service.workflows.admission import AgentBinding
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ class AgentNodeResources:
     mutation_tracker: MutationTracker | None
     mutation_coordinator: MutationCoordinator | None
     spill_quota: SpillQuota | None
+    background_tasks: BackgroundTasks | None
     allow_user_interaction: bool
     mcp_cache: MCPConnectionCache | None
     agent_registry: AgentProfileRegistry | None
@@ -243,6 +245,7 @@ async def build_kernel_node(
         session_id=session_id,
         session_dir=res.session_dir,
         web=web_tools,
+        background_tasks=res.background_tasks,
     )
     for warning in web_tools.warnings:
         await res.bus.publish(warning)
@@ -432,7 +435,7 @@ async def build_kernel_node(
     )
     approval.bind_publisher(callbacks.emitter())
     middleware.append(approval)
-    middleware.append(SleepMiddleware(res.bus, session_id=session_id))
+    middleware.append(SleepMiddleware(res.bus, session_id=session_id, background_tasks=res.background_tasks))
     middleware.append(
         UsageTrackingMiddleware(
             max_context_tokens=ctx.usage_middleware.max_context_tokens,
@@ -599,6 +602,7 @@ async def _register_sub_agents(
         workspace_cwd=environment.cwd,
         serialize_implicit_windows=not res.settings.parallel_implicit_tools,
         spill_quota=res.spill_quota,
+        background_tasks=res.background_tasks,
         ask_user_timeout_seconds=res.settings.ask_user_timeout_seconds,
         turn_context=turn_context,
         max_transient_retries=res.settings.effective_max_transient_retries(),

@@ -32,9 +32,11 @@ def _stores(config_dir: Path, session: str | None) -> list[ApprovalGrantStore]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog=f"{APP_COMMAND} approvals", description="Manage explicitly remembered approvals."
+        prog=f"{APP_COMMAND} approval", description="Manage explicitly remembered approvals."
     )
-    parser.add_argument("action", choices=["list", "revoke", "clear"])
+    parser.add_argument(
+        "action", nargs="?", choices=["list", "revoke", "clear"], default="list", help="What to do (default: list)"
+    )
     parser.add_argument("id", nargs="?", help="Full grant ID for revoke")
     parser.add_argument("--session", help="Select one saved session (full or short ID)")
     parser.add_argument("--project", help="Filter by project directory")

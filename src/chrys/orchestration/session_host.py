@@ -390,6 +390,12 @@ class ChrysSessionHost:
         return self._engine.runtime_details.model.vision
 
     @property
+    def running_background_tasks(self) -> int:
+        """How many of the session's shell commands run in the background; shutting down stops them."""
+        tasks = self._engine.session.background_tasks
+        return len(tasks.running) if tasks is not None else 0
+
+    @property
     def last_turn_outcome(self) -> TurnOutcome | None:
         """Structured outcome for the most recently completed streamed turn."""
         return self._last_turn_outcome

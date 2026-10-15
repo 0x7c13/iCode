@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -21,7 +22,6 @@ from chrys.foundation.platform.process import (
     _parse_linux_proc_stat,
     _process_listing_has_stopped_group_member,
     _process_statuses_have_stopped_session_member,
-    _process_statuses_session_groups,
     _ProcessStatus,
     managed_subprocess,
     resolve_windows_comspec,
@@ -77,38 +77,59 @@ def test_process_statuses_detect_stopped_member_by_session() -> None:
     assert _process_statuses_have_stopped_session_member(statuses, 500)
 
 
-def test_process_statuses_collect_session_process_groups() -> None:
-    statuses = [
-        _ProcessStatus(pid=1, state="S", pgid=100, session_id=300),
-        _ProcessStatus(pid=2, state="S", pgid=101, session_id=300),
-        _ProcessStatus(pid=3, state="S", pgid=0, session_id=300),
-        _ProcessStatus(pid=4, state="S", pgid=200, session_id=400),
-    ]
-
-    assert _process_statuses_session_groups(statuses, 300) == {100, 101}
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX session APIs (os.getsid) unavailable on Windows")
-def test_kill_process_session_rejects_own_session(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_signal_process_session_rejects_own_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(process_mod.sys, "platform", "linux")
     monkeypatch.setattr(process_mod.os, "getsid", lambda _pid: 300)
 
-    assert not process_mod.kill_process_session(300)
+    assert not process_mod.signal_process_session(300, signal.SIGKILL)
+
+
+def _session_members(monkeypatch: pytest.MonkeyPatch, statuses: list[_ProcessStatus]) -> None:
+    monkeypatch.setattr(process_mod.sys, "platform", "linux")
+    monkeypatch.setattr(process_mod.os, "getsid", lambda _pid: 999)
+    monkeypatch.setattr(process_mod.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(process_mod, "_iter_posix_process_statuses", lambda: iter(statuses))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX session APIs (os.getsid) unavailable on Windows")
-def test_kill_process_session_kills_each_session_group(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[int] = []
+def test_signal_process_session_signals_each_session_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    _session_members(
+        monkeypatch,
+        [
+            _ProcessStatus(pid=1, state="S", pgid=200, session_id=300),
+            _ProcessStatus(pid=2, state="S", pgid=100, session_id=300),
+            _ProcessStatus(pid=3, state="S", pgid=0, session_id=300),
+            _ProcessStatus(pid=4, state="S", pgid=400, session_id=400),
+        ],
+    )
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(process_mod.os, "killpg", lambda pgid, signum: calls.append((pgid, signum)))
 
-    monkeypatch.setattr(process_mod.sys, "platform", "linux")
-    monkeypatch.setattr(process_mod.os, "getsid", lambda _pid: 999)
-    monkeypatch.setattr(process_mod, "_process_groups_in_session", lambda _session_id: {200, 100})
-    monkeypatch.setattr(
-        process_mod, "kill_process_group", lambda process_group_id: calls.append(process_group_id) or True
+    assert process_mod.signal_process_session(300, 15)
+    assert calls == [(100, 15), (200, 15)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX session APIs (os.getsid) unavailable on Windows")
+def test_signal_process_session_signals_members_of_a_refused_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS may refuse a group signal that each member of the group accepts."""
+    _session_members(
+        monkeypatch,
+        [
+            _ProcessStatus(pid=11, state="S", pgid=100, session_id=300),
+            _ProcessStatus(pid=12, state="S", pgid=100, session_id=300),
+        ],
     )
 
-    assert process_mod.kill_process_session(300)
-    assert calls == [100, 200]
+    def refuse(_pgid: int, _signum: int) -> None:
+        raise PermissionError
+
+    signalled: list[int] = []
+    monkeypatch.setattr(process_mod.os, "killpg", refuse)
+    monkeypatch.setattr(process_mod.os, "kill", lambda pid, _signum: signalled.append(pid))
+
+    assert process_mod.signal_process_session(300, 9)
+    assert signalled == [11, 12]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX session APIs (os.getsid/os.getpgid) unavailable on Windows")
@@ -124,7 +145,6 @@ def test_process_session_status_falls_back_to_ps_on_non_linux(monkeypatch: pytes
     monkeypatch.setattr(process_mod.os, "getpgid", lambda pid: {10: 100, 11: 101}[pid])
 
     assert process_mod._process_session_has_stopped_member(300)
-    assert process_mod._process_groups_in_session(300) == {100, 101}
 
 
 def _stub_subprocess_spawn(monkeypatch: pytest.MonkeyPatch, spawn: object) -> None:

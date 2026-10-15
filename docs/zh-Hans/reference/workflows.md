@@ -250,8 +250,8 @@ agent(
 | 参数 | 含义 |
 | --- | --- |
 | `name` | 节点名称 |
-| `profile` | 必填，已有智能体配置的 ID、名称或显示名称；建议使用 ID，通过 `icode agents` 查看 |
-| `model` | 可选，传入 iCode 模型配置的 ID 或名称，可通过 `icode models` 查看；省略时按下文的模型选择规则确定 |
+| `profile` | 必填，已有智能体配置的 ID、名称或显示名称；建议使用 ID，通过 `icode agent list` 查看 |
+| `model` | 可选，传入 iCode 模型配置的 ID 或名称，可通过 `icode model list` 查看；省略时按下文的模型选择规则确定 |
 | `instructions_suffix` | 可选字符串，补充当前节点的指令 |
 | `timeout` | 单次尝试的秒数上限，默认不限制；有限正数或 `None` |
 | `retry` | 省略时最多三次尝试，间隔为零；不是所有错误都会自动重试 |
@@ -774,7 +774,7 @@ icode trajectory export --session <session-id> --format perfetto --out workflow.
 
 ### `icode workflow list`
 
-按[文件发现](#文件发现)规则列出工作流，不执行工作流代码。自定义工作流的标题取自此前保存的信任确认记录。
+按[文件发现](#文件发现)规则列出工作流，不执行工作流代码。自定义工作流的标题取自此前保存的信任确认记录。不带命令运行 `icode workflow` 效果相同。
 
 ```shell
 icode workflow list [--json]

@@ -55,6 +55,7 @@ from chrys.service.state._session_files import (
     session_write_lock_path,
 )
 from chrys.service.state._session_meta import resolve_session_kind
+from chrys.service.tools.background import BACKGROUND_DIR_NAME
 from chrys.service.tools.session_artifacts import reharden_document_image_artifacts
 from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY
 
@@ -298,6 +299,8 @@ class SessionForkMixin:
                 excluded.update(
                     name for name in names if name.casefold() in {"approval-grants.json", "approval-grants.json.lock"}
                 )
+                # Background command logs and stop files belong to commands the original session runs.
+                excluded.update(name for name in names if name.casefold() == BACKGROUND_DIR_NAME)
             return excluded
 
         return _ignore

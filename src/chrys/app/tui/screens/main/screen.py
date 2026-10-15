@@ -32,6 +32,7 @@ from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
 from chrys.app.tui.i18n import render_content, render_str
 from chrys.app.tui.language import LANGUAGE_OPTIONS, LANGUAGE_UNKNOWN_LOCALE
 from chrys.app.tui.screens.dialogs.app_mode import AppModeDialog
+from chrys.app.tui.screens.dialogs.background_task import ROLLBACK_NOTE, BackgroundTaskModal, confirm_stopping
 from chrys.app.tui.screens.dialogs.editor import EditorDialog, EditorDialogResult
 from chrys.app.tui.screens.main.action_availability import check_main_action
 from chrys.app.tui.screens.main.commands import INVALID_COMMAND_TITLE_REF, SlashCommandActions
@@ -102,6 +103,7 @@ from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode
+from chrys.app.tui.widgets.sidebar.background_tasks import BackgroundTaskList
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
 from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
@@ -147,6 +149,7 @@ if TYPE_CHECKING:
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -172,6 +175,12 @@ _SETTINGS_REJECTED = msg(
     fallback="Could not save settings; the store rejected: {keys}.",
 )
 _BREAK_BINDING = msg("tui.binding.break_agent", fallback="Break")
+_SHELL_TO_BACKGROUND_BINDING = msg("tui.binding.shell_to_background", fallback="Move to background")
+_BACKGROUND_FULL_TITLE = msg("tui.background.full.title", fallback="Too many background tasks")
+_BACKGROUND_FULL = msg(
+    "tui.background.full.message",
+    fallback="The command keeps running here. Stop a background task in the Tasks tab, then try again.",
+)
 _TRAJECTORY_BINDING = msg("tui.binding.trajectory", fallback="Trajectory")
 _CHAT_PAGE_UP_BINDING = msg("tui.binding.chat_page_up", fallback="Chat Page Up")
 _CHAT_PAGE_DOWN_BINDING = msg("tui.binding.chat_page_down", fallback="Chat Page Down")
@@ -219,6 +228,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     BINDINGS: ClassVar[list] = [
         localized_binding("ctrl+b", "interrupt", _BREAK_BINDING, show=False),
+        localized_binding("ctrl+t", "shell_to_background", _SHELL_TO_BACKGROUND_BINDING, show=False),
         localized_binding("f1", "sessions", _SESSIONS_BINDING, priority=True),
         localized_binding("f2", "agents_config", _AGENTS_BINDING, priority=True),
         localized_binding("f4", "models_config", _MODELS_BINDING, priority=True),
@@ -256,6 +266,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     chat_workspace_branch: reactive[str] = reactive("")
     context_usage_state: reactive[ContextUsageState | None] = reactive(None, always_update=True)
     todo_state: reactive[TodoListState | None] = reactive(None, always_update=True)
+    background_tasks_state: reactive[tuple[BackgroundTaskView, ...]] = reactive(())
     shell_mode_state: reactive[bool] = reactive(False, init=False)
     _reactive_state_initialized: bool = False
 
@@ -332,6 +343,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 partial(self._sessions.apply_custom_session_title, title, session_id)
             ),
             session_dir=self._session_dir_for,
+            animations_enabled=lambda: self.app.animation_level != "none",
+            attention=lambda: self._events.attention_mark(),  # noqa: PLW0108 — _events is built below
             locale_controller=self._locale_controller,
         )
         self._workspace_branch = WorkspaceBranchController(
@@ -443,6 +456,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 debug=self._debug,
                 refresh_model_indicator=self._refresh_model_indicator,
                 choose_missing_working_dir=partial(self._workspace_actions.choose_replacement_dir, reason="restore"),
+                confirm_stopping_background_tasks=self._confirm_stopping_background_tasks,
             ),
             agent_load=self._events,
             runtime_info=self._runtime_info,
@@ -505,6 +519,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # forwards to the active modal, which can close with a refresh still queued.
             schedule=self.call_later,
             sync_chrome=self._sync_workflow_chrome,
+            sync_terminal_title=self._session_title.set_workflow_tab,
             locale_controller=self._locale_controller,
         )
         self._workflow_timer: Timer | None = None
@@ -816,6 +831,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             post_gc_message=self.post_message,
             debug=self._debug,
             locale_controller=self._locale_controller,
+            confirm_stopping_background_tasks=lambda turn: self._confirm_stopping_background_tasks(after_turn=turn),
         )
 
     def _set_interrupt_confirm_active(self, active: bool) -> None:
@@ -861,6 +877,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             start_worker=self._start_worker,
             debug=self._debug,
             locale_controller=self._locale_controller,
+            background_tasks_running=lambda: self.background_tasks_running,
+            confirm_stopping_background_tasks=partial(self._confirm_stopping_background_tasks, exiting=True),
         )
 
     def _start_worker(self, work: Callable[[], Awaitable[object]]) -> object:
@@ -1028,6 +1046,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             yield SidebarPanel(locale_controller=self._locale_controller).data_bind(
                 context_usage_state=MainScreen.context_usage_state,
                 todo_state=MainScreen.todo_state,
+                background_tasks=MainScreen.background_tasks_state,
             )
         yield StatusBar(locale_controller=self._locale_controller).data_bind(
             agent_running=MainScreen.agent_running_state,
@@ -1827,6 +1846,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if running:
             self._state.run.turn_end_check_pending = True
             if not was_running:
+                self._events.reset_chat_attention()
                 self._session_title.run_started()
                 self._state.run.generation += 1
                 self._live_diff.reset_for_run_start(
@@ -1923,6 +1943,57 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         await self._input_flow.publish_interrupt()
 
+    def action_shell_to_background(self) -> None:
+        last = self._state.runtime.background_tasks
+        if last is not None and last.full:
+            self._view_adapter.notify(_BACKGROUND_FULL.bind(), title=_BACKGROUND_FULL_TITLE.bind(), severity="warning")
+            return
+        self._start_worker(self._tool_actions.move_shells_to_background)
+
+    @on(BackgroundTaskList.Opened)
+    def _open_background_task(self, event: BackgroundTaskList.Opened) -> None:
+        event.stop()
+        task = self._background_task(event.task_id)
+        if task is not None:
+            self.app.push_screen(
+                BackgroundTaskModal(task, latest=self._background_task, stop=self._stop_background_task)
+            )
+
+    @property
+    def background_tasks_running(self) -> bool:
+        """Whether any of the session's background commands runs."""
+        return any(task.running for task in self.background_tasks_state)
+
+    def _background_task(self, task_id: str) -> BackgroundTaskView | None:
+        return next((task for task in self.background_tasks_state if task.id == task_id), None)
+
+    def _stop_background_task(self, task_id: str) -> None:
+        self._start_worker(partial(self._tool_actions.stop_background_task, task_id))
+
+    async def _confirm_stopping_background_tasks(self, after_turn: int | None = None, *, exiting: bool = False) -> bool:
+        """Whether the user lets the running background commands stop; True when none would.
+
+        With *after_turn*, only those the turns after it started, as a rollback
+        stops; *exiting* when quitting stops them. Await it in a worker: the
+        answer arrives through this screen's queue.
+        """
+        tasks = [
+            task
+            for task in self.background_tasks_state
+            if task.running and (after_turn is None or task.turn > after_turn)
+        ]
+        if not tasks:
+            return True
+        answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+        def settle(confirmed: bool | None) -> None:
+            if not answer.done():
+                answer.set_result(bool(confirmed))
+
+        note = ROLLBACK_NOTE if after_turn is not None else None
+        self.app.push_screen(confirm_stopping(tasks, self, note=note, exiting=exiting), settle)
+        return await answer
+
     # -- Per-sub-agent retry/abort bridging ---------------------------
     #
     # The :class:`SubAgentToolCall` renderer posts widget-level Textual
@@ -1935,11 +2006,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     async def on_sub_agent_retry_clicked(self, event: SubAgentRetryClicked) -> None:
         """Bubbled from :class:`SubAgentToolCall` Retry button."""
         event.stop()
+        self._events.sub_agent_decided(event.invocation_id)
         await self._tool_actions.request_sub_agent_retry(event.invocation_id)
 
     async def on_sub_agent_abort_clicked(self, event: SubAgentAbortClicked) -> None:
         """Bubbled from :class:`SubAgentToolCall` Abort button."""
         event.stop()
+        self._events.sub_agent_decided(event.invocation_id)
         await self._tool_actions.request_sub_agent_abort(event.invocation_id)
 
     async def on_sleep_skip_clicked(self, event: SleepSkipClicked) -> None:
@@ -1950,6 +2023,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     async def on_ask_user_inline_submitted(self, event: AskUserInlineSubmitted) -> None:
         """Bubbled from :class:`AskUserToolCall` inline response controls."""
         event.stop()
+        self._events.inline_question_answered(event.request_id)
         await self._tool_actions.submit_ask_user_inline(event.request_id, event.answers)
 
     def action_quit(self) -> None:
@@ -2177,8 +2251,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         input_bar = self.query_one(InputBar)
         if self._dashboard_visible():
             self._view_adapter.hide_trajectory_dashboard()
-        if not workflow:
+        if workflow:
+            # Switching away acknowledges the chat's last result mark.
+            self._session_title.clear_terminal_title_result()
+        else:
             self._workflow.leave()
+            self._session_title.set_workflow_tab(None)
         self._workflow.workflow_mode = workflow
         self.query_one(SidebarPanel).set_workflow_mode(workflow)
         self._sync_sidebar_tab_strip_focus()

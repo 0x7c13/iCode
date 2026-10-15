@@ -33,6 +33,7 @@ from textual.widgets import Button, TextArea
 
 from chrys.app.tui.i18n import render_content, render_str
 from chrys.app.tui.support.prompt_history import DEFAULT_MAX_ENTRIES, PromptHistoryWriter, append_history, load_history
+from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import resync_compositor_regions
 from chrys.app.tui.widgets import EnhancedTextArea
 from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate
@@ -46,8 +47,6 @@ from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.platform import safe_getcwd
 
-# Status-bar chrome is synchronized by MainScreen through widget messages.
-_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # Unicode-name markers for CJK-family scripts where a preceding character cannot be an email local part.
 _CJK_NAME_TOKENS = ("CJK", "HIRAGANA", "KATAKANA", "HANGUL", "BOPOMOFO", "IDEOGRAPH")
 INPUT_SEND = msg("tui.input.send", fallback="Send")
@@ -1131,7 +1130,7 @@ class InputBar(Widget):
 
     def _spin_prompt(self) -> None:
         """Update the prompt indicator with a spinner frame."""
-        frame = _SPINNER_FRAMES[int(time() * 8) % len(_SPINNER_FRAMES)]
+        frame = SPINNER_FRAMES[int(time() * 8) % len(SPINNER_FRAMES)]
         self.query_one("#editor-btn", Button).label = Text(frame)
 
     def _unlock(self) -> None:

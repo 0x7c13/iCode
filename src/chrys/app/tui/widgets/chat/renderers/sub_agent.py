@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from rich.text import Text
 from textual.containers import Horizontal, Vertical
@@ -345,8 +345,6 @@ class SubAgentToolCall(BaseToolCard):
         text-style: bold;
     }
     """
-
-    _SPINNERS: ClassVar[str] = "\u25d0\u25d3\u25d1\u25d2"
 
     def __init__(
         self,

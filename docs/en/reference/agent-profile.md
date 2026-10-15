@@ -64,7 +64,7 @@ This example omits `id`. iCode assigns a stable ID and writes it back to the fil
 Save the profile as `Reviewer.yaml` in the [user agent profile directory](#user-agent-profile-directory). Run the following command to confirm that it loads:
 
 ```bash
-icode agents
+icode agent list
 ```
 
 If "Code review" appears in the list, the profile has loaded. If it does not appear, check the YAML parsing or field validation warnings shown at startup, and confirm that the file is in the user agent profile directory.
@@ -103,7 +103,7 @@ model:
 
 If `profile_id` is omitted, empty, or not found among the loaded model profiles, the main agent uses the model profile currently active in the session, and a sub-agent inherits the model profile actually used by its parent. iCode also logs a warning when the ID cannot be found.
 
-Run `icode models` to find stable model profile IDs in the `ID` column. For model configuration instructions, see [Configure models](../guides/configuration/models.md).
+Run `icode model list` to find stable model profile IDs in the `ID` column. For model configuration instructions, see [Configure models](../guides/configuration/models.md).
 
 ## tools
 
@@ -191,7 +191,7 @@ For configuration instructions, connection tests, and verification of tool calls
 
 `shell_filter` applies only to tools in the `shell` kind. If this field is omitted or set to `unrestricted`, iCode does not filter shell commands.
 
-Shell tool calls go through [approval](#approval) first. Once approved, `shell_filter` checks the actual command. The command runs only after both checks pass. If the filter blocks a command, iCode returns a tool error indicating that the command was blocked, without starting a shell process.
+Shell tool calls go through [approval](#approval) first. Once approved, `shell_filter` checks the actual command. The command runs only after both checks pass. If the filter blocks a command, iCode returns a tool error indicating that the command was blocked, without starting a shell process. The filter always allows the command iCode gives the agent for stopping a [background command](../guides/configuration/tools.md#commands-that-keep-running-in-the-background), so a read-only agent can still stop its own.
 
 You can use a preset or define your own allowed or blocked commands. To use a preset, specify its name directly or select it with `preset` in an object. These two forms are equivalent:
 

@@ -21,9 +21,11 @@ from threading import Event
 from typing import Final, cast
 
 from chrys.foundation.trajectory.event_types import TurnEndReason
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._context_evidence import _compaction_consumption_resolution, _RevisionResolution
 from chrys.service.analytics._facts import (
     _START_FAMILIES,
+    _UNREPORTED_FAILURE_USAGE_REASON,
     _active,
     _Endpoint,
     _ExchangeUsage,
@@ -59,7 +61,7 @@ from chrys.service.analytics._turn_graph import (
     _turn_flow,
     _wall_partition,
 )
-from chrys.service.analytics.math import interval_length
+from chrys.service.analytics.math import Interval, interval_length
 from chrys.service.analytics.model import (
     ContextSample,
     Metric,
@@ -90,11 +92,13 @@ class _ResolutionCache:
 def _turn_token_usage(
     intermediate: _Intermediate,
     turn_id: str,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     verdict: Metric,
 ) -> TokenUsage:
     exchanges = [
-        item for item in intermediate.usage_by_turn.get(turn_id, ()) if _active(item.sequence, inactive_ranges)
+        item
+        for item in intermediate.usage_by_turn.get(turn_id, ())
+        if _active(item.sequence, inactive_ranges) and not item.unreported_failure
     ]
     return _interned_token_usage(tuple(_turn_bucket_usage(exchanges, bucket, verdict) for bucket in UsageBucket))
 
@@ -102,7 +106,7 @@ def _turn_token_usage(
 def _turn_uses_session_carrier_fallback(
     intermediate: _Intermediate,
     turn_id: str,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     cancel_event: Event | None,
 ) -> bool:
@@ -124,7 +128,7 @@ def _turn_uses_session_carrier_fallback(
 def _resolve_turn(
     intermediate: _Intermediate,
     turn: _Turn,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     resolution_cache: _ResolutionCache,
     revisions: _RevisionResolution,
@@ -158,10 +162,8 @@ def _resolve_turn(
     elif finish.scope != start.scope or finish.sequence <= start.sequence or finish.monotonic_ns < start.monotonic_ns:
         diagnostics.append("turn interval has invalid monotonic endpoints")
         turn_lifecycle_exact = False
-    tail_end, tail_exact, end_sequence, waited_hook_ids = _turn_tail(
-        intermediate, turn, start, finish, inactive_ranges, diagnostics
-    )
-    visible_end = tail_end or (finish.monotonic_ns if finish is not None else start.monotonic_ns)
+    tail = _turn_tail(intermediate, turn, start, finish, inactive_ranges, diagnostics)
+    visible_end = tail.end_ns or (finish.monotonic_ns if finish is not None else start.monotonic_ns)
     turn_bounds = (start.monotonic_ns, max(start.monotonic_ns, visible_end))
     counter_axis_diagnostics = _counter_axis_diagnostics(
         intermediate,
@@ -178,7 +180,7 @@ def _resolve_turn(
     coverage_exact = _turn_coverage_exact(
         intermediate,
         start,
-        end_sequence,
+        tail.end_sequence,
         inactive_ranges,
         integrity_diagnostics,
         rollback_projection_unresolved=rollback_projection_unresolved,
@@ -198,25 +200,23 @@ def _resolve_turn(
     )
     _check_cancelled(cancel_event)
     resolved_nodes.extend(_continuation_poll_nodes(resolved_nodes))
-    suspension_nodes, suspension_deductions, suspension_exact = _suspension_nodes(
-        turn, resolved_nodes, start, finish, inactive_ranges, diagnostics
-    )
-    resolved_nodes.extend(suspension_nodes)
+    suspensions = _suspension_nodes(turn, resolved_nodes, start, finish, inactive_ranges, diagnostics)
+    resolved_nodes.extend(suspensions.nodes)
     projection = _project_turn(
         resolved_nodes,
         turn_bounds,
         start=start,
         finish=finish,
-        tail_end=tail_end,
-        waited_hook_ids=waited_hook_ids,
-        suspension_deductions=suspension_deductions,
+        tail_end=tail.end_ns,
+        waited_hook_ids=tail.waited_hook_ids,
+        suspension_deductions=suspensions.deductions,
         revisions=revisions,
         compaction_consumption=compaction_consumption,
         mapped_carrier=mapped_carrier,
         cancel_event=cancel_event,
         diagnostics=diagnostics,
     )
-    wall_durations, idle_intervals = _wall_partition(turn_bounds, projection.slices, cancel_event=cancel_event)
+    wall = _wall_partition(turn_bounds, projection.slices, cancel_event=cancel_event)
     idle_slices = tuple(
         TimeSlice(
             family="idle",
@@ -232,7 +232,7 @@ def _resolve_turn(
             compute_weight=False,
             response_weight=True,
         )
-        for index, (idle_start, idle_end) in enumerate(idle_intervals)
+        for index, (idle_start, idle_end) in enumerate(wall.idle)
     )
     all_slices = tuple(
         sorted((*projection.slices, *idle_slices), key=lambda item: (item.start_ns, item.end_ns, item.slice_id))
@@ -247,9 +247,9 @@ def _resolve_turn(
         if coverage_exact
         and turn_lifecycle_exact
         and lifecycle_exact
-        and tail_exact
+        and tail.exact
         and projection.timeline_exact
-        and suspension_exact
+        and suspensions.exact
         else Precision.UNRESOLVED
     )
     causes_exact = _required_causes_present(resolved_nodes, diagnostics)
@@ -261,7 +261,7 @@ def _resolve_turn(
         and projection.dag_exact
         and causes_exact
     )
-    response_cp_exact = compute_cp_exact and tail_exact and suspension_exact and projection.response_dependency_exact
+    response_cp_exact = compute_cp_exact and tail.exact and suspensions.exact and projection.response_dependency_exact
     critical_paths = _critical_paths(
         resolved_nodes,
         all_slices,
@@ -310,7 +310,7 @@ def _resolve_turn(
     response_cp_reason = None if response_cp_exact else unresolved_reason
     wall_metrics = {
         bucket: Metric(value=value, precision=precision, reason=metric_reason)
-        for bucket, value in wall_durations.items()
+        for bucket, value in wall.durations.items()
     }
     utilization = {
         bucket: Metric(
@@ -363,7 +363,7 @@ def _resolve_turn(
         turn_number=turn_number,
         runtime_id=start.runtime_id,
         start_sequence=start.sequence,
-        end_sequence=end_sequence,
+        end_sequence=tail.end_sequence,
         elapsed_ns=Metric(elapsed, precision, metric_reason),
         compute_cp_ns=Metric(
             critical_paths.compute_ns if compute_cp_exact else None,
@@ -409,25 +409,38 @@ def _resolve_turn(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _TurnTail:
+    """Where a turn's visible span ends: its response fence, or its terminal event without one."""
+
+    end_ns: int | None
+    exact: bool
+    """Whether the end is proven: a cancelled or process-exit turn's terminal event, or a valid
+    fence with every hook it waited on accounted for."""
+    end_sequence: int | None
+    waited_hook_ids: frozenset[str] | None
+    """The hooks the response waited on; None when they cannot be known."""
+
+
 def _turn_tail(
     intermediate: _Intermediate,
     turn: _Turn,
     start: _Endpoint,
     finish: _Endpoint | None,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     diagnostics: list[str],
-) -> tuple[int | None, bool, int | None, frozenset[str] | None]:
+) -> _TurnTail:
     if finish is None:
-        return None, False, None, None
+        return _TurnTail(None, False, None, None)
     if finish.scope != start.scope or finish.sequence <= start.sequence or finish.monotonic_ns < start.monotonic_ns:
-        return finish.monotonic_ns, False, finish.sequence, None
+        return _TurnTail(finish.monotonic_ns, False, finish.sequence, None)
     end_reason = _payload_str(finish.payload, "end_reason")
     if end_reason in {TurnEndReason.PROCESS_EXIT, TurnEndReason.CANCELLED}:
-        return finish.monotonic_ns, True, finish.sequence, frozenset()
+        return _TurnTail(finish.monotonic_ns, True, finish.sequence, frozenset())
     markers = [marker for marker in turn.response_markers if _active(marker.sequence, inactive_ranges)]
     if len(markers) != 1:
         diagnostics.append("turn response fence is missing or duplicated")
-        return finish.monotonic_ns, False, finish.sequence, None
+        return _TurnTail(finish.monotonic_ns, False, finish.sequence, None)
     marker = markers[0]
     segment_end_sequence = max(
         (
@@ -439,12 +452,12 @@ def _turn_tail(
     )
     if marker.scope != start.scope or marker.sequence <= finish.sequence or marker.monotonic_ns < finish.monotonic_ns:
         diagnostics.append("turn response fence is outside the turn runtime or precedes turn.finished")
-        return finish.monotonic_ns, False, segment_end_sequence, None
+        return _TurnTail(finish.monotonic_ns, False, segment_end_sequence, None)
     waited_ids = _reassemble_waited_hook_ids(intermediate, marker, inactive_ranges)
     expected = _payload_int(marker.payload, "waited_hook_operation_count")
     if waited_ids is None or expected is None or len(waited_ids) != expected or len(set(waited_ids)) != expected:
         diagnostics.append("turn response fence hook membership is incomplete")
-        return marker.monotonic_ns, False, segment_end_sequence, None
+        return _TurnTail(marker.monotonic_ns, False, segment_end_sequence, None)
     drained_scopes = _payload_value(marker.payload, "drained_scopes")
     outcome = _payload_str(marker.payload, "outcome")
     if (
@@ -457,7 +470,7 @@ def _turn_tail(
         or (waited_ids and "turn" not in drained_scopes)
     ):
         diagnostics.append("turn response fence drained_scopes are inconsistent with its outcome or membership")
-        return marker.monotonic_ns, False, segment_end_sequence, None
+        return _TurnTail(marker.monotonic_ns, False, segment_end_sequence, None)
     hook_nodes = {
         node.operation_id: node
         for node in intermediate.nodes_by_turn.get(turn.turn_id, ())
@@ -484,14 +497,14 @@ def _turn_tail(
             or not _endpoint_in_coverage_runtime(intermediate, terminals[0], inactive_ranges)
         ):
             diagnostics.append("a waited hook is not a uniquely closed async turn-scope hook before the response fence")
-            return marker.monotonic_ns, False, segment_end_sequence, None
-    return marker.monotonic_ns, True, segment_end_sequence, frozenset(waited_ids)
+            return _TurnTail(marker.monotonic_ns, False, segment_end_sequence, None)
+    return _TurnTail(marker.monotonic_ns, True, segment_end_sequence, frozenset(waited_ids))
 
 
 def _reassemble_waited_hook_ids(
     intermediate: _Intermediate,
     marker: _Endpoint,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
 ) -> list[str] | None:
     declarations = [
         declaration
@@ -542,7 +555,7 @@ def _turn_coverage_exact(
     intermediate: _Intermediate,
     start: _Endpoint,
     end_sequence: int | None,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     diagnostics: list[str],
     *,
     rollback_projection_unresolved: bool,
@@ -640,7 +653,7 @@ def _turn_coverage_exact(
 def _resolved_turn_nodes(
     intermediate: _Intermediate,
     turn_start: _Endpoint,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     diagnostics: list[str],
 ) -> tuple[list[_ResolvedNode], bool]:
     resolved: list[_ResolvedNode] = []
@@ -729,7 +742,7 @@ def _resolved_side_call_node(
     turn_start: _Endpoint,
     starts: list[_Endpoint],
     finishes: list[_Endpoint],
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
 ) -> _ResolvedNode | None:
     """Validate a side-call lifecycle in its own actor domain without entering main-turn metrics."""
     if len(starts) != 1 or len(finishes) != 1:
@@ -760,7 +773,7 @@ def _tool_action_projection_exact(
     intermediate: _Intermediate,
     turn_start: _Endpoint,
     terminal_sequence: int | None,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     diagnostics: list[str],
 ) -> bool:
     exact = True
@@ -817,7 +830,7 @@ def _timeline_operations(
     intermediate: _Intermediate,
     *,
     turn_id: str,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     resolved_nodes: list[_ResolvedNode],
     cancel_event: Event | None,
 ) -> tuple[TimelineOperation, ...]:
@@ -957,14 +970,24 @@ def _continuation_poll_nodes(nodes: list[_ResolvedNode]) -> list[_ResolvedNode]:
     return derived
 
 
+@dataclass(frozen=True, slots=True)
+class _Suspensions:
+    """A turn's paired suspensions and the time each deducts from the sub-agent call it paused."""
+
+    nodes: list[_ResolvedNode]
+    deductions: dict[str, list[Interval]]
+    """Suspended intervals by the node id of the sub-agent call they fall in."""
+    exact: bool
+
+
 def _suspension_nodes(
     turn: _Turn,
     nodes: list[_ResolvedNode],
     turn_start: _Endpoint,
     finish: _Endpoint | None,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     diagnostics: list[str],
-) -> tuple[list[_ResolvedNode], dict[str, list[tuple[int, int]]], bool]:
+) -> _Suspensions:
     """Pair turn suspension markers and identify the sole deductible boundary."""
     suspended = sorted(
         (event for event in turn.suspended if _active(event.sequence, inactive_ranges)),
@@ -977,7 +1000,7 @@ def _suspension_nodes(
     resume_index = 0
     exact = True
     derived: list[_ResolvedNode] = []
-    deductions: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    deductions: dict[str, list[Interval]] = defaultdict(list)
     boundaries = [node for node in nodes if node.family == "sub_agent"]
     for index, start in enumerate(suspended):
         while resume_index < len(resumed) and resumed[resume_index].sequence <= start.sequence:
@@ -1040,7 +1063,7 @@ def _suspension_nodes(
     if resume_index < len(resumed):
         diagnostics.append("turn.resumed has no preceding suspension")
         exact = False
-    return derived, deductions, exact
+    return _Suspensions(derived, deductions, exact)
 
 
 def _synthetic_endpoint(
@@ -1066,7 +1089,7 @@ def _synthetic_endpoint(
 
 def _usage_samples_by_turn(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
 ) -> dict[str, tuple[TokenUsageSample, ...]]:
     """Project timestamped per-exchange usage counters on demand for export."""
     finish_ns = {
@@ -1097,7 +1120,7 @@ def _usage_samples_by_turn(
 
 def _context_samples_by_turn(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
 ) -> dict[str, tuple[ContextSample, ...]]:
     """Project timestamped context-size counters on demand for export.
 
@@ -1129,7 +1152,7 @@ def _context_samples_by_turn(
 def _turn_usage(
     intermediate: _Intermediate,
     turn_id: str,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     integrity_exact: bool,
     integrity_reason: str,
@@ -1162,9 +1185,8 @@ def _turn_usage(
             exchange_projection_exact = False
     if unclosed_start:
         return Metric(None, Precision.MISSING, "one or more model exchanges have no terminal usage")
-    exchanges = [
-        item for item in intermediate.usage_by_turn.get(turn_id, ()) if _active(item.sequence, inactive_ranges)
-    ]
+    active = [item for item in intermediate.usage_by_turn.get(turn_id, ()) if _active(item.sequence, inactive_ranges)]
+    exchanges = [item for item in active if not item.unreported_failure]
     if any(
         item.normalization_unavailable or item.input_total is None or item.output_total is None for item in exchanges
     ):
@@ -1172,7 +1194,7 @@ def _turn_usage(
     value = sum(cast("int", item.input_total) + cast("int", item.output_total) for item in exchanges)
     if not integrity_exact:
         return Metric(value, Precision.UNRESOLVED, integrity_reason or "turn sequence integrity is unresolved")
-    usage_terminals = [item.sequence for item in exchanges]
+    usage_terminals = [item.sequence for item in active]
     if (
         not turn_lifecycle_exact
         or not exchange_projection_exact
@@ -1185,6 +1207,8 @@ def _turn_usage(
         for item in exchanges
     ):
         return Metric(value, Precision.UNRESOLVED, "normalized usage provenance is incomplete")
+    if len(exchanges) < len(active):
+        return Metric(value, Precision.ESTIMATED, _UNREPORTED_FAILURE_USAGE_REASON)
     return Metric(value, Precision.EXACT)
 
 
@@ -1192,8 +1216,10 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
     """Split one turn's usage verdict into a per-bucket display metric.
 
     The turn-level verdict caps every bucket: a missing or unresolved turn can
-    never yield an exact bucket. Optional buckets additionally degrade on
-    partial reporting because providers normalize them inconsistently.
+    never yield an exact bucket, and an estimated one (failed requests that
+    reported no usage, already left out of *exchanges*) keeps every bucket a
+    lower bound. Optional buckets additionally degrade on partial reporting
+    because providers normalize them inconsistently.
     """
     if verdict.value is None:
         return Metric(None, verdict.precision, verdict.reason)
@@ -1201,7 +1227,7 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
     if bucket in _OPTIONAL_USAGE_BUCKETS and exchanges and not reported:
         return Metric(None, Precision.MISSING, "no exchange reported this bucket")
     value = sum(reported)
-    if verdict.precision is not Precision.EXACT:
+    if verdict.precision not in {Precision.EXACT, Precision.ESTIMATED}:
         return Metric(value, Precision.UNRESOLVED, verdict.reason)
     if bucket is UsageBucket.REASONING and any(
         item.extras is not None
@@ -1215,13 +1241,15 @@ def _turn_bucket_usage(exchanges: list[_ExchangeUsage], bucket: UsageBucket, ver
         return Metric(value, Precision.ESTIMATED, "not every exchange reported this bucket")
     if not all(item.bucket_has_provider_provenance(bucket) for item in exchanges):
         return Metric(value, Precision.UNRESOLVED, "normalized usage provenance is incomplete")
+    if verdict.precision is Precision.ESTIMATED:
+        return Metric(value, Precision.ESTIMATED, verdict.reason)
     return Metric(value, Precision.EXACT)
 
 
 def _counter_axis_diagnostics(
     intermediate: _Intermediate,
     turn_id: str,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     resolution_cache: _ResolutionCache,
     axis_start_ns: int,
@@ -1297,7 +1325,7 @@ def _empty_turn(
     starts: list[_Endpoint],
     reason: str,
     *,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     resolution_cache: _ResolutionCache,
     revisions: _RevisionResolution,
     refresh: bool,

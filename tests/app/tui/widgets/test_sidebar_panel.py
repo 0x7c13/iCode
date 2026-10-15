@@ -144,7 +144,7 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         assert tabs_after == tabs_before
         assert _tab_labels(sidebar) == ["消息", "任务", "上下文", "调试", "伙伴"]
         assert str(sidebar.tasks_panel.query_one(".tasks-label", Static).render()) == "待办 (1/1)"
-        assert str(sidebar.tasks_panel.query_one("#tasks-empty", Static).render()) == "暂无任务"
+        assert str(sidebar.tasks_panel.query_one("#tasks-empty", Static).render()) == "暂无待办"
         assert str(sidebar.toc_panel.query_one(".toc-empty", Static).render()) == "你的对话将显示在这里"
         assert (
             str(sidebar.buddy_panel.query_one(".buddy-empty", Static).render()) == "尚未孵化伙伴。请尝试 /buddy hatch"

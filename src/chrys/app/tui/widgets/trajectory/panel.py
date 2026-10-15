@@ -12,7 +12,7 @@ from functools import partial
 from pathlib import Path
 from threading import Event
 from time import monotonic
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 from rich.style import Style
 from rich.text import Text
@@ -111,6 +111,13 @@ class DashboardTab(StrEnum):
     SESSION_DATA = "session-data"
 
 
+class _TurnTab(NamedTuple):
+    """One turn tab of the timeline: the turn it selects and its label."""
+
+    turn_id: str
+    label: str
+
+
 class TrajectoryDashboard(Container):
     """Own dashboard foreground and active-tab state as one atomic pair."""
 
@@ -190,7 +197,7 @@ class TrajectoryDashboard(Container):
         self._session_id = ""
         self._path: Path | None = None
         self._session_json_loaded = False
-        self._turn_tab_key: tuple[tuple[str, str], ...] = ()
+        self._turn_tab_key: tuple[_TurnTab, ...] = ()
         self._analyzer: TrajectoryAnalyzer | None = None
         self._analysis: TrajectoryAnalysis | None = None
         self._session_storage: SessionStorage | None = None
@@ -397,7 +404,7 @@ class TrajectoryDashboard(Container):
         index = int(event.tab.id.removeprefix("turn-"))
         if index >= len(self._turn_tab_key):
             return
-        turn_id = self._turn_tab_key[index][0]
+        turn_id = self._turn_tab_key[index].turn_id
         if turn_id == self._selected_turn_id:
             return
         self._selected_turn_id = turn_id
@@ -457,7 +464,8 @@ class TrajectoryDashboard(Container):
             analysis.turns if analysis is not None and analysis.availability is AnalysisAvailability.AVAILABLE else ()
         )
         key = tuple(
-            (turn.turn_id, self._render_message(TURN_LABEL.bind(turn=turn.turn_number or "—"))) for turn in turns
+            _TurnTab(turn.turn_id, self._render_message(TURN_LABEL.bind(turn=turn.turn_number or "—")))
+            for turn in turns
         )
         if key != self._turn_tab_key:
             self._turn_tab_key = key
@@ -484,11 +492,7 @@ class TrajectoryDashboard(Container):
 
     def _active_turn_tab_id(self) -> str | None:
         return next(
-            (
-                f"turn-{index}"
-                for index, (turn_id, _) in enumerate(self._turn_tab_key)
-                if turn_id == self._selected_turn_id
-            ),
+            (f"turn-{index}" for index, tab in enumerate(self._turn_tab_key) if tab.turn_id == self._selected_turn_id),
             None,
         )
 
@@ -496,7 +500,7 @@ class TrajectoryDashboard(Container):
         old = self.query_one("#timeline-turn-tabs", Tabs)
         anchor = self.query_one("#trajectory-tabs", Tabs)
         replacement = Tabs(
-            *(Tab(Text(label), id=f"turn-{index}") for index, (_, label) in enumerate(self._turn_tab_key)),
+            *(Tab(Text(tab.label), id=f"turn-{index}") for index, tab in enumerate(self._turn_tab_key)),
             active=self._active_turn_tab_id(),
             id="timeline-turn-tabs",
         )

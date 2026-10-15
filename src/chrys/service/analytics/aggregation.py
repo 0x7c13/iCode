@@ -19,8 +19,9 @@ from __future__ import annotations
 
 from array import array
 from collections import Counter, defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from io import BufferedReader
+from itertools import pairwise
 from os import fstat
 from pathlib import Path
 from threading import Event
@@ -31,6 +32,7 @@ from chrys.foundation.config.settings import DEFAULT_TRAJECTORY_VERIFY_COMMANDS
 from chrys.foundation.platform.files import secure_open_owner_only_binary
 from chrys.foundation.trajectory.fingerprint import FINGERPRINT_KEY_BYTES
 from chrys.foundation.trajectory.keys import TRAJECTORY_KEY_FILE_NAME
+from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._actions import (
     _action_count_metrics,
     _degrade_change_verification,
@@ -41,12 +43,14 @@ from chrys.service.analytics._actions import (
 )
 from chrys.service.analytics._context_evidence import _revision_memberships, _RevisionResolution
 from chrys.service.analytics._facts import (
+    _UNREPORTED_FAILURE_USAGE_REASON,
     _active,
     _closed_sequence_union,
     _Endpoint,
     _Intermediate,
     _lifecycle_cut,
     _LifecycleCut,
+    _Membership,
     _Node,
     _payload_str,
 )
@@ -59,6 +63,7 @@ from chrys.service.analytics._insights import (
 )
 from chrys.service.analytics._metric_ops import (
     _cap_session_metric,
+    _merge_reasons,
     _percentile_metric,
     _sum_metrics,
     _sum_optional_bucket_metrics,
@@ -72,7 +77,7 @@ from chrys.service.analytics._timeline import (
     _turn_start_membership,
 )
 from chrys.service.analytics._workflows import include_workflow_overview, workflow_runs
-from chrys.service.analytics.findings import evaluate_findings
+from chrys.service.analytics.findings import RetriedExchange, SequenceSpan, evaluate_findings
 from chrys.service.analytics.model import (
     FLOW_TERMINAL_INDEX,
     ActionClass,
@@ -525,7 +530,7 @@ def _resolve(
     )
     if session_integrity_reason is not None:
         change_verification = _degrade_change_verification(change_verification, session_integrity_reason)
-    retry_amplification, retry_evidence, retry_target = _retry_amplification(
+    retry = _retry_amplification(
         intermediate,
         active_ranges,
         revisions,
@@ -535,7 +540,7 @@ def _resolve(
         actions,
         resolved_turns,
         change_verification,
-        retry_amplification,
+        retry.tokens,
         cancel_event=cancel_event,
     )
     if session_integrity_reason is not None:
@@ -552,14 +557,21 @@ def _resolve(
         session_projection(),
         cancel_event=cancel_event,
     )
+    logical_turns = _fold_retry_turns(resolved_turns, cancel_event=cancel_event)
+    runs = workflow_runs(
+        intermediate, active_ranges, integrity_reason=session_integrity_reason, cancel_event=cancel_event
+    )
     findings = evaluate_findings(
         actions=actions,
-        turns=resolved_turns,
+        turns=logical_turns,
         validation=validation,
         change_verification=change_verification,
-        retry_amplification_evidence=retry_evidence,
-        retry_target=retry_target,
-        context_carrying_load=context_carrying_load,
+        retry_amplification_evidence=retry.evidence,
+        retried_exchange=retry.exchange,
+        # A workflow session shows no Insights, which is what names the
+        # items a costly-context finding is about.
+        context_carrying_load=() if runs else context_carrying_load,
+        outside_changes=(*_background_task_spans(intermediate), *_current_turn_drops(intermediate)),
         cancel_event=cancel_event,
     )
     span_mismatches, containment_violations = _timeline_diagnostics(
@@ -607,7 +619,6 @@ def _resolve(
         tool_kind="mcp",
         display_name=lambda action: action.tool_name,
     )
-    logical_turns = _fold_retry_turns(resolved_turns, cancel_event=cancel_event)
     diagnostics = replace(
         diagnostics,
         timeline_operations=_timeline_operation_diagnostics(logical_turns),
@@ -629,9 +640,6 @@ def _resolve(
         mcp_usage = _degrade_tool_usage_panel(mcp_usage, session_integrity_reason)
         insights = _degrade_insights(insights, session_integrity_reason)
         submission_latency = _degrade_submission_latency(submission_latency, session_integrity_reason)
-    runs = workflow_runs(
-        intermediate, active_ranges, integrity_reason=session_integrity_reason, cancel_event=cancel_event
-    )
     if runs:
         overview = include_workflow_overview(overview, runs)
     return TrajectoryAnalysis(
@@ -688,7 +696,7 @@ def _session_integrity_reason(
 
 def _rollback_projection_unresolved(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
 ) -> bool:
     if any(_active(sequence, inactive_ranges) for sequence in intermediate.rollback_errors):
         return True
@@ -701,6 +709,54 @@ def _rollback_projection_unresolved(
         _active(sequence, inactive_ranges)
         and (old_branch is None or new_branch is None or (old_branch, new_branch) not in rollback_pairs)
         for sequence, old_branch, new_branch in intermediate.branch_supersessions
+    )
+
+
+def _background_task_spans(intermediate: _Intermediate) -> tuple[SequenceSpan, ...]:
+    """Where each background task the log records was running.
+
+    A task whose start fell outside the log is taken as running from the
+    beginning. A task with no finish event may outlive a runtime that closed
+    the log properly (a rollback reopens the log in place and keeps
+    background commands running), but not one that ended without closing it:
+    the process is gone, and on Windows its job with it, while on POSIX a
+    later launch stops the task or leaves it running untracked. So the task
+    counts as running until the next runtime after such an end starts, or to
+    the end of the log.
+    """
+    runtime_starts = sorted(
+        (endpoint.sequence, runtime_id)
+        for runtime_id, endpoints in intermediate.runtime_starts.items()
+        for endpoint in endpoints
+    )
+    unclosed_ends = [
+        sequence
+        for (_previous_start, previous_id), (sequence, _runtime_id) in pairwise(runtime_starts)
+        if not intermediate.runtime_finishes.get(previous_id)
+    ]
+    spans: list[SequenceSpan] = []
+    for task in intermediate.background_tasks.values():
+        start = 0 if task.started is None else task.started
+        end = (
+            task.finished
+            if task.finished is not None
+            else next((sequence for sequence in unclosed_ends if sequence > start), None)
+        )
+        spans.append(SequenceSpan(start, end))
+    return tuple(spans)
+
+
+def _current_turn_drops(intermediate: _Intermediate) -> tuple[SequenceSpan, ...]:
+    """Where compaction dropped tool results of the turn it ran in.
+
+    Only phase 4 touches the running turn; the other phases rewrite earlier,
+    completed turns.
+    """
+    return tuple(
+        SequenceSpan(finish.sequence, finish.sequence)
+        for node in intermediate.nodes.get("compaction.phase", {}).values()
+        for finish in node.finishes[-1:]
+        if _payload_str(finish.payload, "phase") == "phase4"
     )
 
 
@@ -755,6 +811,11 @@ def _overview(
         if elapsed.precision is Precision.EXACT and exclusive.precision is Precision.EXACT
         else Precision.UNRESOLVED
     )
+    ratio_reason = (
+        None
+        if ratio_precision is Precision.EXACT
+        else _merge_reasons(elapsed.reason, exclusive.reason) or f"one or more {metric_subject} are unresolved"
+    )
     elapsed_value = int(elapsed.value) if elapsed.value is not None else None
     exclusive_value = int(exclusive.value) if exclusive.value is not None else None
     wall = {
@@ -779,7 +840,7 @@ def _overview(
             if elapsed_value == 0
             else None,
             ratio_precision,
-            None if ratio_precision is Precision.EXACT else f"one or more {metric_subject} are unresolved",
+            ratio_reason,
         )
     return TrajectoryOverview(
         elapsed_ns=elapsed,
@@ -793,7 +854,7 @@ def _overview(
             if elapsed_value == 0 and exclusive_value is not None
             else None,
             ratio_precision,
-            None if ratio_precision is Precision.EXACT else f"one or more {metric_subject} are unresolved",
+            ratio_reason,
         ),
         overlap_gain_ns=overlap,
         wall_time_ns=wall,
@@ -804,7 +865,7 @@ def _overview(
 
 def _token_usage(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     turns: list[TurnAnalysis],
     *,
     cancel_event: Event | None,
@@ -1054,13 +1115,24 @@ def _merge_turn_token_usage(usages: list[TokenUsage]) -> TokenUsage:
     return TokenUsage(buckets=buckets)
 
 
+@dataclass(frozen=True, slots=True)
+class _RetryAmplification:
+    """Tokens resent by retried model exchanges, with what the finding needs to name them."""
+
+    tokens: Metric
+    evidence: tuple[str, ...]
+    """The rollback-stable context items the retried requests carried."""
+    exchange: RetriedExchange | None
+    """The first retried exchange, even when its usage is zero or was never reported."""
+
+
 def _retry_amplification(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     revisions: _RevisionResolution,
     *,
     cancel_event: Event | None,
-) -> tuple[Metric, tuple[str, ...], tuple[str | None, str | None, str | None]]:
+) -> _RetryAmplification:
     attribution_exact = True
     retry_ids: set[str] = set()
     for node in intermediate.nodes.get("retry", {}).values():
@@ -1104,7 +1176,7 @@ def _retry_amplification(
             if attribution_exact
             else Metric(None, Precision.UNRESOLVED, "retry lifecycle attribution is incomplete")
         )
-        return metric, (), (None, None, None)
+        return _RetryAmplification(metric, (), None)
     parent_by_operation: dict[str, str | None] = {}
     for family in ("model.run", "model.cycle", "model.exchange"):
         for node in intermediate.nodes.get(family, {}).values():
@@ -1188,43 +1260,50 @@ def _retry_amplification(
             if attribution_exact
             else Metric(None, Precision.UNRESOLVED, "retry exchange attribution is incomplete")
         )
-        return metric, (), (None, None, None)
+        return _RetryAmplification(metric, (), None)
+    reported = [usage for usage in amplified if not usage.unreported_failure]
     missing = any(
-        usage.normalization_unavailable or usage.input_total is None or usage.output_total is None
-        for usage in amplified
+        usage.normalization_unavailable or usage.input_total is None or usage.output_total is None for usage in reported
     )
-    value = sum((usage.input_total or 0) + (usage.output_total or 0) for usage in amplified)
+    value = sum((usage.input_total or 0) + (usage.output_total or 0) for usage in reported)
     provenance_exact = all(
         usage.bucket_has_provider_provenance(UsageBucket.INPUT)
         and usage.bucket_has_provider_provenance(UsageBucket.OUTPUT)
-        for usage in amplified
+        for usage in reported
     )
+    unreported = len(reported) < len(amplified)
     precision = (
         Precision.MISSING
         if missing
-        else Precision.EXACT
-        if provenance_exact and attribution_exact
         else Precision.UNRESOLVED
+        if not (provenance_exact and attribution_exact)
+        else Precision.ESTIMATED
+        if unreported
+        else Precision.EXACT
     )
     reason = (
         "normalized usage is missing for one or more retried exchanges"
         if missing
-        else None
-        if provenance_exact and attribution_exact
         else "retry exchange attribution is incomplete"
         if not attribution_exact
         else "normalized retry usage provenance is incomplete"
+        if not provenance_exact
+        else _UNREPORTED_FAILURE_USAGE_REASON
+        if unreported
+        else None
     )
     stable_items: set[str] = set()
-    target: tuple[str | None, str | None, str | None] = (None, None, None)
+    exchange: RetriedExchange | None = None
     for usage in amplified:
         _check_cancelled(cancel_event)
         operation_id, start = retried_exchanges[usage.sequence]
         revision_id = _payload_str(start.payload, "context_revision_id")
         stable_items.update(revisions.memberships.get(revision_id or "", ()))
-        if target == (None, None, None):
-            target = (start.turn_id, operation_id, str(usage.sequence))
-    return Metric(value if not missing else None, precision, reason), tuple(sorted(stable_items)), target
+        if exchange is None:
+            exchange = RetriedExchange(start.turn_id, operation_id, usage.sequence)
+    return _RetryAmplification(
+        Metric(value if not missing else None, precision, reason), tuple(sorted(stable_items)), exchange
+    )
 
 
 def _all_side_call_lifecycle(node: _Node) -> bool:
@@ -1243,12 +1322,12 @@ _PROMOTED_PREPARATION_OUTCOMES: Final = frozenset({PreparationOutcome.FRESH_TURN
 
 def _submission_latency(
     intermediate: _Intermediate,
-    inactive_ranges: tuple[tuple[int, int], ...],
+    inactive_ranges: tuple[SequenceRange, ...],
     *,
     cancel_event: Event | None,
 ) -> SubmissionLatencyOverview:
     turn_by_scope: dict[str, list[_Endpoint]] = defaultdict(list)
-    turn_scope_membership: dict[str, tuple[bool, bool]] = {}
+    turn_scope_membership: dict[str, _Membership] = {}
     for turn in intermediate.turns.values():
         _check_cancelled(cancel_event)
         for start in turn.starts:
@@ -1257,8 +1336,8 @@ def _submission_latency(
                 continue
             active = _active(start.sequence, inactive_ranges)
             turn_scope_membership[scope_id] = _merge_projection_memberships(
-                turn_scope_membership.get(scope_id, (False, False)),
-                (active, not active),
+                turn_scope_membership.get(scope_id, _Membership(False, False)),
+                _Membership(active, not active),
             )
             if active:
                 turn_by_scope[scope_id].append(start)
@@ -1396,8 +1475,8 @@ def _submission_latency(
 def _drop_submission_lifecycle_cut(
     intermediate: _Intermediate,
     node: _Node,
-    inactive_ranges: tuple[tuple[int, int], ...],
-    turn_scope_membership: dict[str, tuple[bool, bool]],
+    inactive_ranges: tuple[SequenceRange, ...],
+    turn_scope_membership: dict[str, _Membership],
 ) -> bool:
     """Whether a complete cut lifecycle has no active submission owner."""
     if _lifecycle_cut(node, inactive_ranges) is _LifecycleCut.NONE:
@@ -1406,7 +1485,7 @@ def _drop_submission_lifecycle_cut(
     outcome = _payload_str(raw_finish.payload, "outcome")
     if outcome not in _RECOGNIZED_PREPARATION_OUTCOMES:
         return False
-    scope_membership = turn_scope_membership.get(node.operation_id, (False, False))
+    scope_membership = turn_scope_membership.get(node.operation_id, _Membership(False, False))
     target_turn_id = _payload_str(raw_finish.payload, "target_turn_id")
     target_membership = _turn_start_membership(
         intermediate,
@@ -1414,7 +1493,7 @@ def _drop_submission_lifecycle_cut(
         inactive_ranges,
     )
     ownership = _merge_projection_memberships(scope_membership, target_membership)
-    if ownership[0]:
+    if ownership.active:
         return False
     if outcome in _PROMOTED_PREPARATION_OUTCOMES:
         # A promoted turn must claim the preparation scope. Absence is damaged

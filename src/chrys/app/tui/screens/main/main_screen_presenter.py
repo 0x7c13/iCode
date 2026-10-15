@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
     from chrys.foundation.events.types import ProvisionalPresentation
+    from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.policy import ApprovalMode
 
@@ -98,11 +99,17 @@ class MainScreenPresenter:
     def clear_todos(self) -> None:
         self._view.clear_todos()
 
+    def set_background_tasks(self, tasks: tuple[BackgroundTaskView, ...]) -> None:
+        self._view.set_background_tasks(tasks)
+
     def set_header_approval_mode(self, mode: ApprovalMode) -> None:
         self._view.set_header_approval_mode(mode)
 
     def set_terminal_title_for_cwd(self, cwd: str | None = None) -> None:
         self._view.set_terminal_title_for_cwd(cwd)
+
+    def set_terminal_title_for_user_message(self, text: str) -> None:
+        self._view.set_terminal_title_for_user_message(text)
 
     def set_status_profile(self, profile: str, *, description: str = "") -> None:
         self._view.set_status_profile(profile, description=description)

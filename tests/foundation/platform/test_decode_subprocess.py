@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from chrys.foundation.platform.process import decode_subprocess_output
+from chrys.foundation.platform.process import decode_subprocess_output, subprocess_output_utf16_codec
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -252,6 +252,17 @@ class TestWindowsLegacyCodePage:
         with _patch_windows_legacy_cp():
             result = decode_subprocess_output(raw)
         assert result == "结果: 成功\r\n"
+
+    def test_utf16_codec_is_the_one_decoding_uses(self) -> None:
+        with _patch_windows_legacy_cp():
+            assert subprocess_output_utf16_codec("结果: 成功\r\n".encode("utf-16-le")) == "utf-16-le"
+            # The first chunk of a stream may end inside a code unit.
+            assert subprocess_output_utf16_codec("结果: 成功\r\n".encode("utf-16-le")[:7]) == "utf-16-le"
+            assert subprocess_output_utf16_codec("结果: 成功\r\n".encode("utf-16")) == "utf-16"
+            assert subprocess_output_utf16_codec(b"file-a\x00file-b\x00") is None
+            assert subprocess_output_utf16_codec("结果: 成功\r\n".encode()) is None
+        with _patch_unix():
+            assert subprocess_output_utf16_codec("结果: 成功\r\n".encode("utf-16-le")) is None
 
     def test_nul_delimited_ascii_is_not_treated_as_utf16(self) -> None:
         """No-BOM UTF-16 probing must not erase NUL-delimited command output."""

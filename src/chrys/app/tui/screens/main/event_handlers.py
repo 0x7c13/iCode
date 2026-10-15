@@ -34,6 +34,7 @@ from chrys.app.tui.screens.main.ports import (
     StatusTrail,
 )
 from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
+from chrys.app.tui.screens.main.session_title import QUESTION_MARK, RETRY_MARK, AttentionMark
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
@@ -69,6 +70,7 @@ from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalReviewed,
     AskUserTimedOut,
+    BackgroundTasksChanged,
     CompactionFinished,
     CompactionStarted,
     ContextCompressed,
@@ -145,6 +147,7 @@ _APPROVAL_MODE_CHANGED = msg("tui.approval.mode_changed", fallback="Approval mod
 _WARNING_TITLE = msg("tui.warning.title", fallback="Warning")
 _UNKNOWN_ERROR = msg("tui.error.unknown", fallback="Unknown error")
 _RETRY_NOT_STARTED = msg("tui.retry.not_started", fallback="Retry not started")
+_INJECTION_NOT_SENT = msg("tui.injection.not_sent", fallback="Message not sent")
 _AGENT_FAILED_TO_LOAD = msg("tui.agent_load.failed", fallback="Agent failed to load.")
 _NON_TURN_NOTIFICATION_ERROR_CODES = {
     "hook_blocked",
@@ -310,6 +313,29 @@ class BackendEventHandler:
         self._runtime_info = runtime_info or RegistryRuntimeInfoProvider(services)
         self._live_diff = live_diff or LiveDiffTracker()
         self._seen_warnings: set[_WarningDedupeKey] = set()
+        # Chat sub-agents paused for the user's Retry/Abort decision.
+        self._paused_sub_agents: set[str] = set()
+
+    def attention_mark(self) -> AttentionMark:
+        """Why the live run waits for the user: ``!`` a paused sub-agent, ``?`` an approval or question."""
+        # Only chat sub-agents pause, and a cancel can end one without an event:
+        # past its chat run, a pause no longer waits.
+        if self._paused_sub_agents and self.agent_running:
+            return RETRY_MARK
+        if self._approval_controller.awaiting_user or self._question_controller.awaiting_user:
+            return QUESTION_MARK
+        return ""
+
+    def reset_chat_attention(self) -> None:
+        """A new run starts with no paused sub-agent from the last one."""
+        self._paused_sub_agents.clear()
+
+    def sub_agent_decided(self, invocation_id: str) -> None:
+        """The user chose Retry or Abort; a new failure pauses it again."""
+        self._paused_sub_agents.discard(invocation_id)
+
+    def inline_question_answered(self, request_id: str) -> None:
+        self._question_controller.inline_answered(request_id)
 
     def _render_display(self, reference: MessageRef) -> str:
         controller = self._locale_controller
@@ -465,8 +491,8 @@ class BackendEventHandler:
         self._state.workspace_marker.original_cwd = value
 
     @property
-    def pending_user_submit_active(self) -> bool:
-        return self._state.submit.active
+    def in_pending_submit_publish(self) -> bool:
+        return self._state.submit.in_publish()
 
     @property
     def pending_user_submit_text(self) -> str:
@@ -826,7 +852,11 @@ class BackendEventHandler:
         ui = self._ui()
 
         self._state.workspace.roots = [event.primary_cwd, *event.working_dirs]
+        if (event.session_id or "") != s.main_usage_source_id:
+            # The list was the previous session's: its commands ended with it.
+            self._state.runtime.background_tasks = None
         s.main_usage_source_id = event.session_id or ""
+        self._show_background_tasks()
         s.profile = event.display_name or event.agent_profile
         s.runtime_metadata = event.runtime_details
         self._state.runtime.details_confirmed = True
@@ -1065,8 +1095,11 @@ class BackendEventHandler:
 
         if event.consumed:
             try:
-                # Render the bubble even when cancelled-too-late: the model
-                # did see this text, so the transcript must show it.
+                # Show it even when cancelled-too-late: the model did see this
+                # text. The tab first, before any await, so it cannot overwrite
+                # a turn result that lands meanwhile.
+                if s.agent_running:
+                    ui.set_terminal_title_for_user_message(event.text)
                 await ui.add_user_injection(event.text, created_at=event.created_at)
                 s.update_toc()
                 s.debug("UserInjectResult", "consumed" if owns_input else "consumed (stale id)")
@@ -1447,6 +1480,7 @@ class BackendEventHandler:
         if not s.agent_running:
             return
 
+        self._paused_sub_agents.add(event.origin.invocation_id)
         self._ui().sub_agent_paused(
             event.origin.invocation_id,
             event.reason,
@@ -1464,12 +1498,14 @@ class BackendEventHandler:
         """Clear the paused state — the controller is running again."""
         if not _chat_sub_agent(event.origin):
             return
+        self._paused_sub_agents.discard(event.origin.invocation_id)
         self._ui().sub_agent_resumed_after_pause(event.origin.invocation_id)
 
     async def on_sub_agent_cascade_aborted(self, event: InvocationCascadeAborted) -> None:
         """Mark the sub-agent card as cancelled by a global interrupt."""
         if not _chat_sub_agent(event.origin):
             return
+        self._paused_sub_agents.discard(event.origin.invocation_id)
         self._ui().sub_agent_cascade_aborted(event.origin.invocation_id)
 
     async def on_sub_agent_aborted(self, event: InvocationAborted) -> None:
@@ -1482,6 +1518,7 @@ class BackendEventHandler:
         """
         if not _chat_sub_agent(event.origin):
             return
+        self._paused_sub_agents.discard(event.origin.invocation_id)
         self._ui().sub_agent_aborted(event.origin.invocation_id, event.last_error)
 
     # -- Live /diff accumulation helpers -----------------------------------
@@ -1605,7 +1642,7 @@ class BackendEventHandler:
         return self._gateway().question_can_reopen_modal(event)
 
     async def on_ask_user_timed_out(self, event: AskUserTimedOut) -> None:
-        """Dismiss or dequeue an ask_user dialog after the backend timeout fires."""
+        """Dismiss or dequeue an ask_user dialog the backend timed out or withdrew."""
         await self._questions().on_timed_out(event)
 
     async def on_usage_update(self, event: UsageUpdate) -> None:
@@ -1654,6 +1691,18 @@ class BackendEventHandler:
         label = f"Usage[{event.agent_profile}]" if event.agent_profile else "UsageUpdate"
         source = _usage_source_debug_suffix(event.usage_source_id, main_source_id=s.main_usage_source_id)
         s.debug(label, f"{event.total_tokens:,} ({event.pct:.1f}%) local={event.local_tokens:,}{source}")
+
+    async def on_background_tasks_changed(self, event: BackgroundTasksChanged) -> None:
+        if event.session_id != self.main_usage_source_id:
+            return  # A session that ended, its commands stopping after it.
+        self._state.runtime.background_tasks = event
+        # On the screen's own pump: the registry publishes from a task without the app's context.
+        self._view.call_later(self._show_background_tasks)
+
+    def _show_background_tasks(self) -> None:
+        """Show the current session's last background command list, or none."""
+        last = self._state.runtime.background_tasks
+        self._ui().set_background_tasks(last.tasks if last is not None else ())
 
     async def on_todo_list_updated(self, event: TodoListUpdated) -> None:
         s = self
@@ -1766,7 +1815,7 @@ class BackendEventHandler:
 
     async def on_warning(self, event: Warning) -> None:
         s = self
-        submit_rejected = event.code in _SUBMIT_BLOCKING_WARNING_CODES and s.pending_user_submit_active
+        submit_rejected = event.code in _SUBMIT_BLOCKING_WARNING_CODES and s.in_pending_submit_publish
         if submit_rejected:
             s.block_pending_user_submit()
             if event.code in _IMAGE_WARNING_CODES:
@@ -1871,8 +1920,9 @@ class BackendEventHandler:
             s.push_screen(dialog)
             s.debug("Error", f"[{event.code}] {full_msg[:60]}")
             return
-        if s.pending_user_submit_active and event.code in _SUBMIT_BLOCKING_ERROR_CODES:
-            s.set_agent_running(False)
+        if s.in_pending_submit_publish and event.code in _SUBMIT_BLOCKING_ERROR_CODES:
+            # The backend refusing the submit in flight: the message, never a
+            # run (see ``SubmitKind``).
             s.block_pending_user_submit()
             if event.code in _IMAGE_ERROR_CODES:
                 self._show_image_rejection_dialog(event.code, display_full)
@@ -1977,8 +2027,16 @@ class BackendEventHandler:
         if "- {" in short_msg:
             short_msg = short_msg[: short_msg.index("- {")].strip()
         chat_msg = self._extract_error_detail(message)
+        kind = self._state.submit.kind
+        if kind == "injection":
+            # The turn it was meant for goes on, and the status line and the
+            # transcript are that turn's: an error card would end its running
+            # tool cards.
+            s.notify(chat_msg, title=_INJECTION_NOT_SENT.bind(), severity="error", timeout=8)
+            s.debug("Error", f"[{code}] {(message if raw_message is None else raw_message)[:60]}")
+            return
         ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
-        if self._state.submit.is_retry:
+        if kind == "retry":
             # Admission did not start a new run. Keep the previous terminal
             # card and its action so the user can retry after resolving this.
             s.notify(chat_msg, title=_RETRY_NOT_STARTED.bind(), severity="error", timeout=8)

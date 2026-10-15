@@ -274,3 +274,21 @@ def test_acp_command_rejects_old_agent_aliases(old_option: str) -> None:
 
     with pytest.raises(SystemExit):
         parser.parse_args([old_option, "Code"])
+
+
+def test_acp_stops_only_what_acp_launches_left_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    left = [object()]
+    asked: list[str | None] = []
+    stopped: list[object] = []
+
+    def find(_sessions: object, *, surface: str | None = None) -> list[object]:
+        asked.append(surface)
+        return left
+
+    monkeypatch.setattr(acp_cli, "find_left_behind", find)
+    monkeypatch.setattr(acp_cli, "stop_left_behind", stopped.append)
+
+    acp_cli._stop_left_behind()
+
+    assert asked == ["acp"]
+    assert stopped == [left]

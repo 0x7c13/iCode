@@ -213,6 +213,8 @@ def _write_p1_operations(path: Path) -> None:
     )
     _tool(log, "6" * 32, turn_two, 13, "read_file", "filesystem.read", "repeated", outcome="errored")
     _tool(log, "8" * 32, turn_two, 15, "read_file", "filesystem.read", "repeated")
+    # Re-reads the file just read successfully with nothing run in between.
+    _tool(log, "f" * 32, turn_two, 16, "read_file", "filesystem.read", "repeated")
     _tool(log, "9" * 32, turn_two, 17, "Bash", "shell", "verify", call_item_id=verify_call)
     _tool(log, "c" * 32, turn_two, 19, "write_file", "filesystem.write", "edit-2")
     log.span(

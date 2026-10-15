@@ -29,6 +29,7 @@ from chrys.service.state.store import (
     JsonFileStateStore,
     SessionForkError,
 )
+from chrys.service.tools.background import BACKGROUND_DIR_NAME
 from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY
 
 
@@ -315,6 +316,19 @@ async def test_fork_drops_the_turn_registry_that_names_the_parents_log(tmp_path:
         assert TRAJECTORY_STATE_KEY not in envelope["state"], name
     parent_envelope = json.loads((parent_dir / "session.json").read_text(encoding="utf-8"))
     assert parent_envelope["state"][TRAJECTORY_STATE_KEY] == registry
+
+
+async def test_fork_leaves_out_the_logs_and_stop_files_of_the_parents_background_commands(tmp_path: Path) -> None:
+    store = JsonFileStateStore(tmp_path)
+    await store.save_session("parent", {"messages": [Message("user", ["hi"])], "compressed_msgs": []})
+    background = store.session_dir("parent") / BACKGROUND_DIR_NAME
+    background.mkdir()
+    (background / "bg1.log").write_text("serving\n", encoding="utf-8")
+
+    fork_id = store.fork_session("parent")
+
+    assert not (store.session_dir(fork_id) / BACKGROUND_DIR_NAME).exists()
+    assert (background / "bg1.log").read_text(encoding="utf-8") == "serving\n"
 
 
 async def test_refused_thinking_stays_marked_through_save_load_and_fork(tmp_path: Path) -> None:

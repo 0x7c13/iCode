@@ -621,7 +621,7 @@ async def test_ask_user_middleware_no_timeout_waits_indefinitely(monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_ask_user_middleware_cancelled_wait_traces_cleanup_and_reraises(
+async def test_ask_user_middleware_cancelled_wait_withdraws_the_question_and_reraises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import AsyncMock, MagicMock
@@ -646,6 +646,17 @@ async def test_ask_user_middleware_cancelled_wait_traces_cleanup_and_reraises(
 
     trace = InstrumentedWait()
     monkeypatch.setattr(ask_user_middleware_module.WaitTrace, "open", lambda *_args, **_kwargs: trace)
+    asked: list[QuestionToUser] = []
+    withdrawn: list[AskUserTimedOut] = []
+
+    async def ask(event: QuestionToUser) -> None:
+        asked.append(event)
+
+    async def withdraw(event: AskUserTimedOut) -> None:
+        withdrawn.append(event)
+
+    await bus.subscribe(QuestionToUser, ask)
+    await bus.subscribe(AskUserTimedOut, withdraw)
 
     function = MagicMock()
     function.chrys_kind = "ask_user"
@@ -659,6 +670,7 @@ async def test_ask_user_middleware_cancelled_wait_traces_cleanup_and_reraises(
     task = asyncio.create_task(middleware.process(context, AsyncMock()))
     await wait_started.wait()
     assert len(bus._handlers[AskUserResponse]) == 1
+    assert withdrawn == []
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -667,6 +679,167 @@ async def test_ask_user_middleware_cancelled_wait_traces_cleanup_and_reraises(
     assert finished == []
     assert finished_soon == [ask_user_middleware_module.WaitOutcome.CANCELLED]
     assert bus._handlers[AskUserResponse] == []
+    # The frontend stops showing a question nobody waits on.
+    assert [(event.request_id, event.session_id) for event in withdrawn] == [(asked[0].request_id, "test")]
+
+
+@pytest.mark.asyncio
+async def test_ask_user_middleware_cancel_after_the_answer_withdraws_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    import chrys.service.agent_middleware.control.ask_user as ask_user_middleware_module
+
+    bus = EventBus()
+    middleware = AskUserMiddleware(bus, session_id="test", timeout_seconds=None)
+    finishing = asyncio.Event()
+    held = asyncio.Event()
+
+    class HeldFinish:
+        async def started(self) -> None:
+            pass
+
+        async def finished(self, *, outcome: str = "completed") -> None:
+            finishing.set()
+            await held.wait()
+
+        def finished_soon(self, *, outcome: str) -> None:
+            pass
+
+    trace = HeldFinish()
+    monkeypatch.setattr(ask_user_middleware_module.WaitTrace, "open", lambda *_args, **_kwargs: trace)
+    withdrawn: list[AskUserTimedOut] = []
+
+    async def reply(event: QuestionToUser) -> None:
+        await bus.publish(AskUserResponse(request_id=event.request_id, answers=(AskUserAnswer(values=("yes",)),)))
+
+    async def withdraw(event: AskUserTimedOut) -> None:
+        withdrawn.append(event)
+
+    await bus.subscribe(QuestionToUser, reply)
+    await bus.subscribe(AskUserTimedOut, withdraw)
+
+    function = MagicMock()
+    function.chrys_kind = "ask_user"
+    function.name = "ask_user"
+    context = MagicMock()
+    context.function = function
+    context.arguments = {"questions": [{"question": "Pick?"}]}
+    context.metadata = {}
+    context.result = None
+
+    task = asyncio.create_task(middleware.process(context, AsyncMock()))
+    await wait_for(lambda: finishing.is_set() or task.done(), description="answered wait closing")
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert withdrawn == []
+
+
+@pytest.mark.asyncio
+async def test_ask_user_withdrawal_finishes_through_a_second_cancel() -> None:
+    bus = EventBus()
+    middleware = AskUserMiddleware(bus, session_id="test", timeout_seconds=None)
+    withdrawing = asyncio.Event()
+    release = asyncio.Event()
+    withdrawn: list[str] = []
+    asked = asyncio.Event()
+
+    async def ask(_event: QuestionToUser) -> None:
+        asked.set()
+
+    async def withdraw(event: AskUserTimedOut) -> None:
+        withdrawing.set()
+        await release.wait()
+        withdrawn.append(event.request_id)
+
+    await bus.subscribe(QuestionToUser, ask)
+    await bus.subscribe(AskUserTimedOut, withdraw)
+    function = FunctionTool(name="ask_user")
+    set_tool_kind(function, KIND_ASK_USER)
+    context = FunctionInvocationContext(function, {"questions": [{"question": "Pick?"}]})
+
+    async def call_next() -> None:
+        raise AssertionError("ask_user is answered by the middleware, never by the tool body")
+
+    task = asyncio.create_task(middleware.process(context, call_next))
+    try:
+        await wait_for(lambda: asked.is_set() or task.done(), description="question shown")
+        assert not task.done()
+        task.cancel()
+        await wait_for(lambda: withdrawing.is_set() or task.done(), description="withdrawal publishing")
+        assert not task.done()
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(withdrawn) == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_user_timeout_withdraws_the_question_when_a_cancel_lands_while_it_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import chrys.service.agent_middleware.control.ask_user as ask_user_middleware_module
+
+    bus = EventBus()
+    # Times out at once.
+    middleware = AskUserMiddleware(bus, session_id="test", timeout_seconds=0)
+    finishing = asyncio.Event()
+    held = asyncio.Event()
+    finished: list[str] = []
+    finished_soon: list[str] = []
+
+    class HeldFinish:
+        async def started(self) -> None:
+            pass
+
+        async def finished(self, *, outcome: str = "completed") -> None:
+            finished.append(outcome)
+            finishing.set()
+            await held.wait()
+
+        def finished_soon(self, *, outcome: str) -> None:
+            finished_soon.append(outcome)
+
+    trace = HeldFinish()
+    monkeypatch.setattr(ask_user_middleware_module.WaitTrace, "open", lambda *_args, **_kwargs: trace)
+    asked: list[QuestionToUser] = []
+    withdrawn: list[AskUserTimedOut] = []
+
+    async def ask(event: QuestionToUser) -> None:
+        asked.append(event)
+
+    async def withdraw(event: AskUserTimedOut) -> None:
+        withdrawn.append(event)
+
+    await bus.subscribe(QuestionToUser, ask)
+    await bus.subscribe(AskUserTimedOut, withdraw)
+    function = FunctionTool(name="ask_user")
+    set_tool_kind(function, KIND_ASK_USER)
+    context = FunctionInvocationContext(function, {"questions": [{"question": "Pick?"}]})
+
+    async def call_next() -> None:
+        raise AssertionError("ask_user is answered by the middleware, never by the tool body")
+
+    task = asyncio.create_task(middleware.process(context, call_next))
+    try:
+        await wait_for(lambda: finishing.is_set() or task.done(), description="timed-out wait closing")
+        assert not task.done()
+        assert withdrawn == []
+        task.cancel()
+    finally:
+        held.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished == [ask_user_middleware_module.WaitOutcome.TIMED_OUT]
+    assert finished_soon == []
+    assert [(event.request_id, event.session_id) for event in withdrawn] == [(asked[0].request_id, "test")]
 
 
 def test_ask_user_native_shape_aliases_validate() -> None:
@@ -916,6 +1089,12 @@ async def test_ask_user_cancelled_during_question_publication_unsubscribes() -> 
         await blocked.wait()
 
     await bus.subscribe(QuestionToUser, block_question)
+    withdrawn: list[AskUserTimedOut] = []
+
+    async def withdraw(event: AskUserTimedOut) -> None:
+        withdrawn.append(event)
+
+    await bus.subscribe(AskUserTimedOut, withdraw)
     middleware = AskUserMiddleware(bus, session_id="test", timeout_seconds=None)
     function = FunctionTool(name="ask_user")
     set_tool_kind(function, KIND_ASK_USER)
@@ -936,3 +1115,42 @@ async def test_ask_user_cancelled_during_question_publication_unsubscribes() -> 
         with pytest.raises(asyncio.CancelledError):
             await task
     assert bus._handlers[AskUserResponse] == []
+    # The handler that already ran shows the question: it is withdrawn.
+    assert len(withdrawn) == 1
+
+
+async def test_ask_user_cancel_during_publication_after_an_answer_withdraws_nothing() -> None:
+    bus = EventBus()
+    answered = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def answer_then_block(event: QuestionToUser) -> None:
+        await bus.publish(AskUserResponse(request_id=event.request_id, answers=(AskUserAnswer(values=("yes",)),)))
+        answered.set()
+        await blocked.wait()
+
+    await bus.subscribe(QuestionToUser, answer_then_block)
+    withdrawn: list[AskUserTimedOut] = []
+
+    async def withdraw(event: AskUserTimedOut) -> None:
+        withdrawn.append(event)
+
+    await bus.subscribe(AskUserTimedOut, withdraw)
+    middleware = AskUserMiddleware(bus, session_id="test", timeout_seconds=None)
+    function = FunctionTool(name="ask_user")
+    set_tool_kind(function, KIND_ASK_USER)
+    context = FunctionInvocationContext(function, {"questions": [{"question": "Pick?"}]})
+
+    async def call_next() -> None:
+        raise AssertionError("ask_user is answered by the middleware, never by the tool body")
+
+    task = asyncio.create_task(middleware.process(context, call_next))
+    try:
+        await wait_for(lambda: answered.is_set() or task.done(), description="question answered during publication")
+        assert not task.done()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert bus._handlers[AskUserResponse] == []
+    assert withdrawn == []

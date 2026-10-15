@@ -738,6 +738,7 @@ class WorkflowCoordinator:
             mutation_tracker=session.mutation_tracker,
             mutation_coordinator=session.mutation_coordinator,
             spill_quota=session.spill_quota,
+            background_tasks=session.background_tasks,
             allow_user_interaction=self._allow_user_interaction,
             mcp_cache=self._mcp_cache,
             agent_registry=self._agent_registry,

@@ -17,6 +17,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str
+from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import (
     is_widget_shown_on_active_screen,
     resync_compositor_regions,
@@ -44,7 +45,6 @@ _APPROVAL_MODE_MANUAL = msg("tui.chrome.approval_mode.manual", fallback="MANUAL"
 _APPROVAL_MODE_AUTO = msg("tui.chrome.approval_mode.auto", fallback="AUTO")
 _APPROVAL_MODE_BYPASS = msg("tui.chrome.approval_mode.bypass", fallback="BYPASS")
 _APPROVAL_REVIEWING = msg("tui.chrome.approval_mode.reviewing", fallback="Reviewing")
-_REVIEW_SPINNER = "◐◓◑◒"
 _REVIEW_SPIN_SECONDS = 0.12
 
 _APPROVAL_CLASSES = {
@@ -223,13 +223,13 @@ class AppHeader(Widget):
         between it and the badge in a narrow window.
         """
         reviewing = self._render_message(_APPROVAL_REVIEWING.bind())
-        return f" {_REVIEW_SPINNER[self._review_frame]} {reviewing} "
+        return f" {SPINNER_FRAMES[self._review_frame]} {reviewing} "
 
     def _spin_review(self) -> None:
         """Advance the spinner: a repaint at a fixed width, only where it can be seen."""
         if not self._auto_review_count:
             return
-        self._review_frame = (self._review_frame + 1) % len(_REVIEW_SPINNER)
+        self._review_frame = (self._review_frame + 1) % len(SPINNER_FRAMES)
         indicator = self.query_one("#approval-reviewing", Static)
         if is_widget_shown_on_active_screen(indicator):
             indicator.update(Content.from_text(self._review_text(), markup=False), layout=False)

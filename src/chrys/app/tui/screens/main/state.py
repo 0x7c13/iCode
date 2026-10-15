@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.config.settings import DEFAULT_WORKSPACE_MRU_MAX_ENTRIES
 from chrys.foundation.events.types import AgentRuntimeDetails, InvocationMessage
@@ -16,11 +17,9 @@ from chrys.foundation.platform import safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
 
 if TYPE_CHECKING:
-    import asyncio
-
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.events.types import Error
+    from chrys.foundation.events.types import BackgroundTasksChanged, Error
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -87,6 +86,8 @@ class RuntimeState:
     details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
     details_confirmed: bool = False
     approval_mode: ApprovalMode = ApprovalMode.MANUAL
+    background_tasks: BackgroundTasksChanged | None = None
+    """The last list of the main agent's background commands; shown while its session is the current one."""
     # Set when a Save inside the agent config modal renames the active profile.
     # The engine switch waits for the modal to close (``on_agent_config_result``):
     # switching sooner would tear down the live agent while the modal's panels
@@ -151,6 +152,13 @@ class WorkspaceMarkerState:
     current_cwd: str = field(default_factory=safe_getcwd)
 
 
+# What a submit asks for: a new turn, a message for the running turn, or a
+# retry. A refusal shows by it, and never ends a run: a new turn or retry
+# starts running only after its publish returns, and the turn a mid-run
+# message was meant for goes on without it.
+type SubmitKind = Literal["turn", "injection", "retry"]
+
+
 @dataclass
 class SubmitCoordinator:
     """State for a user submit while backend validation is in progress."""
@@ -158,21 +166,32 @@ class SubmitCoordinator:
     active: bool = False
     text: str = ""
     blocked: bool = False
-    is_retry: bool = False
+    kind: SubmitKind = "turn"
+    # The task publishing the submit, named just before it publishes.
+    # ``EventBus.publish`` awaits its handlers in order, so the backend's
+    # refusal reaches the frontend on this task before the publish returns;
+    # what a running turn publishes meanwhile comes from that turn's own task,
+    # and is the turn's.
+    publisher: asyncio.Task[Any] | None = field(default=None, repr=False)
 
-    def begin(self, text: str, *, is_retry: bool = False) -> None:
+    def begin(self, text: str, *, kind: SubmitKind = "turn") -> None:
         """Mark a submit as active and clear any previous block decision."""
         self.active = True
         self.text = text
         self.blocked = False
-        self.is_retry = is_retry
+        self.kind = kind
+        self.publisher = None
+
+    def publish_from_current_task(self) -> None:
+        """Name the current task as the one about to publish the submit."""
+        self.publisher = asyncio.current_task()
+
+    def in_publish(self) -> bool:
+        """Return whether the code running now is inside this submit's publish."""
+        return self.active and self.publisher is not None and asyncio.current_task() is self.publisher
 
     def block(self) -> None:
-        """Record that synchronous backend validation rejected the submit.
-
-        ``EventBus.publish`` awaits its handlers in order, so a rejecting
-        handler has run by the time the submit's publish returns.
-        """
+        """Record that the backend refused the submit."""
         self.blocked = True
 
     def clear(self) -> None:
@@ -180,7 +199,8 @@ class SubmitCoordinator:
         self.active = False
         self.text = ""
         self.blocked = False
-        self.is_retry = False
+        self.kind = "turn"
+        self.publisher = None
 
 
 @dataclass

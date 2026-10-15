@@ -24,6 +24,7 @@ from chrys.kernel import EXCLUDED_KEY, ChatResponse, ChatResponseUpdate, Content
 from chrys.kernel.middleware import ChatContext
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.reminders.archive_pointer import _catalog_pointer_text
+from chrys.service.agent_middleware.reminders.background_tasks import BackgroundTasksSource
 from chrys.service.agent_middleware.reminders.context_usage import CONTEXT_USAGE_WARNING, format_usage_line
 from chrys.service.agent_middleware.reminders.skills import SkillsSource
 from chrys.service.agent_middleware.reminders.sub_agents import SubAgentsSource
@@ -79,14 +80,21 @@ def _middleware(
     runtime: list[str | None] | None = None,
     todo: list[str | None] | None = None,
     sub_agent_names: list[str] | None = None,
+    background_tasks: list[str | None] | None = None,
 ) -> SystemReminderMiddleware:
     """A middleware whose turn line is one of *hints* per ``prepare_turn``.
 
-    *catalog* (skills), *runtime* and *todo* are read live, so a test changes
-    one by assigning its ``[0]``; without them the turn offers none.
+    *catalog* (skills), *runtime*, *todo* and *background_tasks* are read live,
+    so a test changes one by assigning its ``[0]``; without them the turn offers none.
     """
     return _middleware_pair(
-        monkeypatch, hints=hints, catalog=catalog, runtime=runtime, todo=todo, sub_agent_names=sub_agent_names
+        monkeypatch,
+        hints=hints,
+        catalog=catalog,
+        runtime=runtime,
+        todo=todo,
+        sub_agent_names=sub_agent_names,
+        background_tasks=background_tasks,
     )[0]
 
 
@@ -98,6 +106,7 @@ def _middleware_pair(
     runtime: list[str | None] | None = None,
     todo: list[str | None] | None = None,
     sub_agent_names: list[str] | None = None,
+    background_tasks: list[str | None] | None = None,
 ) -> tuple[SystemReminderMiddleware, LastWordsState]:
     """``_middleware`` plus the LAST_WORDS state it renders."""
     middleware, last_words = reminder_pair(
@@ -105,6 +114,7 @@ def _middleware_pair(
         sub_agent_names=sub_agent_names,
         skill_catalog_provider=(lambda: catalog[0]) if catalog is not None else None,
         todo_state_provider=(lambda: todo[0]) if todo is not None else None,
+        background_tasks_provider=(lambda: background_tasks[0]) if background_tasks is not None else None,
     )
     remaining = iter(hints)
     monkeypatch.setattr(middleware.sources.turn_line, "clock", lambda: next(remaining))
@@ -627,6 +637,28 @@ async def test_todo_list_is_resent_when_it_changes_and_withdrawn_once_cleared(mo
     todo[0] = None
     cleared = TodoSource.withdrawn
     assert await _next_turn(middleware, history, "fourth") == ["fourth", _wrap("turn 4"), _wrap(cleared)]
+    assert await _next_turn(middleware, history, "fifth") == ["fifth", _wrap("turn 5")]
+
+
+async def test_background_commands_are_resent_when_they_change_and_withdrawn_once_none_are_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listed: list[str | None] = ["bg-1 running"]
+    middleware = _middleware(monkeypatch, hints=[f"turn {n}" for n in range(1, 6)], background_tasks=listed)
+    history: list[Message] = []
+
+    assert await _next_turn(middleware, history, "first") == ["first", _wrap("turn 1"), _wrap("bg-1 running")]
+    assert _record(history[0])[-1] == {"kind": "catalog", "text": "bg-1 running", "name": "background_tasks"}
+    assert await _next_turn(middleware, history, "second") == ["second", _wrap("turn 2")]
+    listed[0] = "bg-1 exited with code 0"
+    assert await _next_turn(middleware, history, "third") == [
+        "third",
+        _wrap("turn 3"),
+        _wrap("bg-1 exited with code 0"),
+    ]
+    listed[0] = None
+    withdrawn = BackgroundTasksSource.withdrawn
+    assert await _next_turn(middleware, history, "fourth") == ["fourth", _wrap("turn 4"), _wrap(withdrawn)]
     assert await _next_turn(middleware, history, "fifth") == ["fifth", _wrap("turn 5")]
 
 

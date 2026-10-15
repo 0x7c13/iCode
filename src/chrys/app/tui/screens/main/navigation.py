@@ -74,6 +74,8 @@ class MainNavigationController:
         start_worker: StartWorker,
         debug: Callable[[str, str], None],
         locale_controller: LocaleController | None = None,
+        background_tasks_running: Callable[[], bool] = lambda: False,
+        confirm_stopping_background_tasks: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._services = services
         self._view = view
@@ -93,6 +95,9 @@ class MainNavigationController:
         self._start_worker = start_worker
         self._debug = debug
         self._locale_controller = locale_controller
+        self._background_tasks_running = background_tasks_running
+        self._confirm_stopping_background_tasks = confirm_stopping_background_tasks
+        self._asking_to_quit = False
 
     def show_log_viewer(self) -> None:
         """Open the log viewer modal."""
@@ -105,7 +110,28 @@ class MainNavigationController:
         self._view.open_guide(self._locale_controller)
 
     def quit(self) -> None:
-        """Stop the shell panel, flush notification settings, and exit."""
+        """Stop the shell panel, flush notification settings, and exit.
+
+        While background commands run, it first asks whether they may stop; quitting
+        again while it asks quits at once.
+        """
+        confirm = self._confirm_stopping_background_tasks
+        if confirm is not None and not self._asking_to_quit and self._background_tasks_running():
+
+            async def quit_if_confirmed() -> None:
+                self._asking_to_quit = True
+                try:
+                    confirmed = await confirm()
+                finally:
+                    self._asking_to_quit = False
+                if confirmed:
+                    self._quit_now()
+
+            self._start_worker(quit_if_confirmed)
+            return
+        self._quit_now()
+
+    def _quit_now(self) -> None:
         self._view.stop_shell()
         try:
             self._start_worker(self._quit_after_notification_flush)
@@ -251,6 +277,9 @@ class MainNavigationController:
 
     def confirm_exit(self) -> None:
         """Ask before exiting the app."""
+        if self._background_tasks_running():
+            self.quit()  # Its question names the background commands that stop.
+            return
         self._view.open_confirm_dialog(
             title=_CONFIRM_EXIT.bind(),
             message=_CONFIRM_EXIT_MESSAGE.bind(app_name=APP_DISPLAY_NAME),

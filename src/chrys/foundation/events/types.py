@@ -12,6 +12,7 @@ from uuid import uuid4
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
+from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
@@ -113,6 +114,10 @@ class UserMessage(Event):
     # mid-run injection can be correlated and cancelled (``UserInjectCancel``)
     # before the model sees it. ``None`` for ordinary fresh-turn submits.
     injection_id: str | None = None
+    # Set by the backend, before its publish returns, when this message opened
+    # a new turn — also for an injection submit whose run ended before it was
+    # admitted, so the frontend shows that turn instead of a queued injection.
+    started_turn: bool = field(default=False, compare=False)
 
 
 @dataclass
@@ -263,6 +268,18 @@ class SleepSkip(Event):
     """User skips a running sleep tool call."""
 
     call_id: str = ""
+
+
+@dataclass
+class ShellToBackground(Event):
+    """User moves the shell commands the main agent runs now to the background."""
+
+
+@dataclass
+class BackgroundTaskStop(Event):
+    """User stops one of the main agent's background commands."""
+
+    task_id: str = ""
 
 
 @dataclass
@@ -739,7 +756,7 @@ class QuestionToUser(Event):
 
 @dataclass
 class AskUserTimedOut(Event):
-    """An ask_user question expired before the user responded."""
+    """An ask_user question expired, or its caller withdrew it, before the user responded."""
 
     request_id: str = ""
 
@@ -893,6 +910,15 @@ class TodoListUpdated(Event):
     items: list[TodoItem] = field(default_factory=list)
     source: str = "main"
     """Origin of the update; future: sub-agent name / ``"user"``."""
+
+
+@dataclass
+class BackgroundTasksChanged(Event):
+    """The main agent's background commands changed (full list, not a diff; for the TUI only)."""
+
+    tasks: tuple[BackgroundTaskView, ...] = ()
+    full: bool = False
+    """Whether the session already runs as many background commands as it can."""
 
 
 @dataclass

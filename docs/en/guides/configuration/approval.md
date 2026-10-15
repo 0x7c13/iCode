@@ -53,6 +53,7 @@ Tool calls that require approval open an **Approval Required** dialog showing th
 - When declining, you can provide a reason. The reason is sent to the agent to help it adjust its next steps. Once a reason is entered, the approve button is disabled.
 - In automatic mode, no dialog opens while the approval judge model evaluates a call; **Reviewing** appears, after a spinning icon, to the left of the approval mode label in the upper-right corner. Calls the model judges safe run without a dialog. If the model judges a call suspicious, the dialog opens with the title **Flagged by Auto-Review**, shows the reason, and waits for a person to decide. The cursor starts in the reason field so that a stray key press does not approve the call: type a reason and decline, or press **Tab** to move to the buttons. If the approval judge model is unavailable, or evaluation fails or times out, the dialog opens for a person to decide instead of approving the tool call automatically.
 - To see each call while it is evaluated, press **F10** to open **Settings** and turn off **Show the approval dialog only when Auto-Review flags a call** on the **Security** tab. The dialog then opens at once and shows **Evaluating**: it closes by itself if the model judges the call safe, and you can approve or decline before evaluation finishes.
+- While a dialog waits for your decision, the terminal tab shows `?` before its title, so you can tell from another tab that iCode needs you. See [Follow a task in the terminal tab](../daily-use/sessions.md#follow-a-task-in-the-terminal-tab).
 
 ## Remember approvals
 
@@ -77,16 +78,16 @@ If iCode cannot save your choice, the call still runs once and a notice says tha
 
 ### Manage remembered approvals
 
-Use the `icode approvals` command to see and remove what you have remembered:
+Use the `icode approval` command to see and remove what you have remembered:
 
 ```bash
-icode approvals list                         # everything you have remembered
-icode approvals list --project /work/demo    # only one project
-icode approvals list --session SESSION_ID --json
-icode approvals revoke GRANT_ID              # remove one approval by its ID from the list
-icode approvals clear --project /work/demo   # remove all approvals for one project
-icode approvals clear --session SESSION_ID   # remove all approvals for one session
-icode approvals clear --all                  # remove everything
+icode approval list                          # everything you have remembered
+icode approval list --project /work/demo     # only one project
+icode approval list --session SESSION_ID --json
+icode approval revoke GRANT_ID               # remove one approval by its ID from the list
+icode approval clear --project /work/demo    # remove all approvals for one project
+icode approval clear --session SESSION_ID    # remove all approvals for one session
+icode approval clear --all                   # remove everything
 ```
 
 Approvals for a session are deleted with that session and are not copied to a branch you create with `/fork`. Approvals for a project stay until you remove them.

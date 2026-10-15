@@ -50,6 +50,8 @@ icode run "Fix the login form validation error and run the relevant tests" --age
 
 These tasks may modify files in the working directory and execute commands. Before running one, check that the prompt, agent, and current directory are what you intend.
 
+Shell commands that the agent moved to the background, such as a development server, stop when the run ends, and iCode prints a warning saying how many it stops. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 Run `icode run -h` or `icode run --help` to see the options supported by the current version.
 
 ## Read the progress
@@ -104,7 +106,7 @@ Each run accepts only one prompt source: either a prompt passed directly or a fi
 
 ## Choose an agent and model
 
-`icode run` requires an agent specified with `--agent`. Run `icode agents` to list the available agent profiles:
+`icode run` requires an agent specified with `--agent`. Run `icode agent list` to see the available agent profiles:
 
 ```text
 Default  Name  Display Name  ID            Model
@@ -118,7 +120,7 @@ You can use `Name`, `Display Name`, or `ID` as the value of `--agent`. A `Model`
 
 For agents that use the `active` model, you can specify a model profile for this run with `-m` or `--model`. For agents with a bound model, `--model` has no effect.
 
-Run `icode models` to list the available model profiles:
+Run `icode model list` to see the available model profiles:
 
 ```text
 Active  ID            Name           Provider  API   Model          Context  Flags

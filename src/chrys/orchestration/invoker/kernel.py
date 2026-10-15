@@ -20,6 +20,7 @@ from chrys.foundation.models.invocations import InvocationOrigin, PassHandle
 from chrys.foundation.retry import HistorySnapshot
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.kernel import AgentResponse, AgentSession, LoopRecorder
+from chrys.service.tools.background import TaskScope, current_scope
 
 from .attempts import AgentRunKwargs, AttemptRunner, AttemptTaskHandle
 from .contracts import (
@@ -237,6 +238,8 @@ class KernelConversation:
         self._active = active
         origin_token = current_invocation_origin.set(request.origin)
         invocation_token = invocation_routing_key.set(invocation_id)
+        # The tool calls of this pass start background commands for, and sleep on those of, this agent.
+        scope_token = current_scope.set(TaskScope.of(request.origin))
         response: AgentResponse[Any] | None = None
         error: Exception | None = None
         cancellation: asyncio.CancelledError | None = None
@@ -338,6 +341,7 @@ class KernelConversation:
                 task.uncancel()
             current_invocation_origin.reset(origin_token)
             invocation_routing_key.reset(invocation_token)
+            current_scope.reset(scope_token)
             unbind()
             self._active = None
             active.done.set()

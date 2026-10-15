@@ -37,6 +37,7 @@ from chrys.app.tui.screens.main.ports import (
     StatusTrail,
     SuggestionEntry,
 )
+from chrys.app.tui.screens.main.runtime_info import with_background_count
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
 from chrys.app.tui.widgets import PromptDraft
@@ -53,6 +54,7 @@ from chrys.app.tui.widgets.chrome.status_bar import (
     STATUS_RETRYING,
     STATUS_RUNNING_TOOL,
     STATUS_SHELL_MODE,
+    STATUS_STILL_SENDING,
     StatusBar,
 )
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
@@ -85,6 +87,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.events.types import ProvisionalPresentation
+    from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
@@ -139,6 +142,9 @@ class MainScreenViewAdapter:
         self._session_surfaces: dict[bool, frozenset[SessionSurface]] = {}
         # The status bar as shell mode found it, restored when shell mode exits.
         self._shell_status_snapshot: dict = {}
+        # The runtime trail the status bar shows, before the background command count.
+        self._runtime_trail: StatusTrail = ""
+        self._background_running = 0
 
     # -------------------------------------------------------------- #
     # Generic screen effects
@@ -236,6 +242,9 @@ class MainScreenViewAdapter:
     def call_after_refresh(self, callback: Callable[[], None]) -> None:
         self._screen.call_after_refresh(callback)
 
+    def call_later(self, callback: Callable[[], None]) -> None:
+        self._screen.call_later(callback)
+
     def stop_shell(self) -> None:
         self._screen.query_one(ShellPanel).stop()
 
@@ -313,6 +322,9 @@ class MainScreenViewAdapter:
     def flash_interrupted(self) -> None:
         self._screen.query_one(StatusBar).flash(STATUS_INTERRUPTED.bind(), caution=True)
 
+    def flash_submit_still_sending(self) -> None:
+        self._screen.query_one(StatusBar).flash(STATUS_STILL_SENDING.bind())
+
     async def render_interrupted(self) -> None:
         await self._screen.query_one(ChatPanel).add_interrupted()
 
@@ -327,7 +339,8 @@ class MainScreenViewAdapter:
     # -------------------------------------------------------------- #
 
     def set_tool_info(self, trail: StatusTrail) -> None:
-        self._screen.query_one(StatusBar).set_tool_info(trail)
+        self._runtime_trail = trail
+        self._screen.query_one(StatusBar).set_tool_info(with_background_count(trail, self._background_running))
 
     def show_status(self, text: StatusMessage) -> None:
         self._screen.query_one(StatusBar).show(text)
@@ -418,6 +431,13 @@ class MainScreenViewAdapter:
     def clear_todos(self) -> None:
         self._screen.todo_state = TodoListState()
 
+    def set_background_tasks(self, tasks: tuple[BackgroundTaskView, ...]) -> None:
+        self._screen.background_tasks_state = tasks
+        running = sum(task.running for task in tasks)
+        if running != self._background_running:
+            self._background_running = running
+            self.set_tool_info(self._runtime_trail)
+
     def set_header_approval_mode(self, mode: ApprovalMode) -> None:
         self._screen.header_approval_mode = mode
 
@@ -432,8 +452,22 @@ class MainScreenViewAdapter:
     def set_input_paste_cwd(self, cwd: str) -> None:
         self._screen.query_one(InputBar).set_paste_cwd(cwd)
 
+    def unlock_input_clearing(self, text: str) -> None:
+        """Unlock the composer, clearing it unless edited since *text* was sent.
+
+        A locked composer is read-only, so it still holds what was sent; Enter
+        sends the composer's text stripped.
+        """
+        input_bar = self._screen.query_one(InputBar)
+        if input_bar.locked or input_bar.value.strip() == text:
+            input_bar.unlock_and_clear()
+
+    def restore_input_draft(self, text: str) -> bool:
+        """Hand *text* back to an empty composer; a draft already there wins."""
+        return self._screen.query_one(InputBar).restore_draft(text)
+
     def restore_input_text(self, text: str) -> InputRestore | None:
-        """Hand a consumed prompt back to an empty composer.
+        """Hand a consumed prompt back to an empty composer, or a queued one's.
 
         Returns proof of that restore for a caller that has to rewrite the same
         text afterwards, or ``None`` when nothing was written — the composer
@@ -446,6 +480,11 @@ class MainScreenViewAdapter:
         input_bar = self._screen.query_one(InputBar)
         if input_bar.locked:
             input_bar.unlock_and_keep()
+            # A queued message's composer stays read-only from its Enter, which
+            # sends the text stripped: holding *text*, it still holds that
+            # message, and unlocking it hands the message back.
+            if input_bar.value.strip() == text:
+                return InputRestore(generation=self._input_restore_generation, text=input_bar.value)
         if not input_bar.restore_draft(text):
             return None
         return InputRestore(generation=self._input_restore_generation, text=text)
@@ -1475,7 +1514,9 @@ class MainScreenViewAdapter:
         sidebar.remove_class("-shell-active")
         # Restore last for the same reason flash runs last in enter_shell_mode:
         # its map rebuild must see the fully restored layout.
-        status.restore(self._shell_status_snapshot)
+        # With the trail as it is now: the run or its background count may have moved on while the shell showed.
+        trail = with_background_count(self._runtime_trail, self._background_running)
+        status.restore(self._shell_status_snapshot, tool_trail=trail)
         if not dashboard_restored and input_bar.display:
             input_bar.focus_input()
 

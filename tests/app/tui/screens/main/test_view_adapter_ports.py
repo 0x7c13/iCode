@@ -181,3 +181,46 @@ def test_approval_dialog_tool_name_is_the_raw_name_or_empty() -> None:
 
     assert adapter.approval_dialog_tool_name(ApprovalDialog(caller_name="", tool_name=acp_name)) == acp_name
     assert adapter.approval_dialog_tool_name(SimpleNamespace(tool_name="shell")) == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("draft", "locked", "expected"),
+    [
+        ("queued text", True, ("", False, ["unlock_and_clear"])),
+        ("queued text", False, ("", False, ["unlock_and_clear"])),
+        # Enter sends the composer's text stripped.
+        ("  queued text\n", False, ("", False, ["unlock_and_clear"])),
+        ("edited draft", False, ("edited draft", False, [])),
+    ],
+    ids=["still_queued", "handed_back_unchanged", "handed_back_with_whitespace", "edited_since"],
+)
+def test_unlock_input_clearing_keeps_a_draft_edited_since(
+    draft: str, locked: bool, expected: tuple[str, bool, list[str]]
+) -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.widgets.chrome.input_bar import InputBar
+
+    calls: list[str] = []
+    input_bar = SimpleNamespace(value=draft, locked=locked)
+
+    def unlock_and_clear() -> None:
+        calls.append("unlock_and_clear")
+        input_bar.value = ""
+        input_bar.locked = False
+
+    def unlock_and_keep() -> None:
+        calls.append("unlock_and_keep")
+        input_bar.locked = False
+
+    input_bar.unlock_and_clear = unlock_and_clear
+    input_bar.unlock_and_keep = unlock_and_keep
+
+    def query_one(widget_type: type) -> object:
+        assert widget_type is InputBar
+        return input_bar
+
+    adapter = MainScreenViewAdapter(SimpleNamespace(query_one=query_one), state=MainScreenState())  # type: ignore[arg-type]
+    adapter.unlock_input_clearing("queued text")
+
+    assert (input_bar.value, input_bar.locked, calls) == expected

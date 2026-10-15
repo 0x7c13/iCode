@@ -22,16 +22,21 @@ from chrys.app.acp.transport import AbortableMessageSender
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
 from chrys.foundation.branding import APP_COMMAND, APP_DISPLAY_NAME
-from chrys.foundation.config.settings import Settings
+from chrys.foundation.config.settings import Settings, resolve_sessions_dir
 from chrys.foundation.config.settings_store import LoadedSettings
 from chrys.foundation.config.spec import Source
 from chrys.foundation.config.warnings import settings_warning_events
+from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.platform.signals import hangup_as_interrupt
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.startup import bootstrap_runtime
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import resolve_for_agent
+from chrys.service.tools.background.crash import find_left_behind, stop_left_behind
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,11 +155,22 @@ async def run_command(args: argparse.Namespace) -> int:
         initial_vision=initial_vision,
         permission_timeout_seconds=settings.approval_timeout_seconds,
     )
+    # A client that ends this process kills it outright, so its background commands outlive it until now.
+    left_behind = asyncio.create_task(asyncio.to_thread(_stop_left_behind))
     try:
         await _serve_agent(server)
     finally:
         await manager.shutdown()
+        await left_behind
     return 0
+
+
+def _stop_left_behind() -> None:
+    """Stop, without asking, the background commands ACP launches that were killed left running."""
+    try:
+        stop_left_behind(find_left_behind(resolve_sessions_dir(create=False), surface=SessionSurface.ACP))
+    except Exception:
+        logger.warning("Could not stop background commands left running", exc_info=True)
 
 
 async def _serve_agent(server: ChrysAcpServer) -> None:
@@ -192,7 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"Error: {missing_cwd}\n")
         return 1
     try:
-        return asyncio.run(run_command(args))
+        with hangup_as_interrupt():
+            return asyncio.run(run_command(args))
     except KeyboardInterrupt:
         return 130
     except Exception as exc:

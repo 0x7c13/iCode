@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from chrys.service.profiles.agents.loader import (
     AgentProfileLoadError,
@@ -37,6 +37,7 @@ _BUILTIN_IDS: dict[str, str] = {
     "General": "b0119e4e0004",
     "QA": "b0119a000005",
 }
+BUILTIN_PROFILE_NAMES: Final = frozenset(_BUILTIN_IDS)
 
 # The removed builtin ``Plan`` sub-agent, whose references user profiles may still carry.
 _RETIRED_PLAN_PROFILE = "Plan"

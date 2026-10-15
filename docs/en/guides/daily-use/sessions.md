@@ -11,6 +11,8 @@ When the agent is idle, enter the appropriate command in the input field, depend
 | Start a new session and keep the current session available to resume later | `/new` | Kept; you can resume it from the session list |
 | Start a new session without keeping the current session | `/clear` | Opens a confirmation dialog; once confirmed, the session is permanently deleted and cannot be recovered |
 
+Leaving a session, by either command or by switching to another session, stops the shell commands it runs in the background. See [Commands that keep running in the background](../configuration/tools.md#commands-that-keep-running-in-the-background).
+
 ## Change the session title
 
 You can change the current session's title in any of these ways:
@@ -22,6 +24,20 @@ You can change the current session's title in any of these ways:
 The top of the "Session Title" dialog also shows the session ID. Click "Copy ID" to copy it, for example to resume the session later with `icode -s <session-id>`. Click "Open folder" to open the folder that holds the session's data in your file manager. "Open folder" is not shown where iCode cannot open a file manager, for example over SSH.
 
 After you set a title manually, the new title appears in the session list and on the main screen, and iCode stops updating that session's title automatically. If [automatic session titles](../configuration/settings.md#sessions) are enabled, clearing the "Session Title" dialog and saving restores the existing automatic title and lets iCode continue updating it automatically during subsequent tasks.
+
+## Follow a task in the terminal tab
+
+The terminal tab shows your latest message, or the session title once iCode updates it; a title you set yourself always stays. A mark before it shows how the current task is going, so you can check on it from another tab:
+
+| Mark | Meaning |
+| --- | --- |
+| Spinning dots, such as `⠋` | The agent is working. |
+| `?` | The agent is waiting for you to approve a tool call or answer a question. |
+| `!` | A sub-agent failed and is waiting for you to click "Retry" or "Abort". |
+| `✓` | The task is finished. |
+| `✗` | The task failed. |
+
+A task you stop shows no mark, and the mark clears when you start the next task. Some terminals do not show tab titles.
 
 ## Resume an existing session
 

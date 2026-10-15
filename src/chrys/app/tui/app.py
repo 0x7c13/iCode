@@ -39,6 +39,7 @@ from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, 
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
+from chrys.app.tui.screens.dialogs.background_task import confirm_stopping_left_behind
 from chrys.app.tui.screens.main import MainScreen
 from chrys.app.tui.screens.settings import SettingsDialog
 from chrys.app.tui.screens.settings.dialog import THEME_PREVIEW_HINT
@@ -73,13 +74,20 @@ from chrys.app.tui.widgets.chrome.status_bar import STATUS_AGENT_STARTUP_FAILED
 from chrys.foundation import platform as chrys_platform
 from chrys.foundation.branding import APP_DISPLAY_NAME, format_app_version_title
 from chrys.foundation.config.runtime_pointer import set_model_pointer
-from chrys.foundation.config.settings import DEFAULT_AGENT_PROFILE, DEFAULT_THEME, Settings, persist_theme
+from chrys.foundation.config.settings import (
+    DEFAULT_AGENT_PROFILE,
+    DEFAULT_THEME,
+    Settings,
+    persist_theme,
+    resolve_sessions_dir,
+)
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
 from chrys.foundation.config.spec import SettingOrigin, Source
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Warning
 from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
+from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.assembly import assemble_agent_engine
 from chrys.orchestration.engine.engine import AgentEngine
@@ -94,6 +102,7 @@ from chrys.service.profiles.models.resolver import (
     resolve_profile_selector as resolve_model_profile_selector,
 )
 from chrys.service.state.store import JsonFileStateStore
+from chrys.service.tools.background.crash import find_left_behind, forget_left_behind, stop_left_behind
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +340,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         self._startup_task: asyncio.Task[None] | None = None
         self._update_check = update_check
         self._update_check_task: asyncio.Task[None] | None = None
+        self._left_behind_task: asyncio.Task[None] | None = None
         self._main_screen: MainScreen | None = None
         self._gc_freeze_watchdog: Timer | None = None
         self._gc_pointer_buttons_down: set[int] = set()
@@ -864,6 +874,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         for screen in self.screen_stack:
             if isinstance(screen, SettingsDialog):
                 screen.commit_pending()
+        main = self._main_screen
+        if main is not None and main in self.screen_stack and main.background_tasks_running:
+            main.action_quit()  # It asks whether the background commands may stop.
+            return
         self.exit()
 
     def action_copy_with_insert(self) -> None:
@@ -922,6 +936,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     async def on_mount(self) -> None:
         """Push the main screen and start the engine."""
         self._set_terminal_title_for_cwd()
+        # Closing the terminal or SIGTERM quits without asking, so the session's background commands stop.
+        for signum in HANGUP_SIGNALS:
+            asyncio.get_running_loop().add_signal_handler(signum, self.exit)
         screen = self._build_main_screen()
         await self.push_screen(screen)
         self._main_screen = screen
@@ -954,6 +971,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             # No engine start means no restore either: the bootstrap settings
             # stay in force, so their warnings are due after all.
             await self._flush_deferred_settings_warnings()
+        self._left_behind_task = asyncio.create_task(self._offer_to_stop_left_behind(screen))
 
     async def _run_update_check(self, check: UpdateCheck, screen: MainScreen) -> None:
         # A check that fails in any way just leaves the welcome screen as it is.
@@ -963,6 +981,29 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             raise
         except Exception:
             logger.debug("Update check failed", exc_info=True)
+
+    async def _offer_to_stop_left_behind(self, screen: MainScreen) -> None:
+        """Ask whether to stop the background commands launches that crashed left running."""
+        try:
+            # After the startup session: what it asks comes first.
+            if self._startup_task is not None:
+                await asyncio.wait([self._startup_task])
+            left = await asyncio.to_thread(find_left_behind, resolve_sessions_dir(create=False))
+            if not left:
+                return
+            answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+            def settle(stop: bool | None) -> None:
+                if not answer.done():
+                    answer.set_result(bool(stop))
+
+            commands = [command for record in left for command in record.commands]
+            self.push_screen(confirm_stopping_left_behind(commands, screen), settle)
+            await asyncio.to_thread(stop_left_behind if await answer else forget_left_behind, left)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Could not check for background commands left running", exc_info=True)
 
     async def _flush_deferred_settings_warnings(self) -> None:
         for w in self._deferred_settings_warnings:
@@ -1097,7 +1138,16 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._update_check_task
         self._update_check_task = None
+        if self._left_behind_task is not None and not self._left_behind_task.done():
+            self._left_behind_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._left_behind_task
+        self._left_behind_task = None
         await self._engine.shutdown()
+        # Only now: a second SIGHUP or SIGTERM while the engine stops its
+        # background commands must not end the process before it has.
+        for signum in HANGUP_SIGNALS:
+            asyncio.get_running_loop().remove_signal_handler(signum)
         # After the engine: its shutdown drains a still-finalizing run
         # whose success callback can schedule one last title task; the
         # updater must be the last thing torn down so that task is

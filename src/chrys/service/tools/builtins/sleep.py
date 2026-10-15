@@ -46,10 +46,7 @@ def validate_sleep_seconds(seconds: int | None) -> str:
     if seconds > MAX_SLEEP_SECONDS:
         return tool_error(
             "sleep_duration_too_long",
-            (
-                f"sleep duration cannot exceed {MAX_SLEEP_SECONDS} seconds. "
-                "Use a background command or monitor-style workflow for longer waits."
-            ),
+            f"sleep duration cannot exceed {MAX_SLEEP_SECONDS} seconds. To wait longer, sleep again.",
             details={"seconds": seconds, "max_seconds": MAX_SLEEP_SECONDS},
         )
     return ""
@@ -75,14 +72,15 @@ async def sleep(
     seconds: Annotated[int, f"How long to sleep, in seconds. Must be between 0 and {MAX_SLEEP_SECONDS}."],
     reason: Annotated[
         str,
-        "Brief reason for sleeping, shown to the user. Prefer background monitoring for long-running work.",
+        "Brief reason for sleeping, shown to the user.",
     ] = "",
 ) -> str:
-    """Sleep briefly before continuing.
+    """Sleep before continuing.
 
-    Use this when a short delay is genuinely useful before the next action.
-    Do not use sleep loops to monitor long-running commands, files, or services;
-    prefer background execution and monitoring for those workflows.
+    Use this for a deliberate pause, or to wait for a background shell command
+    to finish: the sleep returns early, with the end of the command's log, when
+    one of your background commands ends. The main agent's sleep also returns
+    early when the user sends a new message.
     """
     duration = parse_sleep_seconds(seconds)
     if isinstance(duration, str):

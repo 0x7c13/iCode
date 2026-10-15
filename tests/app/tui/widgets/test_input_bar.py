@@ -811,6 +811,27 @@ async def test_rewrite_restored_input_leaves_identical_text_and_its_cursor_alone
 
 
 @pytest.mark.asyncio
+async def test_restore_input_text_hands_back_a_refused_queued_message() -> None:
+    """A queued message's composer stays read-only, so unlocking it restores that message."""
+    async with _InputBarApp().run_test(size=(120, 15)) as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        adapter = _draft_restore_adapter(input_bar)
+
+        # Enter while the agent runs keeps the text, locked, and sends it stripped.
+        text_area.load_text("describe @shot.png\n")
+        input_bar.lock_with_text()
+
+        restore = adapter.restore_input_text("describe @shot.png")
+
+        assert restore is not None
+        assert not input_bar.locked
+        # The image-rejection dialog's "use paths" action rewrites it in place.
+        assert adapter.rewrite_restored_input(restore, "describe /abs/shot.png") is True
+        assert input_bar.value == "describe /abs/shot.png"
+
+
+@pytest.mark.asyncio
 async def test_restore_input_text_unlocks_before_deferring_to_a_live_draft() -> None:
     """Abandoned injections still unlock the bar even when the restore is skipped."""
     async with _InputBarApp().run_test(size=(120, 15)) as pilot:

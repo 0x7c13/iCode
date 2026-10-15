@@ -31,6 +31,7 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.state.locks import ActiveSessionGuard
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 
 
 def _awaiting_marker() -> Message:
@@ -403,9 +404,10 @@ async def test_session_restore_active_lock_conflict_fails_fast(tmp_path: Path) -
     await bus.subscribe(Error, collect_error)
     engine = assemble_agent_engine(bus, settings=Settings(), state_store=store)
     try:
-        start = time.monotonic()
-        await engine.on_session_restore(SessionRestore(session_id="busy"))
-        elapsed = time.monotonic() - start
+        with earlier_tests_heap_frozen():
+            start = time.monotonic()
+            await engine.on_session_restore(SessionRestore(session_id="busy"))
+            elapsed = time.monotonic() - start
     finally:
         held.release()
         await engine.shutdown()

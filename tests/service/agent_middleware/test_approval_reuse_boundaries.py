@@ -230,9 +230,9 @@ async def test_approved_command_starts_in_the_checked_directory(runtime, tmp_pat
     for name in ("_execute_pipe", "_execute_pty"):
         backend = getattr(ShellTools, name)
 
-        async def record(self, command, shell, cwd, timeout, backend=backend):
+        async def record(self, command, shell, cwd, timeout, reason="", backend=backend):
             started_in.append(cwd)
-            return await backend(self, command, shell, cwd, timeout)
+            return await backend(self, command, shell, cwd, timeout, reason)
 
         monkeypatch.setattr(ShellTools, name, record)
 

@@ -12,6 +12,7 @@ from uuid import uuid4
 from chrys.app.tui.screens.dialogs.ask_user import AskUserDialog, AskUserDialogResult
 from chrys.app.tui.screens.dialogs.confirm import NoticeDialog
 from chrys.app.tui.screens.main.recent_dirs import WorkspaceMruRecentDirs
+from chrys.app.tui.screens.main.session_title import WorkflowTab
 from chrys.app.tui.widgets.workflow import text
 from chrys.foundation.events import types as events
 from chrys.foundation.events.workflow import WorkflowRunEvent
@@ -20,6 +21,7 @@ from chrys.foundation.models.workflow_session import (
     WorkflowSessionSelection,
 )
 from chrys.orchestration.workflows.preview import PreparedWorkflow
+from chrys.service.workflows.outcomes import run_status
 
 if TYPE_CHECKING:
     from chrys.app.tui.screens.dialogs.workflow_input import WorkflowInputContext
@@ -47,12 +49,18 @@ class WorkflowRunControl:
         self._retried: set[tuple[str, str, int]] = set()
         self._cancel_confirmation: tuple[str, NoticeDialog] | None = None
         self._input_generation = 0
+        # The run the terminal tab follows: the last one this screen started.
+        # Its terminal is kept apart from the projector, which drops a
+        # terminal that arrives without ``WorkflowRunStarted``.
+        self._tab_run_id = ""
+        self._tab_finished: events.WorkflowRunFinished | None = None
 
     @property
     def awaiting_engine(self) -> bool:
         return self._pending_run is not None or bool(self._model_request)
 
     def leave(self) -> None:
+        self._forget_tab_run()
         self._input_generation += 1
         self._input_open = False
         self._close_cancel_confirmation()
@@ -79,6 +87,37 @@ class WorkflowRunControl:
         self.clear_input()
         self._pending_answers.clear()
         self._retried.clear()
+        self._forget_tab_run()
+
+    def _forget_tab_run(self) -> None:
+        self._tab_run_id = ""
+        self._tab_finished = None
+
+    def terminal_tab(self, title: str, cwd: str) -> WorkflowTab:
+        """The terminal tab for the run this screen started last."""
+        if self._pending_run is not None:
+            return WorkflowTab(title, cwd, "running")
+        run_id = self._tab_run_id
+        if (finished := self._tab_finished) is not None:
+            # A cancelled or interrupted run shows no mark, as a chat interrupt does.
+            status = run_status(finished.outcome, finished.reason, active=False)
+            if status == "completed":
+                return WorkflowTab(title, cwd, "completed")
+            return WorkflowTab(title, cwd, "failed" if status == "failed" else "idle")
+        execution = self.host.execution()
+        if not run_id or execution.kind != "workflow" or execution.run_id != run_id:
+            # Never started, or the lease is gone without a terminal: nothing is live.
+            return WorkflowTab(title, cwd)
+        if (run := self.host.session_view.projector.run(run_id)) is None:
+            return WorkflowTab(title, cwd, "running")
+        if any(
+            node.state == "awaiting_retry" and (run_id, node.activation_id, node.attempt) not in self._retried
+            for node in run.nodes.values()
+        ):
+            return WorkflowTab(title, cwd, "awaiting_retry")
+        if any(request_id not in self._pending_answers for request_id in run.questions):
+            return WorkflowTab(title, cwd, "question")
+        return WorkflowTab(title, cwd, "running")
 
     def can_change_model(self) -> bool:
         return bool(
@@ -268,6 +307,7 @@ class WorkflowRunControl:
         target = self.host.session_view.selection or self.host.new_target(loaded.preview.source.workflow_id)
         prepared = PreparedWorkflow(target, loaded.preview)
         self._pending_run = _PendingRun(uuid4().hex, prepared, panel.run_id)
+        self._forget_tab_run()
         event = prepared.run_request(input_text=draft, request_id=self._pending_run.request_id)
         self.host.refresh()
         self.host.spawn(self.host.services.bus.publish(event))
@@ -345,11 +385,14 @@ class WorkflowRunControl:
                 return
             self._pending_run = None
             if isinstance(event, events.WorkflowRunAccepted):
+                self._tab_run_id = event.run_id
                 self._input_draft = ""
                 await self.host.session_view.accept_run(event, pending.prepared.preview, pending.selected_run_id)
             elif event.error != "cancelled":
                 self.host.show_error(f"{event.error}: {event.message}")
         else:
+            if isinstance(event, events.WorkflowRunFinished) and event.run_id == self._tab_run_id:
+                self._tab_finished = event
             self.host.session_view.projector.record(event)
             self._prune_actions()
         self.host.request_refresh()
