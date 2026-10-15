@@ -12,14 +12,18 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDialog
+from chrys.app.tui.screens.main import MainScreen
 from chrys.app.tui.screens.main.event_handlers import BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, RunState
+from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
@@ -27,11 +31,13 @@ from chrys.foundation.events.types import (
     UserInjectResult,
     UserInterrupt,
     UserMessage,
+    Warning,
 )
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.invocations import InvocationOrigin
-from tests.support.tui_helpers import fake_session_title, make_backend_handler
+from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
+from tests.support.tui_helpers import click_when_settled, fake_session_title, make_backend_handler
 from tests.support.waiting import wait_for
 
 _BLOCK_REASON = "hook 'guard' blocked: denied"
@@ -490,3 +496,44 @@ async def test_mid_run_message_failing_before_its_publish_releases_the_submit(mo
 
     assert h.state.submit.active is False
     assert h.published == []
+
+
+async def test_use_paths_instead_rewrites_a_mid_run_message_refused_for_its_image(tmp_path: Path) -> None:
+    """The message stays in the input box while it is sent, so the box is not
+    empty when the refusal hands it back; the button still rewrites it."""
+    app = make_chrys_app(tmp_path, engine=SessionGenerationEngine())
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    sent: list[UserMessage] = []
+
+    async def refuse_images(event: UserMessage) -> None:
+        # What the backend does with an image in a message sent while a turn runs.
+        sent.append(event)
+        await app._bus.publish(
+            Warning(
+                code="image_attachment_while_running", message="Images cannot be added while the agent is responding."
+            )
+        )
+
+    await app._bus.subscribe(UserMessage, refuse_images)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main._state.workspace.current_cwd = str(tmp_path)
+        main._state.runtime.details_confirmed = True
+        main._state.runtime.details.model.model_id = "vendor/model"
+        main._set_agent_running(True)
+        input_bar = main.query_one(InputBar)
+        input_bar.value = f'look at @"{image}"'
+        input_bar.focus_input()
+        await wait_for(lambda: input_bar.query_one("#chat-input").has_focus, pilot=pilot)
+
+        await pilot.press("enter")
+        await wait_for(lambda: isinstance(app.screen, VisionUnsupportedDialog), pilot=pilot)
+        assert [event.injection_id is not None for event in sent] == [True]
+        await click_when_settled(pilot, "#vision-unsupported-use-paths")
+        await wait_for(lambda: app.screen is main, pilot=pilot)
+
+        assert input_bar.value == f"look at {image}"
+        assert not input_bar.locked

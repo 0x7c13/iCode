@@ -29,7 +29,7 @@ from typing import Final, cast
 
 import chrys.service.analytics._turns as _turns
 from chrys.foundation.config.settings import DEFAULT_TRAJECTORY_VERIFY_COMMANDS
-from chrys.foundation.platform.files import secure_open_owner_only_binary
+from chrys.foundation.platform.key_files import read_owner_only_key
 from chrys.foundation.trajectory.fingerprint import FINGERPRINT_KEY_BYTES
 from chrys.foundation.trajectory.keys import TRAJECTORY_KEY_FILE_NAME
 from chrys.foundation.trajectory.sequences import SequenceRange
@@ -114,6 +114,7 @@ from chrys.service.analytics.reader import (
     verify_prefix,
 )
 from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelled
+from chrys.service.analytics.session_paths import session_directory_for_events
 from chrys.service.trajectory.preparation import PreparationOutcome
 
 MAX_RESIDENT_MEMORY_BYTES: Final = 200 * 1024 * 1024
@@ -133,12 +134,8 @@ def _read_prefix_probe(handle: BufferedReader, byte_offset: int) -> bytes:
 
 
 def _read_installed_fingerprint_key(path: Path) -> bytes | None:
-    if (
-        len(path.parents) < 4
-        or path.name != "events.jsonl"
-        or path.parent.name != "trajectory"
-        or path.parents[2].name != "sessions"
-    ):
+    session_dir = session_directory_for_events(path)
+    if session_dir is None:
         return None
     from chrys.foundation.platform import get_platform
 
@@ -147,14 +144,13 @@ def _read_installed_fingerprint_key(path: Path) -> bytes | None:
     # directory) and trees copied along with their key; the config directory
     # is the fallback for a custom session root, whose sessions live
     # elsewhere while the key stays put.
-    candidates = [path.parents[3] / TRAJECTORY_KEY_FILE_NAME]
+    candidates = [session_dir.parent.parent / TRAJECTORY_KEY_FILE_NAME]
     config_key_path = get_platform().config_dir / TRAJECTORY_KEY_FILE_NAME
     if config_key_path not in candidates:
         candidates.append(config_key_path)
     for key_path in candidates:
         try:
-            with secure_open_owner_only_binary(key_path) as handle:
-                key = handle.read(FINGERPRINT_KEY_BYTES + 1)
+            key = read_owner_only_key(key_path, max_bytes=FINGERPRINT_KEY_BYTES + 1)
         except OSError:
             continue
         if len(key) == FINGERPRINT_KEY_BYTES:

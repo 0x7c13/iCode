@@ -21,6 +21,15 @@ from chrys.service.context.providers.context_management import ContextManagement
 from chrys.service.context.providers.history import CompressibleHistoryProvider
 from chrys.service.profiles.models.resolver import default_profile
 from chrys.service.tools.result_metadata import tool_result_metadata
+from tests.kernel._fakes import (
+    _assert_actionable_argument_error,
+    _call_response,
+    _ProbeFunction,
+    _result_contents,
+    _stack,
+    _text_response,
+    _user,
+)
 from tests.support.provider_errors import openai_context_overflow
 
 # ---------------------------------------------------------------------------
@@ -167,6 +176,57 @@ class TestCompressContext:
 # ---------------------------------------------------------------------------
 # _list_compressed_contexts
 # ---------------------------------------------------------------------------
+
+
+async def test_list_tool_rejects_extra_arguments_before_execution_and_accepts_retry() -> None:
+    provider = _make_provider()
+    _bind_session(provider, _build_state(3))
+    name = "list_compressed_contexts"
+    probe = _ProbeFunction()
+    layer, wire = _stack(
+        [
+            _call_response(("initial", name, {})),
+            _call_response(("bad-call", name, {"_call": "check before compressing"})),
+            _call_response(("bad-note", name, {"note": "check before compressing"})),
+            _call_response(("retry", name, {})),
+            _text_response(),
+        ]
+    )
+
+    response = await layer.get_response([_user()], options={"tools": provider._tools}, middleware=[probe])
+
+    initial, bad_call, bad_note, retry = _result_contents(response)
+    for result, field in ((bad_call, "_call"), (bad_note, "note")):
+        message = _assert_actionable_argument_error(result, name, f"unknown '{field}'", "Expected: {}.")
+        assert "check before compressing" not in message
+    assert initial.exception is retry.exception is None
+    assert initial.result == retry.result
+    assert "turn_3" in str(retry.result)
+    assert [context.arguments for context in probe.contexts] == [{}, {}]
+    assert any(bad_call in message.contents for message in wire.calls[2]["messages"])
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("compress_context", {"marker_id": "turn_2", "summary": "Summary"}),
+        ("recall_context", {"compressed_context_id": "block", "question": "What changed?"}),
+    ],
+)
+@pytest.mark.parametrize("field", ["_call", "note"])
+async def test_context_tools_reject_extra_arguments_before_execution(
+    name: str, arguments: dict[str, str], field: str
+) -> None:
+    provider = _make_provider()
+    probe = _ProbeFunction()
+    # Leave the provider unbound: an invalid call must never reach its body.
+    layer, _wire = _stack([_call_response(("bad", name, {**arguments, field: "extra"})), _text_response()])
+
+    response = await layer.get_response([_user()], options={"tools": provider._tools}, middleware=[probe])
+
+    (result,) = _result_contents(response)
+    _assert_actionable_argument_error(result, name, f"unknown '{field}'")
+    assert probe.contexts == []
 
 
 class TestListCompressedContexts:

@@ -5,13 +5,16 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from chrys.foundation.platform import key_files
 from chrys.foundation.platform.files import SecureFileError, atomic_write_owner_only_text
 from chrys.service.session import sub_agent_logs
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
@@ -439,7 +442,17 @@ def test_drain_quarantines_deeply_nested_pending_record(tmp_path: Path) -> None:
     assert (pending / "corrupt" / "deep.json").exists()
 
 
-def test_acp_hmac_key_creation_is_locked_and_stable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("publication", ["native", "no_hard_links", "directory"])
+def test_acp_hmac_key_creation_is_locked_and_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publication: str
+) -> None:
+    if publication == "no_hard_links":
+        monkeypatch.setattr(os, "link", Mock(side_effect=OSError(errno.ENOTSUP, "Hard links unavailable")))
+    elif publication == "directory":
+        monkeypatch.setattr(
+            key_files, "publish_file_no_replace", Mock(side_effect=OSError(errno.ENOTSUP, "No atomic file publish"))
+        )
+
     async def create_many() -> list[bytes]:
         return await asyncio.gather(
             *(asyncio.to_thread(load_or_create_acp_audit_key, config_dir=tmp_path) for _ in range(8))
@@ -447,6 +460,12 @@ def test_acp_hmac_key_creation_is_locked_and_stable(tmp_path: Path) -> None:
 
     keys = asyncio.run(create_many())
     assert len(set(keys)) == 1
+    assert len(keys[0]) == 32
+    key_path = tmp_path / "acp-audit-hmac.key"
+    assert key_path.is_dir() is (publication == "directory")
+    assert key_files.read_owner_only_key(key_path, max_bytes=33) == keys[0]
+    assert load_or_create_acp_audit_key(config_dir=tmp_path) == keys[0]
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_acp_hmac_key_rejects_symlink(tmp_path: Path) -> None:

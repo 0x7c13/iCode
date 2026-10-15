@@ -61,6 +61,8 @@ The "Takes effect" column in the following tables describes each setting's usual
 | --- | --- | --- |
 | Save prompt history | Saves submitted input across sessions for reuse. When no other dialog covers the main screen, press **Ctrl+R** to open the prompt history list above the input field. Click an entry, or select it with the up and down arrow keys and press **Enter**, to copy the prompt into the input field. The history file, `prompt_history.jsonl`, is stored in `~/.chrys/` on macOS and Linux, or `%APPDATA%\chrys\` on Windows. Turning this setting off does not delete the file; iCode stops reading it, and **Ctrl+R** shows "No results". Re-enable the setting and restart iCode to read the file's entries again. To clear the history, delete the history file; deletion cannot be undone. | After restart |
 
+When no suggestion list is open, **Up** and **Down** move through the rows of the prompt, including automatically wrapped rows. **Up** recalls an older prompt only from the first row. While browsing history, **Down** moves to a newer prompt only from the last row; moving past the newest entry restores your draft.
+
 #### Updates
 
 | Setting | Effect and notes | Takes effect |
@@ -115,7 +117,7 @@ Project settings, hooks, and skills come with the repository you open, so all th
 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
-| Capture raw HTTP traffic | Records model requests and responses for troubleshooting. **Logs may contain API keys, complete prompts, and model responses in plain text.** Enable this only while troubleshooting and protect the log files. When finished, turn it off promptly and restart iCode. The log file, `llm_raw_http.jsonl`, is stored in the current session folder; see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). | After restart |
+| Capture raw model HTTP requests | Records model requests and responses for troubleshooting. **Logs may contain API keys, complete prompts, and model responses in plain text.** Enable this only while troubleshooting and protect the log files. When finished, turn it off promptly and restart iCode. The log file, `llm_raw_http.jsonl`, is stored in the current session folder; see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). | After restart |
 
 #### Telemetry
 

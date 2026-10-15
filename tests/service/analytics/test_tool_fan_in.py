@@ -9,9 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR, resolve_sessions_dir
+from chrys.foundation.platform import get_platform
 from chrys.foundation.trajectory.envelope import Actor, SegmentedField, measurement
 from chrys.foundation.trajectory.event_types import EventType
+from chrys.foundation.trajectory.keys import load_or_create_fingerprint_key
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
+from chrys.foundation.trajectory.revisions import membership_hash
 from chrys.service.analytics import (
     Precision,
     TrajectoryAnalyzer,
@@ -20,6 +24,7 @@ from chrys.service.analytics import (
 from chrys.service.analytics._context_evidence import _replay_delta
 from chrys.service.analytics._facts import _RevisionEntry
 from tests.service.analytics._events import NS, EventLog, caused_by, operation_index
+from tests.support.symlinks import symlink_or_skip
 
 
 def test_serial_model_cycle_fans_in_from_prior_tool_subtree(tmp_path) -> None:
@@ -438,17 +443,33 @@ def test_phase4_consumption_rejects_ambiguous_topologies(
 
 
 @pytest.mark.parametrize("with_session_store", [True, False])
+@pytest.mark.parametrize("linked_store", [False, True])
 def test_legacy_tool_fan_in_uses_only_a_reachable_session_carrier_mapping(
     tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
     with_session_store: bool,
+    linked_store: bool,
 ) -> None:
     carrier_item_id = "7" * 32
     result_item_id = "2" * 32
-    trajectory_dir = tmp_path / "sessions" / "fixture" / "trajectory"
+    sessions = tmp_path / "sessions"
+    if linked_store:
+        destination = tmp_path / "icode-history"
+        destination.mkdir()
+        symlink_or_skip(sessions, destination, target_is_directory=True)
+        monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(tmp_path))
+        sessions = resolve_sessions_dir()
+        assert sessions.name == "icode-history"
+    key = load_or_create_fingerprint_key(get_platform().config_dir)
+    trajectory_dir = sessions / "fixture" / "trajectory"
     trajectory_dir.mkdir(parents=True)
     path = _write_fan_in_membership_probe(
         trajectory_dir,
-        {"item_count": 2, "unidentified_item_count": 0},
+        {
+            "item_count": 2,
+            "unidentified_item_count": 0,
+            "membership_hash": membership_hash(key, [("1" * 32, 0), (carrier_item_id, 0)]),
+        },
         result_membership_item_id=carrier_item_id,
         file_name="events.jsonl",
     )
@@ -473,6 +494,7 @@ def test_legacy_tool_fan_in_uses_only_a_reachable_session_carrier_mapping(
 
     turn = analyze_trajectory(path).turns[0]
 
+    assert not any("membership_hash" in diagnostic for diagnostic in turn.diagnostics)
     if with_session_store:
         assert turn.compute_cp_ns.precision is Precision.EXACT
         assert turn.response_cp_ns.precision is Precision.EXACT

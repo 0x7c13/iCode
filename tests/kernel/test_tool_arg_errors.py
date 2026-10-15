@@ -136,6 +136,22 @@ def test_schema_supplied_error_uses_schema_without_echoing_values() -> None:
     assert secret not in message
 
 
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"additionalProperties": False}, "{}"),
+        ({}, "object"),
+        ({"additionalProperties": True}, "object"),
+        ({"additionalProperties": {"type": "string"}}, "{string: string}"),
+        ({"additionalProperties": False, "patternProperties": {"^item": {"type": "string"}}}, "object"),
+    ],
+)
+def test_empty_object_guidance_distinguishes_closed_and_dynamic_schemas(fields: dict, expected: str) -> None:
+    schema = {"type": "object", "properties": {}, **fields}
+
+    assert _schema_type_text(schema, schema) == expected
+
+
 def test_argument_guidance_descends_into_mapping_value_schemas() -> None:
     class WeightsArguments(BaseModel):
         weights: dict[str, int]

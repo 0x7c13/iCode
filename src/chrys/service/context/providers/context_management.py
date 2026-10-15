@@ -241,6 +241,7 @@ class ContextManagementProvider(ContextProvider):
                         },
                     },
                     "required": ["marker_id", "summary"],
+                    "additionalProperties": False,
                 },
             ),
             FunctionTool(
@@ -269,6 +270,7 @@ class ContextManagementProvider(ContextProvider):
                         },
                     },
                     "required": ["compressed_context_id", "question"],
+                    "additionalProperties": False,
                 },
             ),
             FunctionTool(
@@ -282,6 +284,7 @@ class ContextManagementProvider(ContextProvider):
                 input_model={
                     "type": "object",
                     "properties": {},
+                    "additionalProperties": False,
                 },
             ),
         ]

@@ -352,13 +352,14 @@ class _ProgressiveMCPExposure:
                 }
             },
             "required": ["tool"],
+            "additionalProperties": False,
         }
         tools = [
             FunctionTool(
                 func=_list,
                 name=list_name,
                 description=f"List MCP tools available from server '{self._config.name}'.",
-                input_model={"type": "object", "properties": {}},
+                input_model={"type": "object", "properties": {}, "additionalProperties": False},
                 additional_properties={_MCP_PROGRESSIVE_CONTROL_MARKER: True},
             ),
             FunctionTool(

@@ -400,24 +400,29 @@ class _ChatTextArea(EnhancedTextArea):
             super().action_paste()
 
     async def _on_key(self, event) -> None:
-        # Prompt history navigation: up on first line, down on last line.
+        # Prompt history navigation: up on the first row shown, down on the last.
+        # Rows, not lines: a long line wrapped onto several rows is still one
+        # line, and the arrows move between its rows first.
         # Skip history when suggestion list is active — arrows navigate suggestions instead
         if (
             event.key in _HISTORY_PREVIOUS_KEYS
-            and self.cursor_location[0] == 0
+            and self.navigator.is_first_wrapped_line(self.cursor_location)
             and not self._suggestions_active
             and await self._browse_history(-1)
         ):
             event.stop()
             event.prevent_default()
             return
-        if event.key in _HISTORY_NEXT_KEYS and self._history.index != -1 and not self._suggestions_active:
-            last_line = self.document.line_count - 1
-            if self.cursor_location[0] == last_line:
-                if await self._browse_history(1):
-                    event.stop()
-                    event.prevent_default()
-                return
+        if (
+            event.key in _HISTORY_NEXT_KEYS
+            and self._history.index != -1
+            and not self._suggestions_active
+            and self.navigator.is_last_wrapped_line(self.cursor_location)
+        ):
+            if await self._browse_history(1):
+                event.stop()
+                event.prevent_default()
+            return
         if event.key == "ctrl+o":
             event.stop()
             event.prevent_default()

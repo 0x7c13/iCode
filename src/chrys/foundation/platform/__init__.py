@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from chrys.foundation.platform.c_api import declare_functions
+from chrys.foundation.platform.paths import real_path
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class PlatformInfo:
     os_version: str  # marketing version: "15.4.1" (macOS), "11" (Win), "22.04" (Ubuntu)
     arch: str  # "arm64", "amd64", "x86", or raw machine string
     shell: ShellInfo
-    config_dir: Path  # ~/.chrys or %APPDATA%/chrys
+    config_dir: Path  # ~/.chrys or %APPDATA%/chrys, by its real path (paths.real_path)
     data_dir: Path  # same as config_dir for now
     extra_shells: tuple[ShellInfo, ...] = ()  # additional shells (e.g. Git Bash on Windows)
 
@@ -124,6 +125,18 @@ def _detect_os_version(system: str) -> str:
     return platform.release()
 
 
+def conventional_config_dir() -> Path:
+    """``~/.chrys``, or ``%APPDATA%/chrys`` on Windows, as the user knows it — possibly a link.
+
+    Files are opened through :attr:`PlatformInfo.config_dir`, which is this with
+    its links followed; only a command acting on the entry itself, such as
+    removing it, wants this name.
+    """
+    if platform.system().lower() == "windows":
+        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "chrys"
+    return Path.home() / ".chrys"
+
+
 def detect_platform() -> PlatformInfo:
     """Detect the current platform and return unified info."""
     system = platform.system().lower()
@@ -136,7 +149,6 @@ def detect_platform() -> PlatformInfo:
         from concurrent.futures import ThreadPoolExecutor
 
         os_name = "windows"
-        config_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "chrys"
         # Detect default shell and Git Bash in parallel
         with ThreadPoolExecutor(max_workers=2) as pool:
             shell_future = pool.submit(_detect_windows_shell)
@@ -148,12 +160,15 @@ def detect_platform() -> PlatformInfo:
     elif system == "darwin":
         os_name = "macos"
         shell = _detect_unix_shell()
-        config_dir = Path.home() / ".chrys"
     else:
         os_name = "linux"
         shell = _detect_unix_shell()
-        config_dir = Path.home() / ".chrys"
 
+    # The owner-only file helpers refuse a link anywhere on the path they open,
+    # so a home or config folder reached through one (a symlink, or a junction
+    # such as AppData moved to another drive) would fail each of them. Named by
+    # its real path here, the folder is linkless for everything built on it.
+    config_dir = real_path(conventional_config_dir())
     return PlatformInfo(
         os_name=os_name,
         arch=arch,

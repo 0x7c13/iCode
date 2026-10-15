@@ -23,12 +23,13 @@ from chrys.foundation.platform.files import (
     SecureFileError,
     atomic_write_owner_only_bytes,
     atomic_write_owner_only_text,
+    fsync_directory,
     read_owner_verified_bounded,
     secure_open_owner_only,
-    secure_open_owner_only_binary,
     secure_unlink_owner_verified,
     surrogate_safe_text,
 )
+from chrys.foundation.platform.key_files import publish_owner_only_key, read_owner_only_key
 from chrys.foundation.trajectory.metadata import read_analytics_item_id
 from chrys.foundation.util.filenames import bounded_safe_stem, safe_fs_name
 from chrys.foundation.util.lock import FileLock
@@ -451,12 +452,12 @@ def load_or_create_acp_audit_key(*, config_dir: Path | None = None, timeout: flo
                 file.flush()
                 os.fsync(file.fileno())
             try:
-                os.link(temp_path, key_path, follow_symlinks=False)
+                publish_owner_only_key(temp_path, key_path)
             except FileExistsError:
                 # A creator not using this lock is still never allowed to be
                 # overwritten; validate what won the no-replace publish race.
                 return _read_acp_audit_key(key_path)
-            _fsync_parent(root)
+            fsync_directory(root)
             return _read_acp_audit_key(key_path)
         finally:
             if fd >= 0:
@@ -466,23 +467,12 @@ def load_or_create_acp_audit_key(*, config_dir: Path | None = None, timeout: flo
 
 def _read_acp_audit_key(path: Path) -> bytes:
     try:
-        with secure_open_owner_only_binary(path) as file:
-            key = file.read(_ACP_HMAC_KEY_BYTES + 1)
+        key = read_owner_only_key(path, max_bytes=_ACP_HMAC_KEY_BYTES + 1)
     except OSError as exc:
         raise SecureFileError("The ACP audit HMAC key failed secure verification.") from exc
     if len(key) != _ACP_HMAC_KEY_BYTES:
         raise SecureFileError("The ACP audit HMAC key has an invalid length.")
     return key
-
-
-def _fsync_parent(path: Path) -> None:
-    if get_platform().is_windows:
-        return
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def normalize_acp_state(state: dict[str, Any], *, parent_session_dir: Path | None) -> dict[str, Any]:
