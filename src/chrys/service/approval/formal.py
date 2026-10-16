@@ -88,7 +88,7 @@ class FormalAuditState:
     request_id: str
     meter: CallMeter
     asset_version: str | None = None
-    decision_version: str | None = None
+    decision_version: int | None = None
     asset_digest: str | None = None
     stages: list[str] = field(default_factory=list)
     failure_reason: str | None = None

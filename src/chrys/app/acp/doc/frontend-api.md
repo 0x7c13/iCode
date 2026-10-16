@@ -132,6 +132,8 @@ All routed through `ext_method`.
 | `session/skip_sleep` | `sessionId`, `callId` | Finish an active `sleep` tool call early. |
 | `session/set_config_option` | `sessionId`, `key`, `value` | Persist a supported config key to the user settings document + awaited reload, then push `chrys/runtime_update` (global default; see below). `key` accepts the logical name or its legacy `CHRYS_*` spelling; the response carries all three names (`key` echoed, `envKey`, `settingKey`). The session must be active — it is validated *before* the document write, so a failed request never leaves persisted config mutated. |
 
+`session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.
+
 Approval mode and model switching are **not** here — they use standard ACP
 `set_session_mode` / `set_session_model` (see *Standard ACP*).
 
@@ -146,8 +148,6 @@ Approval mode and model switching are **not** here — they use standard ACP
 | `settings/options` | `sessionId?` | Supported config keys under all three names (`key`, `envKey`, `settingKey`). Each entry carries the durable document `value` plus `baseValue`/`baseSource` — the manager's base settings, deliberately not called any session's view. With `sessionId`, entries add `sessionValue`/`sessionSource` read from that session's own loaded settings. |
 | `mcp/list` | `sessionId` | MCP tools + failures from runtime details. |
 | `skills/list` | `sessionId` | Skill sources + details from runtime details. |
-
-`session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.
 
 ### Sub-agent control
 

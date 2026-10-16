@@ -264,6 +264,8 @@ async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypat
                     if item["update"]["sessionUpdate"] == "permission_review"
                 )
                 assert saved["reason"] == safe_reason
+                assert type(saved["decision_version"]) is int
+                assert saved["decision_version"] == 1
                 assert audit["reason"] == safe_reason
                 assert reviews[0].reason == reason
             finally:

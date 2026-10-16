@@ -66,7 +66,7 @@ llm:
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `approval.default_mode` | `CHRYS_DEFAULT_APPROVAL_MODE` | `manual` | 字符串；`manual` 手动审批、`auto` 自动审批、`bypass` 跳过审批。设置默认模式不会切换当前会话 |
-| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` 直接审查或 `formal` 逐项风险检查；只在 `auto` 模式下生效，重载设置后应用。仅用户级可设置，项目不能覆盖；无效值使用 `direct` |
+| `approval.auto_review` | `CHRYS_APPROVAL_AUTO_REVIEW` | `direct` | `direct` 为“直接审查”；`formal` 为“逐项风险检查”，发现删除文件、发布代码等风险时会请你确认。用法见[选择自动审查方式](../guides/configuration/approval.md#选择自动审查方式)。只在 `auto` 模式下生效。在设置窗口中修改后，关闭窗口即可生效；手动编辑文件后可重启 iCode 生效。请写在用户设置中，项目不能覆盖；无效值使用 `direct` |
 | `approval.timeout_seconds` | `CHRYS_APPROVAL_TIMEOUT_SECONDS` | `0` | 整数；TUI 和 ACP 等待人工审批的秒数，`0` 表示不超时，正数表示等待时限，负数调整为 `0`。超时后拒绝本次工具调用。重启 iCode 后生效 |
 | `ui.approval.defer_while_judging` | 无 | `true` | 布尔值；自动模式下，TUI 是否只在审批裁判模型标记调用或评估失败时才弹出审批对话框。`false` 表示评估期间立即弹出。ACP 服务器和 `icode run` 不受影响 |
 | `project.config_enabled` | 无 | `false` | 布尔值；是否加载各工作目录的项目设置，必须在用户设置中启用 |

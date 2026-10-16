@@ -950,6 +950,8 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
     assert resolved["decision"] == "approved"
     assert resolved["decider"] == "judge"
     assert resolved["formal_judge"]["stages"] == ["predicate"]
+    assert type(resolved["formal_judge"]["decision_version"]) is int
+    assert resolved["formal_judge"]["decision_version"] == 1
     assert resolved["formal_judge"]["predicate_results"] == [{"id": key, "value": False} for key in predicate_values()]
 
 

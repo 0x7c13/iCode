@@ -35,19 +35,38 @@ With the default settings unchanged, the TUI starts in manual approval mode on i
 
 To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Security** tab. **Settings** does not offer bypass mode as a default that can be saved.
 
-### Check risks individually in automatic mode
+## Choose how automatic review works
 
-Press **F10**, open **Security → Approval**, and set **Automatic review strategy** to **Individual risk checks**. Changes apply when you close Settings; an ongoing review finishes using its original strategy. Select `/approval auto` to use automatic mode. The default strategy is **Direct review**; this setting applies only in automatic mode.
+Automatic mode uses **Direct review** by default. Choose **Individual risk checks** if you want iCode to ask you to confirm actions such as deleting files or publishing code, even when you requested them.
 
-The approval model checks seven conditions: external publication or transfer, deletion or destructive changes, changes to shared or production resources, sensitive data or account operations, security or permission changes, untrusted code or externally exposed services, and actions beyond the requested scope.
+| Strategy | What you can expect |
+| --- | --- |
+| Direct review (default) | The approval model considers your request and the proposed action together. It runs actions it judges safe and asks you about the others. |
+| Individual risk checks | The model checks the risks listed below one by one. A detected risk opens an approval dialog with an explanation, so you can approve or decline. |
 
-If any condition holds, the approval dialog lists the detected concerns and waits for your decision. If none holds, the call runs automatically. If the model cannot determine a condition and finds no risk, the same model reviews the complete action before approving or asking you. Both checks and response corrections share the model profile's read timeout; a timeout or invalid response asks you to decide.
+For example, if you ask iCode to clean a build directory, direct review may approve the deletion based on your request. Individual risk checks flag file deletion and ask you to confirm the target first, including temporary files and build outputs.
 
-When there is no user request, such as a workflow started with empty input, the model reviews the complete action even if all conditions are false.
+To choose a strategy:
 
-If individual risk checks fail because of model authentication, rate limiting, or an internal service error, the approval dialog shows the cause and asks you to decide.
+1. Enter `/approval auto` to switch to automatic mode.
+2. Press **F10**, open **Security → Approval**, and find **Automatic review strategy**.
+3. Choose **Direct review** or **Individual risk checks**, then close Settings. Your choice is saved automatically and takes effect when the window closes. A review already in progress finishes as before.
 
-Deletion of files or folders, including temporary files and build outputs, and access to sensitive data require human confirmation. Individual checks also flag external publication such as a requested `git push`, security changes and exposed services that direct review may approve. Calls that already qualify for automatic approval or a remembered approval still use those rules.
+Individual risk checks cover these actions:
+
+| Action | Examples |
+| --- | --- |
+| Sending or publishing content outside your computer | Pushing code, uploading files, or sending messages |
+| Deleting or destroying data | Removing files or folders, emptying a file, or discarding changes that cannot be recovered |
+| Changing shared or production systems | Deploying a service or changing a shared database |
+| Accessing sensitive information | Reading API keys or account credentials |
+| Changing security settings | Granting broader permissions or disabling security checks |
+| Running untrusted code or exposing a service | Downloading and running a script, or making a local service accessible to others |
+| Going beyond your request | Changing configuration when you only asked to inspect it |
+
+When no risk is found, the action can run automatically. If something is unclear, iCode reviews the action again before deciding whether to run it or ask you. For workflows started without task input, actions with no detected risk also get this extra review. If review fails or times out, an approval dialog lets you decide what to do.
+
+This setting applies only in automatic mode. Actions that do not need approval and [approvals you have already remembered](#remember-approvals) continue to work as before.
 
 ## Handle approval requests in the TUI
 

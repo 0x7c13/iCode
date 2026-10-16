@@ -11,7 +11,8 @@ from enum import StrEnum
 from importlib.resources import files
 from typing import Any, Literal
 
-_DECISION_VERSION = "three-valued-or-v2"
+# Version the approval routing contract independently of the risk definitions.
+_DECISION_VERSION = 1
 _MAX_PRINCIPLES = 32
 _MAX_TEXT_LENGTH = 4_000
 
@@ -54,7 +55,7 @@ class PredicateAsset:
     """Validated immutable predicate definition used for one evaluation."""
 
     asset_version: str
-    decision_version: str
+    decision_version: int
     digest: str
     principles: tuple[Principle, ...]
 
@@ -165,7 +166,8 @@ def asset_digest(raw: bytes) -> str:
 def validate_asset_snapshot(asset: PredicateAsset) -> None:
     """Validate once when constructing the immutable asset."""
     if (
-        asset.decision_version != _DECISION_VERSION
+        type(asset.decision_version) is not int
+        or asset.decision_version != _DECISION_VERSION
         or not _valid_text(asset.asset_version)
         or not isinstance(asset.digest, str)
         or len(asset.digest) != 64
