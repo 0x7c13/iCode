@@ -56,6 +56,7 @@ from chrys.foundation.models.ask_user import (
     validate_request_input_response,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.images import MAX_IMAGE_BYTES
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
 from chrys.foundation.trajectory.context import TrajectoryContext
@@ -401,13 +402,26 @@ class AcpUpdateTranslator:
 
     def record_permission_review(self, request_id: str, audit: Mapping[str, Any]) -> None:
         """Append Formal Judge route evidence for a remote permission request."""
+
+        def safe_copy(value: Any) -> Any:
+            if isinstance(value, str):
+                return surrogate_safe_text(value)
+            if isinstance(value, Mapping):
+                return {
+                    surrogate_safe_text(key) if isinstance(key, str) else key: safe_copy(item)
+                    for key, item in value.items()
+                }
+            if isinstance(value, list | tuple):
+                return [safe_copy(item) for item in value]
+            return value
+
         self._append_audit_item(
             {
                 "seq": None,
                 "update": {
                     "sessionUpdate": "permission_review",
                     "request_id": request_id,
-                    "formal_judge": _bounded_value(dict(audit)),
+                    "formal_judge": _bounded_value(safe_copy(audit)),
                 },
             }
         )

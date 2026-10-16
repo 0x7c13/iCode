@@ -160,6 +160,8 @@ class FormalEvaluator:
             async with asyncio.timeout_at(meter.deadline):
                 predicate = await self._evaluate_predicates(model, asset, request, log_path, meter)
                 audit.predicate_results = [{"id": value.id, "value": value.value} for value in predicate.values]
+                if time.monotonic() >= meter.deadline:
+                    raise TimeoutError
                 if predicate.decision is PredicateDecision.NEEDS_REVIEW:
                     return audit.verdict(False, predicate.reason)
                 if predicate.decision is PredicateDecision.ALLOW and request.user_messages:
@@ -169,6 +171,8 @@ class FormalEvaluator:
                 if verdict is None:
                     audit.failure_reason = "invalid_verdict"
                     verdict = JudgeVerdict(False, "Judge returned invalid response")
+                if time.monotonic() >= meter.deadline:
+                    raise TimeoutError
             return audit.verdict(approved=verdict.approved, reason=verdict.reason)
         except asyncio.CancelledError:
             if not meter.started:

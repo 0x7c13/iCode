@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from unittest.mock import create_autospec
 
@@ -17,10 +18,12 @@ from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.kernel import ChatResponse, Message
+from chrys.orchestration.invoker import acp_protocol as acp_module
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.service.approval import judge as judge_module
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.turn_context import TurnContextHolder
+from chrys.service.session.sub_agent_logs import SubAgentSessionLogWriter
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support import formal_approval as core
 from tests.support.event_capture import capture_event_sequence
@@ -177,6 +180,141 @@ async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, tri
                 await asyncio.gather(task, return_exceptions=True)
                 await broker.close()
                 await bus.unsubscribe(ApprovalReviewed, human_approve)
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypatch, tmp_path, approved):
+    bus = EventBus()
+    context = TurnContextHolder()
+    context.replace(["Inspect source"])
+    reason = "Reviewed path /workspace/\udcff.txt"
+    replies = [json.dumps(core.predicate_values("unknown")), json.dumps({"approved": approved, "reason": reason})]
+    async with core.judge_client(monkeypatch, replies) as (judge, calls):
+        broker = AcpPermissionBroker(
+            event_bus=bus,
+            session_id="parent",
+            caller_name="External",
+            mode_getter=lambda: ApprovalMode.AUTO,
+            turn_context=context,
+            workspace_roots=[],
+            workspace_cwd="",
+            approval_judge=judge,
+            ask_user_timeout_seconds=None,
+        )
+        translator = AcpUpdateTranslator(
+            event_bus=bus,
+            session_id="parent",
+            agent_name="External",
+            invocation_id="inv",
+            attempt=1,
+            origin=InvocationOrigin("sub_agent", "parent", "inv", None),
+        )
+        broker.set_translator(translator)
+
+        async def human_decline(event: ApprovalReviewed):
+            if not event.approved:
+                await bus.publish(ApprovalResponse(request_id=event.request_id, approved=False, session_id="parent"))
+
+        await bus.subscribe(ApprovalReviewed, human_decline)
+        async with capture_event_sequence(bus, ApprovalReviewed) as reviews:
+            task = asyncio.create_task(
+                broker.on_permission_request(
+                    ToolCallUpdate(toolCallId="call", title="Inspect source", rawInput={}),
+                    [
+                        PermissionOption(optionId="allow", name="Allow", kind="allow_once"),
+                        PermissionOption(optionId="reject", name="Reject", kind="reject_once"),
+                    ],
+                )
+            )
+            try:
+                await wait_for(task.done, description="ACP review with surrogate reason settled")
+                assert (await task).action == ("allow" if approved else "deny")
+                assert len(calls) == 2
+                assert len(reviews) == 1
+                assert reviews[0].approved is approved
+                assert reviews[0].reason == reason
+                audit = next(
+                    item["update"]["formal_judge"]
+                    for item in translator.translated_updates
+                    if item["update"]["sessionUpdate"] == "permission_review"
+                )
+                safe_reason = "Reviewed path /workspace/\\udcff.txt"
+                writer = SubAgentSessionLogWriter(
+                    parent_session_dir=tmp_path / "session",
+                    parent_session_id="parent",
+                    invocation_id="inv",
+                    tool_name="external",
+                    agent_profile="external",
+                    agent_display_name="External",
+                    prompt="Inspect source",
+                    parent_provider_call_id="provider",
+                    parent_event_call_id="event",
+                    runner="acp",
+                    acp_command="agent",
+                )
+                assert await writer.write(
+                    status="completed", ended=True, acp_state={"translated_updates": translator.translated_updates}
+                )
+                assert writer.path is not None
+                envelope = json.loads(writer.path.read_text(encoding="utf-8", errors="strict"))
+                assert envelope["meta"]["status"] == "completed"
+                saved = next(
+                    item["update"]["formal_judge"]
+                    for item in envelope["acp_state"]["translated_updates"]
+                    if item["update"]["sessionUpdate"] == "permission_review"
+                )
+                assert saved["reason"] == safe_reason
+                assert audit["reason"] == safe_reason
+                assert reviews[0].reason == reason
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await broker.close()
+                await bus.unsubscribe(ApprovalReviewed, human_decline)
+
+
+def test_permission_review_sanitizes_a_copy_before_limiting_strings():
+    translator = AcpUpdateTranslator(
+        event_bus=EventBus(),
+        session_id="parent",
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "parent", "inv", None),
+    )
+    audit = {"reason": "\udcff" * 1_000, "\udcfe" * 50: [{"nested": ("\udcfd", {"\udcfc": "\udcfb"})}]}
+    original = copy.deepcopy(audit)
+    translator.record_permission_review("request", audit)
+    saved = translator.translated_updates[0]["update"]["formal_judge"]
+    assert audit == original
+    assert saved["reason"] == acp_module.preview_text("\\udcff" * 1_000)
+    key = acp_module.preview_text("\\udcfe" * 50, limit=200)
+    assert saved[key] == [{"nested": ["\\udcfd", {"\\udcfc": "\\udcfb"}]}]
+    json.dumps(saved, ensure_ascii=False).encode("utf-8", errors="strict")
+
+
+@pytest.mark.parametrize("byte_limit", [3_000, 2_100])
+def test_surrogate_audit_respects_eviction_and_truncation_budgets(monkeypatch, byte_limit):
+    monkeypatch.setattr(acp_module, "_AUDIT_RING_ITEMS", 1)
+    monkeypatch.setattr(acp_module, "_AUDIT_RING_BYTES", byte_limit)
+    translator = AcpUpdateTranslator(
+        event_bus=EventBus(),
+        session_id="parent",
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "parent", "inv", None),
+    )
+    for request_id in ("first", "second"):
+        translator.record_permission_review(request_id, {"reason": "\udcff" * 1_000})
+    updates = translator.translated_updates
+    assert len(updates) <= 1
+    assert len(json.dumps(updates, ensure_ascii=False).encode("utf-8", errors="strict")) <= byte_limit
+    if byte_limit == 3_000:
+        assert updates[0]["update"]["request_id"] == "second"
+    else:
+        assert not updates
 
 
 @pytest.mark.parametrize("interrupt", [False, True])

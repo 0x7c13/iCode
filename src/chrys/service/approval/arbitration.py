@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,17 @@ if TYPE_CHECKING:
 
     from chrys.foundation.events.bus import EventBus
     from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
+
+
+_log = logging.getLogger(__name__)
+
+
+def _record_verdict(verdict: JudgeVerdict, callback: Callable[[JudgeVerdict], None] | None) -> None:
+    if callback is not None:
+        try:
+            callback(verdict)
+        except Exception:
+            _log.warning("Approval audit callback failed", exc_info=True)
 
 
 class ApprovalDecisionArbiter:
@@ -65,8 +77,7 @@ class ApprovalDecisionArbiter:
         except FormalEvaluationCancelled as exc:
             # Owner-only evidence (e.g. ACP audit ring); no UI verdict and no
             # future fulfillment after cancellation or a human decision.
-            if on_verdict is not None:
-                on_verdict(exc.verdict)
+            _record_verdict(exc.verdict, on_verdict)
             return
         except asyncio.CancelledError:
             return
@@ -76,8 +87,7 @@ class ApprovalDecisionArbiter:
         # Middleware cancels the task when a human responds.  This additional
         # guard covers a response that wins while a provider cancellation is
         # being delivered, so no late Judge verdict reaches the UI.
-        if on_verdict is not None:
-            on_verdict(verdict)
+        _record_verdict(verdict, on_verdict)
         if decision_future.done():
             return
         await self._bus.publish(

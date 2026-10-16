@@ -297,6 +297,34 @@ async def test_stages_and_repairs_share_one_deadline(monkeypatch, end, repair):
         assert verdict.failure_reason == (None if end < 105.0 else "timeout")
 
 
+@pytest.mark.parametrize("route", ["predicate", "reasoning", "direct"])
+async def test_postprocessing_cannot_approve_after_formal_deadline(monkeypatch, tmp_path, route):
+    clock = [asyncio.get_running_loop().time()]
+    fake_time = ModuleType("time")
+    fake_time.monotonic = lambda: clock[0]
+    monkeypatch.setattr(formal_module, "time", fake_time)
+    monkeypatch.setattr(review_types_module, "time", fake_time)
+    original_log = judge_module.ApprovalJudge._write_log
+
+    def write_log(log_path, attempt, messages, text, verdict, stage="direct"):
+        original_log(log_path, attempt, messages, text, verdict, stage)
+        if stage == ("predicate" if route == "predicate" else "direct"):
+            clock[0] += 6
+
+    monkeypatch.setattr(judge_module.ApprovalJudge, "_write_log", staticmethod(write_log))
+    replies = [] if route == "direct" else [json.dumps(_values("unknown" if route == "reasoning" else False))]
+    if route != "predicate":
+        replies.append('{"approved":true,"reason":"reviewed"}')
+    async with _judge(monkeypatch, replies, auto_review="direct" if route == "direct" else "formal") as (judge, calls):
+        verdict = await judge.evaluate("Inspect", "read_file", "", {}, [], request_id="deadline", log_dir=tmp_path)
+        assert verdict.approved is (route == "direct")
+        assert verdict.failure_reason == (None if route == "direct" else "timeout")
+        assert len(calls) == (2 if route == "reasoning" else 1)
+        assert "APPROVED:" in (tmp_path / "deadline.log").read_text(encoding="utf-8")
+        if route != "direct":
+            assert verdict.audit["usage"]["total_token_count"] == 5 * len(calls)
+
+
 async def test_predicate_asset_is_loaded_once_per_judge(monkeypatch):
     load = create_autospec(load_default_asset, return_value=load_default_asset())
     monkeypatch.setattr(formal_module, "load_default_asset", load)

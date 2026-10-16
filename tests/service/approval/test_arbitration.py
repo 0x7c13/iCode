@@ -17,7 +17,8 @@ from tests.support.event_capture import capture_event_sequence
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-async def test_human_wins_without_late_review_but_retains_verdict(cancelled):
+@pytest.mark.parametrize("audit_fails", [False, True])
+async def test_human_wins_without_late_review_but_retains_verdict(cancelled, audit_fails):
     bus = EventBus()
     future = asyncio.get_running_loop().create_future()
     verdict = JudgeVerdict(
@@ -35,6 +36,12 @@ async def test_human_wins_without_late_review_but_retains_verdict(cancelled):
 
     judge.evaluate.side_effect = evaluated
     saved = []
+
+    def record(verdict):
+        saved.append(verdict)
+        if audit_fails:
+            raise ValueError("Audit unavailable")
+
     async with capture_event_sequence(bus, ApprovalReviewed) as events:
         await ApprovalDecisionArbiter(bus).judge(
             request_id="request",
@@ -50,11 +57,47 @@ async def test_human_wins_without_late_review_but_retains_verdict(cancelled):
             decision_future=future,
             approved_value="model",
             log_dir=None,
-            on_verdict=saved.append,
+            on_verdict=record,
         )
         assert events == []
     assert saved == [verdict]
     assert future.result() == "human"
+
+
+@pytest.mark.parametrize("approved", [False, True])
+async def test_audit_failure_does_not_block_review(approved):
+    bus = EventBus()
+    future = asyncio.get_running_loop().create_future()
+    judge = create_autospec(ApprovalJudge, instance=True)
+    judge.evaluate.return_value = JudgeVerdict(approved, "Reviewed")
+
+    def record(verdict):
+        raise ValueError("Audit unavailable")
+
+    async with capture_event_sequence(bus, ApprovalReviewed) as events:
+        await ApprovalDecisionArbiter(bus).judge(
+            request_id="request",
+            judge=judge,
+            judge_input=ApprovalJudgeInput(
+                tool_name="shell",
+                tool_kind="",
+                args={},
+                user_message="Inspect",
+                user_messages=["Inspect"],
+                workspace_roots=[],
+            ),
+            decision_future=future,
+            approved_value="model",
+            log_dir=None,
+            on_verdict=record,
+        )
+    assert len(events) == 1
+    assert events[0].approved is approved
+    assert future.done() is approved
+    if approved:
+        assert future.result() == "model"
+    else:
+        future.cancel()
 
 
 async def test_human_decides_before_judge_starts():
