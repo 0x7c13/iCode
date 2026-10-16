@@ -22,6 +22,7 @@ from chrys.app.tui.screens.dialogs.background_task import (
     confirm_stopping,
 )
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+from chrys.app.tui.widgets.task_summary import TaskSummary
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
@@ -104,17 +105,16 @@ def test_confirm_stopping_names_each_task_and_the_note() -> None:
     task = _task(Path("/logs/x.log"), command="npm run dev\n  --port 3000", reason="x" * 100)
     dialog = confirm_stopping([task], Static(), note=ROLLBACK_NOTE)
     message = dialog._message
-    assert not isinstance(message, str)
-    lines = message.plain.split("\n")
-    assert lines[0] == "This stops the background task:"
-    assert lines[2].startswith("• npm run dev --port 3000  1m ")
-    assert lines[3] == "  " + "x" * 79 + "…"
-    assert lines[-1] == "Rollback may not restore what they changed while in the background."
+    assert message == "This stops the background task:"
+    assert dialog._tasks[0].command == task.command
+    assert dialog._tasks[0].reason == task.reason
+    assert dialog._tasks[0].duration.startswith("1m ")
+    assert dialog._impact_text().endswith("Rollback may not restore what they changed while in the background.")
 
     two = confirm_stopping([task, dataclasses.replace(task, id="t2", reason="")], Static())
-    assert not isinstance(two._message, str)
-    assert two._message.plain.startswith("This stops 2 background tasks:")
-    assert "Rollback" not in two._message.plain
+    assert two._message == "This stops 2 background tasks:"
+    assert len(two._tasks) == 2
+    assert "Rollback" not in two._impact_text()
 
 
 @pytest.mark.asyncio
@@ -127,8 +127,10 @@ async def test_confirm_stopping_scrolls_a_long_list_right_above_its_buttons() ->
         await wait_for(lambda: buttons.region.height > 0, pilot=pilot, description="buttons laid out")
 
         scroll = pilot.app.screen.query_one("#notice-scroll")
+        await wait_for(lambda: scroll.max_scroll_y > 0, pilot=pilot, description="task list scrolls")
         assert scroll.max_scroll_y > 0
-        assert buttons.region.y == scroll.region.bottom
+        assert buttons.region.y >= scroll.region.bottom
+        assert len(pilot.app.screen.query(TaskSummary)) == len(tasks)
         assert scroll.styles.scrollbar_size_vertical == 1
 
 
@@ -170,7 +172,7 @@ async def test_modal_follows_the_log_and_stops_after_a_confirmation(tmp_path: Pa
 
         await click_when_settled(pilot, "#background-task-stop")
         await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
-        message = app.screen.query_one("#confirm-message", Static)
+        message = app.screen.query_one(".task-command", Static)
         assert "npm run dev" in str(message.render())
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: app.stopped == ["t1"], pilot=pilot, description="the stop requested")

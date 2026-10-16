@@ -54,3 +54,4 @@ src/chrys/foundation/vendor/ripgrep/rg*
 .windsurf
 .aider*
 .copilot
+.chrys

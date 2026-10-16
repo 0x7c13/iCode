@@ -20,6 +20,8 @@ from chrys.app.tui.screens.main.live_diff import (
 from chrys.app.tui.screens.main.state import MainScreenServices
 from chrys.foundation.models.mutation_scope import MutationScope
 from chrys.foundation.platform import get_platform
+from chrys.foundation.platform.paths import resolve_workspace_path
+from chrys.service.mutations.git_state import entry_display_path
 from chrys.service.mutations.types import FileHashDiff, FileMutationTextSnapshot
 
 if TYPE_CHECKING:
@@ -93,13 +95,23 @@ class LiveDiffTracker:
         self.file_mutations.clear()
         self.owner = owner
 
-    def record_tool_start(self, call_id: str, tool_name: str, args: dict[str, Any] | None) -> None:
+    def record_tool_start(
+        self,
+        call_id: str,
+        tool_name: str,
+        args: dict[str, Any] | None,
+        *,
+        workspace_cwd: str,
+    ) -> None:
         """Remember file-tool paths so results can attach snapshots."""
         if tool_name not in ("write_file", "edit_file") or not args:
             return
         path = args.get("file_path") or args.get("path", "")
         if isinstance(path, str) and path:
-            self.call_paths[call_id] = path
+            # Match the mutation ledger and shell snapshots before merging:
+            # tool paths are relative to the workspace, not the process cwd.
+            resolved = resolve_workspace_path(path, base_cwd=workspace_cwd)
+            self.call_paths[call_id] = entry_display_path(resolved)
 
     def record_tool_result(self, event: LiveDiffToolResult) -> None:
         """Accumulate file snapshots from main-agent or sub-agent tool results."""

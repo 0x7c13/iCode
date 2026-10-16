@@ -225,6 +225,17 @@ def decode_completion(
     refused = "content_filter" in reasons or any(has_refusal(choice.message) for choice in response.choices)
     if refused and any(calls):
         raise refused_calls_error(usage_details=usage)
+    # OpenRouter can return partial content and a choice-level error under
+    # HTTP 200. No part of that completion, including its calls, may land.
+    for choice in response.choices:
+        error = getattr(choice, "error", None)
+        if error or choice.finish_reason == "error":
+            raise ProviderResponseError.from_body(
+                {"error": error},
+                fallback_code="server_error",
+                fallback_message="The service failed the completion.",
+                usage_details=usage,
+            )
     if (failure := finish_failure(reasons, usage_details=usage)) is not None:
         raise failure
     for choice, reason, choice_calls in zip(response.choices, reasons, calls, strict=True):

@@ -4276,8 +4276,8 @@ msgstr ""
 msgid "tui.background_task.running"
 msgstr ""
 
-#. English: {command}  This stops every process the command started.
-#. chrys-meta={"fingerprint":"7576990b36584d42dd4d127cf967f043fecd2688b5b3469abdd682ce9b631497","multiline":true,"placeholders":["command"]}
+#. English: This stops these tasks and every process they started.
+#. chrys-meta={"fingerprint":"31d13c4e8f66cfa701dd7f6b35a203185f8eed7a3398b46ecd36cc5e6bd8dcea","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/background_task.py
 msgid "tui.background_task.stop.message"
 msgstr ""
@@ -10714,6 +10714,18 @@ msgstr ""
 msgid "tui.status.details_tooltip"
 msgstr ""
 
+#. English: {days}d {hours}h {minutes}m {seconds}s
+#. chrys-meta={"fingerprint":"561af9fafc71032037f34577d423fccaaa18ac6cd4a3656d72923f5dc91bcdab","multiline":false,"placeholders":["days","hours","minutes","seconds"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.elapsed_days_hours_minutes_seconds"
+msgstr ""
+
+#. English: {hours}h {minutes}m {seconds}s
+#. chrys-meta={"fingerprint":"f7d258f7578fee8d3145afdeb93cfc52fb71945fc984b768db90509ab8108b10","multiline":false,"placeholders":["hours","minutes","seconds"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.elapsed_hours_minutes_seconds"
+msgstr ""
+
 #. English: {minutes}m {seconds}s
 #. chrys-meta={"fingerprint":"c977f24045f39b1d2849aaa22d3aa31fee418015371e4ac4f259b42fc91c5891","multiline":false,"placeholders":["minutes","seconds"]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
@@ -10949,6 +10961,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"6cf0f21adc77100116a9771bb03e0b9f46dea38f54b9c1f929f41ca9481df6f1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/suggestions.py
 msgid "tui.suggestions.system_commands"
+msgstr ""
+
+#. English: Running for {duration}
+#. chrys-meta={"fingerprint":"ccfabe4cd62895b9ee4293c3b573bc5090f91869a6dacad405ee08940ac6053b","multiline":false,"placeholders":["duration"]}
+#: src/chrys/app/tui/widgets/task_summary.py
+msgid "tui.task_summary.duration"
 msgstr ""
 
 #. English: Could not open {label}: launcher exited with status {failure_code}.

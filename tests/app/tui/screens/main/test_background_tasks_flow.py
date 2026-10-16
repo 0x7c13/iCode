@@ -227,7 +227,10 @@ async def test_a_new_session_asks_before_stopping_running_tasks(tmp_path: Path) 
 
         main.post_message(InputBar.NewSessionRequested())
         await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
-        message = str(app.screen.query_one("#confirm-message", Static).render())
+        await wait_for(
+            lambda: any("serve t1" in str(row.render()) for row in app.screen.query(".task-command")), pilot=pilot
+        )
+        message = "\n".join(str(row.render()) for row in app.screen.query(".task-command"))
         assert "serve t1" in message
         assert "serve t8" in message
         assert "serve t9" not in message

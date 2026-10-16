@@ -663,14 +663,15 @@ class _FileToolCall(BaseToolCard):
             defer_snapshot = isinstance(file_snapshot, FileSnapshotRef)
             self._update_title(result, defer_snapshot=defer_snapshot)
             self._show_tool_copy_button()
-            if lazy or defer_snapshot:
+            if lazy:
                 # Store flag — diff will be built on first expand
                 self._diff_pending = True
             else:
                 # Defer diff mounting — syntax highlighting is expensive and
                 # blocks the event loop. A short timer lets fast-completing
                 # tool groups collapse first, avoiding work for historical
-                # diffs that are no longer visible.
+                # diffs that are no longer visible. Disk-backed snapshots use
+                # the same async mount path so expanded cards finish rendering.
                 self._diff_timer = self.set_timer(_INLINE_DIFF_MOUNT_DELAY_SECONDS, self._schedule_mount_diff)
 
     async def mount_diff_if_pending(self) -> bool:

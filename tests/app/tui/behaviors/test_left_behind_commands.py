@@ -35,8 +35,11 @@ async def test_the_answer_stops_or_forgets_the_commands(
         )
         message = str(app.screen.query_one("#confirm-message", Static).render())
         assert "closed unexpectedly" in message
-        assert "npm run dev" in message
-        assert "/repo" in message
+        await wait_for(
+            lambda: "npm run dev" in str(app.screen.query_one(".task-command", Static).render()), pilot=pilot
+        )
+        assert "npm run dev" in str(app.screen.query_one(".task-command", Static).render())
+        assert "/repo" in str(app.screen.query_one(".task-reason", Static).render())
 
         await click_when_settled(pilot, button)
         await wait_for(lambda: done, pilot=pilot, description="the answer carried out")

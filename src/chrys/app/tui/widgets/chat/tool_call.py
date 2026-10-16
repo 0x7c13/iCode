@@ -404,7 +404,7 @@ def _compact_tool_metadata(metadata: dict[str, Any] | None) -> dict[str, Any] | 
 
 
 def fmt_duration(ms: int) -> str:
-    """Format milliseconds as a compact human string: ``120ms``, ``25s``, ``1m 25s``, ``2h 3m``."""
+    """Format milliseconds as a compact human string, from ``120ms`` through ``1d 4h``."""
     if ms < 1000:
         return f"{ms}ms"
     seconds = ms // 1000
@@ -414,6 +414,9 @@ def fmt_duration(ms: int) -> str:
     if m < 60:
         return f"{m}m {s}s" if s else f"{m}m"
     h, m = divmod(m, 60)
+    if h >= 24:
+        d, h = divmod(h, 24)
+        return f"{d}d {h}h" if h else f"{d}d"
     if m == 0:
         return f"{h}h"
     return f"{h}h {m}m"

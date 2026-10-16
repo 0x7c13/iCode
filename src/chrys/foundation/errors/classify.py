@@ -83,7 +83,9 @@ _TIMEOUT_MODULES = frozenset({"httpx", "httpcore"})
 _THINKING_BINDING_PHRASE = "bound to a different conversation"
 
 # Kinds no retry can fix, whatever the transient layers say.
-_NON_RETRYABLE_KINDS = frozenset({ErrorKind.QUOTA_EXHAUSTED, ErrorKind.CONTEXT_OVERFLOW, ErrorKind.PAYLOAD_TOO_LARGE})
+_NON_RETRYABLE_KINDS = frozenset(
+    {ErrorKind.QUOTA_EXHAUSTED, ErrorKind.CONTEXT_OVERFLOW, ErrorKind.PAYLOAD_TOO_LARGE, ErrorKind.CONTENT_FILTERED}
+)
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -160,6 +162,8 @@ def classify_error(exc: BaseException) -> ErrorClassification:
         retryable = False
     elif signal is not None and signal.explicit_retryable is not None:
         retryable = signal.explicit_retryable
+    elif signal is not None and signal.verdict is not None:
+        retryable = signal.verdict.retryable
     elif (
         (network is not None and network.deterministic)
         or kind in _NON_RETRYABLE_KINDS

@@ -182,6 +182,120 @@ async def test_a_failed_completion_raises_a_retryable_provider_error(
     assert invalidates_continuation_token(raised.value) is False
 
 
+@pytest.mark.parametrize(
+    ("canonical", "kind", "retryable"),
+    [
+        ("content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
+        ("refusal", ErrorKind.CONTENT_FILTERED, False),
+        ("payment_required", ErrorKind.QUOTA_EXHAUSTED, False),
+        ("rate_limit_exceeded", ErrorKind.RATE_LIMITED, True),
+        ("provider_unavailable", ErrorKind.SERVER_ERROR, True),
+    ],
+)
+async def test_choice_error_rejects_partial_completion_and_preserves_usage(
+    canonical: str, kind: ErrorKind, retryable: bool
+) -> None:
+    # OpenRouter can report a provider failure inside a choice under HTTP 200.
+    completion = _completion_reporting_usage(content="Partial", finish_reason="error")
+    completion.choices[0] = completion.choices[0].model_copy(
+        update={"error": {"code": 502, "message": "Provider failed.", "metadata": {"error_type": canonical}}}
+    )
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(completion)
+
+    result = classify_error(raised.value)
+    assert (result.kind, result.retryable) == (kind, retryable)
+    assert (raised.value.code, raised.value.provider_message) == ("502", "Provider failed.")
+    assert raised.value.usage_details == {
+        "input_token_count": 70,
+        "output_token_count": 9,
+        "total_token_count": 79,
+    }
+
+
+@pytest.mark.parametrize(
+    ("error_type", "kind", "retryable"),
+    [
+        ("billing_error", ErrorKind.QUOTA_EXHAUSTED, False),
+        ("authentication_error", ErrorKind.AUTH_FAILED, False),
+        ("permission_error", ErrorKind.AUTH_FAILED, False),
+        ("invalid_request_error", ErrorKind.REQUEST_REJECTED, False),
+        ("overloaded_error", ErrorKind.OVERLOADED, True),
+        ("rate_limit_error", ErrorKind.RATE_LIMITED, True),
+        ("vendor_error", ErrorKind.UNKNOWN, True),
+    ],
+)
+@pytest.mark.parametrize("code_fields", [{}, {"code": None}], ids=["absent_code", "null_code"])
+async def test_choice_error_without_code_is_classified_by_its_native_type(
+    error_type: str, kind: ErrorKind, retryable: bool, code_fields: dict[str, None]
+) -> None:
+    completion = _completion(content="Partial", finish_reason="error")
+    completion.choices[0] = completion.choices[0].model_copy(
+        update={"error": {**code_fields, "type": error_type, "message": "Provider explanation."}}
+    )
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(completion)
+
+    result = classify_error(raised.value)
+    assert (result.kind, result.retryable) == (kind, retryable)
+    assert (raised.value.code, raised.value.provider_message) == (error_type, "Provider explanation.")
+
+
+@pytest.mark.parametrize("details", [None, {}, {"message": "Provider failed."}, "Provider failed."])
+async def test_error_finish_reason_without_a_code_still_fails(details: object) -> None:
+    completion = _completion(content="Partial", finish_reason="error")
+    completion.choices[0] = completion.choices[0].model_copy(update={"error": details})
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await _respond(completion)
+
+    result = classify_error(raised.value)
+    assert (result.kind, result.retryable) == (ErrorKind.SERVER_ERROR, True)
+
+
+@pytest.mark.parametrize("details", [None, {}])
+async def test_empty_choice_error_does_not_reject_a_successful_completion(details: object) -> None:
+    completion = _completion(content="Explaining content_policy_violation", finish_reason="stop")
+    completion.choices[0] = completion.choices[0].model_copy(update={"error": details})
+
+    response, _ = await _respond(completion)
+
+    assert response.text == "Explaining content_policy_violation"
+    assert response.finish_reason == "stop"
+
+
+@pytest.mark.parametrize("error_index", [0, 1])
+async def test_choice_error_prevents_all_tool_calls_even_beside_a_successful_choice(error_index: int) -> None:
+    completion = _completion(calls=1, finish_reason="tool_calls")
+    completion.choices.append(_completion(content="Partial").choices[0].model_copy(update={"index": 1}))
+    # The explicit error stands even if the gateway leaves a successful finish reason.
+    completion.choices[error_index] = completion.choices[error_index].model_copy(
+        update={"error": {"code": 403, "message": "Declined.", "metadata": {"error_type": "content_policy_violation"}}}
+    )
+    runs: list[str] = []
+
+    @tool
+    def read_file(path: str) -> str:
+        runs.append(path)
+        return "contents"
+
+    async with scripted_openai([completion, _completion(content="done")]) as wire:
+        client = ChatCompletionsClient(model="test", sdk_client=wire.client)
+        layer = InvariantCheckedToolLoopLayer(
+            ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware(backoff_schedule=(0,))])
+        )
+        with pytest.raises(ProviderResponseError) as raised:
+            await layer.get_response([Message("user", ["go"])], stream=False, options={"tools": [read_file]})
+
+    assert (runs, len(wire.requests)) == ([], 1)
+    assert (classify_error(raised.value).kind, classify_error(raised.value).retryable) == (
+        ErrorKind.CONTENT_FILTERED,
+        False,
+    )
+
+
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
 async def test_a_context_overflow_finish_reason_fails_without_retry(stream: bool) -> None:
     reason = "model_context_window_exceeded"

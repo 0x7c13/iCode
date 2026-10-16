@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from openai.types.responses.parsed_response import ParsedResponse
 
-from chrys.foundation.errors import ProviderResponseError, in_band_failure_retryable
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.hosted_tools import OPENAI_HOSTED_WIRE_ITEM_KEY
 from chrys.kernel import (
     OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY,
@@ -143,16 +143,11 @@ def response_failure(
     code, message = _error_field(error, "code"), _error_field(error, "message")
     if code is None and message is None and status not in ("failed", "cancelled"):
         return None
-    if status == "cancelled":
-        code = code or "cancelled"
-        retryable = False
-    else:
-        code = code or "server_error"
-        retryable = in_band_failure_retryable(code)
-    return ProviderResponseError(
-        code,
-        message or f"The service reported the response as {status or 'failed'}.",
-        retryable=retryable,
+    return ProviderResponseError.from_body(
+        {"error": to_payload(error), "error_type": getattr(response, "error_type", None)},
+        fallback_code="cancelled" if status == "cancelled" else "server_error",
+        fallback_message=f"The service reported the response as {status or 'failed'}.",
+        retryable=False if status == "cancelled" else None,
         invalidates_continuation_token=True,
         observed_contents=tuple(observed),
         usage_details=usage_details,

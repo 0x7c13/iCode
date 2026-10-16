@@ -260,7 +260,7 @@ def bordered_section(
 
 
 def _axis_duration(value_ns: int, span_ns: int) -> str:
-    """Compact tick label whose unit follows the magnitude: ms → s → m → h.
+    """Compact tick label whose unit follows the magnitude: ms → s → m → h → d.
 
     The origin borrows the axis span's unit so ``0s`` sits next to ``1m46s``
     while a sub-second axis still reads ``0ms … 800ms``.
@@ -279,4 +279,7 @@ def _axis_duration(value_ns: int, span_ns: int) -> str:
     if minutes < 60:
         return f"{minutes}m{remainder:02d}s"
     hours, minutes = divmod(minutes, 60)
+    if hours >= 24:
+        days, hours = divmod(hours, 24)
+        return f"{days}d{hours:02d}h"
     return f"{hours}h{minutes:02d}m"

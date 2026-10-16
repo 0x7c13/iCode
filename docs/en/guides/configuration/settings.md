@@ -120,6 +120,23 @@ Project settings, hooks, and skills come with the repository you open, so all th
 | --- | --- | --- |
 | Capture raw model HTTP requests | Records model requests and responses for troubleshooting. **Logs may contain API keys, complete prompts, and model responses in plain text.** Enable this only while troubleshooting and protect the log files. When finished, turn it off promptly and restart iCode. The log file, `llm_raw_http.jsonl`, is stored in the current session folder; see [Find the session ID and storage location](../daily-use/sessions.md#find-the-session-id-and-storage-location). | After restart |
 
+After enabling raw capture, fully quit and restart iCode, resume the affected session, and send a request. The log is created when that request is sent; enabling the checkbox does not capture requests from the current process.
+
+iCode uses structured error details to distinguish a rejected request from a temporary service failure, even when a gateway rewrites the HTTP status. The chat error retains the provider's explanation. Known content-filter and account-quota rejections stop iCode's automatic retry loop; the provider SDK may already have retried the HTTP request before returning the error.
+
+| Service or gateway | Recognized details | Handling |
+| --- | --- | --- |
+| [New API](https://github.com/QuantumNous/new-api) and compatible relays | `sensitive_words_detected`, `prompt_blocked`; the `new_api_error` message form used by Anthropic-compatible endpoints | Content-filter rejection, including when wrapped in HTTP 500 |
+| [Alibaba Cloud Model Studio / DashScope](https://www.alibabacloud.com/help/en/model-studio/error-code) | `DataInspectionFailed` / `data_inspection_failed`; `Arrearage` | Content-filter rejection; account quota exhausted |
+| [Volcengine Ark](https://console.volcengine.com/ark/region%3Acn-beijing/docs/error-codes) | `SensitiveContentDetected` and documented input/output content-policy codes | Content-filter rejection |
+| [OpenRouter](https://openrouter.ai/docs/api_reference/errors-and-debugging) | Canonical `error_type`, moderation metadata, and budget `limit_source` | Preserves the specific rejection, quota, throttling, or service-failure category across Chat Completions, Anthropic Messages, and Responses error formats |
+
+For non-streaming Chat Completions, an error in `choices[].error` fails the whole response even under HTTP 200: partial answers are not accepted and tool calls are not executed. Reported token usage is retained. A bare `finish_reason: "error"` without details is treated as a retryable service failure.
+
+When an in-band error omits `code`, iCode uses its native `type`: for example, `billing_error` and `authentication_error` stop automatic retries, while `overloaded_error` remains retryable. A recognized canonical `error_type` still takes precedence.
+
+Ordinary 500/502/503 errors remain retryable. A 403 without content-filter evidence remains an authorization failure. OpenRouter's temporary `openrouter_in_flight_budget` response is retryable when accompanied by a positive `Retry-After`; exhausted account or workspace budgets are not. If ordinary task content is blocked, contact the provider with the request ID: the response may omit the exact matched text, and a client cannot infer it from the status alone.
+
 #### Telemetry
 
 | Setting | Effect and notes | Takes effect |

@@ -12,13 +12,19 @@ raises).  ``code`` alone doesn't count: ``SystemExit.code`` would match.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from ._provider_payload import (
+    CONTENT_FILTER_CODES,
+    GATEWAY_QUOTA_CODES,
+    ProviderErrorPayload,
+    ProviderVerdict,
+    gateway_verdict,
+)
 from ._text import _clean_exception_text
 from .kinds import ErrorKind
 
@@ -31,6 +37,7 @@ NON_RETRYABLE_PROVIDER_ERROR_CODES = frozenset(
         "billing_hard_limit_reached",
         "exceeded_current_quota_error",
         "usage_not_included",
+        *GATEWAY_QUOTA_CODES,
     }
 )
 # Zhipu GLM's balance-exhausted code; it means quota only on a 429.
@@ -50,7 +57,7 @@ _PROVIDER_CODE_KINDS: Mapping[str, ErrorKind] = {
     "permission_error": ErrorKind.AUTH_FAILED,
     "invalid_request_error": ErrorKind.REQUEST_REJECTED,
     "not_found_error": ErrorKind.REQUEST_REJECTED,
-    "content_filter": ErrorKind.CONTENT_FILTERED,
+    **dict.fromkeys(CONTENT_FILTER_CODES, ErrorKind.CONTENT_FILTERED),
     "billing_error": ErrorKind.QUOTA_EXHAUSTED,
     "stream_truncated": ErrorKind.STREAM_TRUNCATED,
 }
@@ -240,6 +247,38 @@ class ProviderResponseError(ContinuationVerdictError):
         self.observed_contents = observed_contents
         self.usage_details = usage_details
 
+    @classmethod
+    def from_body(
+        cls,
+        body: object,
+        *,
+        fallback_code: str,
+        fallback_message: str,
+        retryable: bool | None = None,
+        invalidates_continuation_token: bool = False,
+        observed_contents: tuple[object, ...] = (),
+        usage_details: Mapping[str, Any] | None = None,
+    ) -> ProviderResponseError:
+        """An in-band failure using the same envelope rules as HTTP/SDK errors.
+
+        A caller's lifecycle decision (such as cancellation) can veto retry;
+        protocol-specific lossy codes never discard a precise gateway verdict.
+        """
+        payload = ProviderErrorPayload.read(body)
+        code = payload.code or payload.error_type or fallback_code
+        verdict = gateway_verdict(payload, None)
+        kind = verdict.kind if verdict is not None else _code_kind(code)
+        may_retry = verdict.retryable if verdict is not None else in_band_failure_retryable(code)
+        return cls(
+            code,
+            payload.message or fallback_message,
+            kind=kind,
+            retryable=may_retry if retryable is None else retryable,
+            invalidates_continuation_token=invalidates_continuation_token,
+            observed_contents=observed_contents,
+            usage_details=usage_details,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderSignal:
@@ -249,35 +288,24 @@ class ProviderSignal:
     source: BaseException
     # None for a bare ``APIError`` raised from an in-band stream event.
     status_code: int | None
-    code: str | None
-    # ``body.error.type`` or the node's ``.type``.
-    error_type: str | None
-    message: str | None
+    payload: ProviderErrorPayload
     # Seconds from the response's ``retry-after`` header.
     retry_after: float | None
     # Set only by :class:`ProviderResponseError`.
     explicit_retryable: bool | None = None
+    verdict: ProviderVerdict | None = None
 
+    @property
+    def code(self) -> str | None:
+        return self.payload.code
 
-def _text(value: object) -> str | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return str(value)
-    return value if isinstance(value, str) and value else None
+    @property
+    def error_type(self) -> str | None:
+        return self.payload.error_type
 
-
-def _error_object(body: object) -> Mapping[str, Any]:
-    """Return the error object of a provider body (a dict or its JSON text)."""
-    if isinstance(body, str | bytes):
-        try:
-            body = json.loads(body)
-        except ValueError:
-            return {}
-    if not isinstance(body, Mapping):
-        return {}
-    error = body.get("error")
-    return error if isinstance(error, Mapping) else body
+    @property
+    def message(self) -> str | None:
+        return self.payload.message
 
 
 def _retry_after(node: BaseException) -> float | None:
@@ -298,6 +326,28 @@ def _status(node: BaseException) -> int | None:
     return status if isinstance(status, int) and not isinstance(status, bool) else None
 
 
+def _sdk_payload(node: BaseException, body: object) -> ProviderErrorPayload:
+    payload = ProviderErrorPayload.read(
+        body,
+        code=getattr(node, "code", None),
+        error_type=getattr(node, "type", None),
+        message=getattr(node, "message", None),
+    )
+    if payload.canonical_code is None:
+        # OpenAI unwraps body.error before constructing its status exception,
+        # losing Responses' sibling error_type. Recover only that field from
+        # this same response's already-buffered body; never read a live stream.
+        response = getattr(node, "response", None)
+        try:
+            original_body = response.content if response is not None else None
+        except AttributeError, RuntimeError:
+            original_body = None
+        original = ProviderErrorPayload.read(original_body)
+        if original.canonical_code is not None:
+            payload = replace(payload, canonical_code=original.canonical_code)
+    return payload
+
+
 def provider_signal(explicit: Iterable[BaseException]) -> ProviderSignal | None:
     """Return the signal of the first SDK-shaped node in *explicit*, if any."""
     for node in explicit:
@@ -305,9 +355,7 @@ def provider_signal(explicit: Iterable[BaseException]) -> ProviderSignal | None:
             return ProviderSignal(
                 source=node,
                 status_code=None,
-                code=node.code,
-                error_type=None,
-                message=node.provider_message,
+                payload=ProviderErrorPayload(code=node.code, message=node.provider_message),
                 retry_after=node.retry_after,
                 explicit_retryable=node.retryable,
             )
@@ -315,14 +363,14 @@ def provider_signal(explicit: Iterable[BaseException]) -> ProviderSignal | None:
         body = getattr(node, "body", None)
         if status is None and (body is None or not hasattr(node, "code")):
             continue
-        error = _error_object(body)
+        payload = _sdk_payload(node, body)
+        retry_after = _retry_after(node)
         return ProviderSignal(
             source=node,
             status_code=status,
-            code=_text(getattr(node, "code", None)) or _text(error.get("code")),
-            error_type=_text(getattr(node, "type", None)) or _text(error.get("type")),
-            message=_text(error.get("message")) or _text(getattr(node, "message", None)),
-            retry_after=_retry_after(node),
+            payload=payload,
+            retry_after=retry_after,
+            verdict=gateway_verdict(payload, status, retry_after),
         )
     return None
 
@@ -364,6 +412,8 @@ def signal_kind(signal: ProviderSignal) -> tuple[ErrorKind, str]:
     if isinstance(source, ProviderResponseError):
         return source.kind, f"provider {source.code}"
     evidence = f"{type(source).__name__} http {signal.status_code}"
+    if signal.verdict is not None:
+        return signal.verdict.kind, f"{evidence} {signal.verdict.evidence}"
     if _is_quota(signal):
         return ErrorKind.QUOTA_EXHAUSTED, f"{evidence} {signal.code or signal.error_type or ''}".rstrip()
     # An error a response reports in-band, with no status of its own or under
@@ -403,6 +453,8 @@ def names_context_overflow(signal: ProviderSignal | None, unstructured_texts: It
     source = signal.source
     if isinstance(source, ProviderResponseError):
         return source.kind is ErrorKind.CONTEXT_OVERFLOW
+    if signal.verdict is not None:
+        return signal.verdict.kind is ErrorKind.CONTEXT_OVERFLOW
     status = signal.status_code
     if status in _NON_OVERFLOW_STATUS_CODES or _is_server_error(status) or signal.code in _NON_OVERFLOW_CODES:
         return False

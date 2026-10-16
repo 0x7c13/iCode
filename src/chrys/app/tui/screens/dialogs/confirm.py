@@ -7,17 +7,20 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual import on
 from textual.binding import Binding
 from textual.containers import VerticalGroup, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import Button, Static
+from textual.errors import NoWidget
+from textual.widgets import Button, Static, Tooltip
 
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets import DialogButtonRow, DialogButtonSpec
+from chrys.app.tui.widgets.task_summary import TaskSummary, TaskSummaryData, display_command
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
@@ -54,6 +57,7 @@ class ConfirmDialog(BaseDialog[bool]):
     ]
 
     CSS_PATH = "confirm.tcss"
+    _minimum_width = 43
 
     def __init__(
         self,
@@ -65,6 +69,8 @@ class ConfirmDialog(BaseDialog[bool]):
         *,
         locale_controller: LocaleController | None = None,
         bold_message_prefix: bool = False,
+        tasks: tuple[TaskSummaryData, ...] = (),
+        impact: tuple[ConfirmLabel, ...] = (),
     ) -> None:
         self._locale_controller = locale_controller
         self._title_message = title
@@ -72,6 +78,8 @@ class ConfirmDialog(BaseDialog[bool]):
         self._confirm_label_message = confirm_label
         self._cancel_label_message = cancel_label
         self._bold_message_prefix = bold_message_prefix
+        self._tasks = tasks
+        self._impact = impact
         self._title = self._render_message(title)
         self._message = self._render_dialog_message(message)
         self._confirm_label = self._render_message(confirm_label)
@@ -93,7 +101,19 @@ class ConfirmDialog(BaseDialog[bool]):
 
     def compose_message(self) -> ComposeResult:
         body = self._render_dialog_message(self._message_value)
-        yield Static(body if isinstance(body, Text) else Text(body), id="confirm-message")
+        message = Static(body if isinstance(body, Text) else Text(body), id="confirm-message")
+        if self._tasks:
+            yield message
+            with VerticalScroll(id="notice-scroll", classes="confirm-scroll"):
+                for task in self._tasks:
+                    yield TaskSummary(task, self._render_message)
+            yield Static(Text(self._impact_text()), id="confirm-impact")
+        else:
+            with VerticalScroll(id="notice-scroll", classes="confirm-scroll"):
+                yield message
+
+    def _impact_text(self) -> str:
+        return "\n".join(self._render_message(item) for item in self._impact)
 
     def _render_message(self, message: ConfirmLabel) -> str:
         if isinstance(message, str):
@@ -120,6 +140,53 @@ class ConfirmDialog(BaseDialog[bool]):
         # settled, and never let a missing button crash the app: a compose
         # interrupted by shutdown leaves the row empty.
         self.call_after_refresh(self._focus_confirm_button)
+        self.call_after_refresh(self._size_dialog)
+
+    def on_resize(self) -> None:
+        self.call_after_refresh(self._size_dialog)
+
+    def _maybe_clear_tooltip(self, _: object) -> None:
+        # A long command tooltip can cover its anchor. Its first layout must
+        # not dismiss it merely because the tooltip is now under the pointer.
+        anchor = self._tooltip_widget
+        if anchor is not None and anchor.has_class("task-command") and anchor.region.contains(*self.app.mouse_position):
+            with contextlib.suppress(NoWidget):
+                under_mouse, _region = self.get_widget_at(*self.app.mouse_position)
+                if isinstance(under_mouse, Tooltip):
+                    return
+        super()._maybe_clear_tooltip(_)
+
+    def _size_dialog(self) -> None:
+        if not self.is_mounted or not self.is_attached or self.dismiss_requested:
+            return
+        message = self._message.plain if isinstance(self._message, Text) else self._message
+        needed = max(cell_len(self._title) + 6, *(cell_len(line) + 6 for line in message.split("\n")))
+        for task in self._tasks:
+            # A preview has two lines; commands can widen only to the last tier.
+            needed = max(needed, (max(map(cell_len, display_command(task.command).split("\n"))) + 1) // 2 + 7)
+        minimum = 64 if self._tasks else self._minimum_width
+        desired = next((tier for tier in (minimum, 80, 100) if tier >= needed), 100)
+        width = max(8, min(desired, int(self.size.width * 0.9)))
+        container = self.query_one("#confirm-container")
+        container.styles.width = width
+        buttons = list(self.query_one("#confirm-buttons").query(Button))
+        stacked = sum(max(16, cell_len(str(button.label)) + 4) + 2 for button in buttons) + 2 > width - 2
+        row = self.query_one("#confirm-buttons")
+        row.styles.layout = "vertical" if stacked else "horizontal"
+        row.styles.height = 3 * len(buttons) if stacked else 3
+        for button in buttons:
+            button.styles.min_width = 0 if stacked else 16
+            button.styles.width = "1fr" if stacked else "auto"
+        content_width = max(2, width - 7)
+        for task_row in self.query(TaskSummary):
+            task_row.refresh_preview(content_width)
+        fixed = 2 + (3 * len(buttons) if stacked else 3)
+        if self._tasks:
+            impact = self.query_one("#confirm-impact", Static)
+            impact.update(Text(self._impact_text()))
+            for widget in (self.query_one("#confirm-message", Static), impact):
+                fixed += widget.get_content_height(self.size, self.size, max(2, width - 6)) + 2
+        self.query_one(".confirm-scroll").styles.max_height = max(1, int(self.size.height * 0.9) - fixed)
 
     def on_unmount(self) -> None:
         if self._locale_controller is not None:
@@ -137,6 +204,7 @@ class ConfirmDialog(BaseDialog[bool]):
         if self._cancel_label_message is not None:
             self._cancel_label = self._render_message(self._cancel_label_message)
             self.query_one("#confirm-no", Button).label = Text(self._cancel_label)
+        self._size_dialog()
 
     def _focus_confirm_button(self) -> None:
         with contextlib.suppress(NoMatches):
@@ -171,10 +239,7 @@ class NoticeDialog(ConfirmDialog):
     """Scrollable feedback and cancellable progress using the standard dialog controls."""
 
     CSS_PATH: ClassVar[list[str]] = ["confirm.tcss", "notice.tcss"]
-
-    def compose_message(self) -> ComposeResult:
-        with VerticalScroll(id="notice-scroll"):
-            yield from super().compose_message()
+    _minimum_width = 64
 
     def finish(self) -> None:
         self.dismiss_when_topmost(False)

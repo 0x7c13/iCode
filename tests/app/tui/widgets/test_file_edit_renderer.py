@@ -27,6 +27,7 @@ from chrys.app.tui.widgets.chat.file_snapshot import (
     file_snapshot_inline_char_limit,
     should_externalize_snapshot,
 )
+from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.file_edit import (
     _EDIT_FILE_INLINE_MAX_DISPLAY_LINES,
     _FILE_COPY_FULL_DIFF_MAX_CHARS,
@@ -34,7 +35,7 @@ from chrys.app.tui.widgets.chat.renderers.file_edit import (
     EditFileToolCall,
     WriteFileToolCall,
 )
-from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader
+from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
 from chrys.app.tui.widgets.diff_view import CodeColumn, DiffView, GutterColumn
 from chrys.app.tui.widgets.diff_view.cells import annotation_cell
 from chrys.app.tui.widgets.diff_view.compute import compute_highlighted_lines, compute_hunks
@@ -44,9 +45,11 @@ from chrys.app.tui.widgets.diff_view.rows import DiffRow, RowKind, unified_rows
 from chrys.app.tui.widgets.diff_view.unified import UnifiedDiffLines
 from chrys.app.tui.widgets.file_preview import WRITE_FILE_PREVIEW_MAX_LINE_CHARS
 from chrys.foundation.config.process_settings import reset_process_settings
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_WRITE
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY
 from chrys.service.mutations.store import SnapshotStore
 from tests.support.paths import SRC_ROOT
+from tests.support.tui_helpers import ChatPanelApp
 from tests.support.waiting import wait_for
 
 _CHRYS_CSS = SRC_ROOT / "chrys" / "app" / "tui" / "chrys.tcss"
@@ -888,30 +891,61 @@ async def test_file_tool_renderers_set_error_status_for_failed_results(
         assert mounted.has_class("-error")
 
 
+@pytest.mark.parametrize(
+    ("tool_cls", "tool_name"), [(EditFileToolCall, "edit_file"), (WriteFileToolCall, "write_file")]
+)
+@pytest.mark.parametrize("mode", ["live", "lazy", "collapsed"])
 @pytest.mark.asyncio
-async def test_disk_backed_live_snapshot_defers_inline_diff_until_explicit_mount(tmp_path: Path) -> None:
+async def test_disk_backed_snapshot_mounts_when_group_is_expanded(
+    tmp_path: Path, tool_cls: type[EditFileToolCall] | type[WriteFileToolCall], tool_name: str, mode: str
+) -> None:
     store = SnapshotStore(tmp_path)
     before_hash = store.save_data_as_blob(b"old\n").content_hash
     after_hash = store.save_data_as_blob(b"new\n").content_hash
     ref = FileSnapshotRef(store.mutations_dir, before_hash, after_hash)
 
-    async with _EditFileToolApp().run_test() as pilot:
-        tool = pilot.app.query_one(EditFileToolCall)
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.set_tool_kinds({tool_name: KIND_FILESYSTEM_WRITE})
+        await panel.add_user_message("change file")
+        await panel.add_tool_start("file1", tool_name, KIND_FILESYSTEM_WRITE, args={"path": "src/app.py"})
+        # Keep the group live so a collapse defers the diff without pruning
+        # and replaying the card whose completion is under test.
+        await panel.add_tool_start("sibling", "plain_tool", "", args={})
+        group = panel.query_one(ToolGroup)
+        assert not group.collapsed
+        tool = group.query_one(tool_cls)
+        if mode == "collapsed":
+            group.collapsed = True
 
-        tool.set_complete("Edited src/app.py", 25, file_snapshot=ref)
-        await pilot.pause(0.35)
+        group.complete_tool("file1", "Changed src/app.py", 25, file_snapshot=ref, lazy=mode == "lazy")
 
+        # Completing a disk-backed tool must not read its snapshots inline.
         assert tool._after_content is None
-        assert tool._diff_pending is True
-        assert not list(pilot.app.query(DiffView))
         assert not list(pilot.app.query(InlineUnifiedDiffLines))
 
-        await tool.mount_diff_if_pending()
-        await pilot.pause()
+        if mode == "lazy":
+            assert tool._diff_pending is True
+            assert tool._diff_timer is None
+            await tool.mount_diff_if_pending()
+        elif mode == "collapsed":
+            await wait_for(
+                lambda: tool._diff_timer is None and tool._diff_pending,
+                pilot=pilot,
+                description="collapsed live diff defers its scheduled mount",
+            )
+            assert tool._after_content is None
+            assert not list(pilot.app.query(InlineUnifiedDiffLines))
+            group.collapsed = False
+
+        await _wait_for_inline_diff(pilot)
 
         assert tool._get_after_content() == "new\n"
+        assert tool.has_class("-done")
+        assert not tool._diff_pending
+        assert not tool.query_one("#ft-spinner").display
         assert not list(pilot.app.query(DiffView))
-        assert list(pilot.app.query(InlineUnifiedDiffLines))
+        assert len(list(pilot.app.query(InlineUnifiedDiffLines))) == 1
 
 
 @pytest.mark.asyncio
