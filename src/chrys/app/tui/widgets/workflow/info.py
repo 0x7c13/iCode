@@ -12,10 +12,12 @@ from rich import box
 from rich.table import Table
 from rich.text import Text
 from textual import on
+from textual.compose import compose
 from textual.containers import Grid, Horizontal, VerticalGroup
 from textual.reactive import reactive
 from textual.widgets import Collapsible, Static
 
+from chrys.app.tui.util.removal import remove_children_shielded
 from chrys.app.tui.widgets.workflow import text
 from chrys.app.tui.widgets.workflow.graph import node_detail
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -193,6 +195,21 @@ class WorkflowInfo(VerticalGroup):
 
     def refresh_localization(self) -> None:
         self.refresh(recompose=True)
+
+    def _can_recompose(self) -> bool:
+        return self.is_attached and self.app.is_running and not (self._closing or self._pruning)
+
+    async def recompose(self) -> None:
+        """Drain old content without mounting replacements during shutdown."""
+        if not self._can_recompose():
+            return
+        with self.app.batch_update():
+            await remove_children_shielded(self)
+            # Closing overlays leaves the underlying Info attached after the app
+            # stops. Children mounted then never start their message loops and
+            # cannot detach on the next refresh, leaving duplicate IDs behind.
+            if self._can_recompose():
+                await self.mount_all(compose(self))
 
     def watch_data(self, previous: WorkflowInfoData | None, current: WorkflowInfoData | None) -> None:
         if (
