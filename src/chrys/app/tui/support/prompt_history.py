@@ -225,6 +225,11 @@ def append_history(
         logger.warning("Failed to append prompt history to %s: %s", path, err)
 
 
+def prompt_history_enabled() -> bool:
+    """Return whether the Save prompt history setting is on."""
+    return not _history_disabled()
+
+
 def _history_disabled() -> bool:
     from chrys.foundation.config.process_settings import process_settings
 

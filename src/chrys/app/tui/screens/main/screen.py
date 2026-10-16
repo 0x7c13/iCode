@@ -1554,6 +1554,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         input_bar = self.query_one(InputBar)
         if input_bar.locked:
             return
+        # Another list's input is its own command (#agent, $model, /command, @file),
+        # not prompt text to search; one list at a time, Esc closes it first.
+        if self._suggestions.suggestion_mode not in (None, "history"):
+            return
+        if self._suggestions.suggestion_mode == "history":
+            self._suggestions.on_prompt_history_shortcut_while_open()
+            return
         input_bar.focus_input()
         revision = self._suggestions.start_prompt_history()
         self._show_prompt_history(revision)
@@ -1577,6 +1584,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     @on(SuggestionList.Selected)
     def _on_suggestion_selected(self, event: SuggestionList.Selected) -> None:
         self._suggestions.on_suggestion_selected(event.mode, event.text, event.execute, event.kind)
+
+    @on(SuggestionList.RowWidthChanged)
+    def _on_suggestion_row_width_changed(self, _event: SuggestionList.RowWidthChanged) -> None:
+        self._suggestions.on_suggestion_row_width_changed()
 
     @on(InputBar.SuggestionDismiss)
     @on(SuggestionList.Dismissed)

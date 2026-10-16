@@ -920,9 +920,13 @@ class SuggestionListStub:
         self.last_mode: str | None = None
         self.last_items: list[object] = []
         self.last_title: str | None = None
+        self.last_empty_text: str | None = None
+        self.last_keep_selection = False
         self.is_visible = False
         self.is_loading = False
         self.select_result = False
+        self.selections: list[bool] = []
+        self.row_width = 80
 
     def show(self, mode: str, items=None, *_args, **_kwargs) -> None:
         self.last_mode = mode
@@ -940,6 +944,8 @@ class SuggestionListStub:
 
     def update(self, items=None, *_args, **_kwargs) -> None:
         self.last_items = list(items or [])
+        self.last_empty_text = _kwargs.get("empty_text")
+        self.last_keep_selection = _kwargs.get("keep_selection", False)
         self.is_loading = False
         title = _kwargs.get("title")
         if title is not None:
@@ -952,7 +958,7 @@ class SuggestionListStub:
         return
 
     def select_highlighted(self, *, execute: bool = False) -> bool:
-        _ = execute
+        self.selections.append(execute)
         return self.select_result
 
     @property
@@ -985,6 +991,7 @@ class DismissInputBarStub:
         self.replacements: list[tuple[str, str]] = []
         self.prompt_history: list[str] = []
         self.prompt_history_limits: list[int] = []
+        self.prompt_history_on = True
         self.suggestions_active = False
         self.suggestion_mode: str | None = None
 
@@ -997,6 +1004,9 @@ class DismissInputBarStub:
 
     def replace_trigger_text(self, trigger: str, replacement: str) -> None:
         self.replacements.append((trigger, replacement))
+
+    def prompt_history_enabled(self) -> bool:
+        return self.prompt_history_on
 
     async def load_prompt_history(self, *, max_entries: int) -> list[str]:
         self.prompt_history_limits.append(max_entries)
@@ -1206,5 +1216,12 @@ def scan_result(root: str, paths: list[ProjectPathSuggestion], **kwargs: object)
 async def wait_for_file_query(handler: SuggestionHandler) -> None:
     """Await the handler's in-flight `@` file query, if there is one."""
     worker = handler._file_query_worker
+    if worker is not None:
+        await worker.wait()
+
+
+async def wait_for_prompt_history_query(handler: SuggestionHandler) -> None:
+    """Await the handler's in-flight prompt-history search, if there is one."""
+    worker = handler._prompt_history_query_worker
     if worker is not None:
         await worker.wait()

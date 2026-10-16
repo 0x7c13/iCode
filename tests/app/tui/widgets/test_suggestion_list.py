@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 from textual import events
@@ -21,6 +22,7 @@ from chrys.app.tui.widgets.marquee import OverflowMarquee
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.types import RuntimeSkillDetails
 from tests.support.tui_helpers import make_suggestion_handler, make_suggestion_screen
+from tests.support.waiting import wait_until
 
 
 class _SuggestionListApp(App):
@@ -696,6 +698,47 @@ async def test_suggestion_list_empty_state_has_no_bullet() -> None:
         assert suggestion_list._contents[0].plain == "No results"
 
 
+async def test_suggestion_list_draws_match_spans_in_the_theme_match_style() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        item = SuggestionItem(value="v", label="fix the session bug", kind="history", match_spans=((8, 15),))
+        suggestion_list.show("history", [item, SuggestionItem(value="w", label="plain row", kind="history")])
+        await pilot.pause()
+
+        match_color = suggestion_list.get_component_styles("suggestion-list--match").color
+        matched, plain = suggestion_list._contents
+        styled = [(matched.plain[span.start : span.end], span.style) for span in matched.spans]
+        assert [text for text, _style in styled] == ["session"]
+        style = styled[0][1]
+        assert isinstance(style, Style)
+        assert style.bold is True
+        assert style.foreground == match_color
+        assert plain.spans == []
+
+        # Nord's accent differs from the default theme's, so the match color must follow it.
+        pilot.app.theme = "nord"
+        await pilot.pause()
+        suggestion_list.update([item])
+        new_color = suggestion_list.get_component_styles("suggestion-list--match").color
+        assert new_color != match_color
+        (rethemed,) = suggestion_list._contents
+        new_style = rethemed.spans[0].style
+        assert isinstance(new_style, Style)
+        assert new_style.foreground == new_color
+
+
+async def test_suggestion_list_update_shows_caller_empty_text() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        suggestion_list.show("history", [])
+        suggestion_list.update([], empty_text="No prompt history yet.")
+        assert [content.plain for content in suggestion_list._contents] == ["No prompt history yet."]
+        assert suggestion_list._values == [None]
+
+        suggestion_list.update([])
+        assert suggestion_list._contents[0].plain == "No results"
+
+
 async def test_runtime_skill_suggestion_metadata_is_rendered_as_literal_text() -> None:
     screen = make_suggestion_screen()
     handler = make_suggestion_handler(screen)
@@ -715,6 +758,55 @@ async def test_runtime_skill_suggestion_metadata_is_rendered_as_literal_text() -
 
 
 @pytest.mark.asyncio
+async def test_suggestion_list_quick_load_never_shows_the_loading_indicator() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        loading = suggestion_list.query_one(ChrysLoadingIndicator)
+        suggestion_list.show_loading("history", title="Prompt History")
+        suggestion_list.update([SuggestionItem(value="ready", label="ready")])
+        # Past the indicator delay: the cancelled reveal must not fire late.
+        assert not await wait_until(lambda: loading.display, timeout=0.4)
+        assert suggestion_list._values == ["ready"]
+
+
+async def test_suggestion_list_page_keys_move_a_page_and_stop_at_the_ends() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        items = [SuggestionItem(value=str(n), label=str(n), kind="history") for n in range(30)]
+        suggestion_list.show("history", items)
+        await pilot.pause()
+
+        suggestion_list.move_cursor_page(1)
+        assert suggestion_list._highlighted == 12
+        suggestion_list.move_cursor_page(1)
+        suggestion_list.move_cursor_page(1)
+        assert suggestion_list._highlighted == 29
+        suggestion_list.move_cursor_page(-1)
+        assert suggestion_list._highlighted == 17
+        suggestion_list.move_cursor_page(-1)
+        suggestion_list.move_cursor_page(-1)
+        assert suggestion_list._highlighted == 0
+
+
+async def test_suggestion_list_update_can_keep_the_selected_value_and_scroll() -> None:
+    async with _SuggestionListApp().run_test() as pilot:
+        suggestion_list = pilot.app.query_one(SuggestionList)
+        items = [SuggestionItem(value=str(n), label=str(n), kind="history") for n in range(30)]
+        suggestion_list.show("history", items)
+        await pilot.pause()
+        suggestion_list.move_cursor_page(1)
+        suggestion_list.move_cursor_page(1)
+        suggestion_list.move_cursor_up()
+        highlighted, window_start = suggestion_list._highlighted, suggestion_list._window_start
+        assert (highlighted, window_start) == (23, 13)
+
+        suggestion_list.update([replace(item, label=f"{item.label}!") for item in items], keep_selection=True)
+        assert (suggestion_list._highlighted, suggestion_list._window_start) == (highlighted, window_start)
+
+        suggestion_list.update(items)
+        assert (suggestion_list._highlighted, suggestion_list._window_start) == (0, 0)
+
+
 async def test_click_during_loading_popup_selects_nothing() -> None:
     """Clicks against a loading popup — content row, border columns, border
     row — neither select a row nor post a Selected message: loading clears

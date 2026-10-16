@@ -37,6 +37,9 @@ if TYPE_CHECKING:
 _SUGGESTIONS_NO_RESULTS = msg("tui.suggestions.no_results", fallback="No results")
 
 _SUGGESTION_ROWS = 12
+# Prompt history shows its loading indicator only for loads slower than this,
+# so a quick load or a reopen opens the list without a flash.
+_HISTORY_LOADING_INDICATOR_DELAY_SECONDS = 0.15
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,9 @@ class SuggestionItem:
     disabled_reason: str = ""
     # Character boundary between a pinned identity and its scrolling detail.
     marquee_start: int | None = None
+    # ``[start, end)`` character ranges of the label that matched the query,
+    # drawn with the ``suggestion-list--match`` style of the current theme.
+    match_spans: tuple[tuple[int, int], ...] = ()
 
 
 class SuggestionList(Widget):
@@ -62,7 +68,7 @@ class SuggestionList(Widget):
     keeps focus and forwards key events.
     """
 
-    COMPONENT_CLASSES: ClassVar[set[str]] = {"suggestion-list--option-hover"}
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"suggestion-list--option-hover", "suggestion-list--match"}
 
     DEFAULT_CSS = """
     SuggestionList {
@@ -79,6 +85,9 @@ class SuggestionList(Widget):
     }
     SuggestionList > .suggestion-list--option-hover {
         background: $primary 30%;
+    }
+    SuggestionList > .suggestion-list--match {
+        color: $accent;
     }
     SuggestionList > #suggestion-list-loading {
         width: 100%;
@@ -100,6 +109,9 @@ class SuggestionList(Widget):
     class Dismissed(Message):
         """The suggestion list was dismissed."""
 
+    class RowWidthChanged(Message):
+        """The cells a row can show changed while the list was visible."""
+
     def __init__(
         self,
         *,
@@ -120,6 +132,8 @@ class SuggestionList(Widget):
         self._window_start = 0
         self._marquee = marquee or OverflowMarquee()
         self._marquee_timer: Timer | None = None
+        self._loading_timer: Timer | None = None
+        self._row_width = 0
         self._marquee_generation = 0
         self._loading = False
         self._loading_indicator = ChrysLoadingIndicator(id="suggestion-list-loading")
@@ -191,6 +205,9 @@ class SuggestionList(Widget):
         disabled: set[str] | None = None,
         initial: str | None = None,
         title: str | None = None,
+        empty_text: str | None = None,
+        *,
+        keep_selection: bool = False,
     ) -> None:
         """Replace displayed items with a new filtered set.
 
@@ -198,18 +215,41 @@ class SuggestionList(Widget):
             title: When given, re-renders the border title so per-keystroke
                 rebuilds pick up the active locale (``""`` clears it; ``None``
                 keeps the current title).
+            empty_text: Rendered row shown when *items* is empty; ``None``
+                shows the generic "No results".
+            keep_selection: Highlight the value highlighted now, at the same
+                scroll position, when the new items still hold it.
         """
         self._set_loading(False)
         if title is not None:
             # Plain Content: a path in the title must not be parsed as markup.
             self.border_title = Content(title) if title else None
-        self._populate(items, disabled, initial)
+        highlighted = self._highlighted
+        kept = self._values[highlighted] if keep_selection and highlighted is not None else None
+        window_start = self._window_start
+        self._populate(items, disabled, kept if kept is not None else initial, empty_text=empty_text)
+        if kept is not None and self._highlighted is not None and self._values[self._highlighted] == kept:
+            self._window_start = window_start
+            self._ensure_highlight_visible()
         self._restart_marquee()
 
     def _set_loading(self, loading: bool) -> None:
-        """Switch the mounted indicator without retaining selectable rows."""
+        """Switch the loading state; prompt history shows the indicator only once its load turns slow."""
         self._loading = loading
-        self._loading_indicator.display = loading
+        timer, self._loading_timer = self._loading_timer, None
+        if timer is not None:
+            timer.stop()
+        delayed = loading and self._mode == "history"
+        self._loading_indicator.display = loading and not delayed
+        if delayed:
+            self._loading_timer = self.set_timer(
+                _HISTORY_LOADING_INDICATOR_DELAY_SECONDS, self._reveal_loading_indicator
+            )
+
+    def _reveal_loading_indicator(self) -> None:
+        self._loading_timer = None
+        if self._loading:
+            self._loading_indicator.display = True
 
     def _clear_items(self) -> None:
         """Clear every rendered and interactive suggestion row."""
@@ -233,13 +273,17 @@ class SuggestionList(Widget):
         items: list[SuggestionItem | tuple[str, str | Content]],
         disabled: set[str] | None = None,
         initial: str | None = None,
+        *,
+        empty_text: str | None = None,
     ) -> None:
         """Replace the fixed-height rendered suggestion rows."""
         self._clear_items()
         if not items:
+            if empty_text is None:
+                empty_text = self._render_message(_SUGGESTIONS_NO_RESULTS.bind())
             self._values.append(None)
             self._kinds.append("")
-            self._contents.append(Content.styled(self._render_message(_SUGGESTIONS_NO_RESULTS.bind()), "#888888"))
+            self._contents.append(Content.styled(self._single_line(empty_text), "#888888"))
             self._disabled.append(True)
             self._marquee_starts.append(None)
             self._highlighted = None
@@ -250,7 +294,9 @@ class SuggestionList(Widget):
         first_enabled: int | None = None
         initial_idx: int | None = None
         previous_section = ""
-        for item in self._normalize_items(items):
+        normalized = self._normalize_items(items)
+        match_style = self._match_style() if any(item.match_spans for item in normalized) else None
+        for item in normalized:
             if item.section and item.section != previous_section:
                 previous_section = item.section
                 self._values.append(None)
@@ -262,7 +308,7 @@ class SuggestionList(Widget):
             self._values.append(item.value)
             self._kinds.append(item.kind)
             is_disabled = item.disabled or item.value in disabled
-            self._contents.append(self._content_for_item(item, is_disabled=is_disabled))
+            self._contents.append(self._content_for_item(item, is_disabled=is_disabled, match_style=match_style))
             self._disabled.append(is_disabled)
             self._marquee_starts.append(item.marquee_start)
             if not is_disabled and first_enabled is None:
@@ -291,8 +337,15 @@ class SuggestionList(Widget):
         """Collapse newlines: window math and click mapping assume one row per item."""
         return " ".join(text.splitlines()) if "\n" in text or "\r" in text else text
 
+    def _match_style(self) -> Style:
+        """Return the theme's style for matched characters: its match color, in bold.
+
+        Bold keeps matches visible where colors are not shown.
+        """
+        return Style(foreground=self.get_component_styles("suggestion-list--match").color, bold=True)
+
     @classmethod
-    def _content_for_item(cls, item: SuggestionItem, *, is_disabled: bool) -> Content:
+    def _content_for_item(cls, item: SuggestionItem, *, is_disabled: bool, match_style: Style | None = None) -> Content:
         """Return single-line display content for one selectable item."""
         label = item.label
         if item.disabled_reason:
@@ -309,7 +362,12 @@ class SuggestionList(Widget):
             # Degenerate multi-line label (e.g. user-authored skill metadata):
             # flatten, trading its inline styling for correct row accounting.
             content = Content(cls._single_line(content.plain))
-        return Content.styled(str(content), "dim") if is_disabled else content
+        if is_disabled:
+            return Content.styled(str(content), "dim")
+        if match_style is not None:
+            for start, end in item.match_spans:
+                content = content.stylize(match_style, start, end)
+        return content
 
     @property
     def is_visible(self) -> bool:
@@ -322,6 +380,20 @@ class SuggestionList(Widget):
     def move_cursor_down(self) -> None:
         """Move the highlight cursor down, skipping disabled items."""
         self._move_cursor(1)
+
+    def move_cursor_page(self, direction: int) -> None:
+        """Move the highlight one page of rows up (-1) or down (1), stopping at either end."""
+        selectable = [index for index, disabled in enumerate(self._disabled) if not disabled]
+        if not selectable:
+            return
+        if self._highlighted not in selectable:
+            position = 0 if direction > 0 else len(selectable) - 1
+        else:
+            position = selectable.index(self._highlighted) + direction * _SUGGESTION_ROWS
+        self._highlighted = selectable[min(max(position, 0), len(selectable) - 1)]
+        self._ensure_highlight_visible()
+        self._restart_marquee()
+        self.refresh()
 
     def _move_cursor(self, direction: int) -> None:
         selectable = [index for index, disabled in enumerate(self._disabled) if not disabled]
@@ -420,10 +492,23 @@ class SuggestionList(Widget):
     def on_resize(self, _event: events.Resize) -> None:
         """Recalculate overflow from the new content width."""
         self._restart_marquee()
+        width = self.content_size.width
+        if width != self._row_width:
+            self._row_width = width
+            if self.visible and self._mode:
+                self.post_message(self.RowWidthChanged())
+
+    @property
+    def row_width(self) -> int:
+        """Return the cells one row can show, or 0 before the list is laid out."""
+        return self.content_size.width
 
     def on_unmount(self) -> None:
         """Release the timer and active content during teardown."""
         self._cancel_marquee()
+        if self._loading_timer is not None:
+            self._loading_timer.stop()
+            self._loading_timer = None
 
     def _ensure_highlight_visible(self) -> None:
         old_window_start = self._window_start
