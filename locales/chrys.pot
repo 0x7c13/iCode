@@ -9779,8 +9779,10 @@ msgstr ""
 msgid "tui.settings.hint.app.update_check"
 msgstr ""
 
-#. English: Only used in auto mode. Defaults to direct review.
-#. chrys-meta={"fingerprint":"8d32c64bc6c787dbd26634e01de5a46676027d8f3327695689d97930090ebbcd","multiline":false,"placeholders":[]}
+#. English: Only used in auto mode. Defaults to direct review. Direct review
+#. judges the action as a whole; individual risk checks use a fixed checklist
+#. and ask you to confirm any flagged risk.
+#. chrys-meta={"fingerprint":"320c039e30e2778c1aac526bfb07e02337e45aed76344d39d2fd9f49fadf21ba","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.auto_review"
 msgstr ""

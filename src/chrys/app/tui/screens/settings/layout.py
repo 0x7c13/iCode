@@ -96,7 +96,11 @@ _HINT_APPROVAL_DEFAULT_MODE = msg(
 )
 _HINT_APPROVAL_AUTO_REVIEW = msg(
     "tui.settings.hint.approval.auto_review",
-    fallback="Only used in auto mode. Defaults to direct review.",
+    fallback=(
+        "Only used in auto mode. Defaults to direct review. "
+        "Direct review judges the action as a whole; individual risk checks use a fixed checklist "
+        "and ask you to confirm any flagged risk."
+    ),
 )
 _HINT_APPROVAL_TIMEOUT_SECONDS = msg(
     "tui.settings.hint.approval.timeout_seconds",

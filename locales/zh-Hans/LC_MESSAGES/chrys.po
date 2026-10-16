@@ -9968,11 +9968,13 @@ msgstr "下次启动时默认使用的智能体。"
 msgid "tui.settings.hint.app.update_check"
 msgstr "每天启动时最多查询一次最新版本，并显示在欢迎页上。不会发送任何个人数据。"
 
-#. English: Only used in auto mode. Defaults to direct review.
-#. chrys-meta={"fingerprint":"8d32c64bc6c787dbd26634e01de5a46676027d8f3327695689d97930090ebbcd","multiline":false,"placeholders":[]}
+#. English: Only used in auto mode. Defaults to direct review. Direct review
+#. judges the action as a whole; individual risk checks use a fixed checklist
+#. and ask you to confirm any flagged risk.
+#. chrys-meta={"fingerprint":"320c039e30e2778c1aac526bfb07e02337e45aed76344d39d2fd9f49fadf21ba","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.auto_review"
-msgstr "只在自动模式下生效，默认直接审查。"
+msgstr "只在自动模式下生效，默认直接审查。直接审查对操作作整体判断；逐项风险检查按固定清单检查风险，发现风险时请你确认。"
 
 #. English: Approval mode at the next launch; /approval changes both the
 #. current session and this default. /approval bypass applies to the current

@@ -37,14 +37,14 @@ To change only the default for the next launch without changing the current appr
 
 ## Choose how automatic review works
 
-Automatic mode uses **Direct review** by default. Choose **Individual risk checks** if you want iCode to ask you to confirm actions such as deleting files or publishing code, even when you requested them.
+Automatic mode uses **Direct review** by default. Direct review judges the action as a whole; **Individual risk checks** use a fixed checklist and ask you to confirm any flagged risk.
 
 | Strategy | What you can expect |
 | --- | --- |
 | Direct review (default) | The approval model considers your request and the proposed action together. It runs actions it judges safe and asks you about the others. |
 | Individual risk checks | The model checks the risks listed below one by one. A detected risk opens an approval dialog with an explanation, so you can approve or decline. |
 
-For example, if you ask iCode to clean a build directory, direct review may approve the deletion based on your request. Individual risk checks flag file deletion and ask you to confirm the target first, including temporary files and build outputs.
+Both strategies ask you to confirm file deletion, including temporary files and build outputs. With Individual risk checks, the dialog identifies the matching risk from the checklist below.
 
 To choose a strategy:
 
