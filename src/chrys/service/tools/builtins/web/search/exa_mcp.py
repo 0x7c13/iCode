@@ -20,10 +20,10 @@ from chrys.service.tools.builtins.web.search.types import SearchHit, SearchReque
 _RESULT_HEADER = re.compile(r"(?:\A|\n---\n+)Title: ([^\n]+)\nURL: ([^\n]+)\n")
 # Every request to this anonymous service is ours, so these are the service
 # refusing, not a caller or configuration error: a 4xx (typically a bot block),
-# a JSON-RPC error, or a tool result flagged isError (its free-tier rate limit,
-# an upstream API error, a timeout). An empty search is a plain result, never
-# flagged, so it still ends the chain.
-_FALLS_THROUGH = ENVIRONMENT_FAILURES | {"http_4xx", "exa_rpc_error", "exa_search_failed"}
+# a JSON-RPC error, a free-tier rate limit marked in result metadata, or a tool
+# result flagged isError (an upstream API error, a timeout). An empty search is
+# a plain result, never flagged, so it still ends the chain.
+_FALLS_THROUGH = ENVIRONMENT_FAILURES | {"http_4xx", "exa_rpc_error", "exa_search_failed", "exa_rate_limited"}
 _OBJECTIVE = (
     "Find original pages relevant to the full query. Respect any dates and constraints in the query. "
     "Extract relevant facts and publication dates; prefer primary sources."
@@ -67,6 +67,17 @@ def rpc_result(raw: bytes, mime: str) -> dict[str, Any]:
     result = reply.get("result")
     if not isinstance(result, dict):
         raise WebError("protocol_error")
+    meta = result.get("_meta")
+    if isinstance(meta, dict) and meta.get("ai.exa/rateLimited") is True:
+        # Free-tier limits can arrive without isError; an immediate retry is not useful.
+        raise WebError(
+            "exa_rate_limited",
+            retryable=False,
+            hint=(
+                "Exa's anonymous search rate limit was reached. "
+                "Try again later or configure a search provider with an API key."
+            ),
+        )
     if result.get("isError", False) is not False:
         raise WebError("exa_search_failed")
     return result

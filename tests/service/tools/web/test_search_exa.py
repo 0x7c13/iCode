@@ -18,6 +18,7 @@ from chrys.service.tools.builtins.web.config import parse_provider, parse_search
 from chrys.service.tools.builtins.web.http import WebError
 from chrys.service.tools.builtins.web.search.exa_mcp import parse_results, rpc_result
 from chrys.service.tools.registry import ToolRegistry
+from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.service.tools.web._support import Chunks, assemble
 from tests.support.paths import REPO_ROOT
 
@@ -146,6 +147,40 @@ def test_remote_errors_are_not_returned_as_search_content(reply, code):
     with pytest.raises(WebError, match=code) as error:
         rpc_result(json.dumps(reply).encode(), "application/json")
     assert "private diagnostic" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        None,
+        [],
+        {},
+        {"other": True},
+        {"ai.exa/rateLimited": False},
+        {"ai.exa/rateLimited": 1},
+        {"ai.exa/rateLimited": "true"},
+    ],
+)
+@pytest.mark.parametrize(
+    "text", [_TEXT, "No search results found. Please try a different query."], ids=["hits", "empty"]
+)
+def test_unrelated_or_non_boolean_rate_limit_metadata_preserves_results(meta, text):
+    content = [{"type": "text", "text": text}]
+    reply = envelope(result={"_meta": meta, "content": content})
+    assert parse_results(rpc_result(json.dumps(reply).encode(), "application/json")) == parse_results(
+        {"content": content}
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [_TEXT, "No search results found. Please try a different query.", "private diagnostic"],
+    ids=["hits", "empty", "diagnostic"],
+)
+def test_rate_limit_metadata_takes_precedence_over_search_content(text):
+    reply = envelope(result={"_meta": {"ai.exa/rateLimited": True}, "content": [{"type": "text", "text": text}]})
+    with pytest.raises(WebError, match=r"^exa_rate_limited$"):
+        rpc_result(json.dumps(reply).encode(), "application/json")
 
 
 @pytest.mark.parametrize("text", ["Please log in", "", "Title: Bad\nURL: javascript:alert(1)\nHighlights: bad"])
@@ -288,22 +323,42 @@ _EXA_REFUSALS = [
             }
         },
         "exa_search_failed",
+        "exa_search_failed",
         id="tool-error-result",
     ),
     pytest.param(
         {"error": {"code": -32603, "message": "private diagnostic"}},
         "exa_rpc_error",
+        "exa_rpc_error",
         id="json-rpc-error",
     ),
+    *[
+        pytest.param(
+            {
+                "result": {
+                    "_meta": {"ai.exa/rateLimited": True},
+                    "content": [{"type": "text", "text": "You've hit Exa's free MCP rate limit. private diagnostic"}],
+                    **error_flag,
+                }
+            },
+            "exa_rate_limited",
+            "exa_rate_limited: Exa's anonymous search rate limit was reached. "
+            "Try again later or configure a search provider with an API key.",
+            id=f"meta-rate-limited-{name}",
+        )
+        for name, error_flag in [("unflagged", {}), ("false", {"isError": False}), ("true", {"isError": True})]
+    ],
 ]
 
 
-def _exa_refusal_handler(changes, seen):
+def _exa_refusal_handler(changes, seen, mime):
     def handle(request):
         seen.append(request)
         if request.url.host == "mcp.exa.ai":
             raw = json.dumps(envelope(**changes)).encode()
-            return httpx.Response(200, headers={"Content-Type": "application/json"}, stream=Chunks(raw))
+            if mime == "text/event-stream":
+                raw = b"event: message\ndata: " + raw + b"\n\n"
+            return httpx.Response(200, headers={"Content-Type": mime}, stream=Chunks(raw[:80], raw[80:]))
         body = (
             b'<ol id="b_results"><li class="b_algo"><h2><a href="https://example.com/a">Backup hit</a></h2>'
             b'<div class="b_caption"><p>From the fallback.</p></div></li></ol>'
@@ -313,8 +368,9 @@ def _exa_refusal_handler(changes, seen):
     return handle
 
 
-@pytest.mark.parametrize("changes,code", _EXA_REFUSALS)
-async def test_exa_service_error_falls_back_to_the_next_configured_provider(changes, code):
+@pytest.mark.parametrize("mime", ["application/json", "text/event-stream"])
+@pytest.mark.parametrize("changes,code,message", _EXA_REFUSALS)
+async def test_exa_service_error_falls_back_to_the_next_configured_provider(changes, code, message, mime):
     """Exa's rate limit and upstream errors arrive over HTTP 200; the next provider still gets the query."""
     config = parse_search(
         {
@@ -329,7 +385,7 @@ async def test_exa_service_error_falls_back_to_the_next_configured_provider(chan
     with patch(
         "chrys.service.tools.builtins.web.http.ValidatedAsyncTransport",
         autospec=True,
-        return_value=httpx.MockTransport(_exa_refusal_handler(changes, seen)),
+        return_value=httpx.MockTransport(_exa_refusal_handler(changes, seen, mime)),
     ):
         output = await search.web_search("query")
     # Not retried: an immediate second call would meet the same rate limit.
@@ -340,19 +396,33 @@ async def test_exa_service_error_falls_back_to_the_next_configured_provider(chan
     assert "private diagnostic" not in output
 
 
-@pytest.mark.parametrize("changes,code", _EXA_REFUSALS)
-async def test_exa_service_error_is_the_result_when_exa_is_the_last_provider(changes, code):
+@pytest.mark.parametrize("mime", ["application/json", "text/event-stream"])
+@pytest.mark.parametrize("changes,code,message", _EXA_REFUSALS)
+async def test_exa_service_error_is_the_result_when_exa_is_the_last_provider(changes, code, message, mime):
     search = build_web_tools(["web_search"], Settings(), None, None).search
     assert search is not None
     seen = []
-    with patch(
-        "chrys.service.tools.builtins.web.http.ValidatedAsyncTransport",
-        autospec=True,
-        return_value=httpx.MockTransport(_exa_refusal_handler(changes, seen)),
-    ):
-        output = await search.web_search("query")
+    metadata = {}
+    token = tool_result_metadata.set(metadata)
+    try:
+        with patch(
+            "chrys.service.tools.builtins.web.http.ValidatedAsyncTransport",
+            autospec=True,
+            return_value=httpx.MockTransport(_exa_refusal_handler(changes, seen, mime)),
+        ):
+            output = await search.web_search("query")
+    finally:
+        tool_result_metadata.reset(token)
     assert [request.url.host for request in seen] == ["mcp.exa.ai"]
-    assert output == f"Error: {code}"
+    assert output == f"Error: {message}"
+    assert metadata == {
+        "failed": True,
+        "tool_error_kind": "web_search",
+        "tool_error_message": message,
+        "tool_error_code": code,
+        "tool_error_retryable": False,
+        "tool_error_details": {"status": None},
+    }
 
 
 async def test_exa_response_body_limit():

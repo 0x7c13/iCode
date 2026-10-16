@@ -127,6 +127,8 @@ In `auto` mode, iCode tries the providers in `fallback_chain` in order and retur
 - The provider redirects, returns a captcha or consent page, or sends a response that is too large, uses an unsupported compression, or cannot be read.
 - `exa_mcp`, `bing_html`, or `duckduckgo_html` returns any HTTP 4xx error, or `exa_mcp` reports that the search failed (for example, its free rate limit was reached). An empty result from `exa_mcp` is an answer, so the chain stops there.
 
+If you see `Error: exa_rate_limited`, Exa has reported that its anonymous search limit was reached. iCode does not immediately retry this error; it tries the next provider in your fallback chain, if any. When Exa is the last provider, including the default setup, the error suggests trying again later or configuring a [search API with a key](#search-apis-with-a-key).
+
 For keyed and custom providers, an HTTP 4xx error usually means a configuration problem, such as a wrong key, so the chain stops and the agent receives the error with its status, for example `Error: http_4xx (HTTP 403)`. Errors caused by the request itself, such as an empty query, also stop the chain. There is no hidden fallback: iCode tries only the providers you list.
 
 ### Use your own search endpoint
