@@ -1062,17 +1062,22 @@ def test_cancelled_queued_flagged_request_leaves_no_wait_behind() -> None:
     assert controller.awaiting_user is False
 
 
-def test_cancelling_the_open_dialog_first_keeps_the_queue_consistent() -> None:
+@pytest.mark.parametrize("judging", [False, True], ids=["manual", "flagged"])
+def test_cancelling_the_open_dialog_first_keeps_the_queue_consistent(judging: bool) -> None:
     port = _ApprovalPort()
+    port.defer_while_judging = True
     controller = ApprovalQueueController(port)
     asyncio.run(controller.on_request(_approval_request("open", judging=False)))
-    asyncio.run(controller.on_request(_approval_request("queued", judging=False)))
+    asyncio.run(controller.on_request(_approval_request("queued", judging=judging)))
+    if judging:
+        asyncio.run(controller.on_reviewed(ApprovalReviewed(request_id="queued", approved=False, reason="danger")))
 
     # Control order: cancelling the open dialog lets the queued one show.
     asyncio.run(controller.on_cancelled(ApprovalCancelled(request_id="open")))
 
     assert controller.awaiting_user is True
-    port.dialogs[1].callback((False, "", None))
+    assert set(controller.open_dialogs) == {"queued"}
+    asyncio.run(controller.on_cancelled(ApprovalCancelled(request_id="queued")))
 
     assert len(controller.queue) == 0
     assert controller.open_dialogs == {}

@@ -102,12 +102,12 @@ def _msg(text: str) -> str:
 
 
 def _blocked(kind: str, text: str) -> str:
-    return _seq(f"state=blocked:kind={kind}:app=icode:{_msg(text)}")
+    return _seq(f"state=blocked:kind={kind}:app=iCode:{_msg(text)}")
 
 
-_IDLE = _seq("state=idle:app=icode")
-_WORKING = _seq("state=working:app=icode")
-_DONE = _seq("state=done:app=icode")
+_IDLE = _seq("state=idle:app=iCode")
+_WORKING = _seq("state=working:app=iCode")
+_DONE = _seq("state=done:app=iCode")
 
 
 def _turn_origin(invocation_id: str = "i1") -> InvocationOrigin:
@@ -148,7 +148,7 @@ def test_report_carries_state_and_app_only() -> None:
 def test_report_orders_kind_before_app_and_msg() -> None:
     report = build_program_status_report("blocked", kind="permission", message="hello")
 
-    assert report == _seq("state=blocked:kind=permission:app=icode:msg=aGVsbG8=")
+    assert report == _seq("state=blocked:kind=permission:app=iCode:msg=aGVsbG8=")
 
 
 def test_report_encodes_utf8_message_as_base64() -> None:
@@ -233,7 +233,7 @@ async def test_turn_runs_working_then_done_survives_idle_release(monkeypatch: py
         ),
     )
 
-    assert writes == [_IDLE, _WORKING, _seq(f"state=done:app=icode:{_msg('All done')}")]
+    assert writes == [_IDLE, _WORKING, _seq(f"state=done:app=iCode:{_msg('All done')}")]
 
 
 async def test_interrupt_replaces_outcome_with_idle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,7 +263,7 @@ async def test_interrupt_replaces_an_error(monkeypatch: pytest.MonkeyPatch) -> N
         ),
     )
 
-    assert writes == [_IDLE, _WORKING, _seq(f"state=error:app=icode:{_msg('provider unreachable')}"), _IDLE]
+    assert writes == [_IDLE, _WORKING, _seq(f"state=error:app=iCode:{_msg('provider unreachable')}"), _IDLE]
 
 
 async def test_stale_terminal_events_after_an_interrupt_do_not_flip_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,7 +301,7 @@ async def test_new_run_does_not_show_the_previous_outcome(monkeypatch: pytest.Mo
     assert writes == [
         _IDLE,
         _WORKING,
-        _seq(f"state=error:app=icode:{_msg('provider unreachable')}"),
+        _seq(f"state=error:app=iCode:{_msg('provider unreachable')}"),
         _WORKING,
     ]
 
@@ -374,7 +374,7 @@ async def test_live_error_reports_error_with_first_line(monkeypatch: pytest.Monk
         ),
     )
 
-    assert writes[-1] == _seq(f"state=error:app=icode:{_msg('provider unreachable')}")
+    assert writes[-1] == _seq(f"state=error:app=iCode:{_msg('provider unreachable')}")
 
 
 @pytest.mark.parametrize("code", ["hook_blocked", "image_attachment_error", "vision_unsupported"])
@@ -613,7 +613,7 @@ async def test_paused_sub_agent_blocks_without_kind(monkeypatch: pytest.MonkeyPa
         ),
     )
 
-    assert writes[-1] == _seq(f"state=blocked:app=icode:{_msg('Explore failed - retry or abort')}")
+    assert writes[-1] == _seq(f"state=blocked:app=iCode:{_msg('Explore failed - retry or abort')}")
 
 
 async def test_paused_sub_agent_without_a_name_still_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -627,7 +627,7 @@ async def test_paused_sub_agent_without_a_name_still_blocks(monkeypatch: pytest.
         ),
     )
 
-    assert writes[-1] == _seq(f"state=blocked:app=icode:{_msg('sub-agent failed - retry or abort')}")
+    assert writes[-1] == _seq(f"state=blocked:app=iCode:{_msg('sub-agent failed - retry or abort')}")
 
 
 async def test_two_paused_agents_block_until_both_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -643,7 +643,7 @@ async def test_two_paused_agents_block_until_both_resolve(monkeypatch: pytest.Mo
         ),
     )
 
-    assert writes[-1] == _seq(f"state=blocked:app=icode:{_msg('QA failed - retry or abort')}")
+    assert writes[-1] == _seq(f"state=blocked:app=iCode:{_msg('QA failed - retry or abort')}")
     await bus.publish(InvocationAborted(origin=_sub_agent_origin("p2"), agent_name="QA"))
 
     assert writes[-1] == _WORKING
@@ -685,7 +685,7 @@ async def test_workflow_node_retry_blocks_and_resumes(monkeypatch: pytest.Monkey
         ),
     )
 
-    assert writes[-2] == _seq(f"state=blocked:app=icode:{_msg('build awaits manual retry')}")
+    assert writes[-2] == _seq(f"state=blocked:app=iCode:{_msg('build awaits manual retry')}")
     assert writes[-1] == _WORKING
 
 
@@ -767,7 +767,7 @@ async def test_workflow_node_failure_reports_error(monkeypatch: pytest.MonkeyPat
         ),
     )
 
-    assert writes[-1] == _seq(f"state=error:app=icode:{_msg('build step timed out')}")
+    assert writes[-1] == _seq(f"state=error:app=iCode:{_msg('build step timed out')}")
 
 
 async def test_workflow_deadline_reports_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +781,7 @@ async def test_workflow_deadline_reports_error(monkeypatch: pytest.MonkeyPatch) 
         ),
     )
 
-    assert writes[-1] == _seq("state=error:app=icode")
+    assert writes[-1] == _seq("state=error:app=iCode")
 
 
 async def test_workflow_user_cancellation_reports_idle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -839,7 +839,7 @@ async def test_new_session_clears_the_previous_outcome(monkeypatch: pytest.Monke
             ExecutionChanged(snapshot=ExecutionSnapshot("idle")),
         ),
     )
-    assert writes[-1] == _seq(f"state=done:app=icode:{_msg('All done')}")
+    assert writes[-1] == _seq(f"state=done:app=iCode:{_msg('All done')}")
 
     # /new: a fresh session id lands with the next SessionReady.
     await bus.publish(SessionReady(session_id="s2"))
@@ -862,7 +862,7 @@ async def test_same_session_rebuild_keeps_the_outcome(monkeypatch: pytest.Monkey
         ),
     )
 
-    assert writes[-1] == _seq(f"state=done:app=icode:{_msg('All done')}")
+    assert writes[-1] == _seq(f"state=done:app=iCode:{_msg('All done')}")
 
 
 async def test_restored_session_clears_the_previous_outcome(monkeypatch: pytest.MonkeyPatch) -> None:

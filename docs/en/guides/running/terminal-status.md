@@ -18,10 +18,12 @@ While several decisions are pending at once — two approvals, an approval plus 
 
 `done` appears as soon as the reply is readable in iCode; the session save and the end-of-turn hooks may still be running at that moment.
 
+When you continue an interrupted turn, reporting returns to `working` as soon as the retry takes over, even while the previous turn is finishing cancellation. Creating or restoring a chat or workflow session, or switching between chat and workflow mode, clears the previous result.
+
 ## Where it shows up
 
 Terminals that implement the protocol decide how to present it; check your terminal's documentation for whether it consumes OSC 7501 and what it does with the reports. Terminals that do not know the protocol ignore it completely, so iCode's reporting never disturbs them. If you run iCode inside a terminal multiplexer, the multiplexer is the terminal iCode reports to — the status only reaches your outer terminal if the multiplexer passes the protocol through.
 
-What iCode sends is the state, the stable name `icode`, and, where noted above, a short single line of text (a tool name, a question, the opening of a reply or an error). When you quit iCode, it reports `idle` one last time: quitting is taken as having seen the result, so a finished run does not keep notifying after you left.
+What iCode sends is the state, the stable program identifier `iCode` (`app=iCode`), and, where noted above, a short single line of text (a tool name, a question, the opening of a reply or an error). When you quit iCode, it reports `idle` one last time: quitting is taken as having seen the result, so a finished run does not keep notifying after you left.
 
-Two cases never report: iCode served in a browser (`icode serve`), because a browser page is not a terminal, and the headless `icode run`, which reports its progress as plain text instead.
+Reporting is enabled only in the native TUI, including its chat and workflow modes. Browser sessions (`icode serve`), headless commands (`icode run` and `icode workflow run`), and the ACP server (`icode acp`) do not send OSC 7501 reports.

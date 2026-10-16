@@ -936,6 +936,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             on_editor_keymap_changed=self._record_editor_keymap_override,
             tool_groups_expanded=lambda: self._settings_handle.settings.tool_groups_expanded,
             approval_mode=self._engine.approval_mode,
+            reset_program_status=self._program_status_reporter.reset_context,
         )
 
     async def on_mount(self) -> None:

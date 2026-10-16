@@ -30,7 +30,7 @@ from chrys.app.tui.terminal.title import (
     running_under_textual_web_driver,
     title_safe_text,
 )
-from chrys.foundation.branding import APP_COMMAND
+from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.events.types import (
     ApprovalCancelled,
     ApprovalRequest,
@@ -102,7 +102,7 @@ def build_program_status_report(
     *,
     kind: str = "",
     message: str = "",
-    app: str = APP_COMMAND,
+    app: str = APP_DISPLAY_NAME,
 ) -> str:
     """Build one OSC 7501 report sequence.
 
@@ -437,6 +437,15 @@ class ProgramStatusReporter:
 
     async def on_session_restored(self, event: SessionRestored) -> None:
         self._session_id = event.session_id or self._session_id
+        self._forget_session_facts()
+        self._refresh()
+
+    def reset_context(self) -> None:
+        """Acknowledge the previous view's result on a UI context switch.
+
+        Workflow session changes and chat/workflow mode switches do not
+        rebuild the chat engine or emit its session lifecycle events.
+        """
         self._forget_session_facts()
         self._refresh()
 
