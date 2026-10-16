@@ -108,6 +108,7 @@ async def test_workflow_context_changes_clear_only_acknowledged_results(
             await switch_mode(main, pilot)
             assert main._workflow.workflow_mode is False
         assert _reports(driver)[-1] == (result if action == "failed-restore" else _IDLE)
+    assert _reports(driver)[-1] == _IDLE
 
 
 async def test_switching_from_chat_to_workflow_acknowledges_chat_result(tmp_path: Path) -> None:

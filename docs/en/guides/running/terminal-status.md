@@ -24,6 +24,6 @@ When you continue an interrupted turn, reporting returns to `working` as soon as
 
 Terminals that implement the protocol decide how to present it; check your terminal's documentation for whether it consumes OSC 7501 and what it does with the reports. Terminals that do not know the protocol ignore it completely, so iCode's reporting never disturbs them. If you run iCode inside a terminal multiplexer, the multiplexer is the terminal iCode reports to — the status only reaches your outer terminal if the multiplexer passes the protocol through.
 
-What iCode sends is the state, the stable program identifier `iCode` (`app=iCode`), and, where noted above, a short single line of text (a tool name, a question, the opening of a reply or an error). When you quit iCode, it reports `idle` one last time: quitting is taken as having seen the result, so a finished run does not keep notifying after you left.
+What iCode sends is the state, the stable program identifier `iCode` (`app=iCode`), and, where noted above, a short single line of text (a tool name, a question, the opening of a reply or an error). When you quit iCode, it reports `idle` one last time: quitting is taken as having seen the result, so a finished run does not keep notifying after you left. This also applies when you quit with a workflow error dialog still open.
 
 Reporting is enabled only in the native TUI, including its chat and workflow modes. Browser sessions (`icode serve`), headless commands (`icode run` and `icode workflow run`), and the ACP server (`icode acp`) do not send OSC 7501 reports.
