@@ -937,6 +937,8 @@ class AcpPermissionBroker:
                 response = await future
             except asyncio.CancelledError:
                 should_notify = self._permission_waits.pop(request_id, None) is not None
+                # The verdict callback must finish before interruption records its audit;
+                # waiting for the finally block to drain the judge would be too late.
                 if judge_task is not None and not judge_task.done():
                     judge_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):

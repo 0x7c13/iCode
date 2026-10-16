@@ -116,6 +116,8 @@ class CallMeter:
         if time.monotonic() >= self.deadline:
             raise TimeoutError
         self.started = True
+        # For streams, this timeout bounds stalls and resets on progress. The enclosing
+        # timeout_at in FormalEvaluator enforces the absolute review deadline.
         response = await call(
             client, messages, stream=stream, options=options, timeout=self.deadline - time.monotonic()
         )
