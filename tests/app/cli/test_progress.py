@@ -139,6 +139,11 @@ def _result(
         (3599.4, "59m 59s"),
         (3600, "1h 00m"),
         (3900, "1h 05m"),
+        (86399, "23h 59m"),
+        (86399.6, "1d 00h"),
+        (86400, "1d 00h"),
+        (102050, "1d 04h"),
+        (172800, "2d 00h"),
     ],
 )
 def test_format_duration(seconds: float, text: str) -> None:

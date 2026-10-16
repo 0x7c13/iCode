@@ -108,6 +108,9 @@ def _coerce_timeout_seconds(value: Any) -> int:
 
 def _fmt_duration(seconds: int) -> str:
     """Format seconds into a compact human-readable string."""
+    if seconds >= 86400:
+        days, remainder = divmod(seconds, 86400)
+        return f"{days}d {_fmt_duration(remainder)}" if remainder else f"{days}d"
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:

@@ -58,8 +58,22 @@ async def test_status_bar_status_reactive_refreshes_text() -> None:
         assert pilot.app.query_one("#status-text", Static).render().plain == "Thinking"
 
 
+@pytest.mark.parametrize(
+    ("elapsed", "english", "chinese"),
+    [
+        (61, "1m 1s", "1分 1秒"),
+        (3600, "1h 0m 0s", "1小时 0分 0秒"),
+        (30030, "8h 20m 30s", "8小时 20分 30秒"),
+        (86399, "23h 59m 59s", "23小时 59分 59秒"),
+        (86400, "1d 0h 0m 0s", "1天 0小时 0分 0秒"),
+        (102050, "1d 4h 20m 50s", "1天 4小时 20分 50秒"),
+    ],
+)
 async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payload(
     monkeypatch: pytest.MonkeyPatch,
+    elapsed: int,
+    english: str,
+    chinese: str,
 ) -> None:
     from types import SimpleNamespace
 
@@ -70,7 +84,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
     controller = LocaleController(Settings(locale="en"))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     now = [100.0]
-    monkeypatch.setattr(status_bar_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
     status_bar: StatusBar | None = None
 
     async with WidgetApp(lambda: StatusBar(locale_controller=controller)).run_test() as pilot:
@@ -87,7 +101,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
             )
         )
         status_bar.start_run()
-        now[0] = 161.0
+        now[0] += elapsed
         status_bar.add_tool_call()
         runtime_info = RegistryRuntimeInfoProvider(  # type: ignore[arg-type]
             SimpleNamespace(agent_registry=None)
@@ -116,7 +130,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
         assert status_bar.query_one("#agent-label", Static).render().plain == "Agent"
         assert status_bar.query_one("#model-label", Static).render().plain == "Model"
         assert status_bar.query_one("#status-text", Static).render().plain == "Thinking"
-        assert status_bar.query_one("#status-trail", Static).render().plain == "  (1m 1s · 1 tool call)"
+        assert status_bar.query_one("#status-trail", Static).render().plain == f"  ({english} · 1 tool call)"
         assert (
             status_bar.query_one("#status-tool-info", Static).render().plain == "2 tools · 1 skill · 2 hooks · 1 file"
         )
@@ -125,7 +139,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
         assert status_bar.query_one("#agent-label", Static).render().plain == "智能体"
         assert status_bar.query_one("#model-label", Static).render().plain == "模型"
         assert status_bar.query_one("#status-text", Static).render().plain == "正在思考"
-        assert status_bar.query_one("#status-trail", Static).render().plain == "  (1分 1秒 · 1 次工具调用)"
+        assert status_bar.query_one("#status-trail", Static).render().plain == f"  ({chinese} · 1 次工具调用)"
         tool_info = status_bar.query_one("#status-tool-info", Static)
         assert tool_info.render().plain == "2 个工具 · 1 个 Skill · 2 个钩子 · 1 个文件"
         assert tool_info.tooltip is not None
@@ -163,29 +177,38 @@ async def test_status_bar_relocalizes_active_flash_and_snapshot_restore(
         assert status_bar.query_one("#status-tool-info", Static).render().plain == "会话已恢复：abc123"  # noqa: RUF001
 
 
+@pytest.mark.parametrize(
+    ("elapsed", "english", "chinese"),
+    [(61, "1m 1s", "1分 1秒"), (102050, "1d 4h 20m 50s", "1天 4小时 20分 50秒")],
+)
 async def test_status_bar_completed_flash_restores_localized_elapsed_from_snapshot(
     monkeypatch: pytest.MonkeyPatch,
+    elapsed: int,
+    english: str,
+    chinese: str,
 ) -> None:
+    from types import SimpleNamespace
+
     from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
 
     controller = LocaleController(Settings(locale="en"))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
     now = [100.0]
-    monkeypatch.setattr(status_bar_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
 
     async with WidgetApp(lambda: StatusBar(locale_controller=controller)).run_test() as pilot:
         status_bar = pilot.app.query_one(StatusBar)
         status_bar.start_run()
-        now[0] = 161.0
+        now[0] += elapsed
         status_bar.flash_completed()
         snapshot = status_bar.snapshot()
-        assert status_bar.query_one("#status-flash", Static).render().plain == "Completed in 1m 1s"
+        assert status_bar.query_one("#status-flash", Static).render().plain == f"Completed in {english}"
 
         status_bar.flash("shell payload", warn=True)
         assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
         status_bar.restore(snapshot)
 
-        assert status_bar.query_one("#status-flash", Static).render().plain == "已在 1分 1秒 内完成"
+        assert status_bar.query_one("#status-flash", Static).render().plain == f"已在 {chinese} 内完成"
 
 
 async def test_status_bar_localizes_tool_count_choices_and_elapsed_formats(

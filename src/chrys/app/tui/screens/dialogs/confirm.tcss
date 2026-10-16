@@ -2,23 +2,27 @@ ConfirmDialog {
     align: center middle;
 }
 
-#confirm-container {
+ConfirmDialog > Tooltip {
+    max-width: 90%;
+}
+
+ConfirmDialog #confirm-container {
     width: 43;
     height: auto;
-    min-height: 8;
+    max-width: 90%;
+    max-height: 90%;
     border: round $tui-border-primary $border-opacity;
     border-title-color: $primary;
     border-title-style: bold;
 }
 
-#confirm-inner {
+ConfirmDialog #confirm-inner {
     width: 100%;
     height: auto;
-    min-height: 6;
     background: $surface;
 }
 
-#confirm-message {
+ConfirmDialog #confirm-message, ConfirmDialog #confirm-impact {
     width: 100%;
     height: auto;
     min-height: 1;
@@ -28,14 +32,24 @@ ConfirmDialog {
     padding: 0 2;
 }
 
-#confirm-buttons {
+ConfirmDialog .confirm-scroll {
+    height: auto;
+    scrollbar-size-vertical: 1;
+    scrollbar-gutter: stable;
+}
+
+ConfirmDialog .confirm-scroll > TaskSummary {
+    margin: 0 2 1 2;
+}
+
+ConfirmDialog #confirm-buttons {
     dock: bottom;
     align: center top;
     height: 3;
     padding: 0 1 0 1;
 }
 
-#confirm-buttons > Button {
+ConfirmDialog #confirm-buttons > Button {
     margin: 0 1;
 }
 

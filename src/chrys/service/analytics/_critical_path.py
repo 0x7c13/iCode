@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from threading import Event
 from typing import Final
@@ -119,13 +120,23 @@ def _longest_interval_path(
         witness.extend(carried(previous, cursor))
         witness.extend(intervals.get(previous, ()))
         cursor = previous
-    if interval_length(interval_union(witness)) == sums[end]:
-        return _PathResolution(sums[end], True, True)
+    witness_length = interval_length(witness)
+    if witness_length == sums[end]:
+        return _PathResolution(witness_length, True, True)
 
-    paths: dict[str, set[tuple[Interval, ...]]] = defaultdict(set)
+    # Every interval is a union of elementary spans between these endpoints.
+    # Bit sets preserve exact union/subset semantics without copying and
+    # scanning a growing tuple of intervals at every edge in a long turn.
+    points = sorted(
+        {point for members in intervals.values() for start, end in members if end > start for point in (start, end)}
+    )
+    positions = {point: index for index, point in enumerate(points)}
+    masks = {vertex: _interval_mask(intervals.get(vertex, ()), positions) for vertex in vertices}
+    completion_masks: dict[str, int] = {}
+    paths: dict[str, set[int]] = defaultdict(set)
     retained = 0
     for vertex in starts:
-        paths[vertex].add(interval_union(intervals.get(vertex, ())))
+        paths[vertex].add(masks[vertex])
         retained += 1
     if retained > _MAX_CRITICAL_PATH_CANDIDATES:
         return _PathResolution(None, True, False)
@@ -134,16 +145,22 @@ def _longest_interval_path(
     for vertex in order:
         _check_cancelled(cancel_event)
         candidates = paths.get(vertex, set())
-        if candidates:
-            candidate_max = max(interval_length(path) for path in candidates)
+        # Extending a path never decreases its union. Without a requested
+        # terminal it is sufficient to weigh sinks, rather than every prefix.
+        if candidates and (vertex == terminal_id or (terminal_id is None and not edges.get(vertex))):
+            candidate_max = max(_mask_length(path, points) for path in candidates)
             best = max(best, candidate_max)
             if vertex == terminal_id:
                 terminal_value = candidate_max
         for target in edges.get(vertex, ()):
             target_paths = paths[target]
-            crossing = carried(vertex, target)
+            crossing = 0
+            if displacing_parents.get(target) != vertex and (vertex, target) not in fork_edges:
+                if vertex not in completion_masks:
+                    completion_masks[vertex] = _interval_mask(carried(vertex, target), positions)
+                crossing = completion_masks[vertex]
             for path in candidates:
-                candidate = interval_union((*path, *crossing, *intervals.get(target, ())))
+                candidate = path | crossing | masks[target]
                 retained += _retain_nondominated(target_paths, candidate)
                 if retained > _MAX_CRITICAL_PATH_CANDIDATES:
                     return _PathResolution(None, True, False)
@@ -155,25 +172,34 @@ def _longest_interval_path(
 
 
 def _retain_nondominated(
-    retained: set[tuple[Interval, ...]],
-    candidate: tuple[Interval, ...],
+    retained: set[int],
+    candidate: int,
 ) -> int:
-    if any(_intervals_subset(candidate, existing) for existing in retained):
+    if candidate in retained:
         return 0
-    dominated = {existing for existing in retained if _intervals_subset(existing, candidate)}
+    if any(candidate & existing == candidate for existing in retained):
+        return 0
+    dominated = {existing for existing in retained if existing & candidate == existing}
     retained.difference_update(dominated)
     retained.add(candidate)
     return 1 - len(dominated)
 
 
-def _intervals_subset(
-    subset: tuple[Interval, ...],
-    superset: tuple[Interval, ...],
-) -> bool:
-    superset_index = 0
-    for start, end in subset:
-        while superset_index < len(superset) and superset[superset_index][1] <= start:
-            superset_index += 1
-        if superset_index >= len(superset) or superset[superset_index][0] > start or superset[superset_index][1] < end:
-            return False
-    return True
+def _interval_mask(intervals: Iterable[Interval], positions: dict[int, int]) -> int:
+    mask = 0
+    for start, end in intervals:
+        if end > start:
+            mask |= (1 << positions[end]) - (1 << positions[start])
+    return mask
+
+
+def _mask_length(mask: int, points: list[int]) -> int:
+    length = 0
+    while mask:
+        start = (mask & -mask).bit_length() - 1
+        suffix = mask >> start
+        # Adding one flips the trailing run of ones and its next zero.
+        end = start + (suffix ^ (suffix + 1)).bit_length() - 1
+        length += points[end] - points[start]
+        mask &= ~((1 << end) - 1)
+    return length

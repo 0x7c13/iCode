@@ -31,7 +31,7 @@ from tests.service.llm._responses_wire import (
 )
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 from tests.support.wire_cases import Reply
-from tests.support.wire_cases._kit import WEATHER_REPORT_JSON, WeatherReport, resp_message
+from tests.support.wire_cases._kit import WEATHER_REPORT_JSON, WeatherReport, json_reply, resp_message
 
 _STREAM_LOGGER = "chrys.service.llm.openai_responses.stream"
 _NO_TERMINAL_WARNING = "ended without a terminal event"
@@ -130,6 +130,54 @@ async def test_a_blocking_response_that_failed_raises(
         await respond(blocking(resp_message("msg_1", "Partial"), **fields), stream=False, options=options)
 
     _assert_failure(raised.value, code, retryable=retryable)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("canonical", "kind", "retryable"),
+    [
+        ("content_policy_violation", ErrorKind.CONTENT_FILTERED, False),
+        ("refusal", ErrorKind.CONTENT_FILTERED, False),
+        ("payment_required", ErrorKind.QUOTA_EXHAUSTED, False),
+        ("authentication", ErrorKind.AUTH_FAILED, False),
+        ("provider_overloaded", ErrorKind.OVERLOADED, True),
+        ("server", ErrorKind.SERVER_ERROR, True),
+    ],
+)
+async def test_gateway_canonical_failure_survives_responses_wire_translation(
+    stream: bool, canonical: str, kind: ErrorKind, retryable: bool
+) -> None:
+    body = {
+        **snapshot(status="failed", error={"code": "server_error", "message": "Gateway explanation."}),
+        "error_type": canonical,
+    }
+    reply = Script().started().emit("response.failed", response=body).reply() if stream else json_reply(body)
+    with pytest.raises(ProviderResponseError) as raised:
+        await respond(reply, stream=stream)
+    result = classify_error(raised.value)
+    assert (result.kind, result.retryable) == (kind, retryable)
+    assert raised.value.provider_message == "Gateway explanation."
+    assert invalidates_continuation_token(raised.value) is True
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("error_type", "kind"),
+    [("billing_error", ErrorKind.QUOTA_EXHAUSTED), ("authentication_error", ErrorKind.AUTH_FAILED)],
+)
+async def test_responses_failure_without_code_keeps_its_native_type(
+    stream: bool, error_type: str, kind: ErrorKind
+) -> None:
+    body = snapshot(status="failed", error={"type": error_type, "message": "Provider explanation."})
+    reply = Script().started().emit("response.failed", response=body).reply() if stream else json_reply(body)
+
+    with pytest.raises(ProviderResponseError) as raised:
+        await respond(reply, stream=stream)
+
+    result = classify_error(raised.value)
+    assert (result.kind, result.retryable) == (kind, False)
+    _assert_failure(raised.value, error_type, retryable=False)
+    assert raised.value.provider_message == "Provider explanation."
 
 
 # ---------------------------------------------------------------------------

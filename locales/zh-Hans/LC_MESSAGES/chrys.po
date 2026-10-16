@@ -4308,14 +4308,11 @@ msgstr "无法读取日志。"
 msgid "tui.background_task.running"
 msgstr "运行中"
 
-#. English: {command}  This stops every process the command started.
-#. chrys-meta={"fingerprint":"7576990b36584d42dd4d127cf967f043fecd2688b5b3469abdd682ce9b631497","multiline":true,"placeholders":["command"]}
+#. English: This stops these tasks and every process they started.
+#. chrys-meta={"fingerprint":"31d13c4e8f66cfa701dd7f6b35a203185f8eed7a3398b46ecd36cc5e6bd8dcea","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/background_task.py
 msgid "tui.background_task.stop.message"
-msgstr ""
-"{command}\n"
-"\n"
-"这会停止该命令启动的所有进程。"
+msgstr "这会停止这些任务及其启动的所有子进程。"
 
 #. English: Stop this background task?
 #. chrys-meta={"fingerprint":"9d94da6a955b2dea2b8daad7d64f18bde74f54e13f8adf43d514d15ab1c9f1e7","multiline":false,"placeholders":[]}
@@ -10899,6 +10896,18 @@ msgstr "已清除自定义标题"
 msgid "tui.status.details_tooltip"
 msgstr "点击查看详情"
 
+#. English: {days}d {hours}h {minutes}m {seconds}s
+#. chrys-meta={"fingerprint":"561af9fafc71032037f34577d423fccaaa18ac6cd4a3656d72923f5dc91bcdab","multiline":false,"placeholders":["days","hours","minutes","seconds"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.elapsed_days_hours_minutes_seconds"
+msgstr "{days}天 {hours}小时 {minutes}分 {seconds}秒"
+
+#. English: {hours}h {minutes}m {seconds}s
+#. chrys-meta={"fingerprint":"f7d258f7578fee8d3145afdeb93cfc52fb71945fc984b768db90509ab8108b10","multiline":false,"placeholders":["hours","minutes","seconds"]}
+#: src/chrys/app/tui/widgets/chrome/status_bar.py
+msgid "tui.status.elapsed_hours_minutes_seconds"
+msgstr "{hours}小时 {minutes}分 {seconds}秒"
+
 #. English: {minutes}m {seconds}s
 #. chrys-meta={"fingerprint":"c977f24045f39b1d2849aaa22d3aa31fee418015371e4ac4f259b42fc91c5891","multiline":false,"placeholders":["minutes","seconds"]}
 #: src/chrys/app/tui/widgets/chrome/status_bar.py
@@ -11128,6 +11137,12 @@ msgstr "被 /{name} 遮蔽"
 #: src/chrys/app/tui/screens/main/suggestions.py
 msgid "tui.suggestions.system_commands"
 msgstr "系统命令"
+
+#. English: Running for {duration}
+#. chrys-meta={"fingerprint":"ccfabe4cd62895b9ee4293c3b573bc5090f91869a6dacad405ee08940ac6053b","multiline":false,"placeholders":["duration"]}
+#: src/chrys/app/tui/widgets/task_summary.py
+msgid "tui.task_summary.duration"
+msgstr "已运行 {duration}"
 
 #. English: Could not open {label}: launcher exited with status {failure_code}.
 #. chrys-meta={"fingerprint":"9dcd9b9dbf49acf07d87d4e8faa6b499af18533ee86a1623d577970d9fee4635","multiline":false,"placeholders":["failure_code","label"]}

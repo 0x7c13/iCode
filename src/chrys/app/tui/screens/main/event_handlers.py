@@ -1146,7 +1146,9 @@ class BackendEventHandler:
             provider_call_id=event.provider_call_id,
             canonical_status=canonical_status,
         )
-        self._live_diff.record_tool_start(event.call_id, event.tool_name, event.args)
+        self._live_diff.record_tool_start(
+            event.call_id, event.tool_name, event.args, workspace_cwd=self._state.workspace.current_cwd
+        )
         s.debug("InvocationToolCallStart", f"{event.tool_name}")
 
     async def on_tool_progress(self, event: InvocationToolCallProgress) -> None:
@@ -1307,7 +1309,9 @@ class BackendEventHandler:
             provider_status=event.provider_status,
             provider_call_id=event.provider_call_id,
         )
-        self._live_diff.record_tool_start(event.call_id, event.tool_name, event.args)
+        self._live_diff.record_tool_start(
+            event.call_id, event.tool_name, event.args, workspace_cwd=self._state.workspace.current_cwd
+        )
 
     async def on_sub_agent_tool_result(self, event: InvocationToolCallResult) -> None:
         if not _chat_sub_agent(event.origin):

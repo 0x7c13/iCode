@@ -9,12 +9,16 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+from anthropic import APIStatusError
+
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.event_handlers import BackendEventHandler
 from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.errors.display import _DNS_FAILED, _MAYBE_OFFLINE
+from chrys.foundation.errors import ROUTE_EXTENSION_KEY, Origin, RouteFacts, clean_error_message
+from chrys.foundation.errors.display import _DNS_FAILED, _MAYBE_OFFLINE, display_fields
 from chrys.foundation.events.types import (
     AgentLoadFailed,
     Error,
@@ -23,6 +27,7 @@ from chrys.foundation.events.types import (
     InvocationRetryAttempt,
 )
 from chrys.foundation.i18n import Localizer, MessageRef
+from tests.support.provider_errors import anthropic_status
 from tests.support.tui_helpers import make_backend_handler
 
 _RAW = "Connection error."
@@ -132,6 +137,27 @@ def test_other_errors_with_a_display_still_show_it_alone() -> None:
     asyncio.run(handler.on_error(Error(code="run_failed", message=_RAW, display_message=_DNS, display_hint=_HINT)))
 
     assert surfaces.chat_errors == [_joined("en", separator=" ")]
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+async def test_gateway_content_filter_shows_localized_reason_and_raw_verdict(locale: str) -> None:
+    handler, surfaces = _handler(LocaleController(Settings(locale=locale)))
+    error = await anthropic_status(500, {"error": {"type": "new_api_error", "message": "sensitive_words_detected"}})
+    # The production HTTP client stamps the model route on the SDK request.
+    assert isinstance(error, APIStatusError)
+    error.request.extensions[ROUTE_EXTENSION_KEY] = RouteFacts(
+        Origin("https", "api.example.test", 443), None, first_hop_reached=True
+    )
+    display, hint = display_fields(error)
+    assert display is not None
+    assert display.definition.key == "error.kind.content_filtered"
+
+    await handler.on_error(
+        Error(code="executor_error", message=clean_error_message(error), display_message=display, display_hint=hint)
+    )
+
+    assert surfaces.chat_errors == [f"{Localizer(locale).render(display)}\nError code: 500 - sensitive_words_detected"]
+    assert surfaces.retry_banners == []
 
 
 def test_error_display_follows_the_current_locale() -> None:

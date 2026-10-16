@@ -4,12 +4,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from random import Random
+
+import pytest
+
 from chrys.service.analytics import (
     Precision,
     analyze_trajectory,
 )
 from chrys.service.analytics import _critical_path as critical_path_module
 from chrys.service.analytics._critical_path import _longest_interval_path
+from chrys.service.analytics.math import Interval
 from tests.service.analytics._events import NS, EventLog, caused_by
 
 
@@ -82,6 +88,70 @@ def test_completion_edges_carry_displaced_descendants_but_forks_do_not() -> None
 
     assert (through_consumer.value, through_consumer.bounded) == (6, True)
     assert (through_fork.value, through_fork.bounded) == (2, True)
+
+
+def test_long_overlapping_path_does_not_remerge_every_history_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    size = 128
+    intervals = {str(index): [(0, 1), (3 * index + 2, 3 * index + 3)] for index in range(size)}
+    edges = {str(index): {str(index + 1)} for index in range(size - 1)}
+    merged_spans = 0
+    real_union = critical_path_module.interval_union
+
+    def count_union(members: Iterable[Interval]) -> tuple[Interval, ...]:
+        nonlocal merged_spans
+        materialized = tuple(members)
+        merged_spans += len(materialized)
+        return real_union(materialized)
+
+    monkeypatch.setattr(critical_path_module, "interval_union", count_union)
+
+    result = _longest_interval_path(intervals, edges, root_id="0", terminal_id=str(size - 1))
+
+    assert (result.value, result.acyclic, result.bounded) == (size + 1, True, True)
+    # Linear setup is allowed; repeatedly merging every growing prefix is not.
+    assert merged_spans <= 12 * size
+
+
+@pytest.mark.parametrize("seed", range(30))
+@pytest.mark.parametrize("terminal", [None, "6"])
+def test_overlapping_paths_match_exhaustive_nanosecond_union(seed: int, terminal: str | None) -> None:
+    rng = Random(seed)
+    intervals: dict[str, list[Interval]] = {}
+    edges: dict[str, set[str]] = {}
+    parents = {"2": "1", "3": "2"}
+    forks = frozenset({("1", "4")})
+    for index in range(7):
+        start = rng.randrange(-10, 10)
+        intervals[str(index)] = [(start, start + rng.randrange(0, 8)), (30 + index, 32 + index)]
+        edges[str(index)] = {str(target) for target in range(index + 1, 7) if rng.random() < 0.6}
+    # Exercise descendant carrying and a fork edge, including their overlaps.
+    edges["0"].add("1")
+    edges["1"].update(("2", "4"))
+    edges["2"].add("3")
+    edges["3"].add("6")
+    samples = {node: {ns for start, end in members for ns in range(start, end)} for node, members in intervals.items()}
+
+    def descendants(node: str) -> set[int]:
+        covered: set[int] = set()
+        for child, parent in parents.items():
+            if parent == node:
+                covered.update(samples[child], descendants(child))
+        return covered
+
+    def enumerate_paths(node: str, covered: set[int]) -> list[int]:
+        covered = covered | samples[node]
+        values = [len(covered)] if terminal is None or node == terminal else []
+        for target in edges[node]:
+            crossing = set() if parents.get(target) == node or (node, target) in forks else descendants(node)
+            values.extend(enumerate_paths(target, covered | crossing))
+        return values
+
+    expected = max(enumerate_paths("0", set()))
+    result = _longest_interval_path(
+        intervals, edges, parents=parents, fork_edges=forks, root_id="0", terminal_id=terminal
+    )
+
+    assert (result.value, result.acyclic, result.bounded) == (expected, True, True)
 
 
 def test_critical_path_candidate_cap_degrades_metrics_with_diagnostic(tmp_path, monkeypatch) -> None:

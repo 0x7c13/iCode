@@ -34,6 +34,7 @@ from chrys.app.tui.widgets.trajectory.presentation import (
     ResponsiveTier,
     align_edges,
     cache_hit_metric,
+    format_duration,
     identity_with_hook_id,
 )
 from chrys.foundation.trajectory.envelope import SegmentedField
@@ -135,12 +136,23 @@ def test_time_ruler_tick_units_follow_the_axis_magnitude() -> None:
     sub_second = time_ruler(800_000_000, width=60).plain
     minutes = time_ruler(638 * _NS, width=90).plain
     hours = time_ruler(3 * 3600 * _NS + 1800 * _NS, width=90).plain
+    days = time_ruler(2 * 86400 * _NS, width=90).plain
 
     assert sub_second.startswith("0ms") and sub_second.endswith("800ms")
     assert minutes.startswith("0s") and minutes.endswith("10m38s")
     assert "1m46s" in minutes and "3m33s" in minutes
     assert hours.startswith("0s") and hours.endswith("3h30m")
     assert "35m00s" in hours and "1h10m" in hours
+    assert days.startswith("0s") and days.endswith("2d00h")
+    assert "1d" in days
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(86399, "23h 59m"), (86400, "1d 00h"), (102050, "1d 04h"), (172800, "2d 00h")],
+)
+def test_trajectory_durations_include_days(seconds: int, expected: str) -> None:
+    assert format_duration(seconds * _NS) == expected
 
 
 def test_derived_token_ratios_preserve_missing_and_inconsistent_evidence() -> None:

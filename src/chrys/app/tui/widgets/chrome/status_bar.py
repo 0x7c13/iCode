@@ -75,6 +75,14 @@ STATUS_ELAPSED_MINUTES_SECONDS = msg(
     "tui.status.elapsed_minutes_seconds",
     fallback="{minutes}m {seconds}s",
 )
+STATUS_ELAPSED_HOURS_MINUTES_SECONDS = msg(
+    "tui.status.elapsed_hours_minutes_seconds",
+    fallback="{hours}h {minutes}m {seconds}s",
+)
+STATUS_ELAPSED_DAYS_HOURS_MINUTES_SECONDS = msg(
+    "tui.status.elapsed_days_hours_minutes_seconds",
+    fallback="{days}d {hours}h {minutes}m {seconds}s",
+)
 STATUS_DETAILS_TOOLTIP = msg("tui.status.details_tooltip", fallback="Click for details")
 STATUS_AGENT_SELECTOR_LABEL = msg("tui.status.agent_selector_label", fallback="Agent")
 STATUS_MODEL_SELECTOR_LABEL = msg("tui.status.model_selector_label", fallback="Model")
@@ -808,6 +816,18 @@ class StatusBar(Widget):
         if elapsed < 60:
             return self._render_message(STATUS_ELAPSED_SECONDS.bind(seconds=elapsed))
         minutes, seconds = divmod(elapsed, 60)
+        if minutes >= 60:
+            hours, minutes = divmod(minutes, 60)
+            if hours >= 24:
+                days, hours = divmod(hours, 24)
+                return self._render_message(
+                    STATUS_ELAPSED_DAYS_HOURS_MINUTES_SECONDS.bind(
+                        days=days, hours=hours, minutes=minutes, seconds=seconds
+                    )
+                )
+            return self._render_message(
+                STATUS_ELAPSED_HOURS_MINUTES_SECONDS.bind(hours=hours, minutes=minutes, seconds=seconds)
+            )
         return self._render_message(STATUS_ELAPSED_MINUTES_SECONDS.bind(minutes=minutes, seconds=seconds))
 
     def refresh_localization(self) -> None:

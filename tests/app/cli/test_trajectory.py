@@ -155,7 +155,7 @@ def test_json_export_surfaces_an_entirely_corrupt_events_log(tmp_path) -> None:
     }
 
 
-def test_sensitive_json_export_round_trips_surrogateescaped_event_path(tmp_path, monkeypatch) -> None:
+def test_json_export_with_full_payload_round_trips_surrogateescaped_event_path(tmp_path, monkeypatch) -> None:
     events = tmp_path / "events-\udcff.jsonl"
     out = tmp_path / "analysis.json"
     analysis = TrajectoryAnalysis(

@@ -120,6 +120,23 @@ iCode 设置控制界面外观、默认智能体、会话、工具、通知和�
 | --- | --- | --- |
 | 捕获模型原始 HTTP 请求 | 记录模型请求和响应，以便排查问题。**日志可能以明文包含 API 密钥、完整提示词和模型回复**，因此建议仅在排查时开启，并妥善保管日志文件；排查完成后，应及时关闭该设置并重启 iCode。日志文件 `llm_raw_http.jsonl` 保存在当前会话文件夹中；查找该文件夹的方法请参阅[查找会话 ID 和会话保存位置](../daily-use/sessions.md#查找会话-id-和会话保存位置)。 | 重启后 |
 
+启用原始捕获后，需要完全退出并重新启动 iCode，恢复出问题的会话，再发送一次请求。日志在发送请求时创建；只勾选开关不会捕获当前进程的请求。
+
+iCode 会根据结构化错误详情区分请求被拒绝和临时服务故障，即使网关改写了 HTTP 状态码，也会在聊天错误中保留服务提供方的解释。已识别的内容拦截和账户额度不足会停止 iCode 的自动重试循环；提供商 SDK 可能在返回错误之前已经重试过 HTTP 请求。
+
+| 服务或网关 | 识别的错误详情 | 处理方式 |
+| --- | --- | --- |
+| [New API](https://github.com/QuantumNous/new-api) 及兼容中转服务 | `sensitive_words_detected`、`prompt_blocked`，以及 Anthropic 兼容端点使用的 `new_api_error` 消息形式 | 内容过滤拦截，包括被包装成 HTTP 500 的情况 |
+| [阿里云百炼 / DashScope](https://www.alibabacloud.com/help/zh/model-studio/error-code) | `DataInspectionFailed` / `data_inspection_failed`；`Arrearage` | 内容过滤拦截；账户额度不足 |
+| [火山方舟](https://console.volcengine.com/ark/region%3Acn-beijing/docs/error-codes) | `SensitiveContentDetected` 和文档中明确列出的输入、输出内容策略错误码 | 内容过滤拦截 |
+| [OpenRouter](https://openrouter.ai/docs/api_reference/errors-and-debugging) | 精确的 `error_type`、审核 metadata 和预算 `limit_source` | 在 Chat Completions、Anthropic Messages 和 Responses 错误格式之间保留具体的拒绝、额度、限流或服务故障分类 |
+
+对于非流式 Chat Completions，即使 HTTP 状态是 200，`choices[].error` 中的错误也会使整个响应失败：部分回答不会作为成功结果接收，工具调用不会执行，已报告的 token 用量仍会保留。只有 `finish_reason: "error"` 而没有错误详情时，按可重试的服务故障处理。
+
+当响应内的错误没有 `code` 时，iCode 会使用原生 `type` 分类：例如，`billing_error` 和 `authentication_error` 会停止自动重试，`overloaded_error` 仍可重试。已识别的 canonical `error_type` 仍具有更高优先级。
+
+普通 500/502/503 错误仍可重试；没有内容拦截证据的 403 仍归为鉴权或权限问题。OpenRouter 临时的 `openrouter_in_flight_budget` 响应在带有正数 `Retry-After` 时可重试，账户或工作区预算耗尽则不重试。如果普通任务内容遭到拦截，可以携带请求 ID 联系服务提供方排查：响应可能不包含具体命中内容，客户端无法仅凭状态码推断。
+
 #### 遥测
 
 | 设置项 | 效果与必要说明 | 生效时间 |

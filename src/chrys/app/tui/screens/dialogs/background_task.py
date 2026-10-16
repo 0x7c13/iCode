@@ -45,6 +45,7 @@ from chrys.app.tui.widgets.sidebar.background_tasks import (
     task_icon,
     task_outcome,
 )
+from chrys.app.tui.widgets.task_summary import TaskSummaryData
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.platform.files import surrogate_safe_text
@@ -93,8 +94,7 @@ _COPY_LOG_PATH = msg("tui.background_task.button.copy_log_path", fallback="Copy 
 _STOP_TITLE = msg("tui.background_task.stop.title", fallback="Stop this background task?")
 _STOP_MESSAGE = msg(
     "tui.background_task.stop.message",
-    fallback="{command}\n\nThis stops every process the command started.",
-    multiline=True,
+    fallback="This stops these tasks and every process they started.",
 )
 _COPIED_LOG_PATH = msg("tui.background_task.copy.log_path", fallback="Copied log path")
 _COPIED_LOG_PATH_UNAVAILABLE = msg(
@@ -120,13 +120,6 @@ ROLLBACK_NOTE = msg(
     "tui.background_task.stop_all.rollback_note",
     fallback="Rollback may not restore what they changed while in the background.",
 )
-_SHOWN_CHARS = 80
-"""How much of a command or reason a confirmation shows."""
-
-
-def _shown(text: str) -> str:
-    line = one_line(text)
-    return line if len(line) <= _SHOWN_CHARS else line[: _SHOWN_CHARS - 1] + "…"
 
 
 def confirm_stopping(
@@ -136,20 +129,12 @@ def confirm_stopping(
 
     *exiting* when the action quits, so its button says so.
     """
-    localizer = widget_localizer(owner)
     now = time.time()
-    message = Text(render_str(localizer, _STOP_ALL_MESSAGE.bind(count=len(tasks))))
-    for task in tasks:
-        message.append(f"\n\n• {_shown(task.command)}")
-        message.append(f"  {task_duration(task, now)}", style="dim")
-        if task.reason:
-            message.append(f"\n  {_shown(task.reason)}", style="dim")
-    if note is not None:
-        message.append(f"\n\n{render_str(localizer, note.bind())}")
-    # Scrolls: the tasks with their reasons can outgrow a short terminal.
     return NoticeDialog(
         title=_STOP_ALL_TITLE.bind(),
-        message=message,
+        message=_STOP_ALL_MESSAGE.bind(count=len(tasks)),
+        tasks=tuple(TaskSummaryData(task.command, task_duration(task, now), task.reason) for task in tasks),
+        impact=(_STOP_MESSAGE.bind(),) + ((note.bind(),) if note is not None else ()),
         confirm_label=(_STOP_AND_EXIT if exiting else _STOP_AND_CONTINUE).bind(),
         confirm_variant="error",
         locale_controller=widget_locale_controller(owner),
@@ -158,13 +143,11 @@ def confirm_stopping(
 
 def confirm_stopping_left_behind(commands: Sequence[LeftCommand], owner: Widget) -> NoticeDialog:
     """A question, for *owner* to show, whether to stop the *commands* a launch that crashed left running."""
-    message = Text(render_str(widget_localizer(owner), _LEFT_BEHIND_MESSAGE.bind(app=APP_DISPLAY_NAME)))
-    for command in commands:
-        message.append(f"\n\n• {_shown(command.command)}")
-        message.append(f"\n  {_shown(command.cwd)}", style="dim")
     return NoticeDialog(
         title=_LEFT_BEHIND_TITLE.bind(),
-        message=message,
+        message=_LEFT_BEHIND_MESSAGE.bind(app=APP_DISPLAY_NAME),
+        tasks=tuple(TaskSummaryData(command.command, reason=command.cwd) for command in commands),
+        impact=(_STOP_MESSAGE.bind(),),
         confirm_label=_STOP.bind(),
         cancel_label=_IGNORE.bind(),
         confirm_variant="error",
@@ -344,7 +327,11 @@ class BackgroundTaskModal(BaseDialog[None]):
         self.app.push_screen(
             ConfirmDialog(
                 title=_STOP_TITLE.bind(),
-                message=_STOP_MESSAGE.bind(command=one_line(self._shown.command)),
+                message=_STOP_ALL_MESSAGE.bind(count=1),
+                tasks=(
+                    TaskSummaryData(self._shown.command, task_duration(self._shown, time.time()), self._shown.reason),
+                ),
+                impact=(_STOP_MESSAGE.bind(),),
                 confirm_label=_STOP.bind(),
                 confirm_variant="error",
                 locale_controller=widget_locale_controller(self),

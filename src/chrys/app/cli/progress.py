@@ -172,13 +172,15 @@ def guarded(handle: Callable[[Event], None]) -> Callable[[Event], None]:
 
 
 def format_duration(seconds: float) -> str:
-    """``0.4s``, ``12.3s``, ``2m 14s``, ``1h 05m``."""
+    """``0.4s``, ``12.3s``, ``2m 14s``, ``1h 05m``, ``1d 04h``."""
     seconds = max(seconds, 0.0)
     if round(seconds, 1) < 60:
         return f"{seconds:.1f}s"
     total = round(seconds)
     if total < 3600:
         return f"{total // 60}m {total % 60:02d}s"
+    if total >= 86400:
+        return f"{total // 86400}d {total % 86400 // 3600:02d}h"
     return f"{total // 3600}h {total % 3600 // 60:02d}m"
 
 

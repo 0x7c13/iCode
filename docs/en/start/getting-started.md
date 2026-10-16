@@ -141,6 +141,8 @@ Hello
 
 iCode should reply with a greeting. If the model service returns an error, check the model profile again, including the model ID, base URL, and API key.
 
+While an agent runs, the status bar above the input shows elapsed time and tool calls. Long runs include hours and days, for example `1d 4h 20m 50s`. Tool cards, background tasks, CLI progress, and the F12 timing dashboard also support days; compact displays keep only the largest time units.
+
 ## 4. Use agents
 
 ### Select an agent
