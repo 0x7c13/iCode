@@ -255,6 +255,8 @@ class WorkflowSessionOwner:
     def judge_for(self, node_model: ModelProfile | None) -> ApprovalJudge | None:
         """The approval judge for a node that runs on ``node_model``; ``None`` before a run with agents.
 
+        Nodes that resolve to the same judge model share one judge.
+
         With no judge model configured, the judge follows its node. A run needs no model of its
         own when every node brings one (its own, or its agent profile's), and a judge left on the
         run's missing model would fail every call those nodes make. A node without a model (ACP)

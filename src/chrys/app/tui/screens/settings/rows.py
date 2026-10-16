@@ -83,11 +83,14 @@ _CONFIRM_APPROVAL_AUTO = msg(
 )
 _CONFIRM_RAW_HTTP_CAPTURE = msg(
     "tui.settings.confirm.raw_http_capture",
-    fallback="This writes API keys and full prompts in clear text to <session>/llm_raw_http.jsonl. Continue?",
+    fallback=(
+        "This writes raw model HTTP requests and responses in plain text to <session>/llm_raw_http.jsonl,"
+        " including sensitive data in the requests such as API keys. Continue?"
+    ),
 )
 _CONFIRM_OTEL_SENSITIVE = msg(
     "tui.settings.confirm.otel_sensitive_data",
-    fallback="This includes prompts and tool payloads in exported telemetry. Continue?",
+    fallback="This records prompts, model responses, tool arguments, and tool results in telemetry. Continue?",
 )
 _CONFIRM_DANGEROUS = msg("tui.settings.confirm.dangerous", fallback="This lowers a safety setting. Continue?")
 

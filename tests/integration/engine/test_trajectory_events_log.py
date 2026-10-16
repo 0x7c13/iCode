@@ -16,7 +16,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from chrys.foundation.config.env_layers import freeze_process_env
-from chrys.foundation.config.settings import Settings
+from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR, Settings, resolve_sessions_dir
 from chrys.foundation.config.settings_store import persist
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
@@ -66,6 +66,7 @@ from tests.support.pipeline_helpers import (
     wait_for_event,
     wait_for_idle,
 )
+from tests.support.symlinks import symlink_or_skip
 from tests.support.trajectory_invariants import assert_trajectory_accounted, assert_trajectory_operation_settlement
 from tests.support.waiting import (
     ENGINE_TEST_WAIT_TIMEOUT,
@@ -178,6 +179,31 @@ async def test_persistent_activation_failure_retries_then_warns_the_user_once(
     assert attempts == 2
     assert [warning.code for warning in warnings] == ["trajectory_activation_failed"]
     assert warnings[0].display_message is not None
+
+
+@pytest.mark.asyncio
+async def test_a_session_root_reached_through_a_link_still_records(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The log is opened by helpers that refuse a link anywhere on the path, so
+    session storage is handed out by its real path and recording starts."""
+    real_root = tmp_path / "disk" / "root"
+    real_root.mkdir(parents=True)
+    symlink_or_skip(tmp_path / "root", real_root, target_is_directory=True)
+    monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(tmp_path / "root"))
+    ctx = await create_test_engine([MockResponse(text="hello back")], resolve_sessions_dir().parent)
+    warnings: list[Warning] = []
+
+    async def _collect(event: Warning) -> None:
+        warnings.append(event)
+
+    await ctx.bus.subscribe(Warning, _collect)
+    await ctx.send_message("hello")
+    session_dir = await _finish(ctx)
+
+    assert warnings == []
+    assert _one(_events(session_dir), EventType.TURN_FINISHED).session_id == ctx.session_id
 
 
 @pytest.mark.asyncio
@@ -844,6 +870,7 @@ async def test_an_approval_round_records_a_pair_the_writer_accepts(tmp_path: Pat
 
 
 @pytest.mark.parametrize("reload_during_review", [False, True])
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path, monkeypatch, reload_during_review):
     from chrys.service.tools.registry import ToolRegistry
 
@@ -899,10 +926,6 @@ async def test_auto_formal_executes_the_tool_and_records_its_judgement(tmp_path,
             assert entered.is_set() and not run_task.done()
             assert persist({"approval.auto_review": "direct"}).ok
             reload_task = asyncio.create_task(ctx.bus.publish(SettingsReload(), raise_handler_errors=True))
-            await asyncio.sleep(0)  # admit the reload while the review remains held
-            assert not reload_task.done()
-            assert ctx.engine.current.loaded.approval_judge is bound_judge
-            assert bound_judge._auto_review == "formal"
             release.set()
             await wait_for(run_task.done, timeout=ENGINE_TURN_TIMEOUT, description="Formal turn finalized")
             await run_task

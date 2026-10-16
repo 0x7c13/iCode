@@ -407,7 +407,7 @@ class AcpUpdateTranslator:
                 "update": {
                     "sessionUpdate": "permission_review",
                     "request_id": request_id,
-                    "formal_audit": _bounded_value(dict(audit)),
+                    "formal_judge": _bounded_value(dict(audit)),
                 },
             }
         )

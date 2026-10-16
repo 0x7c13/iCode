@@ -230,15 +230,17 @@ class ExecutionLease:
         self._run_task = task
         if task is not None:
             task.add_done_callback(self._run_task_finished)
-        self._notify_execution()
+        self._notify_execution(turn_started=task is not None and not task.done())
 
     def _run_task_finished(self, task: asyncio.Task[None]) -> None:
         if task is self._run_task:
             self._notify_execution()
 
-    def _notify_execution(self) -> None:
+    def _notify_execution(self, *, turn_started: bool = False) -> None:
         snapshot = self.execution()
-        if snapshot == self._last_execution:
+        # A queued retry can replace its predecessor before the lease goes
+        # idle. The new owner must be announced even when both are turns.
+        if snapshot == self._last_execution and not turn_started:
             return
         self._last_execution = snapshot
         bus = self.bus

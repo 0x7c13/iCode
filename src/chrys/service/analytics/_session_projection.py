@@ -27,6 +27,7 @@ from chrys.kernel.exchanges import (
 )
 from chrys.service.analytics.reader import plain_int_value as _plain_int_value
 from chrys.service.analytics.reader import raise_if_cancelled as _check_cancelled
+from chrys.service.analytics.session_paths import session_directory_for_events
 from chrys.service.mutations.types import parse_skip_reason
 from chrys.service.session.sub_agent_logs import (
     MAX_AUDIT_SCAN_TOTAL_BYTES,
@@ -105,14 +106,8 @@ def _lazy_session_projection(
 
 def _session_document_path(path: Path) -> Path | None:
     """Return the session document beside *path*, or None for a loose log."""
-    if (
-        len(path.parents) < 4
-        or path.name != "events.jsonl"
-        or path.parent.name != "trajectory"
-        or path.parents[2].name != "sessions"
-    ):
-        return None
-    return path.parents[1] / "session.json"
+    session_dir = session_directory_for_events(path)
+    return session_dir / "session.json" if session_dir is not None else None
 
 
 class _FileStamp(NamedTuple):

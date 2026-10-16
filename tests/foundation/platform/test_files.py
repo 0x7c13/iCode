@@ -128,6 +128,63 @@ def test_atomic_create_text_creates_once_and_refuses_to_replace(tmp_path) -> Non
     assert list(target.parent.glob(f"{target.name}.*.tmp")) == []
 
 
+@pytest.mark.parametrize("link_error", [errno.ENOTSUP, errno.EPERM, errno.ENOSYS])
+def test_atomic_create_text_without_hard_links_preserves_existing_file(tmp_path, monkeypatch, link_error) -> None:
+    monkeypatch.setattr(files.os, "link", Mock(side_effect=OSError(link_error, "Hard links unavailable")))
+    target = tmp_path / "payload.txt"
+
+    files.atomic_create_text(target, "complete payload")
+    with pytest.raises(FileExistsError):
+        files.atomic_create_text(target, "must not replace")
+
+    assert target.read_text(encoding="utf-8") == "complete payload"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["payload.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation may require Windows privileges")
+def test_no_hard_links_does_not_allow_replacing_a_dangling_symlink(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "payload.txt"
+    missing = tmp_path / "missing"
+    target.symlink_to(missing)
+    monkeypatch.setattr(files.os, "link", Mock(side_effect=OSError(errno.ENOTSUP, "Hard links unavailable")))
+
+    with pytest.raises(FileExistsError):
+        files.atomic_create_text(target, "must not replace")
+
+    assert target.is_symlink()
+    assert not missing.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX hard-link fallback")
+def test_atomic_create_fails_without_publishing_when_native_rename_is_unsupported(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "payload.txt"
+    monkeypatch.setattr(files.os, "link", Mock(side_effect=OSError(errno.ENOTSUP, "Hard links unavailable")))
+    monkeypatch.setattr(
+        files, "_rename_file_no_replace", Mock(side_effect=OSError(errno.ENOTSUP, "Exclusive rename unavailable"))
+    )
+
+    with pytest.raises(OSError, match="Exclusive rename unavailable"):
+        files.atomic_create_text(target, "payload")
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX hard-link fallback")
+@pytest.mark.parametrize("link_error", [errno.EACCES, errno.EIO, errno.EXDEV])
+def test_atomic_create_propagates_link_errors_without_rename(tmp_path, monkeypatch, link_error) -> None:
+    rename = Mock()
+    monkeypatch.setattr(files, "_rename_file_no_replace", rename)
+    monkeypatch.setattr(files.os, "link", Mock(side_effect=OSError(link_error, "Publication failed")))
+
+    with pytest.raises(OSError) as raised:
+        files.atomic_create_text(tmp_path / "payload.txt", "payload")
+
+    assert raised.value.errno == link_error
+    rename.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_atomic_create_removes_the_temp_name_before_the_directory_sync(tmp_path, monkeypatch) -> None:
     """A crash after the sync must not resurrect the temp entry.
 
@@ -267,6 +324,27 @@ def test_secure_open_rejects_insecure_mode_without_repair(tmp_path) -> None:
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
     assert target.read_text(encoding="utf-8") == "payload"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode assertion")
+def test_secure_open_takes_an_owner_only_mode_other_than_0600(tmp_path) -> None:
+    """A volume that stores no permissions (exFAT on macOS) shows every file as
+    0700 and ignores chmod; owner-only means no group or other bit, not 0600."""
+    target = tmp_path / "exfat-like.jsonl"
+    target.write_bytes(b"first\n")
+    target.chmod(0o700)
+
+    handle = files.secure_open_owner_only_append(target)
+    try:
+        os.write(handle.fd, b"second\n")
+    finally:
+        os.close(handle.fd)
+    os.close(files.secure_open_owner_only(target, read=True))
+
+    assert target.read_bytes() == b"first\nsecond\n"
+    target.chmod(0o640)
+    with pytest.raises(files.SecureFileError, match="owner-only"):
+        files.secure_open_owner_only_append(target)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFOs are POSIX-only")

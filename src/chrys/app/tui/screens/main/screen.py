@@ -289,6 +289,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         on_editor_keymap_changed: Callable[[str], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
         approval_mode: ApprovalMode = ApprovalMode.MANUAL,
+        reset_program_status: Callable[[], None] | None = None,
     ) -> None:
         self._services = MainScreenServices(
             bus=event_bus,
@@ -302,6 +303,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             workspace_mru_max_entries=workspace_mru_max_entries,
         )
         self._state = MainScreenState()
+        self._reset_program_status = reset_program_status or (lambda: None)
         self._editor_mode = EditorMode.parse(editor_keymap)
         self._trajectory_verify_commands = trajectory_verify_commands
         self._on_editor_keymap_changed = on_editor_keymap_changed
@@ -520,6 +522,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             schedule=self.call_later,
             sync_chrome=self._sync_workflow_chrome,
             sync_terminal_title=self._session_title.set_workflow_tab,
+            reset_program_status=self._reset_program_status,
             locale_controller=self._locale_controller,
         )
         self._workflow_timer: Timer | None = None
@@ -2248,6 +2251,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _set_workflow_mode(self, workflow: bool) -> None:
         if workflow == self._workflow.workflow_mode or not self._can_switch_app_mode():
             return
+        self._reset_program_status()
         input_bar = self.query_one(InputBar)
         if self._dashboard_visible():
             self._view_adapter.hide_trajectory_dashboard()

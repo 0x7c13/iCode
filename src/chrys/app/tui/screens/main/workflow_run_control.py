@@ -84,6 +84,7 @@ class WorkflowRunControl:
         self._refresh_question()
 
     def reset(self) -> None:
+        self.host.reset_program_status()
         self.clear_input()
         self._pending_answers.clear()
         self._retried.clear()

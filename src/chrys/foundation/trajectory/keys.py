@@ -3,13 +3,12 @@
 """Per-installation fingerprint key for trajectory events.
 
 Mirrors the ACP audit key precedent (``~/.chrys/acp-audit-hmac.key``): an
-owner-only 32-byte secret published with a no-replace ``link`` so a racing
+owner-only 32-byte secret published atomically without replacement so a racing
 creator can never overwrite a key another process already used.
 """
 
 from __future__ import annotations
 
-import contextlib
 import os
 import secrets
 import stat
@@ -17,10 +16,11 @@ from pathlib import Path
 
 from chrys.foundation.platform.files import (
     SecureFileError,
+    fsync_directory,
     secure_open_owner_only,
-    secure_open_owner_only_binary,
     secure_unlink_owner_verified,
 )
+from chrys.foundation.platform.key_files import publish_owner_only_key, read_owner_only_key
 from chrys.foundation.trajectory.fingerprint import FINGERPRINT_KEY_BYTES
 from chrys.foundation.util.lock import FileLock
 
@@ -64,10 +64,10 @@ def load_or_create_fingerprint_key(config_dir: Path, *, timeout: float = 5.0) ->
                 file.flush()
                 os.fsync(file.fileno())
             try:
-                os.link(temp_path, key_path, follow_symlinks=False)
+                publish_owner_only_key(temp_path, key_path)
             except FileExistsError:
                 return _read_key(key_path)
-            _fsync_parent(config_dir)
+            fsync_directory(config_dir)
             return _read_key(key_path)
         finally:
             if fd >= 0:
@@ -77,23 +77,9 @@ def load_or_create_fingerprint_key(config_dir: Path, *, timeout: float = 5.0) ->
 
 def _read_key(path: Path) -> bytes:
     try:
-        with secure_open_owner_only_binary(path) as file:
-            key = file.read(FINGERPRINT_KEY_BYTES + 1)
+        key = read_owner_only_key(path, max_bytes=FINGERPRINT_KEY_BYTES + 1)
     except OSError as exc:
         raise SecureFileError("The trajectory fingerprint key failed secure verification.") from exc
     if len(key) != FINGERPRINT_KEY_BYTES:
         raise SecureFileError("The trajectory fingerprint key has an invalid length.")
     return key
-
-
-def _fsync_parent(path: Path) -> None:
-    from chrys.foundation.platform import get_platform
-
-    if get_platform().is_windows:
-        return
-    with contextlib.suppress(OSError):
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)

@@ -153,12 +153,12 @@ def decide_predicates(values: tuple[PredicateValue, ...], asset: PredicateAsset)
 
 
 def evaluate_predicate_response(text: str, asset: PredicateAsset) -> PredicateEvaluation:
-    """Shared, side-effect-free online/offline predicate evaluation entry point."""
+    """Parse predicate values and apply the decision table."""
     return decide_predicates(validate_predicate_response(text, asset), asset)
 
 
 def asset_digest(raw: bytes) -> str:
-    """Return a stable audit identifier for a candidate or packaged asset."""
+    """Compute the principle asset's stable audit digest."""
     return hashlib.sha256(raw).hexdigest()
 
 

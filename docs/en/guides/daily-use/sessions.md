@@ -71,6 +71,12 @@ Enter `/settings sessions`, or press **F10** and select the "Sessions" tab. The 
 
 If you have not customized the session storage root, the `sessions` directory defaults to `~/.chrys/sessions` on macOS and Linux, and `%APPDATA%\chrys\sessions` on Windows.
 
+The root setting names the folder that contains `sessions`. If the configuration folder, the session storage root, or `sessions` itself is a symbolic link (or a Windows directory junction), "In use" shows the folder it leads to, which can have a different name. Sessions stored there work as usual.
+
+On macOS, these folders can also be on an exFAT drive. exFAT drives do not keep separate permissions for each user, and neither does a drive with "Ignore ownership on this volume" selected in its Finder Get Info window. On such a drive, other accounts on this Mac can read and change the configuration, sessions, and keys that iCode stores there. To keep them from other accounts, put these folders on the Mac's internal disk, or on a drive that is not exFAT and does not have that option selected.
+
+To back up or move your configuration, copy the whole configuration folder.
+
 ## Migrate session storage
 
 To change where sessions are stored, set a new session storage root and migrate existing sessions to it. The new location takes effect after a restart; changing the storage location alone does not migrate existing sessions automatically.

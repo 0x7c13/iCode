@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.29.2\n"
+"Project-Id-Version: Chrys 0.30.0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -898,8 +898,8 @@ msgstr ""
 msgid "settings.llm.retry.max_transient.label"
 msgstr ""
 
-#. English: Capture raw HTTP traffic
-#. chrys-meta={"fingerprint":"40b190430db426c4537cd5f615a99a67f9c59cc82c7b679a804f5906528537d4","multiline":false,"placeholders":[]}
+#. English: Capture raw model HTTP requests
+#. chrys-meta={"fingerprint":"75094a31aaa97c45280dfdf85d75c8d129c1e898a620bfe1c21139ca4400a302","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.log.raw_http_capture.label"
 msgstr ""
@@ -3901,10 +3901,11 @@ msgstr ""
 msgid "tui.approval.review.asset_unavailable"
 msgstr ""
 
-#. English: Automatic review was cancelled.
-#. chrys-meta={"fingerprint":"56ec1d3ea02ae80ce9e11198bbef7756c450610b7795727e0a5d69b8925f2cc1","multiline":false,"placeholders":[]}
+#. English: The approval model rejected authentication or access. Check the API
+#. key and model permissions.
+#. chrys-meta={"fingerprint":"5c675160b85ca9cabebce3b0ba5e90b3cf5c1d2851af6b3e435f00d85c91119f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
-msgid "tui.approval.review.cancelled"
+msgid "tui.approval.review.auth_failed"
 msgstr ""
 
 #. English: Automatic review failed. Please check the action.
@@ -3929,6 +3930,20 @@ msgstr ""
 #. chrys-meta={"fingerprint":"28e63dc23808f38c6fe45ac4e1bfdddf98306804685bc7632e80136a23185d82","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
 msgid "tui.approval.review.invalid_verdict"
+msgstr ""
+
+#. English: The approval model is rate limiting requests. Please try again
+#. later.
+#. chrys-meta={"fingerprint":"fe05fd429d9882aa592f51cefa7f59201fda61d079873b4d3ab9a5786f4041fd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.rate_limited"
+msgstr ""
+
+#. English: The approval model service returned an internal error. Please try
+#. again later.
+#. chrys-meta={"fingerprint":"52a4d260c9e82758ada2665fd090543144ea1a53d2566ae641a092353760c345","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.server_error"
 msgstr ""
 
 #. English: Automatic review timed out.
@@ -9644,16 +9659,17 @@ msgstr ""
 msgid "tui.settings.confirm.dangerous"
 msgstr ""
 
-#. English: This includes prompts and tool payloads in exported telemetry.
-#. Continue?
-#. chrys-meta={"fingerprint":"0a7f677f63d552956a3f32b25918b11e3d6ee98829823b4c00d38506262cfab1","multiline":false,"placeholders":[]}
+#. English: This records prompts, model responses, tool arguments, and tool
+#. results in telemetry. Continue?
+#. chrys-meta={"fingerprint":"e334b050881f0e1048a67903f660bfb3b2a44745574a5548d681ed89e2959ce0","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/rows.py
 msgid "tui.settings.confirm.otel_sensitive_data"
 msgstr ""
 
-#. English: This writes API keys and full prompts in clear text to
-#. <session>/llm_raw_http.jsonl. Continue?
-#. chrys-meta={"fingerprint":"6e5e70598b01a07bbd70fe851b3b6f8010720229553d49b56522377afed9c42b","multiline":false,"placeholders":[]}
+#. English: This writes raw model HTTP requests and responses in plain text to
+#. <session>/llm_raw_http.jsonl, including sensitive data in the requests such
+#. as API keys. Continue?
+#. chrys-meta={"fingerprint":"97650a2c2d2671cbf3471ba7382c7f75e2de705fa03535f487550822e41b930f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/rows.py
 msgid "tui.settings.confirm.raw_http_capture"
 msgstr ""
@@ -9763,9 +9779,8 @@ msgstr ""
 msgid "tui.settings.hint.app.update_check"
 msgstr ""
 
-#. English: Only used in auto mode. Defaults to direct review. Reload settings
-#. to apply.
-#. chrys-meta={"fingerprint":"8cb684e1042946b6102571a32dab047a04d81006451537b52d1d85012c23723d","multiline":false,"placeholders":[]}
+#. English: Only used in auto mode. Defaults to direct review.
+#. chrys-meta={"fingerprint":"8d32c64bc6c787dbd26634e01de5a46676027d8f3327695689d97930090ebbcd","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.approval.auto_review"
 msgstr ""
@@ -9806,9 +9821,10 @@ msgstr ""
 msgid "tui.settings.hint.llm.retry.max_transient"
 msgstr ""
 
-#. English: Writes API keys and full prompts in clear text to
-#. <session>/llm_raw_http.jsonl.
-#. chrys-meta={"fingerprint":"3fe4a2c7f98b5b8ec67cb1cd48adc9b95a72ece496f92f7de783f5802fa35616","multiline":false,"placeholders":[]}
+#. English: Writes raw model HTTP requests and responses in plain text to
+#. <session>/llm_raw_http.jsonl, including sensitive data in the requests such
+#. as API keys.
+#. chrys-meta={"fingerprint":"b3e9fc33b4307b95187312f0d2ab2949ef7918e07a2f6697938628b6dc20c29f","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.log.raw_http_capture"
 msgstr ""
@@ -9844,8 +9860,9 @@ msgstr ""
 msgid "tui.settings.hint.otel.endpoint"
 msgstr ""
 
-#. English: Include prompts and tool payloads in telemetry.
-#. chrys-meta={"fingerprint":"9e12ee0be20e37882c8e09132a41ee3abcd6ad2cb62453f696d44ffe24a9ed8c","multiline":false,"placeholders":[]}
+#. English: Records prompts, model responses, tool arguments, and tool results
+#. in telemetry.
+#. chrys-meta={"fingerprint":"b619301ee37d519a91167f2e98d75a0c8b33701f763495d37a4739be237d6554","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.otel.sensitive_data"
 msgstr ""

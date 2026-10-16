@@ -22,8 +22,8 @@ def platform_with_config_dir(config_dir: Path) -> PlatformInfo:
     Tests isolate ``config_dir`` to a tmp path, but they must not hardcode the
     OS booleans while doing so: a fake carrying ``is_windows=False`` lies on the
     Windows runner and defeats genuine production platform guards (the
-    ``files.py`` POSIX/Windows syscall branch, ``sub_agent_logs._fsync_parent``,
-    ...), turning them into ``os.open('C:\\')``-style crashes. ``is_windows`` /
+    ``files.py`` POSIX/Windows syscall branch, for example), turning them into
+    ``os.open('C:\\')``-style crashes. ``is_windows`` /
     ``is_macos`` are computed properties, so replacing just the ``config_dir``
     field keeps them truthful to the real kernel.
     """

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -17,6 +19,7 @@ from chrys.service.analytics import (
 from chrys.service.analytics import _turns as turns_module
 from chrys.service.analytics import aggregation as aggregation_module
 from tests.service.analytics._events import NS, EventLog
+from tests.support.platform_fakes import platform_with_config_dir
 
 
 def test_session_span_keeps_first_turn_start_last_turn_finish_and_runtime_count(tmp_path) -> None:
@@ -285,26 +288,29 @@ def test_refresh_duplicate_revision_invalidates_every_affected_turn(tmp_path: Pa
     assert "context sample lies outside its owning attempt axis" not in refreshed.diagnostics
 
 
-def test_installed_fingerprint_key_falls_back_to_the_recorder_config_directory(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("directory_key", [False, True])
+def test_installed_fingerprint_key_falls_back_to_the_recorder_config_directory(
+    tmp_path, monkeypatch, directory_key: bool
+) -> None:
     """A custom session root stores sessions away from the config directory
     that holds the recorder's key; the reader must still find it there."""
     import chrys.foundation.platform as platform_module
-    from chrys.foundation.trajectory.keys import load_or_create_fingerprint_key
+    from chrys.foundation.platform import key_files
+    from chrys.foundation.trajectory.keys import TRAJECTORY_KEY_FILE_NAME, load_or_create_fingerprint_key
+
+    if directory_key:
+        monkeypatch.setattr(
+            key_files, "publish_file_no_replace", Mock(side_effect=OSError(errno.ENOTSUP, "No atomic file publish"))
+        )
 
     events = tmp_path / "custom-root" / "sessions" / "abc123" / "trajectory" / "events.jsonl"
     events.parent.mkdir(parents=True)
     events.touch()
     config_dir = tmp_path / "config"
     recorder_key = load_or_create_fingerprint_key(config_dir)
+    assert (config_dir / TRAJECTORY_KEY_FILE_NAME).is_dir() is directory_key
 
-    real_platform = platform_module.get_platform()
-
-    class _RecorderPlatform:
-        def __getattr__(self, name: str) -> object:
-            return getattr(real_platform, name)
-
-    installed = _RecorderPlatform()
-    installed.__dict__["config_dir"] = config_dir
+    installed = platform_with_config_dir(config_dir)
     monkeypatch.setattr(platform_module, "get_platform", lambda: installed)
 
     assert aggregation_module._read_installed_fingerprint_key(events) == recorder_key

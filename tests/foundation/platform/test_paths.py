@@ -7,14 +7,18 @@ from __future__ import annotations
 import os
 import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from chrys.foundation.platform import paths as paths_module
 from chrys.foundation.platform.paths import (
+    real_path,
     resolve_cross_platform_path,
     resolve_existing_path,
     resolve_workspace_path,
 )
+from tests.support.symlinks import symlink_or_skip
 
 
 def test_resolve_cross_platform_path_resolves_relative_against_base(tmp_path: Path) -> None:
@@ -170,3 +174,43 @@ def test_resolve_existing_path_does_not_resolve_traversal_via_compatibility(tmp_
     requested = str(workspace / "\uff0e\uff0e\uff0fsecret.txt")
 
     assert resolve_existing_path(requested) is None
+
+
+def test_real_path_keeps_the_path_as_given_when_it_cannot_be_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows ``realpath`` raises for some failures even when not strict, such
+    as a network share that cannot be reached; detection must not fail on it."""
+
+    def unreachable(_path: object) -> str:
+        raise OSError(0, "The specified network name is no longer available", None, 64)
+
+    target = tmp_path / "share" / "chrys"
+    monkeypatch.setattr(
+        paths_module,
+        "os",
+        SimpleNamespace(path=SimpleNamespace(realpath=unreachable, lexists=os.path.lexists, exists=os.path.exists)),
+    )
+
+    assert real_path(target) == target
+
+
+@pytest.mark.parametrize("below", ["", "sessions/abc"], ids=["the link itself", "a path behind it"])
+def test_real_path_does_not_follow_a_link_whose_target_is_missing(tmp_path: Path, below: str) -> None:
+    """A link to a disk that is not mounted: its target would be created on the disk beneath."""
+    mount_point = tmp_path / "mnt" / "ext"
+    mount_point.mkdir(parents=True)
+    link = tmp_path / "link"
+    symlink_or_skip(link, mount_point / "data", target_is_directory=True)
+    given = link / below if below else link
+
+    assert real_path(given) == given
+
+
+def test_real_path_follows_a_live_link_to_a_missing_tail(tmp_path: Path) -> None:
+    """A folder not created yet behind a working link is named by its real path."""
+    (tmp_path / "disk").mkdir()
+    link = tmp_path / "link"
+    symlink_or_skip(link, tmp_path / "disk", target_is_directory=True)
+
+    assert real_path(link / "sessions" / "abc") == Path(os.path.realpath(tmp_path / "disk")) / "sessions" / "abc"

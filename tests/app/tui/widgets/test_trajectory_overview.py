@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -17,6 +18,7 @@ from textual.geometry import Region, Size
 from chrys.app.tui.widgets.trajectory import DashboardTab, ResponsiveTier
 from chrys.app.tui.widgets.trajectory import panel as trajectory_panel
 from chrys.app.tui.widgets.trajectory.text_view import TrajectoryTextView
+from chrys.foundation.config.settings import SESSION_ROOT_DIR_ENV_VAR, resolve_sessions_dir
 from chrys.service.analytics import TrajectoryAnalyzer
 from tests.app.tui.widgets._trajectory_fixtures import (
     _NS,
@@ -27,6 +29,7 @@ from tests.app.tui.widgets._trajectory_fixtures import (
     page_text,
 )
 from tests.service.analytics._events import EventLog
+from tests.support.symlinks import symlink_or_skip
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
 
@@ -113,8 +116,9 @@ async def test_overview_renders_kpi_waterfall_coverage_and_structured_diagnostic
         assert _in_any_box(insight_lines, "Containment wait @66666666")
 
 
+@pytest.mark.parametrize("linked_store", [False, True])
 async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked_store: bool
 ) -> None:
     capability_checks: list[None] = []
 
@@ -123,7 +127,25 @@ async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store
         return True
 
     monkeypatch.setattr(trajectory_panel, "can_open_in_file_manager", can_open_folder)
+    # Recognizing the store can touch the disk: it belongs to the load worker,
+    # never to a render or an action on the UI thread.
+    on_ui_thread: list[bool] = []
+    recognize = trajectory_panel.session_directory_for_events
+
+    def recording_recognizer(events: Path) -> Path | None:
+        on_ui_thread.append(threading.current_thread() is threading.main_thread())
+        return recognize(events)
+
+    monkeypatch.setattr(trajectory_panel, "session_directory_for_events", recording_recognizer)
     session_dir, path = _store_layout_session(tmp_path)
+    if linked_store:
+        destination = tmp_path / "icode-history"
+        session_dir.parent.rename(destination)
+        symlink_or_skip(tmp_path / "sessions", destination, target_is_directory=True)
+        monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(tmp_path))
+        session_dir = resolve_sessions_dir() / session_dir.name
+        path = session_dir / "trajectory" / "events.jsonl"
+        assert session_dir.parent.name == "icode-history"
 
     async with open_dashboard(path, size=(150, 40)) as (dashboard, _pilot):
         assert capability_checks == [None]
@@ -167,6 +189,8 @@ async def test_overview_session_info_shows_folder_sizes_and_wall_clock_for_store
         monkeypatch.setattr(trajectory_panel, "can_open_in_file_manager", lambda: False)
         dashboard.open_session_folder()
         assert len(notices) == 3 and "current environment" in notices[2]
+
+    assert on_ui_thread and not any(on_ui_thread)
 
 
 async def test_overview_session_info_hides_open_folder_over_ssh(

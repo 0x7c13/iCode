@@ -44,6 +44,7 @@ from chrys.foundation.config.web_values import (
 )
 from chrys.foundation.i18n import msg
 from chrys.foundation.i18n.locale import SUPPORTED_LOCALES
+from chrys.foundation.platform.paths import real_path
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +331,11 @@ def default_session_root_dir(config_dir: str | Path | None = None) -> Path:
     return Path(config_dir)
 
 
+def default_sessions_dir(config_dir: str | Path | None = None) -> Path:
+    """The default root's sessions folder, by its real path like :func:`resolve_sessions_dir`'s."""
+    return real_path(default_session_root_dir(config_dir) / "sessions")
+
+
 def resolve_session_root_dir(config_dir: str | Path | None = None, *, create: bool = True) -> Path:
     """Return the active base root for session storage.
 
@@ -356,7 +362,13 @@ def resolve_session_root_dir(config_dir: str | Path | None = None, *, create: bo
 
 
 def resolve_sessions_dir(config_dir: str | Path | None = None, *, create: bool = True) -> Path:
-    """Return the active directory containing saved session folders."""
+    """Return the active directory containing saved session folders, by its real path.
+
+    Session files are opened by helpers that refuse a link anywhere on the path,
+    so a session root, or a ``sessions`` folder moved to another disk and linked
+    back, would otherwise fail every one of them. It also makes this comparable
+    with ``==`` to :func:`probe_session_root` and :func:`default_sessions_dir`.
+    """
     root = resolve_session_root_dir(config_dir, create=create)
     sessions_dir = root / "sessions"
     if create:
@@ -365,16 +377,20 @@ def resolve_sessions_dir(config_dir: str | Path | None = None, *, create: bool =
         if cached is not None:
             return cached
     if _session_storage_dir_is_valid(sessions_dir, create=create):
+        resolved = real_path(sessions_dir)
         if create:
-            _RESOLVED_SESSIONS_DIR_CACHE[str(sessions_dir)] = sessions_dir
-        return sessions_dir
+            _RESOLVED_SESSIONS_DIR_CACHE[str(sessions_dir)] = resolved
+        return resolved
 
     fallback = default_session_root_dir(config_dir) / "sessions"
-    if sessions_dir != fallback:
+    if real_path(sessions_dir) != real_path(fallback):
         logger.warning("Ignoring invalid session storage directory %s; using %s", sessions_dir, fallback)
-    if _session_storage_dir_is_valid(fallback, create=create) and create:
-        _RESOLVED_SESSIONS_DIR_CACHE[str(fallback)] = fallback
-    return fallback
+    if not _session_storage_dir_is_valid(fallback, create=create):
+        return fallback
+    resolved = real_path(fallback)
+    if create:
+        _RESOLVED_SESSIONS_DIR_CACHE[str(fallback)] = resolved
+    return resolved
 
 
 def session_root_is_ruled_out(raw: str) -> bool:
@@ -616,9 +632,9 @@ def probe_session_root(raw: str) -> Path | None:
     Where :func:`session_root_is_ruled_out` only looks, this creates: it makes
     ``<root>/sessions`` (or the default location's, for a blank *raw*) and
     checks that it takes a write, exactly as :func:`resolve_sessions_dir` will
-    on first use. The returned path is for validation and display only — the
-    persisted value stays the string, and ``None`` means the value would send
-    storage to the fallback.
+    on first use. The returned path, real like that one's so the two compare,
+    is for validation and display only — the persisted value stays the string,
+    and ``None`` means the value would send storage to the fallback.
 
     A blank value is probed at the default location directly rather than
     through the ruled-out check, whose empty-string candidate is the current
@@ -629,14 +645,14 @@ def probe_session_root(raw: str) -> Path | None:
     raw = raw.strip()
     if not raw:
         default_sessions = default_session_root_dir() / "sessions"
-        return default_sessions if _session_storage_dir_is_valid(default_sessions, create=True) else None
+        return real_path(default_sessions) if _session_storage_dir_is_valid(default_sessions, create=True) else None
     if session_root_is_ruled_out(raw):
         return None
     candidate = _session_root_candidate(raw)
     if candidate is None:
         return None
     sessions = candidate / "sessions"
-    return sessions if _session_storage_dir_is_valid(sessions, create=True) else None
+    return real_path(sessions) if _session_storage_dir_is_valid(sessions, create=True) else None
 
 
 # ── Panel labels ─────────────────────────────────────────────────────
@@ -711,7 +727,7 @@ _LABEL_UI_CHAT_FILE_SNAPSHOT_INLINE_CHARS = msg(
     "settings.ui.chat.file_snapshot_inline_chars.label", fallback="Inline file snapshot limit (chars)"
 )
 _LABEL_MODEL_ROLE_BUDDY_MODEL_ID = msg("settings.model.role.buddy_model_id.label", fallback="Buddy model")
-_LABEL_LOG_RAW_HTTP_CAPTURE = msg("settings.log.raw_http_capture.label", fallback="Capture raw HTTP traffic")
+_LABEL_LOG_RAW_HTTP_CAPTURE = msg("settings.log.raw_http_capture.label", fallback="Capture raw model HTTP requests")
 _LABEL_MUTATIONS_TRACE_MODE = msg("settings.mutations.trace.mode.label", fallback="Mutation trace mode")
 _LABEL_MUTATIONS_TRACE_FSATRACE_PATH = msg("settings.mutations.trace.fsatrace_path.label", fallback="fsatrace path")
 _LABEL_PROJECT_CONFIG_ENABLED = msg("settings.project.config_enabled.label", fallback="Load project settings")

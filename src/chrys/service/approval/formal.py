@@ -5,17 +5,15 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 from chrys.foundation.errors import classify_error
-from chrys.kernel import ChatResponse, Message
-from chrys.service.approval import judge as judge_module
 from chrys.service.approval.predicate import (
     PredicateAsset,
     PredicateAssetError,
@@ -24,9 +22,13 @@ from chrys.service.approval.predicate import (
     evaluate_predicate_response,
     load_default_asset,
 )
-
-if TYPE_CHECKING:
-    from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
+from chrys.service.approval.review_types import (
+    ApprovalJudgeInput,
+    CallMeter,
+    FormalEvaluationCancelled,
+    JudgeVerdict,
+    build_user_prompt,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -54,47 +56,43 @@ def _build_predicate_system_prompt(asset: PredicateAsset) -> str:
     )
 
 
+class ReviewModel(Protocol):
+    """Model capabilities used by risk-check orchestration."""
+
+    async def ask[T](
+        self,
+        *,
+        system: str,
+        user: str,
+        parse: Callable[[str], tuple[T, JudgeVerdict] | None],
+        correction: str,
+        exhausted_reason: str,
+        stage: str,
+        log_path: Path | None,
+        meter: CallMeter | None = None,
+    ) -> T | None: ...
+
+    async def review_direct(
+        self,
+        request: ApprovalJudgeInput,
+        *,
+        log_path: Path | None,
+        meter: CallMeter | None = None,
+    ) -> JudgeVerdict | None: ...
+
+
 @dataclass(slots=True)
 class FormalAuditState:
     """Request-local audit data; never retained on the shared judge instance."""
 
     request_id: str
-    deadline: float
+    meter: CallMeter
     asset_version: str | None = None
     decision_version: str | None = None
     asset_digest: str | None = None
     stages: list[str] = field(default_factory=list)
     failure_reason: str | None = None
     predicate_results: list[dict[str, Any]] | None = None
-    usage: dict[str, int] = field(default_factory=dict)
-    started: bool = False
-    log_dir: Path | None = None
-
-    async def get_final_response(
-        self,
-        client: Any,
-        messages: list[Message],
-        stream: bool,
-        options: dict[str, Any] | None,
-    ) -> ChatResponse:
-        """Collect response usage within the request's remaining budget."""
-        task = asyncio.current_task()
-        if task is not None and task.cancelling():
-            raise asyncio.CancelledError
-        if time.monotonic() >= self.deadline:
-            raise TimeoutError
-        self.started = True
-        response = await judge_module.get_final_response(
-            client, messages, stream=stream, options=options, timeout=self.deadline - time.monotonic()
-        )
-        for key, value in (response.usage_details or {}).items():
-            if type(value) is int:
-                self.usage[key] = self.usage.get(key, 0) + value
-        if task is not None and task.cancelling():
-            raise asyncio.CancelledError
-        if time.monotonic() >= self.deadline:
-            raise TimeoutError
-        return response
 
     def verdict(self, approved: bool, reason: str) -> JudgeVerdict:
         """Attach a request-local audit snapshot to the terminal verdict."""
@@ -107,11 +105,11 @@ class FormalAuditState:
             "asset_version": self.asset_version,
             "decision_version": self.decision_version,
             "asset_digest": self.asset_digest,
-            "usage": dict(self.usage),
+            "usage": dict(self.meter.usage),
             "approved": approved,
             "reason": reason,
         }
-        return judge_module.JudgeVerdict(
+        return JudgeVerdict(
             approved=approved,
             reason=reason,
             audit=record,
@@ -123,35 +121,28 @@ class FormalAuditState:
 class FormalEvaluator:
     """Check risks and route uncertain actions through the owning judge."""
 
-    def __init__(self) -> None:
+    def __init__(self, timeout: float | None) -> None:
+        self._timeout = timeout
         self._asset: PredicateAsset | None = None
 
     async def evaluate(
         self,
-        judge: ApprovalJudge,
-        user_message: str,
-        tool_name: str,
-        tool_kind: str,
-        args: dict[str, Any],
-        workspace_roots: list[str],
+        model: ReviewModel,
+        request: ApprovalJudgeInput,
+        *,
         request_id: str = "",
-        log_dir: Path | None = None,
-        user_messages: list[str] | None = None,
+        log_path: Path | None = None,
     ) -> JudgeVerdict:
         """Evaluate a fixed request within one model-profile time budget."""
-        audit = FormalAuditState(request_id=request_id, log_dir=log_dir, deadline=time.monotonic())
-        user_messages = judge_module._normalize_user_messages(user_message, user_messages)
-        if not tool_name.strip() or not user_messages:
+        meter = CallMeter(deadline=time.monotonic())
+        audit = FormalAuditState(request_id=request_id, meter=meter)
+        if not request.tool_name.strip():
             audit.failure_reason = "invalid_input"
             return audit.verdict(approved=False, reason="Approval judge input is invalid")
-        args = copy.deepcopy(args)
-        workspace_roots = list(workspace_roots)
-        user_message = user_messages[-1]
-        total_timeout = judge.profile.http_read_timeout
-        if total_timeout is None or total_timeout <= 0:
+        if self._timeout is None or self._timeout <= 0:
             audit.failure_reason = "timeout"
             return audit.verdict(approved=False, reason="Approval judge time budget exhausted")
-        audit.deadline += total_timeout
+        meter.deadline += self._timeout
         try:
             if self._asset is None:
                 self._asset = load_default_asset()
@@ -163,44 +154,28 @@ class FormalEvaluator:
         audit.decision_version = asset.decision_version
         audit.asset_digest = asset.digest
         try:
-            remaining = audit.deadline - time.monotonic()
-            if remaining <= 0:
+            if meter.deadline - time.monotonic() <= 0:
                 raise TimeoutError
             audit.stages.append("predicate")
-            async with asyncio.timeout_at(audit.deadline):
-                predicate = await self._evaluate_predicates(
-                    judge,
-                    asset=asset,
-                    user_message=user_message,
-                    user_messages=user_messages,
-                    tool_name=tool_name,
-                    tool_kind=tool_kind,
-                    args=args,
-                    workspace_roots=workspace_roots,
-                    audit=audit,
-                )
+            async with asyncio.timeout_at(meter.deadline):
+                predicate = await self._evaluate_predicates(model, asset, request, log_path, meter)
                 audit.predicate_results = [{"id": value.id, "value": value.value} for value in predicate.values]
-                if predicate.decision is not PredicateDecision.REASONING:
-                    return audit.verdict(predicate.decision is PredicateDecision.ALLOW, predicate.reason)
+                if predicate.decision is PredicateDecision.NEEDS_REVIEW:
+                    return audit.verdict(False, predicate.reason)
+                if predicate.decision is PredicateDecision.ALLOW and request.user_messages:
+                    return audit.verdict(True, predicate.reason)
                 audit.stages.append("reasoning")
-                verdict = await judge._evaluate_direct(
-                    user_message=user_message,
-                    user_messages=user_messages,
-                    tool_name=tool_name,
-                    tool_kind=tool_kind,
-                    args=args,
-                    workspace_roots=workspace_roots,
-                    request_id=request_id,
-                    log_dir=log_dir,
-                    audit=audit,
-                )
+                verdict = await model.review_direct(request, log_path=log_path, meter=meter)
+                if verdict is None:
+                    audit.failure_reason = "invalid_verdict"
+                    verdict = JudgeVerdict(False, "Judge returned invalid response")
             return audit.verdict(approved=verdict.approved, reason=verdict.reason)
         except asyncio.CancelledError:
-            if not audit.started:
+            if not meter.started:
                 raise
             audit.failure_reason = "cancelled"
             verdict = audit.verdict(approved=False, reason="Approval judge cancelled")
-            raise judge_module.FormalEvaluationCancelled(verdict) from None
+            raise FormalEvaluationCancelled(verdict) from None
         except PredicateAssetError:
             audit.failure_reason = "invalid_shape"
             reason = "Predicate response is invalid"
@@ -208,66 +183,39 @@ class FormalEvaluator:
             audit.failure_reason = "timeout"
             reason = "Approval judge time budget exhausted"
         except Exception as exc:
-            _log.debug("Formal evaluation failed for %s", tool_name, exc_info=True)
+            _log.debug("Formal evaluation failed for %s", request.tool_name, exc_info=True)
             audit.failure_reason = classify_error(exc).kind.value
             reason = "Approval judge evaluation failed"
         return audit.verdict(approved=False, reason=reason)
 
     async def _evaluate_predicates(
         self,
-        judge: ApprovalJudge,
+        model: ReviewModel,
         asset: PredicateAsset,
-        user_message: str,
-        user_messages: list[str] | None,
-        tool_name: str,
-        tool_kind: str,
-        args: dict[str, Any],
-        workspace_roots: list[str],
-        audit: FormalAuditState,
+        request: ApprovalJudgeInput,
+        log_path: Path | None,
+        meter: CallMeter,
     ) -> PredicateEvaluation:
-        """Retry invalid predicate JSON with the same conversation repair flow as Direct."""
-        client = await judge._get_client()
-        user_prompt = judge_module._build_user_prompt(
-            user_message, tool_name, tool_kind, args, workspace_roots, user_messages
-        )
-        messages: list[Message] = [
-            Message("system", [_build_predicate_system_prompt(asset)]),
-            Message("user", [user_prompt]),
-        ]
-        log_path = audit.log_dir / f"{audit.request_id}.log" if audit.log_dir and audit.request_id else None
-        fields = ",".join(f'"{principle.id}":true|false|"unknown"' for principle in asset.principles)
-        for attempt in range(judge_module._MAX_RETRIES + 1):
-            response = await judge._get_final_response(
-                client,
-                messages,
-                stream=judge.profile.stream,
-                options=judge._chat_options,
-                timeout=judge.profile.http_read_timeout,
-                audit=audit,
-            )
-            text = response.text or ""
+        """Extract and validate every condition using the shared repair flow."""
+
+        def parse(text: str) -> tuple[PredicateEvaluation, JudgeVerdict] | None:
             try:
                 result = evaluate_predicate_response(text, asset)
             except PredicateAssetError:
-                result = None
-            verdict = (
-                judge_module.JudgeVerdict(result.decision is PredicateDecision.ALLOW, result.reason) if result else None
-            )
-            judge._write_log(log_path, attempt, messages, text, verdict)
-            if result is not None:
-                return result
-            if attempt < judge_module._MAX_RETRIES:
-                messages.extend(judge_module._assistant_retry_messages(response, text))
-                messages.append(
-                    Message(
-                        "user", [f"Invalid response. You must respond with ONLY this JSON object shape: {{{fields}}}."]
-                    )
-                )
-        judge._write_log(
-            log_path,
-            judge_module._MAX_RETRIES + 1,
-            messages,
-            "",
-            judge_module.JudgeVerdict(False, "Predicate response is invalid"),
+                return None
+            return result, JudgeVerdict(result.decision is PredicateDecision.ALLOW, result.reason)
+
+        fields = ",".join(f'"{principle.id}":true|false|"unknown"' for principle in asset.principles)
+        result = await model.ask(
+            system=_build_predicate_system_prompt(asset),
+            user=build_user_prompt(request),
+            parse=parse,
+            correction=f"Invalid response. You must respond with ONLY this JSON object shape: {{{fields}}}.",
+            exhausted_reason="Predicate response is invalid",
+            stage="predicate",
+            log_path=log_path,
+            meter=meter,
         )
-        raise PredicateAssetError("predicate response is invalid")
+        if result is None:
+            raise PredicateAssetError("predicate response is invalid")
+        return result

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import fields, replace
 from pathlib import Path
@@ -24,6 +25,7 @@ from chrys.foundation.config.process_settings import (
 from chrys.foundation.config.settings import (
     SESSION_ROOT_DIR_ENV_VAR,
     Settings,
+    default_sessions_dir,
     probe_session_root,
     resolve_session_root_dir,
     resolve_sessions_dir,
@@ -32,6 +34,7 @@ from chrys.foundation.config.settings_store import LoadedSettings, load_settings
 from chrys.foundation.config.spec import Apply, Source, specs_by_field
 from chrys.foundation.config.warnings import settings_warning_events
 from chrys.service.state.store import JsonFileStateStore
+from tests.support.symlinks import symlink_or_skip
 
 
 def _loaded(**overrides: object) -> LoadedSettings:
@@ -495,7 +498,10 @@ def test_settling_reaches_the_same_verdict_as_the_resolver(tmp_path: Path, shape
 
     assert (settled.settings.session_root_dir == str(root)) is kept
     # The half that matters: whichever way settling went, storage agrees.
-    assert (resolve_sessions_dir(tmp_path / "config") == root / "sessions") is kept
+    resolved = resolve_sessions_dir(tmp_path / "config")
+    assert (resolved != tmp_path / "config" / "sessions") is kept
+    if kept:
+        assert resolved == Path(os.path.realpath(root / "sessions"))
     assert bool(settled.warnings) is not kept
 
 
@@ -537,6 +543,113 @@ def test_settling_leaves_a_root_that_does_not_exist_yet_alone(tmp_path: Path) ->
 
     assert loaded.settings.session_root_dir == str(root)
     assert loaded.warnings == ()
+
+
+@pytest.mark.parametrize("linked", ["session root", "sessions folder"])
+def test_session_storage_through_a_link_is_handed_out_by_its_real_path(
+    linked: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Session files are opened by helpers that refuse a link anywhere on the
+    path. The panel's probe of the same value names the same folder, or it would
+    offer to migrate the sessions onto themselves."""
+    real = tmp_path / "disk" / "sessions"
+    real.mkdir(parents=True)
+    root = tmp_path / "root"
+    if linked == "session root":
+        symlink_or_skip(root, real.parent, target_is_directory=True)
+    else:
+        root.mkdir()
+        symlink_or_skip(root / "sessions", real, target_is_directory=True)
+    monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(root))
+
+    resolved = resolve_sessions_dir()
+
+    assert resolved == Path(os.path.realpath(real))
+    assert resolve_sessions_dir() == resolve_sessions_dir(create=False) == resolved
+    assert probe_session_root(str(root)) == resolved
+
+
+@pytest.mark.parametrize("root", ["unset", "custom, its sessions a file"])
+def test_a_linked_default_sessions_folder_is_the_one_in_force(
+    root: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``sessions`` folder moved to another disk and linked back, in use as
+    the default or as the fallback: the panel compares the default folder with
+    the one in force to offer a migration."""
+    from chrys.foundation.platform import get_platform
+
+    if root == "unset":
+        monkeypatch.delenv(SESSION_ROOT_DIR_ENV_VAR)
+    else:
+        (tmp_path / "custom").mkdir()
+        (tmp_path / "custom" / "sessions").write_text("", encoding="utf-8")
+        monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(tmp_path / "custom"))
+    config_dir = get_platform().config_dir
+    config_dir.mkdir(parents=True, exist_ok=True)
+    real = tmp_path / "disk" / "sessions"
+    real.mkdir(parents=True)
+    symlink_or_skip(config_dir / "sessions", real, target_is_directory=True)
+
+    resolved = resolve_sessions_dir()
+
+    assert resolved == Path(os.path.realpath(real))
+    assert default_sessions_dir() == resolved
+    assert probe_session_root("") == resolved
+
+
+@pytest.mark.parametrize(("root", "replaced"), [("unset", False), ("custom", True)])
+def test_an_unusable_sessions_folder_is_reported_only_when_another_replaces_it(
+    root: str, replaced: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The default ``sessions`` folder is its own fallback, by its link or by its
+    real path, so a link to something unusable is not said to be replaced."""
+    from chrys.foundation.platform import get_platform
+
+    config_dir = get_platform().config_dir
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "disk").mkdir()
+    (tmp_path / "disk" / "sessions").write_text("", encoding="utf-8")
+    symlink_or_skip(config_dir / "sessions", tmp_path / "disk" / "sessions")
+    if root == "unset":
+        monkeypatch.delenv(SESSION_ROOT_DIR_ENV_VAR)
+    else:
+        (tmp_path / "custom").mkdir()
+        (tmp_path / "custom" / "sessions").write_text("", encoding="utf-8")
+        monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(tmp_path / "custom"))
+
+    with caplog.at_level(logging.WARNING, logger=settings_module.__name__):
+        resolve_sessions_dir()
+
+    assert ("Ignoring invalid session storage directory" in caplog.text) is replaced
+
+
+@pytest.mark.parametrize("root", ["unset", "custom, its sessions a file"])
+def test_a_linked_sessions_folder_whose_disk_is_missing_is_not_created_beneath_it(
+    root: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``sessions`` folder moved to a disk that is not mounted: the empty mount
+    point is still there, and creating the folder in it would hide the sessions
+    saved meanwhile once the disk comes back."""
+    from chrys.foundation.platform import get_platform
+
+    if root == "unset":
+        monkeypatch.delenv(SESSION_ROOT_DIR_ENV_VAR)
+    else:
+        (tmp_path / "custom").mkdir()
+        (tmp_path / "custom" / "sessions").write_text("", encoding="utf-8")
+        monkeypatch.setenv(SESSION_ROOT_DIR_ENV_VAR, str(tmp_path / "custom"))
+    config_dir = get_platform().config_dir
+    config_dir.mkdir(parents=True, exist_ok=True)
+    mount_point = tmp_path / "mnt" / "ext"
+    mount_point.mkdir(parents=True)
+    symlink_or_skip(config_dir / "sessions", mount_point / "sessions", target_is_directory=True)
+
+    assert resolve_sessions_dir() == config_dir / "sessions"
+    # Without creating: what approval grants and session artifacts then write under.
+    assert resolve_sessions_dir(create=False) == config_dir / "sessions"
+    assert default_sessions_dir() == config_dir / "sessions"
+    assert probe_session_root("") is None
+    assert list(mount_point.iterdir()) == []
 
 
 # ── probe_session_root: the panel's create-and-write check ─────────────

@@ -153,6 +153,61 @@ def replace_with_retry(source: str | os.PathLike[str], target: str | os.PathLike
             time.sleep(_WINDOWS_REPLACE_RETRY_DELAY_SECONDS * 2**attempt)
 
 
+def publish_file_no_replace(source: Path, target: Path) -> None:
+    """Atomically publish a completed file without replacing any target entry.
+
+    Both paths must be on the same filesystem. The caller owns flushing the
+    source and syncing the parent, and must clean up the source if it remains:
+    hard-link publication retains it, while native rename consumes it.
+    """
+    if _is_windows():
+        os.rename(source, target)
+        return
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except OSError as exc:
+        # Some filesystems have no hard links; EPERM is also used for that, and
+        # the native rename still enforces filesystem permissions itself. Not
+        # every such filesystem has an exclusive rename either: macOS exFAT
+        # refuses both with ENOTSUP, which reaches the caller (installation
+        # keys then fall back to their directory layout, see key_files.py).
+        if exc.errno not in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EPERM}:
+            raise
+        _rename_file_no_replace(source, target)
+
+
+def _rename_file_no_replace(source: Path, target: Path) -> None:
+    """Use an exclusive native rename; never emulate it with check + replace."""
+    from chrys.foundation.platform import get_platform
+
+    platform = get_platform()
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        if platform.is_macos:
+            declare_functions(libc, {"renamex_np": (ctypes.c_int, [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint])})
+            # Darwin's RENAME_EXCL rejects even a dangling target symlink.
+            result = libc.renamex_np(os.fsencode(source), os.fsencode(target), 0x00000004)
+        elif platform.is_linux:
+            declare_functions(
+                libc,
+                {
+                    "renameat2": (
+                        ctypes.c_int,
+                        [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint],
+                    )
+                },
+            )
+            # AT_FDCWD, RENAME_NOREPLACE; no raw syscall numbers tied to an ABI.
+            result = libc.renameat2(-100, os.fsencode(source), -100, os.fsencode(target), 1)
+        else:
+            raise OSError(errno.ENOTSUP, "Atomic no-replace rename is unavailable.")
+    except AttributeError as exc:
+        raise OSError(errno.ENOTSUP, "Atomic no-replace rename is unavailable.") from exc
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), os.fspath(source), None, os.fspath(target))
+
+
 def _atomic_write_bytes(path: Path, payload: bytes) -> None:
     """Atomically write *payload* to *path* via temp-file + ``os.replace``."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,12 +253,9 @@ def _atomic_create_bytes(path: Path, payload: bytes) -> None:
     """Create *path* with *payload* atomically, raising ``FileExistsError``.
 
     Same temp-file durability as ``_atomic_write_bytes``, but the commit is
-    the platform's atomic no-clobber primitive (``os.rename`` refuses to
-    replace on Windows, hard-linking refuses everywhere else), so a file that
+    the platform's atomic no-clobber primitive, so a file that
     appears after a caller's early existence check is never silently replaced.
     """
-    from chrys.foundation.platform import get_platform
-
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
     tmp_path = Path(tmp_name)
@@ -212,14 +264,10 @@ def _atomic_create_bytes(path: Path, payload: bytes) -> None:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
-        if get_platform().is_windows:
-            os.rename(tmp_path, path)
-        else:
-            # Drop the temp link before the directory sync: syncing while both
-            # names exist would let a crash after return resurrect the temp
-            # entry, breaking the no-temp-file-on-success durability above.
-            os.link(tmp_path, path)
-            tmp_path.unlink()
+        publish_file_no_replace(tmp_path, path)
+        # Drop any remaining temp link before syncing the directory, so a
+        # crash after return cannot resurrect the temp entry.
+        tmp_path.unlink(missing_ok=True)
         fsync_directory(path.parent)
     finally:
         with contextlib.suppress(FileNotFoundError):
@@ -314,7 +362,7 @@ def _verify_darwin_no_acl(fd: int) -> None:
     macOS NFSv4-style ACLs grant access invisibly to ``st_mode`` — a 0600
     file with ``everyone allow read`` still fstats as owner-only. (Linux
     needs no analog: a POSIX.1e ACL surfaces its mask in the group bits, so
-    the exact-0600 check already rejects it.)
+    the no-group-or-other-bits check already rejects it.)
     """
     api = _darwin_acl_api()
     ctypes.set_errno(0)
@@ -400,7 +448,10 @@ def strip_inherited_directory_acl(path: Path) -> None:
 def _verify_posix_owner_only(fd: int) -> None:
     _verify_posix_owner_identity(fd)
     info = os.fstat(fd)
-    if stat.S_IMODE(info.st_mode) != _OWNER_ONLY_MODE:
+    # No group or other bits, rather than exactly 0600: a volume that stores no
+    # permissions (exFAT on macOS) reports every file as 0700 and ignores the
+    # chmod, and owner-only is all that ever had to hold.
+    if stat.S_IMODE(info.st_mode) & 0o077:
         raise SecureFileError("Secure file permissions are not owner-only.")
     if _is_macos():
         _verify_darwin_no_acl(fd)

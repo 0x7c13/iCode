@@ -38,11 +38,13 @@ class WorkflowController:
         schedule: Callable[[Callable[[], None]], bool],
         sync_chrome: Callable[[], None],
         sync_terminal_title: Callable[[WorkflowTab | None], None],
+        reset_program_status: Callable[[], None],
         locale_controller: LocaleController | None,
     ) -> None:
         self.services, self.panel, self.cwd = services, panel, cwd
         self.schedule, self.sync_chrome = schedule, sync_chrome
         self.sync_terminal_title = sync_terminal_title
+        self.reset_program_status = reset_program_status
         self.locale_controller = locale_controller
         self.workflow_mode = False
         self.closed = False

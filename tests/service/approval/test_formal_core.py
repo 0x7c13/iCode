@@ -18,6 +18,7 @@ from chrys.foundation.errors import classify_error
 from chrys.kernel import ChatResponse, Message
 from chrys.service.approval import formal as formal_module
 from chrys.service.approval import judge as judge_module
+from chrys.service.approval import review_types as review_types_module
 from chrys.service.approval.judge import _SYSTEM_PROMPT, FormalEvaluationCancelled
 from chrys.service.approval.predicate import (
     PredicateAssetError,
@@ -70,10 +71,32 @@ async def test_all_false_approves_and_writes_only_standard_log(monkeypatch, tmp_
         assert [path.name for path in tmp_path.iterdir()] == ["safe.log"]
 
 
+async def test_shared_repair_loop_logs_each_stage(monkeypatch, tmp_path):
+    replies = ["invalid", json.dumps(_values("unknown")), "invalid", '{"approved":true,"reason":"reviewed"}']
+    async with _judge(monkeypatch, replies) as (judge, calls):
+        verdict = await judge.evaluate("Inspect", "read_file", "", {}, [], request_id="repair", log_dir=tmp_path)
+        assert verdict.approved is True
+        assert len(calls) == 4
+        log = (tmp_path / "repair.log").read_text(encoding="utf-8")
+        for stage in ("predicate", "direct"):
+            assert log.count(f"ATTEMPT 0 ({stage})") == 1
+            assert log.count(f"ATTEMPT 1 ({stage})") == 1
+
+
+async def test_exhausted_repair_writes_terminal_failure(monkeypatch, tmp_path):
+    async with _judge(monkeypatch, ["invalid"] * 3) as (judge, calls):
+        verdict = await judge.evaluate("Inspect", "read_file", "", {}, [], request_id="invalid", log_dir=tmp_path)
+        assert verdict.failure_reason == "invalid_shape"
+        assert len(calls) == 3
+        log = (tmp_path / "invalid.log").read_text(encoding="utf-8")
+        assert "ATTEMPT 3 (predicate)" in log
+        assert "FLAGGED: Predicate response is invalid" in log
+
+
 @pytest.mark.parametrize("approved", [False, True])
 @pytest.mark.parametrize("values", [_values() | {"external_action": "unknown"}, _values("unknown")])
 async def test_unknown_uses_same_judge_and_request_for_direct(monkeypatch, approved, values):
-    monkeypatch.setattr(judge_module, "_current_time_context", lambda: "Current time: fixed")
+    monkeypatch.setattr(review_types_module, "current_time_context", lambda: "Current time: fixed")
     replies = [json.dumps(values), json.dumps({"approved": approved, "reason": "direct verdict"})]
     async with _judge(monkeypatch, replies) as (judge, calls):
         verdict = await judge.evaluate(
@@ -115,23 +138,52 @@ async def test_invalid_response_uses_conversation_repair(monkeypatch, recovers, 
         assert "Invalid response" in repaired[3]["content"]
 
 
-async def test_direct_strategy_uses_original_prompt_without_formal_audit(monkeypatch):
-    async with _judge(monkeypatch, ['{"approved":true,"reason":"direct"}'], auto_review="direct") as (judge, calls):
+@pytest.mark.parametrize("strategy", ["direct", "unrecognized"])
+async def test_direct_strategy_uses_original_prompt_without_formal_audit(monkeypatch, strategy):
+    async with _judge(monkeypatch, ['{"approved":true,"reason":"direct"}'], auto_review=strategy) as (judge, calls):
         verdict = await _evaluate(judge)
         assert verdict.approved is True
         assert verdict.audit is None
         assert json.loads(calls[0].content)["messages"][0]["content"] == _SYSTEM_PROMPT
 
 
-@pytest.mark.parametrize(
-    "latest,messages,tool", [("", [], "read_file"), (" ", [" ", "\t"], "read_file"), ("Inspect", ["Inspect"], " ")]
-)
-async def test_invalid_context_never_calls_model(monkeypatch, latest, messages, tool):
+@pytest.mark.parametrize("tool", ["", " "])
+async def test_invalid_tool_never_calls_model(monkeypatch, tool):
     async with _judge(monkeypatch, []) as (judge, calls):
-        verdict = await judge.evaluate(latest, tool, "", {}, [], user_messages=messages)
+        verdict = await judge.evaluate("Inspect", tool, "", {}, [], user_messages=["Inspect"])
         assert verdict.approved is False
         assert verdict.failure_reason == "invalid_input"
         assert calls == []
+
+
+@pytest.mark.parametrize("latest,messages", [("", []), (" ", [" ", "\t"])])
+@pytest.mark.parametrize("other", [False, "unknown"])
+@pytest.mark.parametrize("risk", [False, True])
+@pytest.mark.parametrize("approved", [False, True])
+async def test_empty_context_reviews_without_inventing_user_authorization(
+    monkeypatch, latest, messages, other, risk, approved
+):
+    monkeypatch.setattr(review_types_module, "current_time_context", lambda: "Current time: fixed")
+    values = _values(other)
+    if risk:
+        values["external_action"] = True
+    replies = [json.dumps(values)]
+    if not risk:
+        replies.append(json.dumps({"approved": approved, "reason": "reviewed without user context"}))
+    async with _judge(monkeypatch, replies) as (judge, calls):
+        verdict = await judge.evaluate(latest, "read_file", "", {"path": "main.py"}, [], user_messages=messages)
+        assert verdict.approved is (approved and not risk)
+        assert verdict.failure_reason is None
+        assert verdict.audit["stages"] == (["predicate"] if risk else ["predicate", "reasoning"])
+        assert len(calls) == (1 if risk else 2)
+        prompts = [json.loads(call.content)["messages"][1]["content"] for call in calls]
+        assert len(set(prompts)) == 1
+        assert "Current-turn user prompts:\n(no user message available)" in prompts[0]
+        assert "Latest user prompt:\n(no user message available)" in prompts[0]
+        if risk:
+            assert verdict.triggered == ("external_action",)
+        else:
+            assert verdict.reason == "reviewed without user context"
 
 
 async def test_empty_latest_message_uses_normalized_user_context(monkeypatch):
@@ -207,7 +259,8 @@ async def test_cancellation_retains_audit_at_either_stage(monkeypatch, stage):
 
 
 @pytest.mark.parametrize("end", [104.5, 106.0])
-async def test_stages_and_repairs_share_one_deadline(monkeypatch, end):
+@pytest.mark.parametrize("repair", [False, True])
+async def test_stages_and_repairs_share_one_deadline(monkeypatch, end, repair):
     clock = [100.0]
     budgets, deadlines = [], []
 
@@ -219,6 +272,9 @@ async def test_stages_and_repairs_share_one_deadline(monkeypatch, end):
     async def response(client, messages, *, stream, options, timeout):
         budgets.append(timeout)
         reasoning = messages[0].text == _SYSTEM_PROMPT
+        if repair and len(budgets) == 1:
+            clock[0] = 102.0
+            return ChatResponse(messages=[Message("assistant", ["invalid"])])
         clock[0] = end if reasoning else 104.0
         result = {"approved": True, "reason": "ok"} if reasoning else _values("unknown")
         return ChatResponse(messages=[Message("assistant", [json.dumps(result)])])
@@ -228,6 +284,7 @@ async def test_stages_and_repairs_share_one_deadline(monkeypatch, end):
     fake_asyncio = ModuleType("asyncio")
     fake_asyncio.__dict__.update(vars(asyncio), timeout_at=bounded)
     monkeypatch.setattr(formal_module, "time", fake_time)
+    monkeypatch.setattr(review_types_module, "time", fake_time)
     monkeypatch.setattr(formal_module, "asyncio", fake_asyncio)
     monkeypatch.setattr(
         judge_module, "get_final_response", create_autospec(judge_module.get_final_response, side_effect=response)
@@ -235,7 +292,7 @@ async def test_stages_and_repairs_share_one_deadline(monkeypatch, end):
     async with _judge(monkeypatch, []) as (judge, _):
         verdict = await _evaluate(judge)
         assert deadlines == [105.0]
-        assert budgets == [5.0, 1.0]
+        assert budgets == ([5.0, 3.0, 1.0] if repair else [5.0, 1.0])
         assert verdict.approved is (end < 105.0)
         assert verdict.failure_reason == (None if end < 105.0 else "timeout")
 
@@ -409,7 +466,7 @@ def test_predicates_reject_invalid_fenced_response(response):
 
 @pytest.mark.parametrize("mutation", ["legacy", "duplicate", "missing", "bad-role", "bad-example", "bad-label"])
 def test_invalid_assets_are_rejected(mutation):
-    definitions = json.loads(files("chrys.service.approval").joinpath("principles.json").read_text())
+    definitions = json.loads(files("chrys.service.approval").joinpath("principles.json").read_text(encoding="utf-8"))
     if mutation == "legacy":
         definitions = {"principles": definitions}
     elif mutation == "duplicate":

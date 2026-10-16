@@ -29,16 +29,29 @@ _FAILED = msg("tui.approval.review.failed", fallback="Automatic review failed. P
 _INPUT = msg("tui.approval.review.invalid_input", fallback="There is not enough valid context to review this action.")
 _ASSET = msg("tui.approval.review.asset_unavailable", fallback="The risk definitions could not be loaded.")
 _TIMEOUT = msg("tui.approval.review.timeout", fallback="Automatic review timed out.")
-_CANCELLED = msg("tui.approval.review.cancelled", fallback="Automatic review was cancelled.")
 _SHAPE = msg("tui.approval.review.invalid_shape", fallback="The risk check returned an invalid response.")
 _VERDICT = msg("tui.approval.review.invalid_verdict", fallback="The approval model returned an invalid response.")
+_AUTH = msg(
+    "tui.approval.review.auth_failed",
+    fallback="The approval model rejected authentication or access. Check the API key and model permissions.",
+)
+_RATE_LIMITED = msg(
+    "tui.approval.review.rate_limited",
+    fallback="The approval model is rate limiting requests. Please try again later.",
+)
+_SERVER = msg(
+    "tui.approval.review.server_error",
+    fallback="The approval model service returned an internal error. Please try again later.",
+)
 _FAILURES = {
     "invalid_input": _INPUT,
     "asset_unavailable": _ASSET,
     "timeout": _TIMEOUT,
-    "cancelled": _CANCELLED,
     "invalid_shape": _SHAPE,
     "invalid_verdict": _VERDICT,
+    "auth_failed": _AUTH,
+    "rate_limited": _RATE_LIMITED,
+    "server_error": _SERVER,
 }
 
 
@@ -48,9 +61,5 @@ def review_reason(verdict: JudgeVerdict, localizer: Localizer) -> str:
         return render_str(localizer, _FAILURES.get(verdict.failure_reason, _FAILED).bind())
     if verdict.triggered:
         conditions = ", ".join(render_str(localizer, _RISKS[key].bind()) for key in verdict.triggered if key in _RISKS)
-        return (
-            render_str(localizer, _TRIGGERED.bind(conditions=conditions))
-            if conditions
-            else render_str(localizer, _FAILED.bind())
-        )
+        return render_str(localizer, _TRIGGERED.bind(conditions=conditions)) if conditions else verdict.reason
     return verdict.reason

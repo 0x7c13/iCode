@@ -37,11 +37,15 @@ To change only the default for the next launch without changing the current appr
 
 ### Check risks individually in automatic mode
 
-Press **F10**, open **Security → Approval**, and set **Automatic review strategy** to **Individual risk checks**. Save and close Settings to apply it, then select `/approval auto`. The default strategy is **Direct review**; this setting applies only in automatic mode.
+Press **F10**, open **Security → Approval**, and set **Automatic review strategy** to **Individual risk checks**. Changes apply when you close Settings; an ongoing review finishes using its original strategy. Select `/approval auto` to use automatic mode. The default strategy is **Direct review**; this setting applies only in automatic mode.
 
 The approval model checks seven conditions: external publication or transfer, deletion or destructive changes, changes to shared or production resources, sensitive data or account operations, security or permission changes, untrusted code or externally exposed services, and actions beyond the requested scope.
 
 If any condition holds, the approval dialog lists the detected concerns and waits for your decision. If none holds, the call runs automatically. If the model cannot determine a condition and finds no risk, the same model reviews the complete action before approving or asking you. Both checks and response corrections share the model profile's read timeout; a timeout or invalid response asks you to decide.
+
+When there is no user request, such as a workflow started with empty input, the model reviews the complete action even if all conditions are false.
+
+If individual risk checks fail because of model authentication, rate limiting, or an internal service error, the approval dialog shows the cause and asks you to decide.
 
 Deletion of files or folders, including temporary files and build outputs, and access to sensitive data require human confirmation. Individual checks also flag external publication such as a requested `git push`, security changes and exposed services that direct review may approve. Calls that already qualify for automatic approval or a remembered approval still use those rules.
 

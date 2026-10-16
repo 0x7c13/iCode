@@ -37,6 +37,7 @@ from chrys.service.mcp.errors import (
 )
 from chrys.service.mcp.owned import MCPTool
 from chrys.service.profiles.agents.schema import ApprovalConfig, MCPServerConfig
+from tests.kernel._fakes import _assert_actionable_argument_error, _ProbeFunction, _result_contents
 from tests.service.mcp._helpers import _FakeCatalogTool
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
@@ -1065,6 +1066,51 @@ async def test_blocking_loop_sees_loaded_mcp_tool_on_next_iteration() -> None:
     assert "remote" in wire.calls[1]["tool_names"]
 
     await adapter.disconnect_all()
+
+
+@pytest.mark.parametrize("control", ["list_mcp_tools", "load_tool", "unload_tool"])
+async def test_control_tools_reject_extra_arguments_before_execution_and_accept_retry(control: str) -> None:
+    remote = _function("remote")
+    remote_schema = remote.parameters()
+    adapter, _fake, initial = await _connected(remote)
+    try:
+        name = f"mcp_srv_{control}"
+        arguments = {} if control == "list_mcp_tools" else {"tool": "remote"}
+        preparation = (
+            [_call_response("prepare", "mcp_srv_load_tool", {"tool": "remote"})] if control == "unload_tool" else []
+        )
+        wire = _ScriptedClient(
+            [
+                *preparation,
+                _call_response("bad-call", name, {**arguments, "_call": "extra"}),
+                _call_response("bad-note", name, {**arguments, "note": "extra"}),
+                _call_response("retry", name, arguments),
+                ChatResponse(messages=[Message("assistant", ["done"])]),
+            ]
+        )
+        probe = _ProbeFunction()
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire))
+
+        response = await layer.get_response([Message("user", ["work"])], options={"tools": initial}, middleware=[probe])
+
+        bad_call, bad_note, retry = _result_contents(response)[-3:]
+        for result, field in ((bad_call, "_call"), (bad_note, "note")):
+            _assert_actionable_argument_error(result, name, f"unknown '{field}'")
+        assert retry.exception is None
+        assert not str(retry.result).startswith("Error:")
+        assert [context.arguments for context in probe.contexts] == [
+            *([{"tool": "remote"}] if preparation else []),
+            arguments,
+        ]
+        assert ("remote" in wire.calls[-1]["tool_names"]) is (control == "load_tool")
+        if control == "list_mcp_tools":
+            assert "Expected: {}." in str(bad_call.result)
+            assert "remote" in str(retry.result)
+        # Closing local control schemas must not change remote declarations.
+        assert remote.parameters() == clone_mcp_function_tool(remote).parameters() == remote_schema
+        assert "additionalProperties" not in remote_schema
+    finally:
+        await adapter.disconnect_all()
 
 
 async def test_streaming_loop_sees_loaded_mcp_tool_on_next_iteration() -> None:

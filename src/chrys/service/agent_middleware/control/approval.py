@@ -515,9 +515,8 @@ class ApprovalMiddleware(FunctionMiddleware):
             async with OneShotCorrelation(self._bus, ApprovalResponse, request_id=request_id) as correlation:
                 future = correlation.future
                 try:
-                    review_mode = self._approval_mode
                     judging = (
-                        review_mode is ApprovalMode.AUTO
+                        self._approval_mode is ApprovalMode.AUTO
                         and self._approval_judge is not None
                         and not dev_sub_agent_review
                     )

@@ -6,28 +6,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import ApprovalAutoFulfillBlocked, ApprovalReviewed
+from chrys.service.approval.review_types import ApprovalJudgeInput as ApprovalJudgeInput
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
     from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ApprovalJudgeInput:
-    """Judge-only fields kept separate from spoof-proof presentation fields."""
-
-    tool_name: str
-    tool_kind: str
-    args: dict[str, Any]
-    user_message: str
-    user_messages: list[str]
-    workspace_roots: list[str]
 
 
 class ApprovalDecisionArbiter:

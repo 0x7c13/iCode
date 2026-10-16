@@ -147,6 +147,8 @@ Approval mode and model switching are **not** here — they use standard ACP
 | `mcp/list` | `sessionId` | MCP tools + failures from runtime details. |
 | `skills/list` | `sessionId` | Skill sources + details from runtime details. |
 
+`session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.
+
 ### Sub-agent control
 
 | Method | Params | Effect |
@@ -367,8 +369,6 @@ profile CRUD, `mcp/test`, mid-run injection, agent-load progress, context/tool
 compaction, structured errors/warnings.
 
 ### Why config options stay an extension
-
-`session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.
 
 ACP has a native config mechanism (`config_options` on `session/new`,
 `set_config_option`, `current_config_option_update`). Chrys deliberately does
