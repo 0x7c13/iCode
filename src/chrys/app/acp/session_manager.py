@@ -105,6 +105,7 @@ _SUPPORTED_CONFIG_OPTIONS: tuple[AcpConfigOption, ...] = (
     AcpConfigOption("model_profile", "model.profile.active", "CHRYS_MODEL_PROFILE"),
     AcpConfigOption("approval_judge_model_profile", "model.role.approval_judge", "CHRYS_MODEL_PROFILE_APPROVAL_JUDGE"),
     AcpConfigOption("default_approval_mode", "approval.default_mode", "CHRYS_DEFAULT_APPROVAL_MODE"),
+    AcpConfigOption("approval_auto_review", "approval.auto_review", "CHRYS_APPROVAL_AUTO_REVIEW"),
     AcpConfigOption("theme", "ui.theme", "CHRYS_THEME"),
     AcpConfigOption("rollback_snapshots_keep", "rollback.snapshots_keep", "CHRYS_ROLLBACK_SNAPSHOTS_KEEP"),
 )

@@ -5,15 +5,28 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.text.model_json import model_json
-from chrys.kernel import Message
+from chrys.foundation.util.once_close import OnceClose
+from chrys.kernel import ChatResponse, Message
+from chrys.service.approval.formal import FormalEvaluator
+from chrys.service.approval.review_types import (
+    ApprovalJudgeInput,
+    CallMeter,
+    build_user_prompt,
+    normalize_user_messages,
+)
+from chrys.service.approval.review_types import (
+    FormalEvaluationCancelled as FormalEvaluationCancelled,
+)
+from chrys.service.approval.review_types import (
+    JudgeVerdict as JudgeVerdict,
+)
 from chrys.service.llm.one_shot import get_final_response
 
 if TYPE_CHECKING:
@@ -120,55 +133,6 @@ Rejected example (deletion — always flag):
 
 Rejected example (sensitive data / tool laundering):
 {"approved": false, "reason": "The command reads local credential material unrelated to the user's coding task. Access to tokens or secrets requires explicit human approval."}"""
-
-
-def _current_time_context() -> str:
-    """Return current local and UTC times for the judge prompt."""
-    now_utc = datetime.now(UTC)
-    now_local = now_utc.astimezone()
-    return (
-        f"Current time (local): {now_local.isoformat(timespec='seconds')}\n"
-        f"Current time (UTC): {now_utc.isoformat(timespec='seconds')}"
-    )
-
-
-def _format_user_messages(user_message: str, user_messages: list[str] | None) -> tuple[str, str]:
-    """Return formatted current-turn messages and latest prompt text."""
-    messages = [message.strip() for message in (user_messages or []) if message.strip()]
-    latest = user_message.strip() or (messages[-1] if messages else "")
-    if latest and (not messages or messages[-1] != latest):
-        messages.append(latest)
-    if not messages:
-        return "(no user message available)", "(no user message available)"
-
-    formatted = "\n".join(
-        f"{index}. {message.replace('\n', '\n   ')}" for index, message in enumerate(messages, start=1)
-    )
-    return formatted, latest
-
-
-def _build_user_prompt(
-    user_message: str,
-    tool_name: str,
-    tool_kind: str,
-    args: dict[str, Any],
-    workspace_roots: list[str],
-    user_messages: list[str] | None = None,
-) -> str:
-    """Build the user-turn prompt for the judge LLM call."""
-    workspace = ", ".join(workspace_roots) if workspace_roots else "(not specified)"
-    user_ctx, latest_user_ctx = _format_user_messages(user_message, user_messages)
-    formatted_args = model_json(args, default=str, indent=2)
-
-    return (
-        f"{_current_time_context()}\n\n"
-        f"Workspace directories: {workspace}\n\n"
-        f"Current-turn user prompts:\n{user_ctx}\n\n"
-        f"Latest user prompt:\n{latest_user_ctx}\n\n"
-        f"Proposed action:\n"
-        f"Tool: {tool_name} (kind: {tool_kind})\n"
-        f"Arguments:\n{formatted_args}"
-    )
 
 
 def _strip_json_fence(text: str) -> str:
@@ -382,15 +346,7 @@ def _parse_verdict(text: str) -> JudgeVerdict | None:
     return verdicts[-1]
 
 
-@dataclass
-class JudgeVerdict:
-    """Result of an LLM approval judge evaluation."""
-
-    approved: bool
-    reason: str
-
-
-def _assistant_retry_messages(response: Any, fallback_text: str) -> list[Message]:
+def _assistant_retry_messages(response: ChatResponse, fallback_text: str) -> list[Message]:
     """Return assistant messages to echo on a retry.
 
     For thinking models, retrying with only ``response.text`` drops hidden
@@ -399,35 +355,19 @@ def _assistant_retry_messages(response: Any, fallback_text: str) -> list[Message
     messages verbatim; fall back to plain text only when the caller did not
     receive structured messages.
     """
-    raw_messages = getattr(response, "messages", None)
-    if isinstance(raw_messages, list):
-        cloned = [
-            Message.from_dict(msg.to_dict())
-            for msg in raw_messages
-            if isinstance(msg, Message) and msg.role == "assistant"
-        ]
-        if cloned:
-            return cloned
+    cloned = [Message.from_dict(message.to_dict()) for message in response.messages if message.role == "assistant"]
+    if cloned:
+        return cloned
     if fallback_text:
         return [Message("assistant", [fallback_text])]
     return []
 
 
 class ApprovalJudge:
-    """Evaluates tool calls using a lightweight LLM call for safety and relevance.
+    """Judge tool calls with a resolved model profile.
 
-    The judge uses a single-turn, no-tools LLM call with a security-focused
-    prompt. Responses must be JSON ``{"approved": bool, "reason": str}``.
-    If the response is not valid JSON, the judge retries with a correction
-    message appended to the conversation. LLM call exceptions propagate to
-    the caller, which should fall back to showing a manual approval dialog.
-
-    Bound to a resolved ``ModelProfile`` at construction time — the
-    caller (typically ``AgentEngine``) picks the right profile via
-    :func:`chrys.service.profiles.models.resolver.resolve_judge_profile`.  This
-    keeps the judge agnostic of registry/settings lookups and lets
-    different code paths (tests, headless evaluators) wire judges to
-    arbitrary profiles directly.
+    Direct reviews the complete action. Formal checks individual risks and
+    uses the same model to review uncertainty or actions without user context.
     """
 
     def __init__(
@@ -436,6 +376,7 @@ class ApprovalJudge:
         session_id: str | None = None,
         parent_session_id: str | None = None,
         session_dir: Path | None = None,
+        auto_review: str = "direct",
     ) -> None:
         self._profile = profile
         self._session_id = session_id
@@ -445,6 +386,9 @@ class ApprovalJudge:
         self._client_lock = asyncio.Lock()
         self._closed = False
         self._chat_options: dict[str, Any] | None = None
+        self._formal: FormalEvaluator | None = None
+        self._auto_review = auto_review
+        self._close = OnceClose(self._close_clients)
 
     @property
     def profile(self) -> ModelProfile:
@@ -470,8 +414,11 @@ class ApprovalJudge:
             return self._client
 
     async def aclose(self) -> None:
-        """Close the judge's client, if one was created; later evaluations are refused."""
+        """Drain the owned client even if a close waiter is cancelled."""
         self._closed = True
+        await self._close()
+
+    async def _close_clients(self) -> None:
         async with self._client_lock:
             client, self._client = self._client, None
         if client is not None:
@@ -488,64 +435,89 @@ class ApprovalJudge:
         log_dir: Path | None = None,
         user_messages: list[str] | None = None,
     ) -> JudgeVerdict:
-        """Evaluate a tool call for safety and relevance.
-
-        Returns a ``JudgeVerdict``. On LLM call failure, raises the
-        underlying exception — callers should catch and fall back to manual
-        approval.
-
-        If *log_dir* is provided, raw input/output for each LLM round is
-        appended to ``{log_dir}/{request_id}.jsonl``.
-        """
-        client = await self._get_client()
-        user_prompt = _build_user_prompt(user_message, tool_name, tool_kind, args, workspace_roots, user_messages)
-
-        messages: list[Message] = [
-            Message("system", [_SYSTEM_PROMPT]),
-            Message("user", [user_prompt]),
-        ]
-
+        """Evaluate with the review strategy bound at construction."""
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError
+        messages = normalize_user_messages(user_message, user_messages)
+        request = ApprovalJudgeInput(
+            user_message=messages[-1] if messages else "",
+            user_messages=messages,
+            tool_name=tool_name,
+            tool_kind=tool_kind,
+            args=copy.deepcopy(args),
+            workspace_roots=list(workspace_roots),
+        )
         log_path = log_dir / f"{request_id}.log" if log_dir and request_id else None
+        if self._auto_review == "formal":
+            if self._formal is None:
+                self._formal = FormalEvaluator(self._profile.http_read_timeout)
+            return await self._formal.evaluate(self, request, request_id=request_id, log_path=log_path)
+        verdict = await self.review_direct(request, log_path=log_path)
+        return verdict if verdict is not None else JudgeVerdict(False, "Judge returned invalid response")
 
-        for attempt in range(_MAX_RETRIES + 1):
-            response = await get_final_response(
-                client,
-                messages,
-                stream=self._profile.stream,
-                options=self._chat_options,
-                timeout=self._profile.http_read_timeout,
-            )
-            text = response.text or ""
-            _log.debug("Approval judge attempt %d for %s: %s", attempt, tool_name, text.strip()[:120])
+    async def review_direct(
+        self, request: ApprovalJudgeInput, *, log_path: Path | None, meter: CallMeter | None = None
+    ) -> JudgeVerdict | None:
+        """Review the complete action with the configured approval model."""
 
+        def parse(text: str) -> tuple[JudgeVerdict, JudgeVerdict] | None:
             verdict = _parse_verdict(text)
+            return (verdict, verdict) if verdict is not None else None
 
-            # Log raw input/output
-            self._write_log(log_path, attempt, messages, text, verdict)
+        return await self.ask(
+            system=_SYSTEM_PROMPT,
+            user=build_user_prompt(request),
+            parse=parse,
+            correction=(
+                "Invalid response. You must respond with ONLY a JSON object: "
+                '{"approved": true, "reason": "..."}. Write reason in the same language '
+                "as the latest user prompt whenever possible."
+            ),
+            exhausted_reason="Judge returned invalid response",
+            stage="direct",
+            log_path=log_path,
+            meter=meter,
+        )
 
-            if verdict is not None:
-                return verdict
-
-            # Invalid response — append correction and retry
+    async def ask[T](
+        self,
+        *,
+        system: str,
+        user: str,
+        parse: Callable[[str], tuple[T, JudgeVerdict] | None],
+        correction: str,
+        exhausted_reason: str,
+        stage: str,
+        log_path: Path | None,
+        meter: CallMeter | None = None,
+    ) -> T | None:
+        """Request, parse and correct a response while preserving the full conversation."""
+        client = await self._get_client()
+        messages = [Message("system", [system]), Message("user", [user])]
+        for attempt in range(_MAX_RETRIES + 1):
+            if meter is None:
+                response = await get_final_response(
+                    client,
+                    messages,
+                    stream=self._profile.stream,
+                    options=self._chat_options,
+                    timeout=self._profile.http_read_timeout,
+                )
+            else:
+                response = await meter.get_final_response(
+                    get_final_response, client, messages, self._profile.stream, self._chat_options
+                )
+            text = response.text or ""
+            result = parse(text)
+            self._write_log(log_path, attempt, messages, text, result[1] if result is not None else None, stage)
+            if result is not None:
+                return result[0]
             if attempt < _MAX_RETRIES:
                 messages.extend(_assistant_retry_messages(response, text))
-                messages.append(
-                    Message(
-                        "user",
-                        [
-                            (
-                                "Invalid response. You must respond with ONLY a JSON object: "
-                                '{"approved": true, "reason": "..."}. Write reason in the same language '
-                                "as the latest user prompt whenever possible."
-                            )
-                        ],
-                    )
-                )
-
-        # Exhausted retries — fail-safe: flag as not approved
-        fallback = JudgeVerdict(approved=False, reason="Judge returned invalid response")
-        self._write_log(log_path, _MAX_RETRIES + 1, messages, "", fallback)
-        return fallback
+                messages.append(Message("user", [correction]))
+        self._write_log(log_path, _MAX_RETRIES + 1, messages, "", JudgeVerdict(False, exhausted_reason), stage)
+        return None
 
     @staticmethod
     def _write_log(
@@ -554,6 +526,7 @@ class ApprovalJudge:
         messages: list,
         response_text: str,
         verdict: JudgeVerdict | None,
+        stage: str = "direct",
     ) -> None:
         """Append one LLM round to the approval log file (human-readable)."""
         if log_path is None:
@@ -561,7 +534,7 @@ class ApprovalJudge:
         try:
             lines: list[str] = []
             lines.append("=" * 78)
-            lines.append(f"ATTEMPT {attempt}")
+            lines.append(f"ATTEMPT {attempt} ({stage})")
             lines.append("=" * 78)
             for m in messages:
                 if m.role == "system":

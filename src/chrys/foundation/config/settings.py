@@ -688,6 +688,7 @@ _LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
     "settings.approval.timeout_seconds.label", fallback="Human approval timeout (seconds)"
 )
 _LABEL_APPROVAL_DEFAULT_MODE = msg("settings.approval.default_mode.label", fallback="Default approval mode")
+_LABEL_APPROVAL_AUTO_REVIEW = msg("settings.approval.auto_review.label", fallback="Automatic review strategy")
 _LABEL_UI_APPROVAL_DEFER_WHILE_JUDGING = msg(
     "settings.ui.approval.defer_while_judging.label",
     fallback="Show the approval dialog only when Auto-Review flags a call",
@@ -1116,6 +1117,21 @@ class Settings:
             choices=_VALID_APPROVAL_MODES,
             risk=Risk.DANGEROUS,
             # Falling through could land on a persisted ``bypass``.
+            invalid_policy=InvalidPolicy.SAFE_DEFAULT,
+        ),
+    )
+
+    approval_auto_review: str = field(
+        default="direct",
+        metadata=spec(
+            key="approval.auto_review",
+            label=_LABEL_APPROVAL_AUTO_REVIEW,
+            env="CHRYS_APPROVAL_AUTO_REVIEW",
+            coerce=choice_coercer(choices=("direct", "formal")),
+            choices=("direct", "formal"),
+            apply=Apply.RELOAD,
+            group="approval",
+            kind=Kind.ENUM,
             invalid_policy=InvalidPolicy.SAFE_DEFAULT,
         ),
     )

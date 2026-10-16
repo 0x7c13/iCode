@@ -1848,10 +1848,11 @@
         ["awaitable", "await self._bus.publish(ApprovalRequest(request_id=request_id, caller_name=self._caller_name, tool_name=f'acp:{presentation_title}', tool_kind='', presentation_kind=judge_kind or 'remote', args=published_args, intent_summary=f'Allow remote tool: {presentation_title}', user_message=self._turn_context.user_message, workspace_roots=list(self._workspace_roots), workspace_cwd=self._workspace_cwd, judging=judging, session_id=self._session_id))", "unresolved"],
         ["wrapper", "await self._publish_initial_dialog_cleanup(ApprovalCancelled(request_id=request_id, session_id=self._session_id))", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpPermissionBroker._publish_initial_dialog_cleanup"],
         ["future", "await future", "unresolved"],
+        ["future", "await judge_task", "unresolved"],
         ["awaitable", "await self._bus.publish(ApprovalCancelled(request_id=request_id, session_id=self._session_id))", "unresolved"],
         ["future", "await judge_task", "unresolved"],
-        ["awaitable", "await approval_trace.resolved(approved=True, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='approved', arguments_modified=False)", "unresolved"],
-        ["awaitable", "await approval_trace.resolved(approved=False, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='rejected', arguments_modified=False)", "unresolved"]
+        ["awaitable", "await approval_trace.resolved(approved=True, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='approved', arguments_modified=False, judge_audit=judge_audit)", "unresolved"],
+        ["awaitable", "await approval_trace.resolved(approved=False, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='rejected', arguments_modified=False, judge_audit=judge_audit)", "unresolved"]
       ],
       "AcpPermissionBroker._publish_initial_dialog_cleanup": [
         ["wrapper", "await drain_acp_task(task)", "unresolved", "chrys.orchestration.invoker.acp_protocol.drain_acp_task"]
@@ -3360,7 +3361,7 @@
         ["awaitable", "await approval_trace.requested(tool_name=tool_name, approval_mode=self._approval_mode.value, approval_level=_approval_level(policy=policy_requires_approval, dev_sub_agent_review=dev_sub_agent_review, sensitive=sensitive_shell or sensitive_filesystem_read or sensitive_filesystem_write))", "unresolved"],
         ["wrapper", "await await_approval_with_hooks(future=future, judge_task=judge_task, manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, workspace_cwd=self._workspace_cwd or '', caller_name=self._caller_name, request_id=request_id, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=parsed_args, target_operation_id=approval_trace.request_id if approval_trace is not None else None)", "unresolved", "chrys.service.agent_middleware.control.approval_hooks.await_approval_with_hooks"],
         ["future", "await judge_task", "unresolved"],
-        ["awaitable", "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args))", "unresolved"],
+        ["awaitable", "await approval_trace.resolved(approved=approved, decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE, reason_code='user_reason' if reason else '', arguments_modified=bool(modified_args), judge_audit=judge_audit)", "unresolved"],
         ["wrapper", "await self._publish_abandoned(request_id, ended_by=exc)", "unresolved", "chrys.service.agent_middleware.control.approval.ApprovalMiddleware._publish_abandoned"],
         ["wrapper", "await apply_before_tool_hooks(manager=self._hook_manager, context=context, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=context.arguments, workspace_cwd=self._workspace_cwd or '', target_operation_id=tool_operation_id(context.metadata))", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.apply_before_tool_hooks"],
         ["awaitable", "await publisher.publish(InvocationToolCallArgsUpdated(origin=publisher.origin, agent_name=self._caller_name, tool_name=tool_name, tool_kind=tool_kind, call_id=call_id, args=final_args, session_id=self._session_id))", "unresolved"],
@@ -3719,7 +3720,7 @@
       ],
       "ApprovalDecisionArbiter.judge": [
         ["awaitable", "await judge.evaluate(user_message=judge_input.user_message, user_messages=list(judge_input.user_messages), tool_name=judge_input.tool_name, tool_kind=judge_input.tool_kind, args=judge_input.args, workspace_roots=list(judge_input.workspace_roots), request_id=request_id, log_dir=log_dir)", "unresolved"],
-        ["awaitable", "await self._bus.publish(ApprovalReviewed(request_id=request_id, approved=verdict.approved, reason=verdict.reason, session_id=self._session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(ApprovalReviewed(request_id=request_id, approved=verdict.approved, reason=verdict.reason, triggered=verdict.triggered, failure_reason=verdict.failure_reason, session_id=self._session_id))", "unresolved"]
       ]
     },
     "chrys.service.approval.correlation": {
@@ -3730,18 +3731,44 @@
         ["awaitable", "await self._bus.unsubscribe(self._event_type, self._on_event)", "unresolved"]
       ]
     },
+    "chrys.service.approval.formal": {
+      "FormalEvaluator._evaluate_predicates": [
+        ["awaitable", "await model.ask(system=_build_predicate_system_prompt(asset), user=build_user_prompt(request), parse=parse, correction=f'Invalid response. You must respond with ONLY this JSON object shape: {{{fields}}}.', exhausted_reason='Predicate response is invalid', stage='predicate', log_path=log_path, meter=meter)", "unresolved"]
+      ],
+      "FormalEvaluator.evaluate": [
+        ["async_context", "async with asyncio.timeout_at(meter.deadline)", "unresolved"],
+        ["wrapper", "await self._evaluate_predicates(model, asset, request, log_path, meter)", "unresolved", "chrys.service.approval.formal.FormalEvaluator._evaluate_predicates"],
+        ["awaitable", "await model.review_direct(request, log_path=log_path, meter=meter)", "unresolved"]
+      ]
+    },
     "chrys.service.approval.judge": {
+      "ApprovalJudge._close_clients": [
+        ["sync_primitive", "async with self._client_lock", "unresolved"],
+        ["awaitable", "await client.aclose()", "unresolved"]
+      ],
       "ApprovalJudge._get_client": [
         ["sync_primitive", "async with self._client_lock", "unresolved"],
         ["wrapper", "await create_client(self._profile, session_id=self._session_id, parent_session_id=self._parent_session_id, session_dir=self._session_dir)", "unresolved", "chrys.service.llm.clients.create_client"]
       ],
       "ApprovalJudge.aclose": [
-        ["sync_primitive", "async with self._client_lock", "unresolved"],
-        ["awaitable", "await client.aclose()", "unresolved"]
+        ["awaitable", "await self._close()", "unresolved"]
+      ],
+      "ApprovalJudge.ask": [
+        ["wrapper", "await self._get_client()", "unresolved", "chrys.service.approval.judge.ApprovalJudge._get_client"],
+        ["wrapper", "await get_final_response(client, messages, stream=self._profile.stream, options=self._chat_options, timeout=self._profile.http_read_timeout)", "unresolved", "chrys.service.llm.one_shot.get_final_response"],
+        ["awaitable", "await meter.get_final_response(get_final_response, client, messages, self._profile.stream, self._chat_options)", "unresolved"]
       ],
       "ApprovalJudge.evaluate": [
-        ["wrapper", "await self._get_client()", "unresolved", "chrys.service.approval.judge.ApprovalJudge._get_client"],
-        ["wrapper", "await get_final_response(client, messages, stream=self._profile.stream, options=self._chat_options, timeout=self._profile.http_read_timeout)", "unresolved", "chrys.service.llm.one_shot.get_final_response"]
+        ["awaitable", "await self._formal.evaluate(self, request, request_id=request_id, log_path=log_path)", "unresolved"],
+        ["wrapper", "await self.review_direct(request, log_path=log_path)", "unresolved", "chrys.service.approval.judge.ApprovalJudge.review_direct"]
+      ],
+      "ApprovalJudge.review_direct": [
+        ["wrapper", "await self.ask(system=_SYSTEM_PROMPT, user=build_user_prompt(request), parse=parse, correction='Invalid response. You must respond with ONLY a JSON object: {\"approved\": true, \"reason\": \"...\"}. Write reason in the same language as the latest user prompt whenever possible.', exhausted_reason='Judge returned invalid response', stage='direct', log_path=log_path, meter=meter)", "unresolved", "chrys.service.approval.judge.ApprovalJudge.ask"]
+      ]
+    },
+    "chrys.service.approval.review_types": {
+      "CallMeter.get_final_response": [
+        ["awaitable", "await call(client, messages, stream=stream, options=options, timeout=self.deadline - time.monotonic())", "unresolved"]
       ]
     },
     "chrys.service.context.compaction.breaker": {

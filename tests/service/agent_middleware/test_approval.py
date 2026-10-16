@@ -1662,13 +1662,8 @@ async def test_auto_mode_without_judge_falls_back_to_manual() -> None:
 class _CancelOnRequestedSink(FakeSink):
     """A sink whose request marker is interrupted, as an Esc on its write ack would be."""
 
-    def __init__(self, judging: asyncio.Event) -> None:
-        super().__init__()
-        self._judging = judging
-
     async def emit(self, draft, *, payload_factory=None):  # type: ignore[no-untyped-def]
         if draft.event_type == EventType.APPROVAL_REQUESTED:
-            await self._judging.wait()
             raise asyncio.CancelledError
         return await super().emit(draft, payload_factory=payload_factory)
 
@@ -1690,8 +1685,8 @@ class _WatchedJudge:
         return JudgeVerdict(approved=True, reason="never reached")
 
 
-async def test_an_interrupted_request_marker_still_reaps_the_handler_and_the_judge(tmp_path) -> None:
-    """The marker sits between the subscription and the block that reaps it."""
+async def test_an_interrupted_request_marker_reaps_the_handler_without_starting_the_judge(tmp_path) -> None:
+    """Cancelling the request write clears its subscription without starting a model call."""
     bus = EventBus()
     judge = _WatchedJudge()
     mw = ApprovalMiddleware(
@@ -1707,7 +1702,7 @@ async def test_an_interrupted_request_marker_still_reaps_the_handler_and_the_jud
         raise AssertionError("the tool must not run")
 
     with (
-        trajectory_scope(make_context(_CancelOnRequestedSink(judge.entered))),
+        trajectory_scope(make_context(_CancelOnRequestedSink())),
         pytest.raises(asyncio.CancelledError),
     ):
         await mw.process(_ctx("write_file", "filesystem.write", {"path": "/tmp/x"}), _next)
@@ -1715,7 +1710,8 @@ async def test_an_interrupted_request_marker_still_reaps_the_handler_and_the_jud
     # Nothing of this request outlives it: no handler left on the bus, no
     # judge left calling the model for a dialog that is already gone.
     assert len(bus._handlers[ApprovalResponse]) == subscribed_before
-    assert judge.cancelled is True
+    assert not judge.entered.is_set()
+    assert judge.cancelled is False
 
 
 async def test_interrupting_a_pending_approval_records_its_resolution() -> None:

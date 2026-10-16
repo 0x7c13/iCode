@@ -850,6 +850,12 @@ msgstr ""
 msgid "settings.app.update_check.label"
 msgstr ""
 
+#. English: Automatic review strategy
+#. chrys-meta={"fingerprint":"e900839e0cb419651c36d199a1ebc7efea285ff567afcfb709d7d57cb54a1ff6","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.approval.auto_review.label"
+msgstr ""
+
 #. English: Default approval mode
 #. chrys-meta={"fingerprint":"c8e65280cb85901d51d8d710a52c18865fd88c7247b342d14df96d915ed2b0fa","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -3887,6 +3893,111 @@ msgstr ""
 #. chrys-meta={"fingerprint":"6e37e71d02e38f81ecec007c76eb522161280b8332d539d606163234756f1eae","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/approval/dialog.py
 msgid "tui.approval.reuse.title"
+msgstr ""
+
+#. English: The risk definitions could not be loaded.
+#. chrys-meta={"fingerprint":"1bb7592ee2026f1ec271d16fd198cb4be1e1677c0077172fdf0ebb09bfb07d96","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.asset_unavailable"
+msgstr ""
+
+#. English: The approval model rejected authentication or access. Check the API
+#. key and model permissions.
+#. chrys-meta={"fingerprint":"5c675160b85ca9cabebce3b0ba5e90b3cf5c1d2851af6b3e435f00d85c91119f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.auth_failed"
+msgstr ""
+
+#. English: Automatic review failed. Please check the action.
+#. chrys-meta={"fingerprint":"e6a14f280c8028c5c439ba0d5f392d05b00bd00018c98805446c8cdcacf90f74","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.failed"
+msgstr ""
+
+#. English: There is not enough valid context to review this action.
+#. chrys-meta={"fingerprint":"80cea776974b1c7027ea1781e63c36b14023640d62326e926af540ca8ccd68d0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.invalid_input"
+msgstr ""
+
+#. English: The risk check returned an invalid response.
+#. chrys-meta={"fingerprint":"693f7df0c6218f8aec154626478a018255734a39b0006fb15a94cb82230a9c3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.invalid_shape"
+msgstr ""
+
+#. English: The approval model returned an invalid response.
+#. chrys-meta={"fingerprint":"28e63dc23808f38c6fe45ac4e1bfdddf98306804685bc7632e80136a23185d82","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.invalid_verdict"
+msgstr ""
+
+#. English: The approval model is rate limiting requests. Please try again
+#. later.
+#. chrys-meta={"fingerprint":"fe05fd429d9882aa592f51cefa7f59201fda61d079873b4d3ab9a5786f4041fd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.rate_limited"
+msgstr ""
+
+#. English: The approval model service returned an internal error. Please try
+#. again later.
+#. chrys-meta={"fingerprint":"52a4d260c9e82758ada2665fd090543144ea1a53d2566ae641a092353760c345","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.server_error"
+msgstr ""
+
+#. English: Automatic review timed out.
+#. chrys-meta={"fingerprint":"91f33bc2bd6171886ad186d6d591f453a208263d87dc66d5f0949da34b7113cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.timeout"
+msgstr ""
+
+#. English: Requires human confirmation: {conditions}.
+#. chrys-meta={"fingerprint":"8d216e000809e03daebedb05417fadc52eef6d609f531d5c7b921098fc6333a9","multiline":false,"placeholders":["conditions"]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.review.triggered"
+msgstr ""
+
+#. English: Deletion or destructive changes
+#. chrys-meta={"fingerprint":"40f27eb4b731fad44e4f8169ef139d0b4a463609416faab1a72bf6211f886333","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.destructive_action"
+msgstr ""
+
+#. English: External publication or transfer
+#. chrys-meta={"fingerprint":"fca65260a1707caa0f9aace61e4db8031c2f5210c48f15ce98cb48a79f042951","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.external_action"
+msgstr ""
+
+#. English: Actions beyond the requested scope
+#. chrys-meta={"fingerprint":"ae29394698d983d8bd226f5f0f7b9c6e93df24c38c5c48313502fac0fcf49d1e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.scope_escalation"
+msgstr ""
+
+#. English: Security or permission changes
+#. chrys-meta={"fingerprint":"0ccb3ecc7cc9a9b333514af148bfd35266dec1888da772877e9410187cff8377","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.security_boundary"
+msgstr ""
+
+#. English: Sensitive data or account operations
+#. chrys-meta={"fingerprint":"bbadd3af80674e4441568e558f49588aba2cb96c267d47b149ea65dda07631ae","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.sensitive_data"
+msgstr ""
+
+#. English: Changes to shared or production resources
+#. chrys-meta={"fingerprint":"663acb1cb9c542827be1c81d2aa786aaedcdcfaf57d70e40a92f7d9c6fdf4913","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.shared_mutation"
+msgstr ""
+
+#. English: Untrusted code or externally exposed services
+#. chrys-meta={"fingerprint":"f10e013eabef62565627db9b930cab1a221f93989c4eed24b35f008419650e2a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/approval/review_reason.py
+msgid "tui.approval.risk.untrusted_execution"
 msgstr ""
 
 #. English: Review sub-agent delegation
@@ -9475,6 +9586,18 @@ msgstr ""
 msgid "tui.sessions.workflow_count"
 msgstr ""
 
+#. English: Direct review
+#. chrys-meta={"fingerprint":"3714fcf3e79dc48a90c520205f3d804d11bf58da150260c9203b2e219f0d1007","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/rows.py
+msgid "tui.settings.approval.auto_review.direct"
+msgstr ""
+
+#. English: Individual risk checks
+#. chrys-meta={"fingerprint":"a25f3cd3d83a9cdeb15a8810bbffb9a95010df5d6591760394023e7c9c35328d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/rows.py
+msgid "tui.settings.approval.auto_review.formal"
+msgstr ""
+
 #. English: ⚠
 #. chrys-meta={"fingerprint":"eca56b71fa7c94e68d974945338ab5d8226beb51ebbe48fcc75bb2d90ecd061e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/rows.py
@@ -9654,6 +9777,14 @@ msgstr ""
 #. chrys-meta={"fingerprint":"4664a03299f05cf4eba84a768e8af328d4ac74381e485614890aa575faa295ce","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.app.update_check"
+msgstr ""
+
+#. English: Only used in auto mode. Defaults to direct review. Direct review
+#. judges the action as a whole; individual risk checks use a fixed checklist
+#. and ask you to confirm any flagged risk.
+#. chrys-meta={"fingerprint":"320c039e30e2778c1aac526bfb07e02337e45aed76344d39d2fd9f49fadf21ba","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.approval.auto_review"
 msgstr ""
 
 #. English: Approval mode at the next launch; /approval changes both the

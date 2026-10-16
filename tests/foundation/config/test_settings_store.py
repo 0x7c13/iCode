@@ -74,6 +74,17 @@ def _write_user_env(config_dir: Path, text: str) -> Path:
     return path
 
 
+def test_auto_review_defaults_and_persists(config_dir: Path) -> None:
+    key = "approval.auto_review"
+    freeze_process_env()
+    assert load_settings(env={}).settings.approval_auto_review == "direct"
+    assert persist({key: "formal"}).written == {key: "formal"}
+    assert load_settings().settings.approval_auto_review == "formal"
+    assert load_settings(env={"CHRYS_APPROVAL_AUTO_REVIEW": "invalid"}).settings.approval_auto_review == "direct"
+    entry = specs_by_field(Settings)["approval_auto_review"]
+    assert (entry.key, entry.apply, entry.kind, entry.choices) == (key, Apply.RELOAD, Kind.ENUM, ("direct", "formal"))
+
+
 def _clear_theme(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CHRYS_THEME", raising=False)
 

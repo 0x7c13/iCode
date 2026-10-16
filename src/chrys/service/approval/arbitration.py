@@ -5,28 +5,29 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.events.types import ApprovalAutoFulfillBlocked, ApprovalReviewed
+from chrys.service.approval.review_types import ApprovalJudgeInput as ApprovalJudgeInput
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
-    from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ApprovalJudgeInput:
-    """Judge-only fields kept separate from spoof-proof presentation fields."""
+_log = logging.getLogger(__name__)
 
-    tool_name: str
-    tool_kind: str
-    args: dict[str, Any]
-    user_message: str
-    user_messages: list[str]
-    workspace_roots: list[str]
+
+def _record_verdict(verdict: JudgeVerdict, callback: Callable[[JudgeVerdict], None] | None) -> None:
+    if callback is not None:
+        try:
+            callback(verdict)
+        except Exception:
+            _log.warning("Approval audit callback failed", exc_info=True)
 
 
 class ApprovalDecisionArbiter:
@@ -53,10 +54,15 @@ class ApprovalDecisionArbiter:
         decision_future: asyncio.Future[Any],
         approved_value: Any,
         log_dir: Path | None,
+        on_verdict: Callable[[JudgeVerdict], None] | None = None,
     ) -> None:
         """Publish a verdict and fulfil only while no user decision has won."""
-        from chrys.service.approval.judge import JudgeVerdict
+        from chrys.service.approval.judge import FormalEvaluationCancelled, JudgeVerdict
 
+        # A response can win between task creation and its first instruction.
+        # Do not spend a model call or emit a stale review in that case.
+        if decision_future.done():
+            return
         try:
             verdict = await judge.evaluate(
                 user_message=judge_input.user_message,
@@ -68,16 +74,29 @@ class ApprovalDecisionArbiter:
                 request_id=request_id,
                 log_dir=log_dir,
             )
+        except FormalEvaluationCancelled as exc:
+            # Owner-only evidence (e.g. ACP audit ring); no UI verdict and no
+            # future fulfillment after cancellation or a human decision.
+            _record_verdict(exc.verdict, on_verdict)
+            return
         except asyncio.CancelledError:
             return
         except Exception as exc:
             verdict = JudgeVerdict(approved=False, reason=f"Judge evaluation failed: {exc}")
 
+        # Middleware cancels the task when a human responds.  This additional
+        # guard covers a response that wins while a provider cancellation is
+        # being delivered, so no late Judge verdict reaches the UI.
+        _record_verdict(verdict, on_verdict)
+        if decision_future.done():
+            return
         await self._bus.publish(
             ApprovalReviewed(
                 request_id=request_id,
                 approved=verdict.approved,
                 reason=verdict.reason,
+                triggered=verdict.triggered,
+                failure_reason=verdict.failure_reason,
                 session_id=self._session_id,
             )
         )

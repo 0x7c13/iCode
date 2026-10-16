@@ -56,6 +56,7 @@ from chrys.foundation.models.ask_user import (
     validate_request_input_response,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.text.images import MAX_IMAGE_BYTES
 from chrys.foundation.tool_result_metadata import TOOL_FAILED_METADATA_KEY, TOOL_INTERRUPTED_METADATA_KEY
 from chrys.foundation.trajectory.context import TrajectoryContext
@@ -73,7 +74,7 @@ from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
-    from chrys.service.approval.judge import ApprovalJudge
+    from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
     from chrys.service.approval.turn_context import TurnContextReader
 
 logger = logging.getLogger(__name__)
@@ -395,6 +396,32 @@ class AcpUpdateTranslator:
                     "kind": preview_text(kind),
                     "rawInput": _bounded_value(raw_input),
                     "outcome": outcome,
+                },
+            }
+        )
+
+    def record_permission_review(self, request_id: str, audit: Mapping[str, Any]) -> None:
+        """Append Formal Judge route evidence for a remote permission request."""
+
+        def safe_copy(value: Any) -> Any:
+            if isinstance(value, str):
+                return surrogate_safe_text(value)
+            if isinstance(value, Mapping):
+                return {
+                    surrogate_safe_text(key) if isinstance(key, str) else key: safe_copy(item)
+                    for key, item in value.items()
+                }
+            if isinstance(value, list | tuple):
+                return [safe_copy(item) for item in value]
+            return value
+
+        self._append_audit_item(
+            {
+                "seq": None,
+                "update": {
+                    "sessionUpdate": "permission_review",
+                    "request_id": request_id,
+                    "formal_judge": _bounded_value(safe_copy(audit)),
                 },
             }
         )
@@ -789,6 +816,10 @@ class AcpPermissionBroker:
             outcome=outcome,
         )
 
+    def _record_judge_audit(self, request_id: str, audit: Mapping[str, Any] | None) -> None:
+        if audit is not None and self._translator is not None:
+            self._translator.record_permission_review(request_id=request_id, audit=audit)
+
     async def _decide_permission(
         self,
         tool_call: ToolCallUpdate,
@@ -811,11 +842,18 @@ class AcpPermissionBroker:
             context=self._trajectory_context,
             target_operation_id=self._trajectory_boundary_operation_id,
         )
+        judge_audit: Mapping[str, Any] | None = None
         async with OneShotCorrelation(self._bus, ApprovalResponse) as correlation:
             request_id = correlation.request_id
+
+            def record_verdict(verdict: JudgeVerdict) -> None:
+                nonlocal judge_audit
+                judge_audit = verdict.audit
+                self._record_judge_audit(request_id, judge_audit)
+
             future = correlation.future
             self._permission_waits[request_id] = future
-            judging = mode == ApprovalMode.AUTO and self._judge is not None
+            judging = mode is ApprovalMode.AUTO and self._judge is not None
             judge_title, judge_kind, raw_args = _permission_judge_fields(tool_call)
             presentation_title = preview_text(tool_call.title or "tool", limit=_MAX_FIELD_CHARS - 4)
             published_args = _raw_args_dict(tool_call.raw_input)
@@ -887,6 +925,7 @@ class AcpPermissionBroker:
                                 session_id=self._session_id,
                             ),
                             log_dir=None,
+                            on_verdict=record_verdict,
                         ),
                     )
             except BaseException:
@@ -898,8 +937,14 @@ class AcpPermissionBroker:
                 response = await future
             except asyncio.CancelledError:
                 should_notify = self._permission_waits.pop(request_id, None) is not None
+                # The verdict callback must finish before interruption records its audit;
+                # waiting for the finally block to drain the judge would be too late.
+                if judge_task is not None and not judge_task.done():
+                    judge_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await judge_task
                 if approval_trace is not None:
-                    approval_trace.interrupted_soon(reason_code="cancelled")
+                    approval_trace.interrupted_soon(reason_code="cancelled", judge_audit=judge_audit)
                 if should_notify:
                     await self._bus.publish(ApprovalCancelled(request_id=request_id, session_id=self._session_id))
                 return PermissionDecision.cancelled()
@@ -919,7 +964,7 @@ class AcpPermissionBroker:
         # here would let the remote run a tool after the global interrupt.
         if self._aborted:
             if approval_trace is not None:
-                approval_trace.interrupted_soon(reason_code="cascade_abort")
+                approval_trace.interrupted_soon(reason_code="cascade_abort", judge_audit=judge_audit)
             return PermissionDecision.cancelled()
         if response.approved:
             if approval_trace is not None:
@@ -928,6 +973,7 @@ class AcpPermissionBroker:
                     decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE,
                     reason_code="approved",
                     arguments_modified=False,
+                    judge_audit=judge_audit,
                 )
             return PermissionDecision.allow(allow.option_id)
         if approval_trace is not None:
@@ -936,6 +982,7 @@ class AcpPermissionBroker:
                 decider=ApprovalDecider.USER if correlation.resolved_by_event else ApprovalDecider.JUDGE,
                 reason_code="rejected",
                 arguments_modified=False,
+                judge_audit=judge_audit,
             )
         return PermissionDecision.deny(reject.option_id) if reject is not None else PermissionDecision.cancelled()
 

@@ -93,6 +93,7 @@ class WorkflowSessionOwner:
         self.trajectory: SessionTrajectory | None = None
         self._judge_model: Callable[[ModelProfile | None], ModelProfile] | None = None
         self._judges: dict[str, ApprovalJudge] = {}
+        self._auto_review = "direct"
         self.state: WorkflowSessionState | None = None
         self.title = ""
         self.hooks_transferred = False
@@ -248,15 +249,18 @@ class WorkflowSessionOwner:
             return resolve_judge_profile(model_registry, settings, run_model if node_model is None else node_model)
 
         self._judge_model = judge_model
+        self._auto_review = settings.approval_auto_review
         self._judges = {}
 
     def judge_for(self, node_model: ModelProfile | None) -> ApprovalJudge | None:
         """The approval judge for a node that runs on ``node_model``; ``None`` before a run with agents.
 
+        Nodes that resolve to the same judge model share one judge.
+
         With no judge model configured, the judge follows its node. A run needs no model of its
         own when every node brings one (its own, or its agent profile's), and a judge left on the
         run's missing model would fail every call those nodes make. A node without a model (ACP)
-        gets the run's. Nodes that resolve to the same judge model share one judge.
+        gets the run's.
         """
         if self._judge_model is None:
             return None
@@ -267,6 +271,7 @@ class WorkflowSessionOwner:
         if judge is None:
             judge = ApprovalJudge(
                 profile,
+                auto_review=self._auto_review,
                 session_id=derive_llm_route_session_id(session_id, route_kind="approval-judge", model_profile=profile),
                 parent_session_id=session_id,
                 session_dir=session.session_dir,

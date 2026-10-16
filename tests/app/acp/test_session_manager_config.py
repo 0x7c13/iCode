@@ -331,6 +331,16 @@ def test_set_config_option_keeps_non_bypass_approval_mode(monkeypatch: pytest.Mo
     assert _stored_setting(tmp_path, "approval.default_mode") == "manual"
 
 
+@pytest.mark.parametrize("key", ["approval_auto_review", "CHRYS_APPROVAL_AUTO_REVIEW"])
+def test_auto_review_option_writes_user_setting(monkeypatch, tmp_path, key):
+    manager = _manager(None, _StaticListStore([]))
+    _redirect_config_dir(monkeypatch, tmp_path)
+    result = manager.set_config_option(key, "formal")
+    assert _stored_setting(tmp_path, "approval.auto_review") == "formal"
+    assert result["settingKey"] == "approval.auto_review"
+    assert result["envKey"] == "CHRYS_APPROVAL_AUTO_REVIEW"
+
+
 def test_set_config_option_rejects_non_int_rollback_snapshots(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     manager = _manager(None, _StaticListStore([]))
     _redirect_config_dir(monkeypatch, tmp_path)

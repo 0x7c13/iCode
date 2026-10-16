@@ -35,6 +35,39 @@ With the default settings unchanged, the TUI starts in manual approval mode on i
 
 To change only the default for the next launch without changing the current approval mode, press **F10** to open **Settings** and change **Default approval mode** on the **Security** tab. **Settings** does not offer bypass mode as a default that can be saved.
 
+## Choose how automatic review works
+
+Automatic mode uses **Direct review** by default. Direct review judges the action as a whole; **Individual risk checks** use a fixed checklist and ask you to confirm any flagged risk.
+
+| Strategy | What you can expect |
+| --- | --- |
+| Direct review (default) | The approval model considers your request and the proposed action together. It runs actions it judges safe and asks you about the others. |
+| Individual risk checks | The model checks the risks listed below one by one. A detected risk opens an approval dialog with an explanation, so you can approve or decline. |
+
+Both strategies ask you to confirm file deletion, including temporary files and build outputs. With Individual risk checks, the dialog identifies the matching risk from the checklist below.
+
+To choose a strategy:
+
+1. Enter `/approval auto` to switch to automatic mode.
+2. Press **F10**, open **Security → Approval**, and find **Automatic review strategy**.
+3. Choose **Direct review** or **Individual risk checks**, then close Settings. Your choice is saved automatically and takes effect when the window closes. A review already in progress finishes as before.
+
+Individual risk checks cover these actions:
+
+| Action | Examples |
+| --- | --- |
+| Sending or publishing content outside your computer | Pushing code, uploading files, or sending messages |
+| Deleting or destroying data | Removing files or folders, emptying a file, or discarding changes that cannot be recovered |
+| Changing shared or production systems | Deploying a service or changing a shared database |
+| Accessing sensitive information | Reading API keys or account credentials |
+| Changing security settings | Granting broader permissions or disabling security checks |
+| Running untrusted code or exposing a service | Downloading and running a script, or making a local service accessible to others |
+| Going beyond your request | Changing configuration when you only asked to inspect it |
+
+When no risk is found, the action can run automatically. If something is unclear, iCode reviews the action again before deciding whether to run it or ask you. For workflows started without task input, actions with no detected risk also get this extra review. If review fails or times out, an approval dialog lets you decide what to do.
+
+This setting applies only in automatic mode. Actions that do not need approval and [approvals you have already remembered](#remember-approvals) continue to work as before.
+
 ## Handle approval requests in the TUI
 
 Tool calls that require approval open an **Approval Required** dialog showing the tool name and call arguments. For file edits, it also shows the planned diff so you can review changes before they are made. An argument too long to show at once, such as the whole content of a file, appears in a box with a scroll bar: scroll it with the mouse wheel, or click it and use the arrow keys, **Page Up**, **Page Down**, **Home** and **End** to read it to the end. Characters that could hide text or change the order it shows in, such as terminal control codes, appear as **�**; copying an argument still gives its original text.

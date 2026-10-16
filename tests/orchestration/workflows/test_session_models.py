@@ -407,3 +407,39 @@ async def test_a_judge_without_a_model_of_its_own_runs_on_its_nodes_model(
         assert [call.args[0].profile for call in evaluate.await_args_list] == [bound]
     finally:
         await host.shutdown()
+
+
+@pytest.mark.parametrize("auto_review", ["direct", "formal"])
+async def test_workflow_judge_uses_run_strategy_and_shares_matching_profiles(tmp_path, auto_review):
+    from chrys.foundation.config.settings import Settings
+    from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.workspace import Workspace
+    from chrys.orchestration.workflows.session import WorkflowSessionOwner
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.session.persistence import SessionPersistence
+
+    registry = ModelProfileRegistry()
+    main = ModelProfile(id="main", name="Main", model_id="reasoning-main")
+    node = replace(main, id="node", name="Node", model_id="reasoning-node")
+    judge_profile = replace(main, id="judge", name="Judge", model_id="judge-test")
+    for profile in (main, node, judge_profile):
+        registry.register(profile)
+    bus = EventBus()
+    owner = WorkflowSessionOwner(
+        bus=bus,
+        persistence=SessionPersistence(JsonFileStateStore(tmp_path / "sessions"), bus),
+        session_id="workflow-test",
+        workspace=Workspace.from_cwd(str(tmp_path)),
+    )
+    settings = Settings(
+        model_profile=main.id, approval_judge_model_profile=judge_profile.id, approval_auto_review=auto_review
+    )
+    owner._prepare_agents(settings, registry)
+    try:
+        first, second = owner.judge_for(None), owner.judge_for(node)
+        assert first.profile == second.profile == judge_profile
+        assert owner.judge_for(node) is second
+        assert first is second
+        assert first._auto_review == auto_review
+    finally:
+        await owner.close()

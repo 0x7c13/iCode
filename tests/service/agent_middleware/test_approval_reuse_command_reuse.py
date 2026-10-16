@@ -167,6 +167,7 @@ async def test_judge_review_preserves_explicit_human_remember_choice(runtime, mo
             decider=ApprovalDecider.USER if human_remembers else ApprovalDecider.JUDGE,
             reason_code="",
             arguments_modified=False,
+            judge_audit=None,
         )
         assert bool(binding.service.match(reuse_candidate(binding, context))) is human_remembers
     finally:

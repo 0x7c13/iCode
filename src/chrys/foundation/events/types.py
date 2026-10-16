@@ -730,6 +730,8 @@ class ApprovalReviewed(Event):
     request_id: str = ""
     approved: bool = False
     reason: str = ""
+    triggered: tuple[str, ...] = ()
+    failure_reason: str | None = None
 
 
 @dataclass

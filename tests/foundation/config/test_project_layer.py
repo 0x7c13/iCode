@@ -65,6 +65,13 @@ def _enable_gate(config_dir: Path) -> Path:
     return _write_user_yaml(config_dir, "project:\n  config_enabled: true\n")
 
 
+def test_project_cannot_choose_auto_review_strategy(config_dir: Path, project_root: Path) -> None:
+    freeze_process_env()
+    _enable_gate(config_dir)
+    _write_project_yaml(project_root, "approval:\n  auto_review: formal\n")
+    assert load_settings(project_root=project_root).settings.approval_auto_review == "direct"
+
+
 # ── the gate ─────────────────────────────────────────────────────────
 
 
