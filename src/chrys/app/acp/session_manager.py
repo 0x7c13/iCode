@@ -73,8 +73,9 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from chrys.service.profiles.models.serializer import delete_profile as delete_model_profile
 from chrys.service.profiles.models.serializer import save_profile as save_model_profile
-from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, StateStore
+from chrys.service.state.store import ChatSessionMeta, JsonFileStateStore, SessionTranscript, StateStore
 from chrys.service.tools.names import chrys_reserved_tool_names
+from chrys.service.trajectory.state import TurnRecord
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,38 @@ class ManagedSession:
     # acquire this lock before shutdown so a host cannot be torn down while a
     # prompt is still draining its terminal events.
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Turns admitted or waiting for the lock above. The lock alone cannot tell
+    # the two apart from the outside: ``locked()`` reads False between a release
+    # and the next waiter's acquisition, and again while a waiter is queued, so
+    # a turn admitted exclusively has to be counted, not inferred.
+    _turns_reserved: int = 0
     closing: bool = False
+
+    @property
+    def turns_reserved(self) -> bool:
+        """Whether a turn is running or already admitted to run.
+
+        A turn waiting for ``prompt_lock`` counts: another request admitted now
+        would queue behind it, run after it, and be answered long after its
+        caller gave up.
+        """
+        return self._turns_reserved > 0
+
+    def reserve_turn(self) -> bool:
+        """Admit one turn under this session, refusing a second.
+
+        The whole point is to be the first thing a caller does: the check and
+        the reservation are one step, so no caller can act on a reading that
+        another request invalidates before it acts.
+        """
+        if self._turns_reserved:
+            return False
+        self._turns_reserved += 1
+        return True
+
+    def release_turn(self) -> None:
+        """Give up a reservation taken by :meth:`reserve_turn`."""
+        self._turns_reserved = max(0, self._turns_reserved - 1)
 
     async def shutdown(self) -> None:
         """Shut down the host, then drain the title updater.
@@ -1064,8 +1096,8 @@ class AcpSessionManager:
             failure_message="Model switch failed.",
         )
 
-    async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, list[dict[str, object]] | None]:
-        """Return raw persisted messages, scoped to the requesting workspace cwd.
+    async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, SessionTranscript | None]:
+        """Return persisted messages and turn records, scoped to the requesting workspace cwd.
 
         Mirrors ``load``/``delete`` scoping so a client cannot read another
         workspace's session history just by knowing its id.
@@ -1074,15 +1106,41 @@ class AcpSessionManager:
         existing = self._resolve_active_session(session_id)
         if existing is not None:
             self._validate_active_cwd(existing, resolved_cwd)
-            messages = await self._state_store.load_session_raw(
+            transcript = await self._state_store.load_session_transcript(
                 existing.session_id,
                 prefer_recovery=existing.host.engine.recovered_from_sidecar,
             )
-            return existing.session_id, messages
+            return existing.session_id, transcript
         canonical_id, meta = await self._resolve_session_meta(session_id)
         self._validate_saved_cwd(meta, resolved_cwd)
         prefer_recovery = await self._meta_resolved_from_recovery(canonical_id, meta)
-        return canonical_id, await self._state_store.load_session_raw(canonical_id, prefer_recovery=prefer_recovery)
+        return canonical_id, await self._state_store.load_session_transcript(
+            canonical_id, prefer_recovery=prefer_recovery
+        )
+
+    async def session_turn_context(self, *, cwd: str | None, session_id: str) -> tuple[str, Path, list[TurnRecord]]:
+        """Return a session's directory and turn registry, scoped to the requesting cwd.
+
+        The same scope as ``session_history``. The registry is read where it is
+        authoritative: an active session's engine holds the turns it has run but
+        not yet saved, while an inactive one is read from its persisted state. A
+        session with no stored state and no live engine returns no records
+        rather than failing — its trajectory log is still worth reading.
+        """
+        resolved_cwd = self._resolve_requested_cwd(cwd)
+        existing = self._resolve_active_session(session_id)
+        if existing is not None:
+            self._validate_active_cwd(existing, resolved_cwd)
+            return (
+                existing.session_id,
+                self._state_store.session_dir(existing.session_id),
+                existing.host.engine.turn_records(),
+            )
+        canonical_id, meta = await self._resolve_session_meta(session_id)
+        self._validate_saved_cwd(meta, resolved_cwd)
+        prefer_recovery = await self._meta_resolved_from_recovery(canonical_id, meta)
+        transcript = await self._state_store.load_session_transcript(canonical_id, prefer_recovery=prefer_recovery)
+        return canonical_id, self._state_store.session_dir(canonical_id), transcript.turns if transcript else []
 
     async def reload_settings(self, session_id: str, *, warnings: list[Warning] | None = None) -> SettingsReloaded:
         """Reload settings/profile files for an active session.

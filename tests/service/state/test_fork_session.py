@@ -294,12 +294,17 @@ async def test_fork_session_copies_and_rewrites_session_identity(tmp_path: Path)
     assert fork_envelope["state"]["chrys_mutations"]["turns"][0]["mutations"][0]["path"] == str(workspace_file)
 
 
-async def test_fork_drops_the_turn_registry_that_names_the_parents_log(tmp_path: Path) -> None:
+async def test_fork_carries_the_turn_registry_with_its_log_sequences_cleared(tmp_path: Path) -> None:
     store = JsonFileStateStore(tmp_path)
-    registry = {"turns": {"1": {"turn_id": "a" * 32, "started_sequence": 42}}}
+    registry = {
+        "turn_log": [
+            {"turn_number": 1, "turn_id": "a" * 32, "started_sequence": 42, "origin_session_id": "grandparent"},
+            {"turn_number": 2, "turn_id": "b" * 32, "opening_item_id": "item-b"},
+        ]
+    }
     await store.save_session(
         "parent",
-        {"messages": [Message("user", ["hi"])], "compressed_msgs": [], TRAJECTORY_STATE_KEY: dict(registry)},
+        {"messages": [Message("user", ["hi"])], "compressed_msgs": [], TRAJECTORY_STATE_KEY: registry},
     )
     parent_dir = store.session_dir("parent")
     snapshots = parent_dir / "snapshots"
@@ -311,9 +316,14 @@ async def test_fork_drops_the_turn_registry_that_names_the_parents_log(tmp_path:
     fork_dir = store.session_dir(fork_id)
     for name in ("session.json", "snapshots/turn_1.json"):
         envelope = json.loads((fork_dir / name).read_text(encoding="utf-8"))
+        entries = envelope["state"][TRAJECTORY_STATE_KEY]["turn_log"]
         # The fork numbers its own log from one, so a sequence copied from the
         # parent would make a rollback here name a range that never existed.
-        assert TRAJECTORY_STATE_KEY not in envelope["state"], name
+        # Everything else about the turn rides along, including where it came
+        # from: a rollback that supersedes it still has to name it.
+        assert all("started_sequence" not in entry for entry in entries), name
+        assert [entry["turn_id"] for entry in entries] == ["a" * 32, "b" * 32]
+        assert [entry["origin_session_id"] for entry in entries] == ["grandparent", "parent"]
     parent_envelope = json.loads((parent_dir / "session.json").read_text(encoding="utf-8"))
     assert parent_envelope["state"][TRAJECTORY_STATE_KEY] == registry
 

@@ -57,10 +57,12 @@ from chrys.foundation.events.types import (
     StateChanged,
     TodoListUpdated,
     ToolCompacted,
+    TurnStarted,
     UsageUpdate,
     UserInjectResult,
     UserInterrupt,
     UserMessage,
+    UserRetry,
     Warning,
     WorkflowCancelRequest,
     WorkflowNodeStateChanged,
@@ -133,6 +135,7 @@ _HEADLESS_RUN_EVENT_TYPES = (
     InvocationMessage,
     AgentRuntimeUpdated,
     AgentThinking,
+    TurnStarted,
     ApprovalModeUpdated,
     ApprovalRequest,
     ApprovalReviewed,
@@ -481,15 +484,37 @@ class ChrysSessionHost:
         async for event in self._iter_turn_events(message, raise_for_outcome=False):
             yield event
 
+    async def iter_retry_events(self, text: str | None = None) -> AsyncIterator[Event]:
+        """Retry the pending turn and yield events, recording a structured terminal outcome.
+
+        *text* is optional guidance for the retry, not a new prompt: it is
+        persisted inside the turn being retried. A retry is admitted only when
+        the engine is willing (:attr:`AgentEngine.can_retry`); otherwise this
+        runs nothing and resolves every caller the same way a turn that
+        produced no answer does.
+        """
+        async for event in self._iter_run_events(
+            UserRetry(text=text or "", session_id=self.session_id), raise_for_outcome=False
+        ):
+            yield event
+
     async def _iter_turn_events(self, message: str | UserMessage, *, raise_for_outcome: bool) -> AsyncIterator[Event]:
+        async for event in self._iter_run_events(
+            self._coerce_user_message(message), raise_for_outcome=raise_for_outcome
+        ):
+            yield event
+
+    async def _iter_run_events(
+        self, event: UserMessage | UserRetry, *, raise_for_outcome: bool
+    ) -> AsyncIterator[Event]:
         if self._run_lock.locked():
             error_message = "Concurrent turns are not supported for a ChrysSessionHost."
             raise RuntimeError(error_message)
         async with self._run_lock:
             self._last_turn_outcome = None
             self._cancel_requested = False
-            async for event in self._iter_run_events_locked(message, raise_for_outcome=raise_for_outcome):
-                yield event
+            async for event_out in self._iter_run_events_locked(event, raise_for_outcome=raise_for_outcome):
+                yield event_out
 
     async def cancel_current_turn(self) -> None:
         """Request cancellation for the active turn, if any."""
@@ -498,11 +523,15 @@ class ChrysSessionHost:
 
     async def _iter_run_events_locked(
         self,
-        message: str | UserMessage,
+        turn_event: UserMessage | UserRetry,
         *,
         raise_for_outcome: bool,
     ) -> AsyncIterator[Event]:
-        """Run one user turn while the host run lock is held."""
+        """Run one user turn while the host run lock is held.
+
+        *turn_event* is the one event this turn publishes to start it: a user
+        message for a fresh turn, a retry for a turn being resumed.
+        """
         final: InvocationMessage | None = None
         error: Error | None = None
         question: QuestionToUser | None = None
@@ -529,10 +558,9 @@ class ChrysSessionHost:
         async with self._bus.stream(*_HEADLESS_RUN_EVENT_TYPES) as stream:
             ask_user_interrupted = False
 
-            async def _publish_user_turn() -> None:
+            async def _publish_turn_event() -> None:
                 nonlocal run_task
-                user_event = self._coerce_user_message(message)
-                await self._bus.publish(user_event)
+                await self._bus.publish(turn_event)
                 run_task = asyncio.create_task(self._engine.wait_for_run_task())
 
             async def _event_task_ready_after_checkpoint() -> bool:
@@ -545,7 +573,7 @@ class ChrysSessionHost:
 
             next_event_task = asyncio.create_task(stream.__anext__())
             if self._started:
-                await _publish_user_turn()
+                await _publish_turn_event()
             else:
                 start_task = asyncio.create_task(self.start())
 
@@ -581,7 +609,7 @@ class ChrysSessionHost:
                             continue
                         await start_task
                         start_task = None
-                        await _publish_user_turn()
+                        await _publish_turn_event()
                         continue
 
                     if run_task is not None and run_task in done:

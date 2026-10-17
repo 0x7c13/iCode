@@ -45,6 +45,48 @@ from tests.app.acp._server_fakes import (
     _WarningRejectingClient,
 )
 
+# ACP carries the client's ``messageId`` as a UUID: the server rejects anything
+# else with ``invalid_params`` before it starts a turn.
+_CLIENT_MESSAGE_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+# Session totals around one turn, used to pin the split between ``usage``
+# (this turn's spend) and ``sessionUsage`` (the cumulative total).
+_USAGE_BASELINE = UsageUpdate(
+    total_session_input_tokens=70,
+    total_session_output_tokens=20,
+    total_session_tokens=100,
+    total_session_cache_hit_tokens=11,
+)
+_USAGE_AFTER_TURN = UsageUpdate(
+    total_session_input_tokens=79,
+    total_session_output_tokens=24,
+    total_session_tokens=113,
+    total_session_cache_hit_tokens=13,
+)
+
+
+class _RecordingUsageEngine(_FakeEngine):
+    """An engine whose cumulative usage advances once the turn has run.
+
+    The server snapshots usage twice per turn — at admission and in the
+    ``finally`` — so the second snapshot is what the completed turn added to
+    the session counters, and the first is the baseline it is measured against.
+    """
+
+    def __init__(self, *, before: UsageUpdate, after: UsageUpdate | None = None) -> None:
+        super().__init__(usage=after if after is not None else before)
+        self._before = before
+        self._after = after if after is not None else before
+        self._snapshots = 0
+
+    @property
+    def usage_publisher(self):
+        return SimpleNamespace(make_usage_event=self._snapshot_usage)
+
+    def _snapshot_usage(self, *, session_id: str | None = None) -> UsageUpdate:
+        self._snapshots += 1
+        return self._before if self._snapshots == 1 else self._after
+
 
 def _stub_replay(monkeypatch: pytest.MonkeyPatch, *, error: BaseException | None = None) -> list[tuple[Any, ...]]:
     """Replace the module-level history replay and return the calls it records.
@@ -105,22 +147,16 @@ async def test_prompt_returns_cancelled_stop_reason() -> None:
     server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(client)
 
-    response = await server.prompt([text_block("stop")], session_id="s1", message_id="m1")
+    response = await server.prompt([text_block("stop")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
 
     assert response.stop_reason == "cancelled"
-    assert response.user_message_id == "m1"
+    assert response.user_message_id == _CLIENT_MESSAGE_ID
     assert len(client.updates) == 1
     assert client.updates[0].update.session_update == "agent_message_chunk"
 
 
 @pytest.mark.anyio
 async def test_prompt_snapshots_cumulative_usage_in_finally_while_holding_prompt_lock() -> None:
-    usage = UsageUpdate(
-        total_session_input_tokens=70,
-        total_session_output_tokens=20,
-        total_session_tokens=100,
-        total_session_cache_hit_tokens=11,
-    )
     host = _FakeHost(event_bus=EventBus(), outcome=EndTurn())
     manager = _FakeManager(host)
     snapshot_lock_states: list[bool] = []
@@ -133,7 +169,7 @@ async def test_prompt_snapshots_cumulative_usage_in_finally_while_holding_prompt
         def _snapshot_usage(self, *, session_id: str | None = None) -> UsageUpdate:
             assert session_id == "s1"
             snapshot_lock_states.append(manager._session.prompt_lock.locked())
-            return usage
+            return _USAGE_BASELINE if len(snapshot_lock_states) == 1 else _USAGE_AFTER_TURN
 
     host.engine = _Engine()  # type: ignore[assignment]
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
@@ -141,12 +177,17 @@ async def test_prompt_snapshots_cumulative_usage_in_finally_while_holding_prompt
 
     response = await server.prompt([text_block("run")], session_id="s1")
 
-    assert snapshot_lock_states == [True]
+    # One snapshot before the turn and one in the finally: the response reports
+    # the difference, and both are taken while the prompt lock is held.
+    assert snapshot_lock_states == [True, True]
     assert response.usage is not None
-    assert response.usage.input_tokens == 70
-    assert response.usage.output_tokens == 20
-    assert response.usage.total_tokens == 100
-    assert response.usage.cached_read_tokens == 11
+    assert response.usage.input_tokens == 9
+    assert response.usage.output_tokens == 4
+    assert response.usage.total_tokens == 13
+    assert response.usage.cached_read_tokens == 2
+    assert response.field_meta == {
+        "chrys": {"sessionUsage": {"inputTokens": 79, "outputTokens": 24, "totalTokens": 113, "cachedReadTokens": 13}}
+    }
 
 
 @pytest.mark.anyio
@@ -154,8 +195,8 @@ async def test_prompt_errored_outcome_carries_usage_in_request_error_data() -> N
     host = _FakeHost(
         event_bus=EventBus(),
         outcome=Errored(error=Error(code="model_failed", message="provider stopped")),
-        engine=_FakeEngine(
-            usage=UsageUpdate(
+        engine=_RecordingUsageEngine(
+            before=UsageUpdate(
                 total_session_input_tokens=30,
                 total_session_output_tokens=5,
                 total_session_tokens=35,
@@ -169,7 +210,14 @@ async def test_prompt_errored_outcome_carries_usage_in_request_error_data() -> N
         await server.prompt([text_block("run")], session_id="s1")
 
     assert exc_info.value.data["code"] == "model_failed"
+    # ``usage`` is this turn's spend, ``sessionUsage`` the session total it was
+    # measured against.
     assert exc_info.value.data["usage"] == {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+    }
+    assert exc_info.value.data["sessionUsage"] == {
         "inputTokens": 30,
         "outputTokens": 5,
         "totalTokens": 35,
@@ -186,8 +234,8 @@ async def test_prompt_execution_exception_carries_usage_but_pre_execution_valida
 
     host = _ExplodingHost(
         event_bus=EventBus(),
-        engine=_FakeEngine(
-            usage=UsageUpdate(
+        engine=_RecordingUsageEngine(
+            before=UsageUpdate(
                 total_session_input_tokens=9,
                 total_session_output_tokens=4,
                 total_session_tokens=13,
@@ -200,6 +248,11 @@ async def test_prompt_execution_exception_carries_usage_but_pre_execution_valida
     with pytest.raises(RequestError) as executed:
         await server.prompt([text_block("run")], session_id="s1")
     assert executed.value.data["usage"] == {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+    }
+    assert executed.value.data["sessionUsage"] == {
         "inputTokens": 9,
         "outputTokens": 4,
         "totalTokens": 13,
@@ -397,7 +450,7 @@ async def test_prompt_forwards_todo_list_updates_as_plan_updates() -> None:
     server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(client)
 
-    await server.prompt([text_block("go")], session_id="s1", message_id="m1")
+    await server.prompt([text_block("go")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
 
     plans = _plan_updates(client)
     assert len(plans) == 1

@@ -118,6 +118,10 @@ class UserMessage(Event):
     # a new turn — also for an injection submit whose run ended before it was
     # admitted, so the frontend shows that turn instead of a queued injection.
     started_turn: bool = field(default=False, compare=False)
+    # A client-supplied id for this message (ACP ``messageId``), echoed back on
+    # the replay of this exact message. ``None`` for every frontend that has no
+    # id of its own; the backend mints one before the turn starts.
+    client_message_id: str | None = None
 
 
 @dataclass
@@ -346,6 +350,25 @@ class AgentThinking(Event):
     """Agent is thinking (optional thinking content)."""
 
     text: str | None = None
+
+
+@dataclass
+class TurnStarted(Event):
+    """A turn — a logical user question — began executing (backend → frontend).
+
+    Published once per pass, before the pass's first model request, so a
+    frontend can label everything that follows with the turn it belongs to.
+    A retry pass repeats the same ``turn_id`` with ``is_retry=True``: the id
+    names the question, not the attempt at answering it. ``turn_number`` is
+    the display ordinal and may repeat after a rollback; ``turn_id`` is the
+    identity.
+    """
+
+    turn_id: str = ""
+    turn_number: int = 0
+    is_retry: bool = False
+    user_message_id: str | None = None
+    """Id of the user message that opened the turn, when it has one."""
 
 
 @dataclass(frozen=True)
@@ -1265,6 +1288,13 @@ class RollbackResult(Event):
 
     rolled_back_user_text: str = ""
     """First user prompt from the discarded turn range, if available."""
+
+    superseded_turn_ids: list[str] = field(default_factory=list)
+    """Identities of the turns this rollback discarded, in the order they ran.
+
+    Includes turns a fork inherited and never ran here, which nothing in this
+    session's log can describe — this event is the only place their loss is
+    reported. The TUI ignores it."""
 
     files_reverted: int = 0
     """Count of files that were actually changed on disk by the revert

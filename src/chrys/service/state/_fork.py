@@ -57,7 +57,7 @@ from chrys.service.state._session_files import (
 from chrys.service.state._session_meta import resolve_session_kind
 from chrys.service.tools.background import BACKGROUND_DIR_NAME
 from chrys.service.tools.session_artifacts import reharden_document_image_artifacts
-from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY
+from chrys.service.trajectory.state import fork_turn_registry
 
 logger = logging.getLogger(__name__)
 
@@ -597,9 +597,11 @@ class SessionForkMixin:
         state = envelope.get("state")
         if isinstance(state, dict):
             # The fork records into a log of its own, numbered from one: the
-            # turn registry's sequences point into the parent's log and would
-            # make a rollback here name a range that never existed.
-            state.pop(TRAJECTORY_STATE_KEY, None)
+            # registry's sequences point into the parent's log and would make a
+            # rollback here name a range that never existed, so they are
+            # cleared. The turns themselves carry over — the fork inherits the
+            # conversation — restated with the session that first ran them.
+            fork_turn_registry(state, origin_session_id=parent_session_id)
             cls._rewrite_clipboard_mentions_in_state(
                 state,
                 parent_clipboard_root=parent_clipboard_root,

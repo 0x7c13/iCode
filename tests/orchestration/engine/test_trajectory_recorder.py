@@ -35,7 +35,7 @@ from chrys.foundation.trajectory.event_types import (
     TurnEndReason,
     TurnSuspendReason,
 )
-from chrys.foundation.trajectory.ids import is_valid_analytics_id
+from chrys.foundation.trajectory.ids import is_valid_analytics_id, new_analytics_id
 from chrys.foundation.trajectory.lease import WriterLease
 from chrys.foundation.trajectory.reader import last_event_of_type, read_trajectory
 from chrys.foundation.trajectory.segments import reassemble_array_slice
@@ -57,9 +57,12 @@ from chrys.service.trajectory.session import (
 from chrys.service.trajectory.state import (
     TRAJECTORY_STATE_KEY,
     TurnRecord,
-    forget_turns_after,
-    record_turn_started,
-    turn_record,
+    append_turn,
+    confirm_resumed_turn,
+    fork_turn_registry,
+    legacy_turn_records,
+    mark_turn_sequence,
+    turn_records,
 )
 from tests.support.trajectory_invariants import assert_trajectory_accounted
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_until
@@ -114,8 +117,30 @@ class BoundRecorder:
         if waits:
             await asyncio.gather(*waits, return_exceptions=True)
 
-    async def start_turn(self, turn_number: int, *, is_retry: bool = False, **overrides: Any) -> str:
+    async def start_turn(
+        self,
+        turn_number: int,
+        *,
+        is_retry: bool = False,
+        turn_id: str | None = None,
+        register: bool = True,
+        **overrides: Any,
+    ) -> str:
+        """Open a pass and register it the way the runner does; returns the pass id."""
+        pass_id = new_analytics_id()
+        logical_id = turn_id or pass_id
+        if register and not is_retry:
+            append_turn(
+                self.history_state,
+                TurnRecord(
+                    turn_number=turn_number,
+                    turn_id=logical_id,
+                    opening_item_id=overrides.get("opening_item_id"),
+                ),
+            )
         kwargs: dict[str, Any] = {
+            "turn_id": pass_id,
+            "logical_turn_id": logical_id,
             "turn_number": turn_number,
             "is_retry": is_retry,
             "agent_profile_fingerprint": AGENT_FP,
@@ -124,9 +149,23 @@ class BoundRecorder:
             "history_state": self.history_state,
         }
         kwargs.update(overrides)
-        turn_id = await self.recorder.turn_started(**kwargs)
-        assert turn_id is not None
-        return turn_id
+        opened = await self.recorder.turn_started(**kwargs)
+        assert opened == pass_id
+        return pass_id
+
+    def registry(self) -> list[TurnRecord]:
+        return turn_records(self.history_state)
+
+    def rollback_to(self, turn_number: int | None) -> tuple[list[TurnRecord], list[TurnRecord]]:
+        """Split the registry the way ``rollback.py`` does for a snapshot at *turn_number*.
+
+        ``None`` is the welcome-page branch: nothing is kept, so every
+        registered turn is superseded.
+        """
+        kept = [record for record in self.registry() if turn_number is not None and record.turn_number <= turn_number]
+        kept_ids = {record.turn_id for record in kept}
+        superseded = [record for record in self.registry() if record.turn_id not in kept_ids]
+        return superseded, kept
 
 
 def _start_info_factory(primary_cwd: str) -> Callable[[], SessionStartInfo | None]:
@@ -194,6 +233,8 @@ class TestUnboundRecorder:
         state: dict[str, Any] = {}
         assert (
             await recorder.turn_started(
+                turn_id=new_analytics_id(),
+                logical_turn_id=new_analytics_id(),
                 turn_number=1,
                 is_retry=False,
                 agent_profile_fingerprint=AGENT_FP,
@@ -211,7 +252,7 @@ class TestUnboundRecorder:
         await recorder.checkpoint()
         await recorder.mutation_summary({"a.txt": _diff(None, "h1")}, checkpoint=None)
         await recorder.profile_switched(kind=ProfileKind.MODEL, from_fingerprint="a", to_fingerprint="b")
-        await recorder.rollback(target_turn=1, history_state=state)
+        await recorder.rollback(superseded_turns=[], target_turns=[])
         await recorder.close()
         await recorder.close(reason=RuntimeFinishReason.SESSION_SWITCH)
         assert recorder.trajectory is None
@@ -365,12 +406,13 @@ class TestTurns:
         _assert_no_substring(dict(payload), bound.primary_cwd)
 
         # The turn registry in the history state round-trips the id and the landing sequence.
-        record = turn_record(bound.history_state, 1)
-        assert record is not None
+        records = bound.registry()
+        assert len(records) == 1
+        record = records[0]
         assert record.turn_id == turn_id
         assert record.turn_number == 1
         assert record.started_sequence == started.sequence
-        assert turn_record(bound.history_state, 2) is None
+        assert payload["logical_turn_id"] == turn_id
 
     @pytest.mark.asyncio
     async def test_first_event_activates_the_runtime_prelude(self, bound: BoundRecorder) -> None:
@@ -410,9 +452,12 @@ class TestTurns:
 
     @pytest.mark.asyncio
     async def test_turn_started_without_history_state_records_nothing(self, bound: BoundRecorder) -> None:
-        turn_id = await bound.start_turn(1, history_state=None)
-        assert bound.history_state == {}
-        assert bound.last(EventType.TURN_STARTED).payload["turn_id"] == turn_id
+        turn_id = new_analytics_id()
+        append_turn(bound.history_state, TurnRecord(turn_number=1, turn_id=turn_id))
+        pass_id = await bound.start_turn(1, turn_id=turn_id, register=False, history_state=None)
+
+        assert [record.started_sequence for record in bound.registry()] == [None]
+        assert bound.last(EventType.TURN_STARTED).payload["turn_id"] == pass_id
 
     @pytest.mark.asyncio
     async def test_a_turn_whose_start_was_committed_survives_an_interrupted_ack(
@@ -616,13 +661,13 @@ class TestTurns:
     async def test_turn_ids_are_unique_even_when_turn_numbers_repeat(self, bound: BoundRecorder) -> None:
         first = await bound.start_turn(1)
         await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=bound.registry(), target_turns=[])
         second = await bound.start_turn(1)
         assert first != second
         assert is_valid_analytics_id(first) and is_valid_analytics_id(second)
-        # The registry names the latest turn 1 only.
-        record = turn_record(bound.history_state, 1)
-        assert record is not None and record.turn_id == second
+        # A number handed out again names a different turn, and both stay identifiable.
+        assert [record.turn_id for record in bound.registry()] == [first, second]
+        assert [record.turn_number for record in bound.registry()] == [1, 1]
         started = bound.of_type(EventType.TURN_STARTED)
         assert [event.payload["turn_number"] for event in started] == [1, 1]
         assert {event.turn_id for event in started} == {first, second}
@@ -631,16 +676,19 @@ class TestTurns:
     async def test_a_retry_keeps_the_sequence_the_turn_first_opened_at(self, bound: BoundRecorder) -> None:
         first = await bound.start_turn(4)
         await bound.recorder.turn_finished(end_reason=TurnEndReason.ERROR)
-        opened_at = turn_record(bound.history_state, 4)
-        assert opened_at is not None and opened_at.turn_id == first
+        opened_at = bound.registry()[-1]
+        assert opened_at.turn_id == first
 
-        retry = await bound.start_turn(4, is_retry=True)
+        # The runner mints a pass id of its own for the retry and names the turn.
+        retry_pass_id = await bound.start_turn(4, is_retry=True, turn_id=first)
+        retry_started = bound.last(EventType.TURN_STARTED)
 
-        assert retry != first
+        assert retry_pass_id != first
+        assert retry_started.turn_id == retry_pass_id
+        assert retry_started.payload["logical_turn_id"] == first
         # The abandoned pass is part of turn 4 too: a rollback that supersedes
         # the turn has to start where it first opened, not at the retry.
-        record = turn_record(bound.history_state, 4)
-        assert record == opened_at
+        assert bound.registry() == [opened_at]
 
     @pytest.mark.asyncio
     async def test_starting_a_new_turn_replaces_the_traced_turn(self, bound: BoundRecorder) -> None:
@@ -1003,11 +1051,11 @@ class TestRollback:
         await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
         old_branch = bound.trajectory.branch_id
         assert old_branch is not None
-        turn2_record = turn_record(bound.history_state, 2)
-        turn3_record = turn_record(bound.history_state, 3)
-        assert turn2_record is not None and turn3_record is not None
+        superseded_turns, target_turns = bound.rollback_to(2)
+        assert [record.turn_number for record in target_turns] == [1, 2]
+        assert [record.turn_number for record in superseded_turns] == [3]
 
-        await bound.recorder.rollback(target_turn=2, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=superseded_turns, target_turns=target_turns)
 
         new_branch = bound.trajectory.branch_id
         assert new_branch is not None
@@ -1021,7 +1069,7 @@ class TestRollback:
         assert rollback.payload["new_branch_id"] == new_branch
         assert rollback.payload["reason_code"] == ROLLBACK_REASON_USER
         assert rollback.payload["target_turn_id"] == turn2
-        assert rollback.payload["superseded_from_sequence"] == turn3_record.started_sequence
+        assert rollback.payload["superseded_from_sequence"] == superseded_turns[0].started_sequence
         assert rollback.payload["superseded_to_sequence"] == rollback.sequence - 1
 
         superseded = bound.last(EventType.BRANCH_SUPERSEDED)
@@ -1040,7 +1088,7 @@ class TestRollback:
         # branch that opening picks must not replace the one just announced.
         assert not bound.events_path.exists()
 
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=[], target_turns=[])
 
         new_branch = bound.trajectory.branch_id
         rollback = bound.last(EventType.SESSION_ROLLBACK)
@@ -1056,7 +1104,7 @@ class TestRollback:
     async def test_subsequent_events_are_stamped_with_the_new_branch(self, bound: BoundRecorder) -> None:
         await bound.start_turn(1)
         await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=[], target_turns=[])
         new_branch = bound.trajectory.branch_id
         await bound.start_turn(1)
         bound.recorder.interrupt_requested_soon()
@@ -1076,18 +1124,20 @@ class TestRollback:
     async def test_rollback_to_turn_zero_names_no_target_turn(self, bound: BoundRecorder) -> None:
         await bound.start_turn(1)
         await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
-        turn1_record = turn_record(bound.history_state, 1)
-        assert turn1_record is not None
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        superseded_turns, target_turns = bound.rollback_to(None)
+        assert [record.turn_number for record in superseded_turns] == [1]
+
+        await bound.recorder.rollback(superseded_turns=superseded_turns, target_turns=target_turns)
+
         payload = bound.last(EventType.SESSION_ROLLBACK).payload
         assert "target_turn_id" not in payload
-        assert payload["superseded_from_sequence"] == turn1_record.started_sequence
+        assert payload["superseded_from_sequence"] == superseded_turns[0].started_sequence
 
     @pytest.mark.asyncio
     async def test_rollback_without_registry_omits_sequence_and_target_fields(self, bound: BoundRecorder) -> None:
         await bound.start_turn(1, history_state=None)
         await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
-        await bound.recorder.rollback(target_turn=1, history_state=None)
+        await bound.recorder.rollback(superseded_turns=[], target_turns=[])
         payload = bound.last(EventType.SESSION_ROLLBACK).payload
         assert set(payload) == {"new_branch_id", "old_branch_id", "reason_code"}
 
@@ -1095,7 +1145,7 @@ class TestRollback:
     async def test_rollback_abandons_the_traced_turn_and_pending_interrupt(self, bound: BoundRecorder) -> None:
         await bound.start_turn(1)
         bound.recorder.interrupt_requested_soon()
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=[], target_turns=[])
         assert bound.recorder.current_turn is None
         assert bound.recorder.current_turn_id is None
         # The superseded turn is never closed by the recorder ...
@@ -1108,34 +1158,179 @@ class TestRollback:
         assert bound.of_type(EventType.INTERRUPT_OBSERVED) == []
 
     @pytest.mark.asyncio
-    async def test_forget_turns_after_drops_registry_entries_above_the_target(self, bound: BoundRecorder) -> None:
-        ids = [await bound.start_turn(number) for number in (1, 2, 3)]
-        assert all(turn_record(bound.history_state, n) is not None for n in (1, 2, 3))
-        forget_turns_after(bound.history_state, 1)
-        kept = turn_record(bound.history_state, 1)
-        assert kept is not None and kept.turn_id == ids[0]
-        assert turn_record(bound.history_state, 2) is None
-        assert turn_record(bound.history_state, 3) is None
-        assert set(bound.history_state[TRAJECTORY_STATE_KEY]["turns"]) == {"1"}
+    async def test_started_turn_is_appended_with_its_opening_identity(self, bound: BoundRecorder) -> None:
+        await bound.start_turn(1, opening_item_id="item-a")
+        await bound.recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
+        await bound.start_turn(2, opening_item_id="item-b")
 
-    def test_forget_turns_after_tolerates_missing_or_malformed_registry(self) -> None:
-        forget_turns_after({}, 1)
-        state: dict[str, Any] = {TRAJECTORY_STATE_KEY: "bogus"}
-        forget_turns_after(state, 1)
-        assert state == {TRAJECTORY_STATE_KEY: "bogus"}
-        state = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": "x", "started_sequence": 1}, "abc": {}, "7": 5}}}
-        forget_turns_after(state, 3)
-        assert set(state[TRAJECTORY_STATE_KEY]["turns"]) == {"1"}
+        records = turn_records(bound.history_state)
+        assert [record.turn_number for record in records] == [1, 2]
+        assert records[0].opening_item_id == "item-a"
+        assert records[1].opening_item_id == "item-b"
 
-    def test_turn_record_rejects_malformed_entries(self) -> None:
-        assert turn_record(None, 1) is None
-        assert turn_record({}, 1) is None
-        state: dict[str, Any] = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": 5, "started_sequence": 1}}}}
-        assert turn_record(state, 1) is None
-        state = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": "abc", "started_sequence": True}}}}
-        assert turn_record(state, 1) is None
-        record_turn_started(state, TurnRecord(turn_number=1, turn_id="abc", started_sequence=9))
-        assert turn_record(state, 1) == TurnRecord(turn_number=1, turn_id="abc", started_sequence=9)
+    def test_append_keeps_a_turn_that_reuses_an_ordinal(self) -> None:
+        # An ordinal drifts once a failed turn leaves the saved counter behind:
+        # the next turn reuses it, and both identities have to survive.
+        state: dict[str, Any] = {}
+        append_turn(state, TurnRecord(turn_number=1, turn_id="aaa", started_sequence=3))
+        append_turn(state, TurnRecord(turn_number=1, turn_id="bbb"))
+
+        records = turn_records(state)
+        assert [(record.turn_number, record.turn_id) for record in records] == [(1, "aaa"), (1, "bbb")]
+        assert records[0].started_sequence == 3
+        assert records[1].started_sequence is None
+
+    def test_mark_turn_sequence_only_fills_the_matching_turn_and_only_once(self) -> None:
+        state: dict[str, Any] = {}
+        append_turn(state, TurnRecord(turn_number=1, turn_id="aaa"))
+        append_turn(state, TurnRecord(turn_number=2, turn_id="bbb"))
+
+        mark_turn_sequence(state, "nope", 7)
+        assert [record.started_sequence for record in turn_records(state)] == [None, None]
+
+        mark_turn_sequence(state, "bbb", 9)
+        assert turn_records(state)[1].started_sequence == 9
+
+        # A retry lands later in the log; the range still opens where the turn did.
+        mark_turn_sequence(state, "bbb", 20)
+        assert turn_records(state)[1].started_sequence == 9
+
+    def test_mark_turn_sequence_matches_identity_not_the_ordinal(self) -> None:
+        # Two turns share ordinal 1 — a failed one and the turn that reused its
+        # ordinal — so the ordinal names neither of them reliably. The turn being
+        # marked was appended last, and it is the one that has to be filled.
+        state: dict[str, Any] = {}
+        append_turn(state, TurnRecord(turn_number=1, turn_id="aaa"))
+        append_turn(state, TurnRecord(turn_number=1, turn_id="bbb"))
+
+        mark_turn_sequence(state, "aaa", 3)
+
+        records = turn_records(state)
+        assert [(record.turn_id, record.started_sequence) for record in records] == [("aaa", 3), ("bbb", None)]
+
+    def test_mark_turn_sequence_rewrites_a_legacy_registry_in_place(self) -> None:
+        state: dict[str, Any] = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": "aaa"}}}}
+        mark_turn_sequence(state, "aaa", 4)
+
+        registry = state[TRAJECTORY_STATE_KEY]
+        assert "turns" not in registry
+        assert registry["turn_log"] == [{"turn_number": 1, "turn_id": "aaa", "started_sequence": 4}]
+
+    def test_legacy_ordinal_registry_reads_as_a_log_and_rewrites_on_write(self) -> None:
+        state: dict[str, Any] = {
+            TRAJECTORY_STATE_KEY: {
+                "turns": {
+                    "2": {"turn_id": "bbb", "started_sequence": 8},
+                    "1": {"turn_id": "aaa", "started_sequence": 2},
+                }
+            }
+        }
+        assert [(record.turn_number, record.turn_id) for record in turn_records(state)] == [(1, "aaa"), (2, "bbb")]
+        # Reading alone leaves the stored layout untouched.
+        assert "turn_log" not in state[TRAJECTORY_STATE_KEY]
+
+        append_turn(state, TurnRecord(turn_number=3, turn_id="ccc"))
+
+        registry = state[TRAJECTORY_STATE_KEY]
+        assert "turns" not in registry
+        assert [entry["turn_id"] for entry in registry["turn_log"]] == ["aaa", "bbb", "ccc"]
+        assert registry["turn_log"][0]["started_sequence"] == 2
+
+    def test_legacy_turn_records_tell_the_two_layouts_apart(self) -> None:
+        legacy = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": "aaa", "started_sequence": 2}}}}
+        assert [(record.turn_number, record.turn_id) for record in legacy_turn_records(legacy)] == [(1, "aaa")]
+
+        # The append layout is not a legacy one, and neither is a state that
+        # carries no registry at all: a caller judging a stored turn against the
+        # ordinal it reads gets ``None`` rather than a registry it cannot trust.
+        assert legacy_turn_records({TRAJECTORY_STATE_KEY: {"turn_log": [{"turn_number": 1, "turn_id": "aaa"}]}}) is None
+        assert legacy_turn_records({}) is None
+        assert legacy_turn_records(None) is None
+
+    def test_forks_and_sequence_writes_preserve_legacy_retry_validation(self) -> None:
+        state: dict[str, Any] = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": "aaa"}}}}
+
+        fork_turn_registry(state, origin_session_id="parent")
+        mark_turn_sequence(state, "aaa", 4)
+        fork_turn_registry(state, origin_session_id="child")
+
+        assert "turns" not in state[TRAJECTORY_STATE_KEY]
+        assert legacy_turn_records(state) == [TurnRecord(turn_number=1, turn_id="aaa", origin_session_id="parent")]
+
+    @pytest.mark.parametrize("admission", ["fresh", "retry"])
+    def test_admission_makes_a_converted_registry_trustworthy(self, admission: str) -> None:
+        state: dict[str, Any] = {TRAJECTORY_STATE_KEY: {"turns": {"1": {"turn_id": "aaa"}}}}
+        fork_turn_registry(state, origin_session_id="parent")
+
+        if admission == "fresh":
+            append_turn(state, TurnRecord(turn_number=2, turn_id="bbb"))
+        else:
+            confirm_resumed_turn(state)
+        fork_turn_registry(state, origin_session_id="child")
+
+        assert legacy_turn_records(state) is None
+        assert [record.turn_id for record in turn_records(state)] == (
+            ["aaa", "bbb"] if admission == "fresh" else ["aaa"]
+        )
+
+    def test_malformed_entries_are_dropped_and_fields_validated(self) -> None:
+        assert turn_records(None) == []
+        assert turn_records({}) == []
+        assert turn_records({TRAJECTORY_STATE_KEY: "bogus"}) == []
+        state: dict[str, Any] = {
+            TRAJECTORY_STATE_KEY: {
+                "turn_log": [
+                    {"turn_number": 1, "turn_id": 5},
+                    {"turn_number": True, "turn_id": "bool-ordinal"},
+                    {"turn_number": -1, "turn_id": "negative"},
+                    {"turn_number": 2, "turn_id": ""},
+                    "not-a-dict",
+                    {
+                        "turn_number": 3,
+                        "turn_id": "kept",
+                        "started_sequence": True,
+                        "opening_item_id": 7,
+                        "user_message_id": "",
+                    },
+                ]
+            }
+        }
+
+        records = turn_records(state)
+        assert [(record.turn_number, record.turn_id) for record in records] == [(3, "kept")]
+        # A bool is not an int, and a non-str identity field becomes absent.
+        assert records[0].started_sequence is None
+        assert records[0].opening_item_id is None
+        assert records[0].user_message_id is None
+
+    def test_fork_clears_sequences_and_keeps_the_original_origin(self) -> None:
+        state: dict[str, Any] = {}
+        append_turn(
+            state,
+            TurnRecord(turn_number=1, turn_id="aaa", started_sequence=2, origin_session_id="grandparent"),
+        )
+        append_turn(state, TurnRecord(turn_number=2, turn_id="bbb", started_sequence=9, opening_item_id="item-b"))
+
+        fork_turn_registry(state, origin_session_id="parent")
+
+        forked = turn_records(state)
+        # The parent's log sequences would name a range that never existed here.
+        assert [record.started_sequence for record in forked] == [None, None]
+        assert [record.origin_session_id for record in forked] == ["grandparent", "parent"]
+        # Everything else about the turn rides along untouched.
+        assert [(record.turn_number, record.turn_id) for record in forked] == [(1, "aaa"), (2, "bbb")]
+        assert forked[1].opening_item_id == "item-b"
+
+    def test_a_rerun_turn_claims_a_sequence_of_its_own(self) -> None:
+        state: dict[str, Any] = {}
+        append_turn(state, TurnRecord(turn_number=1, turn_id="aaa"))
+        fork_turn_registry(state, origin_session_id="parent")
+
+        mark_turn_sequence(state, "aaa", 5)
+
+        record = turn_records(state)[0]
+        assert record.started_sequence == 5
+        assert record.origin_session_id == "parent"
 
 
 # --------------------------------------------------------------------- 9. fork
@@ -1287,6 +1482,8 @@ class TestClose:
         await bound.recorder.close()
         assert (
             await bound.recorder.turn_started(
+                turn_id=new_analytics_id(),
+                logical_turn_id=new_analytics_id(),
                 turn_number=2,
                 is_retry=False,
                 agent_profile_fingerprint=AGENT_FP,
@@ -1303,7 +1500,7 @@ class TestClose:
         await bound.recorder.checkpoint()
         await bound.recorder.mutation_summary({"a": _diff(None, "h")}, checkpoint=None)
         await bound.recorder.profile_switched(kind=ProfileKind.AGENT, from_fingerprint="a", to_fingerprint="b")
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=[], target_turns=[])
         assert bound.events_path.read_bytes() == snapshot
         assert bound.recorder.trajectory is None
 
@@ -1383,7 +1580,9 @@ class TestOrderingInvariants:
         await bound.start_turn(2)
         bound.recorder.interrupt_requested_soon()
         await bound.recorder.turn_finished(end_reason=TurnEndReason.INTERRUPTED)
-        await bound.recorder.rollback(target_turn=1, history_state=bound.history_state)
+        superseded_turns, target_turns = bound.rollback_to(1)
+        await bound.recorder.rollback(superseded_turns=superseded_turns, target_turns=target_turns)
+        assert [record.turn_number for record in superseded_turns] == [2]
         await bound.start_turn(2)
         await bound.recorder.checkpoint()
         await bound.recorder.close()
@@ -1437,7 +1636,7 @@ class TestOrderingInvariants:
         await bound.start_turn(1)
         bound.recorder.interrupt_requested_soon()
         await bound.recorder.turn_finished(end_reason=TurnEndReason.INTERRUPTED)
-        await bound.recorder.rollback(target_turn=0, history_state=bound.history_state)
+        await bound.recorder.rollback(superseded_turns=[], target_turns=[])
         system_types = {EventType.COVERAGE_STARTED, EventType.RUNTIME_STARTED}
         for event in bound.events():
             if event.event_type in system_types:

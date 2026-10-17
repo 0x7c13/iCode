@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ from chrys.service.state._session_files import (
     atomic_copy_file,
     parse_snapshot_turn,
 )
+from chrys.service.trajectory.state import TurnRecord, turn_records
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -25,6 +27,18 @@ if TYPE_CHECKING:
     from chrys.service.context.providers.history import CompressedBlock
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class RollbackSnapshot:
+    """A rollback target's snapshot file and the turn registry inside it."""
+
+    path: Path
+    turns: list[TurnRecord]
+    """The registry as of that turn; empty when the snapshot predates the registry."""
+    readable: bool = True
+    """Whether the payload parsed. An unreadable snapshot names no turns at all —
+    not even the empty registry a readable snapshot without the key holds."""
 
 
 def rollback_snapshot_paths(session_dir: Path | None) -> list[Path]:
@@ -107,12 +121,18 @@ def snapshot_target_turns(session_dir: Path | None) -> set[int]:
     return turns
 
 
-def rollback_snapshot_for_target(session_dir: Path | None, target_turn: int) -> Path | None:
-    """Return the newest snapshot whose payload represents *target_turn*."""
+def rollback_snapshot_for_target(session_dir: Path | None, target_turn: int) -> RollbackSnapshot | None:
+    """Return the newest snapshot whose payload represents *target_turn*, with its turn registry."""
     matches = [path for path in rollback_snapshot_paths(session_dir) if snapshot_target_turn(path) == target_turn]
     if not matches:
         return None
-    return max(matches, key=parse_snapshot_turn)
+    chosen = max(matches, key=parse_snapshot_turn)
+    state = _snapshot_payload_state(chosen)
+    if state is None:
+        # The payload does not parse: the snapshot cannot be shown to hold any
+        # turn, so it is reported as naming none rather than as an empty registry.
+        return RollbackSnapshot(path=chosen, turns=[], readable=False)
+    return RollbackSnapshot(path=chosen, turns=turn_records(state))
 
 
 def snapshot_target_turn(path: Path) -> int | None:
@@ -141,6 +161,19 @@ def _is_legacy_numeric_snapshot_name(path: Path) -> bool:
 
 
 def _snapshot_payload_turn_counter(path: Path) -> int | None:
+    state = _snapshot_payload_state(path)
+    if state is None:
+        return None
+    counter = _nonnegative_int(state.get("turn_counter"))
+    if counter is not None:
+        if counter > 0 or not _state_has_messages(state):
+            return counter
+        return _max_marker_turn(state)
+    return _max_marker_turn(state)
+
+
+def _snapshot_payload_state(path: Path) -> dict[str, object] | None:
+    """The snapshot's provider state, read from the envelope or the bare payload."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError, UnicodeDecodeError, OSError:
@@ -148,14 +181,9 @@ def _snapshot_payload_turn_counter(path: Path) -> int | None:
     if not isinstance(raw, dict):
         return None
     state = raw.get("state")
-    if not isinstance(state, dict):
-        state = raw
-    counter = _nonnegative_int(state.get("turn_counter"))
-    if counter is not None:
-        if counter > 0 or not _state_has_messages(state):
-            return counter
-        return _max_marker_turn(state)
-    return _max_marker_turn(state)
+    if isinstance(state, dict):
+        return state
+    return raw
 
 
 def _nonnegative_int(value: object) -> int | None:

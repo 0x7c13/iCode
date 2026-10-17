@@ -45,10 +45,6 @@ _PASS_THROUGH_OPTIONAL_KEYS = (
     # attempt/spend breaker for the interrupted logical turn.
     "last_words_manifest",
     "last_words_breaker",
-    # Trajectory turn registry (turn_number -> turn_id / first sequence) —
-    # rollback needs it to name the superseded range, and it must travel with
-    # the messages it describes through save/restore/snapshot/fork.
-    TRAJECTORY_STATE_KEY,
     TOTAL_SESSION_TOKENS_KEY,
     TOTAL_SESSION_INPUT_TOKENS_KEY,
     TOTAL_SESSION_OUTPUT_TOKENS_KEY,
@@ -59,6 +55,11 @@ _PASS_THROUGH_OPTIONAL_KEYS = (
 _PASS_THROUGH_NULLABLE_KEYS = (
     CATALOG_POINTER_RECORD_COUNT_STATE_KEY,
     TOTAL_SESSION_CACHE_HIT_TOKENS_KEY,
+    # Trajectory turn registry — identity, opening item and client message id
+    # per turn; rollback reads it to name the superseded turns, and replays
+    # read it to label history. Empty is a value here (a session whose turns
+    # were all rolled away), so the truthy filter must not drop it.
+    TRAJECTORY_STATE_KEY,
 )
 
 

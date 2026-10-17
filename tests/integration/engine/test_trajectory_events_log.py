@@ -663,6 +663,8 @@ async def test_an_engine_without_a_state_store_writes_no_trajectory(
         session_start_info=lambda: None,
     )
     turn_id = await engine_services(engine).trajectory_recorder.turn_started(
+        turn_id="cccccccc-dddd-4eee-8fff-000000000001",
+        logical_turn_id="cccccccc-dddd-4eee-8fff-000000000001",
         turn_number=1,
         is_retry=False,
         agent_profile_fingerprint="a" * 64,
@@ -670,7 +672,8 @@ async def test_an_engine_without_a_state_store_writes_no_trajectory(
         primary_cwd=str(tmp_path),
         history_state=None,
     )
-    assert turn_id is not None  # the recorder answers; only the writing is skipped
+    # The recorder answers with the id it was handed; only the writing is skipped.
+    assert turn_id == "cccccccc-dddd-4eee-8fff-000000000001"
     await engine_services(engine).trajectory_recorder.turn_finished(end_reason=TurnEndReason.COMPLETED)
 
     assert not trajectory.is_active

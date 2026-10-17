@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeGuard
@@ -13,7 +14,6 @@ from acp import schema as acp_schema
 from acp.helpers import (
     start_tool_call,
     tool_content,
-    update_agent_message_text,
     update_tool_call,
     update_user_message_text,
 )
@@ -26,7 +26,9 @@ from chrys.foundation.hosted_tools import (
     normalize_hosted_tool_status,
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.turns import turn_slices
 from chrys.foundation.tool_result_metadata import tool_result_metadata_failure_state
+from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.kernel import Content
 from chrys.kernel.exchanges import (
     LEGACY_CALL_CONTENT_TYPE,
@@ -50,8 +52,9 @@ from chrys.service.session.message_metadata import (
     persisted_tool_call_kind,
 )
 from chrys.service.state.store import StateStore
+from chrys.service.trajectory.state import TurnRecord
 
-from .bridge import acp_tool_kind, with_hosted_metadata
+from .bridge import acp_tool_kind, with_chrys_metadata, with_hosted_metadata
 from .tool_status import tool_result_failed
 
 # Replay streams every function call as a tool card, informational ones
@@ -83,6 +86,63 @@ class _ReplayPairingIndex:
     result_for_call: dict[tuple[int, int], tuple[int, int] | None]
     call_for_result: dict[tuple[int, int], tuple[int, int]]
     standalone_hosted_results: set[tuple[int, int]]
+
+
+class _TurnMessageView:
+    """A persisted message dict seen through :class:`SupportsTurnMessage`.
+
+    ``turn_slices`` reads only these three fields, and the dict is the store's
+    own object — nothing here copies or rewrites it.
+    """
+
+    __slots__ = ("_message",)
+
+    def __init__(self, message: dict[str, object]) -> None:
+        self._message = message
+
+    @property
+    def role(self) -> str:
+        role = self._message.get("role", "")
+        return role if isinstance(role, str) else ""
+
+    @property
+    def text(self) -> str | None:
+        text = _message_text(self._message)
+        return text or None
+
+    @property
+    def additional_properties(self) -> dict[str, object]:
+        additional = self._message.get("additional_properties")
+        return additional if isinstance(additional, dict) else {}
+
+
+def index_turns(
+    messages: list[dict[str, object]],
+    records: list[TurnRecord],
+) -> list[tuple[TurnRecord, int, int] | None]:
+    """Align persisted messages with the turns that ran them.
+
+    Returns one entry per :func:`turn_slices` slice — ``(record, start, end)``
+    when the slice's opening message is the one the record registered as the
+    turn's opener, and ``None`` when nothing claims it (a session saved before
+    turn identity existed, or by a build that never registered it).
+
+    The opening message is matched by ``_chrys_analytics_item_id``, the id
+    that is minted once and copied verbatim by every later save, so an
+    injected or retried copy of the text can never be mistaken for the
+    opener. ``None`` entries stay ``None``: a plausible-looking pairing is
+    worse than an admitted gap, and a client that gets no turn id simply
+    shows the text without one.
+    """
+    by_opening_item = {record.opening_item_id: record for record in records if record.opening_item_id}
+    slices = turn_slices([_TurnMessageView(message) for message in messages])
+    aligned: list[tuple[TurnRecord, int, int] | None] = []
+    for start, end in slices:
+        additional = _TurnMessageView(messages[start]).additional_properties
+        item_id = additional.get(ANALYTICS_ITEM_ID_KEY)
+        record = by_opening_item.get(item_id) if isinstance(item_id, str) else None
+        aligned.append((record, start, end) if record is not None else None)
+    return aligned
 
 
 def _paired_result_coordinates(
@@ -149,7 +209,10 @@ async def replay_session_history(
     tool_kind_resolver: Callable[[str], str] | None = None,
 ) -> None:
     """Emit basic ACP replay updates for a restored session."""
-    raw_messages = await state_store.load_session_raw(session_id, prefer_recovery=prefer_recovery)
+    transcript = await state_store.load_session_transcript(session_id, prefer_recovery=prefer_recovery)
+    if transcript is None:
+        return
+    raw_messages = transcript.messages
     if not raw_messages:
         return
     # Compaction tool summaries are the model's context, not the client's; as
@@ -157,6 +220,7 @@ async def replay_session_history(
     # replaced replay. Drop them before pairing so coordinates and replay ids
     # ignore them.
     raw_messages = [message for message in raw_messages if not is_compaction_tool_summary(message)]
+    turn_for_message, opening_user_message = _turn_labels(raw_messages, transcript.turns)
     pairing_index = _paired_result_coordinates(raw_messages)
     replay_id_by_call: dict[tuple[int, int], str] = {}
     replay_id_by_standalone_result: dict[tuple[int, int], str] = {}
@@ -165,6 +229,7 @@ async def replay_session_history(
     pending_hosted: dict[str, tuple[Content, HostedToolView]] = {}
     standalone_hosted: dict[str, tuple[Content, HostedToolView]] = {}
     open_replay_ids: dict[str, None] = {}
+    message_index_by_replay_id: dict[str, int] = {}
     call_start_updates: dict[tuple[int, int], Any] = {}
     started_calls: set[tuple[int, int]] = set()
     occurrence_index = 0
@@ -188,6 +253,7 @@ async def replay_session_history(
             occurrence_index += 1
             replay_id = _replay_tool_call_id(message_index, content_index, occurrence_index)
             open_replay_ids[replay_id] = None
+            message_index_by_replay_id[replay_id] = message_index
             if is_standalone_hosted_result:
                 result = Content.from_dict(content)
                 view = adapt_hosted_tool(None, result)
@@ -214,6 +280,9 @@ async def replay_session_history(
         update = call_start_updates.get(coordinate)
         if update is None:
             return
+        meta = _turn_meta(turn_for_message[coordinate[0]])
+        if meta:
+            update.field_meta = with_chrys_metadata(update.field_meta, meta)
         await client.session_update(session_id=session_id, update=update)
         started_calls.add(coordinate)
 
@@ -225,6 +294,7 @@ async def replay_session_history(
             continue
         role = str(message.get("role", ""))
         text = _message_text(message)
+        turn_meta = _turn_meta(turn_for_message[message_index])
         if role == "user":
             # Skip crash-leftover synthetic ``continue`` nudges: streaming
             # one as a user message misrepresents the conversation to the
@@ -233,11 +303,22 @@ async def replay_session_history(
             if isinstance(additional, dict) and additional.get(HistoryMarkerKind.CONTINUATION_KEY):
                 continue
             if text:
-                await client.session_update(session_id=session_id, update=update_user_message_text(text))
+                # Only the message that OPENED the turn carries the id the
+                # client submitted; an injection or a retry note inside the
+                # turn is a different message and has no client-side id.
+                update = update_user_message_text(text)
+                update.message_id = opening_user_message.get(message_index)
+                if turn_meta:
+                    update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+                await client.session_update(session_id=session_id, update=update)
             continue
         if role not in ("assistant", "tool"):
             continue
         indexed_contents = _indexed_contents(message)
+        # Every content of one persisted message is one ACP message: ACP
+        # groups chunks by messageId, and the transcript separates them by
+        # paragraph, not by id.
+        answer_message_id: str | None = None
         emitted_text = False
         for content_index, content in indexed_contents:
             content_type = content.get("type")
@@ -246,10 +327,15 @@ async def replay_session_history(
                 if isinstance(content_text, str) and content_text:
                     if emitted_text:
                         content_text = f"\n\n{content_text}"
-                    await client.session_update(
-                        session_id=session_id,
-                        update=update_agent_message_text(content_text),
+                    answer_message_id = answer_message_id or str(uuid.uuid4())
+                    update = acp_schema.AgentMessageChunk(
+                        sessionUpdate="agent_message_chunk",
+                        content=acp_schema.TextContentBlock(type="text", text=content_text),
+                        messageId=answer_message_id,
                     )
+                    if turn_meta:
+                        update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+                    await client.session_update(session_id=session_id, update=update)
                     emitted_text = True
                 continue
             coordinate = (message_index, content_index)
@@ -269,15 +355,15 @@ async def replay_session_history(
                     fallback_text = view.result_text
                     if status == "interrupted" and not fallback_text:
                         fallback_text = "Provider-hosted tool was interrupted before the session was persisted."
-                    await client.session_update(
-                        session_id=session_id,
-                        update=_hosted_terminal_update(
-                            replay_id,
-                            view,
-                            status=status,
-                            fallback_text=fallback_text,
-                        ),
+                    update = _hosted_terminal_update(
+                        replay_id,
+                        view,
+                        status=status,
+                        fallback_text=fallback_text,
                     )
+                    if turn_meta:
+                        update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+                    await client.session_update(session_id=session_id, update=update)
                     open_replay_ids.pop(replay_id, None)
                     pending_hosted.pop(replay_id, None)
                     pending_tool_names.pop(replay_id, None)
@@ -295,10 +381,10 @@ async def replay_session_history(
                 open_replay_ids.pop(replay_id, None)
                 view = hosted[1]
                 status = hosted_replay_status(view, has_result=True)
-                await client.session_update(
-                    session_id=session_id,
-                    update=_hosted_terminal_update(replay_id, view, status=status),
-                )
+                update = _hosted_terminal_update(replay_id, view, status=status)
+                if turn_meta:
+                    update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+                await client.session_update(session_id=session_id, update=update)
                 continue
             replay_id = replay_id_by_call.get(call_coordinate)
             if replay_id is None:
@@ -316,11 +402,19 @@ async def replay_session_history(
                 if hosted is not None
                 else _tool_call_result(content, replay_id, tool_name, tool_kind)
             )
+            if turn_meta:
+                update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
             await client.session_update(
                 session_id=session_id,
                 update=update,
             )
     for replay_id in open_replay_ids:
+        # These calls get a synthesized terminal update instead of a persisted
+        # one, but they are as much a part of their turn as any other record,
+        # so the id a client keys its cards by travels with them.
+        meta = _turn_meta(
+            turn_for_message[index] if (index := message_index_by_replay_id.get(replay_id)) is not None else None
+        )
         hosted = pending_hosted.get(replay_id)
         if hosted is not None:
             view = hosted[1]
@@ -328,20 +422,99 @@ async def replay_session_history(
             text = view.result_text
             if status == "interrupted" and not text:
                 text = "Provider-hosted tool was interrupted before the session was persisted."
-            await client.session_update(
-                session_id=session_id,
-                update=_hosted_terminal_update(replay_id, view, status=status, fallback_text=text),
-            )
+            update = _hosted_terminal_update(replay_id, view, status=status, fallback_text=text)
+            if meta:
+                update.field_meta = with_chrys_metadata(update.field_meta, meta)
+            await client.session_update(session_id=session_id, update=update)
             continue
-        await client.session_update(
-            session_id=session_id,
-            update=update_tool_call(
-                replay_id,
-                status="failed",
-                raw_output="No persisted tool result.",
-                content=[tool_content(acp_schema.TextContentBlock(type="text", text="No persisted tool result."))],
-            ),
+        update = update_tool_call(
+            replay_id,
+            status="failed",
+            raw_output="No persisted tool result.",
+            content=[tool_content(acp_schema.TextContentBlock(type="text", text="No persisted tool result."))],
         )
+        if meta:
+            update.field_meta = with_chrys_metadata(update.field_meta, meta)
+        await client.session_update(session_id=session_id, update=update)
+
+
+def _turn_labels(
+    messages: list[dict[str, object]],
+    records: list[TurnRecord],
+) -> tuple[list[TurnRecord | None], dict[int, str]]:
+    """Map each message to its turn, and opener indexes to their user message id.
+
+    Two questions with different answers: which turn a message belongs to
+    (every message inside a slice) and whether an opener has a recorded user
+    message id (only the opener, and only when one was recorded).
+    """
+    return _labels_from_alignment(index_turns(messages, records), len(messages))
+
+
+def _labels_from_alignment(
+    aligned: list[tuple[TurnRecord, int, int] | None],
+    message_count: int,
+) -> tuple[list[TurnRecord | None], dict[int, str]]:
+    """Derive per-message turn ownership from an :func:`index_turns` result."""
+    turn_for_message: list[TurnRecord | None] = [None] * message_count
+    opening_user_message: dict[int, str] = {}
+    for entry in aligned:
+        if entry is None:
+            continue
+        record, start, end = entry
+        for index in range(start, min(end, message_count)):
+            turn_for_message[index] = record
+        if record.user_message_id:
+            opening_user_message[start] = record.user_message_id
+    return turn_for_message, opening_user_message
+
+
+def session_history_payload(
+    session_id: str,
+    messages: list[dict[str, object]],
+    records: list[TurnRecord],
+) -> dict[str, Any]:
+    """Project persisted messages and turn records into the history shape.
+
+    The client gets the raw persisted messages unchanged — this is the
+    debugging surface, not a replay — with the turn each one belongs to named
+    alongside it, plus one entry per turn the session ran. Attribution comes
+    from :func:`index_turns`, the same alignment replay uses, so the two
+    surfaces can never disagree about which turn a message belongs to.
+    """
+    aligned = index_turns(messages, records)
+    turn_for_message, _opening_user_message = _labels_from_alignment(aligned, len(messages))
+
+    def _turn_entry(record: TurnRecord) -> dict[str, Any]:
+        turn: dict[str, Any] = {
+            "turnId": record.turn_id,
+            "turnNumber": record.turn_number,
+            "userMessageId": record.user_message_id,
+        }
+        if record.origin_session_id:
+            turn["inheritedFrom"] = record.origin_session_id
+        return turn
+
+    # One entry per turn the session knows, in start order: a turn with no
+    # message left in the transcript — inherited by a fork, or compacted away —
+    # still ran, and the client needs its id to join live and replayed updates.
+    turns_payload: list[dict[str, Any]] = [_turn_entry(record) for record in records]
+
+    messages_payload: list[dict[str, Any]] = []
+    for message_index, message in enumerate(messages):
+        record = turn_for_message[message_index] if message_index < len(turn_for_message) else None
+        if record is None:
+            messages_payload.append({"turnId": None, "turnNumber": None, "message": message})
+            continue
+        messages_payload.append({"turnId": record.turn_id, "turnNumber": record.turn_number, "message": message})
+
+    return {"sessionId": session_id, "turns": turns_payload, "messages": messages_payload}
+
+
+def _turn_meta(record: TurnRecord | None) -> dict[str, Any]:
+    if record is None:
+        return {}
+    return {"turnId": record.turn_id, "turnNumber": record.turn_number}
 
 
 def _message_text(message: dict[str, object]) -> str:

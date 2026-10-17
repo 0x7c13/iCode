@@ -190,6 +190,7 @@ class TurnCoordinator:
             workspace_change_tracker=self._workspace_change_tracker,
             settings_handle=self._settings_handle,
             trajectory_recorder=self._trajectory_recorder,
+            bus=self._bus,
             fsm=self._fsm,
             on_turn_started=self._on_turn_started,
             finalizer=self._finalizer,
@@ -255,6 +256,11 @@ class TurnCoordinator:
         await self._turn_state.lease.observe_run_task_chain(propagate_inner_cancel=True)
         await self._turn_state.lease.settle_notifications()
 
+    @property
+    def can_retry(self) -> bool:
+        """Return whether the engine may start an immediate retry right now."""
+        return self._retry().can_retry()
+
     async def run_fresh(
         self,
         text: str,
@@ -265,6 +271,7 @@ class TurnCoordinator:
         injection_window: CurrentRunInjectionWindow | None = None,
         admission_preparation: PreparationTrace | None = None,
         binding_failure: Exception | None = None,
+        user_message_id: str | None = None,
     ) -> None:
         """Execute a fresh agent pass against the current engine state."""
 
@@ -276,6 +283,7 @@ class TurnCoordinator:
             injection_window=injection_window,
             admission_preparation=admission_preparation,
             binding_failure=binding_failure,
+            user_message_id=user_message_id,
         )
 
     async def run_retry(
@@ -555,6 +563,7 @@ class TurnCoordinator:
                         created_at=event.timestamp,
                         contents=contents,
                         admission_preparation=preparation,
+                        user_message_id=event.client_message_id,
                     )
                 )
                 # Record the opener synchronously with its task: a Stop followed by
@@ -576,6 +585,7 @@ class TurnCoordinator:
                         run_scope=scope,
                         injection_window=window,
                         admission_preparation=preparation,
+                        user_message_id=event.client_message_id,
                     )
                 ),
             )
@@ -948,6 +958,7 @@ class TurnCoordinator:
         run_scope: CurrentRunScope | None = None,
         injection_window: CurrentRunInjectionWindow | None = None,
         admission_preparation: PreparationTrace | None = None,
+        user_message_id: str | None = None,
     ) -> None:
         """Execute the agent and auto-save the session afterward."""
         task = asyncio.current_task()
@@ -974,6 +985,7 @@ class TurnCoordinator:
                 injection_window=injection_window,
                 admission_preparation=admission_preparation,
                 binding_failure=binding_failure,
+                user_message_id=user_message_id,
             )
         finally:
             if unbind is not None:

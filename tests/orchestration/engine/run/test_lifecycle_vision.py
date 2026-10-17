@@ -27,6 +27,7 @@ from chrys.foundation.events.types import (
     ImageAttachmentCompressionFinished,
     ImageAttachmentCompressionStarted,
     RuntimeModelDetails,
+    TurnStarted,
     UserMessage,
     Warning,
 )
@@ -52,6 +53,7 @@ from chrys.service.hooks.schema import HookDecision
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationTrace
+from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY
 from tests.service.trajectory._fakes import CancelAckSink, FakeSink, make_context
 from tests.support.components import make_current, make_turn_state
 from tests.support.images import image_bytes
@@ -88,6 +90,7 @@ async def run_and_save(
     admission_preparation: PreparationTrace | None = None,
     run_scope=None,
     injection_window=None,
+    user_message_id: str | None = None,
 ) -> None:
     await make_turn_runner(
         current=host.current,
@@ -113,6 +116,7 @@ async def run_and_save(
         admission_preparation=admission_preparation,
         run_scope=run_scope,
         injection_window=injection_window,
+        user_message_id=user_message_id,
     )
 
 
@@ -437,6 +441,7 @@ class _Host:
         admission_preparation: PreparationTrace | None = None,
         run_scope=None,
         injection_window=None,
+        user_message_id: str | None = None,
     ) -> None:
         await run_and_save(
             self,
@@ -446,6 +451,7 @@ class _Host:
             admission_preparation=admission_preparation,
             run_scope=run_scope,
             injection_window=injection_window,
+            user_message_id=user_message_id,
         )
 
     async def _post_run(self) -> None:
@@ -714,7 +720,8 @@ async def test_run_and_save_sends_image_content_when_model_profile_supports_visi
 
     await run_and_save(host, "describe @shot.png", created_at=created_at)
 
-    assert host._bus.events == []
+    events = [event for event in host._bus.events if not isinstance(event, TurnStarted)]
+    assert events == []
     assert host.current.loaded.bindings.user_message == "describe @shot.png"
     assert len(host.current.loaded.bindings.run_calls) == 1
     contents, call_created_at = host.current.loaded.bindings.run_calls[0]
@@ -1179,6 +1186,10 @@ async def test_user_message_rejects_text_only_prepared_image_contents_before_sta
     assert host._turn_state.lease.run_task is None
     assert host.current.loaded.bindings.run_calls == []
     assert host._fsm.state is EngineState.UNINITIALIZED
+    # A refused input never becomes a turn: no identity is minted, nothing is
+    # registered, and no client hears about a turn that did not start.
+    assert [published for published in host._bus.events if isinstance(published, TurnStarted)] == []
+    assert host.current.loaded.bindings.backend.history_state.get(TRAJECTORY_STATE_KEY) is None
 
 
 @pytest.mark.asyncio
@@ -1210,12 +1221,13 @@ async def test_run_and_save_emits_compression_events_for_oversize_images(
 
     await run_and_save(host, "describe @huge.png")
 
-    assert [type(event) for event in host._bus.events] == [
+    events = [event for event in host._bus.events if not isinstance(event, TurnStarted)]
+    assert [type(event) for event in events] == [
         ImageAttachmentCompressionStarted,
         ImageAttachmentCompressionFinished,
     ]
-    assert host._bus.events[0].image_count == 1
-    assert host._bus.events[1].image_count == 1
+    assert events[0].image_count == 1
+    assert events[1].image_count == 1
     contents, _created_at = host.current.loaded.bindings.run_calls[0]
     assert contents[0] == "describe @huge.png"
     assert contents[1].type == "data"
@@ -1241,12 +1253,13 @@ async def test_run_and_save_times_out_slow_image_compression(
 
     await run_and_save(host, "describe @huge.png")
 
-    assert [type(event) for event in host._bus.events] == [
+    events = [event for event in host._bus.events if not isinstance(event, TurnStarted)]
+    assert [type(event) for event in events] == [
         ImageAttachmentCompressionStarted,
         ImageAttachmentCompressionFinished,
         Error,
     ]
-    error = host._bus.events[2]
+    error = events[2]
     item = (
         "@huge.png: Image preparation took longer than 1 second. "
         "Resize oversized images or send fewer images, then try again."

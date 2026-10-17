@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.foundation.branding import APP_COMMAND
@@ -16,7 +17,7 @@ from chrys.foundation.config.settings import Settings, resolve_sessions_dir
 from chrys.foundation.platform.files import atomic_create_text, atomic_write_text, surrogate_safe_text
 from chrys.foundation.util.session_ids import SESSION_SHORT_ID_LEN
 
-_FORMATS = ("perfetto", "json", "csv", "findings-csv")
+_FORMATS = ("perfetto", "json", "csv", "findings-csv", "turns")
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
 
@@ -60,10 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_session_events(selector: str) -> Path | str:
-    """Return the events path for a session selector, or an error message."""
-    from chrys.service.trajectory.session import trajectory_events_path
-
+def _resolve_session_dir(selector: str) -> Path | str:
+    """Return the session directory for a session selector, or an error message."""
     sessions_dir = resolve_sessions_dir(create=False)
     if not sessions_dir.is_dir():
         return f"no sessions directory at {sessions_dir}"
@@ -88,10 +87,132 @@ def _resolve_session_events(selector: str) -> Path | str:
     if len(matches) > 1:
         names = ", ".join(entry.name for entry in matches[:5])
         return f"session id '{selector}' is ambiguous: {names}"
-    events = trajectory_events_path(matches[0])
+    return matches[0]
+
+
+def _resolve_session_events(selector: str) -> Path | str:
+    """Return the events path for a session selector, or an error message."""
+    from chrys.service.trajectory.session import trajectory_events_path
+
+    session_dir = _resolve_session_dir(selector)
+    if isinstance(session_dir, str):
+        return session_dir
+    events = trajectory_events_path(session_dir)
     if not events.is_file():
-        return f"session {matches[0].name} has no trajectory events log"
+        return f"session {session_dir.name} has no trajectory events log"
     return events
+
+
+async def _turns_export_payload(session_dir: Path) -> dict[str, Any]:
+    """Build the ``turns`` export: the same JSON ``session/turns`` returns.
+
+    The turn registry is read through the same store the ACP server uses, so
+    the two surfaces agree on ``userMessageId`` and on fork-inherited turns.
+    """
+    import asyncio
+
+    from chrys.service.analytics.turn_trace import (
+        TraceSessionLevel,
+        TurnTrace,
+        scan_turn_trace,
+        trace_payload_with_registry,
+    )
+    from chrys.service.state.store import JsonFileStateStore
+    from chrys.service.trajectory.session import trajectory_events_path
+
+    store = JsonFileStateStore(resolve_sessions_dir(create=False))
+    transcript = await store.load_session_transcript(session_dir.name, prefer_recovery=True)
+    records = transcript.turns if transcript is not None else []
+    events = trajectory_events_path(session_dir)
+    if events.is_file():
+        trace = await asyncio.to_thread(scan_turn_trace, events)
+    else:
+        # No log means no local execution: every registered turn reports
+        # traceAvailable false rather than the export failing.
+        trace = TurnTrace(
+            session_id=session_dir.name,
+            coverage="partial",
+            gap_count=0,
+            turns=[],
+            superseded_turns=[],
+            unassigned_passes=[],
+            session_level=TraceSessionLevel(),
+        )
+    payload = trace_payload_with_registry(trace, records)
+    if payload is None:  # pragma: no cover - only reachable through a turn filter
+        raise ValueError(f"no turn data for session {session_dir.name}")
+    payload["sessionId"] = session_dir.name
+    return payload
+
+
+def _events_output_conflict(out: Path, events: Path) -> str | None:
+    """Return an error when ``out`` would clobber the events log itself.
+
+    Hard links and other aliases are caught by comparing the files instead of
+    the path strings; a missing output cannot be the existing log, so
+    ``FileNotFoundError`` is not a conflict.
+    """
+    try:
+        same_file = out.samefile(events)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        return f"could not compare input and output paths: {error}"
+    if same_file:
+        return f"output file is the trajectory events source: {out}"
+    return None
+
+
+def _commit_export(out: Path, text: str, *, force: bool) -> str | None:
+    """Write an export atomically, returning an error message instead of raising."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if force:
+            atomic_write_text(out, text)
+        else:
+            # The early existence check ran before a potentially long
+            # analysis; only a no-clobber commit keeps the promise of not
+            # overwriting without --force against a file created in between.
+            atomic_create_text(out, text)
+    except FileExistsError:
+        return f"output file already exists: {out} (pass --force to overwrite)"
+    except OSError as error:
+        return f"could not write export to {out}: {error}"
+    return None
+
+
+def _export_turns(selector: str, out: Path, *, force: bool) -> int:
+    """Write the ``turns`` export for one session.
+
+    The analyzer path is skipped on purpose: the export is the projection
+    merged with the turn registry, so a session whose log is damaged, or that
+    never ran locally, still reports what the registry knows.
+    """
+    import asyncio
+
+    from chrys.service.trajectory.session import trajectory_events_path
+
+    session_dir = _resolve_session_dir(selector)
+    if isinstance(session_dir, str):
+        _write_stderr(f"Error: {session_dir}")
+        return 1
+    events = trajectory_events_path(session_dir)
+    if events.is_file() and (conflict := _events_output_conflict(out, events)) is not None:
+        _write_stderr(f"Error: {conflict}")
+        return 1
+    if out.exists() and not force:
+        _write_stderr(f"Error: output file already exists: {out} (pass --force to overwrite)")
+        return 1
+    payload = asyncio.run(_turns_export_payload(session_dir))
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    if (write_error := _commit_export(out, text, force=force)) is not None:
+        _write_stderr(f"Error: {write_error}")
+        return 1
+    _write_stdout(
+        f"Wrote turns export to {out} "
+        f"(session {session_dir.name}, {len(payload['turns'])} turns, coverage {payload['coverage']})"
+    )
+    return 0
 
 
 def _prepare_runtime() -> Settings:
@@ -122,7 +243,15 @@ def main(argv: list[str] | None = None) -> int:
     if (missing_cwd := launch_cwd_missing_message(workdir_flag=False)) is not None:
         _write_stderr(f"Error: {missing_cwd}")
         return 1
+    if args.format == "turns" and args.session is None:
+        # The turns export merges the turn registry, which only a session
+        # directory can be looked up in: a bare events log cannot name one.
+        _write_stderr("Error: --format turns requires --session")
+        return 1
     settings = _prepare_runtime()
+    out = Path(args.out)
+    if args.format == "turns":
+        return _export_turns(args.session, out, force=args.force)
     if args.events is not None:
         events = Path(args.events)
         if not events.is_file():
@@ -134,16 +263,8 @@ def main(argv: list[str] | None = None) -> int:
             _write_stderr(f"Error: {resolved}")
             return 1
         events = resolved
-    out = Path(args.out)
-    try:
-        output_is_events = out.samefile(events)
-    except FileNotFoundError:
-        output_is_events = False
-    except OSError as error:
-        _write_stderr(f"Error: could not compare input and output paths: {error}")
-        return 1
-    if output_is_events:
-        _write_stderr(f"Error: output file is the trajectory events source: {out}")
+    if (conflict := _events_output_conflict(out, events)) is not None:
+        _write_stderr(f"Error: {conflict}")
         return 1
     if out.exists() and not args.force:
         _write_stderr(f"Error: output file already exists: {out} (pass --force to overwrite)")
@@ -179,20 +300,8 @@ def main(argv: list[str] | None = None) -> int:
         text = turns_csv(analysis)
     else:
         text = findings_csv(analysis, include_sensitive=include_sensitive)
-    try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        if args.force:
-            atomic_write_text(out, text)
-        else:
-            # The early existence check ran before a potentially long
-            # analysis; only a no-clobber commit keeps the promise of not
-            # overwriting without --force against a file created in between.
-            atomic_create_text(out, text)
-    except FileExistsError:
-        _write_stderr(f"Error: output file already exists: {out} (pass --force to overwrite)")
-        return 1
-    except OSError as error:
-        _write_stderr(f"Error: could not write export to {out}: {error}")
+    if (write_error := _commit_export(out, text, force=args.force)) is not None:
+        _write_stderr(f"Error: {write_error}")
         return 1
     executions = f"{len(analysis.turns)} turns"
     if analysis.workflow_runs:
