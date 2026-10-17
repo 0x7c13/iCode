@@ -611,21 +611,20 @@ async def finalize_mutation_tracking(
         # during tool execution, strictly before this stamp.
         ctx.file_mutation.t_end = time.time()
         snapshot = await loop.run_in_executor(None, _read_file_snapshot, tracker, ctx.file_mutation)
-        if snapshot:
-            result.file_snapshot = snapshot
-            result.file_operation = ctx.file_mutation.operation.value
-            result.file_bytes_changed = _content_changed(
-                ctx.file_mutation.before_hash,
-                ctx.file_mutation.after_hash,
-                ctx.file_mutation.before_skip,
-                ctx.file_mutation.after_skip,
-            )
-            result.file_hashes = FileHashDiff(
-                before=ctx.file_mutation.before_hash,
-                after=ctx.file_mutation.after_hash,
-                before_skip=ctx.file_mutation.before_skip,
-                after_skip=ctx.file_mutation.after_skip,
-            )
+        result.file_snapshot = snapshot
+        result.file_operation = ctx.file_mutation.operation.value
+        result.file_bytes_changed = _content_changed(
+            ctx.file_mutation.before_hash,
+            ctx.file_mutation.after_hash,
+            ctx.file_mutation.before_skip,
+            ctx.file_mutation.after_skip,
+        )
+        result.file_hashes = FileHashDiff(
+            before=ctx.file_mutation.before_hash,
+            after=ctx.file_mutation.after_hash,
+            before_skip=ctx.file_mutation.before_skip,
+            after_skip=ctx.file_mutation.after_skip,
+        )
 
     # Collect per-command observations before recording. Targeted scan rows
     # own the worktree endpoint; Git fills only paths that scan did not see.

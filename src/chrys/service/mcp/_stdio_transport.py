@@ -17,7 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from types import TracebackType
@@ -270,7 +270,7 @@ async def tolerant_stdio_client(
     dropped_banner_lines: list[str] | None = None,
     process_diagnostics: _StdioProcessDiagnostics | None = None,
     inherit_env: bool = True,
-) -> AsyncIterator[tuple[Any, Any]]:
+) -> AsyncGenerator[tuple[Any, Any]]:
     """``mcp.client.stdio.stdio_client`` variant that ignores banner lines.
 
     Many real-world stdio MCP servers (vendor CLI wrappers, several

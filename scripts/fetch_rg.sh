@@ -14,13 +14,13 @@
 # plain "rg" (or "rg.exe") for the current host.
 #
 # Environment variables (override CLI flags):
-#   RG_VERSION   — ripgrep version (default: 15.1.0)
+#   RG_VERSION   — ripgrep version (default: 15.2.0)
 #   RG_BASE_URL  — base URL for downloads (default: GitHub releases URL)
 #   RG_ARCHIVE   — path to pre-downloaded archive (skips download entirely)
 
 set -euo pipefail
 
-RG_VERSION="${RG_VERSION:-15.1.0}"
+RG_VERSION="${RG_VERSION:-15.2.0}"
 RG_BASE_URL="${RG_BASE_URL:-https://github.com/BurntSushi/ripgrep/releases/download}"
 RG_ARCHIVE="${RG_ARCHIVE:-}"
 FETCH_ALL=false

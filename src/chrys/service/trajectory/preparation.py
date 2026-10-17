@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Final, Protocol
 
@@ -331,7 +331,7 @@ async def input_admission_wait(
 
 
 @asynccontextmanager
-async def preparation_lock(lock: asyncio.Lock, preparation: PreparationTrace | None) -> AsyncIterator[None]:
+async def preparation_lock(lock: asyncio.Lock, preparation: PreparationTrace | None) -> AsyncGenerator[None]:
     """Acquire *lock* with a child ``wait.tool_admission`` interval."""
     wait = (
         WaitTrace.open(

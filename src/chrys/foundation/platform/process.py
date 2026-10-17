@@ -21,7 +21,7 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Awaitable, Iterable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Iterable, Iterator
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Never, cast
@@ -886,7 +886,7 @@ def _close_windows_handle(handle: int | None) -> None:
     api.kernel32.CloseHandle(handle)
 
 
-async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncIterator[asyncio.subprocess.Process]:
+async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncGenerator[asyncio.subprocess.Process]:
     """Generator backing :func:`managed_subprocess`."""
     if (
         sys.platform != "win32"

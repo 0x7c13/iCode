@@ -962,9 +962,6 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def call_super_watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
 
-    def is_anchored(self) -> bool:
-        return self._anchored
-
     def is_anchor_released(self) -> bool:
         return self._anchor_released
 

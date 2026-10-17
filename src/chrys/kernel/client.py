@@ -17,7 +17,7 @@ import json
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable, Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Collection, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
@@ -54,7 +54,7 @@ def report_wire_progress() -> None:
 
 
 @contextmanager
-def wire_progress_scope(on_progress: Callable[[], None]) -> Iterator[None]:
+def wire_progress_scope(on_progress: Callable[[], None]) -> Generator[None]:
     """Report progress from the block, and every task it spawns, to *on_progress*.
 
     A report also reaches the scopes this one is nested in: an inner timer

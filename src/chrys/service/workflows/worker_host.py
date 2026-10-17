@@ -472,9 +472,7 @@ class _CaptureStream(io.TextIOBase):
         self._fd = fd
         self.buffer = _CaptureBuffer(route, fd)
 
-    @property
-    def encoding(self) -> str:  # type: ignore[override]
-        return "utf-8"
+    encoding: str = "utf-8"
 
     def writable(self) -> bool:
         return True

@@ -19,7 +19,7 @@ import json
 import logging
 import math
 import weakref
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -143,7 +143,7 @@ def in_internal_side_call() -> bool:
 
 
 @contextmanager
-def internal_side_call_scope() -> Iterator[None]:
+def internal_side_call_scope() -> Generator[None]:
     """Mark the enclosed request as an internal side call."""
     token = _INTERNAL_SIDE_CALL.set(True)
     try:

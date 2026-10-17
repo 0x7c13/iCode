@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -608,7 +608,7 @@ def _assemble_stack(
 
 
 @asynccontextmanager
-async def scoped_client(profile: ModelProfile, **kwargs: Any) -> AsyncIterator[Any]:
+async def scoped_client(profile: ModelProfile, **kwargs: Any) -> AsyncGenerator[Any]:
     """Create a client stack for one bounded use and close it on every exit."""
     client = await create_client(profile, **kwargs)
     try:

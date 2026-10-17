@@ -126,7 +126,7 @@ def _span_to_dict(span: ReadableSpan) -> dict[str, Any]:
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "name": span.name,
-        "kind": span.kind.name if span.kind else None,
+        "kind": span.kind.name,
         "trace_id": f"{ctx.trace_id:032x}" if ctx else None,
         "span_id": f"{ctx.span_id:016x}" if ctx else None,
         "parent_span_id": f"{parent.span_id:016x}" if parent else None,

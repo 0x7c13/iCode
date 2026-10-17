@@ -30,7 +30,7 @@ import contextlib
 import logging
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -80,7 +80,7 @@ def writer_lease_held(session_dir: Path) -> bool:
 
 
 @contextlib.contextmanager
-def _writer_lease_taken(session_dir: Path) -> Iterator[bool]:
+def _writer_lease_taken(session_dir: Path) -> Generator[bool]:
     """Hold *session_dir*'s writer lease for the body; ``False`` when somebody else has it.
 
     Asking whether the lease is held answers where it *was*: the probe is

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -30,8 +31,6 @@ from chrys.service.session.message_metadata import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     from chrys.orchestration.invoker.kernel import KernelConversation
 
 logger = logging.getLogger(__name__)
@@ -155,7 +154,7 @@ class TurnResumePolicy:
     @asynccontextmanager
     async def retry_request(
         self, additional_text: str = "", created_at: datetime | str | None = None
-    ) -> AsyncIterator[RunRequest | None]:
+    ) -> AsyncGenerator[RunRequest | None]:
         """Resume from current conversation state.
 
         When *additional_text* is non-empty, it is used as the mid-turn

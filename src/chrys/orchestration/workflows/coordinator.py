@@ -20,7 +20,7 @@ import asyncio
 import logging
 import shutil
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -219,7 +219,7 @@ class WorkflowCoordinator:
     @asynccontextmanager
     async def _session_owner(
         self, session_id: str, *, allow_active: bool = True
-    ) -> AsyncIterator[WorkflowSessionOwner]:
+    ) -> AsyncGenerator[WorkflowSessionOwner]:
         """Borrow an editable active owner or restore one, keeping close behind the operation."""
         active = self._active
         if active is not None and active.session_id == session_id:
@@ -250,7 +250,9 @@ class WorkflowCoordinator:
 
     async def on_model_change(self, event: WorkflowModelChangeRequest) -> None:
         result = WorkflowModelChangeResult(session_id=event.session_id, request_id=event.request_id)
-        if event.session_id in self._model_changes:
+        if event.session_id is None:
+            result.error = "Select a workflow session."
+        elif event.session_id in self._model_changes:
             result.error = "This workflow session's model is being updated. Try again in a moment."
         else:
             # Fence only this session before awaiting its guard. Other sessions
@@ -283,6 +285,8 @@ class WorkflowCoordinator:
         else:
             with self._turn_state.lease.session_operation():
                 try:
+                    if event.session_id is None:
+                        raise ValueError("Select a workflow session.")
                     async with self._session_owner(event.session_id) as owner:
                         settings = await self._load_run_settings(
                             Path(owner.require_workspace().primary_cwd), request_id=event.request_id

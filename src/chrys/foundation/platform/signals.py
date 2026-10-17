@@ -13,18 +13,18 @@ from __future__ import annotations
 import signal
 import sys
 import threading
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from types import FrameType
 
 HANGUP_SIGNALS: tuple[int, ...] = () if sys.platform == "win32" else (signal.SIGHUP, signal.SIGTERM)
 
 
 @contextmanager
-def hangup_as_interrupt() -> Iterator[None]:
+def hangup_as_interrupt() -> Generator[None]:
     """While inside, SIGHUP and SIGTERM act as Ctrl+C: ``asyncio.run`` cancels its main task, so teardown runs.
 
     A process started with Ctrl+C ignored, as ``&`` in a script does, keeps the

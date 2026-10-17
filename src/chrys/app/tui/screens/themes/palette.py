@@ -12,7 +12,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.color import Color
 from textual.geometry import Region
 from textual.message import Message
@@ -238,7 +238,7 @@ class _ResetButton(Button):
     # Mirror of ``_ColorSwatchButton`` bindings: ``left`` hops back to
     # the swatch, ``up``/``down`` move to the neighbouring row's swatch
     # (returning the user to the main navigation column).
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("left", "focus_swatch", show=False),
         Binding("up", "navigate_row(-1)", show=False),
         Binding("down", "navigate_row(1)", show=False),
@@ -282,7 +282,7 @@ class _ColorSwatchButton(Button):
     # Keyboard navigation between rows + lateral hop to the row's reset
     # button.  Bindings live on the swatch itself so they only fire when
     # a swatch is focused — no priority/global side effects.
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_focus(-1)", show=False),
         Binding("down", "move_focus(1)", show=False),
         Binding("right", "focus_reset", show=False),
@@ -431,7 +431,7 @@ class _AnsiTokenPicker(Widget, can_focus=True):
     """Palette picker for Textual's terminal ANSI color tokens."""
 
     ALLOW_SELECT = False
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move(-1)", show=False),
         Binding("down", "move(1)", show=False),
     ]
@@ -508,7 +508,7 @@ class _Xterm256PalettePicker(Widget, can_focus=True):
 
     ALLOW_SELECT = False
     COMPONENT_CLASSES: ClassVar[set[str]] = {"palette--transparent", "palette--transparent-selected"}
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("left", "move(-1, 0)", show=False),
         Binding("right", "move(1, 0)", show=False),
         Binding("up", "move(0, -1)", show=False),
