@@ -82,6 +82,12 @@ def test_non_loopback_create_connection_guard_goes_red() -> None:
 def test_loopback_connect_reaches_the_os_instead_of_the_guard() -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        # Whether a closed loopback port answers with RST or drops the SYN is
+        # a firewall policy, not a property of the guard: on hosts that drop
+        # it, an untimed connect() blocks past pytest-timeout and the hang
+        # surfaces only as a crashed xdist worker. A timeout is still the
+        # OSError that proves the guard let the syscall through.
+        sock.settimeout(2.0)
         try:
             sock.connect(("127.0.0.1", 9))
         except RuntimeError as exc:
