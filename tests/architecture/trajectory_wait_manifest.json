@@ -4515,7 +4515,7 @@
       "finalize_mutation_tracking": [
         ["thread_pool", "await loop.run_in_executor(None, tracker.record_after, ctx.file_mutation)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _read_file_snapshot, tracker, ctx.file_mutation)", "unresolved"],
-        ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before)", "unresolved"],
+        ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before, tracker.store)", "unresolved"],
         ["wrapper", "await _track_git_calibrate_after(ctx.git_calibrator, same_call_paths)", "unresolved", "chrys.service.mutations.pipeline._track_git_calibrate_after"],
         ["thread_pool", "await loop.run_in_executor(None, _record_shell_observations, tracker, observations, call_id, ctx.tool_operation_id)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _apply_trace_upgrades, ctx, shell_mutations)", "unresolved"],
