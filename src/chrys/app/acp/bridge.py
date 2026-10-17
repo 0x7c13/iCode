@@ -5,13 +5,13 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from acp import schema as acp_schema
 from acp.helpers import (
     start_tool_call,
     tool_content,
-    update_agent_message_text,
     update_agent_thought_text,
     update_tool_call,
 )
@@ -78,6 +78,22 @@ SessionUpdate = (
 )
 
 
+def with_chrys_metadata(meta: dict[str, Any] | None, chrys: dict[str, Any]) -> dict[str, Any]:
+    """Merge *chrys* into an update's ``_meta`` without dropping its siblings.
+
+    ACP reserves ``_meta`` for the agent, but it is one shared object: a
+    client's own keys and any other extension's go in the same place. Two
+    Chrys writers (hosted-tool facts, the turn context) therefore merge onto
+    the existing ``chrys`` object rather than replacing it.
+    """
+    metadata = dict(meta or {})
+    existing = metadata.get("chrys")
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(chrys)
+    metadata["chrys"] = merged
+    return metadata
+
+
 def with_hosted_metadata[UpdateT: acp_schema.ToolCallStart | acp_schema.ToolCallProgress](
     update: UpdateT,
     *,
@@ -92,16 +108,16 @@ def with_hosted_metadata[UpdateT: acp_schema.ToolCallStart | acp_schema.ToolCall
     if not provider_hosted:
         return update
     chrys = {
-        "provider_hosted": True,
-        "hosted_family": hosted_family,
+        "providerHosted": True,
+        "hostedFamily": hosted_family,
         "provider": provider,
-        "provider_item_type": provider_item_type,
-        "provider_call_id": provider_call_id,
-        "provider_status": provider_status,
+        "providerItemType": provider_item_type,
+        "providerCallId": provider_call_id,
+        "providerStatus": provider_status,
     }
-    metadata = dict(update.field_meta or {})
-    metadata["chrys"] = {key: value for key, value in chrys.items() if value is True or value != ""}
-    update.field_meta = metadata
+    update.field_meta = with_chrys_metadata(
+        update.field_meta, {key: value for key, value in chrys.items() if value is True or value != ""}
+    )
     return update
 
 
@@ -225,9 +241,119 @@ class AcpEventBridge:
         # parent-card note until the final parent update: all notes share one
         # parent card, so any note that omits them wipes them.
         self._sub_agent_hosted_blocks: dict[str, dict[str, list[Any]]] = {}
+        # The turn every update this bridge emits is labelled with. Set by
+        # ``begin_turn`` from the first ``TurnStarted``; None until then, so
+        # updates that precede any turn carry no turn context.
+        self._turn_id: str | None = None
+        self._turn_number: int | None = None
+        # The agent message currently being streamed. ACP groups chunks into
+        # one message by this id, so it changes at every boundary the client
+        # must render separately: a new turn, and each tool batch.
+        self._agent_message_id: str | None = None
+        # Provisional text is identified by (attempt_id, segment_id) — the
+        # backend's own naming for one retractable segment — so a retraction
+        # can name exactly the chunks it sent.
+        self._provisional_message_ids: dict[str, dict[str, list[str]]] = {}
+        # The segment the live message belongs to. A different segment is a
+        # different message, so text that moves on to another one starts a new
+        # id rather than continuing the last.
+        self._live_segment: tuple[str, str] | None = None
+
+    def begin_turn(self, turn_id: str, turn_number: int) -> None:
+        """Label every later update with the turn that opened.
+
+        Called from the first ``TurnStarted`` of a prompt loop. Both the live
+        updates and the replay of the same session carry this pair, so a
+        client can join them without guessing.
+        """
+        self._turn_id = turn_id
+        self._turn_number = turn_number
+        self._agent_message_id = None
+        self._live_segment = None
+
+    @property
+    def turn_id(self) -> str | None:
+        """Identity of the turn this bridge is labelling, if one opened."""
+        return self._turn_id
+
+    def begin_agent_message(self) -> str:
+        """Start a new agent message and return its id.
+
+        A live message keeps its id: ACP says every chunk of one message shares
+        a ``messageId``, and a change means a new message. Only a boundary —
+        a new turn or a tool call in between — starts another.
+        """
+        if self._agent_message_id is None:
+            self._agent_message_id = str(uuid.uuid4())
+        return self._agent_message_id
+
+    def _turn_meta(self) -> dict[str, Any]:
+        if self._turn_id is None:
+            return {}
+        meta: dict[str, Any] = {"turnId": self._turn_id}
+        if self._turn_number is not None:
+            meta["turnNumber"] = self._turn_number
+        return meta
+
+    def take_retractions(self, attempt_id: str, kept_segment_ids: Sequence[str]) -> list[str]:
+        """Message ids of one attempt's segments the backend did NOT keep.
+
+        The backend names exactly which of an attempt's provisional segments
+        survive (:class:`InvocationPresentationAttemptAccepted`); anything this
+        bridge already sent for that attempt and that is absent from
+        *kept_segment_ids* has to be withdrawn. A rejection passes an empty
+        list. The attempt's record is dropped either way — a later event reuses
+        neither its id nor its segment ids.
+        """
+        segments = self._provisional_message_ids.pop(attempt_id, {})
+        kept = set(kept_segment_ids)
+        return [
+            message_id
+            for segment_id, message_ids in segments.items()
+            if segment_id not in kept
+            for message_id in message_ids
+        ]
 
     def updates_for_event(self, event: Event) -> list[SessionUpdate]:
         """Return ACP updates for one Chrys event."""
+        updates = self._project_event(event)
+        turn_meta = self._turn_meta()
+        if turn_meta:
+            for update in updates:
+                update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
+        return updates
+
+    def _agent_message_update(self, chunk: str, event: InvocationMessage) -> acp_schema.AgentMessageChunk:
+        """One agent text chunk, tagged with the message it belongs to.
+
+        Rebuilt from the schema rather than ``update_agent_message_text``,
+        which takes no ``messageId``. Interim text carries the backend's
+        ``(attempt_id, segment_id)``: those are the ids a retraction names.
+        """
+        presentation = event.presentation
+        segment = (presentation.attempt_id, presentation.segment_id) if presentation is not None else None
+        if segment != self._live_segment:
+            # Another segment is another message: text for a retractable
+            # segment never continues the one before it, and ordinary text
+            # after one starts afresh.
+            self._agent_message_id = None
+            self._live_segment = segment
+        message_id = self.begin_agent_message()
+        if presentation is not None:
+            # A segment can arrive in several chunks; every id it carried has to
+            # be retractable, so the record keeps all of them.
+            sent = self._provisional_message_ids.setdefault(presentation.attempt_id, {}).setdefault(
+                presentation.segment_id, []
+            )
+            if message_id not in sent:
+                sent.append(message_id)
+        return acp_schema.AgentMessageChunk(
+            sessionUpdate="agent_message_chunk",
+            content=acp_schema.TextContentBlock(type="text", text=chunk),
+            messageId=message_id,
+        )
+
+    def _project_event(self, event: Event) -> list[SessionUpdate]:
         if isinstance(event, InvocationEvent):
             if event.origin.root.kind == "workflow_node":
                 return []
@@ -237,7 +363,7 @@ class AcpEventBridge:
             chunk = self._agent_message_delta(event)
             if not chunk:
                 return []
-            return [update_agent_message_text(chunk)]
+            return [self._agent_message_update(chunk, event)]
         if isinstance(event, AgentThinking):
             if not event.text:
                 return []
@@ -254,6 +380,9 @@ class AcpEventBridge:
             self._last_streaming_agent_text = ""
             return []
         if isinstance(event, InvocationToolCallStart):
+            # A client groups streamed text into one message; a tool card in
+            # between is a boundary, so the text after it is a new message.
+            self._agent_message_id = None
             if event.call_id:
                 self._tool_kinds_by_call_id[event.call_id] = event.tool_kind
             update = start_tool_call(

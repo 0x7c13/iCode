@@ -34,6 +34,7 @@ from time import monotonic_ns
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from chrys.foundation.errors import (
+    classify_error,
     clean_error_message,
     invalidates_continuation_token,
     is_context_overflow,
@@ -980,6 +981,8 @@ class _LoopTrajectory:
             payload["error_code"] = type(exc).__name__
             policy = self._retry_policy
             payload["retryable"] = bool(policy is not None and policy.is_retryable(exc))
+            if not isinstance(exc, asyncio.CancelledError):
+                payload["error_kind"] = classify_error(exc).kind
         try:
             trace.finished(outcome=outcome, payload=payload)
         except Exception:

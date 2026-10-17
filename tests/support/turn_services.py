@@ -143,6 +143,7 @@ def make_turn_runner(
         workspace_change_tracker=workspace_change_tracker,
         settings_handle=settings_handle,
         trajectory_recorder=trajectory_recorder,
+        bus=bus,
         fsm=fsm,
         on_turn_started=on_turn_started,
         finalizer=finalizer,

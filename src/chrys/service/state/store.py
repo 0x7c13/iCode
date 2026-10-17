@@ -11,7 +11,7 @@ import logging
 import os as os
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -84,10 +84,25 @@ from chrys.service.state.session_listing import (
 )
 from chrys.service.state.session_mru import SessionMruEntry, SessionMruIndex, coerce_utc, sort_entries
 from chrys.service.state.workflow import WorkflowSessionState
+from chrys.service.trajectory.state import TurnRecord, turn_records
 from chrys.service.workflows.history import read_workflow_meta, read_workflow_run
 from chrys.service.workflows.layout import EVENTS_FILE, HEADER_FILE, run_dir
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTranscript:
+    """A chat session's replayable history and the turn identity behind it.
+
+    Both come from one read of the session envelope, so the turns always
+    describe the messages beside them — a separate read could see the next
+    turn's registry against this turn's messages.
+    """
+
+    messages: list[dict[str, Any]]
+    turns: list[TurnRecord]
+
 
 # The catalog is rewritten whole, so after its first merge a process merges a
 # trickle of new entries (the session a turn just changed) at most this often;
@@ -164,6 +179,12 @@ class StateStore(Protocol):
         *,
         prefer_recovery: bool = False,
     ) -> list[dict[str, Any]] | None: ...
+    async def load_session_transcript(
+        self,
+        session_id: str,
+        *,
+        prefer_recovery: bool = False,
+    ) -> SessionTranscript | None: ...
     async def load_session_meta(
         self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False
     ) -> SessionMeta | None: ...
@@ -1171,13 +1192,13 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
         """Load session state from the session folder."""
         return await asyncio.to_thread(self._load_session_sync, session_id, prefer_recovery=prefer_recovery)
 
-    def _load_session_raw_sync(
+    def _load_session_transcript_sync(
         self,
         session_id: str,
         *,
         prefer_recovery: bool = False,
-    ) -> list[dict[str, Any]] | None:
-        """Sync implementation of raw session load (runs in a thread)."""
+    ) -> SessionTranscript | None:
+        """Read the session envelope once into replayable messages and turn identity."""
         try:
             raw = self._resolve_effective_envelope(session_id, prefer_recovery=prefer_recovery)
             if raw is None:
@@ -1212,9 +1233,18 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
                 if msg.get("additional_properties"):
                     entry["additional_properties"] = msg["additional_properties"]
                 result.append(entry)
-            return result
+            return SessionTranscript(messages=result, turns=turn_records(state))
         except KeyError:
             return None
+
+    async def load_session_transcript(
+        self,
+        session_id: str,
+        *,
+        prefer_recovery: bool = False,
+    ) -> SessionTranscript | None:
+        """Load a chat session's replayable history and turn registry together."""
+        return await asyncio.to_thread(self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery)
 
     async def load_session_raw(
         self,
@@ -1230,7 +1260,8 @@ class JsonFileStateStore(SessionForkMixin, SessionMetaMixin):
             calls) is embedded per-message in
             ``additional_properties["_intermediate_text"]``.
         """
-        return await asyncio.to_thread(self._load_session_raw_sync, session_id, prefer_recovery=prefer_recovery)
+        transcript = await self.load_session_transcript(session_id, prefer_recovery=prefer_recovery)
+        return None if transcript is None else transcript.messages
 
     def _load_session_meta_sync(
         self, session_id: str, *, prefer_recovery: bool = False, strict: bool = False

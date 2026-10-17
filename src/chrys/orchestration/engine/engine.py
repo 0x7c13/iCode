@@ -77,6 +77,7 @@ from chrys.service.state.store import (
     atomic_copy_file,
 )
 from chrys.service.todos.tracker import TodoTracker
+from chrys.service.trajectory.state import TurnRecord, turn_records
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -299,6 +300,16 @@ class AgentEngine:
         return self.execution_busy()
 
     @property
+    def can_retry(self) -> bool:
+        """Whether an immediate retry may start now.
+
+        Read-only: a frontend asks this before offering retry, and the same
+        predicate admits the retry when the request actually arrives. Nothing
+        moves the FSM here — see :meth:`RetryCoordinator.can_retry`.
+        """
+        return self._turns.can_retry
+
+    @property
     def turn_lifecycle_task(self) -> asyncio.Task[None] | None:
         """Return the currently owned execution/finalization task.
 
@@ -395,6 +406,18 @@ class AgentEngine:
         exchanges are attributed to the session.
         """
         return self._trajectory_recorder.context()
+
+    def turn_records(self) -> list[TurnRecord]:
+        """The turns this session has run, in order, or an empty list before an agent exists.
+
+        Read from the live provider state, which is what the next save writes:
+        a frontend asking about the turn it just saw answered gets it here
+        before anything has been persisted.
+        """
+        loaded = self._current.loaded
+        if loaded is None:
+            return []
+        return turn_records(loaded.bindings.backend.history_state)
 
     @property
     def history_messages(self) -> list:

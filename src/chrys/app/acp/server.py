@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Mapping
+import uuid
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Any
@@ -23,9 +25,10 @@ from chrys.app.acp.bridge import (
     plan_update_for_todos,
     session_title_info_update,
     tool_call_title,
+    with_chrys_metadata,
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
-from chrys.app.acp.history import replay_session_history
+from chrys.app.acp.history import replay_session_history, session_history_payload
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -56,6 +59,8 @@ from chrys.foundation.events.types import (
     InvocationContextPressure,
     InvocationEvent,
     InvocationPaused,
+    InvocationPresentationAttemptAccepted,
+    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -70,8 +75,10 @@ from chrys.foundation.events.types import (
     SessionSaved,
     SessionTitleUpdated,
     ToolCompacted,
+    TurnStarted,
     UsageUpdate,
     UserInjectResult,
+    UserMessage,
     Warning,
     WorkspaceUpdated,
 )
@@ -82,6 +89,7 @@ from chrys.service.mutations.types import FileMutationTextSnapshot
 
 if TYPE_CHECKING:
     from chrys.service.mutations.types import FileHashDiff
+    from chrys.service.trajectory.state import TurnRecord
 
 _ALLOW_OPTION_ID = "allow"
 _REJECT_OPTION_ID = "reject"
@@ -93,6 +101,85 @@ _APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
     ("bypass", "Bypass", "All tool calls are auto-approved."),
 )
 _APPROVAL_MODE_IDS = frozenset(mode_id for mode_id, _, _ in _APPROVAL_MODES)
+
+# What this server dispatches and pushes beyond the ACP spec, declared in
+# ``initialize`` so a client can branch on the running build instead of on
+# error codes. ``tests/app/acp/test_server_capabilities.py`` pins both lists
+# to the code itself: a method the dispatcher answers without being declared,
+# or a declaration nothing implements, fails there.
+ACP_EXTENSION_METHODS: tuple[str, ...] = (
+    "session/delete",
+    "chrys/session_runtime",
+    "session/inject",
+    "session/mutations",
+    "session/diff",
+    "session/rollback",
+    "sub_agent/retry",
+    "sub_agent/abort",
+    "session/skip_sleep",
+    "session/switch_agent",
+    "settings/reload",
+    "settings/options",
+    "session/set_config_option",
+    "session/set_workspace",
+    "session/history",
+    "session/turns",
+    "session/retry",
+    "profiles/agents/list",
+    "profiles/agents/read",
+    "profiles/agents/write",
+    "profiles/agents/delete",
+    "profiles/agents/reset",
+    "profiles/models/list",
+    "profiles/models/read",
+    "profiles/models/write",
+    "profiles/models/delete",
+    "mcp/test",
+    "mcp/list",
+    "skills/list",
+)
+
+ACP_EXTENSION_NOTIFICATIONS: tuple[str, ...] = (
+    "chrys/approval_reviewed",
+    "chrys/agent_load_started",
+    "chrys/agent_load_progress",
+    "chrys/agent_load_finished",
+    "chrys/agent_load_failed",
+    "chrys/runtime_update",
+    "chrys/rollback_result",
+    "chrys/session_restored",
+    "chrys/profile_switched",
+    "chrys/workspace_updated",
+    "chrys/turn_started",
+    "chrys/retry_attempt",
+    "chrys/messages_retracted",
+    "chrys/user_inject_result",
+    "chrys/usage_update",
+    "chrys/warning",
+    "chrys/error",
+    "chrys/compaction_started",
+    "chrys/compaction_finished",
+    "chrys/tool_compacted",
+    "chrys/context_compressed",
+    "chrys/context_pressure",
+    "chrys/sub_agent_invocation_start",
+    "chrys/sub_agent_tool_call_start",
+    "chrys/sub_agent_tool_call_result",
+    "chrys/sub_agent_progress",
+    "chrys/sub_agent_retry_attempt",
+    "chrys/sub_agent_compaction_started",
+    "chrys/sub_agent_compaction_finished",
+    "chrys/sub_agent_compaction_committed",
+    "chrys/sub_agent_paused",
+    "chrys/sub_agent_resumed",
+    "chrys/sub_agent_aborted",
+    "chrys/sub_agent_cascade_aborted",
+)
+
+# The version of the Chrys extension surface itself. It changes when the
+# meaning of a declared method or notification changes incompatibly, not when
+# one is added — a client gates on presence per name.
+ACP_EXTENSION_API_VERSION = 1
 
 
 # Sub-agent tool-result metadata keys whose values carry whole file contents.
@@ -170,6 +257,45 @@ def _request_input_question_payload(question: AskUserQuestion) -> dict[str, obje
     }
 
 
+@dataclass
+class _TurnExecution:
+    """What one ``_run_turn`` call produced, before it becomes a response.
+
+    ``turn_id`` is the first ``TurnStarted`` the stream carried — the identity
+    of the turn this request ran, or ``None`` when the run was refused before
+    any turn opened.
+    """
+
+    outcome: EndTurn | Cancelled | Errored | None
+    usage_payload: dict[str, int] | None
+    turn_usage: dict[str, int] | None
+    turn_id: str | None
+    turn_number: int | None
+
+    def response_meta(self) -> dict[str, Any]:
+        """The ``chrys`` object an ACP response carries about this turn."""
+        meta: dict[str, Any] = {}
+        if self.turn_id is not None:
+            meta["turnId"] = self.turn_id
+        if self.turn_number is not None:
+            meta["turnNumber"] = self.turn_number
+        if self.usage_payload is not None:
+            meta["sessionUsage"] = self.usage_payload
+        return meta
+
+
+class _TurnInFlight(Exception):
+    """A turn is already admitted for this session, so this request is refused.
+
+    Carries the error data instead of a ``RequestError`` so the request path
+    that raises it stays free of protocol types.
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        super().__init__(data.get("details", ""))
+        self.data = data
+
+
 class ChrysAcpServer:
     """ACP request handlers backed by ``ChrysSessionHost``."""
 
@@ -224,6 +350,14 @@ class ChrysAcpServer:
                     close=acp_schema.SessionCloseCapabilities(),
                     list=acp_schema.SessionListCapabilities(),
                     additionalDirectories=acp_schema.SessionAdditionalDirectoriesCapabilities(),
+                ),
+                field_meta=with_chrys_metadata(
+                    None,
+                    {
+                        "apiVersion": ACP_EXTENSION_API_VERSION,
+                        "methods": list(ACP_EXTENSION_METHODS),
+                        "notifications": list(ACP_EXTENSION_NOTIFICATIONS),
+                    },
                 ),
             ),
         )
@@ -403,70 +537,206 @@ class ChrysAcpServer:
         _ = kwargs
         if self._client is None:
             raise RequestError.internal_error({"details": "ACP client connection is not ready."})
-        bridge = AcpEventBridge()
-        pending_approvals: dict[str, ApprovalRequest] = {}
-        outcome: EndTurn | Cancelled | Errored | None = None
-        usage_payload: dict[str, int] | None = None
-        execution_started = False
-        try:
-            session = self._manager.get(session_id)
-            async with session.prompt_lock:
-                try:
-                    # A close/delete may have started while this prompt waited for
-                    # the per-session lock. Re-resolve before touching the host so
-                    # a queued prompt cannot run against a closing session.
-                    if self._manager.get(session_id) is not session:
-                        raise AcpSessionError(f"ACP session is not active: {session_id}")
-                    converted = convert_prompt_blocks(prompt, vision_enabled=session.host.vision_enabled)
-                    execution_started = True
-                    async for event in session.host.iter_turn_events(converted.message):
-                        await self._handle_event(session_id, event, bridge, pending_approvals)
-                    outcome = session.host.last_turn_outcome
-                finally:
-                    # This snapshot stays under prompt_lock: a queued turn must
-                    # not mutate cumulative session usage before this response
-                    # (or error) captures the completed turn's total.
-                    if execution_started:
-                        usage_payload = _prompt_usage_payload(
-                            session.host.engine.usage_publisher.make_usage_event(session_id=session_id)
-                        )
-                    # A cancellation tombstone only bridges to a request event
-                    # still queued in THIS turn's per-turn stream. Judge-aborted
-                    # approvals and requests dropped by cancellation never send
-                    # that event, so whatever survives the stream is dead —
-                    # sweep it or a long-lived session accumulates tombstones.
-                    self._drop_session_tombstones(session_id)
-        except AcpContentError as exc:
-            raise RequestError.invalid_params({"details": str(exc)}) from exc
-        except Exception as exc:
-            raise _request_error(exc, usage=usage_payload) from exc
+        user_message_id = _validated_message_id(message_id)
 
-        if isinstance(outcome, EndTurn):
+        def make_message() -> UserMessage:
+            converted = convert_prompt_blocks(prompt, vision_enabled=self._manager.get(session_id).host.vision_enabled)
+            return replace(converted.message, client_message_id=user_message_id)
+
+        def start(session: ManagedSession) -> AsyncIterator[Event]:
+            message = make_message()
+            return session.host.iter_turn_events(message)
+
+        turn = await self._run_turn(session_id, start)
+        if isinstance(turn.outcome, EndTurn):
             return acp_schema.PromptResponse(
                 stopReason="end_turn",
-                userMessageId=message_id,
-                usage=acp_schema.Usage.model_validate(usage_payload),
+                userMessageId=user_message_id,
+                usage=acp_schema.Usage.model_validate(turn.turn_usage),
+                field_meta=with_chrys_metadata(None, turn.response_meta()),
             )
-        if isinstance(outcome, Cancelled):
+        if isinstance(turn.outcome, Cancelled):
             return acp_schema.PromptResponse(
                 stopReason="cancelled",
-                userMessageId=message_id,
-                usage=acp_schema.Usage.model_validate(usage_payload),
+                userMessageId=user_message_id,
+                usage=acp_schema.Usage.model_validate(turn.turn_usage),
+                field_meta=with_chrys_metadata(None, turn.response_meta()),
             )
-        if isinstance(outcome, Errored):
-            error = outcome.error
+        if isinstance(turn.outcome, Errored):
+            error = turn.outcome.error
             raise RequestError.internal_error(
                 {
                     "code": error.code,
                     "message": error.message,
-                    "usage": usage_payload,
+                    "usage": turn.turn_usage,
+                    "sessionUsage": turn.usage_payload,
+                    **turn.response_meta(),
                 }
             )
         raise RequestError.internal_error(
             {
                 "details": f"{APP_DISPLAY_NAME} turn ended without an outcome.",
-                "usage": usage_payload,
+                "usage": turn.turn_usage,
+                "sessionUsage": turn.usage_payload,
+                **turn.response_meta(),
             }
+        )
+
+    async def retry(
+        self,
+        session_id: str,
+        text: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Retry the last failed or interrupted turn of a session.
+
+        A turn that is still running cannot be retried: the client cancels it
+        first, then retries. The payload names the turn that was resumed — the
+        same ``turnId`` the original prompt reported — and a retry opens no new
+        user message, so it carries no ``userMessageId``.
+        """
+        _ = kwargs
+        if self._client is None:
+            raise RequestError.internal_error({"details": "ACP client connection is not ready."})
+
+        # A turn in flight owns the eligibility: refuse a retry that arrives
+        # while one is running instead of queueing it behind the turn, where it
+        # would start a paid pass minutes later, after the client gave up.
+        try:
+            session = self._manager.get(session_id)
+        except Exception as exc:
+            raise _request_error(exc) from exc
+        if session.turns_reserved:
+            raise RequestError.invalid_params(
+                {"details": f"Session {session_id} is running a turn; cancel it before retrying."}
+            )
+
+        def start(session: ManagedSession) -> AsyncIterator[Event]:
+            if not session.host.engine.can_retry:
+                raise RequestError.invalid_params({"details": f"Session {session_id} has no turn that can be retried."})
+            return session.host.iter_retry_events(text)
+
+        turn = await self._run_turn(session_id, start)
+        if turn.outcome is None:
+            # Same rule as a prompt: a run that produced no outcome did not
+            # complete, so it is not reported as a turn that ended normally.
+            raise RequestError.internal_error(
+                {
+                    "details": f"{APP_DISPLAY_NAME} retry ended without an outcome.",
+                    "usage": turn.turn_usage,
+                    "sessionUsage": turn.usage_payload,
+                    **turn.response_meta(),
+                }
+            )
+        if isinstance(turn.outcome, Errored):
+            error = turn.outcome.error
+            raise RequestError.internal_error(
+                {
+                    "code": error.code,
+                    "message": error.message,
+                    "usage": turn.turn_usage,
+                    "sessionUsage": turn.usage_payload,
+                    **turn.response_meta(),
+                }
+            )
+        payload: dict[str, Any] = {
+            "stopReason": "cancelled" if isinstance(turn.outcome, Cancelled) else "end_turn",
+            "usage": turn.turn_usage,
+            "_meta": with_chrys_metadata(None, turn.response_meta()),
+        }
+        return payload
+
+    async def _run_turn(
+        self,
+        session_id: str,
+        start: Callable[[ManagedSession], AsyncIterator[Event]],
+    ) -> _TurnExecution:
+        """Execute one turn for *session_id* and report what it produced.
+
+        The reservation, the lock, the usage accounting, the event consumers
+        and the error mapping live here so a caller that only differs in the
+        turn it starts — a fresh prompt today, a retry — shares them. Nothing
+        about the request's shape reaches the engine: *start* is called under
+        the lock, once the session is known to still be the active one, and it
+        returns the stream of events the turn produces.
+
+        The reservation comes first and is never waited for: a caller that
+        finds a turn in flight fails the request instead of queueing behind it.
+        The lock alone cannot say that — it reads False in the window between a
+        release and the next waiter's acquisition, and that waiter's turn then
+        runs *after* this caller's, the other way round.
+        """
+        bridge = AcpEventBridge()
+        pending_approvals: dict[str, ApprovalRequest] = {}
+        outcome: EndTurn | Cancelled | Errored | None = None
+        usage_payload: dict[str, int] | None = None
+        baseline_usage: dict[str, int] | None = None
+        execution_started = False
+        turn_id: str | None = None
+        turn_number: int | None = None
+        try:
+            session = self._manager.get(session_id)
+            if not session.reserve_turn():
+                raise _TurnInFlight({"details": f"Session {session_id} is running a turn."})
+            try:
+                async with session.prompt_lock:
+                    try:
+                        # A close/delete may have started while this prompt waited for
+                        # the per-session lock. Re-resolve before touching the host so
+                        # a queued prompt cannot run against a closing session.
+                        if self._manager.get(session_id) is not session:
+                            raise AcpSessionError(f"ACP session is not active: {session_id}")
+                        # Cumulative usage before the turn: the response reports the
+                        # turn's own spend, and only this snapshot says where it began.
+                        baseline_usage = self._cumulative_usage(session_id)
+                        events = start(session)
+                        # Only after *start* admitted the turn: a refused retry runs
+                        # nothing, and its error must not report a spend.
+                        execution_started = True
+                        async for event in events:
+                            if isinstance(event, TurnStarted) and turn_id is None:
+                                turn_id, turn_number = event.turn_id, event.turn_number
+                            await self._handle_event(session_id, event, bridge, pending_approvals)
+                        outcome = session.host.last_turn_outcome
+                    finally:
+                        # This snapshot stays under prompt_lock: a queued turn must
+                        # not mutate cumulative session usage before this response
+                        # (or error) captures the completed turn's total.
+                        if execution_started:
+                            usage_payload = _prompt_usage_payload(
+                                session.host.engine.usage_publisher.make_usage_event(session_id=session_id)
+                            )
+                        # A cancellation tombstone only bridges to a request event
+                        # still queued in THIS turn's per-turn stream. Judge-aborted
+                        # approvals and requests dropped by cancellation never send
+                        # that event, so whatever survives the stream is dead —
+                        # sweep it or a long-lived session accumulates tombstones.
+                        self._drop_session_tombstones(session_id)
+            finally:
+                session.release_turn()
+        except AcpContentError as exc:
+            raise RequestError.invalid_params({"details": str(exc)}) from exc
+        except Exception as exc:
+            if isinstance(exc, _TurnInFlight):
+                raise RequestError.invalid_params(exc.data) from exc
+            raise _request_error(
+                exc,
+                usage=_turn_usage(baseline_usage, usage_payload),
+                session_usage=usage_payload,
+                turn_id=turn_id,
+                turn_number=turn_number,
+            ) from exc
+        return _TurnExecution(
+            outcome=outcome,
+            usage_payload=usage_payload,
+            turn_usage=_turn_usage(baseline_usage, usage_payload),
+            turn_id=turn_id,
+            turn_number=turn_number,
+        )
+
+    def _cumulative_usage(self, session_id: str) -> dict[str, int]:
+        return _prompt_usage_payload(
+            self._manager.get(session_id).host.engine.usage_publisher.make_usage_event(session_id=session_id)
         )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -730,10 +1000,18 @@ class ChrysAcpServer:
             session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
             cwd = _optional_string_param(params, "cwd")
             try:
-                canonical_id, messages = await self._manager.session_history(cwd=cwd, session_id=session_id)
+                canonical_id, transcript = await self._manager.session_history(cwd=cwd, session_id=session_id)
             except Exception as exc:
                 raise _request_error(exc) from exc
-            return {"sessionId": canonical_id, "messages": messages}
+            if transcript is None:
+                return {"sessionId": canonical_id, "turns": [], "messages": []}
+            return session_history_payload(canonical_id, transcript.messages, transcript.turns)
+        if method == "session/turns":
+            return await self._session_turns_payload(params)
+        if method == "session/retry":
+            session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
+            text = _optional_string_param(params, "text")
+            return await self.retry(session_id, text=text)
         if method == "profiles/agents/list":
             return {"agents": self._manager.list_agent_profiles()}
         if method == "profiles/agents/read":
@@ -830,10 +1108,87 @@ class ChrysAcpServer:
         if isinstance(event, QuestionToUser):
             await self._request_input(session_id, event)
             return
+        # The turn context is established before the notification announces it:
+        # the notification is itself a labeled update in this session's stream,
+        # and every update after it must carry the same pairing.
+        if isinstance(event, TurnStarted):
+            bridge.begin_turn(event.turn_id, event.turn_number)
+        if await self._handle_turn_event(session_id, event, bridge):
+            return
         if await self._handle_chrys_extension_event(session_id, event):
             return
         for update in bridge.updates_for_event(event):
             await self._client_or_error().session_update(session_id=session_id, update=update)
+
+    async def _handle_turn_event(self, session_id: str, event: Event, bridge: AcpEventBridge) -> bool:
+        """Turn-scoped facts a client joins its own state by.
+
+        These are claims about the main turn (an identity, a retry, a
+        withdrawal of text already sent), so they come from the backend's
+        explicit events only — nothing here is inferred from what was seen
+        streaming. They never replace the standard update the event may also
+        project.
+        """
+        if isinstance(event, TurnStarted):
+            await self._client_or_error().ext_notification(
+                "chrys/turn_started",
+                {
+                    "sessionId": _event_session_id(event, session_id),
+                    "turnId": event.turn_id,
+                    "turnNumber": event.turn_number,
+                    "isRetry": event.is_retry,
+                    "userMessageId": event.user_message_id,
+                },
+            )
+            return False
+        if isinstance(event, InvocationEvent) and event.origin.kind == "turn":
+            if isinstance(event, InvocationRetryAttempt):
+                await self._client_or_error().ext_notification(
+                    "chrys/retry_attempt",
+                    {
+                        "sessionId": _event_session_id(event, session_id),
+                        "turnId": bridge.turn_id,
+                        "attempt": event.attempt,
+                        "maxAttempts": event.max_attempts,
+                        "delaySeconds": event.delay_seconds,
+                        "scope": event.scope,
+                        "message": event.message,
+                    },
+                )
+                return False
+            if isinstance(event, InvocationPresentationAttemptAccepted):
+                await self._retract_unkept_segments(session_id, bridge, event.attempt_id, event.segment_ids)
+                return False
+            if isinstance(event, InvocationPresentationAttemptRejected):
+                await self._retract_unkept_segments(session_id, bridge, event.attempt_id, ())
+                return False
+        return False
+
+    async def _retract_unkept_segments(
+        self,
+        session_id: str,
+        bridge: AcpEventBridge,
+        attempt_id: str,
+        kept_segment_ids: Sequence[str],
+    ) -> None:
+        """Withdraw the attempt's text the backend did not keep.
+
+        ACP has no retraction primitive, so this is the Chrys extension
+        notification a client acts on; the backend has already decided which
+        segments survive, and this only reports it. An attempt whose text all
+        survived sends nothing.
+        """
+        retracted = bridge.take_retractions(attempt_id, kept_segment_ids)
+        if not retracted:
+            return
+        await self._client_or_error().ext_notification(
+            "chrys/messages_retracted",
+            {
+                "sessionId": session_id,
+                "turnId": bridge.turn_id,
+                "messageIds": retracted,
+            },
+        )
 
     async def _handle_chrys_extension_event(self, session_id: str, event: Event) -> bool:
         if isinstance(event, InvocationEvent) and event.origin.root.kind == "workflow_node":
@@ -1333,6 +1688,51 @@ class ChrysAcpServer:
             engine = self._manager.get(session_id).host.engine
             await engine.refresh_mutation_attribution()
 
+    async def _session_turns_payload(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Project a session's trajectory log into per-turn model-request data.
+
+        The registry is read on the event loop (an active session's engine owns
+        it) while the log is scanned off-thread: a multi-megabyte file must not
+        stall every other request on this loop.
+        """
+        from chrys.service.analytics.turn_trace import (
+            TraceSessionLevel,
+            TurnTrace,
+            scan_turn_trace,
+            trace_payload_with_registry,
+        )
+        from chrys.service.trajectory.session import trajectory_events_path
+
+        session_id = _string_param(params, "sessionId") or _string_param(params, "session_id")
+        cwd = _optional_string_param(params, "cwd")
+        turn_id = _optional_string_param(params, "turnId")
+        try:
+            canonical_id, session_dir, records = await self._manager.session_turn_context(
+                cwd=cwd, session_id=session_id
+            )
+        except Exception as exc:
+            raise _request_error(exc) from exc
+        events = trajectory_events_path(session_dir)
+        if events.is_file():
+            trace = await asyncio.to_thread(scan_turn_trace, events)
+        else:
+            # Recording was never activated for this session: the registry is
+            # all there is, and every turn in it reports no local trace.
+            trace = TurnTrace(
+                session_id=canonical_id,
+                coverage="partial",
+                gap_count=0,
+                turns=[],
+                superseded_turns=[],
+                unassigned_passes=[],
+                session_level=TraceSessionLevel(),
+            )
+        payload = trace_payload_with_registry(trace, records, turn_id=turn_id)
+        if payload is None:
+            raise RequestError.invalid_params({"details": f"No turn {turn_id!r} in session {canonical_id}."})
+        payload["sessionId"] = canonical_id
+        return payload
+
     def _mutations_payload(self, session_id: str) -> dict[str, Any]:
         session = self._manager.get(session_id)
         engine = session.host.engine
@@ -1346,13 +1746,20 @@ class ChrysAcpServer:
                 "files": [],
             }
         file_summary = tracker.get_session_file_summary()
+        records = engine.turn_records()
         return {
             "sessionId": session_id,
             "currentTurn": engine.current_turn_number,
             "availableRollbackTurns": engine.available_rollback_turns(),
             "turns": [
                 {
-                    "turnId": turn.turn_id,
+                    # The chat turn's mutation period is numbered, not indexed by
+                    # turn identity, so the id is resolved through the registry.
+                    # An ambiguous or unmatched ordinal reports null rather than
+                    # guessing: the tracker keeps same-numbered periods, and its
+                    # last one is not necessarily this period's owner.
+                    "turnNumber": turn.turn_id,
+                    "turnId": _turn_id_for_ordinal(records, turn.turn_id),
                     "mutationCount": len(turn.mutations),
                     "mutations": [_mutation_payload(mutation) for mutation in turn.mutations],
                 }
@@ -1482,12 +1889,13 @@ class ChrysAcpServer:
             status="pending",
             rawInput=to_json_object(event.args),
             rawOutput=reason or None,
-            field_meta={
-                "chrys": {
-                    "tool_name": event.tool_name,
-                    "tool_kind": event.tool_kind,
-                }
-            },
+            field_meta=with_chrys_metadata(
+                None,
+                {
+                    "toolName": event.tool_name,
+                    "toolKind": event.tool_kind,
+                },
+            ),
         )
         loop = asyncio.get_running_loop()
         cancel_future: asyncio.Future[None] = loop.create_future()
@@ -1657,24 +2065,72 @@ class ChrysAcpServer:
             )
 
 
-def _request_error(exc: Exception, *, usage: dict[str, int] | None = None) -> RequestError:
+def _request_error(
+    exc: Exception,
+    *,
+    usage: dict[str, int] | None = None,
+    session_usage: dict[str, int] | None = None,
+    turn_id: str | None = None,
+    turn_number: int | None = None,
+) -> RequestError:
+    """Map an exception to a RequestError, carrying the turn's own figures.
+
+    ``usage`` is this turn's spend and ``session_usage`` the session total;
+    both are omitted when the turn never started, so a caller can tell "no
+    turn ran" from "a turn ran and spent nothing".
+    """
+    extra: dict[str, object] = {}
+    if usage is not None:
+        extra["usage"] = usage
+    if session_usage is not None:
+        extra["sessionUsage"] = session_usage
+    if turn_id is not None:
+        extra["turnId"] = turn_id
+    if turn_number is not None:
+        extra["turnNumber"] = turn_number
     if isinstance(exc, RequestError):
-        if usage is None:
+        if not extra:
             return exc
         data = dict(exc.data) if isinstance(exc.data, dict) else {}
-        data["usage"] = usage
+        data.update(extra)
         return RequestError(exc.code, str(exc), data)
     if isinstance(exc, AcpSessionError):
-        data: dict[str, object] = {"details": str(exc)}
-        if usage is not None:
-            data["usage"] = usage
-        return RequestError.invalid_params(data)
+        return RequestError.invalid_params({"details": str(exc), **extra})
     details = str(exc)
     details = f"{type(exc).__name__}: {details}" if details else type(exc).__name__
-    data: dict[str, object] = {"details": details}
-    if usage is not None:
-        data["usage"] = usage
-    return RequestError.internal_error(data)
+    return RequestError.internal_error({"details": details, **extra})
+
+
+def _validated_message_id(message_id: str | None) -> str:
+    """The id of the user message this prompt opens, as ACP will report it back.
+
+    ACP requires a UUID here and lets the client omit it; either way the turn
+    owns an id, because the turn registry records it and replay reports it as
+    the turn's ``userMessageId``. A value that cannot be replayed identically
+    is refused rather than stored.
+    """
+    if message_id is None:
+        return str(uuid.uuid4())
+    try:
+        uuid.UUID(message_id)
+    except ValueError as exc:
+        raise RequestError.invalid_params({"details": "messageId must be a UUID."}) from exc
+    # Clients correlate messages by the supplied string, including its case.
+    return message_id
+
+
+def _turn_usage(baseline: dict[str, int] | None, cumulative: dict[str, int] | None) -> dict[str, int] | None:
+    """This turn's spend: the session total minus the snapshot taken at admission.
+
+    Every quantity is clamped at zero. The counter is a session total, and a
+    concurrent mutation of the session's history can move it backwards; a
+    negative delta would then read as a refund, which no turn can produce.
+    The turn's own value is only meaningful once both snapshots exist — a
+    request refused before the turn started has no spend to report.
+    """
+    if baseline is None or cumulative is None:
+        return None
+    return {key: max(0, value - baseline.get(key, 0)) for key, value in cumulative.items()}
 
 
 def _prompt_usage_payload(event: UsageUpdate) -> dict[str, int]:
@@ -1713,6 +2169,10 @@ def _rollback_result_payload(event: RollbackResult) -> dict[str, Any]:
         "targetTurn": event.target_turn,
         "rolledBackUserText": event.rolled_back_user_text,
         "filesReverted": event.files_reverted,
+        # Identities of the turns the rollback discarded, in the order they
+        # ran. A client that labelled its transcript by turn joins on these;
+        # the ids are never reused, so the discarded turns stay identifiable.
+        "supersededTurnIds": list(event.superseded_turn_ids),
         "restoreResults": [
             {
                 "path": result.path,
@@ -1747,6 +2207,18 @@ def _profile_switched_payload(event: ProfileSwitched, *, session_id: str) -> dic
         "memoryFiles": event.memory_files,
         "runtimeDetails": jsonable_dataclass(event.runtime_details),
     }
+
+
+def _turn_id_for_ordinal(records: Sequence[TurnRecord], turn_number: int) -> str | None:
+    """The turn identity registered for *turn_number*, or ``None``.
+
+    ``None`` means "this session cannot say which turn ran under that
+    number" — several records share the ordinal (the runtime and the saved
+    counter drifted apart), or none does. Callers report the ordinal and the
+    mutation data regardless; only the identity is withheld.
+    """
+    matches = [record for record in records if record.turn_number == turn_number]
+    return matches[0].turn_id if len(matches) == 1 else None
 
 
 def _mutation_payload(mutation: Any) -> dict[str, Any]:

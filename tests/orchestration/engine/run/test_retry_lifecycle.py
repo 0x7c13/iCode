@@ -779,3 +779,107 @@ async def test_later_retry_after_interrupted_finalization_preserves_last_words_a
     assert host._turn_state.current_input.text == ""
     assert host._turn_state.current_input.contents is None
     assert host._turn_state.current_input.created_at is None
+
+
+class TestImmediateRetryEligibility:
+    """``can_retry`` is the read-only half of retry admission.
+
+    The engine publishes it so a frontend can ask before offering retry, and
+    a real retry re-reads the same predicate before installing its task. The
+    query must not move the FSM: a frontend asks it while the user is merely
+    looking at a Retry button.
+    """
+
+    @staticmethod
+    def _can_retry(host: _Host) -> bool:
+        return make_turn_coordinator(
+            current=host.current,
+            session=host.session,
+            turn_state=host._turn_state,
+            permits=host.permits,
+            writer=host.writer,
+            loader=host.loader,
+            bus=host._bus,
+            fsm=host._fsm,
+            history=host._history,
+            trajectory_recorder=host._trajectory_recorder,
+            workspace_change_tracker=host._workspace_change_tracker,
+            persistence=host._persistence,
+            on_successful_turn=host._on_successful_turn,
+            retry_and_save=host.retry_and_save,
+            settings_handle=SimpleNamespace(settings=host.settings),
+        ).can_retry  # type: ignore[arg-type]
+
+    @staticmethod
+    def _run_turn_that_finished(host: _Host) -> None:
+        """Leave the FSM RUNNING with a run task that has already completed."""
+        host._fsm.try_transition(Trigger.START)
+        host._fsm.try_transition(Trigger.USER_MESSAGE)
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(None)
+        host._turn_state.lease.run_task = task  # type: ignore[assignment]
+
+    @pytest.mark.parametrize("state", [EngineState.INTERRUPTED, EngineState.FAILED])
+    async def test_a_stopped_turn_can_be_retried(self, state: EngineState) -> None:
+        host = _Host([Message("user", ["request"])])
+        host._fsm.try_transition(Trigger.START)
+        host._fsm.try_transition(
+            Trigger.RESTORE_INTERRUPTED if state is EngineState.INTERRUPTED else Trigger.RESTORE_FAILED
+        )
+
+        assert self._can_retry(host) is True
+        # The query left the FSM exactly where it found it.
+        assert host._fsm.state is state
+
+    async def test_a_finished_run_under_a_running_fsm_can_be_retried(self) -> None:
+        """Finalization leaves the FSM RUNNING while the run task finishes its save."""
+        host = _Host([Message("user", ["request"])])
+        self._run_turn_that_finished(host)
+
+        assert self._can_retry(host) is True
+        assert host._fsm.state is EngineState.RUNNING
+
+    async def test_a_turn_that_is_still_running_cannot_be_retried(self) -> None:
+        host = _Host([Message("user", ["request"])])
+        host._fsm.try_transition(Trigger.START)
+        host._fsm.try_transition(Trigger.USER_MESSAGE)
+        host._turn_state.lease.run_task = asyncio.get_running_loop().create_future()
+
+        assert self._can_retry(host) is False
+
+    async def test_an_idle_engine_cannot_be_retried(self) -> None:
+        host = _Host([Message("user", ["request"])])
+        host._fsm.try_transition(Trigger.START)
+
+        assert host._fsm.state is EngineState.IDLE
+        assert self._can_retry(host) is False
+
+    async def test_a_pending_retry_cannot_start_another_one(self) -> None:
+        host = _Host([Message("user", ["request"])])
+        self._run_turn_that_finished(host)
+        host._fsm.try_transition(Trigger.RETRY_REQUESTED)
+
+        assert host._fsm.state is EngineState.PENDING_RETRY
+        assert self._can_retry(host) is False
+
+    async def test_an_unloaded_agent_cannot_be_retried(self) -> None:
+        host = _Host([Message("user", ["request"])])
+        self._run_turn_that_finished(host)
+        install_loaded_agent(host, loaded=None)
+
+        assert self._can_retry(host) is False
+
+    async def test_a_busy_executor_cannot_be_retried(self) -> None:
+        host = _Host([Message("user", ["request"])])
+        self._run_turn_that_finished(host)
+        host.current.loaded.bindings.state.running = True
+
+        assert self._can_retry(host) is False
+
+    async def test_a_shutting_down_session_cannot_be_retried(self) -> None:
+        host = _Host([Message("user", ["request"])])
+        host._fsm.try_transition(Trigger.START)
+        host._fsm.try_transition(Trigger.RESTORE_FAILED)
+        host.session.shutting_down = True
+
+        assert self._can_retry(host) is False

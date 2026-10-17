@@ -463,12 +463,13 @@ async def test_session_history_uses_active_recovery_source(tmp_path) -> None:
     )
 
     try:
-        canonical_id, messages = await manager.session_history(cwd=str(project), session_id="project-session")
+        canonical_id, transcript = await manager.session_history(cwd=str(project), session_id="project-session")
     finally:
         active_lock.release()
 
     assert canonical_id == "project-session"
-    assert messages[0]["contents"][0]["text"] == "recovered"
+    assert transcript is not None
+    assert transcript.messages[0]["contents"][0]["text"] == "recovered"
 
 
 @pytest.mark.asyncio
@@ -491,10 +492,11 @@ async def test_session_history_uses_inactive_recovery_source_when_it_wins(tmp_pa
     )
     manager = _manager(str(project), store)
 
-    canonical_id, messages = await manager.session_history(cwd=str(project), session_id="project-session")
+    canonical_id, transcript = await manager.session_history(cwd=str(project), session_id="project-session")
 
     assert canonical_id == "project-session"
-    assert messages[0]["contents"][0]["text"] == "recovery"
+    assert transcript is not None
+    assert transcript.messages[0]["contents"][0]["text"] == "recovery"
 
 
 @pytest.mark.asyncio
@@ -520,12 +522,13 @@ async def test_session_history_ignores_external_active_recovery_sidecar(tmp_path
     manager = _manager(str(project), store)
 
     try:
-        canonical_id, messages = await manager.session_history(cwd=str(project), session_id="project-session")
+        canonical_id, transcript = await manager.session_history(cwd=str(project), session_id="project-session")
     finally:
         active_lock.release()
 
     assert canonical_id == "project-session"
-    assert messages[0]["contents"][0]["text"] == "primary"
+    assert transcript is not None
+    assert transcript.messages[0]["contents"][0]["text"] == "primary"
 
 
 @pytest.mark.asyncio

@@ -367,6 +367,77 @@ def test_prepare_runtime_bootstraps_without_telemetry_and_reports_warnings(monke
     assert "Warning: probe warning" in capsys.readouterr().err
 
 
+def test_export_turns_writes_the_registry_merged_projection(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("CHRYS_SESSION_ROOT_DIR", str(tmp_path / "root"))
+    session_dir = tmp_path / "root" / "sessions" / "abc123def456"
+    _write_events(session_dir / "trajectory" / "events.jsonl")
+    out = tmp_path / "turns.json"
+    recorded: list[tuple[str, bool]] = []
+
+    class _Store:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        async def load_session_transcript(self, session_id: str, *, prefer_recovery: bool = False):
+            from chrys.service.state.store import SessionTranscript
+            from chrys.service.trajectory.state import TurnRecord
+
+            recorded.append((session_id, prefer_recovery))
+            return SessionTranscript(
+                messages=[],
+                turns=[TurnRecord(turn_number=1, turn_id="a" * 32, user_message_id="msg-1")],
+            )
+
+    monkeypatch.setattr("chrys.service.state.store.JsonFileStateStore", _Store)
+
+    assert main(["export", "--session", "abc123", "--format", "turns", "--out", str(out)]) == 0
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["sessionId"] == "abc123def456"
+    assert recorded == [("abc123def456", True)]
+    captured = capsys.readouterr()
+    assert "Wrote turns export" in captured.out
+    assert "session abc123def456" in captured.out
+
+
+def test_export_turns_requires_a_session(tmp_path, capsys) -> None:
+    events = tmp_path / "events.jsonl"
+    _write_events(events)
+    out = tmp_path / "turns.json"
+
+    assert main(["export", "--events", str(events), "--format", "turns", "--out", str(out)]) == 1
+
+    assert "--format turns requires --session" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_export_turns_refuses_to_overwrite_the_events_source(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("CHRYS_SESSION_ROOT_DIR", str(tmp_path / "root"))
+    events = tmp_path / "root" / "sessions" / "abc123def456" / "trajectory" / "events.jsonl"
+    _write_events(events)
+    original = events.read_bytes()
+
+    assert main(["export", "--session", "abc123", "--format", "turns", "--out", str(events), "--force"]) == 1
+
+    assert "trajectory events source" in capsys.readouterr().err
+    assert events.read_bytes() == original
+
+
+def test_export_turns_reports_atomic_write_errors(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("CHRYS_SESSION_ROOT_DIR", str(tmp_path / "root"))
+    _write_events(tmp_path / "root" / "sessions" / "abc123def456" / "trajectory" / "events.jsonl")
+    out = tmp_path / "turns.json"
+
+    def fail_write(_path: Path, _text: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(trajectory_module, "atomic_create_text", fail_write)
+
+    assert main(["export", "--session", "abc123", "--format", "turns", "--out", str(out)]) == 1
+    assert "could not write export" in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_export_reports_atomic_write_errors(tmp_path, monkeypatch, capsys) -> None:
     events = tmp_path / "events.jsonl"
     _write_events(events)

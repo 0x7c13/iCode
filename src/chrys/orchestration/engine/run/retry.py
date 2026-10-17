@@ -387,7 +387,7 @@ class RetryCoordinator:
                 self._current.loaded is not None
                 and not self._current.loaded.bindings.state.running
                 and self._turn_state.lease.run_task is None
-                and not self._immediate_retry_start_may_be_valid()
+                and not self.can_retry()
             ):
                 await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)
                 return
@@ -634,8 +634,14 @@ class RetryCoordinator:
             message.role == "user" and not is_continuation_message(message) for message in logical_messages[start:]
         )
 
-    def _immediate_retry_start_may_be_valid(self) -> bool:
-        """Return whether current state may be valid for an immediate retry after cleanup."""
+    def can_retry(self) -> bool:
+        """Return whether the current state may start an immediate retry.
+
+        Read-only: a querying frontend must not move the FSM. Admission at
+        :meth:`_claim_immediate_retry_start` re-reads it, and the state a
+        reader saw can have moved on by then — a retry still ends up refused
+        when it is no longer valid.
+        """
         if self._session.shutting_down:
             return False
         if self._fsm.state in (EngineState.INTERRUPTED, EngineState.FAILED):
@@ -650,18 +656,12 @@ class RetryCoordinator:
 
     def _claim_immediate_retry_start(self) -> bool:
         """Validate and transition the FSM for an immediate retry before task install."""
-        if self._session.shutting_down:
+        if not self.can_retry():
             return False
         if self._fsm.state in (EngineState.INTERRUPTED, EngineState.FAILED):
             self._fsm.try_transition(Trigger.RETRY_STARTED)
             return self._fsm.state is EngineState.RUNNING
-        return (
-            self._fsm.state is EngineState.RUNNING
-            and self._turn_state.lease.run_task is not None
-            and self._turn_state.lease.run_task.done()
-            and self._current.loaded is not None
-            and not self._current.loaded.bindings.state.running
-        )
+        return True
 
     def _retry_request_still_accepted(self) -> bool:
         """Return whether retry-note side effects may still be committed."""

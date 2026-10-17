@@ -34,6 +34,10 @@ from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.orchestration.session_host import Cancelled, EndTurn
 from tests.app.acp._server_fakes import _FakeClient, _FakeHost, _FakeManager, _FakeSession
 
+# ACP carries the client's ``messageId`` as a UUID: the server rejects anything
+# else with ``invalid_params`` before it starts a turn.
+_CLIENT_MESSAGE_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
 
 @dataclass
 class _BlockedPermission:
@@ -119,7 +123,7 @@ async def test_manual_approval_request_bridges_to_acp_permission() -> None:
     assert tool_call.tool_call_id == "r1"
     assert tool_call.title == "Run shell command"
     assert tool_call.kind == "execute"
-    assert tool_call.field_meta == {"chrys": {"tool_name": "bash", "tool_kind": "shell"}}
+    assert tool_call.field_meta == {"chrys": {"toolName": "bash", "toolKind": "shell"}}
     assert len(responses) == 1
     assert responses[0].request_id == "r1"
     assert responses[0].approved is True
@@ -218,7 +222,9 @@ async def test_cancel_resolves_pending_request_input() -> None:
         responses.append(event)
 
     await host.event_bus.subscribe(AskUserResponse, _collect)
-    prompt_task = asyncio.create_task(server.prompt([text_block("ask")], session_id="s1", message_id="m1"))
+    prompt_task = asyncio.create_task(
+        server.prompt([text_block("ask")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
+    )
     await asyncio.wait_for(started.wait(), timeout=1)
 
     await server.cancel("s1")
@@ -237,7 +243,7 @@ async def test_cancel_interrupts_before_rejecting_pending_permission_and_allows_
     def _engine_interrupted_first(_event: ApprovalResponse) -> None:
         assert pending.manager.cancelled_sessions == ["s1"], "engine interruption must precede bridge rejection"
 
-    pending = await blocked_permission_prompt(message_id="m1", on_response=_engine_interrupted_first)
+    pending = await blocked_permission_prompt(message_id=_CLIENT_MESSAGE_ID, on_response=_engine_interrupted_first)
 
     await pending.server.cancel("s1")
     response = await asyncio.wait_for(pending.prompt_task, timeout=1)
@@ -252,7 +258,7 @@ async def test_cancel_interrupts_before_rejecting_pending_permission_and_allows_
     pending.host.events = []
     pending.host.outcome = EndTurn()
     following = await asyncio.wait_for(
-        pending.server.prompt([text_block("next")], session_id="s1", message_id="m2"),
+        pending.server.prompt([text_block("next")], session_id="s1", message_id=_CLIENT_MESSAGE_ID),
         timeout=1,
     )
     assert following.stop_reason == "end_turn"
@@ -640,25 +646,24 @@ async def test_delete_rejected_for_workspace_scope_does_not_interrupt_the_active
 
 
 @pytest.mark.anyio
-async def test_delete_rejects_a_queued_prompt_instead_of_admitting_it_into_a_new_turn() -> None:
+async def test_delete_rejects_a_second_prompt_instead_of_admitting_it_into_a_new_turn() -> None:
     pending = await blocked_permission_prompt(text="one")
     second_prompt = asyncio.create_task(pending.server.prompt([text_block("two")], session_id="s1"))
-    # Pure scheduler ticks (no wall-clock) so the second prompt reaches its
-    # prompt-lock wait before the delete starts.
+    # Pure scheduler ticks (no wall-clock): the second prompt only has to reach
+    # the session's admission, which refuses it outright — a prompt waiting for
+    # the running turn's lock would be admitted the moment that turn drains.
     for _ in range(5):
         await asyncio.sleep(0)
-    assert not second_prompt.done()
+    with pytest.raises(RequestError) as second_exc:
+        await asyncio.wait_for(second_prompt, timeout=1)
+    assert second_exc.value.code == -32602
 
-    # Deleting must release the first prompt's permission wait AND reject the
-    # queued second prompt: without the closing mark set during validation,
-    # the second prompt would be admitted the moment the first drains, and
-    # the teardown would wedge behind its brand-new turn.
+    # Deleting then releases the first prompt's permission wait and drains it,
+    # with no second turn left to be admitted behind the teardown.
     await asyncio.wait_for(pending.server.delete_session("s1", cwd="/tmp/project"), timeout=1)
 
     first_response = await asyncio.wait_for(pending.prompt_task, timeout=1)
     assert first_response.stop_reason == "cancelled"
-    with pytest.raises(RequestError):
-        await asyncio.wait_for(second_prompt, timeout=1)
     assert pending.manager.lifecycle_calls == ["begin_delete:s1", "cancel:s1", "delete:s1"]
     assert pending.manager.deleted_sessions == [("/tmp/project", "s1")]
     assert pending.server._pending_permission_cancels == {}

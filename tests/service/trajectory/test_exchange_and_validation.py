@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from chrys.foundation.errors.kinds import ErrorKind
 from chrys.foundation.trajectory.context import (
     TRAJECTORY_EXCHANGE_KWARG,
     ExchangeTrace,
@@ -186,7 +187,7 @@ async def test_a_client_owned_exchange_closes_itself_when_it_fails() -> None:
     trace.started()
 
     async def _boom() -> None:
-        raise RuntimeError("connection reset")
+        raise RuntimeError("side call failed")
 
     with pytest.raises(RuntimeError):
         await ExchangeRecorder(trace, owned=True).wrap_awaitable(_boom())
@@ -194,6 +195,9 @@ async def test_a_client_owned_exchange_closes_itself_when_it_fails() -> None:
     finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
     assert finished.payload["outcome"] == ExchangeOutcome.ERROR
     assert finished.payload["error_code"] == "RuntimeError"
+    # The failed exchange carries what the error was, not only its type: a
+    # reader classifying why the request died has nothing else to go on.
+    assert finished.payload["error_kind"] == ErrorKind.UNKNOWN
 
 
 def test_exchange_reissue_rolls_onto_a_new_operation_and_resets_state() -> None:

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.events.types import TurnStarted
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
@@ -24,9 +25,17 @@ from chrys.orchestration.engine.run.turn_hooks import TurnHookDispatcher
 from chrys.orchestration.engine.state.machine import EngineState, Trigger
 from chrys.orchestration.invoker.contracts import OverlappingRun, PreparedClosed, StaleContinuation, UnsupportedRequest
 from chrys.service.trajectory.preparation import PreparationOutcome, PreparationScope, PreparationTrace
+from chrys.service.trajectory.state import (
+    TurnRecord,
+    append_turn,
+    confirm_resumed_turn,
+    legacy_turn_records,
+    turn_records,
+)
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
+    from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import RuntimeSkillDetails
     from chrys.orchestration.engine.execution import CurrentRunInjectionWindow, CurrentRunScope
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
@@ -39,6 +48,34 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resumed_turn(history_state: dict[str, Any], *, turn_number: int) -> TurnRecord | None:
+    """The turn a retry pass resumes, or ``None`` when it resumes nothing.
+
+    The append layout names turns the runtime can trust: every admitted fresh
+    pass registered before it ran, so the turn a retry continues is the last
+    entry, whatever ordinal either of them carries. Judging by the ordinal would
+    refuse to resume the very turn the runtime recovered into — a failed turn
+    moves the registry on without moving the save, and a reopen restores the
+    saved counter.
+
+    The legacy ordinal-keyed layout names no such thing: registration used to
+    happen inside the trajectory writer, so the last question a session ran may
+    never have been registered at all. Its last entry is therefore the turn only
+    while the ordinal it carries is the ordinal running now; a mismatch means the
+    registry predates the turn being retried, which is registered as a new turn
+    instead of being handed the older turn's identity. This check also applies
+    after a fork converts the legacy registry to the append layout.
+
+    A registry holding no turn at all leaves the caller to mint one.
+    """
+    records = turn_records(history_state)
+    if not records:
+        return None
+    if legacy_turn_records(history_state) is not None and records[-1].turn_number != turn_number:
+        return None
+    return records[-1]
 
 
 class TurnRunner:
@@ -54,6 +91,7 @@ class TurnRunner:
         workspace_change_tracker: WorkspaceChangeTracker,
         settings_handle: SettingsHandle,
         trajectory_recorder: TrajectoryRecorder,
+        bus: EventBus,
         fsm: EngineStateMachine,
         on_turn_started: Callable[[], None],
         finalizer: TurnFinalizer,
@@ -69,6 +107,7 @@ class TurnRunner:
         self._workspace_change_tracker = workspace_change_tracker
         self._settings_handle = settings_handle
         self._trajectory_recorder = trajectory_recorder
+        self._bus = bus
         self._fsm = fsm
         self._on_turn_started = on_turn_started
         self._finalizer = finalizer
@@ -89,6 +128,7 @@ class TurnRunner:
         injection_window: CurrentRunInjectionWindow | None = None,
         admission_preparation: PreparationTrace | None = None,
         binding_failure: Exception | None = None,
+        user_message_id: str | None = None,
     ) -> None:
         """Execute a fresh agent turn and finalize it."""
         _ = injection_window
@@ -103,6 +143,7 @@ class TurnRunner:
         try:
             await self.pre_run(
                 reset_batch_id=True,
+                user_message_id=user_message_id,
                 preparation_scope_operation_id=self._preparation_operation_id(admission_preparation),
             )
             if admission_preparation is not None:
@@ -344,6 +385,7 @@ class TurnRunner:
         reset_batch_id: bool,
         is_retry: bool = False,
         has_opening_input: bool = True,
+        user_message_id: str | None = None,
         preparation_scope_operation_id: str | None = None,
     ) -> None:
         """Common Turn setup before submitting a request to KernelConversation.
@@ -351,6 +393,8 @@ class TurnRunner:
         ``has_opening_input`` says whether this pass sends a user-authored
         message (a fresh prompt or retry guidance) — only then does the pass
         have an opening item to name in its ``turn.started`` event.
+        *user_message_id* is the frontend's own id for that message, recorded
+        with the turn so a replay can hand the same id back.
         """
         self._turn_state.lease.advance_conversation_revision()
         # Fresh and retry turns alike make this launch's surface the session's last one.
@@ -377,10 +421,23 @@ class TurnRunner:
                 self._session.mutation_tracker.reset_file_cache()
             else:
                 self._session.mutation_tracker.start_turn(self._session.turn_number)
-        await self._record_trajectory_turn_started(
+        turn_id, turn_number, event_user_message_id = await self._record_trajectory_turn_started(
             is_retry=is_retry,
             has_opening_input=has_opening_input,
+            user_message_id=user_message_id,
             preparation_scope_operation_id=preparation_scope_operation_id,
+        )
+        # After the trajectory start, so a subscriber sees a turn whose identity
+        # is already registered and, when the runtime records, whose opening
+        # line has taken its sequence.
+        await self._bus.publish(
+            TurnStarted(
+                session_id=self._session.session_id,
+                turn_id=turn_id,
+                turn_number=turn_number,
+                is_retry=is_retry,
+                user_message_id=event_user_message_id,
+            )
         )
 
     async def _record_trajectory_turn_started(
@@ -388,18 +445,67 @@ class TurnRunner:
         *,
         is_retry: bool,
         has_opening_input: bool,
+        user_message_id: str | None,
         preparation_scope_operation_id: str | None,
-    ) -> None:
-        """Open the pass's trajectory turn and bind the run context on the executor."""
+    ) -> tuple[str, int, str | None]:
+        """Open the pass's trajectory turn and register the logical turn.
+
+        Returns the logical turn's id, its ordinal and the opening message id
+        to publish. The turn id is minted here rather than in the log, so a
+        runtime that records nothing still has an identity to publish,
+        register and name in a retry. A fresh pass's id *is* the turn's; a
+        retry pass mints an id of its own and joins the turn whose registry
+        entry is last, taking that turn's ordinal too: every admitted pass
+        registered before running, though a reopen can leave the running
+        counter behind the registry.
+        """
         recorder = self._trajectory_recorder
+        history_state = self._current.require_loaded().bindings.backend.history_state
         self._opening_item_id = new_analytics_id() if has_opening_input else None
+        pass_id = new_analytics_id()
+        if is_retry:
+            resumed = _resumed_turn(history_state, turn_number=self._session.turn_number)
+            if resumed is None:
+                # Nothing the retry could be resuming: it opens a turn of its own,
+                # registered like a fresh pass so its identity outlives the pass.
+                turn_id = pass_id
+                turn_number = self._session.turn_number
+                append_turn(
+                    history_state,
+                    TurnRecord(turn_number=turn_number, turn_id=turn_id, opening_item_id=self._opening_item_id),
+                )
+            else:
+                # A retry resumes the turn the registry names last and reports
+                # that turn's ordinal: the running counter can have been
+                # reopened behind it (a failed turn moves the registry on
+                # without moving the save), and the resumed turn's own ordinal
+                # is the one clients were told. Its opener is the one the retry
+                # belongs to, so that is the id the event carries.
+                turn_id = resumed.turn_id
+                turn_number = resumed.turn_number
+                user_message_id = resumed.user_message_id
+                confirm_resumed_turn(history_state)
+        else:
+            turn_id = pass_id
+            turn_number = self._session.turn_number
+            append_turn(
+                history_state,
+                TurnRecord(
+                    turn_number=turn_number,
+                    turn_id=turn_id,
+                    opening_item_id=self._opening_item_id,
+                    user_message_id=user_message_id,
+                ),
+            )
         await recorder.turn_started(
-            turn_number=self._session.turn_number,
+            turn_id=pass_id,
+            logical_turn_id=turn_id,
+            turn_number=turn_number,
             is_retry=is_retry,
             agent_profile_fingerprint=self._current.manifest.agent_profile_fingerprint,
             model_profile_fingerprint=self._current.manifest.model_profile_fingerprint,
             primary_cwd=self._session.workspace.primary_cwd if self._session.workspace is not None else "",
-            history_state=self._current.require_loaded().bindings.backend.history_state,
+            history_state=history_state,
             opening_item_id=self._opening_item_id,
             preparation_scope_operation_id=preparation_scope_operation_id,
         )
@@ -417,6 +523,7 @@ class TurnRunner:
             )
         self._current.require_loaded().bindings.trajectory_context = context
         self._current.require_loaded().bindings.inputs.set_opening_item_id(self._opening_item_id)
+        return turn_id, turn_number, user_message_id
 
     @staticmethod
     def _preparation_operation_id(preparation: PreparationTrace | None) -> str | None:

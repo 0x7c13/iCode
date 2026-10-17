@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from chrys.foundation.errors import classify_error
 from chrys.foundation.trajectory.context import ExchangeTrace, TrajectoryContext, current_trajectory
 from chrys.foundation.trajectory.envelope import ActorKind
 from chrys.foundation.trajectory.event_types import ContinuationMode, ExchangeOutcome
@@ -272,6 +273,7 @@ class ExchangeRecorder:
         payload: dict[str, Any] = {}
         if outcome == ExchangeOutcome.ERROR:
             payload["error_code"] = type(exc).__name__
+            payload["error_kind"] = classify_error(exc).kind
         self._trace.finished(outcome=outcome, payload=payload)
 
     def attach_stream(self, stream: ResponseStream[Any, ChatResponse[Any]]) -> None:

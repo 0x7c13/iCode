@@ -46,6 +46,7 @@ from chrys.service.mutations.types import (
     MutationSource,
     TurnMutations,
 )
+from chrys.service.trajectory.state import TurnRecord
 from tests.app.acp._server_fakes import (
     _FakeBlobStore,
     _FakeClient,
@@ -243,7 +244,14 @@ async def test_session_history_forwards_cwd_for_workspace_scoping() -> None:
 
     assert manager.history_reads == [("/tmp/project", "s1")]
     assert result["sessionId"] == "s1"
-    assert result["messages"][0]["contents"][0]["text"] == "hello s1"
+    assert result["turns"] == []
+    assert result["messages"] == [
+        {
+            "turnId": None,
+            "turnNumber": None,
+            "message": {"role": "user", "contents": [{"type": "text", "text": "hello s1"}]},
+        }
+    ]
 
 
 @pytest.mark.anyio
@@ -624,7 +632,12 @@ async def test_session_mutations_extension_returns_tracker_summary() -> None:
         turns=[TurnMutations(turn_id=1, mutations=[mutation])],
         session_summary={"/workspace/a.py": FileHashDiff(before="before", after="after")},
     )
-    engine = _FakeEngine(mutation_tracker=tracker, current_turn_number=2, rollback_turns=[0, 1])
+    engine = _FakeEngine(
+        mutation_tracker=tracker,
+        current_turn_number=2,
+        rollback_turns=[0, 1],
+        turn_records_value=[TurnRecord(turn_number=1, turn_id="turn-b")],
+    )
     host = _FakeHost(event_bus=EventBus(), engine=engine)
     server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
 
@@ -635,7 +648,8 @@ async def test_session_mutations_extension_returns_tracker_summary() -> None:
     assert result["availableRollbackTurns"] == [0, 1]
     assert result["turns"] == [
         {
-            "turnId": 1,
+            "turnNumber": 1,
+            "turnId": "turn-b",
             "mutationCount": 1,
             "mutations": [
                 {
@@ -665,6 +679,78 @@ async def test_session_mutations_extension_returns_tracker_summary() -> None:
             "inferred": False,
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_session_mutations_reports_no_turn_id_when_two_turns_share_the_ordinal() -> None:
+    """A drifted ordinal names two turns; the mutation data is reported, the identity is not."""
+    mutation = FileMutation(
+        path="/workspace/a.py",
+        operation=MutationOp.MODIFY,
+        source=MutationSource.WRITE_FILE,
+        tool_call_id="tc1",
+        timestamp=1.0,
+    )
+    tracker = _FakeMutationTracker(
+        store=_FakeBlobStore(blobs={}),
+        turns=[TurnMutations(turn_id=2, mutations=[mutation])],
+    )
+    engine = _FakeEngine(
+        mutation_tracker=tracker,
+        current_turn_number=2,
+        turn_records_value=[
+            TurnRecord(turn_number=2, turn_id="turn-early"),
+            TurnRecord(turn_number=2, turn_id="turn-late"),
+        ],
+    )
+    host = _FakeHost(event_bus=EventBus(), engine=engine)
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+
+    result = await server.ext_method("session/mutations", {"sessionId": "s1"})
+
+    assert result["turns"][0]["turnNumber"] == 2
+    assert result["turns"][0]["turnId"] is None
+    assert result["turns"][0]["mutationCount"] == 1
+
+
+@pytest.mark.anyio
+async def test_session_mutations_reports_no_turn_id_when_nothing_registered_the_ordinal() -> None:
+    mutation = FileMutation(
+        path="/workspace/a.py",
+        operation=MutationOp.MODIFY,
+        source=MutationSource.WRITE_FILE,
+        tool_call_id="tc1",
+        timestamp=1.0,
+    )
+    tracker = _FakeMutationTracker(
+        store=_FakeBlobStore(blobs={}),
+        turns=[TurnMutations(turn_id=5, mutations=[mutation])],
+    )
+    engine = _FakeEngine(mutation_tracker=tracker, current_turn_number=5, turn_records_value=[])
+    host = _FakeHost(event_bus=EventBus(), engine=engine)
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+
+    result = await server.ext_method("session/mutations", {"sessionId": "s1"})
+
+    assert result["turns"][0]["turnNumber"] == 5
+    assert result["turns"][0]["turnId"] is None
+    assert result["turns"][0]["mutations"][0]["path"] == "/workspace/a.py"
+
+
+@pytest.mark.anyio
+async def test_rollback_reports_the_turns_it_superseded() -> None:
+    """A client that labelled its transcript by turn joins on the discarded ids."""
+    host = _FakeHost(event_bus=EventBus())
+    manager = _FakeManager(host)
+    manager.rollback_superseded_turn_ids = ["turn-c", "turn-b"]
+    client = _FakeClient()
+    server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+
+    result = await server.ext_method("session/rollback", {"sessionId": "s1", "targetTurn": 1})
+
+    assert result["supersededTurnIds"] == ["turn-c", "turn-b"]
+    assert client.ext_notifications[0][1]["supersededTurnIds"] == ["turn-c", "turn-b"]
 
 
 @pytest.mark.anyio
@@ -849,7 +935,16 @@ _ROUTE_CASES = [
         _RouteCase(
             "session/history",
             {"sessionId": "s1"},
-            {"messages": [{"role": "user", "contents": [{"type": "text", "text": "hello s1"}]}]},
+            {
+                "turns": [],
+                "messages": [
+                    {
+                        "turnId": None,
+                        "turnNumber": None,
+                        "message": {"role": "user", "contents": [{"type": "text", "text": "hello s1"}]},
+                    }
+                ],
+            },
         ),
         id="session_history",
     ),

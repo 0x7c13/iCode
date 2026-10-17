@@ -65,10 +65,11 @@ class TestRollbackFileRevert:
             engine.session.turn_number = 0
             return True
 
-        async def _fake_trajectory_rollback(*, target_turn: int, history_state: dict[str, Any] | None) -> None:
-            assert target_turn == 0
-            assert history_state is not None
-            assert history_state["turn_counter"] == 2
+        async def _fake_trajectory_rollback(*, superseded_turns: list[Any], target_turns: list[Any]) -> None:
+            # The reset replaced the state with an empty one, and the bound
+            # state carried no registry to begin with, so nothing is named.
+            assert superseded_turns == []
+            assert target_turns == []
             lifecycle.append("trajectory.rollback")
 
         engine.lifecycle.reset_session_to_welcome = _fake_reset  # type: ignore[assignment]
@@ -323,11 +324,13 @@ class TestRollbackFileRevert:
             _ = write_lock_held, after_delete, before_restart
             return False
 
-        trajectory_rollbacks: list[int] = []
+        # Record the call itself, not what it was told: a welcome rollback passes
+        # an empty target list, so inspecting that would pass whether the audit
+        # ran or not.
+        trajectory_rollback_calls: list[tuple[int, int]] = []
 
-        async def _fake_trajectory_rollback(*, target_turn: int, history_state: dict[str, Any] | None) -> None:
-            _ = history_state
-            trajectory_rollbacks.append(target_turn)
+        async def _fake_trajectory_rollback(*, superseded_turns: list[Any], target_turns: list[Any]) -> None:
+            trajectory_rollback_calls.append((len(superseded_turns), len(target_turns)))
 
         engine.lifecycle.reset_session_to_welcome = _fake_reset  # type: ignore[assignment]
         monkeypatch.setattr(engine_services(engine).trajectory_recorder, "rollback", _fake_trajectory_rollback)
@@ -340,7 +343,8 @@ class TestRollbackFileRevert:
         assert errors[0].message == (
             "Rollback to welcome could not reset the session because the session state is busy."
         )
-        assert trajectory_rollbacks == []
+        # The failed reset never commits, so the branch was never superseded.
+        assert trajectory_rollback_calls == []
         assert_display_message(errors[0], "rollback.reset_failed")
 
 

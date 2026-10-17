@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,7 +32,9 @@ from chrys.service.mutations.types import (
     RestoreResult,
     TurnMutations,
 )
+from chrys.service.state.store import SessionTranscript
 from chrys.service.todos.tracker import TodoTracker
+from chrys.service.trajectory.state import TurnRecord
 from tests.support.acp_wire import acp_outgoing_json
 
 
@@ -128,8 +131,10 @@ class _FakeEngine:
     current_turn_number: int = 0
     usage: UsageUpdate = field(default_factory=UsageUpdate)
     rollback_turns: list[int] = field(default_factory=list)
+    turn_records_value: list[TurnRecord] = field(default_factory=list)
     approval_mode: ApprovalMode = ApprovalMode.MANUAL
     todo_tracker: TodoTracker | None = None
+    can_retry: bool = False
 
     @property
     def usage_publisher(self):
@@ -158,18 +163,29 @@ class _FakeEngine:
     def available_rollback_turns(self) -> list[int]:
         return list(self.rollback_turns)
 
+    def turn_records(self) -> list[TurnRecord]:
+        return list(self.turn_records_value)
+
 
 @dataclass
 class _FakeHost:
     event_bus: EventBus
     events: list[Event] = field(default_factory=list)
+    retry_events: list[Event] = field(default_factory=list)
     outcome: Any = None
     vision_enabled: bool = False
     last_turn_outcome: Any = None
+    retry_texts: list[str | None] = field(default_factory=list)
     engine: _FakeEngine = field(default_factory=_FakeEngine)
 
     async def iter_turn_events(self, _message: Any):
         for event in self.events:
+            yield event
+        self.last_turn_outcome = self.outcome
+
+    async def iter_retry_events(self, text: str | None = None):
+        self.retry_texts.append(text)
+        for event in self.retry_events:
             yield event
         self.last_turn_outcome = self.outcome
 
@@ -180,7 +196,23 @@ class _FakeSession:
     profile_name: str = "Code"
     session_id: str = "s1"
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Mirrors ``ManagedSession``'s admission: a session serves one turn at a
+    # time, and whether one is admitted cannot be read off the lock.
+    _turns_reserved: int = 0
     closing: bool = False
+
+    @property
+    def turns_reserved(self) -> bool:
+        return self._turns_reserved > 0
+
+    def reserve_turn(self) -> bool:
+        if self._turns_reserved:
+            return False
+        self._turns_reserved += 1
+        return True
+
+    def release_turn(self) -> None:
+        self._turns_reserved = max(0, self._turns_reserved - 1)
 
 
 class _FakeStateStore:
@@ -193,6 +225,17 @@ class _FakeStateStore:
         _ = prefer_recovery
         return [{"role": "user", "contents": [{"type": "text", "text": f"hello {session_id}"}]}]
 
+    async def load_session_transcript(
+        self,
+        session_id: str,
+        *,
+        prefer_recovery: bool = False,
+    ) -> SessionTranscript:
+        return SessionTranscript(
+            messages=await self.load_session_raw(session_id, prefer_recovery=prefer_recovery),
+            turns=[],
+        )
+
 
 @dataclass
 class _LoadedSession:
@@ -200,6 +243,20 @@ class _LoadedSession:
     profile_name: str = "Code"
     host: _FakeHost = field(default_factory=lambda: _FakeHost(event_bus=EventBus()))
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _turns_reserved: int = 0
+
+    @property
+    def turns_reserved(self) -> bool:
+        return self._turns_reserved > 0
+
+    def reserve_turn(self) -> bool:
+        if self._turns_reserved:
+            return False
+        self._turns_reserved += 1
+        return True
+
+    def release_turn(self) -> None:
+        self._turns_reserved = max(0, self._turns_reserved - 1)
 
 
 @dataclass
@@ -214,6 +271,7 @@ class _FakeManager:
         self._session = _FakeSession(host=host)
         self.injected: list[tuple[str, str]] = []
         self.rollbacks: list[dict[str, Any]] = []
+        self.rollback_superseded_turn_ids: list[str] = []
         self.sub_agent_retries: list[tuple[str, str]] = []
         self.sub_agent_aborts: list[tuple[str, str]] = []
         self.approval_modes: list[tuple[str, str]] = []
@@ -229,6 +287,9 @@ class _FakeManager:
         self.deleted_sessions: list[tuple[str | None, str]] = []
         self.last_delete_cwd: str | None = None
         self.history_reads: list[tuple[str | None, str]] = []
+        self.turn_context_reads: list[tuple[str | None, str]] = []
+        self.turn_context_dir: Path = Path("/nonexistent/session")
+        self.turn_records: list[TurnRecord] = []
         self.cancelled_sessions: list[str] = []
         self.closed_sessions: list[str] = []
         self.lifecycle_calls: list[str] = []
@@ -282,6 +343,7 @@ class _FakeManager:
             rolled_back_user_text="discarded prompt",
             files_reverted=1,
             restore_results=[RestoreResult(path="/workspace/a.py", outcome=RestoreOutcome.APPLIED)],
+            superseded_turn_ids=list(self.rollback_superseded_turn_ids),
         )
 
     async def retry_sub_agent(self, session_id: str, invocation_id: str) -> None:
@@ -303,9 +365,13 @@ class _FakeManager:
         if warnings is not None:
             warnings.extend(self.reload_warnings)
 
-    async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, list[dict[str, Any]]]:
+    async def session_history(self, *, cwd: str | None, session_id: str) -> tuple[str, SessionTranscript | None]:
         self.history_reads.append((cwd, session_id))
-        return session_id, await self.state_store.load_session_raw(session_id)
+        return session_id, await self.state_store.load_session_transcript(session_id)
+
+    async def session_turn_context(self, *, cwd: str | None, session_id: str) -> tuple[str, Path, list[TurnRecord]]:
+        self.turn_context_reads.append((cwd, session_id))
+        return session_id, self.turn_context_dir, list(self.turn_records)
 
     async def set_workspace(self, session_id: str, primary_cwd: str) -> WorkspaceUpdated:
         self.workspace_updates.append((session_id, primary_cwd))

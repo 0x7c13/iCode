@@ -41,7 +41,7 @@ from chrys.foundation.trajectory.fingerprint import DOMAIN_WORKSPACE, fingerprin
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.service.trajectory.segmented import emit_segmented, emit_segmented_soon
 from chrys.service.trajectory.session import SessionStartInfo, SessionTrajectory
-from chrys.service.trajectory.state import TurnRecord, record_turn_started, turn_record
+from chrys.service.trajectory.state import TurnRecord, mark_turn_sequence
 
 if TYPE_CHECKING:
     from chrys.service.mutations.types import FileHashDiff
@@ -84,6 +84,9 @@ class ActiveTurnTrace:
     """The turn the recorder is currently tracing."""
 
     turn_id: str
+    """The pass id: names this pass's own events in the log."""
+    logical_turn_id: str
+    """The turn's identity, shared by every pass of the turn (``turn_id`` for a fresh pass)."""
     turn_number: int
     started_monotonic_ns: int
     opened_at: str
@@ -218,6 +221,8 @@ class TrajectoryRecorder:
     async def turn_started(
         self,
         *,
+        turn_id: str,
+        logical_turn_id: str,
         turn_number: int,
         is_retry: bool,
         agent_profile_fingerprint: str,
@@ -227,18 +232,24 @@ class TrajectoryRecorder:
         opening_item_id: str | None = None,
         preparation_scope_operation_id: str | None = None,
     ) -> str | None:
-        """Open a new ``turn_id`` for the pass about to run; returns it.
+        """Open the pass about to run under *turn_id*, recording that it belongs to *logical_turn_id*.
 
-        ``workspace_revision`` is the keyed fingerprint of *primary_cwd* —
-        the same value ``session.started`` carries — so a mid-session
-        workspace change shows up as a different revision without the path
-        itself ever reaching the log.
+        The ids come from the caller: a turn's identity has to exist before
+        the log can take it, so a runtime whose trajectory never activates
+        still registers and publishes the same turn. A retry pass mints a
+        pass id of its own while the logical turn — the id a client holds
+        and a rollback supersedes — stays the first pass's. ``workspace_revision``
+        is the keyed fingerprint of *primary_cwd* — the same value
+        ``session.started`` carries — so a mid-session workspace change shows
+        up as a different revision without the path itself ever reaching the
+        log.
         """
         trajectory = self._open()
         if trajectory is None:
             return None
         trace = ActiveTurnTrace(
-            turn_id=new_analytics_id(),
+            turn_id=turn_id,
+            logical_turn_id=logical_turn_id,
             turn_number=turn_number,
             started_monotonic_ns=monotonic_now_ns(),
             opened_at=utc_now_rfc3339(),
@@ -251,6 +262,10 @@ class TrajectoryRecorder:
             "agent_profile_fingerprint": agent_profile_fingerprint,
             "model_profile_fingerprint": model_profile_fingerprint,
             "is_retry": is_retry,
+            # Every pass names the logical turn it belongs to, the pass's own id
+            # included: a consumer reads one field and never has to infer the turn
+            # from the pass id's presence or absence.
+            "logical_turn_id": logical_turn_id,
         }
         if opening_item_id is not None:
             payload["opening_item_id"] = opening_item_id
@@ -277,11 +292,7 @@ class TrajectoryRecorder:
                 fingerprint_text(key, DOMAIN_WORKSPACE, primary_cwd) if key is not None and primary_cwd else ""
             )
             if history_state is not None:
-                record_turn_started(
-                    history_state,
-                    TurnRecord(turn_number=turn_number, turn_id=trace.turn_id, started_sequence=sequence),
-                    is_retry=is_retry,
-                )
+                mark_turn_sequence(history_state, logical_turn_id, sequence)
             return payload
 
         # The opening line rides a task of the recorder's own, shielded from
@@ -598,14 +609,21 @@ class TrajectoryRecorder:
             return
         await trajectory.ensure_active()
 
-    async def rollback(self, *, target_turn: int, history_state: dict[str, Any] | None) -> None:
+    async def rollback(
+        self,
+        *,
+        superseded_turns: list[TurnRecord],
+        target_turns: list[TurnRecord],
+    ) -> None:
         """Open a new branch: ``session.rollback`` then ``branch.superseded``.
 
         A snapshot rollback calls this after its atomic swap and before
         restore; a welcome rollback calls it after the reset has committed and
         rebound the recorder. In both cases the session write lock is released
-        first. *history_state* is the captured registry that still names the
-        target turn and the first superseded turn.
+        first. The two lists are the registry as it reads *before* the
+        rollback — the turns it supersedes and the turns it keeps — so the
+        range is computed from ids rather than inferred from ordinals, which
+        drift apart from the log after a failed or cancelled turn.
         """
         trajectory = self._open()
         if trajectory is None:
@@ -617,18 +635,22 @@ class TrajectoryRecorder:
         await trajectory.ensure_active()
         old_branch = trajectory.branch_id
         new_branch = new_analytics_id()
-        superseded_from = turn_record(history_state, target_turn + 1)
-        target = turn_record(history_state, target_turn) if target_turn > 0 else None
+        # The superseded turns are a suffix of the registry, so the earliest
+        # one that ran here opens the range that covers them all. A turn
+        # inherited from a fork and never re-run locally has no sequence and
+        # is named in the result only — the log holds nothing to supersede.
+        superseded_from_sequence = _earliest_sequence(superseded_turns)
+        target = target_turns[-1] if target_turns else None
         payload: dict[str, Any] = {"new_branch_id": new_branch, "reason_code": ROLLBACK_REASON_USER}
         if old_branch is not None:
             payload["old_branch_id"] = old_branch
-        if superseded_from is not None:
-            payload["superseded_from_sequence"] = superseded_from.started_sequence
+        if superseded_from_sequence is not None:
+            payload["superseded_from_sequence"] = superseded_from_sequence
         if target is not None:
             payload["target_turn_id"] = target.turn_id
 
         def _payload(sequence: int) -> Mapping[str, Any]:
-            if superseded_from is not None:
+            if superseded_from_sequence is not None:
                 payload["superseded_to_sequence"] = sequence - 1
             return payload
 
@@ -688,6 +710,12 @@ class TrajectoryRecorder:
         if trajectory is None or trajectory.is_closed:
             return None
         return trajectory
+
+
+def _earliest_sequence(records: list[TurnRecord]) -> int | None:
+    """The lowest sequence any of *records* started at, if one ran in this session."""
+    sequences = [record.started_sequence for record in records if record.started_sequence is not None]
+    return min(sequences) if sequences else None
 
 
 def _elapsed_ms(start_ns: int, end_ns: int) -> int:

@@ -36,6 +36,7 @@ from chrys.service.mutations.snapshot_files import (
 )
 from chrys.service.mutations.workspace_changes import format_partial_revert_notice, format_retained_changes_notice
 from chrys.service.state.store import SESSION_BACKUP_FILE_NAME, SESSION_RECOVERY_FILE_NAME, recorded_surface
+from chrys.service.trajectory.state import TurnRecord, turn_records
 
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
@@ -644,6 +645,13 @@ class RollbackController:
             return
 
         session_dir = self._session.session_dir
+        # Which turns this rollback supersedes is a matter of identity, not of
+        # ordinals: the registry is append-ordered, and a snapshot's is an
+        # earlier state of it, so the superseded turns are the tail it does not
+        # name. Ordinals cannot stand in for them — after a failed or cancelled
+        # turn the running counter is ahead of the saved one, and subtraction
+        # would then retire a turn that never ran.
+        superseded_turn_ids: list[str] = []
         if target_turn == 0:
             # Every turn goes, and every command the turns started: before their
             # files come back, which those commands could write again.
@@ -652,6 +660,8 @@ class RollbackController:
             # Keep the old registry for the audit record: a successful reset
             # replaces the live history before the rollback event is committed.
             rollback_history_state = self._history.state if self._history.is_bound else None
+            rollback_turns = turn_records(rollback_history_state)
+            superseded_turn_ids = [record.turn_id for record in rollback_turns]
             self._permits.commit_session_transition(transition_owner)
 
             try:
@@ -679,8 +689,8 @@ class RollbackController:
             # A failed reset never reaches here and therefore never supersedes the
             # branch of the session that was restored.
             await self._trajectory_recorder.rollback(
-                target_turn=0,
-                history_state=rollback_history_state,
+                superseded_turns=rollback_turns,
+                target_turns=[],
             )
             if retained_notice:
                 self._workspace_change_tracker.queue_safety_notice(retained_notice, cwd=self._session.workspace_cwd())
@@ -697,13 +707,14 @@ class RollbackController:
                     restore_results=restore_results,
                     exclusions=plan_exclusions,
                     warnings=plan_warnings,
+                    superseded_turn_ids=superseded_turn_ids,
                 ),
             )
             return
 
-        snapshot_path = rollback_snapshot_for_target(session_dir, target_turn)
+        snapshot = rollback_snapshot_for_target(session_dir, target_turn)
         session_file = session_dir / "session.json" if session_dir else None
-        if snapshot_path is None or session_file is None or not snapshot_path.exists():
+        if snapshot is None or session_file is None or not snapshot.path.exists():
             await self._bus.publish(
                 Warning(
                     code="rollback_snapshot_missing",
@@ -718,18 +729,30 @@ class RollbackController:
         if (tasks := self._session.background_tasks) is not None:
             await tasks.stop_turns_after(target_turn)
 
+        live_turns = turn_records(self._history.state if self._history.is_bound else None)
+        # What the audit record is told the snapshot keeps: it is written before
+        # the swap, while the outgoing runtime still holds the pre-rollback
+        # registry, so the restored registry is not available yet. A snapshot
+        # whose payload does not parse names no turn, and superseding everything
+        # on the strength of it would mark history the restore is about to keep
+        # as retired — it names nothing instead.
+        superseded_for_record: list[TurnRecord] = []
+        if snapshot.readable:
+            kept_turn_ids = {record.turn_id for record in snapshot.turns}
+            superseded_for_record = [record for record in live_turns if record.turn_id not in kept_turn_ids]
+
         snapshot_missing_after_lock = False
         try:
             lock_path = self._session.session_write_lock_path(sid)
             if lock_path is None:
                 raise OSError("session state store is unavailable")
             with FileLock(lock_path, timeout=lock_timeout_seconds):
-                if not snapshot_path.exists():
+                if not snapshot.path.exists():
                     snapshot_missing_after_lock = True
                 else:
                     overlays = _read_session_overlays(session_file)
                     self._permits.commit_session_transition(transition_owner)
-                    atomic_copy_file(snapshot_path, session_file)
+                    atomic_copy_file(snapshot.path, session_file)
                     _reapply_session_overlays(session_file, overlays)
                     backup_file = session_file.with_name(SESSION_BACKUP_FILE_NAME)
                     try:
@@ -797,8 +820,8 @@ class RollbackController:
         record_cancelled = False
         try:
             await self._trajectory_recorder.rollback(
-                target_turn=target_turn,
-                history_state=self._history.state if self._history.is_bound else None,
+                superseded_turns=superseded_for_record,
+                target_turns=snapshot.turns,
             )
         except asyncio.CancelledError:
             # The swap has committed but the engine still holds the pre-rollback
@@ -815,6 +838,17 @@ class RollbackController:
             await self._lifecycle.on_session_restore(SessionRestore(session_id=sid, ignore_recovery=True))
         if record_cancelled:
             raise asyncio.CancelledError
+
+        # What the rollback actually retired, read from the registry the restored
+        # session came back with: the snapshot names a state, but the restore may
+        # read another source (a save the crash sidecar won, a backup) or leave
+        # the session untouched, and a turn is superseded only when it is gone
+        # from the session that is live now.
+        retained_ids = {
+            record.turn_id for record in turn_records(self._history.state if self._history.is_bound else None)
+        }
+        superseded_turns = [record for record in live_turns if record.turn_id not in retained_ids]
+        superseded_turn_ids = [record.turn_id for record in superseded_turns]
 
         if event.revert_changes:
             self._workspace_change_tracker.invalidate()
@@ -835,6 +869,7 @@ class RollbackController:
                 restore_results=restore_results,
                 exclusions=plan_exclusions,
                 warnings=plan_warnings,
+                superseded_turn_ids=superseded_turn_ids,
             ),
         )
 

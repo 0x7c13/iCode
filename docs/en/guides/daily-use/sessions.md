@@ -119,3 +119,11 @@ If you build reports from a session's files, link records by the IDs below inste
 iCode also sends this ID to the provider in the `Chrys-Request-Attempt-Id` header, so you can find the request in a gateway or proxy log. If you turned on raw HTTP logging, each request's `exchange_id` in that log is the same ID.
 
 These IDs only link records. A file change detected after a shell command keeps its own confidence: the ID doesn't prove that the command made the change. The IDs also don't count changed lines.
+
+## Export a session's turns and model requests
+
+To investigate failed requests or analyze token usage, export the session's turns, model requests and retries to a JSON file. Replace `<id>` with your session ID:
+
+```bash
+icode trajectory export --session <id> --format turns --out turns.json
+```

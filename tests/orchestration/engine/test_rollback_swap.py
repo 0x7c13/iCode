@@ -25,13 +25,16 @@ from chrys.service.mutations.store import SnapshotStore
 from chrys.service.mutations.tracker import MutationTracker
 from chrys.service.mutations.types import MutationOp, MutationSource
 from chrys.service.profiles.agents.schema import AgentProfile
+from chrys.service.state.serializers import serialize_state
 from chrys.service.state.store import JsonFileStateStore, atomic_copy_file
+from chrys.service.trajectory.state import TRAJECTORY_STATE_KEY
 from tests.orchestration.engine._rollback_helpers import (
     _collect_events,
     _make_engine,
     _state_after_turns,
     _StubExec,
     _write_session_json,
+    fake_reset,
     fake_restore_factory,
     fake_start_factory,
     seed_turns,
@@ -373,8 +376,8 @@ class TestRollbackSwap:
             assert loaded is not None
             engine_services(engine).history.bind(loaded)
 
-        async def _cancelled_record(*, target_turn: int, history_state: dict[str, Any] | None) -> None:
-            _ = target_turn, history_state
+        async def _cancelled_record(*, superseded_turns: list[Any], target_turns: list[Any]) -> None:
+            _ = superseded_turns, target_turns
             raise asyncio.CancelledError
 
         engine.lifecycle.on_session_restore = _fake_restore  # type: ignore[assignment]
@@ -924,3 +927,79 @@ class TestRollbackSwapSemantics:
         assert [m.text for m in restored["messages"] if m.role == "user"] == ["user 1"]
         assert sorted(p.name for p in snap_dir.glob("*.json")) == ["turn_2.json"]
         assert engine.available_rollback_turns() == [0]
+
+
+class TestRollbackSupersededTurns:
+    """Which turns a rollback retires is decided by identity, never by ordinal.
+
+    The registry is append-ordered and the snapshot holds an earlier state of
+    it, so the superseded turns are the tail the snapshot does not name. After
+    a failed or cancelled turn the running ordinal is ahead of the saved one,
+    and the tail is exactly what subtraction by ordinal would get wrong.
+    """
+
+    async def test_the_snapshot_tail_is_superseded_by_id(self, tmp_path: Path, *, engine_services) -> None:
+        engine = _make_engine(tmp_path, engine_services=engine_services)
+        store = engine_services(engine).persistence.state_store
+        assert isinstance(store, JsonFileStateStore)
+        session_dir = store.session_dir("rb_test")
+
+        # Turn 1 opened at sequence 4, turn 2 at 9; the snapshot is taken when
+        # turn 3 opens, so it names turns 1 and 2 and predates turn 3's entry.
+        state = _state_after_turns(3)
+        state[TRAJECTORY_STATE_KEY] = {
+            "turn_log": [
+                {"turn_number": 1, "turn_id": "turn-a", "started_sequence": 4},
+                {"turn_number": 2, "turn_id": "turn-b", "started_sequence": 9},
+                {"turn_number": 3, "turn_id": "turn-c", "started_sequence": 14},
+            ]
+        }
+        await store.save_session("rb_test", state)
+        engine_services(engine).history.bind(state)
+        engine.session.turn_number = 3
+
+        # Named for the turn it precedes, holding the two turns it keeps.
+        snapshot_state = serialize_state(_state_after_turns(2))
+        snapshot_state[TRAJECTORY_STATE_KEY] = {"turn_log": state[TRAJECTORY_STATE_KEY]["turn_log"][:2]}
+        snap_dir = session_dir / "snapshots"
+        snap_dir.mkdir()
+        (snap_dir / "turn_2.json").write_text(
+            json.dumps({"meta": {"session_id": "rb_test"}, "state": snapshot_state}), encoding="utf-8"
+        )
+
+        results: list[RollbackResult] = []
+        await _collect_events(engine.event_bus, RollbackResult, results)
+        engine.lifecycle.on_session_restore = fake_restore_factory(engine, store, engine_services=engine_services)  # type: ignore[assignment]
+
+        await engine._on_user_rollback(UserRollback(target_turn=2, revert_changes=False))
+
+        assert len(results) == 1
+        # Only turn 3 is retired: turn 2 survives, even though the aborted
+        # attempt to run it left the ordinal where it was. The result's ids come
+        # from the restored registry, not from the snapshot the range is built
+        # off — the audit record the range lands in is pinned by the modules that
+        # drive real turns (``run/test_turn_rollback_identity``).
+        assert results[0].superseded_turn_ids == ["turn-c"]
+
+    async def test_a_rollback_to_welcome_supersedes_every_registered_turn(
+        self, tmp_path: Path, *, engine_services
+    ) -> None:
+        engine = _make_engine(tmp_path, engine_services=engine_services)
+        state = _state_after_turns(2)
+        state[TRAJECTORY_STATE_KEY] = {
+            "turn_log": [
+                {"turn_number": 1, "turn_id": "turn-a", "started_sequence": 4},
+                {"turn_number": 2, "turn_id": "turn-b", "started_sequence": 9},
+            ]
+        }
+        engine_services(engine).history.bind(state)
+        engine.session.turn_number = 2
+        engine.lifecycle.reset_session_to_welcome = fake_reset(engine, engine_services=engine_services)  # type: ignore[assignment]
+
+        results: list[RollbackResult] = []
+        await _collect_events(engine.event_bus, RollbackResult, results)
+
+        await engine._on_user_rollback(UserRollback(target_turn=0, revert_changes=False))
+
+        assert len(results) == 1
+        assert results[0].superseded_turn_ids == ["turn-a", "turn-b"]

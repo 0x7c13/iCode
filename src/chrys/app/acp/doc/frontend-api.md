@@ -48,6 +48,21 @@ ACP escape hatches:
 Param keys are camelCase; most request handlers also accept the legacy
 `session_id` spelling. Unknown methods raise JSON-RPC `method_not_found`.
 
+### Capability discovery
+
+`initialize` declares the extension surface under `agentCapabilities._meta.chrys`:
+
+```json
+{"apiVersion": 1, "methods": ["session/delete", "..."], "notifications": ["chrys/runtime_update", "..."]}
+```
+
+The two lists are the server's own dispatch tables (`ACP_EXTENSION_METHODS`,
+`ACP_EXTENSION_NOTIFICATIONS`), so a client can branch on the running build
+instead of on error codes; `chrys/request_input` is a callback the server sends,
+not a method it dispatches, so it is not listed. `apiVersion` changes only when a
+declared name's meaning changes incompatibly, not when one is added — a client
+gates on presence per name. The lists are pinned to the code by a test.
+
 ## Standard ACP
 
 Implemented standard methods:
@@ -116,6 +131,48 @@ without colliding. `on_settings_reload` preserves the per-session override.
 Persisting a *default* model for future sessions is a separate concern handled by
 the config surface (`session/set_config_option`).
 
+### Turn identity (`turnId`, `turnNumber`, `messageId`)
+
+A **logical turn** is one user question and everything it runs, including the
+passes a retry opens; its `turnId` is minted when the first pass starts and is
+never reused. A **pass** is one execution of that turn. ACP exposes the identity
+on four surfaces, and all four report the same string:
+
+| Surface | Carries |
+|---|---|
+| `chrys/turn_started` notification | `turnId`, `turnNumber`, `isRetry`, `userMessageId` |
+| `PromptResponse._meta.chrys` | `turnId`, `turnNumber`, `sessionUsage` |
+| every `session/update` of the turn | `_meta.chrys.{turnId, turnNumber}` |
+| `session/history` | `turns[]` and each labelled `messages[]` entry |
+
+- `turnNumber` is display order only. Reusing a number is possible after a
+  failed or cancelled turn (see *Rollback and turn identity*), so join on
+  `turnId`; a `null` `turnId` on `PromptResponse`/error data means the backend
+  never started a turn (the prompt was rejected before admission).
+- `messageId` on `session/prompt` is the client's own id for the user message.
+  It must be a UUID (`invalid_params` otherwise); omitting it makes the backend
+  mint one. It is echoed verbatim, including letter case, as `userMessageId`
+  and as the opener's `messageId` in replay. Every agent message also carries a
+  `messageId` of its own: a new one per answer, and one per provisional segment
+  (2.4) — a tool call starts a new message.
+- Usage: `usage` on `PromptResponse` (and in error data) is this turn's spend,
+  `sessionUsage` under `_meta.chrys` is the session total. Both count only the
+  interval this request was admitted in.
+- A turn's retries are reported as `chrys/retry_attempt` (scoped
+  `turn | run | compaction | connection`, with `attempt`, `maxAttempts`,
+  `delaySeconds`, `message`) and its withdrawn text as
+  `chrys/messages_retracted` — both only for the main turn. `messages_retracted`
+  lists the `messageId`s the backend decided not to keep; the client drops those
+  bubbles and ignores anything the backend did not explicitly retract.
+
+### Rollback and turn identity
+
+`session/rollback` (and `chrys/rollback_result`) carry `supersededTurnIds`: the
+identities of the turns this rollback discarded, in the order they ran. The ids
+are never reused, so a client that labelled its transcript by `turnId` can join
+on them. A turn's own number can be reused after the rollback, which is why
+identity is the id.
+
 ## Extension RPCs (client → backend)
 
 All routed through `ext_method`.
@@ -130,6 +187,7 @@ All routed through `ext_method`.
 | `session/switch_agent` | `sessionId`, `agentProfile` | Switch active agent profile in-session. Unknown profile → immediate error; switching to the active profile is a no-op (no 60s wait) whose response still carries the live runtime (model/tools/skills), so it won't blank client state. |
 | `session/set_workspace` | `sessionId`, `primaryCwd` | Change primary workspace cwd. `primaryCwd` is validated strictly (must exist + be a directory, resolved absolutely) like `new`/`load`. Soft-restarts the agent, then pushes `chrys/runtime_update` (skills/MCP/memory/context may change). |
 | `session/skip_sleep` | `sessionId`, `callId` | Finish an active `sleep` tool call early. |
+| `session/retry` | `sessionId`, `text?` | Retry the session's last failed or interrupted turn. Resumes the **same** turn (the response `_meta.chrys.turnId` is the one the original prompt reported, and `chrys/turn_started` carries `isRetry: true`), opens no new user message, so the response carries no `userMessageId`. `text` is optional guidance persisted as user input inside the resumed turn, not metadata: it goes through the same approval gate and `user_prompt_submit` hooks as a prompt and can be rejected. Refused with `invalid_params` when the session has no retryable turn, and when a turn is running — cancel it first (`session/cancel`), the retry is never queued behind a live turn. |
 | `session/set_config_option` | `sessionId`, `key`, `value` | Persist a supported config key to the user settings document + awaited reload, then push `chrys/runtime_update` (global default; see below). `key` accepts the logical name or its legacy `CHRYS_*` spelling; the response carries all three names (`key` echoed, `envKey`, `settingKey`). The session must be active — it is validated *before* the document write, so a failed request never leaves persisted config mutated. |
 
 `session/set_config_option` accepts `key="approval_auto_review"` with `value="direct"` or `value="formal"`. It writes the user setting `approval.auto_review` (environment alias `CHRYS_APPROVAL_AUTO_REVIEW`), reloads settings, and applies only when the session uses `auto`. The default is `direct`. Individual risk checks use the configured approval model for both checks and any uncertain-action review. This is a global user setting, not a session-local mode; in-flight reviews keep their bound strategy.
@@ -150,12 +208,17 @@ Approval mode and model switching are **not** here — they use standard ACP
 | Method | Params | Returns |
 |---|---|---|
 | `chrys/session_runtime` | `sessionId` | Runtime snapshot: profile, model, tokens/usage, tools, MCP/skills details. |
-| `session/mutations` | `sessionId` | Per-turn mutation summary + rollback turns + file summary. Mutations carry `beforeSkip`/`afterSkip` (`"too_large"` / `"binary"` / `null`) when a side's content backup was withheld by snapshot policy; such files are excluded from the `files` summary. Each mutation also carries `provenance` (`"proven"` / `"assumed"` / `"foreign"`) + `contested` (bool); `turns[].mutations` and `mutationCount` are the **raw event log** (foreign rows included — clients filter/badge themselves), while the net-level `files` list excludes foreign changes and carries folded `contested`/`inferred` badges. |
+| `session/mutations` | `sessionId` | Per-turn mutation summary + rollback turns + file summary. Turns are `{turnNumber, turnId, mutationCount, mutations}`: `turnId` is the string turn identity when exactly one registered turn carries that ordinal, and `null` when several do (a failed or cancelled turn lets the running ordinal and the saved one drift apart) or none does — `turnNumber`, `mutationCount` and the mutations are returned either way, and the mutations are never attributed to the last same-numbered turn. Mutations carry `beforeSkip`/`afterSkip` (`"too_large"` / `"binary"` / `null`) when a side's content backup was withheld by snapshot policy; such files are excluded from the `files` summary. Each mutation also carries `provenance` (`"proven"` / `"assumed"` / `"foreign"`) + `contested` (bool); `turns[].mutations` and `mutationCount` are the **raw event log** (foreign rows included — clients filter/badge themselves), while the net-level `files` list excludes foreign changes and carries folded `contested`/`inferred` badges. |
 | `session/diff` | `sessionId`, `path?`, `turn?` | Before/after text diff entries (binary-aware). Entries whose content backup was withheld by snapshot policy (oversized/binary files) are omitted. Each entry carries the same folded `contested`/`inferred` badges as the `session/mutations` `files` list, so clients can badge diffs without joining the two endpoints. |
-| `session/history` | `sessionId`, `cwd?` | Raw persisted messages, without the messages compaction excluded (tool calls it summarized or removed, a dropped current turn's in-between text, folded turns). Scoped to the requesting workspace cwd (like `load`/`delete`); a session from another workspace is rejected. An assistant message whose `additional_properties._group` has `_summary_of_group_ids` is compaction's summary of excluded tool calls, kept for the model: the `session/load` and `session/rollback` replays show neither the summary nor the messages it replaced, and a client rendering this list should skip it too. |
+| `session/history` | `sessionId`, `cwd?` | Persisted messages plus the turns that ran them. Shape: `{sessionId, turns: [{turnId, turnNumber, userMessageId, inheritedFrom?}], messages: [{turnId, turnNumber, message}]}` — `turns[]` lists every turn in the session's registry, in start order, including one whose messages the transcript no longer holds (inherited by a fork, or compacted away): the client needs those ids to join what it replays with what `session/turns` reports. In `messages[]`, `turnId`/`turnNumber` are `null` for a message no registered turn claims, `userMessageId` is the client's `messageId` for the turn's opening user message only (`null` for an interjection or retry note inside the same turn), and `inheritedFrom` is present only on a turn a fork inherited, naming the session that first ran it. Message contents are unchanged by this framing: raw persisted messages, without the messages compaction excluded (tool calls it summarized or removed, a dropped current turn's in-between text, folded turns). Scoped to the requesting workspace cwd (like `load`/`delete`); a session from another workspace is rejected. An assistant message whose `additional_properties._group` has `_summary_of_group_ids` is compaction's summary of excluded tool calls, kept for the model: the `session/load` and `session/rollback` replays show neither the summary nor the messages it replaced, and a client rendering this list should skip it too. Call-level data (request ids, timings, usage) is not here — use `session/turns`. |
+| `session/turns` | `sessionId`, `cwd?`, `turnId?` | Per-turn model-request data read from the session's trajectory log: `{sessionId, coverage, gapCount, turns, supersededTurns, unassignedPasses, sessionLevel}`. `turns` preserves log start order even when an older registry overwrote a same-numbered turn; each turn is `{turnId, turnNumber, userMessageId, inheritedFrom, traceAvailable, coverage, status, startedAt, endedAt, usage, usageUnreportedCalls, modelCallCount, failedModelCallCount, requestAttemptCount, retryCount, passes, modelCalls, retries}`. A turn holds one entry per **pass** (a retry adds a pass to the same `turnId`). Its `endedAt` is the latest pass’s end time, or `null` while that pass is unfinished. `turnNumber` comes from the registry when available, otherwise from the first logged pass that supplies it, including for superseded turns. `modelCalls[].attempts[]` are HTTP attempts of one call; `requestAttemptId` is the model request's id and has nothing to do with JSON-RPC `id`. A `modelCall` whose `model.exchange.started` the log lost is reported with `startedAt: null`; readable request attempts survive even when both exchange markers are missing. A readable terminal recovers missing `agentProfile`, `provider` and `requestModel` without replacing facts from a readable start. A call with no terminal has `endedAt: null` and `outcome: null`. Either missing boundary makes its turn and session `partial`. The request retains its envelope pass id: an unplaceable pass belongs in `unassignedPasses`, and a request outside every pass belongs in `sessionLevel`. Each `retries[]` entry is `{retryId, passId, reasonCode, delayMs, retryMode, started}` (no timestamp — the trajectory records none for a retry) and is counted in `retryCount` only when `started` is `true`: a `retry.scheduled` whose `retry.started` never arrived is a backoff an interrupt cancelled mid-sleep, so it is reported with `started: false` and the session is `partial` while it is open. For a retry without `passId`, the branch turn observed at `retry.scheduled` fixes its ownership: later turns and rollbacks cannot move or drop an assigned retry. If the schedule is missing, the branch at `retry.started` is used. `sessionLevel` holds calls outside every turn (a title generated afterwards). Coverage: `exact` only when the scan found no corruption, no unaccounted gap, no unsupported record, no torn tail and nothing unplaceable, and nothing is left outstanding; otherwise `partial`. `gapCount` counts explicit gaps only, so `gapCount == 0` does not mean `exact`. A turn is `partial` when damage overlaps any of its passes or it holds a call with a missing boundary or an unfinished backoff. Each pass ends at its finish record; an unfinished pass extends to the next pass start or the scan tail. An unfinished retry is checked independently of earlier finished passes, and a gap between finished passes and their retries touches neither pass. `coverage`, `usage` and every count cover **this** session's log only — a fork-inherited turn (`inheritedFrom` set, `traceAvailable: false`) brings no source-session numbers or calls, and its `coverage` describes the absence of a local record, not damage to one; read `traceAvailable` first. `supersededTurns` are the turns a rollback discarded; a turn a fork inherited and a rollback then removed has no local record of either, so it appears in neither list. Rollback records written before this upgrade used the ordinals of their day, so their superseded set can be off by one turn. Model calls made inside an external ACP sub-agent are invisible here — only the invocation granularity is recorded. `turnId` returns just that turn (`invalid_params` when no turn matches) and keeps it in the list it belongs to — a superseded turn appears in `supersededTurns` with `turns` empty, while a fork-inherited turn appears in `turns`. Filtered responses have empty `unassignedPasses`, and the session-level `coverage` still describes the whole scan. Replayed history carries the same ids: `session/load` and `session/rollback` stamp `_meta.chrys.turnId`/`turnNumber` on replayed user text, answers, tool cards and the synthesized terminal update of a call whose result was never persisted. Scoped to the requesting workspace cwd, like `session/history`. |
 | `settings/options` | `sessionId?` | Supported config keys under all three names (`key`, `envKey`, `settingKey`). Each entry carries the durable document `value` plus `baseValue`/`baseSource` — the manager's base settings, deliberately not called any session's view. With `sessionId`, entries add `sessionValue`/`sessionSource` read from that session's own loaded settings. |
 | `mcp/list` | `sessionId` | MCP tools + failures from runtime details. |
 | `skills/list` | `sessionId` | Skill sources + details from runtime details. |
+
+The CLI command `icode trajectory export --session <id> --format turns --out turns.json` uses the same turn-trace projection as `session/turns`. Its `sessionId` is the short form stored in the session folder name; ACP returns the full session ID, so these fields may differ in length for the same session.
+
+A provider client's automatic resend within a model call adds an entry to `modelCalls[].attempts[]` and increases `requestAttemptCount`. It does not add a `retries[]` entry or increase `retryCount`. The attempt's `requestAttemptId` identifies one model HTTP request; it is distinct from a JSON-RPC `id`, a tool call ID, `tool_operation_id`, or `_chrys_operation_id`.
 
 ### Sub-agent control
 
@@ -274,10 +337,13 @@ client that keeps stdout open without reading it can still block the server.
 `session/cancel`, `session/close`, and
 `session/delete` interrupt the engine first and then release pending input and
 permission callbacks; close and delete additionally stop prompt admission
-before releasing waits, so a prompt already queued on the session is rejected
-rather than started as a fresh turn the teardown would wait behind. Late
-permission replies are ignored, and unrelated sessions remain independently
-promptable while one client callback is pending.
+before releasing waits, so a prompt that arrives once admission has stopped is
+refused rather than started as a fresh turn the teardown would wait behind.
+Admission is per session and explicit: a second `session/prompt` or a
+`session/retry` arriving while a turn is admitted is refused with
+`invalid_params` instead of queueing behind the live turn — cancel it first.
+Late permission replies are ignored, and unrelated sessions remain
+independently promptable while one client callback is pending.
 
 ## Extension notifications (backend → client)
 
@@ -291,7 +357,8 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
 - Diagnostics: `chrys/error`, `chrys/warning`, `chrys/context_compressed`,
   `chrys/context_pressure`, `chrys/tool_compacted`,
   `chrys/compaction_started`, `chrys/compaction_finished`.
-- Edits / turns: `chrys/rollback_result`, `chrys/user_inject_result`.
+- Edits / turns: `chrys/rollback_result`, `chrys/user_inject_result`,
+  `chrys/turn_started`, `chrys/retry_attempt`, `chrys/messages_retracted`.
 - Sub-agent lifecycle: `chrys/sub_agent_invocation_start`,
   `chrys/sub_agent_tool_call_start`, `chrys/sub_agent_tool_call_result`,
   `chrys/sub_agent_progress`, `chrys/sub_agent_retry_attempt`,
@@ -441,8 +508,6 @@ Standard `session/update` variants Chrys does **not** emit:
 
 Priority: P1 = high-value VS Code UX, P2 = can stay TUI-only for now.
 
-- **[P1] Session-level retry/continue.** `UserRetry` / `RetryAttempt` not exposed
-  (only sub-agent retry is). Needs a `session/retry` RPC + `chrys/retry_attempt`.
 - **[P1] Approval-judge detail depth.** `chrys/approval_reviewed` carries the final
   decision; pending/intermediate judge metadata is not surfaced.
 - **[P1] Richer CRUD validation.** Profile/MCP write/delete is functional, but
@@ -467,17 +532,8 @@ Priority: P1 = high-value VS Code UX, P2 = can stay TUI-only for now.
 - **Out of scope by design:** notifications config, theme, and the Buddy
   surface remain frontend-local cosmetic UX, not shared backend capabilities.
 
-### Capability discovery (known limitation)
-
-Extension methods are not advertised in `initialize` capabilities or versioned —
-clients must know the `chrys/*` / `session/*` method names by convention; unknown
-methods raise `method_not_found`. A future improvement is to advertise the
-extension surface (and its version) during `initialize`.
-
 ## Suggested implementation order
 
-1. Session-level retry/continue (matches TUI interaction model).
-2. Approval-judge detail surfacing (trust/diagnosis).
-3. CRUD validation + MCP overlay hardening.
-4. Capability discovery during `initialize`.
-5. Lower-priority P2 items as VS Code UX demands.
+1. Approval-judge detail surfacing (trust/diagnosis).
+2. CRUD validation + MCP overlay hardening.
+3. Lower-priority P2 items as VS Code UX demands.

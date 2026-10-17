@@ -10,14 +10,16 @@ terminal is on its way.
 from __future__ import annotations
 
 import asyncio
+import errno
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, NoReturn
 
 import pytest
 
+from chrys.foundation.errors.kinds import ErrorKind
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG
 from chrys.foundation.trajectory.envelope import MeasurementSource
-from chrys.foundation.trajectory.event_types import EventType, ToolOutcome
+from chrys.foundation.trajectory.event_types import EventType, ExchangeOutcome, ToolOutcome
 from chrys.kernel import ChatMiddlewareLayer, ChatResponse, Content, Message, tool
 from chrys.kernel import loop as loop_module
 from chrys.kernel.middleware import FunctionInvocationContext, FunctionMiddleware
@@ -150,6 +152,46 @@ class _SuspendingCompaction:
         del messages, context
         self.entered.set()
         await asyncio.Event().wait()
+
+
+class _FailingWireClient(WireClient):
+    """The same preparation path, with a provider that refuses the connection."""
+
+    OTEL_PROVIDER_NAME = "test"
+
+    def __init__(self) -> None:
+        super().__init__(observer=WireCallObserver())
+
+    def _send(
+        self, *, messages: Sequence[Message], options: Mapping[str, Any], **kwargs: Any
+    ) -> Awaitable[ChatResponse]:
+        del messages, options, kwargs
+
+        async def _resolve() -> ChatResponse:
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
+
+        return _resolve()
+
+    def _open_stream(self, *, messages: Sequence[Message], options: Mapping[str, Any], **kwargs: Any) -> NoReturn:
+        raise NotImplementedError("these tests send blocking requests")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_exchange_records_what_the_error_was() -> None:
+    """The wire attempt that dies is closed with an error kind, not just a type name."""
+    layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(_FailingWireClient()))
+    sink = FakeSink()
+
+    with pytest.raises(ConnectionRefusedError):
+        await layer.get_response(
+            [Message("user", ["hi"])],
+            client_kwargs={TRAJECTORY_CONTEXT_KWARG: make_context(sink)},
+        )
+
+    finished = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
+    assert finished.payload["outcome"] == ExchangeOutcome.ERROR
+    assert finished.payload["error_code"] == "ConnectionRefusedError"
+    assert finished.payload["error_kind"] == ErrorKind.CONNECTION_REFUSED
 
 
 @pytest.mark.asyncio

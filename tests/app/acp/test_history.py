@@ -763,20 +763,20 @@ async def test_hosted_replay_emits_image_and_resource_content(tmp_path) -> None:
     assert terminal.status == "completed"
     assert start.field_meta == {
         "chrys": {
-            "provider_hosted": True,
-            "hosted_family": "code",
+            "providerHosted": True,
+            "hostedFamily": "code",
             "provider": "openai",
-            "provider_call_id": "provider-artifacts",
-            "provider_status": "running",
+            "providerCallId": "provider-artifacts",
+            "providerStatus": "running",
         }
     }
     assert terminal.field_meta == {
         "chrys": {
-            "provider_hosted": True,
-            "hosted_family": "code",
+            "providerHosted": True,
+            "hostedFamily": "code",
             "provider": "openai",
-            "provider_call_id": "provider-artifacts",
-            "provider_status": "completed",
+            "providerCallId": "provider-artifacts",
+            "providerStatus": "completed",
         }
     }
     assert [item.content.type for item in terminal.content] == ["image", "resource_link", "text"]
@@ -838,7 +838,7 @@ async def test_hosted_replay_emits_standalone_results_with_synthetic_starts(tmp_
         "assistant result",
         "tool result",
     ]
-    assert all(update.field_meta["chrys"]["provider_hosted"] is True for update in updates)
+    assert all(update.field_meta["chrys"]["providerHosted"] is True for update in updates)
 
 
 @pytest.mark.asyncio
@@ -1007,6 +1007,18 @@ async def test_replay_preserves_mixed_text_local_and_hosted_content_order(tmp_pa
 _SUMMARY_TEXT = '[Tool call: read_file(path="a.py") → contents]'
 
 
+def _replay_shape(update: Any) -> dict[str, Any]:
+    """One replayed update with its per-replay ``messageId`` masked out.
+
+    Replay mints a fresh ``uuid4`` for every answer, so two replays of the
+    same transcript can only be compared with that one field normalized.
+    """
+    payload = update.model_dump(by_alias=True, exclude_none=True)
+    if "messageId" in payload:
+        payload["messageId"] = "<minted>"
+    return payload
+
+
 def _summary_replay_transcript(*, compacted: bool) -> list[Message]:
     """A turn whose read_file group compaction replaced, as saved: the summary, then the excluded originals.
 
@@ -1055,7 +1067,9 @@ async def test_replay_session_history_skips_compacted_groups_but_keeps_same_text
         await replay_session_history(client, store, session_id)
         updates[compacted] = [notification.update for notification in client.updates]
 
-    assert updates[True] == updates[False]
+    # Replay mints a fresh messageId per answer, so identity is compared on
+    # everything else: the same transcript must project to the same updates.
+    assert [_replay_shape(update) for update in updates[True]] == [_replay_shape(update) for update in updates[False]]
     assert [update.content.text for update in updates[True] if update.session_update == "agent_message_chunk"] == [
         _SUMMARY_TEXT
     ]

@@ -855,17 +855,17 @@
         ["awaitable", "await tasks.stop_turns_after(0)", "unresolved"],
         ["awaitable", "await self._lifecycle.reset_session_to_welcome(sid, write_lock_held=welcome_lock_lease.held, after_delete=welcome_file_rollback, before_restart=welcome_lock_lease.release)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='rollback_reset_failed', message='Rollback to welcome could not reset the session because the session state is busy.', display_message=_ROLLBACK_RESET_FAILED.bind(), session_id=sid))", "unresolved"],
-        ["awaitable", "await self._trajectory_recorder.rollback(target_turn=0, history_state=rollback_history_state)", "unresolved"],
-        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=0, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings))", "unresolved"],
+        ["awaitable", "await self._trajectory_recorder.rollback(superseded_turns=rollback_turns, target_turns=[])", "unresolved"],
+        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=0, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings, superseded_turn_ids=superseded_turn_ids))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='rollback_snapshot_missing', message=f'Snapshot for turn {target_turn} is missing.', display_message=_ROLLBACK_SNAPSHOT_MISSING.bind(target_turn=target_turn), session_id=sid))", "unresolved"],
         ["awaitable", "await tasks.stop_turns_after(target_turn)", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='rollback_swap_locked', message=f'Timed out waiting for session lock: {exc}', display_message=_ROLLBACK_SWAP_LOCKED.bind(detail=DisplayBlock(str(exc))), session_id=sid))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='rollback_swap_failed', message=f'Failed to restore snapshot: {exc}', display_message=_ROLLBACK_SWAP_FAILED.bind(detail=DisplayBlock(str(exc))), session_id=sid))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='rollback_snapshot_missing', message=f'Snapshot for turn {target_turn} is missing.', display_message=_ROLLBACK_SNAPSHOT_MISSING.bind(target_turn=target_turn), session_id=sid))", "unresolved"],
-        ["awaitable", "await self._trajectory_recorder.rollback(target_turn=target_turn, history_state=self._history.state if self._history.is_bound else None)", "unresolved"],
+        ["awaitable", "await self._trajectory_recorder.rollback(superseded_turns=superseded_for_record, target_turns=snapshot.turns)", "unresolved"],
         ["awaitable", "await self._lifecycle.on_session_restore(SessionRestore(session_id=sid, ignore_recovery=True))", "unresolved"],
         ["awaitable", "await self._writer.save_current_session()", "unresolved"],
-        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=target_turn, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings))", "unresolved"]
+        ["awaitable", "await self._bus.publish(RollbackResult(session_id=sid, target_turn=target_turn, rolled_back_user_text=rolled_back_user_text, files_reverted=files_reverted, restore_results=restore_results, exclusions=plan_exclusions, warnings=plan_warnings, superseded_turn_ids=superseded_turn_ids))", "unresolved"]
       ],
       "RollbackController._execute_user_rollback_with_permit": [
         ["awaitable", "await self._writer.flush()", "unresolved"],
@@ -1131,10 +1131,10 @@
         ["wrapper", "await self.run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_retry"]
       ],
       "TurnCoordinator.run_and_save": [
-        ["wrapper", "await self.run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_fresh"]
+        ["wrapper", "await self.run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_fresh"]
       ],
       "TurnCoordinator.run_fresh": [
-        ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved"]
+        ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id)", "unresolved"]
       ],
       "TurnCoordinator.run_retry": [
         ["awaitable", "await self._runner().run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved"]
@@ -1314,7 +1314,7 @@
         ["awaitable", "await self._content.prepare_fresh(text)", "unresolved"]
       ],
       "TurnRunner._record_trajectory_turn_started": [
-        ["awaitable", "await recorder.turn_started(turn_number=self._session.turn_number, is_retry=is_retry, agent_profile_fingerprint=self._current.manifest.agent_profile_fingerprint, model_profile_fingerprint=self._current.manifest.model_profile_fingerprint, primary_cwd=self._session.workspace.primary_cwd if self._session.workspace is not None else '', history_state=self._current.require_loaded().bindings.backend.history_state, opening_item_id=self._opening_item_id, preparation_scope_operation_id=preparation_scope_operation_id)", "unresolved"]
+        ["awaitable", "await recorder.turn_started(turn_id=pass_id, logical_turn_id=turn_id, turn_number=turn_number, is_retry=is_retry, agent_profile_fingerprint=self._current.manifest.agent_profile_fingerprint, model_profile_fingerprint=self._current.manifest.model_profile_fingerprint, primary_cwd=self._session.workspace.primary_cwd if self._session.workspace is not None else '', history_state=history_state, opening_item_id=self._opening_item_id, preparation_scope_operation_id=preparation_scope_operation_id)", "unresolved"]
       ],
       "TurnRunner._refresh_runtime_skills": [
         ["awaitable", "await self._skills.refresh(update_active_turn=update_active_turn)", "unresolved"]
@@ -1324,12 +1324,13 @@
         ["awaitable", "await self._retry_factory().report_retry_dropped_for_missing_cwd(dropped_retry_cwd)", "unresolved"]
       ],
       "TurnRunner.pre_run": [
-        ["wrapper", "await self._record_trajectory_turn_started(is_retry=is_retry, has_opening_input=has_opening_input, preparation_scope_operation_id=preparation_scope_operation_id)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._record_trajectory_turn_started"]
+        ["wrapper", "await self._record_trajectory_turn_started(is_retry=is_retry, has_opening_input=has_opening_input, user_message_id=user_message_id, preparation_scope_operation_id=preparation_scope_operation_id)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._record_trajectory_turn_started"],
+        ["awaitable", "await self._bus.publish(TurnStarted(session_id=self._session.session_id, turn_id=turn_id, turn_number=turn_number, is_retry=is_retry, user_message_id=event_user_message_id))", "unresolved"]
       ],
       "TurnRunner.run_fresh": [
         ["wrapper", "await self._prepare_user_contents(text)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._prepare_user_contents"],
         ["awaitable", "await admission_preparation.finished(outcome=PreparationOutcome.PREPARATION_FAILED)", "unresolved"],
-        ["wrapper", "await self.pre_run(reset_batch_id=True, preparation_scope_operation_id=self._preparation_operation_id(admission_preparation))", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.pre_run"],
+        ["wrapper", "await self.pre_run(reset_batch_id=True, user_message_id=user_message_id, preparation_scope_operation_id=self._preparation_operation_id(admission_preparation))", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.pre_run"],
         ["awaitable", "await admission_preparation.finished(outcome=PreparationOutcome.FRESH_TURN)", "unresolved"],
         ["awaitable", "await preamble.started()", "unresolved"],
         ["wrapper", "await self._fire_before_turn(text, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
@@ -2094,14 +2095,18 @@
       ]
     },
     "chrys.orchestration.session_host": {
+      "ChrysSessionHost._iter_run_events": [
+        ["sync_primitive", "async with self._run_lock", "unresolved"],
+        ["wrapper", "async for event_out in self._iter_run_events_locked(event, raise_for_outcome=raise_for_outcome)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events_locked"]
+      ],
       "ChrysSessionHost._iter_run_events_locked": [
         ["async_context", "async with self._bus.stream(*_HEADLESS_RUN_EVENT_TYPES)", "unresolved"],
-        ["awaitable", "await _publish_user_turn()", "unresolved"],
+        ["awaitable", "await _publish_turn_event()", "unresolved"],
         ["multi_wait", "await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)", "unresolved"],
         ["awaitable", "await self._bus.publish(UserInterrupt(session_id=self.session_id))", "unresolved"],
         ["awaitable", "await _event_task_ready_after_checkpoint()", "unresolved"],
         ["future", "await start_task", "unresolved"],
-        ["awaitable", "await _publish_user_turn()", "unresolved"],
+        ["awaitable", "await _publish_turn_event()", "unresolved"],
         ["awaitable", "await _event_task_ready_after_checkpoint()", "unresolved"],
         ["future", "await run_task", "unresolved"],
         ["future", "await start_task", "unresolved"],
@@ -2112,12 +2117,11 @@
       "ChrysSessionHost._iter_run_events_locked._event_task_ready_after_checkpoint": [
         ["sleep", "await asyncio.sleep(0)", "event-loop-yield"]
       ],
-      "ChrysSessionHost._iter_run_events_locked._publish_user_turn": [
-        ["awaitable", "await self._bus.publish(user_event)", "unresolved"]
+      "ChrysSessionHost._iter_run_events_locked._publish_turn_event": [
+        ["awaitable", "await self._bus.publish(turn_event)", "unresolved"]
       ],
       "ChrysSessionHost._iter_turn_events": [
-        ["sync_primitive", "async with self._run_lock", "unresolved"],
-        ["wrapper", "async for event in self._iter_run_events_locked(message, raise_for_outcome=raise_for_outcome)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events_locked"]
+        ["wrapper", "async for event in self._iter_run_events(self._coerce_user_message(message), raise_for_outcome=raise_for_outcome)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events"]
       ],
       "ChrysSessionHost._resolve_restore_session_id": [
         ["awaitable", "await self._state_store.list_sessions()", "unresolved"]
@@ -2127,6 +2131,9 @@
       ],
       "ChrysSessionHost.cancel_workflow": [
         ["awaitable", "await self._bus.publish(WorkflowCancelRequest(run_id=run_id, session_id=self.workflow_session_id or None))", "unresolved"]
+      ],
+      "ChrysSessionHost.iter_retry_events": [
+        ["wrapper", "async for event in self._iter_run_events(UserRetry(text=text or '', session_id=self.session_id), raise_for_outcome=False)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._iter_run_events"]
       ],
       "ChrysSessionHost.iter_run_events": [
         ["wrapper", "async for event in self._iter_turn_events(message, raise_for_outcome=True)", "unresolved", "chrys.orchestration.session_host.ChrysSessionHost._iter_turn_events"]
@@ -4646,7 +4653,10 @@
         ["thread_pool", "await asyncio.to_thread(self._load_session_page_sync, listing, surfaces, page, page_size)", "unresolved"]
       ],
       "JsonFileStateStore.load_session_raw": [
-        ["thread_pool", "await asyncio.to_thread(self._load_session_raw_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
+        ["wrapper", "await self.load_session_transcript(session_id, prefer_recovery=prefer_recovery)", "unresolved", "chrys.service.state.store.JsonFileStateStore.load_session_transcript"]
+      ],
+      "JsonFileStateStore.load_session_transcript": [
+        ["thread_pool", "await asyncio.to_thread(self._load_session_transcript_sync, session_id, prefer_recovery=prefer_recovery)", "unresolved"]
       ],
       "JsonFileStateStore.load_workflow_session": [
         ["thread_pool", "await asyncio.to_thread(self._load_workflow_session_sync, session_id)", "workflow-blocking"]

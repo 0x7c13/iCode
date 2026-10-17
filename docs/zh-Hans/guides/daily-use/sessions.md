@@ -119,3 +119,11 @@
 iCode 还会通过 `Chrys-Request-Attempt-Id` 请求头把这个 ID 发给提供商，便于在网关或代理日志中查找对应请求。如果开启了原始 HTTP 日志，日志中每次请求的 `exchange_id` 也是这个 ID。
 
 这些 ID 只用于关联记录。Shell 命令执行后检测到的文件变更保留原有的可信度，这个 ID 并不能证明变更一定由该命令造成。这些 ID 也不统计改动行数。
+
+## 导出会话的回合与模型请求
+
+需要排查请求失败或分析 token 用量时，可以将会话的回合、模型请求和重试记录导出为 JSON 文件。将 `<id>` 替换为你的会话 ID：
+
+```bash
+icode trajectory export --session <id> --format turns --out turns.json
+```
