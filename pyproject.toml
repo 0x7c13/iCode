@@ -31,7 +31,7 @@ dependencies = [
     "python-dotenv==1.2.3",
     "pyyaml==6.0.3",
     "charset-normalizer==3.5.1",
-    "mcp==1.28.1",
+    "mcp==1.30.0",
     # PyPI's Linux wheels need glibc 2.27 from 12.3.0 on, above the offline
     # binaries' 2.17 floor, so those bundle a 2.17 build of this version
     # (scripts/offline_wheel_overrides.txt). Bump the pin and that file together.

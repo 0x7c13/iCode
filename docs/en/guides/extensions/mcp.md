@@ -33,6 +33,8 @@ Next, complete the HTTP or STDIO settings according to the server's connection m
 4. If the current network requires this server to connect without using the system proxy, enable "Bypass proxy".
 5. Keeping TLS certificate verification enabled is recommended. To connect to a self-signed server you have confirmed is trustworthy, you can enable "Skip TLS verification". When enabled, iCode does not verify the HTTPS server certificate and cannot confirm that it is connecting to the intended server.
 
+HTTP redirects must keep the request method and stay on the same origin (scheme, host, and port); an HTTP-to-HTTPS upgrade on the same host using default ports is also allowed. For POST requests, this permits `307` and `308` redirects, such as adding a trailing slash. If a redirect changes the host or port, downgrades HTTPS to HTTP, or changes a POST into a GET, the connection fails. Configure the intended final server URL directly in that case.
+
 ### Connect over STDIO
 
 1. Set "Transport" to `STDIO`.

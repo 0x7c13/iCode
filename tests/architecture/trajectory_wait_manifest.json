@@ -4186,7 +4186,7 @@
     },
     "chrys.service.mcp._http_transport": {
       "_ChrysStreamableHTTPTransport._chrys_streamable_http_client._handle_post_request": [
-        ["async_context", "async with ctx.client.stream('POST', self.url, **stream_kwargs)", "unresolved"],
+        ["async_context", "async with stream_within_origin(ctx.client, 'POST', self.url, **stream_kwargs)", "unresolved"],
         ["awaitable", "await self._send_session_terminated_error(ctx.read_stream_writer, message.root.id)", "unresolved"],
         ["awaitable", "await self._handle_json_response(response, ctx.read_stream_writer, is_initialization)", "unresolved"],
         ["awaitable", "await self._handle_sse_response(response, ctx, is_initialization)", "unresolved"],
