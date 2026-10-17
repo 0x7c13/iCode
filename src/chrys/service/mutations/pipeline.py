@@ -29,6 +29,7 @@ from chrys.service.mutations.trace import (
 from chrys.service.mutations.types import (
     FileHashDiff,
     FileMutationTextSnapshot,
+    MutationOp,
     MutationProvenance,
     MutationSource,
     SnapshotSkipReason,
@@ -197,10 +198,15 @@ def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd
         scan_targets = [path for path in scan_targets if path in explicit_paths and not os.path.isdir(path)]
         scan = {path: entry for path, entry in scan.items() if path in scan_targets}
     tracker.pre_snapshot(list(dict.fromkeys([*explicit_paths, *scan])))
-    return {"scan": scan, "targets": scan_targets, "cwd": cwd}
+    # Same-size rewrites can leave mtime_ns untouched on filesystems with
+    # coarse timestamps, so a stat-only diff misses them. Keep bounded content
+    # probes for explicit file targets (never directories) to catch that case;
+    # the store's snapshot policy still withholds oversized content.
+    probes = {path: tracker.store.probe(path) for path in explicit_paths if not os.path.isdir(path)}
+    return {"scan": scan, "targets": scan_targets, "cwd": cwd, "probes": probes}
 
 
-def _track_shell_scan_after(before_info: dict) -> list[_ShellObservation]:
+def _track_shell_scan_after(before_info: dict, store) -> list[_ShellObservation]:
     """Collect targeted file changes after shell command execution."""
     from chrys.service.mutations.scanner import WorkspaceScanner
 
@@ -210,6 +216,19 @@ def _track_shell_scan_after(before_info: dict) -> list[_ShellObservation]:
     scanner = WorkspaceScanner(cwd)
     after_scan = scanner.scan_paths(target_paths)
     changes = WorkspaceScanner.diff(before_info["scan"], after_scan)
+
+    # A stat diff cannot see an in-place rewrite that keeps both size and
+    # mtime_ns (coarse-timestamp filesystems reuse the previous tick). Compare
+    # the bounded content probes taken before the command and turn those missed
+    # rewrites into MODIFY observations. Unreadable/skipped endpoints stay
+    # unclaimed, exactly like the stat path.
+    changed_paths = {path for path, _ in changes}
+    for path, before_probe in before_info.get("probes", {}).items():
+        if path in changed_paths or not before_probe.content_hash:
+            continue
+        after_probe = store.probe(path)
+        if after_probe.content_hash and after_probe.content_hash != before_probe.content_hash:
+            changes.append((path, MutationOp.MODIFY))
 
     return [_ShellObservation(path=path, operation=operation) for path, operation in changes]
 
@@ -611,7 +630,9 @@ async def finalize_mutation_tracking(
     observations: list[_ShellObservation] = []
     if ctx.shell_scan_before is not None:
         try:
-            observations = await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before)
+            observations = await loop.run_in_executor(
+                None, _track_shell_scan_after, ctx.shell_scan_before, tracker.store
+            )
         except OSError:
             logger.debug("Shell after-scan failed", exc_info=True)
             tracker.mark_detection_truncated()
