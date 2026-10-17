@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.git_calibrator import GitDiffCalibrator
     from chrys.service.mutations.tracker import MutationTracker
-    from chrys.service.mutations.types import FileMutation, MutationOp
+    from chrys.service.mutations.types import FileMutation
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +137,6 @@ def _track_file_mutation_before(
     tool_operation_id: str | None = None,
 ) -> FileMutation | None:
     """Snapshot file state before write_file/edit_file execution."""
-    import os
-
-    from chrys.service.mutations.types import MutationOp, MutationSource
-
     file_path = args.get("path", "")
     if not file_path:
         return None
@@ -174,7 +170,8 @@ def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd
 
     # Keep a directory alias's children attached to the directory observed
     # before execution. Unlinking/retargeting the alias does not delete them.
-    scan_targets = [os.path.realpath(path) if os.path.isdir(path) else path for path in target_paths]
+    directory_targets = {path for path in target_paths if os.path.isdir(path)}
+    scan_targets = [os.path.realpath(path) if path in directory_targets else path for path in target_paths]
     scanner = WorkspaceScanner(cwd)
     try:
         scan = scanner.scan_paths(scan_targets)
@@ -185,8 +182,9 @@ def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd
     # Explicit file/missing/link targets refresh the hash chain independently
     # of the child budget. save() validates their existence; directory links
     # need their own entry backup as well as their children's stable scan.
-    explicit_paths = dict.fromkeys(path for path in target_paths if os.path.islink(path) or not os.path.isdir(path))
-    children = {path: entry for path, entry in scan.items() if path not in explicit_paths}
+    probe_targets = dict.fromkeys(path for path in target_paths if path not in directory_targets)
+    pre_snapshot_targets = dict.fromkeys(path for path in target_paths if path in probe_targets or os.path.islink(path))
+    children = {path: entry for path, entry in scan.items() if path not in pre_snapshot_targets}
     if (
         len(children) > _MAX_SHELL_CHILD_SNAPSHOT_FILES
         or sum(entry.size for entry in children.values()) > _MAX_SHELL_CHILD_SNAPSHOT_BYTES
@@ -195,18 +193,20 @@ def _track_shell_scan_before(tracker: MutationTracker, args: dict, workspace_cwd
         # Drop directory observations at both endpoints; Git calibration can
         # still supply independently verified changes within its own limits.
         tracker.mark_detection_truncated()
-        scan_targets = [path for path in scan_targets if path in explicit_paths and not os.path.isdir(path)]
+        scan_targets = [path for path in scan_targets if path in probe_targets]
         scan = {path: entry for path, entry in scan.items() if path in scan_targets}
-    tracker.pre_snapshot(list(dict.fromkeys([*explicit_paths, *scan])))
+    tracker.pre_snapshot(list(dict.fromkeys([*pre_snapshot_targets, *scan])))
     # Same-size rewrites can leave mtime_ns untouched on filesystems with
     # coarse timestamps, so a stat-only diff misses them. Keep bounded content
     # probes for explicit file targets (never directories) to catch that case;
     # the store's snapshot policy still withholds oversized content.
-    probes = {path: tracker.store.probe(path) for path in explicit_paths if not os.path.isdir(path)}
+    probes = {path: tracker.store.probe(path) for path in probe_targets}
+    if any(probe.skip_reason is SnapshotSkipReason.UNREADABLE for probe in probes.values()):
+        tracker.mark_detection_truncated()
     return {"scan": scan, "targets": scan_targets, "cwd": cwd, "probes": probes}
 
 
-def _track_shell_scan_after(before_info: dict, store) -> list[_ShellObservation]:
+def _track_shell_scan_after(before_info: dict, tracker: MutationTracker) -> list[_ShellObservation]:
     """Collect targeted file changes after shell command execution."""
     from chrys.service.mutations.scanner import WorkspaceScanner
 
@@ -220,13 +220,15 @@ def _track_shell_scan_after(before_info: dict, store) -> list[_ShellObservation]
     # A stat diff cannot see an in-place rewrite that keeps both size and
     # mtime_ns (coarse-timestamp filesystems reuse the previous tick). Compare
     # the bounded content probes taken before the command and turn those missed
-    # rewrites into MODIFY observations. Unreadable/skipped endpoints stay
-    # unclaimed, exactly like the stat path.
+    # rewrites into MODIFY observations. Unreadable endpoints make detection
+    # incomplete; policy-skipped endpoints stay unclaimed without a warning.
     changed_paths = {path for path, _ in changes}
-    for path, before_probe in before_info.get("probes", {}).items():
+    for path, before_probe in before_info["probes"].items():
         if path in changed_paths or not before_probe.content_hash:
             continue
-        after_probe = store.probe(path)
+        after_probe = tracker.store.probe(path)
+        if after_probe.skip_reason is SnapshotSkipReason.UNREADABLE:
+            tracker.mark_detection_truncated()
         if after_probe.content_hash and after_probe.content_hash != before_probe.content_hash:
             changes.append((path, MutationOp.MODIFY))
 
@@ -630,9 +632,7 @@ async def finalize_mutation_tracking(
     observations: list[_ShellObservation] = []
     if ctx.shell_scan_before is not None:
         try:
-            observations = await loop.run_in_executor(
-                None, _track_shell_scan_after, ctx.shell_scan_before, tracker.store
-            )
+            observations = await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before, tracker)
         except OSError:
             logger.debug("Shell after-scan failed", exc_info=True)
             tracker.mark_detection_truncated()

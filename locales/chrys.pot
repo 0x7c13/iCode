@@ -10419,16 +10419,10 @@ msgstr ""
 msgid "tui.sidebar.background.exit"
 msgstr ""
 
-#. English: pid {pid}
-#. chrys-meta={"fingerprint":"3babd4d004f0ea774f982e8ac31390c174964f3b62ca3cf016fc35471eaa9631","multiline":false,"placeholders":["pid"]}
+#. English: running
+#. chrys-meta={"fingerprint":"30a70ec2e1543266fdf8c3d3507853a36b54e6a70feed23c5ae22fd78476fa4a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/background_tasks.py
-msgid "tui.sidebar.background.pid"
-msgstr ""
-
-#. English: pid {pid}, shell exit {code}
-#. chrys-meta={"fingerprint":"dcc87f20a73b484ac22955d703f6abc35821ddaf417ec3bd84bd9bf662457d8a","multiline":false,"placeholders":["code","pid"]}
-#: src/chrys/app/tui/widgets/sidebar/background_tasks.py
-msgid "tui.sidebar.background.shell_exited"
+msgid "tui.sidebar.background.running"
 msgstr ""
 
 #. English: stopped
