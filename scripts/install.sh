@@ -31,6 +31,7 @@ main() {
                 shift 2
                 ;;
             --version=*)
+                [ -n "${1#*=}" ] || fail "--version needs a value"
                 version="${1#*=}"
                 shift
                 ;;
@@ -40,6 +41,7 @@ main() {
                 shift 2
                 ;;
             --source=*)
+                [ -n "${1#*=}" ] || fail "--source needs a value"
                 source="${1#*=}"
                 shift
                 ;;

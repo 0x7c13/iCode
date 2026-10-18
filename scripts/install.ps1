@@ -23,6 +23,14 @@
         [string]$Source = $env:ICODE_SOURCE
     )
 
+    # An explicitly empty option is a command-line mistake, not "install the latest".
+    if ($PSBoundParameters.ContainsKey('Version') -and [string]::IsNullOrWhiteSpace($Version)) {
+        throw '-Version needs a value.'
+    }
+    if ($PSBoundParameters.ContainsKey('Source') -and [string]::IsNullOrWhiteSpace($Source)) {
+        throw '-Source needs a value.'
+    }
+
     $ErrorActionPreference = 'Stop'
     # Windows PowerShell draws its progress bar so slowly that it throttles the download.
     $ProgressPreference = 'SilentlyContinue'
