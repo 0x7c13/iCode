@@ -810,6 +810,8 @@ class AgentEngine:
 
     async def _on_session_delete(self, event: SessionDelete) -> None:
         """Handle session deletion; the active session is the one whose lock we hold, by its full or short id."""
+        if event.session_id is None:
+            raise ValueError("This session event requires a session ID.")
         if not self._session.guard.owns(event.session_id):
             await self._lifecycle.on_session_delete(event)
             return

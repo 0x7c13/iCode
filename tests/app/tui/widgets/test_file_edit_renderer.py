@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -80,17 +81,25 @@ def _rgb(color: str) -> tuple[int, int, int]:
     return (triplet.red, triplet.green, triplet.blue)
 
 
-async def _wait_for_inline_diff(pilot) -> InlineUnifiedDiffLines:
+async def _wait_for_inline_diff(pilot, tool: EditFileToolCall | WriteFileToolCall) -> InlineUnifiedDiffLines:
     def first_diff_ready() -> bool:
-        matches = list(pilot.app.query(InlineUnifiedDiffLines))
-        return bool(matches) and matches[0].is_mounted and matches[0].region.width > 0
+        matches = list(tool.query(InlineUnifiedDiffLines))
+        # Textual can lay out the child before the parent's awaited mount
+        # resumes and clears its pending state.
+        return (
+            not tool._diff_mounting
+            and not tool._diff_pending
+            and bool(matches)
+            and matches[0].is_mounted
+            and matches[0].region.width > 0
+        )
 
     await wait_for(
         first_diff_ready,
         pilot=pilot,
-        description="inline diff is mounted and laid out",
+        description="inline diff mount has completed and its child is laid out",
     )
-    return pilot.app.query_one(InlineUnifiedDiffLines)
+    return tool.query_one(InlineUnifiedDiffLines)
 
 
 class _WriteFileToolApp(App):
@@ -784,7 +793,7 @@ async def test_write_file_large_one_line_html_result_does_not_scan_full_snapshot
             file_snapshot=("", html),
         )
         assert header.actions_visible is True
-        diff = await _wait_for_inline_diff(pilot)
+        diff = await _wait_for_inline_diff(pilot, tool)
 
         assert tool.status == "complete"
         assert diff.code_after.endswith("...")
@@ -938,7 +947,7 @@ async def test_disk_backed_snapshot_mounts_when_group_is_expanded(
             assert not list(pilot.app.query(InlineUnifiedDiffLines))
             group.collapsed = False
 
-        await _wait_for_inline_diff(pilot)
+        await _wait_for_inline_diff(pilot, tool)
 
         assert tool._get_after_content() == "new\n"
         assert tool.has_class("-done")
@@ -946,6 +955,82 @@ async def test_disk_backed_snapshot_mounts_when_group_is_expanded(
         assert not tool.query_one("#ft-spinner").display
         assert not list(pilot.app.query(DiffView))
         assert len(list(pilot.app.query(InlineUnifiedDiffLines))) == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_diff_wait_does_not_finish_while_visible_child_is_still_mounting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.set_tool_kinds({"edit_file": KIND_FILESYSTEM_WRITE})
+        await panel.add_user_message("change file")
+        await panel.add_tool_start("file1", "edit_file", KIND_FILESYSTEM_WRITE, args={"path": "src/app.py"})
+        # A live sibling keeps the collapsed card mounted instead of pruning it.
+        await panel.add_tool_start("sibling", "plain_tool", "", args={})
+        group = panel.query_one(ToolGroup)
+        tool = group.query_one(EditFileToolCall)
+        group.collapsed = True
+        group.complete_tool("file1", "Edited src/app.py", 25, file_snapshot=("old\n", "new\n"))
+        # Deferring a live mount while collapsed marks the card done, which
+        # exposes its content when reopened. A fresh lazy card stays hidden
+        # until its first mount finishes and cannot reproduce this window.
+        await wait_for(
+            lambda: tool._diff_timer is None and tool._diff_pending and tool.has_class("-done"),
+            pilot=pilot,
+            description="collapsed live diff is deferred before reopening",
+        )
+        content = tool.query_one("#ft-content")
+        original_mount = content.mount
+        original_pause = pilot.pause
+        child_mounted = asyncio.Event()
+        release_mount = asyncio.Event()
+        waiter_polled = asyncio.Event()
+
+        async def hold_mounted_diff(widget: InlineUnifiedDiffLines) -> None:
+            await original_mount(widget)
+            child_mounted.set()
+            await release_mount.wait()
+
+        async def observe_waiter_pause(delay: float | None = None) -> None:
+            waiter_polled.set()
+            await original_pause(delay)
+
+        monkeypatch.setattr(content, "mount", hold_mounted_diff)
+        monkeypatch.setattr(pilot, "pause", observe_waiter_pause)
+        group.collapsed = False
+        worker = group._pending_content_worker
+        assert worker is not None
+        waiter: asyncio.Task[InlineUnifiedDiffLines] | None = None
+        try:
+            await wait_for(
+                lambda: child_mounted.is_set() or worker.is_finished,
+                description="inline diff child mounts before the parent resumes",
+            )
+            if worker.is_finished:
+                await worker.wait()
+            assert child_mounted.is_set()
+            diff = tool.query_one(InlineUnifiedDiffLines)
+            await wait_for(
+                lambda: diff.is_mounted and diff.region.width > 0,
+                description="held inline diff is visible",
+            )
+            assert tool._diff_mounting and tool._diff_pending
+
+            waiter = asyncio.create_task(_wait_for_inline_diff(pilot, tool))
+            await wait_for(
+                lambda: waiter_polled.is_set() or waiter.done(),
+                description="inline diff waiter observes the held mount",
+            )
+            assert not waiter.done()
+        finally:
+            release_mount.set()
+            await worker.wait()
+            if waiter is not None:
+                await waiter
+
+        assert not tool._diff_mounting
+        assert not tool._diff_pending
 
 
 @pytest.mark.asyncio
@@ -959,7 +1044,7 @@ async def test_deferred_live_diff_posts_absorb_after_visible_rows_are_prewarmed(
             file_snapshot=("old\n", "new\n"),
         )
 
-        await _wait_for_inline_diff(pilot)
+        await _wait_for_inline_diff(pilot, tool)
         await wait_for(
             lambda: app.gc_messages,
             pilot=pilot,
@@ -986,7 +1071,7 @@ async def test_write_file_preview_truncation_keeps_raw_snapshot_for_copy() -> No
             file_snapshot=("", raw_html),
         )
 
-        diff = await _wait_for_inline_diff(pilot)
+        diff = await _wait_for_inline_diff(pilot, tool)
         assert raw_html not in diff.code_after
         assert diff.code_after.endswith("...")
         assert tool._get_after_content() == raw_html
@@ -1004,7 +1089,7 @@ async def test_edit_file_inline_diff_is_height_capped() -> None:
 
         tool.set_complete("Edited src/app.py", 25, file_snapshot=(before, after))
 
-        diff = await _wait_for_inline_diff(pilot)
+        diff = await _wait_for_inline_diff(pilot, tool)
         assert diff.max_display_lines == _EDIT_FILE_INLINE_MAX_DISPLAY_LINES
 
         flat = pilot.app.query_one(UnifiedDiffLines)

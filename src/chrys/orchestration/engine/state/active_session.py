@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -173,7 +173,7 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self.session_end_fired = False
 
     @contextmanager
-    def saves_suppressed(self) -> Iterator[None]:
+    def saves_suppressed(self) -> Generator[None]:
         """Suppress saves within this scope, preserving an enclosing scope."""
         previous = self.suppress_save
         self.suppress_save = True

@@ -110,7 +110,7 @@ async def test_background_commands_show_in_their_own_half_below_the_todos() -> N
         assert _title(pilot.app) == "Background Tasks (1)"
         running, ended = _rows(pilot.app)
         assert running.startswith("● python -m http.server [bold]8000[/]")
-        assert running.endswith("pid 4242")
+        assert running.endswith("running")
         assert ended.startswith("✓ make build")
         assert ended.endswith("exit 0")
         assert _clear_shown(pilot.app)
@@ -128,15 +128,18 @@ async def test_background_commands_show_in_their_own_half_below_the_todos() -> N
 
 
 @pytest.mark.asyncio
-async def test_a_running_command_shows_its_time_and_pid_in_the_running_color() -> None:
-    async with _TasksApp().run_test(size=(60, 24)) as pilot:
-        pilot.app.query_one(TasksPanel).background_tasks = (_task("a"), _ended("b"))
+@pytest.mark.parametrize(("shell_exit_code", "outcome"), [(None, "running"), (0, "exit 0"), (3, "exit 3")])
+async def test_a_running_command_shows_its_time_and_outcome_in_the_running_color(shell_exit_code, outcome) -> None:
+    async with _TasksApp().run_test(size=(40, 24)) as pilot:
+        pilot.app.query_one(TasksPanel).background_tasks = (_task("a", shell_exit_code=shell_exit_code), _ended("b"))
         await wait_for(lambda: len(_rows(pilot.app)) == 2, pilot=pilot, description="two background rows")
 
-        icon, _command, duration, pid = _cells(pilot.app, 0)
-        assert (icon[0], pid[0]) == ("●", "pid 4242")
+        icon, _command, duration, status = _cells(pilot.app, 0)
+        assert (icon[0], status[0]) == ("●", outcome)
+        assert "pid" not in _rows(pilot.app)[0]
+        assert "shell" not in _rows(pilot.app)[0]
         assert icon[1].color is not None
-        assert duration[1].color == pid[1].color == icon[1].color
+        assert duration[1].color == status[1].color == icon[1].color
         # An ended one's are dimmed, as Textual paints dim: a faded color.
         _icon, command, ended_duration, exit_code = _cells(pilot.app, 1)
         assert exit_code[0] == "exit 0"

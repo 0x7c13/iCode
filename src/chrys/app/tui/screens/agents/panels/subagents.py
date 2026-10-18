@@ -562,8 +562,8 @@ class SubAgentsConfigPanel(VerticalScroll):
         refs, _max_concurrency_overrides = self._collect_agent_ref_snapshots()
         return refs
 
-    @on(SubAgentCard.Removed)
-    async def _on_remove(self, event: SubAgentCard.Removed) -> None:
+    @on(SubAgentCard.RemoveRequested)
+    async def _on_remove(self, event: SubAgentCard.RemoveRequested) -> None:
         if self._read_only:
             return
         self._config.agents, self._max_concurrency_overrides = self._collect_agent_ref_snapshots()

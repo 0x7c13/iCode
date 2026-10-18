@@ -614,7 +614,7 @@ class MCPConnectionCard(CollapsibleConfigCard):
         def control(self) -> MCPConnectionCard:
             return self.card
 
-    class Removed(CollapsibleConfigCard.Removed):
+    class Removed(CollapsibleConfigCard.RemoveRequested):
         """Posted when the user clicks delete; carries the card, which a later rebuild may re-index."""
 
         def __init__(self, card: MCPConnectionCard) -> None:

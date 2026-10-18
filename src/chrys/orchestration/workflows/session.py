@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Protocol
@@ -297,7 +297,7 @@ class WorkflowSessionOwner:
             raise RuntimeError("Session writes require the lifecycle lock")
 
     @asynccontextmanager
-    async def edit(self) -> AsyncIterator[bool]:
+    async def edit(self) -> AsyncGenerator[bool]:
         """Hold the lifecycle lock for settings/file operations; decline a closing owner.
 
         Settings methods below run inside this scope. Run checkpoints acquire

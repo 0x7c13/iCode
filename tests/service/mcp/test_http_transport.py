@@ -43,7 +43,7 @@ def _post_failure_transport(
     on_error: Callable[[BaseException], None] | None = None,
 ) -> Iterator[MagicMock]:
     """Patch the SDK transport so ``post_writer`` routes ``message`` through
-    ``_handle_post_request`` against an httpx client whose ``stream`` raises ``exc``.
+    ``_handle_post_request`` against an httpx client whose ``send`` raises ``exc``.
 
     Yields the mock client.  ``session_id`` stamps the transport session and
     starts the GET stream first (as a real post-initialize writer would);
@@ -55,11 +55,6 @@ def _post_failure_transport(
     from mcp.types import JSONRPCMessage
 
     client = MagicMock()
-
-    @contextlib.asynccontextmanager
-    async def fail_stream(*_args: object, **_kwargs: object) -> Any:
-        raise exc
-        yield
 
     async def post_writer(
         self: Any,
@@ -89,7 +84,7 @@ def _post_failure_transport(
         return None
 
     with (
-        patch.object(client, "stream", side_effect=fail_stream),
+        patch.object(client, "send", new=AsyncMock(side_effect=exc)),
         patch.object(StreamableHTTPTransport, "post_writer", new=post_writer),
         patch.object(StreamableHTTPTransport, "handle_get_stream", new=handle_get_stream),
     ):
@@ -270,8 +265,8 @@ def test_url_origin_compares_scheme_host_and_effective_port() -> None:
     assert _url_origin(URL("http://h.example/a")) != _url_origin(URL("http://other.example/a"))
 
 
-async def test_built_client_strips_static_headers_from_cross_origin_redirect() -> None:
-    """The client ``_build_httpx_client`` makes follows redirects; its header hook keeps secrets same-origin."""
+async def test_built_client_strips_static_headers_when_redirects_are_explicitly_enabled() -> None:
+    """The header hook still scopes secrets when a caller explicitly enables redirects."""
     import httpx
 
     transport, seen = _redirecting_transport()
@@ -290,7 +285,7 @@ async def test_built_client_strips_static_headers_from_cross_origin_redirect() -
     client = tool._owned_httpx_client
     assert client is not None
     try:
-        response = await client.get("https://origin.test/mcp")
+        response = await client.get("https://origin.test/mcp", follow_redirects=True)
     finally:
         await tool._close_owned_httpx_client()
 
@@ -405,7 +400,7 @@ class TestHTTPMCPToolTransport:
 
         ctor.assert_called_once()
         assert ctor.call_args.kwargs["verify"] is False
-        assert ctor.call_args.kwargs["follow_redirects"] is True
+        assert ctor.call_args.kwargs["follow_redirects"] is False
         assert tool._httpx_client is client
         assert tool._owned_httpx_client is client
 

@@ -294,7 +294,7 @@ def _print_models(rows: list[_ModelRow]) -> None:
             Text(profile.id or "-"),
             Text(profile.name),
             Text(profile.provider or "-"),
-            Text(_format_api_style(profile.api_style) if profile.api_style else "-"),
+            Text(_format_api_style(profile.api_style)),
             Text(profile.model_id or "-"),
             Text(_format_context(profile.max_context_tokens)),
             Text(row.flags),

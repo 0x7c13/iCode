@@ -200,6 +200,18 @@ def test_streamable_http_private_post_hook_contract() -> None:
     """
     import mcp.client.streamable_http as streamable_http
     from mcp.client.streamable_http import RequestContext, StreamableHTTPTransport
+    from mcp.shared._httpx_utils import stream_within_origin
+
+    _assert_keyword_call_shape(
+        stream_within_origin,
+        required_keywords={"client", "method", "url"},
+        call_label="mcp.shared._httpx_utils.stream_within_origin",
+    )
+    _assert_keyword_call_shape(
+        streamable_http._raise_for_unfollowed_redirect,
+        required_keywords={"response"},
+        call_label="mcp.client.streamable_http._raise_for_unfollowed_redirect",
+    )
 
     hook = getattr(StreamableHTTPTransport, "_handle_post_request", None)
     assert hook is not None, "MCP SDK removed StreamableHTTPTransport._handle_post_request"

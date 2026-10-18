@@ -725,6 +725,8 @@ class SessionHandler:
     # -------------------------------------------------------------- #
 
     async def on_session_restored(self, event: SessionRestored) -> None:
+        if event.session_id is None:
+            raise ValueError("This session event requires a session ID.")
         s = self
         ui = self._ui()
 
@@ -824,7 +826,7 @@ class SessionHandler:
         self._callbacks.post_gc_message(GcReclaimRequested(GcReclaimReason.SESSION_RESTORED, prompt=True))
 
     async def on_session_saved(self, event: SessionSaved) -> None:
-        self.debug("SessionSaved", session_short_id(event.session_id))
+        self.debug("SessionSaved", session_short_id(event.session_id or ""))
 
     async def _restore_session_title_state(self, session_id: str, *, prefer_recovery: bool = False) -> None:
         """Reload title overlays from the session meta into the UI.

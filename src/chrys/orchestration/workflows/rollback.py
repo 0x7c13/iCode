@@ -38,6 +38,8 @@ async def rollback_files(
     owner: WorkflowSessionOwner, request: WorkflowRollbackRequest, *, settings: Settings
 ) -> WorkflowRollbackResult:
     """Reload and recheck the plan on both preview and commit; keep Run history intact."""
+    if request.session_id is None:
+        raise ValueError("Select a workflow session.")
     state = owner.require_state()
     directory, workspace = owner.require_session_dir(), owner.require_workspace()
     if state.mutations is None:

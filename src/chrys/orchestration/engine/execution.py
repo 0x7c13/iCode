@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -749,7 +749,7 @@ class ExecutionLease:
         return True
 
     @contextlib.contextmanager
-    def session_operation(self) -> Iterator[None]:
+    def session_operation(self) -> Generator[None]:
         """Hold the lease against workflow admission for one session-family operation, its awaits included."""
         self.session_operations += 1
         try:

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import create_autospec
@@ -28,6 +29,7 @@ async def judge_client(
     auto_review: str = "formal",
     timeout: float = 5,
 ) -> AsyncIterator[tuple[ApprovalJudge, list[httpx.Request]]]:
+    """Build a warmed OpenAI Chat Completions judge over mocked HTTP."""
     calls: list[httpx.Request] = []
     http_clients: list[httpx.AsyncClient] = []
 
@@ -62,6 +64,8 @@ async def judge_client(
         ModelProfile(
             id="core-test",
             name="Core test",
+            provider="openai",
+            api_style="chat_completions",
             model_id="test",
             base_url="https://provider.test/v1",
             api_key="synthetic-key",
@@ -72,6 +76,12 @@ async def judge_client(
         auto_review=auto_review,
     )
     try:
+        # These scenarios budget review work, not SDK cold-start imports. The
+        # resource tree is lazy even after the client factory has returned;
+        # materialize it without sending a request or consuming a scripted reply.
+        client = await judge._get_client()
+        sdk = client.inner.inner.sdk_client
+        await asyncio.to_thread(lambda: sdk.chat.completions.with_raw_response)
         yield judge, calls
     finally:
         await judge.aclose()

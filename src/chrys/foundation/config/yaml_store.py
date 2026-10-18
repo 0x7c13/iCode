@@ -26,7 +26,7 @@ import contextlib
 import logging
 import os
 import stat
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -79,7 +79,7 @@ def lock_path_for(path: Path) -> Path:
 
 
 @contextlib.contextmanager
-def _read_guard(path: Path, timeout: float) -> Iterator[None]:
+def _read_guard(path: Path, timeout: float) -> Generator[None]:
     """Hold the document's lock for a read, or read without it.
 
     Reads take the lock as a courtesy to writers, not because the reader needs

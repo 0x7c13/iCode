@@ -34,26 +34,31 @@ class DebugLogRuntime:
     file_handler: RotatingFileHandler
 
 
+def _require_record_queue(queue: object) -> Queue[logging.LogRecord | None]:
+    if not isinstance(queue, Queue):
+        raise TypeError("Bounded debug logging requires a queue.Queue.")
+    return queue
+
+
 class _BoundedDebugLogHandler(QueueHandler):
     """Queue log records without allowing debug logging to grow memory unboundedly."""
 
-    queue: Queue[logging.LogRecord | None]
-
     def enqueue(self, record: logging.LogRecord) -> None:
+        queue = _require_record_queue(self.queue)
         try:
-            self.queue.put_nowait(record)
+            queue.put_nowait(record)
             return
         except Full:
             pass
 
         with contextlib.suppress(Empty):
-            dropped = self.queue.get_nowait()
-            self.queue.task_done()
+            dropped = queue.get_nowait()
+            queue.task_done()
             if dropped is None:
-                _enqueue_debug_log_sentinel(self.queue, dropped)
+                _enqueue_debug_log_sentinel(queue, dropped)
                 return
         with contextlib.suppress(Full):
-            self.queue.put_nowait(record)
+            queue.put_nowait(record)
 
 
 if TYPE_CHECKING:
@@ -68,7 +73,6 @@ else:
 class _BoundedDebugLogListener(_QueueListenerBase):
     """Queue listener that can always enqueue its shutdown sentinel."""
 
-    queue: Queue[logging.LogRecord | None]
     _stop_deadline: float | None = None
 
     def stop(self) -> None:
@@ -85,16 +89,17 @@ class _BoundedDebugLogListener(_QueueListenerBase):
         super().handle(record)
 
     def enqueue_sentinel(self) -> None:
+        queue = _require_record_queue(self.queue)
         while True:
             try:
-                self.queue.put_nowait(self._sentinel)
+                queue.put_nowait(self._sentinel)
                 return
             except Full:
                 with contextlib.suppress(Empty):
-                    dropped = self.queue.get_nowait()
-                    self.queue.task_done()
+                    dropped = queue.get_nowait()
+                    queue.task_done()
                     if dropped is self._sentinel:
-                        _enqueue_debug_log_sentinel(self.queue, dropped)
+                        _enqueue_debug_log_sentinel(queue, dropped)
                         return
 
 

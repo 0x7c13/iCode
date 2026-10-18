@@ -38,8 +38,7 @@ _TITLE_RUNNING = msg(
 )
 _EMPTY = msg("tui.sidebar.background.empty", fallback="No background tasks")
 _CLEAR_ENDED = msg("tui.sidebar.background.clear_ended", fallback="Clear ended")
-_PID = msg("tui.sidebar.background.pid", fallback="pid {pid}")
-_SHELL_EXITED = msg("tui.sidebar.background.shell_exited", fallback="pid {pid}, shell exit {code}")
+_RUNNING = msg("tui.sidebar.background.running", fallback="running")
 _STOPPING = msg("tui.sidebar.background.stopping", fallback="stopping")
 _EXIT = msg("tui.sidebar.background.exit", fallback="exit {code}")
 _STOPPED = msg("tui.sidebar.background.stopped", fallback="stopped")
@@ -67,15 +66,14 @@ def task_icon(task: BackgroundTaskView, *, running_style: Style) -> Text:
 
 
 def task_outcome(task: BackgroundTaskView) -> MessageRef:
-    """What is left to say of *task* beside its state: its pid while it runs, its exit code once it ended."""
+    """The compact exit code or status shown beside the task's duration."""
     state = task_state(task)
-    pid = str(task.pids[0]) if task.pids else "?"
     if state == "running":
         if task.stopped_by is not None:
             return _STOPPING.bind()
         if task.shell_exit_code is not None:
-            return _SHELL_EXITED.bind(pid=pid, code=str(task.shell_exit_code))
-        return _PID.bind(pid=pid)
+            return _EXIT.bind(code=str(task.shell_exit_code))
+        return _RUNNING.bind()
     if state in ("success", "failure"):
         return _EXIT.bind(code=str(task.exit_code))
     return _STOPPED.bind() if state == "stopped" else _ENDED.bind()

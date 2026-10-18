@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import HorizontalGroup, Vertical, VerticalGroup, VerticalScroll
 from textual.message import Message
 from textual.theme import Theme
@@ -49,7 +49,7 @@ from .palette import (
 class ResettableThemeEditor(Widget):
     """Sidebar controller; one confirmed dialog is one history entry."""
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+z", "undo", show=False),
         Binding("ctrl+y", "redo", show=False),
     ]

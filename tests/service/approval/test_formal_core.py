@@ -299,7 +299,7 @@ async def test_stages_and_repairs_share_one_deadline(monkeypatch, end, repair):
 
 @pytest.mark.parametrize("route", ["predicate", "reasoning", "direct"])
 async def test_postprocessing_cannot_approve_after_formal_deadline(monkeypatch, tmp_path, route):
-    clock = [asyncio.get_running_loop().time()]
+    clock = [0.0]
     fake_time = ModuleType("time")
     fake_time.monotonic = lambda: clock[0]
     monkeypatch.setattr(formal_module, "time", fake_time)
@@ -316,6 +316,8 @@ async def test_postprocessing_cannot_approve_after_formal_deadline(monkeypatch, 
     if route != "predicate":
         replies.append('{"approved":true,"reason":"reviewed"}')
     async with _judge(monkeypatch, replies, auto_review="direct" if route == "direct" else "formal") as (judge, calls):
+        # Align the fake review clock with timeout_at only after cold setup.
+        clock[0] = asyncio.get_running_loop().time()
         verdict = await judge.evaluate("Inspect", "read_file", "", {}, [], request_id="deadline", log_dir=tmp_path)
         assert verdict.approved is (route == "direct")
         assert verdict.failure_reason == (None if route == "direct" else "timeout")

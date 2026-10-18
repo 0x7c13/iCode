@@ -121,6 +121,8 @@ def build_raw_http_event_hooks(
             response_record["body"] = _body_to_record(response.content)
             await _append_response_record(log_path, profile, response_session_id, exchange_id, response_record)
             return
+        if not isinstance(response.stream, httpx.AsyncByteStream):
+            raise TypeError("Raw HTTP logging requires an async response stream.")
         response.stream = _RawLogAsyncByteStream(
             stream=response.stream,
             log_path=log_path,

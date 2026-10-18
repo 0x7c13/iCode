@@ -33,8 +33,8 @@ class _ConfigCardApp(App):
     def compose(self) -> ComposeResult:
         yield _ProbeCard(index=7)
 
-    @on(ConfigCard.Removed)
-    def _on_removed(self, event: ConfigCard.Removed) -> None:
+    @on(ConfigCard.RemoveRequested)
+    def _on_removed(self, event: ConfigCard.RemoveRequested) -> None:
         self.removed_indexes.append(event.index)
 
     @on(Button.Pressed)
@@ -109,8 +109,8 @@ class _CollapsibleCardApp(App):
     def compose(self) -> ComposeResult:
         yield _ProbeCollapsibleCard(index=3, collapsed=self._collapsed, read_only=self._read_only)
 
-    @on(ConfigCard.Removed)
-    def _on_removed(self, event: ConfigCard.Removed) -> None:
+    @on(ConfigCard.RemoveRequested)
+    def _on_removed(self, event: ConfigCard.RemoveRequested) -> None:
         self.removed_indexes.append(event.index)
 
 

@@ -55,15 +55,12 @@ class PathEntryCard(ConfigCard):
         workspace_cwd: str | None = None,
         read_only: bool = False,
     ) -> None:
+        self._delete_button_prefix = f"{self._style_prefix}-delete-btn"
         self._path = path
         self._index = index
         self._workspace_cwd = workspace_cwd
         self._is_relative = self._infer_relative(path) if self._supports_file_path_mode else True
         super().__init__(index=index, read_only=read_only)
-
-    @property
-    def _delete_button_prefix(self) -> str:
-        return f"{self._style_prefix}-delete-btn"
 
     @property
     def _path_input_id(self) -> str:

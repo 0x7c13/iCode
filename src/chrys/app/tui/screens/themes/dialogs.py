@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, ClassVar
 from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.color import Color
 from textual.containers import VerticalGroup, VerticalScroll
 from textual.geometry import Region
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 class _PickerModal(_DismissableModal):
     """One dialog owns one document/field/transaction identity through dismissal."""
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", show=False),
         Binding("ctrl+enter", "accept", show=False),
         Binding("ctrl+z", "cancel_and_undo", show=False, priority=True),

@@ -22,7 +22,7 @@ import errno
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import IO, Any, Final
@@ -648,7 +648,7 @@ class TurnProgress:
         self._writer.line(("• ", _ACCENT), f"Restoring session {_scalar(selector, 80)}…")
 
     @contextlib.asynccontextmanager
-    async def observe_restore(self, bus: EventBus) -> AsyncIterator[None]:
+    async def observe_restore(self, bus: EventBus) -> AsyncGenerator[None]:
         """Show MCP connections and warnings while a restore runs before the turn's own event stream."""
 
         async def on_progress(event: AgentLoadProgress) -> None:

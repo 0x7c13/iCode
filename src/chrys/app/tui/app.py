@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual import __version__ as TEXTUAL_VERSION
 from textual import events as textual_events
+from textual._path import CSSPathType
 from textual.app import App, ScreenStackError
 from textual.await_remove import AwaitRemove
 from textual.css.stylesheet import Stylesheet, StylesheetError
@@ -250,7 +251,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     """Textual application for Chrys."""
 
     TITLE = format_app_version_title(__version__)
-    CSS_PATH: ClassVar[list[str]] = ["chrys.tcss", "screens/themes/editor.tcss"]
+    CSS_PATH: ClassVar[CSSPathType | None] = ["chrys.tcss", "screens/themes/editor.tcss"]
     COMMAND_PALETTE_BINDING = "ctrl+q"
     BINDINGS: ClassVar[list] = [
         # Application fallbacks cover selectable screens and stock Textual

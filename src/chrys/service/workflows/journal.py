@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from typing import Any, Final
 
 from chrys.foundation.events.bus import EventBus
@@ -312,7 +312,7 @@ class WorkflowJournal:
             return seq
 
     @contextlib.asynccontextmanager
-    async def _held(self) -> AsyncIterator[None]:
+    async def _held(self) -> AsyncGenerator[None]:
         """The lock, with the task holding it on record for :meth:`holds`."""
         async with self._lock:
             self._holder = asyncio.current_task()

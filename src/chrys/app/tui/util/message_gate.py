@@ -9,18 +9,17 @@ clicks meanwhile then moves its selection while its content stays put.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from textual.message import Message
     from textual.message_pump import MessagePump
 
 
 @contextmanager
-def messages_disabled(message_type: type[Message], *pumps: MessagePump) -> Iterator[None]:
+def messages_disabled(message_type: type[Message], *pumps: MessagePump) -> Generator[None]:
     """Drop *message_type* posted to *pumps* until the block ends, including while it awaits.
 
     Messages that other widgets post are unaffected. Blocks on one widget must not overlap: the first

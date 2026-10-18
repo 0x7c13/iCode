@@ -60,7 +60,7 @@ class ConfigCard(Vertical):
 
     _delete_button_prefix: str = ""
 
-    class Removed(Message):
+    class RemoveRequested(Message):
         """Posted when the user clicks delete."""
 
         def __init__(self, index: int) -> None:
@@ -95,7 +95,7 @@ class ConfigCard(Vertical):
 
     def _removed_message(self) -> Message:
         """Build the remove message for this card."""
-        return self.Removed(self._index)
+        return self.RemoveRequested(self._index)
 
     @on(Button.Pressed)
     def _on_config_card_button_pressed(self, event: Button.Pressed) -> None:

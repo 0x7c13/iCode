@@ -57,6 +57,8 @@ class Event:
 
     event_id: str = field(default_factory=lambda: uuid4().hex[:12])
     timestamp: datetime = field(default_factory=lambda: datetime.now(tz=UTC))
+    # Subclasses keep this writable envelope type; session-specific handlers
+    # validate a required ID before changing state.
     session_id: str | None = None
 
 
@@ -1172,7 +1174,7 @@ class SessionNew(Event):
 class SessionRestore(Event):
     """User requests to restore a saved session."""
 
-    session_id: str = ""
+    session_id: str | None = ""
     primary_cwd: str = ""
     profile_name: str = ""
     # Rollback restores have already swapped session.json and must ignore/delete
@@ -1190,7 +1192,7 @@ class SessionRestore(Event):
 class SessionDelete(Event):
     """User requests to delete a saved session."""
 
-    session_id: str = ""
+    session_id: str | None = ""
 
 
 @dataclass
@@ -1205,14 +1207,14 @@ class SessionClear(Event):
     engine's active session.
     """
 
-    session_id: str = ""
+    session_id: str | None = ""
 
 
 @dataclass
 class SessionRestored(Event):
     """A session has been successfully restored (backend → frontend)."""
 
-    session_id: str = ""
+    session_id: str | None = ""
     agent_profile: str = ""
     display_name: str = ""
     # Profile shown by the oldest restored messages. This avoids a frontend
@@ -1232,7 +1234,7 @@ class SessionRestored(Event):
 class SessionSaved(Event):
     """A session has been auto-saved (backend → frontend, triggers history refresh)."""
 
-    session_id: str = ""
+    session_id: str | None = ""
 
 
 @dataclass
@@ -1260,14 +1262,14 @@ class SessionTitleUpdated(Event):
 class SessionFork(Event):
     """User requests to fork the current session."""
 
-    session_id: str = ""
+    session_id: str | None = ""
 
 
 @dataclass
 class SessionForked(Event):
     """A session has been forked (backend → frontend)."""
 
-    session_id: str = ""
+    session_id: str | None = ""
     parent_session_id: str = ""
     new_session_id: str = ""
 
@@ -1282,7 +1284,7 @@ class RollbackResult(Event):
     from ``rolled_back_user_text`` after the rollback UI refresh.
     """
 
-    session_id: str = ""
+    session_id: str | None = ""
     target_turn: int = 0
     """Number of turns kept after the rollback (0 = session start)."""
 
@@ -1333,7 +1335,7 @@ class RollbackResult(Event):
 class SessionDeleted(Event):
     """A session has been deleted (backend → frontend)."""
 
-    session_id: str = ""
+    session_id: str | None = ""
 
 
 @dataclass
@@ -1442,7 +1444,7 @@ class WorkflowRunRequest(Event):
 class WorkflowModelChangeRequest(Event):
     """Change one idle Workflow session's default model without changing global or Chat settings."""
 
-    session_id: str
+    session_id: str | None
     profile_id: str
     request_id: str
 
@@ -1465,7 +1467,7 @@ class WorkflowRollbackRequest(Event):
     Run records are never deleted or converted into retryable executions.
     """
 
-    session_id: str
+    session_id: str | None
     run_id: str
     request_id: str
     token: str = ""
