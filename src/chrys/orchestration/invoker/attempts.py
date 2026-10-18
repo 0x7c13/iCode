@@ -40,7 +40,7 @@ from chrys.service.agent_middleware.response_validation import (
 from chrys.service.context.providers.history import PRE_OUTPUT_HISTORY_LEN_STATE_KEY
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 
     from chrys.foundation.trajectory.context import TrajectoryContext
     from chrys.kernel import Agent, AgentResponse, AgentResponseUpdate, AgentSession, Message, ResponseStream
@@ -420,7 +420,7 @@ class ModelRunTrace:
         self._trajectory_retry_run_id = None
 
     @contextlib.asynccontextmanager
-    async def run(self, run_kwargs: AgentRunKwargs, *, stream: bool) -> AsyncIterator[None]:
+    async def run(self, run_kwargs: AgentRunKwargs, *, stream: bool) -> AsyncGenerator[None]:
         """Bind one ``model.run`` operation around one ``agent.run`` attempt.
 
         The narrowed context rides two ways: ambiently (for tool middleware

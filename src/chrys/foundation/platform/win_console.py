@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import Any
 
 from chrys.foundation.platform.c_api import declare_functions
@@ -105,7 +105,7 @@ def _set_console_mode(handle_id: int, mode: int) -> None:
 
 
 @contextlib.contextmanager
-def preserve_console_mode() -> Iterator[None]:
+def preserve_console_mode() -> Generator[None]:
     """Snapshot and restore Windows console mode around a block.
 
     Wrap any subprocess that may spawn a Windows console TUI (shell tool,

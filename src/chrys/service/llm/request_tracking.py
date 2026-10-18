@@ -21,7 +21,7 @@ from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
 from chrys.service.llm.provider_request_ids import read_provider_request_id
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Generator
 
     import httpx
 
@@ -43,7 +43,7 @@ class RequestTracking:
     provider_request_id: str | None = None
 
     @contextmanager
-    def scope(self) -> Iterator[None]:
+    def scope(self) -> Generator[None]:
         token = _CURRENT.set(self)
         try:
             yield

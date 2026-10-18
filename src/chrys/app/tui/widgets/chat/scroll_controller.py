@@ -200,14 +200,14 @@ class ChatScrollController:
             return
         self.final_response_started = True
         self.auto_scroll_paused_by_user = False
-        if self._host.is_anchored():
+        if self._host.is_anchored:
             self._host.set_anchor_released(False)
         self.schedule_anchor_sync()
 
     def on_status_message_mounted(self) -> None:
         """Force a mounted status message to the bottom."""
         self.auto_scroll_paused_by_user = False
-        if self._host.is_anchored():
+        if self._host.is_anchored:
             self._host.set_anchor_released(False)
         self._host.scroll_end(animate=False)
 
@@ -237,7 +237,7 @@ class ChatScrollController:
     def check_anchor(self) -> None:
         """Re-engage bottom-follow only at exact bottom."""
         if (
-            self._host.is_anchored()
+            self._host.is_anchored
             and self._host.is_anchor_released()
             and self._host.scroll_y >= self._host.max_scroll_y
         ):
@@ -246,7 +246,7 @@ class ChatScrollController:
 
     def arrange(self, size: Size, *, optimal: bool = False) -> DockArrangeResult:
         """Defuse Textual anchor pins while chat layout is settling."""
-        if self._host.is_anchored() and not self._host.is_anchor_released():
+        if self._host.is_anchored and not self._host.is_anchor_released():
             new_container_h = size.height + self._host.scrollbar_size_horizontal
             container_size = self._host.get_container_size()
             if container_size.height != new_container_h:
@@ -255,13 +255,13 @@ class ChatScrollController:
         self._host.place_fixed_scroll_button(result, size)
         virtual_h = result.spatial_map.total_region.bottom
         if virtual_h < size.height and self._host.scroll_y < 0:
-            if self._host.is_anchored() and not self._host.is_anchor_released():
+            if self._host.is_anchored and not self._host.is_anchor_released():
                 self._host.set_anchor_released(True)
             self._host.set_scroll_y_reactive(0.0)
             self._host.set_scroll_target_y_reactive(0.0)
         elif (
             virtual_h < self._host.virtual_size.height
-            and self._host.is_anchored()
+            and self._host.is_anchored
             and not self._host.is_anchor_released()
         ):
             self._host.set_anchor_released(True)
@@ -295,7 +295,7 @@ class ChatScrollController:
         hold ends, the child picked last applies the final shift.
         """
         host = self._host
-        if not (host.is_anchored() and host.is_anchor_released()):
+        if not (host.is_anchored and host.is_anchor_released()):
             self._view_hold_child = None
             self._view_hold_arrangement = result if self.view_hold_active else None
             return
@@ -338,7 +338,7 @@ class ChatScrollController:
 
     def reanchor_after_settle(self) -> None:
         """Re-engage the anchor and pin to settled ``max_scroll_y``."""
-        if not self._host.is_anchored():
+        if not self._host.is_anchored:
             return
         self._host.set_anchor_released(False)
         new_y = self._host.max_scroll_y
@@ -358,7 +358,7 @@ class ChatScrollController:
     def jump_to_bottom(self) -> None:
         """Scroll to the current bottom and resume bottom-follow."""
         self.auto_scroll_paused_by_user = False
-        if self._host.is_anchored():
+        if self._host.is_anchored:
             self._host.set_anchor_released(False)
         self.set_scroll_y_programmatically(self._host.max_scroll_y)
         self.schedule_anchor_sync()
@@ -371,7 +371,7 @@ class ChatScrollController:
     def size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
         """Hold one anchored shrink frame before validator clamping."""
         if (
-            self._host.is_anchored()
+            self._host.is_anchored
             and 0 < virtual_size.height < self._host.virtual_size.height
             and self.held_shrink_height != virtual_size.height
         ):
@@ -400,12 +400,12 @@ class ChatScrollController:
         old_line = round(old_value)
         new_line = round(new_value)
         self._host.call_super_watch_scroll_y(old_value, new_value)
-        if self._host.is_anchored() and not self._host.is_anchor_released() and new_value >= self._host.max_scroll_y:
+        if self._host.is_anchored and not self._host.is_anchor_released() and new_value >= self._host.max_scroll_y:
             self.auto_scroll_paused_by_user = False
         if (
             self.agent_running
             and not self.programmatic_scroll
-            and self._host.is_anchored()
+            and self._host.is_anchored
             and self._host.is_anchor_released()
             and new_line < old_line
         ):
@@ -500,7 +500,7 @@ class ChatScrollController:
     def schedule_anchor_sync(self) -> None:
         """Sync scroll position to the bottom after the next refresh."""
         if (
-            self._host.is_anchored()
+            self._host.is_anchored
             and not self._host.is_anchor_released()
             and not self.auto_scroll_paused_by_user
             and not self.anchor_sync_scheduled
@@ -511,9 +511,7 @@ class ChatScrollController:
     def sync_anchor_bottom(self) -> None:
         """Push ``scroll_y`` to the current ``max_scroll_y`` via setter."""
         self.anchor_sync_scheduled = False
-        if not (
-            self._host.is_anchored() and not self._host.is_anchor_released() and not self.auto_scroll_paused_by_user
-        ):
+        if not (self._host.is_anchored and not self._host.is_anchor_released() and not self.auto_scroll_paused_by_user):
             self.sync_scroll_to_bottom_button()
             return
         new_y = self._host.max_scroll_y
@@ -528,14 +526,14 @@ class ChatScrollController:
         if (
             self.agent_running
             and new_h > old_h
-            and self._host.is_anchored()
+            and self._host.is_anchored
             and self._host.is_anchor_released()
             and not self.auto_scroll_paused_by_user
         ):
             max_y = max(0, new_h - self._host.size.height)
             if max_y > self._host.scroll_y + 2:
                 self._host.set_anchor_released(False)
-        if new_h > old_h and self._host.is_anchored() and not self._host.is_anchor_released():
+        if new_h > old_h and self._host.is_anchored and not self._host.is_anchor_released():
             new_y = self._host.max_scroll_y
             if self._host.scroll_y != new_y:
                 self.set_scroll_y_programmatically(new_y)

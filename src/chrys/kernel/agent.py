@@ -933,7 +933,7 @@ class Agent(AgentTelemetryLayer, _AgentCore):
         self,
         messages: AgentRunInputs | None = None,
         *,
-        stream: bool,
+        stream: bool = False,
         session: AgentSession | None = None,
         middleware: ChatMiddleware | FunctionMiddleware | Sequence[ChatMiddleware | FunctionMiddleware] | None = None,
         tools: ToolTypes | Callable[..., Any] | Sequence[ToolTypes | Callable[..., Any]] | None = None,

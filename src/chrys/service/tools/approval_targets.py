@@ -11,7 +11,7 @@ approval (or a remembered grant) never covers a different place.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -66,7 +66,7 @@ def file_write_target(path: str, *, base_cwd: str | None = None) -> FileWriteTar
 
 
 @contextmanager
-def approved_targets(targets: ApprovedTargets | None) -> Iterator[None]:
+def approved_targets(targets: ApprovedTargets | None) -> Generator[None]:
     """Scope the confirmed targets to one tool call, including its worker threads."""
     token = _approved.set(targets)
     try:

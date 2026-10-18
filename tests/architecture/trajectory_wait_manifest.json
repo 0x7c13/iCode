@@ -1512,7 +1512,7 @@
       "SessionLifecycle.on_session_fork": [
         ["timeout", "await asyncio.wait_for(self._permits.wait_for_agent_load_idle(), timeout=_SESSION_FORK_AGENT_LOAD_TIMEOUT_SECONDS)", "unresolved"],
         ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while the agent is still loading.', session_id=event.session_id or self._session.session_id or '', display_message=_FORK_AGENT_LOADING.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
-        ["wrapper", "await self._publish_session_fork_error('session_fork_not_ready', 'Cannot fork before a session is ready.', session_id=active_session_id or event.session_id, display_message=_FORK_NOT_READY.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
+        ["wrapper", "await self._publish_session_fork_error('session_fork_not_ready', 'Cannot fork before a session is ready.', session_id=active_session_id or event.session_id or '', display_message=_FORK_NOT_READY.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
         ["wrapper", "await self._publish_session_fork_error('session_fork_stale', 'Cannot fork because the active session changed.', session_id=event.session_id or active_session_id, display_message=_FORK_SESSION_CHANGED.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
         ["wrapper", "await self._publish_session_fork_error('session_fork_busy', 'Cannot fork while a turn is running.', session_id=active_session_id, display_message=_FORK_TURN_ACTIVE.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
         ["wrapper", "await self._publish_session_fork_error('session_fork_failed', 'State store not configured.', session_id=active_session_id, display_message=_FORK_STATE_STORE_MISSING.bind())", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._publish_session_fork_error"],
@@ -4186,7 +4186,7 @@
     },
     "chrys.service.mcp._http_transport": {
       "_ChrysStreamableHTTPTransport._chrys_streamable_http_client._handle_post_request": [
-        ["async_context", "async with ctx.client.stream('POST', self.url, **stream_kwargs)", "unresolved"],
+        ["async_context", "async with stream_within_origin(ctx.client, 'POST', self.url, **stream_kwargs)", "unresolved"],
         ["awaitable", "await self._send_session_terminated_error(ctx.read_stream_writer, message.root.id)", "unresolved"],
         ["awaitable", "await self._handle_json_response(response, ctx.read_stream_writer, is_initialization)", "unresolved"],
         ["awaitable", "await self._handle_sse_response(response, ctx, is_initialization)", "unresolved"],
@@ -4515,7 +4515,7 @@
       "finalize_mutation_tracking": [
         ["thread_pool", "await loop.run_in_executor(None, tracker.record_after, ctx.file_mutation)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _read_file_snapshot, tracker, ctx.file_mutation)", "unresolved"],
-        ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before, tracker.store)", "unresolved"],
+        ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_after, ctx.shell_scan_before, tracker)", "unresolved"],
         ["wrapper", "await _track_git_calibrate_after(ctx.git_calibrator, same_call_paths)", "unresolved", "chrys.service.mutations.pipeline._track_git_calibrate_after"],
         ["thread_pool", "await loop.run_in_executor(None, _record_shell_observations, tracker, observations, call_id, ctx.tool_operation_id)", "unresolved"],
         ["thread_pool", "await loop.run_in_executor(None, _apply_trace_upgrades, ctx, shell_mutations)", "unresolved"],

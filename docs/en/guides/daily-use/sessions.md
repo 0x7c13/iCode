@@ -104,6 +104,8 @@ Migration keeps the original data in the source directory; it is not deleted aut
 
 Press **F12** to open the trajectory dashboard. **Overview** summarizes time and usage; **Timeline** shows individual turns and operations; **Insights** helps explain delays; **Session data** shows the saved session. Long sessions are analyzed in the background while a loading indicator is visible. The timing analysis preserves overlapping operations, so parallel work is not counted twice on a critical path.
 
+If a shell command's file content comparison cannot be completed because a file is unreadable, the file-change overview marks detection as incomplete. The recorded change list may omit changes; check the affected files or your Git diff before relying on it for rollback. Files deliberately excluded from content comparison by the size or binary-file limits do not by themselves trigger this warning.
+
 ## Link file changes and model requests in session data
 
 If you build reports from a session's files, link records by the IDs below instead of by timestamps or the order of tool calls. Records from older iCode versions don't have these IDs, and some records never get one; when an ID is missing, treat the link as unknown.

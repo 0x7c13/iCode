@@ -38,6 +38,10 @@ class CaseFoldedDefaultHeaders(_HeadersBase):
     """
 
     @property
+    def auth_headers(self) -> dict[str, str]:
+        return super().auth_headers
+
+    @property
     def default_headers(self) -> dict[str, Any]:
         spellings = {name.casefold(): name for name in self.auth_headers}
         folded: dict[str, Any] = {}

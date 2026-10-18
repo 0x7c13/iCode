@@ -7,7 +7,7 @@
 #   .\scripts\fetch_rg.ps1 -Archive C:\path\to\ripgrep-*.zip     # use local archive
 #
 # Environment variables (override parameters):
-#   RG_VERSION   - ripgrep version (default: 15.1.0)
+#   RG_VERSION   - ripgrep version (default: 15.2.0)
 #   RG_BASE_URL  - base URL for downloads (default: GitHub releases URL)
 #   RG_ARCHIVE   - path to pre-downloaded archive (skips download entirely)
 
@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$RgVersion = if ($Version) { $Version } elseif ($env:RG_VERSION) { $env:RG_VERSION } else { "15.1.0" }
+$RgVersion = if ($Version) { $Version } elseif ($env:RG_VERSION) { $env:RG_VERSION } else { "15.2.0" }
 $RgBaseUrl = if ($env:RG_BASE_URL) { $env:RG_BASE_URL } else { "https://github.com/BurntSushi/ripgrep/releases/download" }
 $RgArchive = if ($Archive) { $Archive } elseif ($env:RG_ARCHIVE) { $env:RG_ARCHIVE } else { "" }
 

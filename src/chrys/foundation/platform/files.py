@@ -1395,7 +1395,7 @@ def _unlink_verified_posix(name: str, directory_fd: int, identity: os.stat_resul
     residual — deleting a concurrently substituted entry through an unverified
     name would be worse than leaving debris behind.
     """
-    if identity is None:
+    if not name or identity is None:
         return
     with contextlib.suppress(OSError):
         entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1457,8 +1457,7 @@ def _atomic_write_owner_only_posix(path: Path, payload: bytes) -> None:
     finally:
         if fd >= 0:
             os.close(fd)
-        if temp_name:
-            _unlink_verified_posix(temp_name, directory_fd, written_identity)
+        _unlink_verified_posix(temp_name, directory_fd, written_identity)
         os.close(directory_fd)
 
 

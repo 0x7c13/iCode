@@ -13,6 +13,7 @@ import functools
 import os
 import platform
 import shutil
+from contextlib import ExitStack
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -268,7 +269,8 @@ def _clipboard_copy_windows(text: str) -> None:
     h = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
     if not h:
         raise _win32_error()
-    try:
+    with ExitStack() as allocation:
+        allocation.callback(kernel32.GlobalFree, h)
         ptr = kernel32.GlobalLock(h)
         if not ptr:
             raise _win32_error()
@@ -280,12 +282,9 @@ def _clipboard_copy_windows(text: str) -> None:
             user32.EmptyClipboard()
             if not user32.SetClipboardData(CF_UNICODETEXT, h):
                 raise _win32_error()
-            h = None  # ownership transferred to the clipboard
+            allocation.pop_all()  # ownership transferred to the clipboard
         finally:
             user32.CloseClipboard()
-    finally:
-        if h:
-            kernel32.GlobalFree(h)
 
 
 def clipboard_copy(text: str) -> None:

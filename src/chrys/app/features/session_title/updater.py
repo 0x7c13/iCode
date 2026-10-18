@@ -40,7 +40,7 @@ from chrys.foundation.util.once_close import OnceClose, finish_close
 from chrys.kernel.compaction import EXCLUDED_KEY
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncGenerator, Callable
     from pathlib import Path
 
     from chrys.foundation.events.bus import EventBus
@@ -406,7 +406,7 @@ class SessionTitleUpdater:
         route_session_id: str,
         session_id: str,
         session_dir: Path | None,
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncGenerator[Any]:
         """Lease the cached client for one call, replacing it when its route or profile changed."""
         from chrys.service.llm.clients import create_client
 

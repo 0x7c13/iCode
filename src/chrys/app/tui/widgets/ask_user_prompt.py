@@ -13,7 +13,7 @@ from rich.console import Group
 from rich.style import Style
 from rich.text import Text
 from textual import events, on
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import VerticalGroup
 from textual.content import Content
 from textual.message import Message
@@ -288,7 +288,7 @@ class AskUserReviewPane(_AskUserPane):
 class AskUserPrompt(VerticalGroup):
     """Single owner of selections, drafts, active pane and submission state."""
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+pagedown", "next_question", show=False, priority=True),
         Binding("ctrl+pageup", "previous_question", show=False, priority=True),
     ]

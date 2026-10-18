@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 from rich.cells import cell_len
 from rich.text import Text
 from textual import on
+from textual._path import CSSPathType
 from textual.binding import Binding
 from textual.containers import VerticalGroup, VerticalScroll
 from textual.css.query import NoMatches
@@ -238,7 +239,7 @@ class ConfirmDialog(BaseDialog[bool]):
 class NoticeDialog(ConfirmDialog):
     """Scrollable feedback and cancellable progress using the standard dialog controls."""
 
-    CSS_PATH: ClassVar[list[str]] = ["confirm.tcss", "notice.tcss"]
+    CSS_PATH: ClassVar[CSSPathType | None] = ["confirm.tcss", "notice.tcss"]
     _minimum_width = 64
 
     def finish(self) -> None:

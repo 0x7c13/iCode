@@ -20,6 +20,12 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from opentelemetry.context import Context
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind, StatusCode
 
 from chrys import __version__
 from chrys.foundation.config.settings import Settings
@@ -692,27 +698,47 @@ def test_span_processor_noop_when_no_session() -> None:
 # --- SessionJsonlSpanExporter -------------------------------------------------
 
 
-def test_span_exporter_writes_json_lines(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("kind", "expected_kind"),
+    [
+        (SpanKind.INTERNAL, "INTERNAL"),
+        (SpanKind.SERVER, "SERVER"),
+        (SpanKind.CLIENT, "CLIENT"),
+        (SpanKind.PRODUCER, "PRODUCER"),
+        (SpanKind.CONSUMER, "CONSUMER"),
+    ],
+)
+def test_span_exporter_writes_json_lines(tmp_path: Path, kind: SpanKind, expected_kind: str) -> None:
     sink = OtelSessionSink(write_files=True)
     sink.activate("sess-x", session_dir=tmp_path)
     exporter = SessionJsonlSpanExporter(sink)
 
-    fake_span = MagicMock()
-    fake_span.name = "chat gpt-4"
-    fake_span.kind = None
-    fake_span.get_span_context.return_value = MagicMock(trace_id=0x1234, span_id=0xABCD)
-    fake_span.parent = None
-    fake_span.status = MagicMock(status_code=MagicMock(name="OK"), description=None)
-    fake_span.attributes = {"gen_ai.conversation.id": "sess-x", "gen_ai.request.model": "gpt-4"}
-    fake_span.events = []
-    fake_span.resource = MagicMock(attributes={})
-    fake_span.start_time = 1
-    fake_span.end_time = 2
-
-    exporter.export([fake_span])
+    provider = TracerProvider(resource=Resource({}), shutdown_on_exit=False)
+    captured = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(captured))
+    try:
+        tracer = provider.get_tracer(__name__)
+        with tracer.start_as_current_span(
+            "chat gpt-4",
+            context=Context(),
+            kind=kind,
+            attributes={"gen_ai.conversation.id": "sess-x", "gen_ai.request.model": "gpt-4"},
+        ) as span:
+            span.set_status(StatusCode.OK)
+        (finished,) = captured.get_finished_spans()
+        assert exporter.export([finished]) is SpanExportResult.SUCCESS
+    finally:
+        provider.shutdown()
+        sink.deactivate()
 
     traces = tmp_path / "otel" / "traces.jsonl"
     assert traces.exists()
-    payload = json.loads(traces.read_text().strip())
+    payload = json.loads(traces.read_text(encoding="utf-8").strip())
     assert payload["name"] == "chat gpt-4"
+    assert payload["kind"] == expected_kind
+    assert payload["status"] == {"code": "OK", "description": None}
+    context = span.get_span_context()
+    assert payload["trace_id"] == f"{context.trace_id:032x}"
+    assert payload["span_id"] == f"{context.span_id:016x}"
+    assert payload["parent_span_id"] is None
     assert payload["attributes"]["gen_ai.conversation.id"] == "sess-x"

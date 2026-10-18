@@ -9,7 +9,7 @@ from typing import ClassVar, Literal
 from rich.segment import Segment
 from rich.style import Style
 from textual import events
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.color import Color
 from textual.message import Message
 from textual.strip import Strip
@@ -32,7 +32,7 @@ class ColorPlane(Widget, can_focus=True):
         &.sv { height: 12; }
     }
     """
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("left", "step(-1, 0, 1)", show=False),
         Binding("right", "step(1, 0, 1)", show=False),
         Binding("up", "step(0, -1, 1)", show=False),

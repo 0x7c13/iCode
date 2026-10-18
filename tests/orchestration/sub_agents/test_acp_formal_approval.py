@@ -27,7 +27,7 @@ from chrys.service.session.sub_agent_logs import SubAgentSessionLogWriter
 from tests.service.trajectory._fakes import FakeSink, make_context
 from tests.support import formal_approval as core
 from tests.support.event_capture import capture_event_sequence
-from tests.support.waiting import wait_for
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 @pytest.mark.parametrize("kind", [None, "other"], ids=["missing-kind", "unmapped-kind"])
@@ -73,7 +73,9 @@ async def test_missing_acp_kind_is_reviewed_by_the_predicate_model(monkeypatch, 
             )
         )
         try:
-            await wait_for(task.done, description="ACP permission resolved")
+            # Terminal waits include the five-second review budget plus event
+            # dispatch and settlement, so they need a wider outer window.
+            await wait_for(task.done, timeout=ENGINE_TURN_TIMEOUT, description="ACP permission resolved")
             decision = await task
             assert len(calls) == 1
             assert decision.action == ("deny" if triggered and not human_approved else "allow")
@@ -144,7 +146,9 @@ async def test_empty_formal_context_is_reviewed(monkeypatch, kind, messages, tri
                 )
             )
             try:
-                await wait_for(task.done, description="ACP review without user context settled")
+                await wait_for(
+                    task.done, timeout=ENGINE_TURN_TIMEOUT, description="ACP review without user context settled"
+                )
                 decision = await task
                 assert decision.action == "allow"
                 request, review = events
@@ -227,7 +231,9 @@ async def test_surrogate_reason_is_audited_without_blocking_permission(monkeypat
                 )
             )
             try:
-                await wait_for(task.done, description="ACP review with surrogate reason settled")
+                await wait_for(
+                    task.done, timeout=ENGINE_TURN_TIMEOUT, description="ACP review with surrogate reason settled"
+                )
                 assert (await task).action == ("allow" if approved else "deny")
                 assert len(calls) == 2
                 assert len(reviews) == 1
@@ -367,7 +373,7 @@ async def test_acp_terminal_keeps_formal_audit_when_human_or_interrupt_wins(monk
                 if interrupt:
                     assert not task.done()
                     task.cancel()
-                await wait_for(task.done, description="ACP permission settled")
+                await wait_for(task.done, timeout=ENGINE_TURN_TIMEOUT, description="ACP permission settled")
                 decision = await task
                 assert decision.action == ("cancelled" if interrupt else "deny")
                 resolved = sink.only(EventType.APPROVAL_RESOLVED).payload

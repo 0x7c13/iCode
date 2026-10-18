@@ -829,7 +829,7 @@ class SessionLifecycle:
             await self._publish_session_fork_error(
                 "session_fork_not_ready",
                 "Cannot fork before a session is ready.",
-                session_id=active_session_id or event.session_id,
+                session_id=active_session_id or event.session_id or "",
                 display_message=_FORK_NOT_READY.bind(),
             )
             return
@@ -1339,6 +1339,8 @@ class SessionLifecycle:
         state intact (admission simply reopens), reports
         ``Error(code="session_clear_failed")``, and never starts a new session.
         """
+        if event.session_id is None:
+            raise ValueError("This session event requires a session ID.")
         transition_owner = await self._permits.prepare_session_transition("clear")
         if transition_owner is None:  # No owner filter was given, so this cannot happen.
             raise RuntimeError("Session transition acquisition unexpectedly failed")
@@ -1369,6 +1371,8 @@ class SessionLifecycle:
 
     async def on_session_restore(self, event: SessionRestore) -> None:
         """Handle session restore by loading saved state and rebuilding the agent."""
+        if event.session_id is None:
+            raise ValueError("This session event requires a session ID.")
         from chrys.service.state.locks import SESSION_RESTORE_ACTIVE_LOCK_TIMEOUT_SECONDS
 
         if self._persistence.state_store is None:
@@ -1685,6 +1689,8 @@ class SessionLifecycle:
         staged_loaded: LoadedSettings,
     ) -> None:
         """Hydrate live engine state after restore shutdown while admission remains closed."""
+        if event.session_id is None:
+            raise ValueError("This session event requires a session ID.")
         self._fsm.reset()
         self._session.adopt_restore_identity(session_id=event.session_id, recovered_from_sidecar=recovered_from_sidecar)
         session_dir = self._session.session_dir
@@ -1953,6 +1959,8 @@ class SessionLifecycle:
 
     async def on_session_delete(self, event: SessionDelete) -> None:
         """Handle session deletion."""
+        if event.session_id is None:
+            raise ValueError("This session event requires a session ID.")
         failure = await self._delete_session_reporting(event.session_id)
         if failure is not None:
             await self._bus.publish(

@@ -49,15 +49,15 @@ async def _chrys_streamable_http_client(
     the normal MCP error path instead of hanging the agent build.
 
     Compatibility note: this is intentionally a narrow patch over MCP SDK
-    1.28.1's ``StreamableHTTPTransport._handle_post_request`` private hook.
+    1.30.0's ``StreamableHTTPTransport._handle_post_request`` private hook.
     If those private symbols move, fall back to the stock SDK client so a
     dependency update degrades to upstream behavior instead of breaking all
     HTTP MCP connections.
     """
     try:
         import anyio
-        from mcp.client.streamable_http import StreamableHTTPTransport
-        from mcp.shared._httpx_utils import create_mcp_http_client
+        from mcp.client.streamable_http import StreamableHTTPTransport, _raise_for_unfollowed_redirect
+        from mcp.shared._httpx_utils import create_mcp_http_client, stream_within_origin
         from mcp.shared.message import SessionMessage
         from mcp.types import CONNECTION_CLOSED, ErrorData, JSONRPCError, JSONRPCMessage, JSONRPCRequest
     except ImportError:
@@ -115,7 +115,7 @@ async def _chrys_streamable_http_client(
                 stream_kwargs["timeout"] = Timeout(post_timeout)
 
             try:
-                async with ctx.client.stream("POST", self.url, **stream_kwargs) as response:
+                async with stream_within_origin(ctx.client, "POST", self.url, **stream_kwargs) as response:
                     if response.status_code == 202:
                         return
 
@@ -124,6 +124,7 @@ async def _chrys_streamable_http_client(
                             await self._send_session_terminated_error(ctx.read_stream_writer, message.root.id)
                         return
 
+                    _raise_for_unfollowed_redirect(response)
                     response.raise_for_status()
                     if is_initialization:
                         self._maybe_extract_session_id_from_response(response)
@@ -326,7 +327,7 @@ class _HTTPMCPTool(_NoPrePagePingMixin, _StructuredContentFallbackMixin, MCPStre
 
         connect_timeout = float(self.request_timeout) if self.request_timeout is not None else MCP_DEFAULT_TIMEOUT
         kwargs: dict[str, Any] = {
-            "follow_redirects": True,
+            "follow_redirects": False,
             "timeout": Timeout(connect_timeout, read=MCP_DEFAULT_SSE_READ_TIMEOUT),
             "verify": self._verify_ssl,
         }

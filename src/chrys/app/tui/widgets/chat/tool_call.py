@@ -1165,8 +1165,8 @@ class BaseToolCard(ToolCopyExcludedMixin, Widget):
         self.args = args or {}
         self.tool_kind = ""
         self.result_text = ""
-        self.metadata: dict[str, Any] = {}
-        self.image_contents: list[Any] = []
+        self.metadata: dict[str, Any] | None = {}
+        self.image_contents: tuple[Any, ...] | list[Any] = []
         self.duration_ms = 0
         self.approval: str | None = None
         self.provider_hosted = False
