@@ -14,7 +14,7 @@ import contextlib
 import socket
 import struct
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from functools import partial
 from typing import Any
 
@@ -26,12 +26,15 @@ import pytest
 from chrys.foundation.errors import ErrorKind, Origin, classify_error
 from chrys.service.llm.clients import create_client
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.httpcore_deadlines import HttpcoreDeadlines, httpcore_deadlines
 from tests.support.network_faults import INJECTED_V4, network_faults
 from tests.support.provider_errors import API_HOST
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 _TARGET = Origin("https", API_HOST, 443)
 _CHAT = [{"role": "user", "content": "hi"}]
 _UNREACHABLE_PROXY_HOST = "proxy.example.test"
+_CONNECT_TIMEOUT = 0.2
 
 
 async def _connect_head(reader: asyncio.StreamReader) -> None:
@@ -124,12 +127,14 @@ async def _resetting_proxy() -> AsyncIterator[Origin]:
                 await task
 
 
-async def _tunnel_then_stall(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def _tunnel_then_stall(
+    deadlines: HttpcoreDeadlines, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
     try:
-        await _connect_head(reader)
-        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        await writer.drain()
-        # Swallow the TLS ClientHello and never answer, until the client gives up.
+        await _open_tunnel_and_read_client_hello(reader, writer)
+        # TCP and CONNECT I/O have finished: only the TLS deadline remains.
+        deadlines.expire(_CONNECT_TIMEOUT)
+        # Leave the tunnel open until the client's real TLS timeout closes it.
         while await reader.read(4096):
             pass
     except ConnectionError:
@@ -158,7 +163,7 @@ def _profile(provider: str) -> ModelProfile:
         api_key="sk-test",
         base_url=f"https://{API_HOST}" if provider == "anthropic" else f"https://{API_HOST}/v1",
         http_max_retries=0,
-        http_connect_timeout=0.2,
+        http_connect_timeout=_CONNECT_TIMEOUT,
     )
 
 
@@ -167,10 +172,11 @@ async def _fail_through(proxy: Origin, provider: str, monkeypatch: pytest.Monkey
     stack = await create_client(_profile(provider))
     raw = stack.inner.inner
     try:
-        if provider == "anthropic":
-            await raw.sdk_client.messages.create(model="test-model", max_tokens=8, messages=_CHAT)
-        else:
-            await raw.sdk_client.chat.completions.create(model="test-model", messages=_CHAT)
+        async with asyncio.timeout(DEFAULT_WAIT_TIMEOUT):
+            if provider == "anthropic":
+                await raw.sdk_client.messages.create(model="test-model", max_tokens=8, messages=_CHAT)
+            else:
+                await raw.sdk_client.chat.completions.create(model="test-model", messages=_CHAT)
     except (openai.APIError, anthropic.APIError, httpx.HTTPError) as exc:
         return exc
     finally:
@@ -184,10 +190,17 @@ def proxy_env(monkeypatch: pytest.MonkeyPatch, clear_proxy_env: Callable[[], Non
     return monkeypatch
 
 
+@pytest.fixture
+def proxy_deadlines() -> Iterator[HttpcoreDeadlines]:
+    with httpcore_deadlines() as deadlines:
+        yield deadlines
+
+
 _PROVIDERS = pytest.mark.parametrize("provider", ["openai", "anthropic"])
 
 
 @_PROVIDERS
+@pytest.mark.usefixtures("proxy_deadlines")
 @pytest.mark.parametrize(
     ("serve_proxy", "kind", "retryable"),
     [
@@ -208,7 +221,6 @@ _PROVIDERS = pytest.mark.parametrize("provider", ["openai", "anthropic"])
         # A hang-up mid-handshake failed the connect; a reset is a lost connection in any phase.
         pytest.param(partial(_proxy, _tunnel_then_close), ErrorKind.CONNECTION_FAILED, True, id="tunnel-then-close"),
         pytest.param(_resetting_proxy, ErrorKind.CONNECTION_LOST, True, id="tunnel-then-reset"),
-        pytest.param(partial(_proxy, _tunnel_then_stall), ErrorKind.CONNECT_TIMEOUT, True, id="tunnel-then-stall"),
     ],
 )
 async def test_proxy_answers_are_not_first_hop_evidence(
@@ -228,6 +240,20 @@ async def test_proxy_answers_are_not_first_hop_evidence(
 
 
 @_PROVIDERS
+async def test_a_proxy_tunnel_tls_timeout_is_not_first_hop_evidence(
+    provider: str, proxy_env: pytest.MonkeyPatch, proxy_deadlines: HttpcoreDeadlines
+) -> None:
+    async with _proxy(partial(_tunnel_then_stall, proxy_deadlines)) as proxy:
+        exc = await _fail_through(proxy, provider, proxy_env)
+
+    result = classify_error(exc)
+    assert (result.kind, result.retryable, result.failed_at_first_hop) == (ErrorKind.CONNECT_TIMEOUT, True, False)
+    assert result.route is not None
+    assert (result.route.target, result.route.proxy) == (_TARGET, proxy)
+
+
+@_PROVIDERS
+@pytest.mark.usefixtures("proxy_deadlines")
 async def test_a_proxy_that_refuses_the_connection_is_the_failed_first_hop(
     provider: str, proxy_env: pytest.MonkeyPatch
 ) -> None:

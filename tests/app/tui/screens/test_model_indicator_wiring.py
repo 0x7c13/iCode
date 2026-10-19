@@ -83,28 +83,6 @@ def _registry(*profiles: ModelProfile) -> ModelProfileRegistry:
     return registry
 
 
-async def _click_when_placed(pilot, selector: str) -> None:
-    """Click *selector* once dialog layout has assigned it a real region.
-
-    On loaded CI workers the click can arrive while the freshly pushed
-    dialog is still laying out, which raises OutOfBounds.
-    """
-    from textual.css.query import NoMatches
-
-    app = pilot.app
-
-    def _placed() -> bool:
-        try:
-            button = app.screen.query_one(selector)
-        except NoMatches:
-            return False
-        region = button.region
-        return region.width > 0 and region.height > 0
-
-    await wait_for(_placed, pilot=pilot, description=f"{selector} placed on screen")
-    await pilot.click(selector)
-
-
 def _runtime_details(
     name: str,
     *,
@@ -155,7 +133,7 @@ async def test_unconfirmed_configure_tag_routes_to_model_config(
         monkeypatch.setattr(app.main_screen._config_actions, "open_model_config", lambda: opened.append(None))
         monkeypatch.setattr(app.main_screen._config_actions, "on_model_picked", record_pick)
 
-        await _click_when_placed(pilot, "#model-tag")
+        await click_when_settled(pilot, "#model-tag")
         await pilot.pause()
 
         assert opened == [None]
@@ -189,7 +167,7 @@ async def test_unconfirmed_select_tag_opens_picker_and_routes_selected_profile(
 
         monkeypatch.setattr(app.main_screen._config_actions, "on_model_picked", record_pick)
 
-        await _click_when_placed(pilot, "#model-tag")
+        await click_when_settled(pilot, "#model-tag")
         await pilot.pause()
 
         assert isinstance(app.screen, ModelsScreen)
@@ -686,7 +664,7 @@ async def test_model_guard_dialog_routes_confirm_to_model_config(
         await pilot.pause()
         assert isinstance(app.screen, ConfirmDialog)
 
-        await _click_when_placed(pilot, button)
+        await click_when_settled(pilot, button)
         await pilot.pause()
 
         assert not isinstance(app.screen, ConfirmDialog)
@@ -794,7 +772,7 @@ async def test_guard_confirm_opens_picker_when_profiles_are_selectable(
         assert submitted == []
         assert isinstance(app.screen, ConfirmDialog)
 
-        await _click_when_placed(pilot, "#confirm-yes")
+        await click_when_settled(pilot, "#confirm-yes")
         await pilot.pause()
 
         assert isinstance(app.screen, ModelsScreen)
@@ -827,7 +805,7 @@ async def test_guard_confirm_opens_config_and_close_restores_input_focus(
 
         screen.post_message(InputBar.UserSubmitted("hello"))
         await pilot.pause()
-        await _click_when_placed(pilot, "#confirm-yes")
+        await click_when_settled(pilot, "#confirm-yes")
         await pilot.pause()
         assert isinstance(app.screen, _FakeConfigScreen)
 

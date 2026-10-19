@@ -80,7 +80,10 @@ async def test_missing_selection_notice_preserves_draft_and_underlay(
         )
         dialog = app.screen
         button = dialog.query_one("#confirm-yes", Button)
-        await wait_for(lambda: button.has_focus and button.region.width > 0, pilot=pilot)
+        await wait_for(
+            lambda: dialog.is_mounted and button.has_focus and screen_is_settled(app, dialog),
+            pilot=pilot,
+        )
         container = dialog.query_one("#confirm-container")
         assert abs(container.region.x * 2 + container.region.width - app.size.width) <= 1
         assert abs(container.region.y * 2 + container.region.height - app.size.height) <= 1
@@ -103,6 +106,16 @@ async def test_missing_selection_notice_preserves_draft_and_underlay(
 async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    hold_refresh_callbacks = True
+    # Textual's private Screen._invoke_and_clear_callbacks dispatches _size_dialog;
+    # holding it makes the layout before that callback deterministic.
+    invoke_callbacks = NoticeDialog._invoke_and_clear_callbacks
+
+    async def invoke_when_released(dialog: NoticeDialog) -> None:
+        if not hold_refresh_callbacks:
+            await invoke_callbacks(dialog)
+
+    monkeypatch.setattr(NoticeDialog, "_invoke_and_clear_callbacks", invoke_when_released)
     monkeypatch.chdir(make_project(tmp_path))
     bus = EventBus()
     app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine(), event_bus=bus)
@@ -127,7 +140,16 @@ async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissib
         )
         dialog = app.screen
         button = dialog.query_one("#confirm-yes", Button)
-        await wait_for(lambda: button.region.width > 0, pilot=pilot)
+        try:
+            await wait_for(lambda: dialog.is_mounted and button.region.width > 0, pilot=pilot)
+            # The first layout gives the button a width before _size_dialog caps
+            # the scrolling body. Hold that callback to force this intermediate state.
+            assert button.region.bottom > app.size.height
+            assert not screen_is_settled(app, dialog)
+        finally:
+            hold_refresh_callbacks = False
+            dialog.check_idle()
+        await wait_for(lambda: screen_is_settled(app, dialog), pilot=pilot)
         app.save_screenshot("workflow-long-notice.svg", path=str(tmp_path))
         assert button.region.bottom <= app.size.height, [
             (widget.id, widget.region, widget.styles.height, widget.styles.max_height)

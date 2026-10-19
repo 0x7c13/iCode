@@ -25,6 +25,7 @@ from chrys.app.tui.themes.preview import theme_variables
 from chrys.app.tui.themes.store import UserThemeStore
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from tests.support.paths import SRC_ROOT
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.waiting import wait_for
 
 
@@ -133,7 +134,7 @@ async def test_new_session_button_uses_hover_palette_without_expanding_the_input
         bar = app.query_one(InputBar)
         bar.has_messages = True
         button = bar.query_one("#new-btn", Button)
-        await wait_for(lambda: button.content_size.width > 0, pilot=pilot)
+        await wait_for(lambda: button.content_size.width > 0 and screen_is_settled(app, app.screen), pilot=pilot)
         assert button.region.height == 1
         assert button.variant == "primary"
         normal = button.rich_style.bgcolor

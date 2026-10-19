@@ -10,8 +10,10 @@ requests whose DNS or connect step fails through
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
+from functools import partial
 from typing import Any, NoReturn
 
 import anthropic
@@ -19,7 +21,9 @@ import httpcore
 import httpx
 import openai
 
+from tests.support.httpcore_deadlines import httpcore_deadlines
 from tests.support.network_faults import NetworkFaults, network_faults
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 API_HOST = "api.example.test"
 _CHAT = [{"role": "user", "content": "hi"}]
@@ -190,7 +194,10 @@ async def openai_network(
     arrange: Callable[[NetworkFaults], None], *, connect_timeout: float = 5.0, host: str = API_HOST
 ) -> BaseException:
     """Return the real OpenAI SDK error for a request whose DNS or connect step fails."""
-    with network_faults() as faults:
+    with (
+        httpcore_deadlines() as deadlines,
+        network_faults(on_stalled_connect=partial(deadlines.expire, connect_timeout)) as faults,
+    ):
         arrange(faults)
         timeout = httpx.Timeout(5.0, connect=connect_timeout)
         async with httpx.AsyncClient(trust_env=False, timeout=timeout) as http:
@@ -198,7 +205,8 @@ async def openai_network(
                 api_key="sk-test", base_url=f"http://{host}/v1", max_retries=0, http_client=http
             )
             try:
-                await client.chat.completions.create(model="m", messages=_CHAT)
+                async with asyncio.timeout(DEFAULT_WAIT_TIMEOUT):
+                    await client.chat.completions.create(model="m", messages=_CHAT)
             except openai.APIError as exc:
                 return exc
     raise AssertionError("the request did not fail")

@@ -32,6 +32,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.paths import SRC_ROOT
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import EmptyAgentRegistry, ShutdownOnlyEngine
 from tests.support.waiting import wait_for
 
@@ -114,6 +115,7 @@ async def open_editor(app: ChrysApp, pilot: Pilot, tmp_path: Path, *, new: bool 
             editor.region.width > 0
             and app.theme_preview is not None
             and app.focused is editor._color_buttons["primary"]
+            and screen_is_settled(app, app.screen)
         ),
         pilot=pilot,
     )
@@ -125,7 +127,7 @@ async def wait_for_themes(pilot: Pilot) -> ThemesScreen:
 
     def ready() -> bool:
         screen = pilot.app.screen
-        if not isinstance(screen, ThemesScreen) or not screen.is_mounted or screen._layout_required:
+        if not isinstance(screen, ThemesScreen) or not screen.is_mounted or not screen_is_settled(pilot.app, screen):
             return False
         options = screen.query_one(OptionList)
         return (
@@ -147,7 +149,7 @@ async def wait_for_settings_dialog(pilot: Pilot) -> SettingsDialog:
 
     def ready() -> bool:
         dialog = pilot.app.screen
-        if not isinstance(dialog, SettingsDialog) or not dialog.is_mounted or dialog._layout_required:
+        if not isinstance(dialog, SettingsDialog) or not dialog.is_mounted or not screen_is_settled(pilot.app, dialog):
             return False
         tabs = dialog.query_one(TabbedContent)
         rows = dialog.rows()
@@ -174,7 +176,7 @@ async def wait_for_picker(pilot: Pilot, kind: type[Widget]) -> _PickerModal:
 
     def ready() -> bool:
         modal = pilot.app.screen
-        if not isinstance(modal, _PickerModal) or not modal.is_mounted or modal._layout_required:
+        if not isinstance(modal, _PickerModal) or not modal.is_mounted or not screen_is_settled(pilot.app, modal):
             return False
         pickers = modal.query(kind)
         if not pickers:
@@ -200,7 +202,7 @@ async def wait_for_save_dialog(pilot: Pilot) -> SaveThemeDialog:
 
     def ready() -> bool:
         dialog = pilot.app.screen
-        if not isinstance(dialog, SaveThemeDialog) or not dialog.is_mounted or dialog._layout_required:
+        if not isinstance(dialog, SaveThemeDialog) or not dialog.is_mounted or not screen_is_settled(pilot.app, dialog):
             return False
         button = dialog.query_one("#save-theme-confirm", Button)
         return button.is_mounted and dialog.can_view_entire(button)
@@ -220,7 +222,7 @@ async def wait_for_confirmation(pilot: Pilot) -> ConfirmDialog:
 
     def ready() -> bool:
         dialog = pilot.app.screen
-        if not isinstance(dialog, ConfirmDialog) or not dialog.is_mounted or dialog._layout_required:
+        if not isinstance(dialog, ConfirmDialog) or not dialog.is_mounted or not screen_is_settled(pilot.app, dialog):
             return False
         buttons = list(dialog.query(Button))
         return (

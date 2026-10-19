@@ -10,10 +10,12 @@ address the socket dialed.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import anthropic
@@ -24,6 +26,7 @@ import pytest
 from chrys.foundation.errors import ErrorKind, classify_error, clean_error_message
 from chrys.service.llm.clients import create_client
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.httpcore_deadlines import httpcore_deadlines
 from tests.support.network_faults import (
     INJECTED_V4,
     INJECTED_V6,
@@ -34,10 +37,12 @@ from tests.support.network_faults import (
     socket_error_text,
 )
 from tests.support.provider_errors import API_HOST
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT
 
 _MAX_RETRIES = 2
 _ATTEMPTS = _MAX_RETRIES + 1
 _CHAT = [{"role": "user", "content": "hi"}]
+_CONNECT_TIMEOUT = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,16 +141,17 @@ def _profile(provider: str) -> ModelProfile:
         api_key="sk-test",
         base_url=base_url if provider == "anthropic" else f"{base_url}/v1",
         http_max_retries=_MAX_RETRIES,
-        http_connect_timeout=0.05,
+        http_connect_timeout=_CONNECT_TIMEOUT,
     )
 
 
 async def _fail(provider: str, sdk: Any) -> BaseException:
     try:
-        if provider == "anthropic":
-            await sdk.messages.create(model="test-model", max_tokens=8, messages=_CHAT)
-        else:
-            await sdk.chat.completions.create(model="test-model", messages=_CHAT)
+        async with asyncio.timeout(DEFAULT_WAIT_TIMEOUT):
+            if provider == "anthropic":
+                await sdk.messages.create(model="test-model", max_tokens=8, messages=_CHAT)
+            else:
+                await sdk.chat.completions.create(model="test-model", messages=_CHAT)
     # A deterministic failure leaves the SDK as the transport error itself:
     # Chrys's retry guard re-raises it instead of sleeping.
     except (openai.APIError, anthropic.APIError, httpx.HTTPError) as exc:
@@ -171,7 +177,10 @@ async def test_injected_fault_through_the_real_sdk(provider: str, fault: str, mo
     # The SDK's own backoff, at the instance boundary: retries happen, instantly.
     monkeypatch.setattr(sdk, "_calculate_retry_timeout", lambda *_args, **_kwargs: 0.0)
     try:
-        with network_faults() as faults:
+        with (
+            httpcore_deadlines() as deadlines,
+            network_faults(on_stalled_connect=partial(deadlines.expire, _CONNECT_TIMEOUT)) as faults,
+        ):
             expected.arrange(faults)
             exc = await _fail(provider, sdk)
     finally:

@@ -27,6 +27,7 @@ from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.patches import textual_button_ansi
 from tests.support.paths import SRC_ROOT
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.waiting import wait_for
 
@@ -189,7 +190,10 @@ async def test_chrys_ansi_scroll_and_selector_surfaces(tmp_path: Path) -> None:
         status.set_model(ModelIndicatorState("Test Model", "", "select", "model-id", True))
         profile = status.query_one("#profile-tag", Static)
         model = status.query_one("#model-tag", Static)
-        await wait_for(lambda: profile.region.width > 0 and model.region.width > 0, pilot=pilot)
+        await wait_for(
+            lambda: profile.region.width > 0 and model.region.width > 0 and screen_is_settled(app, app.screen),
+            pilot=pilot,
+        )
         assert profile.rich_style.bgcolor == model.rich_style.bgcolor
         assert profile.rich_style.color == model.rich_style.color
 
