@@ -184,6 +184,51 @@ Two presets fill in the mapping for common services:
 - SearXNG: `type: custom_http`, `preset: searxng`, and your instance's `endpoint`, such as `https://search.example.com/search`. JSON output must be enabled on the SearXNG server.
 - SerpAPI: `type: custom_http` and `preset: serpapi`. Grant `https://serpapi.com/search` with `credential_env_names: [SERPAPI_API_KEY]`.
 
+### DeepSeek Search API
+
+DeepSeek offers a standalone Search API that any DeepSeek model can use through the local `web_search` tool. In the agent profile:
+
+```yaml
+tools:
+  builtins: [filesystem.read, search, web_search]
+  web_search:
+    mode: provider
+    provider: deepseek
+    providers:
+      deepseek:
+        type: custom_http
+        endpoint: https://api.deepseek.com/v1/tools/search
+        method: POST
+        auth:
+          location: header
+          name: Authorization
+          prefix: "Bearer "
+          key_env: DEEPSEEK_API_KEY
+        request:
+          json:
+            query: {$input: query}
+            count: {$input: limit}
+        response:
+          results_pointer: /results
+          url_pointer: /url
+          title_pointer: /title
+          snippet_pointer: /summary
+```
+
+Grant the endpoint in your user settings, then set the API key in the environment:
+
+```yaml
+tools:
+  web_search:
+    custom_endpoints:
+      - url: https://api.deepseek.com/v1/tools/search
+        credential_env_names: [DEEPSEEK_API_KEY]
+```
+
+`/summary` returns a longer result summary. For request fields, query syntax, billing, and limits, see the [DeepSeek search guide](https://api-docs.deepseek.com/guides/search/).
+
+DeepSeek's Fetch API is a separate endpoint. iCode's `web_fetch` reads pages directly and does not call it; to use DeepSeek Fetch, wrap it in an MCP server or a script tool.
+
 ## Control network access
 
 Network access for web tools is set only in your user settings. Project settings and agent profiles cannot change it, so a repository you open cannot widen what the tools may reach. The common search options are on the **Tools** tab of **Settings**; the fetch lists are set in the user `settings.yaml`. For every key, see the [settings file reference](../../reference/settings.md#web-tools).
@@ -274,6 +319,16 @@ Search results and page text come from outside sources. iCode marks them as untr
 Some model services can run web search themselves. When a model profile declares such a tool in its `chat_options`, for example `{"tools": [{"type": "web_search"}]}`, the provider's tool takes over that name. If the agent also includes the matching iCode tool, the local tool is turned off for that run and iCode shows a notice once. This works per name: a provider-run `web_search` leaves a local `web_fetch` in place.
 
 Provider-run search happens on the model provider's side, so iCode's approval rules and network settings do not apply to it. To use iCode's own tools instead, remove the declaration from the model's `chat_options`.
+
+### DeepSeek
+
+DeepSeek's Responses API supports a server-side `web_search` tool. To use it:
+
+- Model profile: provider "DeepSeek (OpenAI)", API style "Responses".
+- Add a `tools` row in **Chat Options** with the value `[{"type": "web_search"}]`.
+- Do not include local `web_search` in the agent's `tools.builtins`; if you do, iCode turns the local tool off for that run and shows a notice. `web_fetch` is unaffected.
+
+See the [DeepSeek Responses API guide](https://api-docs.deepseek.com/guides/responses_api/) for supported models, billing, and limits; you can also use the [DeepSeek Search API](#deepseek-search-api) above through the local `web_search` tool.
 
 ## When web tools do not appear
 

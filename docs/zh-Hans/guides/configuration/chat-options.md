@@ -156,6 +156,14 @@ GPT-5.6 及之后的模型使用 `prompt_cache_options`，有效期为 `30m`，�
 
 当前 API 默认开启思考，推理强度支持 `low`、`high` 和 `max`。在思考模式下，`temperature`、`presence_penalty` 和 `frequency_penalty` 会被忽略；`top_p` 仅在 0.95 到 1.0 范围内生效。较早模型 ID 的能力可能不同。
 
+DeepSeek 也支持 Responses API。使用服务端 `web_search` 时必须选 Responses，并添加 `tools` 选项；支持的模型以 DeepSeek 官方文档为准。
+
+| 用途 | 字段名 | 值 |
+| --- | --- | --- |
+| 服务端联网搜索（Responses） | `tools` | `[{"type": "web_search"}]` |
+
+声明后，模型提供方会接管 `web_search` 这个名称；如果智能体也启用了本地 `web_search`，本地工具会在该次运行中停用并显示提示。服务端搜索不受 iCode 审批和网络设置约束。也可以改用本地 `web_search` 调 DeepSeek Search API，配置见[配置网络工具](./web-tools.md#deepseek-search-api)。
+
 官方文档：[思考模式](https://api-docs.deepseek.com/guides/thinking_mode)、[上下文硬盘缓存](https://api-docs.deepseek.com/guides/kv_cache)、[API 参考](https://api-docs.deepseek.com/api/create-chat-completion)。
 
 ### GLM（智谱 / Z.ai）

@@ -184,6 +184,51 @@ tools:
 - SearXNG：`type: custom_http`、`preset: searxng`，并将 `endpoint` 设为你的实例地址，例如 `https://search.example.com/search`。SearXNG 服务器需要启用 JSON 输出。
 - SerpAPI：`type: custom_http` 和 `preset: serpapi`。授权 `https://serpapi.com/search`，并设置 `credential_env_names: [SERPAPI_API_KEY]`。
 
+### DeepSeek Search API
+
+DeepSeek 提供独立的 Search API，任何 DeepSeek 模型都可以通过本地 `web_search` 使用。在智能体配置文件中：
+
+```yaml
+tools:
+  builtins: [filesystem.read, search, web_search]
+  web_search:
+    mode: provider
+    provider: deepseek
+    providers:
+      deepseek:
+        type: custom_http
+        endpoint: https://api.deepseek.com/v1/tools/search
+        method: POST
+        auth:
+          location: header
+          name: Authorization
+          prefix: "Bearer "
+          key_env: DEEPSEEK_API_KEY
+        request:
+          json:
+            query: {$input: query}
+            count: {$input: limit}
+        response:
+          results_pointer: /results
+          url_pointer: /url
+          title_pointer: /title
+          snippet_pointer: /summary
+```
+
+并在用户设置中授权该端点，再把 API Key 配置到环境变量中：
+
+```yaml
+tools:
+  web_search:
+    custom_endpoints:
+      - url: https://api.deepseek.com/v1/tools/search
+        credential_env_names: [DEEPSEEK_API_KEY]
+```
+
+`snippet_pointer` 用 `/summary` 可获得较长的结果摘要；接口字段、搜索语法、计费和限制以 [DeepSeek 网页搜索与抓取文档](https://api-docs.deepseek.com/zh-cn/guides/search/) 为准。
+
+DeepSeek 的 Fetch API 是另一个独立接口。iCode 的 `web_fetch` 直接读取网页，不调用它；如需使用 DeepSeek Fetch，需要通过 MCP 服务器或脚本工具封装。
+
 ## 控制网络访问
 
 网络工具的网络访问只能在用户设置中配置。项目设置和智能体配置文件都不能修改它，因此打开的代码仓库无法扩大工具可访问的范围。常用的搜索选项位于“设置”的“工具”标签页；网页读取相关的列表需在用户 `settings.yaml` 中设置。各设置项的说明参阅[设置文件参考](../../reference/settings.md#网络工具)。
@@ -274,6 +319,16 @@ iCode 不会自行切换到 `remote`。把 fake-IP 地址段加入 `private_orig
 部分模型服务可以自行运行网络搜索。模型配置在 `chat_options` 中声明此类工具时（例如 `{"tools": [{"type": "web_search"}]}`），提供方的工具会占用该名称。如果智能体也包含对应的 iCode 工具，本地工具会在该次运行中停用，iCode 会显示一次提示。该规则按名称生效：由提供方运行的 `web_search` 不影响本地的 `web_fetch`。
 
 由提供方运行的搜索在模型提供方一侧执行，因此不受 iCode 审批规则和网络设置约束。如需改用 iCode 自己的工具，请从模型的 `chat_options` 中删除该声明。
+
+### DeepSeek
+
+DeepSeek 的 Responses API 支持服务端执行的 `web_search`。使用时：
+
+- 模型配置：提供商选“DeepSeek (OpenAI)”，API 样式选“Responses”。
+- 在“Chat 选项（额外请求字段）”中加一行 `tools`，值为 `[{"type": "web_search"}]`。
+- 智能体的 `tools.builtins` 不要包含本地 `web_search`，否则本地工具会在该次运行中停用并显示提示；`web_fetch` 不受影响。
+
+具体支持的模型、计费和使用限制以 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 为准；也可以改用 [DeepSeek Search API](#deepseek-search-api) 通过本地 `web_search` 使用。
 
 ## 网络工具没有出现时
 

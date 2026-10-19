@@ -156,6 +156,14 @@ Provider "DeepSeek (OpenAI)", API style "Chat Completions", with the default bas
 
 The current API enables thinking by default and accepts `low`, `high`, or `max` effort. In thinking mode, `temperature`, `presence_penalty`, and `frequency_penalty` are ignored; `top_p` is effective only from 0.95 to 1.0. Older model IDs may have different capabilities.
 
+DeepSeek also supports the Responses API. Server-side `web_search` requires Responses and a `tools` row; see DeepSeek's documentation for supported models.
+
+| What you want | Key | Value |
+| --- | --- | --- |
+| Server-side web search (Responses) | `tools` | `[{"type": "web_search"}]` |
+
+The declaration makes the provider own the `web_search` name; if the agent also enables the local `web_search`, iCode turns the local tool off for that run and shows a notice. Provider-run search is not covered by iCode approval or network settings. You can also use the local `web_search` with DeepSeek's Search API; see [Configure web tools](./web-tools.md#deepseek-search-api).
+
 Documentation: [Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode), [Context caching](https://api-docs.deepseek.com/guides/kv_cache), [API reference](https://api-docs.deepseek.com/api/create-chat-completion).
 
 ### GLM (Zhipu / Z.ai)

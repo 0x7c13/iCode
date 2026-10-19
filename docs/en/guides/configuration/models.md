@@ -20,7 +20,7 @@ While a task is running, the "Model Configuration" window opens in read-only mod
 
 1. Click "New".
 2. Enter a "Profile Name" of your choice, such as `My Model`.
-3. In the "Model Options" section, select the "Provider" and "API Style". Only OpenAI and DeepSeek (OpenAI) provide an API Style option. Before configuring it, check the model service's documentation for supported APIs and follow its recommendation when choosing "Chat Completions" or "Responses". If the service supports only one API, select its corresponding style; if it supports both, choose according to the service's recommendation or your needs.
+3. In the "Model Options" section, select the "Provider" and "API Style". Only OpenAI and DeepSeek (OpenAI) provide an API Style option. Before configuring it, check the model service's documentation for supported APIs and follow its recommendation when choosing "Chat Completions" or "Responses". If the service supports only one API, select its corresponding style; if it supports both, choose according to the service's recommendation or your needs. DeepSeek's Responses style is also used for the server-side `web_search`; see DeepSeek's documentation for supported models.
 4. Enter the model ID in "Model" and, as required by the model service, fill in "Base URL" and "API Key".
 5. Set "Max Context Window" and the "Max Output Tokens" field according to the provider's documentation.
 6. Adjust "Streaming", "Vision Model", and "Connection Options" as needed. "Streaming" is on for a new profile.
