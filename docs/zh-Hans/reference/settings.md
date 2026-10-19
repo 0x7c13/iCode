@@ -130,6 +130,8 @@ llm:
 
 这些值中的主机名可以包含下划线。
 
+例如，使用 DeepSeek Search API 时，需要授权 `https://api.deepseek.com/v1/tools/search`，并在 `credential_env_names` 中列出 `DEEPSEEK_API_KEY`。
+
 ### 上下文与轨迹分析
 
 以下设置没有对应环境变量。

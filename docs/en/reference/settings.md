@@ -130,6 +130,8 @@ Origin lists take exact origins (scheme, host, and optional port, such as `https
 
 Host names in these values may contain underscores.
 
+For example, using the DeepSeek Search API requires granting `https://api.deepseek.com/v1/tools/search` and listing `DEEPSEEK_API_KEY` in `credential_env_names`.
+
 ### Context and trajectory analysis
 
 The following settings have no corresponding environment variables.
