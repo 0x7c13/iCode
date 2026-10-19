@@ -26,9 +26,10 @@ from chrys.service.acp_client import (
 from chrys.service.acp_client import _transport as transport_mod
 from chrys.service.acp_client import client as client_mod
 from tests.support.acp_stub_agent import WIDE_PATCH_FILES
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from .helpers import CallbackRecorder, connected_client, make_spec, residual_client_tasks
+from .idle_clock import IdleWatchdogClock
 
 
 async def test_happy_path_returns_validated_usage_after_ordered_update_drain(tmp_path: Path) -> None:
@@ -172,7 +173,9 @@ async def test_permission_denial_selects_the_reject_option(tmp_path: Path) -> No
     assert callbacks.updates[0][1].update.content.text == "permission:deny"
 
 
-async def test_idle_timeout_is_suspended_only_while_human_callback_waits(tmp_path: Path) -> None:
+async def test_idle_timeout_is_suspended_only_while_human_callback_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     callbacks = CallbackRecorder()
     callbacks.permission_gate = asyncio.Event()
     client, _callbacks = await connected_client(
@@ -181,15 +184,38 @@ async def test_idle_timeout_is_suspended_only_while_human_callback_waits(tmp_pat
         callbacks=callbacks,
         idle_timeout_seconds=0.1,
     )
+    clock = IdleWatchdogClock(client, monkeypatch)
     prompt_task = asyncio.create_task(client.prompt("permission wait"))
     try:
-        await wait_for(lambda: len(callbacks.permission_calls) == 1, description="permission callback")
-        assert not await wait_until(prompt_task.done, timeout=0.2, interval=0.01)
+        await wait_for(
+            lambda: len(callbacks.permission_calls) == 1 or prompt_task.done(),
+            description="permission callback",
+        )
+        if prompt_task.done():
+            await prompt_task
+        assert len(callbacks.permission_calls) == 1
+
+        await clock.advance(0.2)
+        assert clock.watchdog is not None and not clock.watchdog.done()
+        assert not prompt_task.done()
+
         callbacks.permission_gate.set()
+        await wait_for(
+            lambda: bool(callbacks.updates) or prompt_task.done(),
+            description="peer received the permission answer",
+        )
+        if prompt_task.done():
+            await prompt_task
+        assert callbacks.updates
+        await clock.advance(0.2)
+        await wait_for(prompt_task.done, description="idle timeout after permission answer")
         with pytest.raises(AcpIdleTimeoutError):
             await prompt_task
     finally:
         callbacks.permission_gate.set()
+        if not prompt_task.done():
+            prompt_task.cancel()
+        await asyncio.gather(prompt_task, return_exceptions=True)
         await client.force_close()
 
 
@@ -1191,13 +1217,22 @@ async def test_terminal_failure_settled_after_the_response_still_fails_the_promp
     assert excinfo.value.usage.output_tokens == 5
 
 
-async def test_idle_expiry_never_governs_the_local_drain_after_the_response(tmp_path: Path) -> None:
+async def test_idle_expiry_never_governs_the_local_drain_after_the_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     callbacks = CallbackRecorder()
     callbacks.update_gate = asyncio.Event()
     client, _callbacks = await connected_client(tmp_path, callbacks=callbacks, idle_timeout_seconds=0.2)
+    clock = IdleWatchdogClock(client, monkeypatch)
+    prompt_task = asyncio.create_task(client.prompt("slow sink"))
     try:
-        prompt_task = asyncio.create_task(client.prompt("slow sink"))
-        await wait_for(lambda: bool(callbacks.updates), description="update sink gated")
+        await wait_for(
+            lambda: bool(callbacks.updates) or prompt_task.done(),
+            description="update sink gated",
+        )
+        if prompt_task.done():
+            await prompt_task
+        assert callbacks.updates
 
         def response_observed() -> bool:
             store = client._store
@@ -1206,14 +1241,16 @@ async def test_idle_expiry_never_governs_the_local_drain_after_the_response(tmp_
             record = store.record_for(store.prompt_id)
             return record is not None and record.response_observed
 
-        await wait_for(response_observed, description="prompt response observed")
+        await wait_for(lambda: response_observed() or prompt_task.done(), description="prompt response observed")
+        if prompt_task.done():
+            await prompt_task
+        assert response_observed()
 
         # The watchdog must retire at the response seal; while the sink is
         # still gated, its idle budget alone would otherwise expire the run.
-        def watchdog_gone() -> bool:
-            return all(task.get_name() != "chrys.acp.idle-watchdog" for task in asyncio.all_tasks())
-
-        await wait_for(watchdog_gone, description="idle watchdog retired")
+        await clock.advance(0.4)
+        assert clock.watchdog is not None and clock.watchdog.done()
+        assert not prompt_task.done()
         callbacks.update_gate.set()
         outcome = await prompt_task
 
@@ -1221,6 +1258,10 @@ async def test_idle_expiry_never_governs_the_local_drain_after_the_response(tmp_
         assert outcome.usage is not None
         assert outcome.usage.total_tokens == 8
     finally:
+        callbacks.update_gate.set()
+        if not prompt_task.done():
+            prompt_task.cancel()
+        await asyncio.gather(prompt_task, return_exceptions=True)
         await client.aclose()
 
 

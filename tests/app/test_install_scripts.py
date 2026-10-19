@@ -352,10 +352,20 @@ def test_install_sh_upgrades_an_offline_install_whose_icode_starts_something_els
         ((), "musl"),
         (("--version", "latest"), "--version takes a version number"),
         (("--version=",), "--version needs a value"),
+        (("--version", ""), "--version needs a value"),
         (("--source", "pypi"), "--source must be github or gitcode"),
         (("--source=",), "--source needs a value"),
+        (("--source", ""), "--source needs a value"),
     ],
-    ids=["musl", "bad-version", "empty-version", "bad-source", "empty-source"],
+    ids=[
+        "musl",
+        "bad-version",
+        "empty-version",
+        "empty-version-separated",
+        "bad-source",
+        "empty-source",
+        "empty-source-separated",
+    ],
 )
 def test_install_sh_refuses_what_it_cannot_install(tmp_path: Path, args: tuple[str, ...], message: str) -> None:
     machine = _sh_machine(tmp_path, ldd="musl libc (x86_64)" if not args else "ldd (GNU libc) 2.35")

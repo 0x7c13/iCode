@@ -46,6 +46,8 @@ $env:ICODE_SOURCE = "gitcode"; irm https://raw.gitcode.com/openJiuwen/iCode/raw/
 
 To install a particular version, end the command with `| sh -s -- --version 0.29.1` instead of `| sh`. On Windows, run `$env:ICODE_VERSION = "0.29.1"` first. A setting made with `$env:` lasts until you close that PowerShell window.
 
+On macOS and Linux, passing an empty value to `--version` or `--source` (for example, `--version ""` or `--source=`) stops installation with an error. If you pass a shell variable to either option, make sure it contains a value.
+
 To install by hand instead, download the package for your platform and follow the steps below. In the commands, `<version>` and `<architecture>` are placeholders. Replace them with the actual values in the downloaded filename.
 
 #### macOS
