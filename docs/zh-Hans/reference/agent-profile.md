@@ -285,7 +285,7 @@ tools:
 
 `exa_mcp`、`bing_html` 和 `duckduckgo_html` 只接受 `type` 字段。
 
-DeepSeek Search API 的完整 `custom_http` 示例见[配置网络工具](../guides/configuration/web-tools.md#deepseek-search-api)。DeepSeek 的服务端 `web_search` 只在 Responses 样式和 `deepseek-v4-pro` 下可用；`deepseek-flash` 不支持。
+DeepSeek Search API 的完整 `custom_http` 示例见[配置网络工具](../guides/configuration/web-tools.md#deepseek-search-api)。DeepSeek 服务端 `web_search` 的支持模型和计费以 DeepSeek 官方文档为准。
 
 ### tools.web_fetch
 

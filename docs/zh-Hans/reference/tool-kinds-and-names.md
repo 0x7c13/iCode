@@ -27,7 +27,7 @@ iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行
 
 具体工具是否可用还取决于当前智能体、模型能力和运行方式。例如，`view_image` 只会提供给支持图片输入的模型，无界面命令行模式 `icode run` 不提供 `ask_user`。
 
-iCode 自带的智能体都没有启用 `web_search` 和 `web_fetch`。智能体包含这两个工具时，如果某个工具的模式为 `off`，或模型提供方运行同名的网络工具，对应的本地工具不会提供。DeepSeek 的服务端 `web_search` 目前只有 `deepseek-v4-pro` 支持。参阅[配置网络工具](../guides/configuration/web-tools.md)。
+iCode 自带的智能体都没有启用 `web_search` 和 `web_fetch`。智能体包含这两个工具时，如果某个工具的模式为 `off`，或模型提供方运行同名的网络工具，对应的本地工具不会提供。参阅[配置网络工具](../guides/configuration/web-tools.md)。
 
 ## Shell 工具名称
 

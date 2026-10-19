@@ -186,7 +186,7 @@ Two presets fill in the mapping for common services:
 
 ### DeepSeek Search API
 
-DeepSeek also offers a standalone Search API (`POST https://api.deepseek.com/v1/tools/search`) that any DeepSeek model can use through the local `web_search` tool. In the agent profile:
+DeepSeek offers a standalone Search API that any DeepSeek model can use through the local `web_search` tool. In the agent profile:
 
 ```yaml
 tools:
@@ -215,7 +215,7 @@ tools:
           snippet_pointer: /summary
 ```
 
-Grant the endpoint in your user settings, then put the API key in your user `.env`:
+Grant the endpoint in your user settings, then set the API key in the environment:
 
 ```yaml
 tools:
@@ -225,9 +225,9 @@ tools:
         credential_env_names: [DEEPSEEK_API_KEY]
 ```
 
-`/summary` returns a longer summary of roughly 600–800 characters for the model to read; `/snippet` returns a short summary of roughly 100–200 characters. DeepSeek limits `query` to 128 characters; a longer query returns HTTP 400. DeepSeek bills 5 CNY (US$0.75) per 1,000 successful requests.
+`/summary` returns a longer result summary. For request fields, query syntax, billing, and limits, see the [DeepSeek search guide](https://api-docs.deepseek.com/guides/search/).
 
-DeepSeek's Fetch API (`POST https://api.deepseek.com/v1/tools/fetch`) is a separate endpoint. iCode's `web_fetch` does not call it; it reads pages directly. To use DeepSeek Fetch, wrap it in an MCP server or a script tool.
+DeepSeek's Fetch API is a separate endpoint. iCode's `web_fetch` reads pages directly and does not call it; to use DeepSeek Fetch, wrap it in an MCP server or a script tool.
 
 ## Control network access
 
@@ -322,13 +322,13 @@ Provider-run search happens on the model provider's side, so iCode's approval ru
 
 ### DeepSeek
 
-DeepSeek's Responses API supports a server-side `web_search` tool, but **only `deepseek-v4-pro` executes it**. With `deepseek-flash`, the declaration produces no `web_search_call`, and the model replies that it has no search tool.
+DeepSeek's Responses API supports a server-side `web_search` tool. To use it:
 
-- Model profile: provider "DeepSeek (OpenAI)", API style "Responses", model ID `deepseek-v4-pro`.
+- Model profile: provider "DeepSeek (OpenAI)", API style "Responses".
 - Add a `tools` row in **Chat Options** with the value `[{"type": "web_search"}]`.
 - Do not include local `web_search` in the agent's `tools.builtins`; if you do, iCode turns the local tool off for that run and shows a notice. `web_fetch` is unaffected.
 
-DeepSeek's server-side search can both search (`search`) and open result pages (`open_page`). Billing follows DeepSeek's notice: server-side Search/Fetch calls in Harness, Claude Code, and Codex are currently free, and per-request billing starts at 00:00 Beijing time on November 1, 2026. With `deepseek-flash`, use the [DeepSeek Search API](#deepseek-search-api) above instead.
+Not all DeepSeek models support it; see the [DeepSeek Responses API guide](https://api-docs.deepseek.com/guides/responses_api/) for supported models, billing, and limits. If your model does not support it, use the [DeepSeek Search API](#deepseek-search-api) above.
 
 ## When web tools do not appear
 

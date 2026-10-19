@@ -285,7 +285,7 @@ Each entry in `providers` supports these fields:
 
 `exa_mcp`, `bing_html`, and `duckduckgo_html` accept only `type`.
 
-A complete `custom_http` example for the DeepSeek Search API is in [Configure web tools](../guides/configuration/web-tools.md#deepseek-search-api). DeepSeek's server-side `web_search` is available only with the Responses style and `deepseek-v4-pro`; `deepseek-flash` does not support it.
+A complete `custom_http` example for the DeepSeek Search API is in [Configure web tools](../guides/configuration/web-tools.md#deepseek-search-api). See DeepSeek's documentation for the models and billing that support its server-side `web_search`.
 
 ### tools.web_fetch
 

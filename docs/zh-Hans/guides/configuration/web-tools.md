@@ -186,7 +186,7 @@ tools:
 
 ### DeepSeek Search API
 
-DeepSeek 也提供独立的 Search API（`POST https://api.deepseek.com/v1/tools/search`），任何 DeepSeek 模型都可以通过本地 `web_search` 使用。在智能体配置文件中：
+DeepSeek 提供独立的 Search API，任何 DeepSeek 模型都可以通过本地 `web_search` 使用。在智能体配置文件中：
 
 ```yaml
 tools:
@@ -215,7 +215,7 @@ tools:
           snippet_pointer: /summary
 ```
 
-并在用户设置中授权该端点，再把 API Key 写入用户 `.env`：
+并在用户设置中授权该端点，再把 API Key 配置到环境变量中：
 
 ```yaml
 tools:
@@ -225,9 +225,9 @@ tools:
         credential_env_names: [DEEPSEEK_API_KEY]
 ```
 
-`snippet_pointer` 用 `/summary` 会返回约 600–800 字的长摘要，适合给模型阅读；改成 `/snippet` 则是约 100–200 字的短摘要。DeepSeek 的 `query` 上限为 128 个字符，超出会返回 HTTP 400。DeepSeek 按每 1000 次成功请求 5 元计费。
+`snippet_pointer` 用 `/summary` 可获得较长的结果摘要；接口字段、搜索语法、计费和限制以 [DeepSeek 网页搜索与抓取文档](https://api-docs.deepseek.com/zh-cn/guides/search/) 为准。
 
-DeepSeek 的 Fetch API（`POST https://api.deepseek.com/v1/tools/fetch`）是另一个独立接口。iCode 的 `web_fetch` 不调用它，而是直接读取网页；如需使用 DeepSeek Fetch，需要通过 MCP 服务器或脚本工具封装。
+DeepSeek 的 Fetch API 是另一个独立接口。iCode 的 `web_fetch` 直接读取网页，不调用它；如需使用 DeepSeek Fetch，需要通过 MCP 服务器或脚本工具封装。
 
 ## 控制网络访问
 
@@ -322,13 +322,13 @@ iCode 不会自行切换到 `remote`。把 fake-IP 地址段加入 `private_orig
 
 ### DeepSeek
 
-DeepSeek 的 Responses API 支持服务端执行的 `web_search`，但**只有 `deepseek-v4-pro` 会真正执行**。`deepseek-flash` 即使收到该声明也不会产生 `web_search_call`，模型会回复没有搜索工具。
+DeepSeek 的 Responses API 支持服务端执行的 `web_search`。使用时：
 
-- 模型配置：提供商选“DeepSeek (OpenAI)”，API 样式选“Responses”，模型 ID 填 `deepseek-v4-pro`。
+- 模型配置：提供商选“DeepSeek (OpenAI)”，API 样式选“Responses”。
 - 在“Chat 选项（额外请求字段）”中加一行 `tools`，值为 `[{"type": "web_search"}]`。
 - 智能体的 `tools.builtins` 不要包含本地 `web_search`，否则本地工具会在该次运行中停用并显示提示；`web_fetch` 不受影响。
 
-DeepSeek 的服务端搜索除了搜索（`search`）还会打开结果页（`open_page`）。计费以 DeepSeek 公告为准：公告中 Harness/Claude Code/Codex 的 Server 端 Search/Fetch 调用目前免费，2026-11-01 00:00（北京时间）起按次计费。使用 `deepseek-flash` 时，请改用 [DeepSeek Search API](#deepseek-search-api)。
+并非所有 DeepSeek 模型都支持该能力；支持的模型、计费和使用限制以 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 为准。若所用模型不支持，可改用 [DeepSeek Search API](#deepseek-search-api)。
 
 ## 网络工具没有出现时
 
