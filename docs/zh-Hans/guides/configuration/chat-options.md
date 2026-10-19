@@ -162,7 +162,7 @@ DeepSeek 也支持 Responses API。使用服务端 `web_search` 时必须选 Res
 | --- | --- | --- |
 | 服务端联网搜索（Responses） | `tools` | `[{"type": "web_search"}]` |
 
-声明后，模型提供方会接管 `web_search` 这个名称；如果智能体也启用了本地 `web_search`，本地工具会在该次运行中停用并显示提示。服务端搜索不受 iCode 审批和网络设置约束。若所用模型不支持，可改用本地 `web_search` 调 DeepSeek Search API，配置见[配置网络工具](./web-tools.md#deepseek-search-api)。
+声明后，模型提供方会接管 `web_search` 这个名称；如果智能体也启用了本地 `web_search`，本地工具会在该次运行中停用并显示提示。服务端搜索不受 iCode 审批和网络设置约束。也可以改用本地 `web_search` 调 DeepSeek Search API，配置见[配置网络工具](./web-tools.md#deepseek-search-api)。
 
 官方文档：[思考模式](https://api-docs.deepseek.com/guides/thinking_mode)、[上下文硬盘缓存](https://api-docs.deepseek.com/guides/kv_cache)、[API 参考](https://api-docs.deepseek.com/api/create-chat-completion)。
 

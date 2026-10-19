@@ -328,7 +328,7 @@ DeepSeek 的 Responses API 支持服务端执行的 `web_search`。使用时：
 - 在“Chat 选项（额外请求字段）”中加一行 `tools`，值为 `[{"type": "web_search"}]`。
 - 智能体的 `tools.builtins` 不要包含本地 `web_search`，否则本地工具会在该次运行中停用并显示提示；`web_fetch` 不受影响。
 
-并非所有 DeepSeek 模型都支持该能力；支持的模型、计费和使用限制以 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 为准。若所用模型不支持，可改用 [DeepSeek Search API](#deepseek-search-api)。
+具体支持的模型、计费和使用限制以 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 为准；也可以改用 [DeepSeek Search API](#deepseek-search-api) 通过本地 `web_search` 使用。
 
 ## 网络工具没有出现时
 

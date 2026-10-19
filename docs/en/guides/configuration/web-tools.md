@@ -328,7 +328,7 @@ DeepSeek's Responses API supports a server-side `web_search` tool. To use it:
 - Add a `tools` row in **Chat Options** with the value `[{"type": "web_search"}]`.
 - Do not include local `web_search` in the agent's `tools.builtins`; if you do, iCode turns the local tool off for that run and shows a notice. `web_fetch` is unaffected.
 
-Not all DeepSeek models support it; see the [DeepSeek Responses API guide](https://api-docs.deepseek.com/guides/responses_api/) for supported models, billing, and limits. If your model does not support it, use the [DeepSeek Search API](#deepseek-search-api) above.
+See the [DeepSeek Responses API guide](https://api-docs.deepseek.com/guides/responses_api/) for supported models, billing, and limits; you can also use the [DeepSeek Search API](#deepseek-search-api) above through the local `web_search` tool.
 
 ## When web tools do not appear
 

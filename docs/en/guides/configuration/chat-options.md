@@ -162,7 +162,7 @@ DeepSeek also supports the Responses API. Server-side `web_search` requires Resp
 | --- | --- | --- |
 | Server-side web search (Responses) | `tools` | `[{"type": "web_search"}]` |
 
-The declaration makes the provider own the `web_search` name; if the agent also enables the local `web_search`, iCode turns the local tool off for that run and shows a notice. Provider-run search is not covered by iCode approval or network settings. If your model does not support it, use the local `web_search` with DeepSeek's Search API; see [Configure web tools](./web-tools.md#deepseek-search-api).
+The declaration makes the provider own the `web_search` name; if the agent also enables the local `web_search`, iCode turns the local tool off for that run and shows a notice. Provider-run search is not covered by iCode approval or network settings. You can also use the local `web_search` with DeepSeek's Search API; see [Configure web tools](./web-tools.md#deepseek-search-api).
 
 Documentation: [Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode), [Context caching](https://api-docs.deepseek.com/guides/kv_cache), [API reference](https://api-docs.deepseek.com/api/create-chat-completion).
 
