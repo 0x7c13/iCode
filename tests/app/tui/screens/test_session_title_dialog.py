@@ -18,6 +18,7 @@ from chrys.app.tui.screens.dialogs import session_title as session_title_dialog
 from chrys.app.tui.screens.dialogs.session_title import SessionTitleDialog
 from chrys.app.tui.widgets import EnhancedInput
 from chrys.foundation.config.settings import Settings
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import click_when_settled, resize_when_settled, rich_plain
 from tests.support.waiting import wait_for, wait_until_quiet
 
@@ -360,7 +361,11 @@ async def test_dragging_across_the_identity_row_selects_the_id_but_not_the_links
         await _open_dialog(app, dialog)
         label = dialog.query_one("#session-title-id-label")
         open_link = dialog.query_one("#session-title-open-folder")
-        await wait_for(lambda: open_link.region.width > 0, pilot=pilot, description="identity row laid out")
+        await wait_for(
+            lambda: _identity_fits(dialog) and screen_is_settled(app, dialog),
+            pilot=pilot,
+            description="identity row layout completed before dragging",
+        )
 
         await pilot.mouse_down(label, offset=(0, 0))
         await pilot.hover(open_link, offset=(open_link.region.width - 1, 0))

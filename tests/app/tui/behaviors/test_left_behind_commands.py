@@ -12,6 +12,7 @@ from textual.widgets import Static
 from chrys.app.tui import app as tui_app
 from chrys.app.tui.screens.dialogs.confirm import NoticeDialog
 from chrys.service.tools.background.crash import LeftBehind, LeftCommand
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
@@ -31,15 +32,16 @@ async def test_the_answer_stops_or_forgets_the_commands(
 
     async with app.run_test(size=(100, 40)) as pilot:
         await wait_for(
-            lambda: isinstance(app.screen, NoticeDialog) and app.screen.is_mounted, pilot=pilot, description="asked"
+            lambda: (
+                isinstance(app.screen, NoticeDialog) and app.screen.is_mounted and screen_is_settled(app, app.screen)
+            ),
+            pilot=pilot,
+            description="left-behind command previews laid out",
         )
-        message = str(app.screen.query_one("#confirm-message", Static).render())
+        message = str(app.screen.query_one("#confirm-message", Static).content)
         assert "closed unexpectedly" in message
-        await wait_for(
-            lambda: "npm run dev" in str(app.screen.query_one(".task-command", Static).render()), pilot=pilot
-        )
-        assert "npm run dev" in str(app.screen.query_one(".task-command", Static).render())
-        assert "/repo" in str(app.screen.query_one(".task-reason", Static).render())
+        assert "npm run dev" in str(app.screen.query_one(".task-command", Static).content)
+        assert "/repo" in str(app.screen.query_one(".task-reason", Static).content)
 
         await click_when_settled(pilot, button)
         await wait_for(lambda: done, pilot=pilot, description="the answer carried out")

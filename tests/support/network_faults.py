@@ -143,8 +143,11 @@ def _with_port(rows: list[tuple[Any, ...]], port: Any) -> list[tuple[Any, ...]]:
 
 
 @contextlib.contextmanager
-def network_faults() -> Iterator[NetworkFaults]:
-    """Install fault rules on the running loop for the ``with`` body."""
+def network_faults(*, on_stalled_connect: Callable[[], None] | None = None) -> Iterator[NetworkFaults]:
+    """Install fault rules; notify the test when a scripted connect reaches its stall.
+
+    ``on_stalled_connect`` runs once per hanging connect attempt, including retries.
+    """
     loop = asyncio.get_running_loop()
     faults = NetworkFaults()
     real_getaddrinfo = loop.getaddrinfo
@@ -165,6 +168,8 @@ def network_faults() -> Iterator[NetworkFaults]:
         host = address[0]
         if host in faults.hanging:
             faults.connect_attempts.append(address)
+            if on_stalled_connect is not None:
+                on_stalled_connect()
             await asyncio.Event().wait()
         rule = faults.connect_rules.get(host)
         if rule is None:

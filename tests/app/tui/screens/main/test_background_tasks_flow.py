@@ -226,11 +226,14 @@ async def test_a_new_session_asks_before_stopping_running_tasks(tmp_path: Path) 
         await _ready(bus, main, pilot, *running, _task("t9", running=False))
 
         main.post_message(InputBar.NewSessionRequested())
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
         await wait_for(
-            lambda: any("serve t1" in str(row.render()) for row in app.screen.query(".task-command")), pilot=pilot
+            lambda: (
+                isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted and screen_is_settled(app, app.screen)
+            ),
+            pilot=pilot,
+            description="all background task previews laid out",
         )
-        message = "\n".join(str(row.render()) for row in app.screen.query(".task-command"))
+        message = "\n".join(str(row.content) for row in app.screen.query(Static).filter(".task-command"))
         assert "serve t1" in message
         assert "serve t8" in message
         assert "serve t9" not in message
@@ -288,7 +291,13 @@ async def test_quit_asks_while_tasks_run_and_a_second_quit_exits(
         monkeypatch.setattr(app, "exit", lambda *args, **_kwargs: exits.append(args))
 
         await pilot.press("ctrl+q")
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
+        await wait_for(
+            lambda: (
+                isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted and screen_is_settled(app, app.screen)
+            ),
+            pilot=pilot,
+            description="quit confirmation controls laid out",
+        )
         assert str(app.screen.query_one("#confirm-yes", Button).label) == "Stop and exit"
         await click_when_settled(pilot, "#confirm-no")
         await wait_for(lambda: app.screen is main, pilot=pilot, description="back to chat")

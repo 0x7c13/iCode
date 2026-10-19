@@ -137,7 +137,10 @@ async def _wait_for_editor_dialog_ready(app: App, pilot, *, description: str) ->
     """
     await _wait_for_condition(
         lambda: (
-            isinstance(app.screen, EditorDialog) and app.screen.query_one("#editor-cancel", Button).region.width > 0
+            isinstance(app.screen, EditorDialog)
+            and app.screen.is_mounted
+            and screen_is_settled(app, app.screen)
+            and app.screen.query_one("#editor-cancel", Button).region.width > 0
         ),
         pilot,
         description=description,

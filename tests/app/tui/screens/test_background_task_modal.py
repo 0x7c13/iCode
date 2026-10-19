@@ -24,6 +24,7 @@ from chrys.app.tui.screens.dialogs.background_task import (
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.widgets.task_summary import TaskSummary
 from chrys.foundation.models.background_tasks import BackgroundTaskView
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
@@ -123,8 +124,13 @@ async def test_confirm_stopping_scrolls_a_long_list_right_above_its_buttons() ->
     tasks = [dataclasses.replace(task, id=f"t{n}") for n in range(7)]
     async with App().run_test(size=(100, 30)) as pilot:
         await pilot.app.push_screen(confirm_stopping(tasks, Static()))
-        buttons = pilot.app.screen.query_one("#confirm-buttons")
-        await wait_for(lambda: buttons.region.height > 0, pilot=pilot, description="buttons laid out")
+        dialog = pilot.app.screen
+        buttons = dialog.query_one("#confirm-buttons")
+        await wait_for(
+            lambda: dialog.is_mounted and screen_is_settled(pilot.app, dialog),
+            pilot=pilot,
+            description="confirmation sizing and layout completed",
+        )
 
         scroll = pilot.app.screen.query_one("#notice-scroll")
         await wait_for(lambda: scroll.max_scroll_y > 0, pilot=pilot, description="task list scrolls")
@@ -159,7 +165,19 @@ def _log_text(modal: BackgroundTaskModal) -> str:
 
 
 @pytest.mark.asyncio
-async def test_modal_follows_the_log_and_stops_after_a_confirmation(tmp_path: Path) -> None:
+async def test_modal_follows_the_log_and_stops_after_a_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hold_refresh_callbacks = True
+    # Textual's private refresh dispatcher runs _size_dialog, which fills the
+    # initially empty task previews. Hold it to expose that state deterministically.
+    invoke_callbacks = ConfirmDialog._invoke_and_clear_callbacks
+
+    async def invoke_when_released(dialog: ConfirmDialog) -> None:
+        if not hold_refresh_callbacks:
+            await invoke_callbacks(dialog)
+
+    monkeypatch.setattr(ConfirmDialog, "_invoke_and_clear_callbacks", invoke_when_released)
     log = tmp_path / "x.log"
     log.write_bytes(b"listening on :3000\n")
     app = _ModalApp(_task(log))
@@ -171,9 +189,23 @@ async def test_modal_follows_the_log_and_stops_after_a_confirmation(tmp_path: Pa
         await wait_for(lambda: "GET / 200" in _log_text(modal), pilot=pilot, description="the new line shown")
 
         await click_when_settled(pilot, "#background-task-stop")
-        await wait_for(lambda: isinstance(app.screen, ConfirmDialog), pilot=pilot, description="the confirmation")
-        message = app.screen.query_one(".task-command", Static)
-        assert "npm run dev" in str(message.render())
+        await wait_for(
+            lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the confirmation mounted before its previews are filled",
+        )
+        dialog = app.screen
+        try:
+            message = dialog.query_one(".task-command", Static)
+            assert str(message.content) == ""
+            assert not screen_is_settled(app, dialog)
+        finally:
+            hold_refresh_callbacks = False
+            dialog.check_idle()
+        await wait_for(
+            lambda: screen_is_settled(app, dialog), pilot=pilot, description="the confirmation previews laid out"
+        )
+        assert "npm run dev" in str(message.content)
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: app.stopped == ["t1"], pilot=pilot, description="the stop requested")
         assert app.screen is modal

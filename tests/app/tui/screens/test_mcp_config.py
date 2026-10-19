@@ -34,6 +34,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.util.env_templates import EnvVarResolutionError
 from chrys.service.mcp.adapter import MCPConnectionError, MCPToolNameCollisionError, MCPToolNameValidationError
 from tests.app.tui.screens._agent_config_support import press_and_answer_confirm
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.waiting import wait_for
 
 
@@ -1776,7 +1777,11 @@ async def test_expose_instructions_checkbox_roundtrip() -> None:
         # Instructions checkbox is listed before the prompts checkbox.
         prompts_checkbox = card.query_one("#mcp-load-prompts-0", Checkbox)
         await wait_for(
-            lambda: checkbox.region.height > 0 and prompts_checkbox.region.height > 0,
+            lambda: (
+                checkbox.region.height > 0
+                and prompts_checkbox.region.height > 0
+                and screen_is_settled(pilot.app, pilot.app.screen)
+            ),
             pilot=pilot,
             description="MCP guidance checkboxes have completed layout",
         )
@@ -1788,7 +1793,7 @@ async def test_expose_instructions_checkbox_roundtrip() -> None:
         assert hint.display is True
         assert not checkbox.has_class("-hint-collapsed")
         checkbox.value = False
-        await pilot.pause()
+        await wait_for(lambda: screen_is_settled(pilot.app, pilot.app.screen), pilot=pilot)
         assert hint.display is False
         assert checkbox.has_class("-hint-collapsed")
         assert prompts_checkbox.region.y - checkbox.region.bottom == 1
