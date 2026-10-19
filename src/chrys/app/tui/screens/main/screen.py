@@ -1330,6 +1330,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         text = event.text.strip()
         if not text:
             return
+        if self._suggestions.suggestion_mode == "history":
+            self._suggestions.dismiss_suggestions()
 
         # Dispatch slash commands
         if is_slash_command_candidate(text):
@@ -1613,6 +1615,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """
         if self._workflow.workflow_mode:
             return
+        if self._suggestions.suggestion_mode == "history":
+            self._suggestions.dismiss_suggestions()
         if self._model_unconfigured():
             # A retry re-runs the turn against the model just like a fresh
             # submit. The composer already consumed the typed note, so hand

@@ -146,6 +146,23 @@ def test_a_line_break_is_never_layout() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("query", "multiline", "inline"),
+    [
+        ("plan:\nthe", "plan:\nthe", "plan: the"),
+        ("存\r\n在", "存\r\n在", "存在"),
+        ("項目:\u2028説明", "項目:\u2028説明", "項目:説明"),
+        ("  \uff30\uff2c\uff21\uff2e\uff1a\n\uff34\uff28\uff25 \n", "plan:\nthe", "plan: the"),
+    ],
+    ids=["punctuation", "cjk-crlf", "cjk-line-separator", "normalized-padded-query"],
+)
+def test_multiline_query_keeps_exact_and_phrase_priority(query: str, multiline: str, inline: str) -> None:
+    # Newest first: a single-line variant must not outrank the query's own line break.
+    assert rank_prompts([inline, multiline], query) == [multiline, inline]
+    inline_phrase, multiline_phrase = f"before {inline} after", f"before {multiline} after"
+    assert rank_prompts([inline_phrase, multiline_phrase], query) == [multiline_phrase, inline_phrase]
+
+
 def test_a_spaced_match_ranks_below_a_substring() -> None:
     # Newest first: the spaced match is newer, yet the substring outranks it.
     prompts = ["xplan:thex", "a plan: the", "a plan:x the"]
@@ -256,6 +273,25 @@ def test_preview_marks_a_prompt_equal_to_the_query_from_end_to_end() -> None:
 
 def test_preview_marks_the_whitespace_inside_a_run_of_the_query() -> None:
     assert _preview("then restore  failed again", "restore failed")[1] == ["restore  failed"]
+
+
+@pytest.mark.parametrize(
+    ("multiline", "inline"),
+    [("plan:\nthe", "plan: the"), ("存\r\n在", "存 在"), ("項目:\u2028説明", "項目: 説明")],
+    ids=["punctuation", "cjk-crlf", "cjk-line-separator"],
+)
+def test_preview_of_multiline_query_marks_only_runs_with_the_line_break(multiline: str, inline: str) -> None:
+    prompt = f"{inline} before {multiline} after {multiline}"
+
+    assert _preview(prompt, multiline, cells=120)[1] == [multiline, multiline]
+    assert _preview(multiline, multiline, cells=80)[1] == [multiline]
+
+
+def test_preview_keeps_spaces_and_line_breaks_equivalent_between_words() -> None:
+    assert _preview("restore failed, restore\nfailed", "restore\nfailed", cells=80)[1] == [
+        "restore failed",
+        "restore\nfailed",
+    ]
 
 
 def test_preview_without_a_run_of_the_query_marks_every_occurrence_of_each_term() -> None:

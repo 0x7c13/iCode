@@ -145,6 +145,26 @@ def _term_patterns(term: str) -> _TermPatterns:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Query:
+    """Normalized terms with their original separators for ranking and preview runs."""
+
+    text: str
+    terms: tuple[_TermPatterns, ...]
+    spans: tuple[tuple[int, int], ...]
+
+    @classmethod
+    def from_text(cls, text: str) -> _Query:
+        normalized = normalize_for_search(text).strip()
+        spans = tuple(match.span() for match in re.finditer(r"\S+", normalized))
+        terms = tuple(_term_patterns(normalized[low:high]) for low, high in spans)
+        return cls(normalized, terms, spans)
+
+    def compact_run(self, start: int, end: int) -> str:
+        """Compact the original text of terms ``[start, end)`` without losing line breaks."""
+        return _compact(self.text[self.spans[start][0] : self.spans[end - 1][1]])
+
+
 def _term_match(patterns: _TermPatterns, entry: _Entry) -> MatchTier | None:
     """Return the strongest tier at which a term matches *entry*, or None."""
     term = patterns.term
@@ -453,24 +473,22 @@ class PromptSearchIndex:
             mine.prompt == theirs.prompt for mine, theirs in zip(self._entries, other._entries, strict=True)
         )
 
-    def _ranked_entries(
-        self, terms: list[str], patterns: list[_TermPatterns], should_stop: Callable[[], bool] | None = None
-    ) -> list[_Entry] | None:
+    def _ranked_entries(self, query: _Query, should_stop: Callable[[], bool] | None = None) -> list[_Entry] | None:
         """Rank the entries matching every term, or return None once *should_stop* says so.
 
         An entry equal to the query comes first, then entries holding the
         query's words as one run in order, then the tiers decide.
         """
-        if not terms:
+        if not query.terms:
             return list(self._entries)
-        joined_query = _compact(" ".join(terms))
-        phrase = len(terms) > 1
+        joined_query = _compact(query.text)
+        phrase = len(query.terms) > 1
         ranked: list[tuple[bool, bool, int, int, int, _Entry]] = []
         for order, entry in enumerate(self._entries):
             if should_stop is not None and should_stop():
                 return None
             tiers: list[MatchTier] = []
-            for term_patterns in patterns:
+            for term_patterns in query.terms:
                 tier = _term_match(term_patterns, entry)
                 if tier is None:
                     break
@@ -498,9 +516,8 @@ class PromptSearchIndex:
         cannot be stopped from outside, so *should_stop* is asked once per
         prompt; once it returns True the search ends with no matches.
         """
-        terms = normalize_for_search(query).split()
-        patterns = [_term_patterns(term) for term in terms]
-        ranked = self._ranked_entries(terms, patterns, should_stop)
+        parsed = _Query.from_text(query)
+        ranked = self._ranked_entries(parsed, should_stop)
         if ranked is None:
             return PromptSearchResult(matches=[], total=0)
         matches: list[PromptMatch] = []
@@ -509,22 +526,22 @@ class PromptSearchIndex:
                 return PromptSearchResult(matches=[], total=0)
             runs = [
                 (
-                    _spaced_pattern(_compact(" ".join(terms[start:end]))) if end - start > 1 else None,
-                    tuple(patterns[start:end]),
+                    _spaced_pattern(parsed.compact_run(start, end)) if end - start > 1 else None,
+                    parsed.terms[start:end],
                 )
-                for start, end in (_runs(terms, entry.compact) if terms else ())
+                for start, end in _runs(parsed, entry.compact)
             ]
             matches.append(_preview(entry, runs, cells, head_chars))
         return PromptSearchResult(matches=matches, total=len(ranked))
 
 
-def _runs(terms: list[str], compact: str) -> tuple[tuple[int, int], ...]:
-    """Split *terms* into the fewest runs that occur in *compact*, as ``[start, end)`` slices of *terms*."""
+def _runs(query: _Query, compact: str) -> tuple[tuple[int, int], ...]:
+    """Split the query into the fewest runs in *compact*, as ``[start, end)`` slices of its terms."""
     runs: list[tuple[int, int]] = []
     start = 0
-    while start < len(terms):
+    while start < len(query.terms):
         end = start + 1
-        while end < len(terms) and _compact(" ".join(terms[start : end + 1])) in compact:
+        while end < len(query.terms) and query.compact_run(start, end + 1) in compact:
             end += 1
         runs.append((start, end))
         start = end
@@ -535,14 +552,20 @@ def _runs(terms: list[str], compact: str) -> tuple[tuple[int, int], ...]:
 def _spaced_pattern(compact: str) -> re.Pattern[str]:
     """Compile the scan that finds in a text what ``in`` finds of *compact* in its compact form.
 
-    A space in *compact* is any whitespace in the text; between two other
-    characters there may be whitespace within a line, unless both join words.
+    Between word-joining characters, a space in *compact* is any whitespace
+    in the text. Elsewhere it must contain a line break, since inline space
+    there would have been removed. Between two other characters there may
+    be whitespace within a line, unless both join words.
     """
     parts: list[str] = []
     previous = ""
-    for char in compact:
+    for index, char in enumerate(compact):
         if char == " ":
-            parts.append(r"\s+")
+            following = compact[index + 1 : index + 2]
+            if _JOINS_RE.fullmatch(previous) and _JOINS_RE.fullmatch(following):
+                parts.append(r"\s+")
+            else:
+                parts.append(rf"{_INLINE_SPACE}*(?:{LINE_SEPARATOR_RE.pattern})\s*")
         else:
             if previous and previous != " " and not (_JOINS_RE.fullmatch(previous) and _JOINS_RE.fullmatch(char)):
                 parts.append(_INLINE_SPACE + "*")

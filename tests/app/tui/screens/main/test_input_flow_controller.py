@@ -177,6 +177,7 @@ def test_input_bar_retry_leaves_status_action_until_admission() -> None:
         _input_flow=flow,
         _model_unconfigured=lambda: False,
         _workflow=SimpleNamespace(workflow_mode=False),
+        _suggestions=SimpleNamespace(suggestion_mode=None),
         _services=MainScreenServices(bus=EventBus()),
     )
 
