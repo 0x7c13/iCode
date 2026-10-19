@@ -1418,11 +1418,15 @@ class MainScreenViewAdapter:
         *,
         disabled: set[str] | None = None,
         title: str | None = None,
+        empty_text: str | None = None,
+        keep_selection: bool = False,
     ) -> None:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 
         with contextlib.suppress(NoMatches):
-            self._screen.query_one(SuggestionList).update(list(items), disabled=disabled, title=title)
+            self._screen.query_one(SuggestionList).update(
+                list(items), disabled=disabled, title=title, empty_text=empty_text, keep_selection=keep_selection
+            )
 
     def hide_suggestions(self) -> None:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
@@ -1437,7 +1441,10 @@ class MainScreenViewAdapter:
         """Load cross-session prompt history without blocking the TUI loop."""
         return await self._screen.query_one(InputBar).load_prompt_history(max_entries=max_entries)
 
-    def run_file_suggestion_worker(self, awaitable: Awaitable[None], *, name: str, group: str) -> Worker[None]:
+    def prompt_history_enabled(self) -> bool:
+        return self._screen.query_one(InputBar).prompt_history_enabled()
+
+    def run_suggestion_worker(self, awaitable: Awaitable[None], *, name: str, group: str) -> Worker[None]:
         return self._screen.run_worker(awaitable, name=name, group=group)
 
     def move_suggestion_cursor(self, direction: str) -> None:
@@ -1446,8 +1453,20 @@ class MainScreenViewAdapter:
         suggestions = self._screen.query_one(SuggestionList)
         if direction == "up":
             suggestions.move_cursor_up()
-            return
-        suggestions.move_cursor_down()
+        elif direction == "pageup":
+            suggestions.move_cursor_page(-1)
+        elif direction == "pagedown":
+            suggestions.move_cursor_page(1)
+        else:
+            suggestions.move_cursor_down()
+
+    def suggestion_row_cells(self) -> int:
+        from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
+
+        try:
+            return self._screen.query_one(SuggestionList).row_width
+        except NoMatches:
+            return 0
 
     def select_highlighted_suggestion(self, *, execute: bool) -> bool:
         from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList

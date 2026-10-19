@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 from rich.text import Text
@@ -19,26 +20,62 @@ from chrys.app.tui.screens.main.model_indicator import is_model_selection_locked
 from chrys.app.tui.screens.main.ports import BuddyCommandView, StartWorker, SuggestionPopupView
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
+from chrys.app.tui.support.prompt_history import DEFAULT_MAX_ENTRIES as _PROMPT_HISTORY_SEARCH_LIMIT
+from chrys.app.tui.support.prompt_search import (
+    LINE_BREAK,
+    LINE_SEPARATOR_RE,
+    PromptMatch,
+    PromptSearchIndex,
+    PromptSearchResult,
+)
 from chrys.app.tui.widgets.chrome.commands import (
     SlashCommandDef,
     is_slash_command_candidate,
 )
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
 from chrys.foundation.i18n import MessageRef, msg
-from chrys.foundation.i18n.formatting import format_message
+from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar
 from chrys.foundation.platform import safe_getcwd
 from chrys.service.profiles.models.schema import is_model_profile_selectable
 
 _FILE_QUERY_DEBOUNCE_SECONDS = 0.04
 _FILE_QUERY_LIMIT = 30
-_PROMPT_HISTORY_LIMIT = 100
-_PROMPT_HISTORY_LINE_BREAK = " ↵ "
+# The list shows the best this many prompts; search covers every stored prompt.
+_PROMPT_HISTORY_DISPLAY_LIMIT = 100
+# A row shows one line and the highlighted row scrolls it, so a label longer than
+# this only costs layout and marquee work on every keystroke; selection still
+# inserts the whole prompt.
+_PROMPT_HISTORY_LABEL_MAX_CHARS = 300
+# Preview width used before the list has been laid out.
+_PROMPT_HISTORY_FALLBACK_CELLS = 80
+# The index outlives the list for an instant reopen only while the prompts hold
+# at most this many characters; it keeps about three copies of their text.
+_PROMPT_HISTORY_CACHE_MAX_CHARS = 2 * 1024 * 1024
 
 _SUGGESTIONS_FILES_TITLE = msg("tui.suggestions.files_title", fallback="Files under {root}")
 _SUGGESTIONS_COMMANDS_TITLE = msg("tui.suggestions.commands_title", fallback="Commands")
 _SUGGESTIONS_AGENTS_TITLE = msg("tui.suggestions.agents_title", fallback="Agents")
 _SUGGESTIONS_MODELS_TITLE = msg("tui.suggestions.models_title", fallback="Models")
 _SUGGESTIONS_PROMPT_HISTORY_TITLE = msg("tui.suggestions.prompt_history_title", fallback="Prompt History")
+_SUGGESTIONS_PROMPT_HISTORY_TITLE_MATCHES = msg(
+    "tui.suggestions.prompt_history_title_matches",
+    fallback="Prompt History · {count} match",
+    plural_fallback="Prompt History · {count} matches",
+)
+_SUGGESTIONS_PROMPT_HISTORY_TITLE_SHOWN_MATCHES = msg(
+    "tui.suggestions.prompt_history_title_shown_matches",
+    fallback="Prompt History · {shown} of {count} match",
+    plural_fallback="Prompt History · {shown} of {count} matches",
+)
+_SUGGESTIONS_PROMPT_HISTORY_EMPTY = msg("tui.suggestions.prompt_history_empty", fallback="No prompt history yet.")
+_SUGGESTIONS_PROMPT_HISTORY_DISABLED = msg(
+    "tui.suggestions.prompt_history_disabled",
+    fallback="Prompt history is off. Turn on Save prompt history in settings and restart to use it.",
+)
+_SUGGESTIONS_PROMPT_HISTORY_NO_MATCH = msg(
+    "tui.suggestions.prompt_history_no_match",
+    fallback="No matching prompts. Try changing or clearing the input.",
+)
 _SUGGESTIONS_SYSTEM_COMMANDS = msg("tui.suggestions.system_commands", fallback="System Commands")
 _SUGGESTIONS_LOADED_SKILLS = msg("tui.suggestions.loaded_skills", fallback="Loaded Skills")
 _SUGGESTIONS_SHADOWED = msg("tui.suggestions.shadowed", fallback="shadowed by /{name}")
@@ -63,6 +100,17 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.chrome.file_index import ProjectPathIndex
     from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
     from chrys.foundation.events.types import RuntimeSkillDetails
+
+
+def _newest_unique(history: Sequence[str]) -> list[str]:
+    """Return *history* (oldest first) newest first, keeping only the newest copy of each prompt."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for prompt in reversed(history):
+        if prompt not in seen:
+            seen.add(prompt)
+            unique.append(prompt)
+    return unique
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +160,21 @@ class SuggestionHandler:
         self._file_warmup_requested_root: str | None = None
         self._file_warmup_worker: Worker[None] | None = None
         self._prompt_history_revision = 0
-        self._prompt_history_draft = ""
+        self._prompt_history_index: PromptSearchIndex | None = None
+        self._prompt_history_query_revision = 0
+        self._prompt_history_pending: tuple[str, int] | None = None
+        self._prompt_history_query_worker: Worker[None] | None = None
+        self._prompt_history_enabled = True
+        # Whether this opening's load finished: a cached index can lack a prompt just submitted.
+        self._prompt_history_loaded = False
+        # The query and index whose rows are shown; showing them again keeps the selected row.
+        self._prompt_history_shown: tuple[str, PromptSearchIndex] | None = None
+        # Survives closing the list so reopening it re-normalizes only new prompts;
+        # None when the history is too large to keep in memory.
+        self._prompt_history_index_cache: PromptSearchIndex | None = None
+        # Up/Down and Enter/Tab pressed while a newer query is still ranking or
+        # the history still loading, in order; replayed once both are done.
+        self._prompt_history_deferred_keys: list[tuple[str, str]] = []
         self._slash_commands: list[SlashCommandDef] = []
         self._active_command: SlashCommandDef | None = None
         self._buddy_command = BuddyCommandController(
@@ -240,45 +302,251 @@ class SuggestionHandler:
         self._suggestion_mode = None
 
     def _invalidate_prompt_history_results(self) -> None:
-        """Invalidate an in-flight prompt-history load."""
+        """Invalidate an in-flight prompt-history load or query and drop loaded entries."""
         self._prompt_history_revision += 1
+        self._prompt_history_index = None
+        self._prompt_history_query_revision += 1
+        self._prompt_history_pending = None
+        self._prompt_history_deferred_keys = []
+        self._prompt_history_loaded = False
+        self._prompt_history_shown = None
 
     @staticmethod
-    def _prompt_history_label(text: str) -> str:
-        """Render a multi-line prompt as one visible suggestion row."""
-        return _PROMPT_HISTORY_LINE_BREAK.join(text.splitlines())
+    def _prompt_history_label(match: PromptMatch) -> tuple[str, tuple[tuple[int, int], ...]]:
+        """Render the preview windows of a ranked prompt as one row and locate its matches in it.
+
+        Line breaks show as ``↵`` (a trailing one is dropped, as ``splitlines``
+        does), control characters are replaced, and an ellipsis marks text cut
+        before, between or after the windows. The last window runs on to its
+        tail, past the row's edge, so a highlighted row scrolls on from the
+        match. The spans are ranges of the returned label.
+        """
+        prompt = match.prompt
+        parts: list[str] = []
+        spans: list[tuple[int, int]] = []
+        length = 0
+
+        def add(text: str, *, matched: bool = False) -> None:
+            nonlocal length
+            if matched:
+                spans.append((length, length + len(text)))
+            parts.append(text)
+            length += len(text)
+
+        def add_text(low: int, high: int) -> None:
+            position = low
+            for span_low, span_high in match.spans:
+                span_low, span_high = max(span_low, position), min(span_high, high)
+                if span_low >= span_high:
+                    continue
+                if span_low > position:
+                    add(sanitize_legacy_scalar(prompt[position:span_low]))
+                add(sanitize_legacy_scalar(prompt[span_low:span_high]), matched=True)
+                position = span_high
+            if position < high:
+                add(sanitize_legacy_scalar(prompt[position:high]))
+
+        previous_end = 0
+        windows = [*match.windows[:-1], (match.windows[-1][0], match.tail_end)]
+        for start, end in windows:
+            if start > previous_end or (start > 0 and not parts):
+                add("…")
+            position = start
+            for separator in LINE_SEPARATOR_RE.finditer(prompt, start, end):
+                add_text(position, separator.start())
+                position = separator.end()
+                # The LF of a CRLF whose CR fell before the window was already shown with it.
+                if position < len(prompt) and prompt[separator.start() - 1 : separator.end()] != "\r\n":
+                    add(LINE_BREAK)
+            add_text(position, end)
+            previous_end = end
+        if previous_end < len(prompt):
+            add("…")
+        return "".join(parts), tuple(spans)
+
+    def _enqueue_prompt_history_query(self, query: str) -> None:
+        """Record *query* as the latest history search and make sure a query loop will run it.
+
+        Ranking scans every loaded entry and entries have no length limit, so it
+        runs off the event loop; keystrokes that arrive meanwhile coalesce into
+        the newest pending query, and results for any older query are dropped.
+        """
+        self._prompt_history_query_revision += 1
+        self._prompt_history_pending = (query, self._prompt_history_query_revision)
+        if self._prompt_history_index is None or self._prompt_history_query_active():
+            return
+        self._prompt_history_query_worker = self._view.run_suggestion_worker(
+            self._run_prompt_history_query_loop(),
+            name="prompt-history-query",
+            group="prompt-history",
+        )
+
+    def _prompt_history_query_active(self) -> bool:
+        """Return whether a history query loop is running; at most one ever is."""
+        worker = self._prompt_history_query_worker
+        return worker is not None and not worker.is_finished
+
+    async def _run_prompt_history_query_loop(self) -> None:
+        """Rank the newest pending history query in a thread until none is pending.
+
+        Closing the list or a newer query makes the search in its thread stop
+        at the next prompt, and the loop goes on to whatever is pending then,
+        including the query of a list reopened meanwhile.
+        """
+        while self._prompt_history_pending is not None:
+            query, revision = self._prompt_history_pending
+            self._prompt_history_pending = None
+            index = self._prompt_history_index
+            if index is None:
+                return
+            result = await asyncio.to_thread(
+                index.search,
+                query,
+                limit=_PROMPT_HISTORY_DISPLAY_LIMIT,
+                cells=self._view.suggestion_row_cells() or _PROMPT_HISTORY_FALLBACK_CELLS,
+                head_chars=_PROMPT_HISTORY_LABEL_MAX_CHARS,
+                # Read from the search thread; the int read needs no lock.
+                should_stop=lambda revision=revision: revision != self._prompt_history_query_revision,
+            )
+            if self._prompt_history_result_current(revision, index):
+                items = await asyncio.to_thread(self._prompt_history_items, result.matches)
+                if not self._prompt_history_result_current(revision, index):
+                    continue
+                self._show_prompt_history_matches(index, items, result, query=query)
+                if self._prompt_history_pending is None and self._prompt_history_loaded:
+                    self._replay_deferred_prompt_history_keys()
+
+    def _prompt_history_result_current(self, revision: int, index: PromptSearchIndex) -> bool:
+        """Return whether a result for *revision* on *index* may still update the open history list."""
+        return (
+            revision == self._prompt_history_query_revision
+            and index is self._prompt_history_index
+            and self._view.is_attached
+            and self._suggestion_mode == "history"
+        )
+
+    @classmethod
+    def _prompt_history_items(cls, matches: list[PromptMatch]) -> list[SuggestionItem]:
+        """Build the rows for ranked *matches*; runs in a thread, off the event loop."""
+        items: list[SuggestionItem] = []
+        for match in matches:
+            label, spans = cls._prompt_history_label(match)
+            items.append(
+                SuggestionItem(value=match.prompt, label=label, kind="history", marquee_start=0, match_spans=spans)
+            )
+        return items
+
+    def _prompt_history_title(self, result: PromptSearchResult, *, shown: int, filtered: bool) -> str:
+        """Name the list, and while a query filters it, how many prompts matched."""
+        if not filtered or result.total == 0:
+            return self._suggestion_title("history")
+        if result.total > shown:
+            return self._render_message(
+                _SUGGESTIONS_PROMPT_HISTORY_TITLE_SHOWN_MATCHES.bind(count=result.total, shown=str(shown))
+            )
+        return self._render_message(_SUGGESTIONS_PROMPT_HISTORY_TITLE_MATCHES.bind(count=result.total))
+
+    def _show_prompt_history_matches(
+        self, index: PromptSearchIndex, items: list[SuggestionItem], result: PromptSearchResult, *, query: str
+    ) -> None:
+        """Show ranked rows from *index*, saying why when there are none.
+
+        Rows refit to a new width keep the selected prompt and scroll position,
+        so a held Enter picks what the user saw; a new query or newly loaded
+        prompts start again from the best match.
+        """
+        shown = self._prompt_history_shown
+        refit = shown is not None and shown[0] == query and shown[1] is index
+        self._prompt_history_shown = (query, index)
+        if not self._prompt_history_enabled:
+            empty = _SUGGESTIONS_PROMPT_HISTORY_DISABLED
+        elif len(index):
+            empty = _SUGGESTIONS_PROMPT_HISTORY_NO_MATCH
+        else:
+            empty = _SUGGESTIONS_PROMPT_HISTORY_EMPTY
+        self._view.update_suggestions(
+            items,
+            title=self._prompt_history_title(result, shown=len(items), filtered=bool(query.split())),
+            empty_text=self._render_message(empty.bind()),
+            keep_selection=refit,
+        )
+
+    def _defer_prompt_history_key(self, action: str, argument: str) -> bool:
+        """Hold a list key until the newest history results are shown; return whether it was held.
+
+        Results arrive after the keystroke that asked for them, and the first
+        ones after the history loads, so moving or selecting at once would act
+        on rows of an older query or on none at all. Rows from a cached index
+        wait for the load too, since it can lack a prompt submitted just now.
+        """
+        if self._suggestion_mode != "history":
+            return False
+        loading = self._prompt_history_index is None or not self._prompt_history_loaded
+        if not loading and self._prompt_history_pending is None and not self._prompt_history_query_active():
+            return False
+        self._prompt_history_deferred_keys.append((action, argument))
+        return True
+
+    def _replay_deferred_prompt_history_keys(self) -> None:
+        """Apply held Up/Down and Enter/Tab, in order, to the rows just shown."""
+        keys, self._prompt_history_deferred_keys = self._prompt_history_deferred_keys, []
+        for action, argument in keys:
+            if action == "move":
+                self._view.move_suggestion_cursor(argument)
+            else:
+                # Selecting closes the list, so nothing held after it applies.
+                self._view.select_highlighted_suggestion(execute=argument == "execute")
+                return
 
     def start_prompt_history(self) -> int:
-        """Open prompt-history loading synchronously and return its request revision."""
+        """Open prompt history synchronously and return its load revision.
+
+        With prompts indexed by an earlier opening, those are searched at once
+        while the load checks for new ones, so reopening shows no loading state.
+        """
         self._invalidate_prompt_history_results()
         revision = self._prompt_history_revision
-        self._prompt_history_draft = self._view.input_value()
         self._show_suggestions_loading("history")
+        cached = self._prompt_history_index_cache
+        if cached is not None:
+            self._prompt_history_index = cached
+            self._enqueue_prompt_history_query(self._view.input_value())
         return revision
 
     async def show_prompt_history_async(self, *, revision: int | None = None) -> None:
-        """Load and show the newest global prompt-history entries first."""
+        """Load the newest global prompt-history entries and show those matching the input text."""
         if revision is None:
             revision = self.start_prompt_history()
         elif revision != self._prompt_history_revision or self._suggestion_mode != "history":
             return
-        history = await self._view.load_prompt_history(max_entries=_PROMPT_HISTORY_LIMIT)
+        history = await self._view.load_prompt_history(max_entries=_PROMPT_HISTORY_SEARCH_LIMIT)
         if (
             revision != self._prompt_history_revision
             or not self._view.is_attached
             or self._suggestion_mode != "history"
         ):
             return
-        items = [
-            SuggestionItem(
-                value=prompt,
-                label=self._prompt_history_label(prompt),
-                kind="history",
-                marquee_start=0,
-            )
-            for prompt in reversed(history)
-        ]
-        self._view.update_suggestions(items, title=self._suggestion_title("history"))
+        self._prompt_history_enabled = self._view.prompt_history_enabled()
+        prompts = _newest_unique(history)
+        index = await asyncio.to_thread(partial(PromptSearchIndex, prompts, previous=self._prompt_history_index_cache))
+        if (
+            revision != self._prompt_history_revision
+            or not self._view.is_attached
+            or self._suggestion_mode != "history"
+        ):
+            return
+        self._prompt_history_loaded = True
+        shown = self._prompt_history_index
+        if shown is not None and index.same_prompts(shown):
+            # Nothing changed: keep the index being searched, whose results must still be shown.
+            if self._prompt_history_pending is None and not self._prompt_history_query_active():
+                self._replay_deferred_prompt_history_keys()
+            return
+        self._prompt_history_index = index
+        small = sum(len(prompt) for prompt in prompts) <= _PROMPT_HISTORY_CACHE_MAX_CHARS
+        self._prompt_history_index_cache = index if small else None
+        # Typing during the load was recorded only as input text; search what is there now.
+        self._enqueue_prompt_history_query(self._view.input_value())
 
     # -------------------------------------------------------------- #
     # Trigger handlers (called by thin @on forwarders in MainScreen)
@@ -509,7 +777,7 @@ class SuggestionHandler:
         self._file_warmup_requested_root = root
         worker = self._file_warmup_worker
         if worker is None or worker.is_finished:
-            worker = self._view.run_file_suggestion_worker(
+            worker = self._view.run_suggestion_worker(
                 self._run_file_warmup_loop(),
                 name="file-suggestion-warmup",
                 group="file-suggestions",
@@ -665,7 +933,7 @@ class SuggestionHandler:
             return
         self._file_query_pending = (query, revision)
         if self._file_query_worker is None or self._file_query_worker.is_finished:
-            self._file_query_worker = self._view.run_file_suggestion_worker(
+            self._file_query_worker = self._view.run_suggestion_worker(
                 self._run_file_query_loop(),
                 name="file-suggestion-query",
                 group="file-suggestions",
@@ -860,18 +1128,32 @@ class SuggestionHandler:
             items = [item_by_id[profile_id] for profile_id in matches]
             self._view.update_suggestions(items, disabled=disabled, title=self._suggestion_title("models"))
 
-        elif self._suggestion_mode == "history" and text != self._prompt_history_draft:
-            self.dismiss_suggestions()
+        elif self._suggestion_mode == "history":
+            # The whole input is the search query; entries arriving later read it on load.
+            self._enqueue_prompt_history_query(text)
 
     # -------------------------------------------------------------- #
     # Navigation and selection
     # -------------------------------------------------------------- #
 
+    def on_prompt_history_shortcut_while_open(self) -> None:
+        """Ctrl+R again while history is open moves to the next older match, as in shells."""
+        self.on_suggestion_navigate("down")
+
+    def on_suggestion_row_width_changed(self) -> None:
+        """Re-fit history previews to the new row width."""
+        if self._suggestion_mode == "history" and self._prompt_history_index is not None:
+            self._enqueue_prompt_history_query(self._view.input_value())
+
     def on_suggestion_navigate(self, direction: str) -> None:
+        if self._defer_prompt_history_key("move", direction):
+            return
         self._view.move_suggestion_cursor(direction)
 
     def on_suggestion_select(self, execute: bool) -> bool:
         """Handle Tab/Enter on suggestion list. Returns True if handled."""
+        if self._defer_prompt_history_key("select", "execute" if execute else "insert"):
+            return True
         selected = self._view.select_highlighted_suggestion(execute=execute)
         if not selected and execute:
             mode = self._suggestion_mode

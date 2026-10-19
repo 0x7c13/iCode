@@ -10,6 +10,7 @@ import pytest
 from rich.cells import cell_len
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.content import Content
 from textual.selection import SELECT_ALL
 from textual.widgets import Button, TextArea
 
@@ -33,6 +34,7 @@ from chrys.app.tui.widgets.sidebar.context import ContextPanel, ContextUsageStat
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import MessageRef
+from tests.support.tui_helpers import click_when_settled, wait_for_prompt_history_query
 from tests.support.waiting import wait_for
 
 
@@ -166,7 +168,7 @@ async def test_ctrl_r_opens_prompt_history_and_enter_restores_original_prompt(
     markup_shaped_prompt = "failure [type=missing, input_value={}, input_type=dict])"
 
     async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
-        assert max_entries == 100
+        assert max_entries == 1000
         return ["older", "middle\nwith newline", markup_shaped_prompt]
 
     monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
@@ -215,7 +217,7 @@ async def test_prompt_history_loading_is_dismissed_before_main_view_transition(
     release = asyncio.Event()
 
     async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
-        assert max_entries == 100
+        assert max_entries == 1000
         started.set()
         await release.wait()
         return ["stale prompt"]
@@ -239,10 +241,16 @@ async def test_prompt_history_loading_is_dismissed_before_main_view_transition(
         loading = suggestions.query_one(ChrysLoadingIndicator)
         assert suggestions.mode == "history"
         assert suggestions.is_loading is True
-        assert loading.display is True
+        # The indicator appears once the load has been slow for a moment.
+        await wait_for(lambda: loading.display, pilot=pilot, description="loading indicator for a slow load")
 
         try:
-            await pilot.press("!" if transition == "shell" else "f12")
+            if transition == "shell":
+                # "!" is query text inside the history search, so the shell request
+                # arrives the way any other entry point would deliver it.
+                input_bar.post_message(InputBar.ShellModeRequested())
+            else:
+                await pilot.press("f12")
             await pilot.pause()
 
             assert suggestions.mode == ""
@@ -261,9 +269,249 @@ async def test_prompt_history_loading_is_dismissed_before_main_view_transition(
 
 
 @pytest.mark.asyncio
+async def test_ctrl_r_again_and_page_keys_move_through_open_prompt_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        assert max_entries == 1000
+        return [f"prompt {n}" for n in range(40)]
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.main_screen.query_one(InputBar)
+        input_bar.focus_input()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input").has_focus,
+            pilot=pilot,
+            description="composer focus before interaction",
+        )
+        suggestions = app.main_screen.query_one(SuggestionList)
+
+        await pilot.press("ctrl+r")
+        await wait_for(
+            lambda: suggestions.mode == "history" and suggestions._highlighted == 0,
+            pilot=pilot,
+            description="prompt history rows",
+        )
+        await pilot.press("ctrl+r")
+        await wait_for(lambda: suggestions._highlighted == 1, pilot=pilot, description="Ctrl+R moving down")
+        assert suggestions.mode == "history"
+
+        await pilot.press("pagedown")
+        await wait_for(lambda: suggestions._highlighted == 13, pilot=pilot, description="PageDown moving a page")
+        await pilot.press("pageup")
+        await wait_for(lambda: suggestions._highlighted == 1, pilot=pilot, description="PageUp moving a page")
+
+        await pilot.press("enter")
+        await wait_for(lambda: suggestions.mode == "", pilot=pilot, description="selection closing the list")
+        assert input_bar.value == "prompt 38"
+
+
+@pytest.mark.asyncio
+async def test_page_keys_leave_the_command_list_alone() -> None:
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.main_screen.query_one(InputBar)
+        input_bar.focus_input()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input").has_focus,
+            pilot=pilot,
+            description="composer focus before interaction",
+        )
+        suggestions = app.main_screen.query_one(SuggestionList)
+        await pilot.press("/")
+        await wait_for(lambda: suggestions.mode == "commands", pilot=pilot, description="command list")
+        highlighted = suggestions._highlighted
+        assert len([disabled for disabled in suggestions._disabled if not disabled]) > 13
+
+        # Only prompt history pages its list; elsewhere the keys keep their old meaning.
+        await pilot.press("pagedown")
+        await pilot.pause()
+
+        assert suggestions.mode == "commands"
+        assert suggestions._highlighted == highlighted
+
+
+@pytest.mark.asyncio
+async def test_prompt_history_search_takes_bang_as_query_until_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        assert max_entries == 1000
+        return ["git status", "!ls -la"]
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.main_screen.query_one(InputBar)
+        input_bar.focus_input()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input").has_focus,
+            pilot=pilot,
+            description="composer focus before interaction",
+        )
+        suggestions = app.main_screen.query_one(SuggestionList)
+
+        await pilot.press("ctrl+r")
+        await wait_for(
+            lambda: suggestions.mode == "history" and not suggestions.is_loading,
+            pilot=pilot,
+            description="prompt history rows",
+        )
+        await pilot.press("!")
+        await wait_for(
+            lambda: suggestions._values == ["!ls -la"],
+            pilot=pilot,
+            description="history filtered by the bang query",
+        )
+        assert input_bar.value == "!"
+        assert app.main_screen._state.shell.active is False
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert suggestions.is_visible is False
+        # Esc closes the list only; the query stays as the draft, as with / and @.
+        assert input_bar.value == "!"
+        input_bar.value = ""
+        await pilot.press("!")
+        await wait_for(
+            lambda: app.main_screen._state.shell.active,
+            pilot=pilot,
+            description="shell mode after leaving history search",
+        )
+
+
+@pytest.mark.asyncio
+async def test_prompt_history_ignored_while_another_suggestion_list_is_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    loads: list[int] = []
+
+    async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        loads.append(max_entries)
+        return ["/resume earlier session"]
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.main_screen.query_one(InputBar)
+        input_bar.focus_input()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input").has_focus,
+            pilot=pilot,
+            description="composer focus before interaction",
+        )
+        suggestions = app.main_screen.query_one(SuggestionList)
+
+        await pilot.press("/")
+        await wait_for(lambda: suggestions.mode == "commands", pilot=pilot, description="command list")
+
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert suggestions.mode == "commands"
+        assert input_bar.value == "/"
+        assert loads == []
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert suggestions.is_visible is False
+        await pilot.press("ctrl+r")
+        await wait_for(
+            lambda: suggestions.mode == "history" and suggestions._values == ["/resume earlier session"],
+            pilot=pilot,
+            description="prompt history after closing the command list",
+        )
+        assert loads == [1000]
+
+
+@pytest.mark.asyncio
+async def test_prompt_handed_back_while_prompt_history_is_open_survives_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        return ["git status", "rejected prompt"]
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.main_screen.query_one(InputBar)
+        input_bar.focus_input()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input").has_focus,
+            pilot=pilot,
+            description="composer focus before interaction",
+        )
+        suggestions = app.main_screen.query_one(SuggestionList)
+        await pilot.press("ctrl+r")
+        await wait_for(
+            lambda: suggestions.mode == "history" and not suggestions.is_loading,
+            pilot=pilot,
+            description="prompt history rows",
+        )
+
+        # A submit, retry or rollback hands its prompt back into the empty composer.
+        assert input_bar.restore_draft("rejected prompt") is True
+        await wait_for(
+            lambda: suggestions._values == ["rejected prompt"],
+            pilot=pilot,
+            description="history filtered by the handed-back prompt",
+        )
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert suggestions.is_visible is False
+        assert input_bar.value == "rejected prompt"
+
+
+@pytest.mark.asyncio
+async def test_prompt_history_search_swaps_input_placeholder_until_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        assert max_entries == 1000
+        return ["older prompt"]
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.main_screen.query_one(InputBar)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        input_bar.focus_input()
+        await wait_for(
+            lambda: text_area.has_focus,
+            pilot=pilot,
+            description="composer focus before interaction",
+        )
+        default_placeholder = text_area.placeholder
+        default_right_hint = text_area._right_placeholder
+        assert default_right_hint
+
+        await pilot.press("ctrl+r")
+        await wait_for(
+            lambda: app.main_screen.query_one(SuggestionList).mode == "history",
+            pilot=pilot,
+            description="prompt history popup",
+        )
+        placeholder = text_area.placeholder
+        assert isinstance(placeholder, Content)
+        assert placeholder.plain == "Search prompt history   Enter  Select  Esc  Close"
+        assert text_area._right_placeholder == ""
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert text_area.placeholder == default_placeholder
+        assert text_area._right_placeholder == default_right_hint
+
+
+@pytest.mark.asyncio
 async def test_prompt_history_selection_resets_up_down_browsing(monkeypatch: pytest.MonkeyPatch) -> None:
     async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
-        assert max_entries == 100
+        assert max_entries == 1000
         return ["selected prompt"]
 
     monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
@@ -273,7 +521,7 @@ async def test_prompt_history_selection_resets_up_down_browsing(monkeypatch: pyt
         await pilot.pause()
         input_bar = app.main_screen.query_one(InputBar)
         text_area = input_bar.query_one("#chat-input", _ChatTextArea)
-        input_bar.add_to_history("instance history")
+        input_bar.add_to_history("selected")
         input_bar.value = "earlier draft"
         input_bar.focus_input()
         await wait_for(
@@ -283,7 +531,7 @@ async def test_prompt_history_selection_resets_up_down_browsing(monkeypatch: pyt
         )
 
         await pilot.press("up")
-        assert input_bar.value == "instance history"
+        assert input_bar.value == "selected"
         assert text_area._history.index == 0
 
         await pilot.press("ctrl+r")
@@ -410,6 +658,37 @@ async def test_input_bar_requests_shell_mode_without_owning_state() -> None:
 
         assert app.shell_request_count == 1
         assert input_bar.shell_mode is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_history_search_types_trigger_characters_as_query_text() -> None:
+    app = _InputBarApp()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        input_bar = app.query_one(InputBar)
+        input_bar.set_suggestions_active(True, mode="history")
+        input_bar.query_one("#chat-input", TextArea).focus()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input", TextArea).has_focus,
+            pilot=pilot,
+            description="control focus before interaction",
+        )
+
+        await pilot.press("!", "$", "@")
+        await pilot.pause()
+
+        assert input_bar.value == "!$@"
+        assert app.shell_request_count == 0
+        assert app.file_trigger_count == 0
+        assert app.model_trigger_count == 0
+
+        # Leaving history search restores the trigger characters.
+        input_bar.set_suggestions_active(False)
+        input_bar.value = ""
+        await pilot.press("!")
+        await pilot.pause()
+        assert app.shell_request_count == 1
 
 
 @pytest.mark.parametrize(
@@ -1330,12 +1609,94 @@ class _MainScreenUserSubmitRecordingApp(_MainScreenInputBindingApp):
         self.user_submitted.append(event.text)
 
 
+@pytest.mark.parametrize("retry", [False, True], ids=["send", "retry"])
+@pytest.mark.parametrize("loaded", [False, True], ids=["loading", "loaded"])
+async def test_submit_button_closes_prompt_history_and_discards_held_selection(
+    monkeypatch: pytest.MonkeyPatch, retry: bool, loaded: bool
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    submitted: list[str] = []
+    retried: list[str] = []
+
+    async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
+        started.set()
+        await release.wait()
+        return ["ready prompt"]
+
+    monkeypatch.setattr(InputBar, "load_prompt_history", load_prompt_history)
+    app = _MainScreenInputBindingApp()
+
+    async with app.run_test() as pilot:
+        screen = app.main_screen
+        monkeypatch.setattr(screen._input_flow, "submit_user_text", submitted.append)
+        monkeypatch.setattr(screen._input_flow, "request_retry", retried.append)
+        input_bar = screen.query_one(InputBar)
+        input_bar.retry_mode = retry
+        input_bar.value = "ready"
+        input_bar.focus_input()
+        await wait_for(
+            lambda: input_bar.query_one("#chat-input").has_focus,
+            pilot=pilot,
+            description="composer focus before history search",
+        )
+        await pilot.press("ctrl+r")
+        await wait_for(started.is_set, pilot=pilot, description="history load started")
+        load_worker = next(worker for worker in app.workers if worker.name == "_show_prompt_history")
+        suggestions = screen.query_one(SuggestionList)
+
+        try:
+            if loaded:
+                release.set()
+                await load_worker.wait()
+                await wait_for_prompt_history_query(screen._suggestions)
+                assert suggestions._values == ["ready prompt"]
+            else:
+                await pilot.press("enter")
+                await wait_for(
+                    lambda: bool(screen._suggestions._prompt_history_deferred_keys),
+                    pilot=pilot,
+                    description="history selection held during the load",
+                )
+
+            await click_when_settled(pilot, "#send-btn")
+            await wait_for(
+                lambda: retried == ["ready"] if retry else submitted == ["ready"],
+                pilot=pilot,
+                description="button submitting the search input",
+            )
+            assert suggestions.mode == ""
+            assert suggestions.is_visible is False
+            assert input_bar.suggestions_active is False
+            assert screen._suggestions._prompt_history_deferred_keys == []
+            assert input_bar.value == ""
+            # Text typed after submitting must survive the older history load.
+            input_bar.value = "next message"
+        finally:
+            release.set()
+            await load_worker.wait()
+            await wait_for_prompt_history_query(screen._suggestions)
+
+        assert input_bar.value == "next message"
+        assert suggestions.is_visible is False
+        input_bar.retry_mode = False
+        input_bar.focus_input()
+        await pilot.press("enter")
+        await wait_for(
+            lambda: submitted == ([] if retry else ["ready"]) + ["next message"],
+            pilot=pilot,
+            description="Enter submitting normally after history closes",
+        )
+        assert retried == (["ready"] if retry else [])
+
+
 @pytest.mark.asyncio
-async def test_enter_tab_during_history_loading_do_not_mis_select(
+async def test_enter_during_history_loading_selects_the_first_result_once_loaded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Enter/Tab pressed against the *loading* history popup select nothing
-    and never submit the draft: rows do not exist yet, and the unselected
+    """Enter pressed against the *loading* history popup is held, never
+    submits the draft, and selects the top row once the rows arrive; a Tab
+    held after it is dropped, since selecting closes the list. The unselected
     Enter consume-fallback must not fall through to submit_user_text (adding
     "history" to SuggestionsController.on_suggestion_select's mode allow-list
     would clear the input and submit the draft here)."""
@@ -1343,7 +1704,7 @@ async def test_enter_tab_during_history_loading_do_not_mis_select(
     release = asyncio.Event()
 
     async def load_prompt_history(_input_bar: InputBar, *, max_entries: int) -> list[str]:
-        assert max_entries == 100
+        assert max_entries == 1000
         started.set()
         await release.wait()
         return ["ready prompt"]
@@ -1354,7 +1715,7 @@ async def test_enter_tab_during_history_loading_do_not_mis_select(
     async with app.run_test() as pilot:
         await pilot.pause()
         input_bar = app.main_screen.query_one(InputBar)
-        input_bar.value = "draft text"
+        input_bar.value = "ready"
         input_bar.focus_input()
         await wait_for(
             lambda: input_bar.query_one("#chat-input").has_focus,
@@ -1372,39 +1733,22 @@ async def test_enter_tab_during_history_loading_do_not_mis_select(
         assert suggestions._values == []
 
         try:
-            # Enter while loading: no row to select and the draft must not be
-            # submitted; the popup stays in its loading state.
+            # Enter and Tab while loading: no row exists yet, nothing is
+            # submitted and the popup stays in its loading state.
             await pilot.press("enter")
-            await pilot.pause()
-            assert app.user_submitted == []
-            assert input_bar.value == "draft text"
-            assert suggestions.is_visible is True
-            assert suggestions.is_loading is True
-            assert suggestions._values == []
-
-            # Tab while loading: consumed by the suggestion layer, selects
-            # nothing, submits nothing.
             await pilot.press("tab")
             await pilot.pause()
             assert app.user_submitted == []
-            assert input_bar.value == "draft text"
+            assert input_bar.value == "ready"
             assert suggestions.is_visible is True
             assert suggestions.is_loading is True
             assert suggestions._values == []
         finally:
             release.set()
 
-        # Once the load resolves, the popup swaps to content in one step and
-        # the same keys drive a real selection.
         await wait_for(
-            lambda: not suggestions.is_loading,
+            lambda: input_bar.value == "ready prompt" and suggestions.mode == "",
             pilot=pilot,
-            description="history rows to appear after release",
+            description="held Enter selecting the first loaded row",
         )
-        assert suggestions._values == ["ready prompt"]
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert input_bar.value == "ready prompt"
-        assert suggestions.mode == ""
         assert app.user_submitted == []
