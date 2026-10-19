@@ -46,6 +46,8 @@ $env:ICODE_SOURCE = "gitcode"; irm https://raw.gitcode.com/openJiuwen/iCode/raw/
 
 要安装指定版本，把命令末尾的 `| sh` 换成 `| sh -s -- --version 0.29.1`。在 Windows 上，先运行 `$env:ICODE_VERSION = "0.29.1"`。用 `$env:` 做的设置在关闭这个 PowerShell 窗口前一直有效。
 
+在 macOS 和 Linux 上，给 `--version` 或 `--source` 显式传入空值（例如 `--version ""` 或 `--source=`）会报错并停止安装。如果通过 shell 变量传入这些选项的值，请确保变量不为空。
+
 如果想手动安装，请下载对应平台的安装包，然后按下面的步骤操作。以下命令中的 `<version>` 和 `<architecture>` 是占位符，请替换为下载文件名中的实际值。
 
 #### macOS

@@ -26,7 +26,7 @@ main() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --version)
-                [ $# -ge 2 ] || fail "--version needs a value"
+                [ $# -ge 2 ] && [ -n "$2" ] || fail "--version needs a value"
                 version="$2"
                 shift 2
                 ;;
@@ -36,7 +36,7 @@ main() {
                 shift
                 ;;
             --source)
-                [ $# -ge 2 ] || fail "--source needs a value"
+                [ $# -ge 2 ] && [ -n "$2" ] || fail "--source needs a value"
                 source="$2"
                 shift 2
                 ;;
