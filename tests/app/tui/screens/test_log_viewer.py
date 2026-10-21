@@ -12,6 +12,7 @@ from textual.widgets import RichLog, Static, TabbedContent
 
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.logs.screen import (
+    MAX_BUFFER_LINE_CHARS,
     MAX_DISPLAY_LINE_CHARS,
     MAX_DISPLAY_LINES,
     MODULE_ORDER,
@@ -113,6 +114,25 @@ class TestTuiLogHandler:
         lines, total = h.snapshot("chrys", total)
         assert lines == ["m3"]
         assert total == 4
+
+    def test_emit_keeps_long_records_but_cuts_request_body_sized_ones(self) -> None:
+        h = _TuiLogHandler()
+        h.setFormatter(logging.Formatter("%(message)s"))
+        traceback_sized = "t" * MAX_BUFFER_LINE_CHARS
+        request_body = "Request options: " + "x" * (MAX_BUFFER_LINE_CHARS * 10) + " ValueError: last"
+        half = MAX_BUFFER_LINE_CHARS // 2
+
+        h.emit(_record("chrys", traceback_sized))
+        h.emit(_record("anthropic", request_body))
+
+        assert h.snapshot("chrys", 0)[0] == [traceback_sized]
+        [kept] = h.snapshot("anthropic", 0)[0]
+        cut = len(request_body) - MAX_BUFFER_LINE_CHARS
+        assert kept == (
+            f"{request_body[:half]} ... [{cut} of {len(request_body)} chars cut] ... {request_body[-half:]}"
+        )
+        assert kept.startswith("Request options: ")
+        assert kept.endswith("ValueError: last")
 
     def test_snapshot_survives_buffer_trim(self) -> None:
         """After buffer trim, subsequent emissions must still be delivered."""

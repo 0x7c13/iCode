@@ -277,6 +277,14 @@ def invalidates_continuation_token(exc: BaseException) -> bool:
     return _invalidates_continuation_token(tuple(iter_explicit_graph(exc)))
 
 
+def is_blank_response(exc: BaseException) -> bool:
+    """Return whether *exc* rejected a finished response that showed nothing, so a resend may answer.
+
+    A type check over the explicit graph alone, like :func:`invalidates_continuation_token`.
+    """
+    return any(isinstance(node, ContinuationVerdictError) and node.blank_response for node in iter_explicit_graph(exc))
+
+
 def is_read_timeout(exc: BaseException) -> bool:
     """Return whether *exc* is a read timeout (connect, write and pool timeouts aren't)."""
     return classify_error(exc).timeout_phase == "read"

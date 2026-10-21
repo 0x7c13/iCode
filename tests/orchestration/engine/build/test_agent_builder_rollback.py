@@ -185,9 +185,6 @@ async def _invoke_build_agent(
     event_bus = bus or EventBus()
     effective_settings = settings or Settings()
 
-    async def _async_noop(*_a: object, **_k: object) -> None:
-        return None
-
     def _sync_noop(*_a: object, **_k: object) -> None:
         return None
 
@@ -199,9 +196,8 @@ async def _invoke_build_agent(
         bus=event_bus,
         agent_registry=agent_registry,
         injection=MagicMock(),
-        intermediate_buffer=MagicMock(),
-        on_intermediate_async=_async_noop,
-        on_intermediate_sync=_sync_noop,
+        batch_counter=MagicMock(),
+        on_intermediate=_sync_noop,
         on_usage=_sync_noop,
         on_load_progress=on_load_progress,
         spill_quota=spill_quota,
@@ -778,59 +774,6 @@ async def test_build_agent_passes_session_id_to_last_words_generator() -> None:
     assert retries[0].display_message is not None
     assert retries[0].display_message.definition.key == "retry.last_words_compaction"
     assert dict(retries[0].display_message.args) == {"reason": DisplayBlock("connection dropped")}
-
-
-async def test_build_agent_validation_retry_keeps_english_message_and_binds_reason() -> None:
-    profile = AgentProfile(name="test")
-    bus = EventBus()
-    retries: list[InvocationRetryAttempt] = []
-
-    async def _capture_retry(event: InvocationRetryAttempt) -> None:
-        retries.append(event)
-
-    await bus.subscribe(InvocationRetryAttempt, _capture_retry)
-
-    agent_mock = MagicMock()
-    agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
-    agent_mock.__aexit__ = AsyncMock()
-    agent_mock.create_session = MagicMock(return_value=MagicMock())
-
-    with (
-        _build_agent_env(mcp_mock=None, agent_mock=agent_mock),
-        patch.object(ab, "TurnBindings", return_value=MagicMock()) as bindings_cls,
-        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
-        patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
-        patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
-        patch.object(
-            runtime_factory_module, "ResponseValidationMiddleware", return_value=MagicMock()
-        ) as validation_cls,
-    ):
-        await _invoke_build_agent(profile, session_id="sess-validation", bus=bus)
-
-    publish_retry = validation_cls.call_args.kwargs["publish_retry"]
-    origin = InvocationOrigin("turn", "sess-validation", "callback-test", None)
-    bindings_cls.call_args.kwargs["invocation_publishers"].bind(origin)
-    token = invocation_routing_key.set(origin.invocation_id)
-    try:
-        await publish_retry(
-            RetryAttemptInfo(reason="missing assistant text", attempt=2, max_attempts=3, delay_seconds=7)
-        )
-    finally:
-        invocation_routing_key.reset(token)
-
-    assert len(retries) == 1
-    retry = retries[0]
-    assert (retry.message, retry.attempt, retry.max_attempts, retry.delay_seconds, retry.session_id) == (
-        "Invalid response: missing assistant text",
-        2,
-        3,
-        7,
-        "sess-validation",
-    )
-    assert retry.detail == "missing assistant text"
-    assert retry.display_message is not None
-    assert retry.display_message.definition.key == "retry.invalid_response"
-    assert dict(retry.display_message.args) == {"reason": DisplayBlock("missing assistant text")}
 
 
 async def test_build_agent_threads_effective_transient_retry_budget() -> None:

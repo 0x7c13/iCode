@@ -7,6 +7,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+type ContentChannel = Literal["answer", "reasoning", "reasoning_summary"]
+"""What a content segment of model output carries: answer text, plaintext reasoning, or a summary of the reasoning."""
+
+type ContentStatus = Literal["completed", "failed", "interrupted"]
+"""How a content segment ended."""
+
 
 @dataclass(frozen=True, slots=True)
 class InvocationOrigin:

@@ -60,12 +60,13 @@ async def _populate(panel: ChatPanel) -> None:
     panel.set_tool_kinds({"read_file": KIND_FILESYSTEM_READ, "grep": KIND_SEARCH, "shell": KIND_SHELL})
     for turn in range(TURNS):
         await panel.add_user_message(f"Request {turn}: 检查模块 {turn} 并总结。")
-        await panel.add_agent_message(f"Turn {turn}: inspecting files.", is_final=False)
+        await panel.add_answer_delta(f"intro-{turn}", f"Turn {turn}: inspecting files.")
         for tool, kind in (("read_file", KIND_FILESYSTEM_READ), ("grep", KIND_SEARCH), ("shell", KIND_SHELL)):
             call_id = f"{tool}-{turn}"
             await panel.add_tool_start(call_id, tool, kind, args={"target": f"src/module_{turn}.py"})
             await panel.add_tool_result(call_id, tool, "\n".join(f"{tool} output line {i}" for i in range(6)), 12)
-        await panel.add_agent_message(_agent_markdown(turn), is_final=True)
+        await panel.add_answer_delta(f"answer-{turn}", _agent_markdown(turn))
+        await panel.add_agent_message(_agent_markdown(turn))
 
 
 def _strips_to_cells(strips: list, width: int, height: int) -> list[list[tuple[str, str]]]:

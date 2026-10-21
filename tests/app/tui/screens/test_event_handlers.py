@@ -911,7 +911,13 @@ def test_backend_handler_defers_agent_message_while_user_bubble_is_rendering() -
 
     asyncio.run(handler.on_agent_message(event))
 
-    assert state.render_gate.consume_deferred() == [event]
+    replayed: list[object] = []
+
+    async def replay(deferred: object) -> None:
+        replayed.append(deferred)
+
+    asyncio.run(state.render_gate.drain(replay))
+    assert replayed == [event]
 
 
 def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(

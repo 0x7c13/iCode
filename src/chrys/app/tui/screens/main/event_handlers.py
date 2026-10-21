@@ -45,6 +45,7 @@ from chrys.app.tui.support.gc_freeze import (
 from chrys.app.tui.support.workspace_mru import schedule_workspace_mru_touches
 from chrys.app.tui.util.context_pressure import context_pressure_message
 from chrys.app.tui.widgets import PromptDraft
+from chrys.app.tui.widgets.chat.agent_transcript_surface import AnswerSegments
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload, FileSnapshotRef, should_externalize_snapshot
 from chrys.app.tui.widgets.chrome.app_header import APPROVAL_MODE_MESSAGES
 from chrys.app.tui.widgets.chrome.input_bar import INPUT_RETRY
@@ -82,11 +83,11 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationContextPressure,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -315,6 +316,7 @@ class BackendEventHandler:
         self._seen_warnings: set[_WarningDedupeKey] = set()
         # Chat sub-agents paused for the user's Retry/Abort decision.
         self._paused_sub_agents: set[str] = set()
+        self._sub_agent_answers = AnswerSegments()
 
     def attention_mark(self) -> AttentionMark:
         """Why the live run waits for the user: ``!`` a paused sub-agent, ``?`` an approval or question."""
@@ -368,7 +370,9 @@ class BackendEventHandler:
     def _image_compression(self) -> ImageCompressionDialogController:
         return self._image_compression_controller
 
-    def _predates_active_run(self, event: InvocationMessage | Error) -> bool:
+    def _predates_active_run(
+        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished | Error
+    ) -> bool:
         """Return whether *event* was sourced before the current UI run."""
         started_at = self._state.run.started_at
         return self._state.run.agent_running and started_at is not None and event.timestamp < started_at
@@ -498,11 +502,15 @@ class BackendEventHandler:
     def pending_user_submit_text(self) -> str:
         return self._state.submit.text
 
-    @property
-    def pending_user_message_render_active(self) -> bool:
-        return self._state.render_gate.active
+    def defers_turn_event(
+        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished | Error
+    ) -> bool:
+        """Whether *event* waits for the user bubble: it mounts, or earlier events are still replaying."""
+        return self._state.render_gate.defers(event)
 
-    def defer_agent_message(self, event: InvocationMessage) -> None:
+    def defer_agent_message(
+        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished
+    ) -> None:
         self._state.render_gate.defer(event)
 
     def defer_error(self, event: Error) -> None:
@@ -1006,81 +1014,67 @@ class BackendEventHandler:
         self._ui().show_status(STATUS_THINKING.bind())
         s.debug("AgentThinking")
 
-    async def on_agent_message(self, event: InvocationMessage) -> None:
+    def _admits_turn_render(
+        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished, name: str
+    ) -> bool:
+        """Whether a main-turn output event renders now; one that arrives while the user bubble mounts is deferred."""
+        if self._predates_active_run(event):
+            self.debug(name, "ignored stale prior-run event")
+            return False
+        if self.defers_turn_event(event):
+            self.defer_agent_message(event)
+            return False
+        return self.agent_running
+
+    async def on_agent_content(self, event: InvocationContentDelta | InvocationContentFinished) -> None:
+        """Stream the turn's answer text; reasoning is not shown but keeps the thinking status."""
         if event.origin.kind == "sub_agent":
-            await self.on_sub_agent_message(event)
+            await self.on_sub_agent_content(event)
             return
-        if event.origin.kind != "turn":
+        if event.origin.kind != "turn" or not self._admits_turn_render(event, type(event).__name__):
+            return
+        ui = self._ui()
+        if isinstance(event, InvocationContentFinished):
+            if event.channel == "answer":
+                ui.finish_answer_segment(event.segment_id, completed=event.status == "completed")
+        elif event.channel == "answer":
+            ui.show_status(STATUS_STREAMING.bind())
+            await ui.add_answer_delta(event.segment_id, event.text)
+        else:
+            ui.show_status(STATUS_THINKING.bind())
+
+    async def on_agent_message(self, event: InvocationMessage) -> None:
+        """Complete the turn: its answer already streamed, so this only finalizes it."""
+        if event.origin.kind != "turn" or not event.is_final:
             return
         s = self
-        if self._predates_active_run(event):
-            s.debug("InvocationMessage", "ignored stale prior-run event")
-            return
-        if s.pending_user_message_render_active:
-            s.defer_agent_message(event)
-            return
-        if not s.agent_running:
+        if not self._admits_turn_render(event, "InvocationMessage"):
             return
 
         ui = self._ui()
-
-        if event.is_intermediate:
+        was_live = s.agent_running
+        terminal_generation = self._state.run.generation
+        terminal_request = GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True)
+        terminal_owned = False
+        try:
+            ui.flash_turn_complete()
             await ui.add_agent_message(
                 event.text,
-                is_final=True,
-                is_intermediate=True,
-                presentation=event.presentation,
+                structured_output_completed=event.structured_output_completed,
                 created_at=event.timestamp,
             )
-            s.debug("InvocationMessage", f"(intermediate, {len(event.text)} chars)")
-        elif event.is_final:
-            was_live = s.agent_running
-            terminal_generation = self._state.run.generation
-            terminal_request = GcAbsorbRequested(GcAbsorbReason.TURN_TERMINAL, terminal_boundary=True)
-            terminal_owned = False
-            try:
-                ui.flash_turn_complete()
-                await ui.add_agent_message(
-                    event.text,
-                    is_final=True,
-                    structured_output_completed=event.structured_output_completed,
-                    created_at=event.timestamp,
-                )
-            finally:
-                if self._state.run.generation == terminal_generation and s.agent_running:
-                    ui.mark_terminal_title_completed()
-                    s.set_agent_running(False)
-                    terminal_owned = True
-            if not terminal_owned:
-                s.debug("InvocationMessage", "ignored stale terminal completion")
-                return
-            self._callbacks.post_gc_message(terminal_request)
-            if was_live:
-                self._notify(NotificationEvent.TURN_COMPLETE)
-            s.debug("InvocationMessage", f"({len(event.text)} chars)")
-        else:
-            ui.show_status(STATUS_STREAMING.bind())
-            await ui.add_agent_message(event.text, is_final=False, created_at=event.timestamp)
-
-    async def on_presentation_attempt_accepted(self, event: InvocationPresentationAttemptAccepted) -> None:
-        """Commit canonical provisional text and remove rejected siblings."""
-        if event.origin.kind == "sub_agent":
-            await self.on_sub_agent_presentation_accepted(event)
+        finally:
+            if self._state.run.generation == terminal_generation and s.agent_running:
+                ui.mark_terminal_title_completed()
+                s.set_agent_running(False)
+                terminal_owned = True
+        if not terminal_owned:
+            s.debug("InvocationMessage", "ignored stale terminal completion")
             return
-        if event.origin.kind != "turn":
-            return
-        self._state.render_gate.accept_presentation_attempt(event.attempt_id, event.segment_ids)
-        await self._ui().accept_presentation_attempt(event.attempt_id, event.segment_ids)
-
-    async def on_presentation_attempt_rejected(self, event: InvocationPresentationAttemptRejected) -> None:
-        """Retract provisional text from a rejected response attempt."""
-        if event.origin.kind == "sub_agent":
-            await self.on_sub_agent_presentation_rejected(event)
-            return
-        if event.origin.kind != "turn":
-            return
-        self._state.render_gate.reject_presentation_attempt(event.attempt_id)
-        await self._ui().reject_presentation_attempt(event.attempt_id)
+        self._callbacks.post_gc_message(terminal_request)
+        if was_live:
+            self._notify(NotificationEvent.TURN_COMPLETE)
+        s.debug("InvocationMessage", f"({len(event.text)} chars)")
 
     async def on_injection_outcome(self, event: UserInjectResult) -> None:
         s = self
@@ -1255,38 +1249,16 @@ class BackendEventHandler:
             tool_name=event.tool_name,
         )
 
-    async def on_sub_agent_message(self, event: InvocationMessage) -> None:
-        """Append invocation-scoped assistant prose to the nested transcript."""
+    async def on_sub_agent_content(self, event: InvocationContentDelta | InvocationContentFinished) -> None:
+        """Show a sub-agent's answer in its nested transcript, each segment whole once it ends."""
         if not _chat_sub_agent(event.origin):
             return
-        if not self.agent_running:
-            return
-        self._ui().add_sub_agent_message(
-            event.agent_name,
-            event.origin.invocation_id,
-            event.text,
-            presentation=event.presentation,
-        )
-
-    async def on_sub_agent_presentation_accepted(self, event: InvocationPresentationAttemptAccepted) -> None:
-        """Commit provisional nested assistant segments."""
-        if not _chat_sub_agent(event.origin):
-            return
-        if not self.agent_running:
-            return
-        self._ui().accept_sub_agent_presentation(
-            event.origin.invocation_id,
-            event.attempt_id,
-            event.segment_ids,
-        )
-
-    async def on_sub_agent_presentation_rejected(self, event: InvocationPresentationAttemptRejected) -> None:
-        """Retract provisional nested assistant segments."""
-        if not _chat_sub_agent(event.origin):
-            return
-        if not self.agent_running:
-            return
-        self._ui().reject_sub_agent_presentation(event.origin.invocation_id, event.attempt_id)
+        # Taken even once the run stopped: a cancelled child still ends its segment, which releases its text.
+        answer = self._sub_agent_answers.take(event)
+        if answer is not None and self.agent_running:
+            self._ui().add_sub_agent_answer(
+                event.agent_name, event.origin.invocation_id, answer.segment_id, answer.text
+            )
 
     async def on_sub_agent_tool_start(self, event: InvocationToolCallStart) -> None:
         if not _chat_sub_agent(event.origin):
@@ -1940,7 +1912,7 @@ class BackendEventHandler:
                 return
             await self._show_pending_submit_error(event.code, display_full, raw_message=full_msg)
             return
-        if s.pending_user_message_render_active:
+        if s.defers_turn_event(event):
             s.defer_error(event)
             return
         # A classified failure shows what went wrong, then the service's own
@@ -1964,7 +1936,7 @@ class BackendEventHandler:
         terminal_owned = not was_live
         try:
             ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
-            await ui.add_error(chat_msg)
+            await ui.add_error(chat_msg, ends_turn=was_live)
         finally:
             if not was_live or (self._state.run.generation == terminal_generation and s.agent_running):
                 if was_live:
@@ -2045,7 +2017,8 @@ class BackendEventHandler:
             # card and its action so the user can retry after resolving this.
             s.notify(chat_msg, title=_RETRY_NOT_STARTED.bind(), severity="error", timeout=8)
         else:
-            await ui.add_error(chat_msg, action_label=None)
+            # No turn ran: a bare Retry later must not take the last answer for this card's.
+            await ui.add_error(chat_msg, action_label=None, ends_turn=False)
         s.debug("Error", f"[{code}] {(message if raw_message is None else raw_message)[:60]}")
 
     async def on_retry_attempt(self, event: InvocationRetryAttempt) -> None:

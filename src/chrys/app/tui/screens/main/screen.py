@@ -496,6 +496,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             view=self._view_adapter,
             start_worker=self._start_worker,
             handle_agent_message=self._events.on_agent_message,
+            handle_agent_content=self._events.on_agent_content,
             handle_error=self._events.on_error,
             set_agent_running=self._set_agent_running,
             set_has_messages=self._set_has_messages,

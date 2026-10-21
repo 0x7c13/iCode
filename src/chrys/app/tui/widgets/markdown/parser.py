@@ -570,6 +570,11 @@ def _guess_code_language(code: str) -> str:
     return guess_language(code, None)
 
 
+def highlight_code(code: str, language: str) -> Content:
+    """Syntax-highlight a code block, guessing its language when the fence names none."""
+    return highlight(code, language=language or _guess_code_language(code), theme=NoErrorHighlightTheme)
+
+
 def _get_list_indent(stack: list[dict]) -> int:
     """Get the indent from the nearest list_item in the stack."""
     for parent in reversed(stack):
@@ -607,6 +612,7 @@ def _parse_tokens(
     open_links: bool = True,
     math_enabled: bool = True,
     math_compiler: Callable[[str], CompiledMath] = compile_math,
+    highlight_closed_fence: Callable[[str, str], Content] = highlight_code,
 ) -> list[MarkdownBlock]:
     """Parse markdown-it tokens into a flat list of MarkdownBlock objects.
 
@@ -614,6 +620,8 @@ def _parse_tokens(
         tokens: Iterable of markdown-it tokens.
         unhandled_token: Optional callback for unhandled token types.
         open_links: Emit terminal hyperlinks for allowed external destinations.
+        highlight_closed_fence: Highlights the code of a closed fence, which
+            streamed reparses leave unchanged; other code blocks use ``highlight_code``.
 
     Returns:
         A list of MarkdownBlock data objects.
@@ -890,7 +898,10 @@ def _parse_tokens(
                     )
                     continue
 
-            highlighted = highlight(code, language=language or _guess_code_language(code), theme=NoErrorHighlightTheme)
+            if token_type == "fence" and token.meta.get(_FENCE_CLOSED_META, False):
+                highlighted = highlight_closed_fence(code, language)
+            else:
+                highlighted = highlight_code(code, language)
 
             append_block(
                 MarkdownBlock(

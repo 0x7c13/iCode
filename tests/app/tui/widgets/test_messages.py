@@ -387,12 +387,11 @@ def test_message_headers_include_dim_timestamp_when_present() -> None:
 
 
 @pytest.mark.parametrize(
-    ("locale", "agent_label", "think_text", "button_text", "tooltip", "user_tooltip", "retry_text", "error_text"),
+    ("locale", "agent_label", "button_text", "tooltip", "user_tooltip", "retry_text", "error_text"),
     [
         (
             "en",
             "Agent",
-            "Think: *one*\n\n*two*",
             "copy",
             "Copy raw agent response",
             "Copy your raw message",
@@ -402,7 +401,6 @@ def test_message_headers_include_dim_timestamp_when_present() -> None:
         (
             "zh-Hans",
             "智能体",
-            "思考：*one*\n\n*two*",  # noqa: RUF001
             "复制",
             "复制原始智能体回复",
             "复制你的原始消息",
@@ -414,7 +412,6 @@ def test_message_headers_include_dim_timestamp_when_present() -> None:
 async def test_agent_and_retry_chrome_render_at_mount_locale(
     locale: str,
     agent_label: str,
-    think_text: str,
     button_text: str,
     tooltip: str,
     user_tooltip: str,
@@ -442,7 +439,8 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
 
         assert agent._copy_label() == agent_label
         assert agent._header_text().plain == f"◇ {agent_label}"
-        assert agent.text == think_text
+        # Think tags are answer text, shown as written in every locale.
+        assert agent.text == "<think>one\n\ntwo</think>"
         copy_button = agent.query_one(MessageCopyButton)
         assert copy_button.render().plain == button_text
         assert copy_button.tooltip == tooltip
@@ -472,12 +470,55 @@ async def test_agent_message_streaming() -> None:
         msg = pilot.app.query_one(AgentMessage)
         assert msg.text == "partial"
         assert msg._is_final is False
-        # Streaming cursor widget should be present
-        assert msg.query(".agent-cursor")
+        assert msg.has_class("--streaming")
 
         msg.stream_update("full response", is_final=True)
         assert msg.text == "full response"
         assert msg._is_final is True
+
+
+@pytest.mark.parametrize("answer", [True, False], ids=["answer", "text_before_tools"])
+async def test_streamed_text_stays_muted_until_it_is_known_to_be_the_answer(answer: bool) -> None:
+    async with WidgetApp(lambda: AgentMessage("partial", is_final=False)).run_test() as pilot:
+        msg = pilot.app.query_one(AgentMessage)
+        streaming_border = msg.styles.border_left
+
+        if answer:
+            msg.stream_update("partial", is_final=True)
+        else:
+            msg.settle_intermediate()
+        await pilot.pause()
+
+        assert not msg.has_class("--streaming")
+        assert (msg.styles.border_left == streaming_border) is not answer
+
+
+async def test_a_growing_streamed_answer_never_shows_a_scrollbar_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The body is laid out before the message grows to fit it: a scrollbar then would narrow it for a frame."""
+    scrollbar_after_layout: list[bool] = []
+    layout_blocks = VirtualizedMarkdown._layout_blocks
+
+    def layout_spy(self: VirtualizedMarkdown, width: int | None = None) -> None:
+        layout_blocks(self, width)
+        scrollbar_after_layout.append(self.show_vertical_scrollbar)
+
+    monkeypatch.setattr(VirtualizedMarkdown, "_layout_blocks", layout_spy)
+    async with WidgetApp(lambda: AgentMessage("```", is_final=False)).run_test(size=(60, 20)) as pilot:
+        msg = pilot.app.query_one(AgentMessage)
+        body = msg.query_one(VirtualizedMarkdown)
+        text = "```"
+        for line in range(8):
+            layouts = len(scrollbar_after_layout)
+            text += f"\nline {line}"
+            msg.stream_update(text)
+            await wait_for(
+                lambda layouts=layouts: len(scrollbar_after_layout) > layouts,
+                pilot=pilot,
+                description="the grown answer laid out",
+            )
+        await wait_for(lambda: body.size.height > 8, pilot=pilot, description="the message grew to fit its answer")
+
+        assert True not in scrollbar_after_layout
 
 
 async def test_agent_message_shows_html_looking_text_as_written() -> None:

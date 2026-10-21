@@ -557,7 +557,7 @@ async def test_chat_panel_bottom_clamp_does_not_mark_user_pause(monkeypatch: pyt
         assert cp._auto_scroll_paused_by_user is False
 
 
-async def test_chat_panel_intermediate_message_does_not_resume_user_pause() -> None:
+async def test_chat_panel_streamed_answer_text_does_not_resume_user_pause() -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         cp.agent_running = True
@@ -565,7 +565,8 @@ async def test_chat_panel_intermediate_message_does_not_resume_user_pause() -> N
         cp._auto_scroll_paused_by_user = True
         cp._final_response_started = False
 
-        await cp.add_agent_message("checking files", is_intermediate=True)
+        # Streamed text may still turn out to be commentary before a tool call.
+        await cp.add_answer_delta("s1", "checking files")
 
         assert cp._auto_scroll_paused_by_user is True
         assert cp._anchor_released is True
@@ -580,7 +581,9 @@ async def test_chat_panel_final_response_resumes_once() -> None:
         cp._auto_scroll_paused_by_user = True
         cp._final_response_started = False
 
-        await cp.add_agent_message("final starts", is_final=False)
+        await cp.add_answer_delta("s1", "final answer")
+        assert cp._auto_scroll_paused_by_user is True
+        await cp.add_agent_message("final answer")
 
         # The mount's layout frame can transiently release the anchor with a
         # deferred re-anchor, so wait until the resume state lands.
@@ -594,7 +597,7 @@ async def test_chat_panel_final_response_resumes_once() -> None:
         cp._anchor_released = True
         cp._auto_scroll_paused_by_user = True
 
-        await cp.add_agent_message("final complete", is_final=True)
+        await cp.add_agent_message("final complete")
 
         assert cp._auto_scroll_paused_by_user is True
         assert cp._anchor_released is True
@@ -613,7 +616,9 @@ async def test_chat_panel_final_response_scrolls_detached_to_bottom(monkeypatch:
         assert cp._auto_scroll_paused_by_user is True
         assert cp._anchor_released is True
 
-        await cp.add_agent_message("final starts", is_final=False)
+        await cp.add_answer_delta("s1", "final answer")
+        assert cp._auto_scroll_paused_by_user is True
+        await cp.add_agent_message("final answer")
 
         # Same deferred re-anchor settle as above: one pause is not enough on
         # slow runners, so wait until the yank to the bottom lands.
@@ -686,17 +691,17 @@ async def test_chat_panel_agent_running_resets_final_response_autoscroll_gate() 
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         cp.agent_running = True
-        await cp.add_agent_message("first run starts", is_final=False)
+        await cp.add_agent_message("first run final")
 
         cp._anchor_released = True
         cp._auto_scroll_paused_by_user = True
-        await cp.add_agent_message("first run final", is_final=True)
+        await cp.add_agent_message("first run late final")
         assert cp._auto_scroll_paused_by_user is True
         assert cp._anchor_released is True
 
         cp.agent_running = False
         cp.agent_running = True
-        await cp.add_agent_message("retry starts", is_final=False)
+        await cp.add_agent_message("retry final")
 
         # The mount's layout frame can transiently release the anchor and
         # defer the re-anchor via ``call_after_refresh`` (see the settle loop

@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from chrys.foundation.events.types import (
-    InvocationMessage,
     InvocationToolCallProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
@@ -54,7 +53,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import (
     set_call_id,
     set_tool_invocation_order,
 )
-from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
+from chrys.service.agent_middleware.events.intermediate_text import ResponseBatchCounter
 from chrys.service.agent_middleware.events.rejection_metadata import rejection_result_metadata, rejection_source
 from chrys.service.agent_middleware.events.result_persistence import (
     RESULT_SLEEP_INTERRUPTED_METADATA_KEY,
@@ -128,16 +127,15 @@ class ToolEventMiddleware(FunctionMiddleware):
     Wraps each function call in the agent's tool loop, firing events before
     and after execution. This lets the frontend display real-time tool activity.
 
-    When an ``IntermediateTextBuffer`` is attached, drains pending intermediate
-    text and publishes it as ``InvocationMessage(is_intermediate=True)`` **before**
-    ``InvocationToolCallStart``.  This ensures correct event ordering (text → tool call).
+    When a ``ResponseBatchCounter`` is attached, each call is recorded under
+    the batch of the response that made it.
     """
 
     def __init__(
         self,
         event_bus: EventBus,
         session_id: str | None = None,
-        intermediate_buffer: IntermediateTextBuffer | None = None,
+        batch_counter: ResponseBatchCounter | None = None,
         mutation_tracker: MutationTracker | None = None,
         hook_manager: HookManager | None = None,
         profile_name: str = "",
@@ -152,7 +150,7 @@ class ToolEventMiddleware(FunctionMiddleware):
         self._origin = origin
         self._bus = event_bus
         self._session_id = session_id
-        self._intermediate_buffer = intermediate_buffer
+        self._batch_counter = batch_counter
         self._mutation_tracker = mutation_tracker
         self._mutation_coordinator = mutation_coordinator
         self._hook_manager = hook_manager
@@ -168,34 +166,6 @@ class ToolEventMiddleware(FunctionMiddleware):
         """Bind the next pass; each dispatched callback captures its own origin."""
         self._origin = origin
 
-    async def release_intermediate_text(self) -> None:
-        """Publish intermediate text that no tool start has released yet.
-
-        A call that never enters the tool pipeline (unknown tool, pre-pipeline
-        argument rejection) starts no tool, so the text streamed with it stays
-        buffered until the next response starts or the pass ends.
-        """
-        await self._release_intermediate_text(self._origin, None)
-
-    async def finish_intermediate_text(self) -> None:
-        """Release what is still buffered as the pass ends; see ``IntermediateTextBuffer.finish``."""
-        if self._intermediate_buffer is not None:
-            await self._intermediate_buffer.finish(self._intermediate_publisher(self._origin))
-
-    async def _release_intermediate_text(self, origin: InvocationOrigin, preamble: PreparationTrace | None) -> None:
-        if self._intermediate_buffer is not None:
-            await self._intermediate_buffer.release(self._intermediate_publisher(origin), preamble)
-
-    def _intermediate_publisher(self, origin: InvocationOrigin) -> Callable[[str], Awaitable[None]]:
-        async def publish(text: str) -> None:
-            await self._bus.publish(
-                InvocationMessage(
-                    origin=origin, text=text, is_final=False, is_intermediate=True, session_id=self._session_id
-                )
-            )
-
-        return publish
-
     async def process(
         self,
         context: FunctionInvocationContext,
@@ -204,9 +174,8 @@ class ToolEventMiddleware(FunctionMiddleware):
         origin = self._origin
         # The trace is bound before the first await because the kernel hands
         # the operation over the moment it dispatches the batch: from here on
-        # nothing else accounts for it, and everything below — the
-        # intermediate-text publish, before-tool hooks, the mutation lock —
-        # can be cancelled. Binding writes nothing; the start marker is still
+        # nothing else accounts for it, and everything below — before-tool
+        # hooks, the mutation lock — can be cancelled. Binding writes nothing; the start marker is still
         # written where the call is dispatched.
         trajectory = ToolOperationTrace.open(context.metadata if isinstance(context.metadata, dict) else {})
         preamble = (
@@ -250,7 +219,7 @@ class ToolEventMiddleware(FunctionMiddleware):
         trajectory.abandoned_soon(
             tool_name=context.function.name,
             tool_kind=get_tool_kind(context.function) or "",
-            batch_index=self._intermediate_buffer.batch_id if self._intermediate_buffer is not None else None,
+            batch_index=self._batch_counter.batch_id if self._batch_counter is not None else None,
             invocation_order=get_tool_invocation_order(context),
             arguments=args,
             invocation_metadata=metadata,
@@ -275,15 +244,6 @@ class ToolEventMiddleware(FunctionMiddleware):
         self._tool_invocation_order = max(self._tool_invocation_order, tool_order + 1)
         set_tool_invocation_order(context, tool_order)
 
-        # Publish the intermediate text accumulated by the result_hook BEFORE
-        # InvocationToolCallStart so the TUI renders it first. Parallel tool
-        # calls run this middleware concurrently (the kernel loop dispatches
-        # the batch via asyncio.gather); the release holds every sibling until
-        # the text is fully delivered (including stream consumers), because a
-        # start that overtakes it lands the text mid-batch and the TUI splits
-        # the tool group, orphaning already-rendered cards.
-        await self._release_intermediate_text(origin, preamble)
-
         provider_call_id = get_provider_call_id(context)
         call_id = get_call_id(context) or uuid4().hex[:_SHORT_ID_LEN]
         tool_name = context.function.name
@@ -292,17 +252,17 @@ class ToolEventMiddleware(FunctionMiddleware):
         # Record batch attribution for this tool call PRE-execution and
         # unconditionally — an interrupted, cancelled, or metadata-less call
         # must not lose its ``_batch_id``.  The batch_id increments once per
-        # LLM response (intermediate-text boundary).  The engine drains the
+        # tool-calling LLM response.  The engine drains the
         # records (``drain_batch_records``) to assign ``_batch_id`` to
         # session messages in post-processing, keyed by
         # (provider_call_id, tool_name) — never by position.
-        if self._intermediate_buffer is not None:
+        if self._batch_counter is not None:
             self._tool_batch_records.append(
                 ToolBatchRecord(
                     provider_call_id=provider_call_id,
                     tool_name=tool_name,
                     tool_order=tool_order,
-                    batch_id=self._intermediate_buffer.batch_id,
+                    batch_id=self._batch_counter.batch_id,
                 )
             )
         # Stash the Chrys call_id in metadata so downstream middleware
@@ -505,7 +465,7 @@ class ToolEventMiddleware(FunctionMiddleware):
                 await trajectory.started(
                     tool_name=tool_name,
                     tool_kind=tool_kind,
-                    batch_index=self._intermediate_buffer.batch_id if self._intermediate_buffer is not None else None,
+                    batch_index=self._batch_counter.batch_id if self._batch_counter is not None else None,
                     invocation_order=get_tool_invocation_order(context),
                     arguments=args,
                     invocation_metadata=_meta,

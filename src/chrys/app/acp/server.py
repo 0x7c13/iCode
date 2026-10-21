@@ -59,8 +59,6 @@ from chrys.foundation.events.types import (
     InvocationContextPressure,
     InvocationEvent,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -488,7 +486,8 @@ class ChrysAcpServer:
                     for warning in warnings:
                         await self._send_warning(session.session_id, warning)
                     await self._send_session_restored(session.session_id)
-                    await replay_session_history(
+                    # The client now shows the replayed ids, which a bare retry withdraws.
+                    session.trailing_answer_message_ids = await replay_session_history(
                         self._client,
                         self._manager.state_store,
                         session.session_id,
@@ -616,7 +615,8 @@ class ChrysAcpServer:
                 raise RequestError.invalid_params({"details": f"Session {session_id} has no turn that can be retried."})
             return session.host.iter_retry_events(text)
 
-        turn = await self._run_turn(session_id, start)
+        # Without text the retry asks again for the answer the turn ended with.
+        turn = await self._run_turn(session_id, start, retracts_trailing_answer=not text)
         if turn.outcome is None:
             # Same rule as a prompt: a run that produced no outcome did not
             # complete, so it is not reported as a turn that ended normally.
@@ -650,6 +650,8 @@ class ChrysAcpServer:
         self,
         session_id: str,
         start: Callable[[ManagedSession], AsyncIterator[Event]],
+        *,
+        retracts_trailing_answer: bool = False,
     ) -> _TurnExecution:
         """Execute one turn for *session_id* and report what it produced.
 
@@ -665,6 +667,9 @@ class ChrysAcpServer:
         The lock alone cannot say that — it reads False in the window between a
         release and the next waiter's acquisition, and that waiter's turn then
         runs *after* this caller's, the other way round.
+
+        *retracts_trailing_answer* withdraws, once the turn starts, the answer
+        messages the session's last turn ended with.
         """
         bridge = AcpEventBridge()
         pending_approvals: dict[str, ApprovalRequest] = {}
@@ -694,11 +699,18 @@ class ChrysAcpServer:
                         # nothing, and its error must not report a spend.
                         execution_started = True
                         async for event in events:
-                            if isinstance(event, TurnStarted) and turn_id is None:
+                            opens_turn = isinstance(event, TurnStarted) and turn_id is None
+                            if opens_turn:
                                 turn_id, turn_number = event.turn_id, event.turn_number
                             await self._handle_event(session_id, event, bridge, pending_approvals)
+                            if opens_turn and retracts_trailing_answer:
+                                # Before the retry streams anything of its own.
+                                await self._retract_trailing_answer(session_id, session, turn_id)
                         outcome = session.host.last_turn_outcome
                     finally:
+                        if turn_id is not None:
+                            # What a later bare retry withdraws: the answer this turn ended with.
+                            session.trailing_answer_message_ids = bridge.trailing_answer_message_ids
                         # This snapshot stays under prompt_lock: a queued turn must
                         # not mutate cumulative session usage before this response
                         # (or error) captures the completed turn's total.
@@ -885,14 +897,16 @@ class ChrysAcpServer:
                 raise _request_error(exc) from exc
             payload = _rollback_result_payload(result)
             await self._client_or_error().ext_notification("chrys/rollback_result", payload)
+            trailing_answer_message_ids: tuple[str, ...] = ()
             if target_turn > 0:
-                await replay_session_history(
+                trailing_answer_message_ids = await replay_session_history(
                     self._client_or_error(),
                     self._manager.state_store,
                     session_id,
                     tool_kind_resolver=self._manager.tool_kind_resolver(session_id),
                 )
                 await self._send_runtime_update(session_id)
+            self._manager.get(session_id).trailing_answer_message_ids = trailing_answer_message_ids
             # Both branches: >0 re-seeds the rolled-back list, ==0 (reset
             # to welcome) clears the client plan.
             await self._send_plan_update(session_id)
@@ -1120,14 +1134,26 @@ class ChrysAcpServer:
         for update in bridge.updates_for_event(event):
             await self._client_or_error().session_update(session_id=session_id, update=update)
 
+    async def _retract_trailing_answer(self, session_id: str, session: ManagedSession, turn_id: str | None) -> None:
+        """Withdraw the answer messages the session's last turn ended with: a bare retry writes that answer again.
+
+        ACP has no retraction primitive, so this is the Chrys extension
+        notification a client acts on.
+        """
+        if not session.trailing_answer_message_ids:
+            return
+        await self._client_or_error().ext_notification(
+            "chrys/messages_retracted",
+            {"sessionId": session_id, "turnId": turn_id, "messageIds": list(session.trailing_answer_message_ids)},
+        )
+
     async def _handle_turn_event(self, session_id: str, event: Event, bridge: AcpEventBridge) -> bool:
         """Turn-scoped facts a client joins its own state by.
 
-        These are claims about the main turn (an identity, a retry, a
-        withdrawal of text already sent), so they come from the backend's
-        explicit events only — nothing here is inferred from what was seen
-        streaming. They never replace the standard update the event may also
-        project.
+        These are claims about the main turn (an identity, a retry), so they
+        come from the backend's explicit events only — nothing here is
+        inferred from what was seen streaming. They never replace the
+        standard update the event may also project.
         """
         if isinstance(event, TurnStarted):
             await self._client_or_error().ext_notification(
@@ -1141,54 +1167,20 @@ class ChrysAcpServer:
                 },
             )
             return False
-        if isinstance(event, InvocationEvent) and event.origin.kind == "turn":
-            if isinstance(event, InvocationRetryAttempt):
-                await self._client_or_error().ext_notification(
-                    "chrys/retry_attempt",
-                    {
-                        "sessionId": _event_session_id(event, session_id),
-                        "turnId": bridge.turn_id,
-                        "attempt": event.attempt,
-                        "maxAttempts": event.max_attempts,
-                        "delaySeconds": event.delay_seconds,
-                        "scope": event.scope,
-                        "message": event.message,
-                    },
-                )
-                return False
-            if isinstance(event, InvocationPresentationAttemptAccepted):
-                await self._retract_unkept_segments(session_id, bridge, event.attempt_id, event.segment_ids)
-                return False
-            if isinstance(event, InvocationPresentationAttemptRejected):
-                await self._retract_unkept_segments(session_id, bridge, event.attempt_id, ())
-                return False
+        if isinstance(event, InvocationRetryAttempt) and event.origin.kind == "turn":
+            await self._client_or_error().ext_notification(
+                "chrys/retry_attempt",
+                {
+                    "sessionId": _event_session_id(event, session_id),
+                    "turnId": bridge.turn_id,
+                    "attempt": event.attempt,
+                    "maxAttempts": event.max_attempts,
+                    "delaySeconds": event.delay_seconds,
+                    "scope": event.scope,
+                    "message": event.message,
+                },
+            )
         return False
-
-    async def _retract_unkept_segments(
-        self,
-        session_id: str,
-        bridge: AcpEventBridge,
-        attempt_id: str,
-        kept_segment_ids: Sequence[str],
-    ) -> None:
-        """Withdraw the attempt's text the backend did not keep.
-
-        ACP has no retraction primitive, so this is the Chrys extension
-        notification a client acts on; the backend has already decided which
-        segments survive, and this only reports it. An attempt whose text all
-        survived sends nothing.
-        """
-        retracted = bridge.take_retractions(attempt_id, kept_segment_ids)
-        if not retracted:
-            return
-        await self._client_or_error().ext_notification(
-            "chrys/messages_retracted",
-            {
-                "sessionId": session_id,
-                "turnId": bridge.turn_id,
-                "messageIds": retracted,
-            },
-        )
 
     async def _handle_chrys_extension_event(self, session_id: str, event: Event) -> bool:
         if isinstance(event, InvocationEvent) and event.origin.root.kind == "workflow_node":

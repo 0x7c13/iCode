@@ -109,8 +109,13 @@ async def test_queued_retry_preserves_original_image(
     assert [content.uri for content in users[0].contents if content.media_type == "image/png"] == original_images
     if note:
         assert users[1].additional_properties[HistoryMarkerKind.INJECTED_KEY]
-    if interrupt:
-        assert all(message.text != "Original response" for message in engine.history_messages)
+    answers = [
+        message.text
+        for message in engine.history_messages
+        if message.role == "assistant" and HistoryMarkerKind.KEY not in message.additional_properties
+    ]
+    # A note goes on from the answer the first pass showed; a bare Continue asks for it again.
+    assert answers == (["Original response", "Retry response"] if note else ["Retry response"])
     session_id = engine.session_id
     assert session_id is not None
     saved = await store.load_session_raw(session_id)

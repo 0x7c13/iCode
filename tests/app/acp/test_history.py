@@ -25,6 +25,7 @@ from chrys.kernel import (
     Message,
     set_excluded,
 )
+from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 from chrys.service.session.message_metadata import TOOL_CALL_KIND_METADATA_KEY, TOOL_RESULT_METADATA_KEY
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.acp_wire import acp_outgoing_json
@@ -101,6 +102,53 @@ async def test_replay_session_history_includes_tool_calls_and_results(tmp_path) 
     assert tool_result.tool_call_id == _history_id(1, 1, 1)
     assert tool_result.status == "completed"
     assert tool_result.raw_output == "contents"
+
+
+@pytest.mark.asyncio
+async def test_replay_sends_readable_reasoning_as_thoughts_before_the_answer(tmp_path) -> None:
+    """Reasoning replays as the live segments showed it; opaque reasoning replays nothing."""
+    summary = Content.from_text_reasoning(text="Short summary.")
+    summary.additional_properties[REASONING_SUMMARY_KEY] = True
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session(
+        "s1",
+        {
+            "messages": [
+                Message("user", ["inspect"]),
+                Message(
+                    "assistant",
+                    [
+                        Content.from_text_reasoning(text="Looking"),
+                        Content.from_text_reasoning(text=" closer."),
+                        summary,
+                        Content.from_text_reasoning(text=None, protected_data="signature"),
+                        "The answer.",
+                    ],
+                ),
+            ]
+        },
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+    client = _FakeClient()
+
+    await replay_session_history(client, store, "s1")
+
+    updates = [n.update for n in client.updates if n.update.session_update != "user_message_chunk"]
+    assert [(update.session_update, update.content.text) for update in updates] == [
+        ("agent_thought_chunk", "Looking"),
+        ("agent_thought_chunk", " closer."),
+        ("agent_thought_chunk", "Short summary."),
+        ("agent_message_chunk", "The answer."),
+    ]
+    assert [update.field_meta["chrys"]["channel"] for update in updates[:3]] == [
+        "reasoning",
+        "reasoning",
+        "reasoning_summary",
+    ]
+    ids = [update.message_id for update in updates]
+    assert ids[0] == ids[1]
+    assert len({ids[0], ids[2], ids[3]}) == 3
 
 
 @pytest.mark.asyncio
@@ -1074,3 +1122,109 @@ async def test_replay_session_history_skips_compacted_groups_but_keeps_same_text
         _SUMMARY_TEXT
     ]
     assert [update.title for update in updates[True] if update.session_update == "tool_call"] == ["zsh"]
+
+
+def _marker(kind: str) -> Message:
+    marker = Message("assistant", [""])
+    marker.additional_properties[HistoryMarkerKind.KEY] = kind
+    return marker
+
+
+def _answer_chunk_ids(client: _FakeClient) -> dict[str, str]:
+    """Each replayed answer message's text by its ``messageId``."""
+    texts: dict[str, str] = {}
+    for notification in client.updates:
+        update = notification.update
+        if update.session_update == "agent_message_chunk":
+            texts[update.message_id] = texts.get(update.message_id, "") + update.content.text
+    return texts
+
+
+@pytest.mark.asyncio
+async def test_replay_returns_the_answer_history_ends_with(tmp_path) -> None:
+    """What a bare retry drops: the answer messages after the last tool exchange, past the trailing markers."""
+    store = JsonFileStateStore(tmp_path / "sessions")
+    call = Content.from_function_call("c1", "read_file", arguments={})
+    await store.save_session(
+        "s1",
+        {
+            "messages": [
+                Message("user", ["go"]),
+                # Narration may be a message of its own, as the provider sent it, before its call's.
+                Message("assistant", ["Let me look."]),
+                Message("assistant", [call]),
+                Message("tool", [Content.from_function_result("c1", result="42")]),
+                Message("assistant", [Content.from_text_reasoning(text="hmm"), "The result ", "is"]),
+                _marker(HistoryMarkerKind.INTERRUPTED),
+                _marker(HistoryMarkerKind.TURN),
+            ]
+        },
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+    client = _FakeClient()
+
+    trailing = await replay_session_history(client, store, "s1")
+
+    texts = _answer_chunk_ids(client)
+    assert [texts[message_id] for message_id in trailing] == ["The result \n\nis"]
+    assert set(texts) - set(trailing) == {next(i for i, t in texts.items() if t == "Let me look.")}
+
+
+@pytest.mark.asyncio
+async def test_replay_returns_no_answer_once_a_user_message_follows_it(tmp_path) -> None:
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session(
+        "s1",
+        {"messages": [Message("user", ["go"]), Message("assistant", ["done"]), Message("user", ["next"])]},
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+
+    assert await replay_session_history(_FakeClient(), store, "s1") == ()
+
+
+@pytest.mark.asyncio
+async def test_replay_returns_no_answer_when_the_failed_turn_ends_in_a_hosted_exchange_message(tmp_path) -> None:
+    """One message holding a hosted call, its result and narration is a tool exchange: a bare retry keeps it."""
+    store = JsonFileStateStore(tmp_path / "sessions")
+    call = Content.from_hosted_tool_call(
+        "provider-search",
+        tool_name="web_search",
+        arguments={"query": "Chrys"},
+        status="running",
+        hosted_family="search",
+        hosted_provider="openai",
+        provider_phase="start",
+    )
+    result = Content.from_hosted_tool_result(
+        "provider-search",
+        tool_name="web_search",
+        result="found",
+        status="completed",
+        hosted_family="search",
+        hosted_provider="openai",
+        provider_phase="terminal",
+    )
+    failed = _marker(HistoryMarkerKind.INTERRUPTED)
+    failed.additional_properties[HistoryMarkerKind.STATUS_CODE_KEY] = HistoryMarkerKind.STATUS_EXECUTION_FAILED
+    await store.save_session(
+        "s1",
+        {
+            "messages": [
+                Message("user", ["search"]),
+                Message("assistant", [call, result, Content.from_text("The search found Chrys.")]),
+                failed,
+                _marker(HistoryMarkerKind.TURN),
+            ]
+        },
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+    client = _FakeClient()
+
+    trailing = await replay_session_history(client, store, "s1")
+
+    # The narration did replay as an answer message; it is just not one a retry withdraws.
+    assert list(_answer_chunk_ids(client).values()) == ["The search found Chrys."]
+    assert trailing == ()

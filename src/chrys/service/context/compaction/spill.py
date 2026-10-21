@@ -1771,7 +1771,9 @@ def _assistant_group_text(group: ScopedGroup) -> str:
             if content.type == "text" and content.text:
                 blocks.append(content.text)
             elif content.type == "text_reasoning":
-                if content.text:
+                # Chat Completions ``reasoning_details`` text is a readable copy of the payload written below.
+                details = content.additional_properties.get("openai_reasoning_format") == "reasoning_details"
+                if content.text and not details:
                     blocks.append(f"[reasoning]\n{content.text}")
                 if content.protected_data:
                     blocks.append(f"[protected reasoning data]\n{content.protected_data}")

@@ -16,13 +16,12 @@ from chrys.app.tui.util.context_pressure import context_pressure_message
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptOp,
+    AnswerSegments,
     TranscriptAssistantOp,
     TranscriptCompactionFinishedOp,
     TranscriptCompactionStartOp,
     TranscriptErrorOp,
     TranscriptInterruptedOp,
-    TranscriptPresentationAcceptedOp,
-    TranscriptPresentationRejectedOp,
     TranscriptResumedOp,
     TranscriptRetryOp,
     TranscriptToolArgsOp,
@@ -43,8 +42,8 @@ WORKFLOW_EVENTS = (events.WorkflowRunAccepted, events.WorkflowRunRejected, *WORK
 INVOCATION_EVENTS = (
     events.InvocationStarted,
     events.InvocationMessage,
-    events.InvocationPresentationAttemptAccepted,
-    events.InvocationPresentationAttemptRejected,
+    events.InvocationContentDelta,
+    events.InvocationContentFinished,
     events.InvocationToolCallStart,
     events.InvocationToolCallArgsUpdated,
     events.InvocationToolCallStatusUpdated,
@@ -140,6 +139,7 @@ class WorkflowProjector:
     def __init__(self) -> None:
         self.current: ObservedRun | None = None
         self.previous: ObservedRun | None = None
+        self._answers = AnswerSegments()
 
     def run(self, run_id: str) -> ObservedRun | None:
         for run in (self.current, self.previous):
@@ -219,8 +219,7 @@ class WorkflowProjector:
                         event.tool_call_count, event.total_usage_tokens, event.usage_unreported_attempts
                     )
                 _seed_attempt(run, key, event)
-                operation = transcript_operation(event)
-                if operation is not None:
+                if (operation := journal_operation(event, self._answers)) is not None:
                     journal.record(operation)
                 return
 
@@ -247,15 +246,18 @@ def _seed_attempt(run: ObservedRun, key: tuple[str, int], first: events.Invocati
         del run.journals[invocation_id, number]
 
 
+def journal_operation(event: events.InvocationEvent, answers: AnswerSegments) -> AgentTranscriptOp | None:
+    """What one fact adds to its transcript; streamed text adds each answer segment it completes."""
+    if isinstance(event, (events.InvocationContentDelta, events.InvocationContentFinished)):
+        return answers.take(event)
+    return transcript_operation(event)
+
+
 def transcript_operation(event: events.InvocationEvent) -> AgentTranscriptOp | None:
     if isinstance(event, events.InvocationStarted) and event.opening_prompt:
         return TranscriptUserOp(event.opening_prompt)
     if isinstance(event, events.InvocationMessage):
-        return TranscriptAssistantOp(event.text, final=event.is_final, presentation=event.presentation)
-    if isinstance(event, events.InvocationPresentationAttemptAccepted):
-        return TranscriptPresentationAcceptedOp(event.attempt_id, event.segment_ids)
-    if isinstance(event, events.InvocationPresentationAttemptRejected):
-        return TranscriptPresentationRejectedOp(event.attempt_id)
+        return TranscriptAssistantOp(event.text, final=True) if event.is_final else None
     if isinstance(event, events.InvocationToolCallStart):
         return TranscriptToolStartOp(
             event.call_id,

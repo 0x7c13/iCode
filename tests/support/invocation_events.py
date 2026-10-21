@@ -7,26 +7,24 @@ from __future__ import annotations
 from chrys.foundation.events.types import (
     InvocationAborted,
     InvocationCascadeAborted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationContextPressure,
     InvocationEvent,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationResumed,
     InvocationRetryAttempt,
     InvocationToolCallArgsUpdated,
     InvocationToolCallStart,
-    ProvisionalPresentation,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
 
 PHASES = (
-    "intermediate",
+    "answer",
+    "reasoning",
+    "segment_end",
     "final",
-    "provisional",
-    "accepted",
-    "rejected",
     "wire",
     "run",
     "compaction",
@@ -39,7 +37,8 @@ PHASES = (
     "pressure",
     "args",
 )
-PROSE_PHASES = frozenset(PHASES[:5])
+PROSE_PHASES = frozenset(PHASES[:4])
+"""Model output: streamed answer and reasoning text, a segment's end, and the final completion snapshot."""
 ORIGINS = (
     InvocationOrigin("turn", "s1", "main", None),
     InvocationOrigin("sub_agent", "s1", "child", InvocationOrigin("turn", "s1", "main", None)),
@@ -57,19 +56,26 @@ def has_chat_card(origin: InvocationOrigin) -> bool:
 
 def projection_event(origin: InvocationOrigin, phase: str) -> InvocationEvent:
     """Produce a fact without changing the wire-facing text or control fields."""
-    if phase in ("intermediate", "final", "provisional"):
+    private = origin.kind == "sub_agent"
+    if phase in ("answer", "reasoning"):
+        return InvocationContentDelta(
+            origin=origin,
+            session_id=origin.session_id,
+            segment_id="segment",
+            channel=phase,
+            text=f"private child {phase}" if private else f"main {phase}",
+        )
+    if phase == "segment_end":
+        return InvocationContentFinished(
+            origin=origin, session_id=origin.session_id, segment_id="segment", channel="answer"
+        )
+    if phase == "final":
         return InvocationMessage(
             origin=origin,
             session_id=origin.session_id,
-            text="private child prose" if origin.kind == "sub_agent" else "main text",
-            is_final=phase == "final",
-            is_intermediate=phase != "final",
-            presentation=ProvisionalPresentation("attempt", "segment") if phase == "provisional" else None,
+            text="private child prose" if private else "main text",
+            is_final=True,
         )
-    if phase == "accepted":
-        return InvocationPresentationAttemptAccepted(origin=origin, attempt_id="attempt", segment_ids=("segment",))
-    if phase == "rejected":
-        return InvocationPresentationAttemptRejected(origin=origin, attempt_id="attempt")
     if phase in ("wire", "run", "compaction", "connection"):
         return InvocationRetryAttempt(origin=origin, scope=phase, message="retry", attempt=1, max_attempts=3)
     if phase == "paused":

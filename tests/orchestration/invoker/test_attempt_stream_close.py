@@ -62,14 +62,13 @@ class _Observer:
     def __init__(self, act: Callable[[], None]) -> None:
         self._act = act
 
-    def on_update(self, update: AgentResponseUpdate) -> None:
+    async def on_update(self, update: AgentResponseUpdate) -> None:
         del update
         self._act()
+        # A real observer publishes here: the cancel lands while it is awaited.
+        await asyncio.sleep(0)
 
     async def on_retry_boundary(self) -> None:
-        pass
-
-    async def before_finalize(self) -> None:
         pass
 
 

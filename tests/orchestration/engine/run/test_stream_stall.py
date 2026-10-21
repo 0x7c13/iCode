@@ -16,12 +16,14 @@ These tests verify:
    capped the whole attempt and tool/chunk accumulation could blow the
    budget).
 2. A stream with an idle gap longer than the stall timeout DOES stall
-   and triggers the retry path.
+   and triggers the retry path, but only while it showed nothing: once its
+   text went out, resending would show it twice, so the turn fails instead.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Annotated
 from unittest.mock import create_autospec
@@ -41,7 +43,13 @@ from anthropic.types.beta import (
 
 from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import InvocationMessage, InvocationRetryAttempt
+from chrys.foundation.events.types import (
+    InvocationContentDelta,
+    InvocationContentFinished,
+    InvocationMessage,
+    InvocationRetryAttempt,
+)
+from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.retry import HistorySnapshot, StreamStall, StreamStallExhausted
 from chrys.kernel import (
@@ -51,6 +59,8 @@ from chrys.kernel import (
     AgentResponseUpdate,
     AgentSession,
     ChatMiddlewareLayer,
+    ChatResponse,
+    ChatResponseUpdate,
     Content,
     FunctionTool,
     Message,
@@ -59,18 +69,17 @@ from chrys.kernel import (
 from chrys.kernel.middleware import ChatContext
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.attempts import continuation_token_observer_for
+from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.origin import BoundEmitter
 from chrys.orchestration.invoker.resources import Conversation
 from chrys.service.agent_middleware import ApprovalMiddleware, AskUserMiddleware
 from chrys.service.agent_middleware.injection import InjectionMiddleware
 from chrys.service.agent_middleware.response_validation import (
     ResponseValidationMiddleware,
-    RetryableResponseValidationError,
     TerminalResponseValidationError,
-    ValidationRetryExemption,
 )
 from chrys.service.llm.anthropic_messages import AnthropicMessagesClient
-from chrys.service.llm.mock import MockResponse
+from chrys.service.llm.mock import MockChatClient, MockResponse
 from tests.support.pipeline_helpers import create_test_engine
 
 
@@ -96,6 +105,46 @@ def _make_executor(
 
 def _finals(events: list) -> list[str]:
     return [e.text for e in events if (isinstance(e, InvocationMessage) and e.origin.kind == "turn") and e.is_final]
+
+
+def _silent_streams(client: MockChatClient) -> None:
+    """Make every stream *client* opens go quiet before its first update; blocking requests still answer."""
+
+    async def _never_starts(*_args: object) -> AsyncIterator[ChatResponseUpdate]:
+        await asyncio.Event().wait()
+        yield ChatResponseUpdate(contents=[])
+
+    vars(client)["_stream_updates"] = _never_starts
+
+
+def _stall_after_first_text(client: MockChatClient) -> None:
+    """Make the first stream *client* opens stall right after its first text, as the watchdog reports a stall."""
+    stream_updates = client._stream_updates
+    stalled = False
+
+    async def _stalling(resp: MockResponse, model_id: str, finish_reason: object) -> AsyncIterator[ChatResponseUpdate]:
+        nonlocal stalled
+        async for update in stream_updates(resp, model_id, finish_reason):
+            yield update
+            if not stalled and any(content.type == "text" for content in update.contents):
+                stalled = True
+                raise StreamStall("Streaming response produced no progress")
+
+    vars(client)["_stream_updates"] = _stalling
+
+
+def _bind_projector(executor: TurnBindings) -> list[object]:
+    """Give a hand-built pass its content projector; return what it publishes."""
+    published: list[object] = []
+
+    async def _publish(event: object) -> None:
+        published.append(event)
+
+    executor._session_id = "session"
+    executor._bus = SimpleNamespace(publish=_publish)
+    executor._bound_emitter = BoundEmitter(executor._bus, InvocationOrigin("turn", "session", "test", None))
+    executor._projector = ContentProjector(executor._bound_emitter)
+    return published
 
 
 class TestStreamStallPerChunk:
@@ -165,7 +214,8 @@ class TestStreamStallPerChunk:
         assert executor._effective_max_retries() == 4
 
     @pytest.mark.asyncio
-    async def test_retry_boundary_resets_private_streaming_text_buffer(self):
+    async def test_retry_boundary_fails_the_abandoned_segment_and_drops_its_unlanded_answer(self):
+        """A failed turn keeps only the answer of the attempt that replaced the abandoned one."""
         updates = [
             AgentResponseUpdate(contents=[Content.from_text("failed partial")], role="assistant"),
             AgentResponseUpdate(
@@ -183,28 +233,21 @@ class TestStreamStallPerChunk:
             def run(self, *_args, **_kwargs):
                 return ResponseStream(_updates(), finalizer=AgentResponse.from_updates)
 
-        published: list[object] = []
-
-        async def _publish(event: object) -> None:
-            published.append(event)
-
         executor = _make_executor(agent=_Agent())
         executor.trajectory_context = None
-        executor._intermediate_buffer = None
         executor._stream_attempt_timeout = 1.0
         executor._attempt_handle.task = None
-        executor._session_id = "session"
-        executor._bus = SimpleNamespace(publish=_publish)
-        executor._bound_emitter = BoundEmitter(
-            executor._bus, InvocationOrigin("turn", executor._session_id or "", "test", None)
-        )
+        published = _bind_projector(executor)
 
         await executor._attempts._stream_single_attempt([], {}, watchdog=False)
 
-        streamed = [
-            event.text for event in published if (isinstance(event, InvocationMessage) and event.origin.kind == "turn")
-        ]
-        assert streamed == ["fresh answer"]
+        abandoned, fresh = (event for event in published if isinstance(event, InvocationContentDelta))
+        assert (abandoned.text, fresh.text) == ("failed partial", "fresh answer")
+        assert fresh.segment_id != abandoned.segment_id
+        finished = [event for event in published if isinstance(event, InvocationContentFinished)]
+        assert [(event.segment_id, event.status) for event in finished] == [(abandoned.segment_id, "failed")]
+        assert executor._projector is not None
+        assert [content.text for content in executor._projector.take_unlanded_answer()] == ["fresh answer"]
 
     def test_forced_stateless_executor_never_enables_service_storage(self):
         executor = _make_executor(
@@ -263,7 +306,6 @@ class TestStreamStallPerChunk:
 
         executor = _make_executor(agent=_Agent())
         executor.trajectory_context = None
-        executor._intermediate_buffer = None
         executor._stream_attempt_timeout = 0.01
         executor._attempt_handle.task = None
         executor._session_id = "session"
@@ -305,7 +347,6 @@ class TestStreamStallPerChunk:
 
         executor = _make_executor(agent=_Agent())
         executor.trajectory_context = None
-        executor._intermediate_buffer = None
         executor._stream_attempt_timeout = 0.01
         executor._attempt_handle.task = None
         executor._session_id = "session"
@@ -345,29 +386,19 @@ class TestStreamStallPerChunk:
             def run(self, *_args, **_kwargs):
                 return ResponseStream(_updates(), finalizer=AgentResponse.from_updates)
 
-        published: list[object] = []
-
-        async def _publish(event: object) -> None:
-            published.append(event)
-
         executor = _make_executor(agent=_Agent())
         executor.trajectory_context = None
-        executor._intermediate_buffer = None
         executor._stream_attempt_timeout = 0.05
         executor._attempt_handle.task = None
-        executor._session_id = "session"
-        executor._bus = SimpleNamespace(publish=_publish)
-        executor._bound_emitter = BoundEmitter(
-            executor._bus, InvocationOrigin("turn", executor._session_id or "", "test", None)
-        )
+        published = _bind_projector(executor)
 
         result = await _asyncio.wait_for(executor._attempts._stream_single_attempt([], {}), timeout=5.0)
 
         assert result.messages
-        assert any(
-            (isinstance(event, InvocationMessage) and event.origin.kind == "turn") and event.text == "done"
-            for event in published
-        )
+        assert [event.text for event in published if isinstance(event, InvocationContentDelta)] == [
+            "trailing intermediate text",
+            "done",
+        ]
 
     @pytest.mark.asyncio
     async def test_anthropic_argument_heartbeats_keep_stream_watchdog_armed(self):
@@ -414,7 +445,7 @@ class TestStreamStallPerChunk:
         client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
-            middleware=[ResponseValidationMiddleware(max_retries=0)],
+            middleware=[ResponseValidationMiddleware()],
         )
 
         class _Agent:
@@ -423,7 +454,6 @@ class TestStreamStallPerChunk:
 
         executor = _make_executor(agent=_Agent())
         executor.trajectory_context = None
-        executor._intermediate_buffer = None
         executor._stream_attempt_timeout = 1.5
         executor._attempt_handle.task = None
         executor._session_id = "session"
@@ -477,7 +507,7 @@ class TestStreamStallPerChunk:
         client = AnthropicMessagesClient(model="kimi-k3", sdk_client=anthropic_client)  # type: ignore[arg-type]
         validated_client = ChatMiddlewareLayer(
             client,
-            middleware=[ResponseValidationMiddleware(max_retries=0)],
+            middleware=[ResponseValidationMiddleware()],
         )
 
         class _Agent:
@@ -486,7 +516,6 @@ class TestStreamStallPerChunk:
 
         executor = _make_executor(agent=_Agent())
         executor.trajectory_context = None
-        executor._intermediate_buffer = None
         executor._stream_attempt_timeout = 1.5
         executor._attempt_handle.task = None
         executor._session_id = "session"
@@ -545,7 +574,7 @@ class TestStreamStallPerChunk:
         assert fallback_calls == [([], {})]
 
     @pytest.mark.asyncio
-    async def test_stored_blocking_loop_uses_injected_budget_and_validation_exemption(self, monkeypatch):
+    async def test_stored_blocking_loop_uses_injected_budget(self, monkeypatch):
         captured: dict[str, object] = {}
 
         class _Loop:
@@ -568,10 +597,10 @@ class TestStreamStallPerChunk:
         await executor._attempts._run_blocking([], {}, service_side=True)
 
         assert captured["max_retries"] == 6
-        assert callable(captured["retry_exemption"])
+        assert callable(captured["may_retry"])
 
     @pytest.mark.asyncio
-    async def test_stored_streaming_loop_uses_injected_budget_and_validation_exemption(self, monkeypatch):
+    async def test_stored_streaming_loop_uses_injected_budget(self, monkeypatch):
         captured: dict[str, object] = {}
         sentinel = object()
 
@@ -592,58 +621,7 @@ class TestStreamStallPerChunk:
 
         assert result is sentinel
         assert captured["max_retries"] == 6
-        assert callable(captured["retry_exemption"])
-
-    @pytest.mark.parametrize("transient_budget", [0, 1])
-    @pytest.mark.asyncio
-    async def test_stored_validation_uses_full_exempt_budget(self, transient_budget: int):
-        executor = _make_executor(injection=InjectionMiddleware())
-        executor.trajectory_context = None
-        executor._max_retries_override = transient_budget
-        executor._BACKOFF_SCHEDULE = (0,)
-        executor._loop_recorder = SimpleNamespace(committed_count=0)
-        executor._hosted_commits_probe = None
-        executor._rollback.snapshot = lambda: HistorySnapshot(messages=[], compressed_count=0)
-        executor._rollback.restore = lambda _snapshot: None
-        executor._attempts._restore_service_retry_inputs = lambda _kwargs: None
-        retry_events: list[tuple[int, int, int]] = []
-
-        async def _publish_retry_attempt(
-            _message: str,
-            attempt: int,
-            max_attempts: int,
-            delay: int,
-            _exc: BaseException,
-        ) -> None:
-            retry_events.append((attempt, max_attempts, delay))
-
-        async def _interruptible_sleep(_seconds: int) -> bool:
-            return False
-
-        validation_errors = [
-            RetryableResponseValidationError(
-                reason,
-                exemption=ValidationRetryExemption(attempt=attempt, max_attempts=3, delay_seconds=0),
-            )
-            for attempt, reason in enumerate(("empty contents", "whitespace", "leaked marker"), start=1)
-        ]
-        sentinel = object()
-        outcomes: list[object] = [*validation_errors, sentinel]
-
-        async def _stream_single_attempt(_current_input, _run_kwargs):
-            outcome = outcomes.pop(0)
-            if isinstance(outcome, BaseException):
-                raise outcome
-            return outcome
-
-        executor._attempts._publish_retry_attempt = _publish_retry_attempt
-        executor._attempts._interruptible_sleep = _interruptible_sleep
-        executor._attempts._stream_single_attempt = _stream_single_attempt
-
-        result = await executor._attempts._stream_with_retry([], {})
-
-        assert result is sentinel
-        assert retry_events == [(1, 3, 0), (2, 3, 0), (3, 3, 0)]
+        assert callable(captured["may_retry"])
 
     @pytest.mark.asyncio
     async def test_stored_zero_budget_stall_makes_one_blocking_fallback(self):
@@ -688,63 +666,8 @@ class TestStreamStallPerChunk:
         assert fallback_calls == 1
 
     @pytest.mark.asyncio
-    async def test_stored_zero_budget_exempt_retry_then_stall_falls_back_to_blocking(self):
-        """An exempt validation retry at budget 0 still leaves the stall→blocking degrade intact."""
-        executor = _make_executor(injection=InjectionMiddleware())
-        executor.trajectory_context = None
-        executor._max_retries_override = 0
-        executor._BACKOFF_SCHEDULE = (0,)
-        executor._loop_recorder = SimpleNamespace(committed_count=0)
-        executor._hosted_commits_probe = None
-        executor._rollback.snapshot = lambda: HistorySnapshot(messages=[], compressed_count=0)
-        executor._rollback.restore = lambda _snapshot: None
-        executor._attempts._restore_service_retry_inputs = lambda _kwargs: None
-        retry_events: list[tuple[int, int, int]] = []
-        fallback_calls = 0
-        sentinel = object()
-        outcomes: list[BaseException] = [
-            RetryableResponseValidationError(
-                "empty contents",
-                exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=0),
-            ),
-            StreamStall("stalled"),
-        ]
-
-        async def _stream_single_attempt(_current_input, _run_kwargs):
-            raise outcomes.pop(0)
-
-        async def _run_agent(_current_input, _run_kwargs):
-            nonlocal fallback_calls
-            fallback_calls += 1
-            return sentinel
-
-        async def _publish_retry_attempt(
-            _message: str,
-            attempt: int,
-            max_attempts: int,
-            delay: int,
-            _exc: BaseException,
-        ) -> None:
-            retry_events.append((attempt, max_attempts, delay))
-
-        async def _interruptible_sleep(_seconds: int) -> bool:
-            return False
-
-        executor._attempts._stream_single_attempt = _stream_single_attempt
-        executor._attempts._run_agent = _run_agent
-        executor._attempts._publish_retry_attempt = _publish_retry_attempt
-        executor._attempts._interruptible_sleep = _interruptible_sleep
-
-        result = await executor._attempts._stream_with_retry([], {})
-
-        assert result is sentinel
-        assert not outcomes
-        assert fallback_calls == 1
-        assert retry_events == [(1, 3, 0)]
-
-    @pytest.mark.asyncio
-    async def test_stored_identical_reason_gives_terminal_after_one_exempt_event(self):
-        """The middleware's identical-reason give-up escapes the loop as a terminal raise."""
+    async def test_stored_rejected_response_ends_the_run_without_a_retry(self):
+        """A response the validation middleware rejects is terminal: the whole-run loop never resends it."""
         executor = _make_executor(injection=InjectionMiddleware())
         executor.trajectory_context = None
         executor._max_retries_override = 5
@@ -754,26 +677,16 @@ class TestStreamStallPerChunk:
         executor._rollback.snapshot = lambda: HistorySnapshot(messages=[], compressed_count=0)
         executor._rollback.restore = lambda _snapshot: None
         executor._attempts._restore_service_retry_inputs = lambda _kwargs: None
-        retry_events: list[tuple[int, int, int]] = []
-        outcomes: list[BaseException] = [
-            RetryableResponseValidationError(
-                "empty contents",
-                exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=0),
-            ),
-            TerminalResponseValidationError("empty contents"),
-        ]
+        attempts = 0
+        retry_events: list[int] = []
 
         async def _stream_single_attempt(_current_input, _run_kwargs):
-            raise outcomes.pop(0)
+            nonlocal attempts
+            attempts += 1
+            raise TerminalResponseValidationError("empty contents")
 
-        async def _publish_retry_attempt(
-            _message: str,
-            attempt: int,
-            max_attempts: int,
-            delay: int,
-            _exc: BaseException,
-        ) -> None:
-            retry_events.append((attempt, max_attempts, delay))
+        async def _publish_retry_attempt(_message: str, attempt: int, *_args) -> None:
+            retry_events.append(attempt)
 
         async def _interruptible_sleep(_seconds: int) -> bool:
             return False
@@ -785,8 +698,8 @@ class TestStreamStallPerChunk:
         with pytest.raises(TerminalResponseValidationError):
             await executor._attempts._stream_with_retry([], {})
 
-        assert not outcomes
-        assert retry_events == [(1, 3, 0)]
+        assert attempts == 1
+        assert retry_events == []
 
     @pytest.mark.asyncio
     async def test_stall_exhaustion_rolls_back_state_before_blocking_fallback(self):
@@ -856,6 +769,64 @@ class TestStreamStallPerChunk:
             "restore_for_retry",
             "fallback",
             "end_retry",
+        ]
+
+    async def test_each_whole_run_attempt_and_the_fallback_start_fresh_segments(self):
+        """Reasoning that streamed before a stall may show again, as its own segment; the
+        blocking fallback's landed answer still goes out whole."""
+        executor = _make_executor()
+        executor.trajectory_context = None
+        executor._BACKOFF_SCHEDULE = (0,)
+        executor._max_retries_override = 1
+        executor._loop_recorder = SimpleNamespace(committed_count=0)
+        executor._hosted_commits_probe = None
+        executor._rollback.snapshot = lambda: HistorySnapshot(messages=[], compressed_count=0)
+        executor._rollback.restore = lambda _snapshot: None
+        executor._attempts._restore_service_retry_inputs = lambda _kwargs: None
+        executor._stream_attempt_timeout = 1.0
+        published = _bind_projector(executor)
+        attempts = 0
+
+        async def _updates() -> AsyncIterator[AgentResponseUpdate]:
+            nonlocal attempts
+            attempts += 1
+            yield AgentResponseUpdate(
+                contents=[Content.from_text_reasoning(text=f"thought {attempts}")], role="assistant"
+            )
+            raise StreamStall("stalled")
+
+        async def _blocking() -> AgentResponse:
+            response = ChatResponse(messages=[Message("assistant", [Content.from_text("final answer")])])
+            await executor._response_ready(response)
+            return AgentResponse(messages=response.messages)
+
+        class _Agent:
+            def run(self, *_args: object, stream: bool, **_kwargs: object) -> object:
+                return ResponseStream(_updates(), finalizer=AgentResponse.from_updates) if stream else _blocking()
+
+        async def _publish_retry_attempt(*_args) -> None:
+            return None
+
+        async def _interruptible_sleep(_seconds: int) -> bool:
+            return False
+
+        executor._attempts._agent = _Agent()
+        executor._attempts._publish_retry_attempt = _publish_retry_attempt
+        executor._attempts._interruptible_sleep = _interruptible_sleep
+
+        await executor._attempts._stream_with_retry([], {})
+
+        deltas = [(e.channel, e.segment_id, e.text) for e in published if isinstance(e, InvocationContentDelta)]
+        assert [(channel, text) for channel, _, text in deltas] == [
+            ("reasoning", "thought 1"),
+            ("reasoning", "thought 2"),
+            ("answer", "final answer"),
+        ]
+        assert len({segment for _, segment, _ in deltas}) == 3
+        assert [e.status for e in published if isinstance(e, InvocationContentFinished)] == [
+            "failed",
+            "failed",
+            "completed",
         ]
 
     def test_service_retry_restore_drops_all_failed_attempt_handles(self):
@@ -985,16 +956,9 @@ class TestStreamStallPerChunk:
 
         With the previous outer ``asyncio.wait_for`` wrapping the entire
         attempt, this case failed: 40 chunks at 0.05 s each = 2.0 s total, which
-        blew the 0.5 s budget even though the stream was actively sending
-        data the whole time.
-
-        NOTE: ``ResponseValidationMiddleware`` (innermost chat middleware)
-        drains the full inner stream before handing a replay to the
-        outer iterator, so from chrys's ``_stream_single_attempt``
-        perspective all 40 chunks arrive in a single burst after the
-        middleware finishes draining.  The per-chunk watchdog therefore
-        now wraps the entire drain.  Use a generous budget so the real
-        invariant (healthy stream → no spurious retry) still holds.
+        blew the budget even though the stream was actively sending data the
+        whole time.  Chunks pass the validation middleware as they arrive, so
+        the per-chunk budget only needs headroom over one 0.05 s gap.
         """
         # Flatten backoff so any (unexpected) retries don't slow the test.
         monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0, 0, 0, 0, 0))
@@ -1013,9 +977,8 @@ class TestStreamStallPerChunk:
 
         await ctx.bus.subscribe(InvocationRetryAttempt, _on_retry)
 
-        # 10s budget comfortably exceeds the ~2s total drain time so the
-        # watchdog never fires on this healthy stream.
-        ctx.engine.current.loaded.bindings._stream_attempt_timeout = 10.0
+        # Under the ~2 s total, far over one 0.05 s gap.
+        ctx.engine.current.loaded.bindings._stream_attempt_timeout = 1.5
 
         try:
             await ctx.send_message("go")
@@ -1030,21 +993,19 @@ class TestStreamStallPerChunk:
 
     @pytest.mark.asyncio
     async def test_idle_gap_triggers_stall(self, tmp_path, monkeypatch):
-        """A single chunk gap exceeding the per-chunk timeout fires _StreamStall,
-        which the retry loop surfaces as a RetryAttempt with "Stream stalled"."""
+        """A stream that goes quiet past the per-chunk timeout before it showed
+        anything stalls, and the retry lane announces a "Stream stalled" retry."""
         # Zero backoff + cap retries so the test converges quickly.  After
         # retries exhaust, the executor falls back to non-streaming, which
-        # the mock client satisfies instantly (no chunk delay on that path).
+        # the mock client satisfies instantly.
         monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0, 0, 0, 0, 0))
-        # Single chunk, but chunk_delay is large relative to the per-chunk
-        # budget we'll install below.  With 2 one-char chunks 1.0 s apart,
-        # the second __anext__() will never arrive within 0.1 s → stall.
         ctx = await create_test_engine(
-            [MockResponse(text="ab", chunk_size=1, chunk_delay=1.0)],
+            [MockResponse(text="ab"), MockResponse(text="ab"), MockResponse(text="answered")],
             tmp_path,
             stream=True,
             max_transient_retries=1,
         )
+        _silent_streams(ctx.mock_client)
 
         retries: list[InvocationRetryAttempt] = []
 
@@ -1062,6 +1023,7 @@ class TestStreamStallPerChunk:
             assert any("stall" in r.message.lower() for r in retries), (
                 f"Expected a stall retry, got messages: {[r.message for r in retries]}"
             )
+            assert _finals(ctx.events) == ["answered"]
         finally:
             await ctx.cleanup()
 
@@ -1069,17 +1031,45 @@ class TestStreamStallPerChunk:
     async def test_local_zero_budget_stall_makes_one_blocking_fallback(self, tmp_path, monkeypatch):
         monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0,))
         ctx = await create_test_engine(
-            [MockResponse(text="ab", chunk_size=1, chunk_delay=0.2)],
+            [MockResponse(text="ab"), MockResponse(text="answered")],
             tmp_path,
             stream=True,
             max_transient_retries=0,
         )
+        _silent_streams(ctx.mock_client)
         ctx.engine.current.loaded.bindings._stream_attempt_timeout = 0.01
 
         try:
             await ctx.send_message("go")
 
             assert ctx.mock_client.call_count == 2
+            assert _finals(ctx.events) == ["answered"]
+        finally:
+            await ctx.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_a_stall_after_shown_text_neither_retries_nor_falls_back(self, tmp_path, monkeypatch):
+        """Resending would show the answer twice: the turn fails and keeps what it showed."""
+        monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0,))
+        ctx = await create_test_engine(
+            [MockResponse(text="ab", chunk_size=1), MockResponse(text="must not run")],
+            tmp_path,
+            stream=True,
+            max_transient_retries=2,
+        )
+        _stall_after_first_text(ctx.mock_client)
+        bindings = ctx.engine.current.loaded.bindings
+
+        try:
+            await ctx.send_message("go")
+
+            assert ctx.mock_client.call_count == 1
+            assert bindings.state.run_failed
+            assert _finals(ctx.events) == []
+            saved = await ctx.get_session_messages()
+            answer, marker = [message for message in saved if message["role"] == "assistant"][:2]
+            assert [content["text"] for content in answer["contents"]] == ["a"]
+            assert marker["additional_properties"][HistoryMarkerKind.KEY] == HistoryMarkerKind.INTERRUPTED
         finally:
             await ctx.cleanup()
 
@@ -1272,14 +1262,13 @@ class TestStreamStallPerChunk:
 
 
 class TestWholeRunRetryGate:
-    """``AttemptRunner._may_retry_attempt`` blocks whole-run retries once any
-    answered tool work exists: locally answered results via the loop
-    recorder's commit count, provider-hosted calls via the evidence the
-    validation middleware attaches to the raised error or via its
-    run-scoped observation probe (the rejected/aborted exchange never
-    reaches the recorder).  A live continuation token exempts the gate:
-    the retry then resumes the background response instead of
-    re-creating the request."""
+    """``AttemptRunner._may_retry_attempt`` blocks a whole-run retry once the run
+    showed readable output or did answered tool work: shown text via the pass's
+    content projector, locally answered results via the loop recorder's commit
+    count, provider-hosted calls via the validation middleware's run-scoped
+    observation probe (the failed exchange never reaches the recorder).  A live
+    continuation token exempts the hosted gate only: the retry then resumes the
+    background response instead of re-creating the request."""
 
     @staticmethod
     def _turn_bindings(
@@ -1292,48 +1281,45 @@ class TestWholeRunRetryGate:
         executor._hosted_commits_probe = lambda: hosted_observed
         return executor
 
-    def test_transient_error_with_no_commits_retries(self):
-        assert self._turn_bindings(0)._attempts._may_retry_attempt(ConnectionError("transient")) is True
-        assert self._turn_bindings(None)._attempts._may_retry_attempt(ConnectionError("transient")) is True
+    def test_no_commits_retries(self):
+        assert self._turn_bindings(0)._attempts._may_retry_attempt() is True
+        assert self._turn_bindings(None)._attempts._may_retry_attempt() is True
 
     def test_local_commits_block_retry(self):
-        assert self._turn_bindings(1)._attempts._may_retry_attempt(ConnectionError("transient")) is False
+        assert self._turn_bindings(1)._attempts._may_retry_attempt() is False
 
-    def test_hosted_commits_block_retry_despite_empty_recorder(self):
-        err = RetryableResponseValidationError(
-            "empty or whitespace-only text response",
-            exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=1),
-            hosted_commits=("create_issue",),
-        )
-        assert self._turn_bindings(0)._attempts._may_retry_attempt(err) is False
-        assert self._turn_bindings(None)._attempts._may_retry_attempt(err) is False
+    async def test_shown_text_blocks_retry_even_while_a_continuation_token_lives(self):
+        executor = self._turn_bindings(0)
+        _bind_projector(executor)
+        projector = executor._projector
+        assert projector is not None
+        live = {"options": {"continuation_token": {"response_id": "pending"}}}
+        await projector.on_update(AgentResponseUpdate(contents=[Content.from_function_call("c1", "echo")]))
+        assert executor._attempts._may_retry_attempt() is True
 
-    def test_hosted_free_validation_failure_still_retries(self):
-        err = RetryableResponseValidationError(
-            "empty contents",
-            exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=1),
-        )
-        assert self._turn_bindings(0)._attempts._may_retry_attempt(err) is True
+        await projector.on_update(AgentResponseUpdate(contents=[Content.from_text("partial")], role="assistant"))
 
-    def test_observed_hosted_work_blocks_stall_and_transport_retries(self):
+        assert executor._attempts._may_retry_attempt() is False
+        assert executor._attempts._may_retry_attempt(live) is False
+
+    def test_observed_hosted_work_blocks_retry(self):
         # A stall/transport drop after hosted updates streamed carries no
         # evidence on the exception — the middleware's probe must gate it.
         executor = self._turn_bindings(0, hosted_observed=("create_issue",))
-        assert executor._attempts._may_retry_attempt(StreamStall("stalled")) is False
-        assert executor._attempts._may_retry_attempt(ConnectionError("dropped")) is False
+        assert executor._attempts._may_retry_attempt() is False
 
     def test_live_continuation_token_exempts_hosted_gate(self):
         # With a live background token the retry polls the SAME response —
         # hosted work is not re-created, so the retry must stay allowed.
         executor = self._turn_bindings(0, hosted_observed=("create_issue",))
         run_kwargs = {"options": {"continuation_token": {"response_id": "pending"}}}
-        assert executor._attempts._may_retry_attempt(StreamStall("stalled"), run_kwargs) is True
-        assert executor._attempts._may_retry_attempt(StreamStall("stalled"), {"options": {}}) is False
+        assert executor._attempts._may_retry_attempt(run_kwargs) is True
+        assert executor._attempts._may_retry_attempt({"options": {}}) is False
 
     async def test_hosted_work_on_a_provider_failure_blocks_whole_run_retry(self):
         # The adapter raised before the response landed: the hosted work it
         # carried reaches the gate only through the validation middleware.
-        middleware = ResponseValidationMiddleware(backoff_schedule=[0.0])
+        middleware = ResponseValidationMiddleware()
         error = ProviderResponseError(
             "stream_truncated",
             "the response failed",
@@ -1354,5 +1340,5 @@ class TestWholeRunRetryGate:
         executor._hosted_commits_probe = middleware.hosted_commits_observed
 
         live = {"options": {"continuation_token": {"response_id": "pending"}}}
-        assert executor._attempts._may_retry_attempt(error) is False
-        assert executor._attempts._may_retry_attempt(error, live) is True
+        assert executor._attempts._may_retry_attempt() is False
+        assert executor._attempts._may_retry_attempt(live) is True

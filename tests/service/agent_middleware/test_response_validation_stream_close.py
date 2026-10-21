@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The streaming validation proxy closes the inner stream it was reading.
+"""A stream the validation middleware observes still closes the provider stream.
 
-An explicit close of the proxy mid-response reaches the provider stream before
-it returns. Finalization, which closes each abandoned generator in a task of
-its own, must not have the proxy's generator close the provider's.
+The middleware hooks the provider's own stream instead of wrapping it, so an
+explicit close mid-response reaches the provider stream before it returns, and
+finalization, which closes each abandoned generator in a task of its own, finds
+no second generator to collide with.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ def _validated_layer(client: _StreamEndsClient) -> InvariantCheckedToolLoopLayer
     return InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware()]))
 
 
-async def test_closing_mid_response_closes_the_provider_stream_under_the_validation_proxy() -> None:
+async def test_closing_mid_response_closes_the_provider_stream_under_validation() -> None:
     client = _StreamEndsClient([[_text("one"), _text("two")]])
 
     stream = _validated_layer(client).get_response([Message("user", ["hi"])], stream=True)
@@ -35,9 +36,9 @@ async def test_closing_mid_response_closes_the_provider_stream_under_the_validat
 
 def test_a_validated_stream_left_open_at_loop_shutdown_closes_each_generator_on_its_own() -> None:
     # ``loop.shutdown_asyncgens`` (like garbage collection) closes every
-    # abandoned generator in a task of its own. A proxy generator whose exit
-    # closed the provider's would collide with that one's own close once its
-    # teardown suspends ("aclose(): asynchronous generator is already
+    # abandoned generator in a task of its own. A wrapping generator whose
+    # exit closed the provider's would collide with that one's own close once
+    # its teardown suspends ("aclose(): asynchronous generator is already
     # running").
     client = _StreamEndsClient([[_text("one"), _text("two")]])
     layer = _validated_layer(client)

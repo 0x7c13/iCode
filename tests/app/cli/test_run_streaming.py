@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Annotated, Any
 from unittest.mock import create_autospec
@@ -20,8 +20,11 @@ from chrys.app.cli import run as run_cli
 from chrys.app.cli.progress import display_path
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.config.settings_store import LoadedSettings
+from chrys.foundation.errors import ProviderResponseError
 from chrys.foundation.i18n import Localizer
-from chrys.kernel import FunctionTool
+from chrys.foundation.models.session_surface import SessionSurface
+from chrys.kernel import ChatResponseUpdate, FunctionTool
+from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -45,21 +48,33 @@ def _real_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, client: MockChat
 
     async def create_client(
         _profile: Any,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
-        on_intermediate_text_sync: Callable[[str], None] | None = None,
+        on_intermediate_text: Callable[[str], None] | None = None,
         **_routing: object,
     ) -> MockChatClient:
-        client._on_intermediate_text_async = on_intermediate_text_async
-        client._on_intermediate_text_sync = on_intermediate_text_sync
+        client._on_intermediate_text = on_intermediate_text
         return client
 
     def load_builtins(self: ToolRegistry, _categories: list[str], *_args: object, **_kwargs: object) -> list[Any]:
         self.register(tool)
         return [tool]
 
-    def build(*, profile_name: str, loaded_settings: LoadedSettings, approval_mode: ApprovalMode, **_kwargs: object):
+    def build(
+        *,
+        profile_name: str,
+        loaded_settings: LoadedSettings,
+        approval_mode: ApprovalMode,
+        surface: SessionSurface | None = None,
+        **_kwargs: object,
+    ):
         assert approval_mode is ApprovalMode.BYPASS
-        return make_host(tmp_path, project=tmp_path, profile_name=profile_name, loaded_settings=loaded_settings)
+        return make_host(
+            tmp_path,
+            project=tmp_path,
+            profile_name=profile_name,
+            loaded_settings=loaded_settings,
+            stream=True,
+            surface=surface,
+        )
 
     def prepare_runtime(*, restoring_session: bool = False) -> headless.PreparedRuntime:
         assert not restoring_session
@@ -133,3 +148,48 @@ async def test_progress_streams_while_a_tool_runs_and_the_answer_lands_last(
     else:
         assert during.err == after.err == ""
         assert after.out == "final answer\n"
+
+
+class _DroppingClient(MockChatClient):
+    """Its first stream drops right after its first text."""
+
+    def __init__(self, responses: list[MockResponse]) -> None:
+        super().__init__(responses=responses)
+        self._dropped = False
+
+    async def _stream_updates(
+        self, resp: MockResponse, model_id: str, finish_reason: Any
+    ) -> AsyncIterator[ChatResponseUpdate]:
+        async for update in super()._stream_updates(resp, model_id, finish_reason):
+            yield update
+            if not self._dropped and any(content.type == "text" for content in update.contents):
+                self._dropped = True
+                raise ProviderResponseError("stream_truncated", "the connection dropped", retryable=True)
+
+
+async def test_a_reply_that_drops_before_it_printed_is_sent_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`icode run` holds a reply's text until it knows what it is: text it never printed stops no retry."""
+    monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0,))
+    client = _DroppingClient([MockResponse(text="Partial answer", chunk_size=8), MockResponse(text="Whole answer")])
+
+    async def unused() -> str:
+        return ""
+
+    _real_host(monkeypatch, tmp_path, client, FunctionTool(func=unused, name="unused_tool", description="Unused"))
+    args = run_cli.build_parser().parse_args(["hello", "--agent", "Headless"])
+
+    exit_code = await asyncio.wait_for(
+        run_cli.run_command(args, run_cli.PreparedRuntimeHolder()), timeout=ENGINE_TURN_TIMEOUT
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert client.call_count == 2
+    assert captured.out == "Whole answer\n"
+    lines = _progress(captured.err)
+    assert lines[0] == f"• Headless ready · mock · session <id> · {display_path(str(tmp_path))}"
+    # The retry notice, and none of the text the retry gave up.
+    assert lines[1].startswith("↻ The model's response was cut off. Retrying in 0s")
+    assert lines[2:] == ["", "✓ Done · <dur> · 0 tool calls · session <id>"]

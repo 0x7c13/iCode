@@ -52,7 +52,7 @@ Shell commands that the agent moved to the background keep running across turns,
 
 ## Interact through the client
 
-iCode sends agent replies and tool call status to the client. When the client cancels a task, iCode interrupts the current task.
+iCode sends agent replies and tool call status to the client. A reply reaches the client as the model writes it. When the model service returns the model's reasoning as readable text, iCode sends it as the agent's thoughts, also when it replays a restored session; reasoning of sub-agents is not sent. If a reply fails partway, the client keeps the part it already showed, and the error follows. Retrying without adding a message writes the reply again, and iCode tells the client to remove the part shown before. When the client cancels a task, iCode interrupts the current task.
 
 If the current model supports image input, a prompt can include images in PNG, JPEG, GIF, or WebP format. A prompt with an image in another format is rejected, and the client receives an error.
 

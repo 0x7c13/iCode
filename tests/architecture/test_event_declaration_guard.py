@@ -35,12 +35,12 @@ _NON_INVOCATION_CORRELATION_FIELDS = {
     "WorkflowNodeStateChanged": {"invocation_id"},
     **_INVOCATION_COMMAND_FIELDS,
 }
-# Existing exchange, presentation and compaction identifiers are payloads.
+# Existing exchange, content-segment and compaction identifiers are payloads.
 _INVOCATION_PAYLOAD_IDS = {
     "call_id",
     "parent_call_id",
     "provider_call_id",
-    "attempt_id",
+    "segment_id",
     "segment_ids",
     "compaction_id",
 }

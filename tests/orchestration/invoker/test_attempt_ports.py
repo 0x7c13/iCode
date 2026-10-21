@@ -264,11 +264,11 @@ async def test_shell_control_targets_the_owned_attempt_task_and_preserves_flags(
         await asyncio.gather(parent, return_exceptions=True)
 
 
-async def test_progressive_text_precedes_explicit_finalize(
+async def test_streamed_text_precedes_explicit_finalize(
     executor: TurnBindings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pin the shell observer's boundary after iteration, before L0's final await."""
-    from chrys.foundation.events.types import InvocationMessage
+    """Pin the shell observer's boundary: each update goes out as it arrives, the final message after L0's await."""
+    from chrys.foundation.events.types import InvocationContentDelta, InvocationContentFinished, InvocationMessage
     from chrys.kernel import AgentResponseUpdate, Content
 
     executor._stream = True
@@ -282,6 +282,12 @@ async def test_progressive_text_precedes_explicit_finalize(
         order.append("explicit finalize")
         return AgentResponse(messages=[Message("assistant", ["first\nlast"])])
 
+    async def delta(event: InvocationContentDelta) -> None:
+        order.append(f"delta:{event.channel}:{event.text}")
+
+    async def finished(event: InvocationContentFinished) -> None:
+        order.append(f"finished:{event.status}")
+
     async def message(event: InvocationMessage) -> None:
         order.append(f"{'final' if event.is_final else 'progressive'}:{event.text}")
 
@@ -289,16 +295,21 @@ async def test_progressive_text_precedes_explicit_finalize(
     stream.__aiter__.side_effect = updates
     stream.get_final_response.side_effect = final
     monkeypatch.setattr(executor._agent, "run", create_autospec(executor._agent.run, return_value=stream))
+    await executor._bus.subscribe(InvocationContentDelta, delta)
+    await executor._bus.subscribe(InvocationContentFinished, finished)
     await executor._bus.subscribe(InvocationMessage, message)
     try:
         await fresh_pass(executor, ["input"])
     finally:
+        await executor._bus.unsubscribe(InvocationContentDelta, delta)
+        await executor._bus.unsubscribe(InvocationContentFinished, finished)
         await executor._bus.unsubscribe(InvocationMessage, message)
     assert executor.state.run_failed is False
     assert order == [
+        "delta:answer:first\nlast",
         "iterator exhausted",
-        "progressive:first\nlast",
         "explicit finalize",
+        "finished:completed",
         "final:first\nlast",
     ]
 

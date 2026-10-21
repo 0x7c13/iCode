@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import itertools
 import json
@@ -17,7 +18,6 @@ from typing import Any
 from chrys.foundation.hosted_tools import (
     HOSTED_TOOL_DEFAULT_RETRY_SAFETY_BY_FAMILY,
     HOSTED_TOOL_DEFAULT_TITLE_BY_FAMILY,
-    PRESENTATION_TEXT_SEGMENT_ID_KEY,
     HostedRetrySafety,
     HostedToolFamily,
     HostedToolPhase,
@@ -46,7 +46,6 @@ from chrys.kernel.exchanges import (
 )
 from chrys.kernel.identity import WeakIdentityRegistry
 from chrys.kernel.images import is_image_data_uri, is_image_media_type
-from chrys.service.agent_middleware.events.intermediate_text import intermediate_text_contents
 
 type ContentOrder = tuple[int, int, int]
 
@@ -82,33 +81,6 @@ class HostedToolView:
     phase: str
     retry_safety: str
     metadata: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class IntermediateTextOp:
-    """Text that precedes or separates tool activity."""
-
-    text: str
-    order: ContentOrder
-    attempt_id: str = ""
-    segment_ids: tuple[str, ...] = ()
-    provisional: bool = False
-    source_contents: tuple[Content, ...] = field(default=(), compare=False, repr=False)
-
-
-@dataclass(frozen=True)
-class PresentationAttemptAcceptedOp:
-    """Commit the canonical subset of provisional text from one attempt."""
-
-    attempt_id: str
-    segments: tuple[IntermediateTextOp, ...]
-
-
-@dataclass(frozen=True)
-class PresentationAttemptRejectedOp:
-    """Retract every provisional text segment published by one attempt."""
-
-    attempt_id: str
 
 
 @dataclass(frozen=True)
@@ -172,10 +144,7 @@ class FinalTextOp:
 type HostedToolOperation = (
     HostedToolStartOp | HostedToolArgsOp | HostedToolProgressOp | HostedToolStatusOp | HostedToolResultOp
 )
-type PresentationOperation = IntermediateTextOp | HostedToolOperation
-type PresentationSinkOperation = (
-    PresentationOperation | FinalTextOp | PresentationAttemptAcceptedOp | PresentationAttemptRejectedOp
-)
+type PresentationSinkOperation = HostedToolOperation | FinalTextOp
 type PresentationSink = Callable[[PresentationSinkOperation], Awaitable[None] | None]
 
 logger = logging.getLogger(__name__)
@@ -207,15 +176,6 @@ def _provider_call_id(content: Content | None) -> str:
         return ""
     raw_id = content.image_id if content.type.startswith("image_generation_") else content.call_id
     return raw_id if isinstance(raw_id, str) else ""
-
-
-def _presentation_text_segment_ids(content: Content) -> tuple[str, ...]:
-    raw_ids = content.additional_properties.get(PRESENTATION_TEXT_SEGMENT_ID_KEY)
-    if isinstance(raw_ids, str):
-        return (raw_ids,) if raw_ids else ()
-    if isinstance(raw_ids, Sequence):
-        return tuple(dict.fromkeys(segment_id for segment_id in raw_ids if isinstance(segment_id, str) and segment_id))
-    return ()
 
 
 def _json_safe(value: Any) -> Any:
@@ -822,15 +782,19 @@ def _hosted_ops(
 
 @dataclass(frozen=True)
 class ResponsePresentationPlan:
-    """Pure, exchange-aware presentation plan for an assembled response."""
+    """Pure, exchange-aware presentation plan for an assembled response.
 
-    operations: list[PresentationOperation]
+    ``operations`` present its hosted tool activity; ``final_text`` is the
+    text after the last tool call or hosted output, the response's answer.
+    """
+
+    operations: list[HostedToolOperation]
     final_text: str
     structured_output_completed: bool = False
 
     @classmethod
     def from_messages(cls, messages: Sequence[Message]) -> ResponsePresentationPlan:
-        """Plan text and hosted operations without rebuilding any content."""
+        """Plan hosted operations and find the final text without rebuilding any content."""
         has_hosted = any(
             _is_hosted_call(content) or _is_hosted_result(content)
             for message in messages
@@ -845,32 +809,13 @@ class ResponsePresentationPlan:
             return cls([], final_text)
 
         pairs = _presentation_pairs(messages)
-        operations: list[PresentationOperation] = []
+        operations: list[HostedToolOperation] = []
         occurrence_by_pair: dict[_Pair, int] = {}
         emitted_starts: set[int] = set()
-        terminal_occurrences: set[int] = set()
         successful_structured_occurrences: set[int] = set()
         pending_text: list[Content] = []
         trailing_text_final = False
         next_occurrence = 0
-
-        def flush_intermediate(order: ContentOrder) -> None:
-            if not pending_text:
-                return
-            segment_ids = tuple(
-                dict.fromkeys(
-                    segment_id for content in pending_text for segment_id in _presentation_text_segment_ids(content)
-                )
-            )
-            operations.append(
-                IntermediateTextOp(
-                    "".join(content.text or "" for content in pending_text),
-                    order,
-                    segment_ids=segment_ids,
-                    source_contents=tuple(pending_text),
-                )
-            )
-            pending_text.clear()
 
         for message_index, message in enumerate(messages):
             for content_index, content in enumerate(message.contents):
@@ -881,14 +826,14 @@ class ResponsePresentationPlan:
                         pending_text.append(content)
                     continue
                 if content.type == "function_call" and not content.informational_only:
-                    flush_intermediate((message_index, content_index, -1))
+                    pending_text.clear()
                     trailing_text_final = False
                     continue
                 if content.type == "function_result" and not _is_hosted_result(content):
                     # A full-run transcript interleaves local results between
                     # responses; the loop resumed past this call, so text that
                     # follows is the model's post-tool answer, not preamble.
-                    flush_intermediate((message_index, content_index, -1))
+                    pending_text.clear()
                     trailing_text_final = True
                     continue
 
@@ -908,7 +853,7 @@ class ResponsePresentationPlan:
                     occurrence_by_pair[pair] = occurrence
 
                 if _is_hosted_result(content):
-                    flush_intermediate((message_index, content_index, -1))
+                    pending_text.clear()
                     start = occurrence not in emitted_starts
                     view = adapt_hosted_tool(call, content)
                     operations.extend(
@@ -923,7 +868,6 @@ class ResponsePresentationPlan:
                     emitted_starts.add(occurrence)
                     status = normalize_hosted_tool_status(view.status)
                     if view.phase == HostedToolPhase.TERMINAL or status in _TERMINAL_STATUSES:
-                        terminal_occurrences.add(occurrence)
                         if _is_successful_structured_output(view, has_result=True):
                             successful_structured_occurrences.add(occurrence)
                         trailing_text_final = True
@@ -932,7 +876,7 @@ class ResponsePresentationPlan:
                     continue
 
                 if _is_hosted_call(content) and occurrence not in emitted_starts:
-                    flush_intermediate((message_index, content_index, -1))
+                    pending_text.clear()
                     view = adapt_hosted_tool(content)
                     operations.extend(
                         _hosted_ops(
@@ -950,18 +894,13 @@ class ResponsePresentationPlan:
                         view.phase == HostedToolPhase.TERMINAL or status in _TERMINAL_STATUSES
                     )
                     if terminal_call:
-                        terminal_occurrences.add(occurrence)
                         if _is_successful_structured_output(view, has_result=False):
                             successful_structured_occurrences.add(occurrence)
                         trailing_text_final = True
                     else:
                         trailing_text_final = False
 
-        if pending_text and trailing_text_final:
-            final_text = "".join(content.text or "" for content in pending_text)
-        else:
-            flush_intermediate((len(messages), 0, 0))
-            final_text = ""
+        final_text = "".join(content.text or "" for content in pending_text) if trailing_text_final else ""
         return cls(operations, final_text, bool(successful_structured_occurrences))
 
 
@@ -971,10 +910,10 @@ class FinalSegment:
 
     The caller receives the response's final segment, as a main turn's answer
     is its last message: text written between tool calls and hosted outputs
-    is published live as intermediate transcript text. A response whose final
-    segment is empty (it ends on a tool result or hosted output) gives the
-    caller everything it said instead; all of that is intermediate text
-    already, so ``transcript`` stays empty.
+    was shown as the model wrote it. A response whose final segment is empty
+    (it ends on a tool result or hosted output) gives the caller everything
+    it said instead; all of that was shown already, so ``transcript`` stays
+    empty.
     """
 
     result: str
@@ -986,20 +925,17 @@ class FinalSegment:
         return cls(final_text or response.text, final_text)
 
 
+# Model text in a landed response: its caller shows it once the response is ready.
+_LANDED_TEXT_TYPES = frozenset({"text", "text_reasoning"})
+
+
 @dataclass
 class _LiveRecord:
-    operation: PresentationOperation | None = None
+    operation: HostedToolOperation | None = None
     local_call_id: str = ""
     local_call_content: Content | None = None
-    text_segment_id: str = ""
+    text_content: Content | None = None
     released: bool = False
-
-
-@dataclass
-class _LiveTextSegment:
-    record: _LiveRecord
-    order: ContentOrder
-    parts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1038,17 +974,27 @@ def next_hosted_run_generation() -> int:
 
 @dataclass
 class HostedPresentationBridge:
-    """Stateful streaming/blocking bridge that emits presentation operations."""
+    """Stateful streaming/blocking bridge that presents hosted tool activity.
+
+    Model text is not its concern: the run's content projector shows it.
+    Hosted operations that follow a local call in a response wait for that
+    call's tool start, those that follow text in a landed response wait
+    until the projector shows that text (:meth:`text_shown`), and the final
+    message waits for every one of them.
+
+    It handles one call at a time. The run, its parallel tool calls and an
+    interrupt call it from their own tasks, and a call that publishes holds
+    the next one: a frontend gets each card's events in order, and an
+    attempt's state is never cleared under a drain.
+    """
 
     publish: PresentationSink
     run_generation: int = 0
     response_index: int = 0
-    batch_id: int = 0
-    # Awaited as each logical response begins, before anything it produces
-    # is presented; it publishes text an earlier response left buffered.
-    before_response: Callable[[], Awaitable[None]] | None = None
     attempt_index: int = field(default=-1, init=False)
     next_occurrence_ordinal: int = field(default=0, init=False)
+    # Whether the hosted work being shown is a failed or rejected response's: the text before it never completed.
+    shows_failed_attempt: bool = field(default=False, init=False)
     published_terminal_signatures: set[tuple[Any, ...]] = field(default_factory=set, init=False)
     _published_signatures: set[tuple[Any, ...]] = field(default_factory=set, init=False, repr=False)
     _live_records: list[_LiveRecord] = field(default_factory=list, init=False, repr=False)
@@ -1061,91 +1007,58 @@ class HostedPresentationBridge:
     _provider_item_candidates: dict[str, list[_HostedOccurrence]] = field(
         default_factory=lambda: defaultdict(list), init=False, repr=False
     )
-    _live_text_segments: dict[str, _LiveTextSegment] = field(default_factory=dict, init=False, repr=False)
-    _published_provisional_segments: dict[str, IntermediateTextOp] = field(default_factory=dict, init=False, repr=False)
-    _published_canonical_text_contents: WeakIdentityRegistry = field(
-        default_factory=WeakIdentityRegistry, init=False, repr=False
-    )
     _started_local_call_contents: WeakIdentityRegistry = field(
         default_factory=WeakIdentityRegistry, init=False, repr=False
     )
     _accepted_barriers: list[_PlanBarrier] = field(default_factory=list, init=False, repr=False)
+    _text_barriers: list[_PlanBarrier] = field(default_factory=list, init=False, repr=False)
     _unbound_local_start_counts: Counter[str] = field(default_factory=Counter, init=False, repr=False)
     _pending_reconciliation: deque[PresentationSinkOperation] = field(default_factory=deque, init=False, repr=False)
     _finalized_response_keys: set[tuple[int, int]] = field(default_factory=set, init=False, repr=False)
     _response_started: bool = field(default=False, init=False, repr=False)
-    _saw_incremental_contents: bool = field(default=False, init=False, repr=False)
-    _saw_hosted_contents: bool = field(default=False, init=False, repr=False)
+    _serial: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
-    async def begin_response(self, *, response_index: int | None = None, batch_id: int | None = None) -> None:
+    async def begin_response(self, *, response_index: int | None = None) -> None:
         """Begin another logical response without resetting run-monotonic ordinals."""
-        if self.before_response is not None:
-            await self.before_response()
-        if response_index is not None:
-            self.response_index = response_index
-        elif self._response_started:
-            self.response_index += 1
-        self._response_started = True
-        if batch_id is not None:
-            self.batch_id = batch_id
-        # Provider-controlled call ids may repeat in a later response. Only
-        # signals that could not yet bind to a concrete Content are scoped to
-        # the current response; identity-bound starts survive for cumulative
-        # final reconciliation. Continuation attempts do not call this method.
-        self._unbound_local_start_counts.clear()
-        self.attempt_index = -1
-        self._clear_attempt_state()
+        async with self._serial:
+            if response_index is not None:
+                self.response_index = response_index
+            elif self._response_started:
+                self.response_index += 1
+            self._response_started = True
+            await self._release_text()
+            # Provider-controlled call ids may repeat in a later response. Only
+            # signals that could not yet bind to a concrete Content are scoped to
+            # the current response; identity-bound starts survive for cumulative
+            # final reconciliation. Continuation attempts do not call this method.
+            self._unbound_local_start_counts.clear()
+            self.attempt_index = -1
+            self._clear_attempt_state()
 
     async def attempt_started(self, *, continuation: bool = False) -> None:
         """Open a validation attempt; continuation resumes the current occurrence set."""
-        self._response_started = True
-        if continuation and self.attempt_index >= 0:
-            return
-        self.attempt_index += 1
-        self._clear_attempt_state()
+        async with self._serial:
+            await self._attempt_started(continuation=continuation)
 
-    async def observe_contents(self, contents: Sequence[Content], *, is_final: bool = False) -> None:
-        """Observe one raw provider update or final content batch in content order."""
+    async def observe_contents(
+        self, contents: Sequence[Content], *, is_final: bool = False, failed: bool = False
+    ) -> None:
+        """Observe one raw provider update or final content batch in content order.
+
+        *failed* contents are the hosted work of a response that failed before it landed.
+        """
+        async with self._serial:
+            self.shows_failed_attempt = failed
+            try:
+                await self._observe_contents(contents, is_final=is_final)
+            finally:
+                self.shows_failed_attempt = False
+
+    async def _observe_contents(self, contents: Sequence[Content], *, is_final: bool) -> None:
         if self.attempt_index < 0:
-            await self.attempt_started()
-        if not is_final and any(content.type != "usage" for content in contents):
-            self._saw_incremental_contents = True
-        blocking_final_snapshot = is_final and not self._saw_incremental_contents
+            await self._attempt_started()
         for content in contents:
-            if content.type == "text":
-                if not content.text:
-                    continue
-                if blocking_final_snapshot:
-                    self._live_records.append(
-                        _LiveRecord(
-                            operation=IntermediateTextOp(
-                                content.text,
-                                (0, len(self._live_records), 0),
-                                source_contents=(content,),
-                            )
-                        )
-                    )
-                    continue
-                if is_final:
-                    continue
-                segment_ids = _presentation_text_segment_ids(content)
-                if len(segment_ids) == 1:
-                    segment_id = segment_ids[0]
-                    segment = self._live_text_segments.get(segment_id)
-                    if segment is None:
-                        record = _LiveRecord(text_segment_id=segment_id)
-                        self._live_records.append(record)
-                        segment = _LiveTextSegment(record, (0, len(self._live_records) - 1, 0))
-                        self._live_text_segments[segment_id] = segment
-                    segment.parts.append(content.text)
-                else:
-                    self._live_records.append(
-                        _LiveRecord(operation=IntermediateTextOp(content.text, (0, len(self._live_records), 0)))
-                    )
-                continue
             if content.type == "function_call" and not content.informational_only:
-                if not is_final and self._saw_hosted_contents:
-                    await self._seal_live_text_segments()
                 call_id = _provider_call_id(content)
                 record = _LiveRecord(local_call_id=call_id, local_call_content=content)
                 if self._unbound_local_start_counts[call_id] > 0:
@@ -1158,56 +1071,49 @@ class HostedPresentationBridge:
                 await self._drain_live_prefix()
                 continue
             if _is_hosted_call(content):
-                self._saw_hosted_contents = True
-                if not is_final:
-                    await self._seal_live_text_segments()
                 await self._observe_call(content)
             elif _is_hosted_result(content):
-                self._saw_hosted_contents = True
-                if not is_final:
-                    await self._seal_live_text_segments()
                 await self._observe_result(content)
+            elif is_final and content.type in _LANDED_TEXT_TYPES:
+                self._live_records.append(_LiveRecord(text_content=content))
 
     async def local_call_start_published(self, provider_call_id: str) -> None:
         """Release the next local-call ordering barrier for a provider call id."""
-        bound = False
+        async with self._serial:
+            bound = False
+            for record in self._live_records:
+                if record.local_call_id == provider_call_id and not record.released:
+                    record.released = True
+                    if record.local_call_content is not None:
+                        self._started_local_call_contents.register(record.local_call_content)
+                    bound = True
+                    break
+            for barrier in self._accepted_barriers:
+                if barrier.call_id == provider_call_id and not barrier.released:
+                    barrier.released = True
+                    self._started_local_call_contents.register(barrier.content)
+                    bound = True
+                    break
+            if not bound:
+                self._unbound_local_start_counts[provider_call_id] += 1
+            await self._drain_live_prefix()
+            await self._drain_reconciliation()
+
+    async def attempt_rejected(self, reason: str = "", *, status: str = HostedToolStatus.FAILED) -> None:
+        """Terminalize visible cards and conclude all rejected-attempt buffers."""
+        async with self._serial:
+            self.shows_failed_attempt = True
+            try:
+                await self._attempt_rejected(reason, status)
+            finally:
+                self.shows_failed_attempt = False
+
+    async def _attempt_rejected(self, reason: str, status: str) -> None:
+        # The rejected response's text never shows and its local calls never
+        # start: the hosted work it ran shows now.
         for record in self._live_records:
-            if record.local_call_id == provider_call_id and not record.released:
-                record.released = True
-                if record.local_call_content is not None:
-                    self._started_local_call_contents.register(record.local_call_content)
-                bound = True
-                break
-        for barrier in self._accepted_barriers:
-            if barrier.call_id == provider_call_id and not barrier.released:
-                barrier.released = True
-                self._started_local_call_contents.register(barrier.content)
-                bound = True
-                break
-        if not bound:
-            self._unbound_local_start_counts[provider_call_id] += 1
-        await self._drain_live_prefix()
-        await self._drain_reconciliation()
-
-    async def attempt_rejected(
-        self,
-        reason: str = "",
-        *,
-        status: str = HostedToolStatus.FAILED,
-        preserve_provisional: bool = False,
-    ) -> None:
-        """Terminalize visible cards and conclude all rejected-attempt buffers.
-
-        Validation failures and retries retract presentation-only text.  A
-        user interrupt may instead preserve text the user has already read;
-        publishing it as accepted also commits its reserved persistence batch.
-        """
-        if self._published_provisional_segments:
-            if preserve_provisional:
-                segments = tuple(dict.fromkeys(self._published_provisional_segments.values()))
-                await self._publish_once(PresentationAttemptAcceptedOp(self._attempt_id(), segments))
-            else:
-                await self._publish_once(PresentationAttemptRejectedOp(self._attempt_id()))
+            record.released = True
+        await self._release_text()
         terminal_status = (
             HostedToolStatus.INTERRUPTED if status == HostedToolStatus.INTERRUPTED else HostedToolStatus.FAILED
         )
@@ -1242,25 +1148,26 @@ class HostedPresentationBridge:
 
     async def attempt_accepted(self, messages: Sequence[Message] | None = None) -> None:
         """Mark validation accepted and reconcile its live-visible operations."""
-        for occurrence in self._occurrences:
-            if occurrence not in self._accepted_occurrences:
-                self._accepted_occurrences.append(occurrence)
-        if messages is not None:
-            # The client's intermediate-text callback already owns this
-            # response's narration, and a final reconcile over a run with
-            # hosted output would publish it a second time.
-            for content in intermediate_text_contents(messages):
-                self._published_canonical_text_contents.register(content)
-            # A logical response inside agent.run() is not necessarily the
-            # turn's final response: local function calls can continue the
-            # loop. Publish its canonical text/tool ordering now, but leave
-            # the terminal FinalTextOp to the run-completion reconciliation.
-            await self._reconcile_accepted(
-                messages,
-                final=False,
-                publish_final=False,
-                occurrence_candidates=tuple(self._occurrences),
-            )
+        async with self._serial:
+            for occurrence in self._occurrences:
+                if occurrence not in self._accepted_occurrences:
+                    self._accepted_occurrences.append(occurrence)
+            if messages is not None:
+                # A logical response inside agent.run() is not necessarily the
+                # turn's final response: local function calls can continue the
+                # loop. Publish its canonical tool ordering now, but leave the
+                # terminal FinalTextOp to the run-completion reconciliation.
+                await self._reconcile_accepted(
+                    messages,
+                    final=False,
+                    publish_final=False,
+                    occurrence_candidates=tuple(self._occurrences),
+                )
+
+    async def text_shown(self, content: Content | None = None) -> None:
+        """The landed *content*, or every landed text, went out: the hosted operations after it follow."""
+        async with self._serial:
+            await self._release_text(content)
 
     async def reconcile_accepted(
         self,
@@ -1275,17 +1182,29 @@ class HostedPresentationBridge:
         starts can arrive after it. ``publish_final`` is false while accepting
         one non-terminal response inside the tool loop.
         """
-        accepted_ordinals = {occurrence.ordinal for occurrence in self._accepted_occurrences}
-        occurrence_candidates = (
-            *self._accepted_occurrences,
-            *(occurrence for occurrence in self._occurrences if occurrence.ordinal not in accepted_ordinals),
-        )
-        await self._reconcile_accepted(
-            messages,
-            final=final,
-            publish_final=publish_final,
-            occurrence_candidates=occurrence_candidates,
-        )
+        async with self._serial:
+            accepted_ordinals = {occurrence.ordinal for occurrence in self._accepted_occurrences}
+            occurrence_candidates = (
+                *self._accepted_occurrences,
+                *(occurrence for occurrence in self._occurrences if occurrence.ordinal not in accepted_ordinals),
+            )
+            await self._reconcile_accepted(
+                messages,
+                final=final,
+                publish_final=publish_final,
+                occurrence_candidates=occurrence_candidates,
+            )
+
+    async def _attempt_started(self, *, continuation: bool = False) -> None:
+        self._response_started = True
+        # Text the last attempt landed was shown by now, or never will be. A
+        # background response's text shows only with the poll that finishes
+        # it: the hosted work an earlier poll saw shows meanwhile.
+        await self._release_text()
+        if continuation and self.attempt_index >= 0:
+            return
+        self.attempt_index += 1
+        self._clear_attempt_state()
 
     async def _reconcile_accepted(
         self,
@@ -1303,9 +1222,6 @@ class HostedPresentationBridge:
         used_ordinals: set[int] = set()
         reconciled: list[PresentationSinkOperation] = []
         for operation in plan.operations:
-            if isinstance(operation, IntermediateTextOp):
-                reconciled.append(replace(operation, attempt_id=self._attempt_id()))
-                continue
             occurrence = mapped_occurrences.get(operation.occurrence_ordinal)
             if occurrence is None:
                 occurrence = self._match_reconciled_occurrence(
@@ -1323,25 +1239,9 @@ class HostedPresentationBridge:
                 )
             )
 
-        accepted_segments, reconciled = self._accept_provisional_text(reconciled)
-        reconciled = [
-            operation
-            for operation in reconciled
-            if not (
-                isinstance(operation, IntermediateTextOp)
-                and operation.source_contents
-                and all(content in self._published_canonical_text_contents for content in operation.source_contents)
-            )
-        ]
-        if self._published_provisional_segments:
-            await self._publish_once(
-                PresentationAttemptAcceptedOp(
-                    self._attempt_id(),
-                    tuple(accepted_segments),
-                )
-            )
-
         self._accepted_barriers = self._plan_barriers(messages)
+        # Only an attempt's acceptance comes before its response's text shows; a run's reconcile comes after.
+        self._text_barriers = [] if final or publish_final else self._text_plan_barriers(messages)
         for barrier in self._accepted_barriers:
             if barrier.content in self._started_local_call_contents:
                 barrier.released = True
@@ -1369,32 +1269,6 @@ class HostedPresentationBridge:
             self._finalized_response_keys.add(response_key)
         self._pending_reconciliation = deque(pending)
         await self._drain_reconciliation()
-
-    async def publish_blocking(self, messages: Sequence[Message]) -> None:
-        """Plan an assembled blocking response and publish its final sentinel last."""
-        if self.attempt_index < 0:
-            await self.attempt_started()
-        plan = ResponsePresentationPlan.from_messages(messages)
-        mapped: dict[int, _HostedOccurrence] = {}
-        for operation in plan.operations:
-            outbound: PresentationOperation = operation
-            if not isinstance(operation, IntermediateTextOp):
-                occurrence = mapped.get(operation.occurrence_ordinal)
-                if occurrence is None:
-                    occurrence = self._allocate_occurrence(operation.view)
-                    mapped[operation.occurrence_ordinal] = occurrence
-                outbound = replace(
-                    operation,
-                    occurrence_ordinal=occurrence.ordinal,
-                    presentation_id=occurrence.presentation_id,
-                )
-            await self._publish_once(outbound)
-        await self._publish_sink(
-            FinalTextOp(
-                plan.final_text,
-                structured_output_completed=not plan.final_text.strip() and plan.structured_output_completed,
-            )
-        )
 
     async def _observe_call(self, content: Content) -> None:
         view = adapt_hosted_tool(content)
@@ -1537,38 +1411,12 @@ class HostedPresentationBridge:
         self._live_records.append(_LiveRecord(operation=operation))
         await self._drain_live_prefix()
 
-    async def _seal_live_text_segments(self) -> None:
-        """Publish completed text only once later output proves it intermediate."""
-        if not self._live_text_segments:
-            return
-        for segment_id, segment in self._live_text_segments.items():
-            segment.record.operation = IntermediateTextOp(
-                "".join(segment.parts),
-                segment.order,
-                attempt_id=self._attempt_id(),
-                segment_ids=(segment_id,),
-                provisional=True,
-            )
-            segment.record.text_segment_id = ""
-        self._live_text_segments.clear()
-        await self._drain_live_prefix()
-
     async def _drain_live_prefix(self) -> None:
         while self._live_cursor < len(self._live_records):
             record = self._live_records[self._live_cursor]
-            if record.local_call_id:
+            if record.local_call_id or record.text_content is not None:
                 if not record.released:
                     return
-                self._live_cursor += 1
-                continue
-            if record.text_segment_id:
-                return
-            if isinstance(record.operation, IntermediateTextOp):
-                if not record.operation.provisional:
-                    return
-                await self._publish_once(record.operation)
-                for segment_id in record.operation.segment_ids:
-                    self._published_provisional_segments[segment_id] = record.operation
                 self._live_cursor += 1
                 continue
             if record.operation is None:
@@ -1583,17 +1431,34 @@ class HostedPresentationBridge:
     async def _drain_reconciliation(self) -> None:
         while self._pending_reconciliation:
             operation = self._pending_reconciliation[0]
-            if isinstance(operation, PresentationAttemptAcceptedOp | PresentationAttemptRejectedOp):
-                self._pending_reconciliation.popleft()
-                await self._publish_once(operation)
-                continue
+            barriers = (*self._accepted_barriers, *self._text_barriers)
             if isinstance(operation, FinalTextOp):
-                if any(not barrier.released for barrier in self._accepted_barriers):
+                if any(not barrier.released for barrier in barriers):
                     return
-            elif any(not barrier.released and barrier.order < operation.order for barrier in self._accepted_barriers):
+            elif any(not barrier.released and barrier.order < operation.order for barrier in barriers):
                 return
             self._pending_reconciliation.popleft()
             await self._publish_once(operation)
+
+    async def _release_text(self, content: Content | None = None) -> None:
+        """Release the text barriers of *content*, or all of them, and publish what waited."""
+        for record in self._live_records:
+            if record.text_content is not None and (content is None or record.text_content is content):
+                record.released = True
+        for barrier in self._text_barriers:
+            if content is None or barrier.content is content:
+                barrier.released = True
+        await self._drain_live_prefix()
+        await self._drain_reconciliation()
+
+    @staticmethod
+    def _text_plan_barriers(messages: Sequence[Message]) -> list[_PlanBarrier]:
+        return [
+            _PlanBarrier("", (message_index, content_index, 0), content)
+            for message_index, message in enumerate(messages)
+            for content_index, content in enumerate(message.contents)
+            if content.type in _LANDED_TEXT_TYPES
+        ]
 
     def _plan_barriers(self, messages: Sequence[Message]) -> list[_PlanBarrier]:
         barriers: list[_PlanBarrier] = []
@@ -1622,9 +1487,6 @@ class HostedPresentationBridge:
             and normalize_hosted_tool_status(operation.view.status) in _TERMINAL_STATUSES
         ):
             self.published_terminal_signatures.add(signature)
-        if isinstance(operation, IntermediateTextOp) and not operation.provisional:
-            for content in operation.source_contents:
-                self._published_canonical_text_contents.register(content)
         await self._publish_sink(operation)
 
     async def _publish_sink(self, operation: PresentationSinkOperation) -> None:
@@ -1641,14 +1503,6 @@ class HostedPresentationBridge:
                 operation.text,
                 operation.structured_output_completed,
             )
-        if isinstance(operation, PresentationAttemptAcceptedOp):
-            return ("presentation_accepted", operation.attempt_id)
-        if isinstance(operation, PresentationAttemptRejectedOp):
-            return ("presentation_rejected", operation.attempt_id)
-        if isinstance(operation, IntermediateTextOp):
-            if operation.segment_ids:
-                return ("text", operation.attempt_id, operation.segment_ids, operation.text)
-            return ("text", self.attempt_index, self.response_index, operation.order, operation.text)
         view = operation.view
         base = (type(operation).__name__, operation.presentation_id)
         if isinstance(operation, HostedToolStartOp):
@@ -1670,63 +1524,9 @@ class HostedPresentationBridge:
         self._occurrences.clear()
         self._open_occurrences.clear()
         self._provider_item_candidates.clear()
-        self._live_text_segments.clear()
-        self._published_provisional_segments.clear()
         self._accepted_barriers.clear()
+        self._text_barriers.clear()
         self._pending_reconciliation.clear()
-        self._saw_incremental_contents = False
-        self._saw_hosted_contents = False
-
-    def _attempt_id(self) -> str:
-        return f"presentation:{self.run_generation}:{self.response_index}:{max(self.attempt_index, 0)}"
-
-    def _accept_provisional_text(
-        self,
-        operations: list[PresentationSinkOperation],
-    ) -> tuple[list[IntermediateTextOp], list[PresentationSinkOperation]]:
-        """Match live provisional text to canonical intermediate operations."""
-        if not self._published_provisional_segments:
-            return [], operations
-        accepted: list[IntermediateTextOp] = []
-        retained: list[PresentationSinkOperation] = []
-        accepted_ids: set[str] = set()
-        published_by_text: dict[str, list[IntermediateTextOp]] = defaultdict(list)
-        for operation in dict.fromkeys(self._published_provisional_segments.values()):
-            published_by_text[operation.text].append(operation)
-
-        for operation in operations:
-            if not isinstance(operation, IntermediateTextOp):
-                retained.append(operation)
-                continue
-            matched: list[IntermediateTextOp] = []
-            if operation.segment_ids and all(
-                segment_id in self._published_provisional_segments for segment_id in operation.segment_ids
-            ):
-                matched = list(
-                    dict.fromkeys(
-                        self._published_provisional_segments[segment_id] for segment_id in operation.segment_ids
-                    )
-                )
-            elif candidates := published_by_text.get(operation.text):
-                matched = [
-                    candidate for candidate in candidates if not accepted_ids.intersection(candidate.segment_ids)
-                ][:1]
-            if not matched:
-                retained.append(operation)
-                continue
-            # The streamed fragments are presentation-only objects, while
-            # ``operation.source_contents`` belongs to the assembled response
-            # that later becomes the final run transcript. Remember that
-            # canonical identity now so run-completion reconciliation cannot
-            # re-publish an already accepted provisional segment.
-            for content in operation.source_contents:
-                self._published_canonical_text_contents.register(content)
-            for candidate in matched:
-                if accepted_ids.intersection(candidate.segment_ids):
-                    continue
-                accepted.append(candidate)
-                accepted_ids.update(candidate.segment_ids)
-        return accepted, retained
 
 
 __all__ = [
@@ -1742,11 +1542,7 @@ __all__ = [
     "HostedToolStatusOp",
     "HostedToolView",
     "ImageHostedAdapter",
-    "IntermediateTextOp",
     "McpHostedAdapter",
-    "PresentationAttemptAcceptedOp",
-    "PresentationAttemptRejectedOp",
-    "PresentationOperation",
     "PresentationSinkOperation",
     "ResponsePresentationPlan",
     "SearchHostedAdapter",

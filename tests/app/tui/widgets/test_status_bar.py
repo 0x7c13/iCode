@@ -9,6 +9,7 @@ from collections.abc import Callable
 import pytest
 from textual import on
 from textual.app import App, ComposeResult
+from textual.timer import Timer, TimerCallback
 from textual.widgets import Static
 
 from chrys.app.tui import i18n as tui_i18n
@@ -145,6 +146,7 @@ async def test_status_bar_relocalizes_status_tool_trail_tooltip_and_literal_payl
         assert tool_info.tooltip is not None
         assert tool_info.tooltip.plain == "点击查看详情"
 
+        now[0] += 1
         status_bar.show("provider payload")
         assert controller.switch_locale("en").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
         assert status_bar.query_one("#status-text", Static).render().plain == "provider payload"
@@ -250,9 +252,6 @@ async def test_status_bar_show_hide() -> None:
         assert sb.query_one(".status-run").visible is True
         assert sb.query_one(".status-flash-bar").visible is False
 
-        sb.show("running: read_file")
-        assert sb.status == "running: read_file"
-
         sb.flash("done")
         assert sb.query_one(".status-run").visible is False
         assert sb.query_one(".status-flash-bar").visible is True
@@ -262,6 +261,85 @@ async def test_status_bar_show_hide() -> None:
         assert sb.visible is False
         assert sb.query_one(".status-run").visible is False
         assert sb.query_one(".status-flash-bar").visible is False
+
+
+async def test_the_run_status_changes_at_most_once_per_interval_and_a_repeat_repaints_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
+
+    now = [100.0]
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    async with WidgetApp(StatusBar).run_test() as pilot:
+        sb = pilot.app.query_one(StatusBar)
+        text = sb.query_one("#status-text", Static)
+        trail = sb.query_one("#status-trail", Static)
+        # The test fires each paced change itself, so nothing but the timer can deliver it.
+        timers: list[tuple[float, TimerCallback]] = []
+
+        def recording_set_timer(
+            delay: float, callback: TimerCallback | None = None, *, name: str | None = None, pause: bool = False
+        ) -> Timer:
+            assert callback is not None
+            timers.append((delay, callback))
+            return Timer(sb, delay, name=name, callback=callback, pause=pause)
+
+        monkeypatch.setattr(sb, "set_timer", recording_set_timer)
+        sb.start_run()
+        sb.show("Thinking")
+        assert text.render().plain == "Thinking"
+
+        painted: list[object] = []
+        real_update = text.update
+
+        def recording_update(*args: object, **kwargs: object) -> None:
+            painted.append(args[0])
+            real_update(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(text, "update", recording_update)
+        for _ in range(3):
+            sb.show("Thinking")
+        assert painted == []
+        assert timers == []
+
+        # A new count shows at once though the status it comes with repeats.
+        sb.add_tool_call()
+        sb.show("Thinking")
+        assert trail.render().plain == "  (0s · 1 tool call)"
+        assert painted == []
+
+        # Within the interval: the newest change waits for the one timer.
+        now[0] += 0.05
+        sb.show("Running: read_file")
+        sb.show("Running: grep")
+        assert sb.status == "Thinking"
+        assert sb.snapshot()["status"] == "Running: grep"
+        assert [delay for delay, _ in timers] == [pytest.approx(0.1)]
+        timers[0][1]()
+        assert text.render().plain == "Running: grep"
+
+        now[0] += 1
+        sb.show("Thinking")
+        assert text.render().plain == "Thinking"
+        assert len(timers) == 1
+
+        # Showing the current status again drops a change still waiting: it went stale.
+        now[0] += 0.05
+        sb.show("Running: read_file")
+        sb.show("Thinking")
+        timers[1][1]()
+        assert text.render().plain == "Thinking"
+        assert sb.snapshot()["status"] == "Thinking"
+
+        # A flash replaces a change still waiting for its interval.
+        sb.show("Running: read_file")
+        sb.flash("Done")
+        timers[2][1]()
+        assert sb.status == ""
+        assert sb.query_one(".status-flash-bar").visible is True
 
 
 async def test_status_bar_flash_text_gets_full_row_when_trail_is_empty() -> None:

@@ -356,21 +356,29 @@ class TestTrimExchangeCompleteness:
         trimmed = _trimmed(messages)
         assert trimmed == [messages[0], keep_assistant, keep_tool]
 
-    def test_sibling_with_text_and_dangling_call_pops_whole(self):
-        """A sibling whose calls are all unanswered pops entirely, text included."""
+    def test_sibling_with_text_and_dangling_call_keeps_only_its_text(self):
+        """A sibling whose calls are all unanswered loses them; the text the user saw stream stays."""
+        narrated = _assistant("thinking", _call("c1"))
         keep_assistant = _assistant(_call("c2"))
         keep_tool = _tool(_result("c2"))
-        messages = [_user(), _assistant("thinking", _call("c1")), keep_assistant, keep_tool]
+        messages = [_user(), narrated, keep_assistant, keep_tool]
         trimmed = _trimmed(messages)
-        assert trimmed == [messages[0], keep_assistant, keep_tool]
+        assert trimmed == [messages[0], narrated, keep_assistant, keep_tool]
+        assert narrated.contents[0].text == "thinking"
+        assert _content_ids(narrated) == [("text", None)]
 
-    def test_all_unanswered_narrated_exchange_drops_the_atomic_assistant_set(self):
+    def test_all_unanswered_exchange_keeps_narration_and_pops_text_less_siblings(self):
+        """Kept text answers nothing: the walk goes on, popping each sibling that showed no text."""
         user = _user()
         narrated = _assistant("I will inspect both files.", _call("c1"), _call("c2"))
+        silent = _assistant(_call("c3"))
+        blank = _assistant("\n\n", _call("c4"))
 
-        trimmed = _trimmed([user, narrated])
+        trimmed = _trimmed([user, narrated, silent, blank])
 
-        assert trimmed == [user]
+        assert trimmed == [user, narrated]
+        assert _content_ids(narrated) == [("text", None)]
+        assert_transcript_invariants(ChatResponse(messages=list(trimmed)))
 
     def test_sibling_with_informational_call_trims_surgically(self):
         """A sibling keeping a hosted informational call loses only its unanswered call."""
@@ -486,3 +494,21 @@ class TestTrimExchangeCompleteness:
         """A falsy unhashable call id joins the empty-id stream and fails closed."""
         messages = [_user(), _assistant(_call([]))]
         assert _trimmed(messages) == [messages[0]]
+
+
+def test_a_kept_partial_answer_skips_contents_history_already_holds() -> None:
+    """A response that landed as its pass ended may be in history already; its answer is never kept twice."""
+    held, cut_off = Content.from_text("Let me check"), Content.from_text("Cut off")
+    state = {"messages": [_user(), Message("assistant", [held, _call("c1")])]}
+    history = SessionHistoryManager()
+    history.bind(state)
+
+    history.trim_to_last_complete_tool_results()
+    history.keep_partial_answer([held])
+    history.keep_partial_answer([cut_off])
+
+    assert [(message.role, message.text) for message in state["messages"]] == [
+        ("user", "go"),
+        ("assistant", "Let me check"),
+        ("assistant", "Cut off"),
+    ]

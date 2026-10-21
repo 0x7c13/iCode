@@ -10,8 +10,7 @@ import pytest
 
 from chrys.foundation.errors import ErrorKind, ProviderResponseError, classify_error, invalidates_continuation_token
 from chrys.foundation.hosted_tools import HeldHostedEvidence, HostedToolFamily, HostedToolPhase
-from chrys.foundation.retry import RetryAttemptInfo
-from chrys.foundation.trajectory.context import TRAJECTORY_EXCHANGE_KWARG, ExchangeTrace
+from chrys.foundation.trajectory.context import ExchangeTrace
 from chrys.foundation.trajectory.event_types import EventType, ValidationReason
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message, ResponseStream
@@ -28,6 +27,7 @@ from tests.service.agent_middleware._response_validation_fakes import (
     _make_context,
     _ObservationHook,
     _service_context,
+    _traced_context,
 )
 from tests.service.trajectory._fakes import FakeSink, make_context
 
@@ -39,13 +39,7 @@ def _exchange(sink: FakeSink) -> ExchangeTrace:
 def _context(*, stream: bool, service_side: bool, exchange: ExchangeTrace) -> ChatContext:
     if service_side:
         return _service_context(stream, exchange)
-    return ChatContext(
-        client=None,
-        messages=[Message("user", ["hi"])],
-        options=None,
-        stream=stream,
-        kwargs={"client_kwargs": {TRAJECTORY_EXCHANGE_KWARG: exchange}},
-    )
+    return _traced_context(stream, exchange)
 
 
 async def _run(
@@ -95,17 +89,12 @@ async def test_a_filtered_response_without_an_answer_fails_as_filtered(
     fake = _FakeCallNext([filtered, _assistant([Content.from_text("must stay unused")])], stream=stream)
     context = _context(stream=stream, service_side=service_side, exchange=_exchange(sink))
     fake.bind(context)
-    retries: list[RetryAttemptInfo] = []
 
-    async def _on_retry(info: RetryAttemptInfo) -> None:
-        retries.append(info)
-
-    middleware = ResponseValidationMiddleware(publish_retry=_on_retry, backoff_schedule=[0.0])
+    middleware = ResponseValidationMiddleware()
     with pytest.raises(TerminalResponseValidationError, match="content filter") as raised:
         await _run(middleware, context, fake)
 
     assert fake.call_count == 1
-    assert retries == []
     cause = raised.value.__cause__
     assert isinstance(cause, ProviderResponseError)
     assert (cause.code, cause.retryable, cause.invalidates_continuation_token) == ("content_filter", False, True)
@@ -115,7 +104,6 @@ async def test_a_filtered_response_without_an_answer_fails_as_filtered(
     assert invalidates_continuation_token(raised.value) is True
     [finished] = sink.of_type(EventType.MODEL_VALIDATION_FINISHED)
     assert finished.payload["reason_code"] == ValidationReason.CONTENT_FILTERED
-    assert finished.payload["gave_up"] is True
     assert str(raised.value) == CONTENT_FILTERED_REASON
 
 
@@ -148,7 +136,7 @@ async def test_an_answer_the_filter_cut_short_is_kept(
     context = _context(stream=stream, service_side=service_side, exchange=_exchange(FakeSink()))
     fake.bind(context)
 
-    response = await _run(ResponseValidationMiddleware(backoff_schedule=[0.0]), context, fake)
+    response = await _run(ResponseValidationMiddleware(), context, fake)
 
     assert fake.call_count == 1
     assert response.finish_reason == "content_filter"
@@ -164,11 +152,12 @@ async def test_other_terminal_verdicts_keep_their_own_classification(stream: boo
     fake.bind(context)
 
     with pytest.raises(TerminalResponseValidationError, match="output token limit") as raised:
-        await _run(ResponseValidationMiddleware(backoff_schedule=[0.0]), context, fake)
+        await _run(ResponseValidationMiddleware(), context, fake)
 
     assert raised.value.__cause__ is None
     assert classify_error(raised.value).kind is not ErrorKind.CONTENT_FILTERED
-    assert invalidates_continuation_token(raised.value) is False
+    # Only a completed response is judged: a retry must not re-poll the one rejected.
+    assert invalidates_continuation_token(raised.value) is True
 
 
 def _hosted_work() -> tuple[Content, Content]:
@@ -206,7 +195,7 @@ async def test_hosted_work_a_failed_response_showed_counts_as_executed(stream: b
     )
     context = _make_context(stream=stream)
     hook = _ObservationHook()
-    middleware = ResponseValidationMiddleware(observation_hook=hook, backoff_schedule=[0.0])
+    middleware = ResponseValidationMiddleware(observation_hook=hook)
 
     with pytest.raises(ProviderResponseError) as raised:
         await _run(middleware, context, _failing_call_next(context, error, stream=stream))
@@ -214,7 +203,7 @@ async def test_hosted_work_a_failed_response_showed_counts_as_executed(stream: b
     assert raised.value is error
     assert middleware.hosted_commits_in_flight() == middleware.hosted_commits_observed()
     assert len(middleware.hosted_commits_observed()) == 1
-    assert ("contents", True, ("mcp_server_tool_call", "mcp_server_tool_result")) in hook.events
+    assert ("failed_contents", True, ("mcp_server_tool_call", "mcp_server_tool_result")) in hook.events
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
@@ -222,7 +211,7 @@ async def test_a_failed_response_without_hosted_work_commits_nothing(stream: boo
     error = ProviderResponseError("network_error", "dropped", retryable=True)
     context = _make_context(stream=stream)
     hook = _ObservationHook()
-    middleware = ResponseValidationMiddleware(observation_hook=hook, backoff_schedule=[0.0])
+    middleware = ResponseValidationMiddleware(observation_hook=hook)
 
     with pytest.raises(ProviderResponseError):
         await _run(middleware, context, _failing_call_next(context, error, stream=stream))
@@ -247,7 +236,7 @@ async def test_held_hosted_work_counts_at_once_and_is_shown_only_when_released(r
         context.result = ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
 
     hook = _ObservationHook()
-    middleware = ResponseValidationMiddleware(observation_hook=hook, backoff_schedule=[0.0])
+    middleware = ResponseValidationMiddleware(observation_hook=hook)
     if released:
         response = await _run(middleware, context, _call_next)
         # In the order the stream released it, behind the call it waited for.

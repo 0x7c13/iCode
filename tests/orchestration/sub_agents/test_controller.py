@@ -69,10 +69,6 @@ from chrys.service.agent_middleware._metadata_keys import (
 from chrys.service.agent_middleware.control.sleep import SleepMiddleware
 from chrys.service.agent_middleware.events.hook_dispatch import set_call_id
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
-from chrys.service.agent_middleware.response_validation import (
-    RetryableResponseValidationError,
-    ValidationRetryExemption,
-)
 from chrys.service.context.compaction import _REASON_COMPRESSION
 from chrys.service.context.providers.history import PRE_OUTPUT_HISTORY_LEN_STATE_KEY
 from chrys.service.llm.mock import MockChatClient
@@ -299,13 +295,6 @@ async def test_a_stall_retry_notice_names_the_stall_as_the_main_turn_does():
     ("exc", "expected_reason"),
     [
         (StreamStall("provider idle"), RetryReason.STREAM_STALL),
-        (
-            RetryableResponseValidationError(
-                "empty contents",
-                exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=1),
-            ),
-            RetryReason.VALIDATION_REJECTED,
-        ),
         (ConnectionError("reset"), RetryReason.TRANSIENT_ERROR),
     ],
 )
@@ -354,36 +343,6 @@ async def test_interrupted_service_retry_sleep_keeps_retry_scheduled() -> None:
         assert await controller.policy._sleep_for_service_retry(7) is True
 
     assert sink.event_types == [EventType.RETRY_SCHEDULED]
-
-
-@pytest.mark.parametrize("transient_budget", [0, 1])
-@pytest.mark.asyncio
-async def test_validation_retries_use_full_exempt_budget(transient_budget: int) -> None:
-    bus = EventBus()
-    retry_events = await _collect(bus, InvocationRetryAttempt)
-    validation_errors = [
-        RetryableResponseValidationError(
-            reason,
-            exemption=ValidationRetryExemption(attempt=attempt, max_attempts=3, delay_seconds=0),
-        )
-        for attempt, reason in enumerate(("empty contents", "whitespace", "leaked marker"), start=1)
-    ]
-    agent = _ScriptedAgent(outcomes=[*validation_errors, "done"])
-    ctrl = _make_controller(
-        agent,
-        bus,
-        max_retries=transient_budget,
-        run_kwargs={"options": {"store": True}},
-    )
-
-    assert await ctrl.run() == "done"
-
-    assert len(agent.calls) == 4
-    assert [(event.attempt, event.max_attempts, event.delay_seconds) for event in retry_events] == [
-        (1, 3, 0),
-        (2, 3, 0),
-        (3, 3, 0),
-    ]
 
 
 @pytest.mark.asyncio
@@ -1205,28 +1164,22 @@ async def test_committed_inner_work_vetoes_stored_mode_retry_at_non_default_budg
     await run_task
 
 
-def test_hosted_commits_disable_automatic_sub_agent_retry() -> None:
-    # A rejected service-mode response carrying executed hosted tool calls
-    # never reaches the loop recorder — the gate must honour the evidence
-    # the validation error carries instead.
-    ctrl = _make_controller(_ScriptedAgent(), None)
-    assert ctrl.policy._attempts._may_retry_attempt(ConnectionError("transient"), ctrl.policy._run_kwargs) is True
-    err = RetryableResponseValidationError(
-        "empty contents",
-        exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=1),
-        hosted_commits=("create_issue",),
-    )
-    assert ctrl.policy._attempts._may_retry_attempt(err, ctrl.policy._run_kwargs) is False
-
-
 def test_observed_hosted_commits_disable_automatic_sub_agent_retry() -> None:
+    # Hosted calls run inside the failed exchange and never reach the loop
+    # recorder: only the run-scoped probe can veto their replay.
+    ctrl = _make_controller(_ScriptedAgent(), None)
+    assert ctrl.policy._attempts._may_retry_attempt(ctrl.policy._run_kwargs) is True
     ctrl = _make_controller(
         _ScriptedAgent(),
         None,
         hosted_commits_probe=lambda: ("shell",),
     )
 
-    assert ctrl.policy._attempts._may_retry_attempt(ConnectionError("transient"), ctrl.policy._run_kwargs) is False
+    assert ctrl.policy._attempts._may_retry_attempt(ctrl.policy._run_kwargs) is False
+    # A live continuation token resumes the background response instead of
+    # re-creating it, so nothing hosted runs twice.
+    live = {"options": {"continuation_token": {"response_id": "pending"}}}
+    assert ctrl.policy._attempts._may_retry_attempt(live) is True
 
 
 @pytest.mark.asyncio

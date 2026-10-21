@@ -73,8 +73,7 @@ def _make_settings_and_models() -> tuple[Settings, ModelProfileRegistry]:
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch, clients: list[MockChatClient], tools: list[FunctionTool]) -> None:
     async def _patched_create_client(_settings: Any = None, **kwargs: Any) -> MockChatClient:
         client = clients.pop(0)
-        client._on_intermediate_text_async = kwargs.get("on_intermediate_text_async")
-        client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
+        client._on_intermediate_text = kwargs.get("on_intermediate_text")
         return client
 
     def _patched_load_builtins(self: ToolRegistry, _categories: Any, **_kwargs: Any) -> list[FunctionTool]:

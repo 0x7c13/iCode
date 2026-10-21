@@ -30,6 +30,8 @@ from chrys.foundation.events.types import (
     ApprovalResponse,
     Event,
     InvocationCompactionFinished,
+    InvocationContentDelta,
+    InvocationContentFinished,
     Warning,
     WorkflowNodeStateChanged,
     WorkflowRunAccepted,
@@ -328,6 +330,7 @@ class FakeHost:
     session_dir: ClassVar[Path | None] = None
     run_events: ClassVar[list[Event]] = []
     """Events the scripted run yields after its acceptance."""
+    failure_after_events: ClassVar[Callable[[], BaseException] | None] = None
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -373,6 +376,8 @@ class FakeHost:
         )
         for event in type(self).run_events:
             yield event
+        if (failure_after_events := type(self).failure_after_events) is not None:
+            raise failure_after_events()
 
     async def shutdown(self) -> None:
         self.shutdown_called = True
@@ -385,6 +390,7 @@ def fake_host(monkeypatch: pytest.MonkeyPatch) -> type[FakeHost]:
     FakeHost.result = None
     FakeHost.session_dir = None
     FakeHost.run_events = []
+    FakeHost.failure_after_events = None
     monkeypatch.setattr(workflow_cli, "ChrysSessionHost", FakeHost)
     return FakeHost
 
@@ -632,6 +638,25 @@ def test_run_reports_an_interrupt_with_exit_code_130(
     assert workflow_cli.main(["run", "chain"]) == 130
     assert capsys.readouterr().err == "• Starting workflow chain…\nError: Interrupted by user.\n"
     assert fake_host.instances[-1].shutdown_called
+
+
+def test_an_interrupted_run_shows_the_answer_text_its_nodes_streamed_before_the_error(
+    fake_host: type[FakeHost], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A call cut off mid-stream ends the text before it as completed; no tool card or final answer follows."""
+    node = InvocationOrigin("workflow_node", "session-1", "inv-1", None, 1)
+    fake_host.run_events = [
+        WorkflowRunStarted(run_id="run-1", workflow_id="chain"),
+        WorkflowNodeStateChanged(
+            run_id="run-1", node_id="build", activation_id="a1", attempt=1, state="running", invocation_id="inv-1"
+        ),
+        InvocationContentDelta(origin=node, segment_id="s1", text="Writing the fix."),
+        InvocationContentFinished(origin=node, segment_id="s1"),
+    ]
+    fake_host.failure_after_events = KeyboardInterrupt
+
+    assert workflow_cli.main(["run", "chain"]) == 130
+    assert capsys.readouterr().err.splitlines()[-2:] == ["  [build] Writing the fix.", "Error: Interrupted by user."]
 
 
 @pytest.mark.parametrize("phase", ["admission", "preview"])

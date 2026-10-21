@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -130,10 +129,9 @@ class StreamRetryLoop[T]:
     """Run an attempt with retry, backoff, and rollback.
 
     All policy is injected via callbacks so the same loop drives both the
-    main :class:`~chrys.orchestration.engine.run.bindings.TurnBindings` path and the per-sub-agent runner. A
-    ``retry_exemption`` supplies its own event/backoff metadata and leaves the
-    transient counter unchanged; callers must only exempt independently
-    bounded policies.
+    main :class:`~chrys.orchestration.engine.run.bindings.TurnBindings` path and the per-sub-agent runner.
+    ``may_retry`` vetoes a retry that would repeat work the failed attempt
+    already committed or showed.
     """
 
     def __init__(
@@ -151,7 +149,6 @@ class StreamRetryLoop[T]:
         restore_on_stall_exhaustion: bool = False,
         after_restore: Callable[[], None] | None = None,
         may_retry: Callable[[BaseException], bool] | None = None,
-        retry_exemption: Callable[[BaseException], RetryAttemptInfo | None] | None = None,
     ) -> None:
         self._max_retries = max_retries
         self._backoff = tuple(backoff_schedule)
@@ -165,7 +162,6 @@ class StreamRetryLoop[T]:
         self._restore_on_stall_exhaustion = restore_on_stall_exhaustion
         self._after_restore = after_restore
         self._may_retry = may_retry
-        self._retry_exemption = retry_exemption
 
     def _restore_attempt(self, snapshot: HistorySnapshot) -> None:
         """Restore history and caller-owned retry state without an await gap."""
@@ -177,15 +173,6 @@ class StreamRetryLoop[T]:
         if not self._backoff:
             return 0
         return self._backoff[min(attempt, len(self._backoff) - 1)]
-
-    @staticmethod
-    def _exemption_delay(info: RetryAttemptInfo) -> int:
-        """Narrow an exemption delay to the integer contract used by sleepers."""
-        delay = info.delay_seconds
-        if not isinstance(delay, (int, float)) or isinstance(delay, bool):
-            msg = "Retry exemption delay_seconds must be a number"
-            raise TypeError(msg)
-        return math.ceil(delay)
 
     async def run(self, attempt_fn: Callable[[], Awaitable[T]]) -> T:
         """Drive ``attempt_fn`` with retry.
@@ -222,8 +209,8 @@ class StreamRetryLoop[T]:
             except StreamStall as e:
                 if self._may_retry is not None and not self._may_retry(e):
                     raise RuntimeError(
-                        "Streaming stalled after tool results were already committed; "
-                        "stopping this run to preserve the completed work."
+                        "Streaming stalled after this run already showed output or completed tool work; "
+                        "stopping it to keep what was done."
                     ) from e
                 if transient_attempt >= self._max_retries:
                     # The main AttemptRunner policy replaces an exhausted stream with a
@@ -245,21 +232,14 @@ class StreamRetryLoop[T]:
             except Exception as e:
                 if not self._is_retryable(e) or (self._may_retry is not None and not self._may_retry(e)):
                     raise
+                if transient_attempt >= self._max_retries:
+                    raise
                 last_exc = e
-                exemption = self._retry_exemption(e) if self._retry_exemption is not None else None
-                if exemption is not None:
-                    err_msg = exemption.reason
-                    retry_attempt = exemption.attempt
-                    retry_max_attempts = exemption.max_attempts
-                    delay = self._exemption_delay(exemption)
-                else:
-                    if transient_attempt >= self._max_retries:
-                        raise
-                    err_msg = self._clean_err(e)
-                    retry_attempt = transient_attempt + 1
-                    retry_max_attempts = self._max_retries
-                    delay = self._delay(transient_attempt)
-                    transient_attempt += 1
+                err_msg = self._clean_err(e)
+                retry_attempt = transient_attempt + 1
+                retry_max_attempts = self._max_retries
+                delay = self._delay(transient_attempt)
+                transient_attempt += 1
 
             logger.warning(
                 "Retrying in %ds (attempt %d/%d): %s",

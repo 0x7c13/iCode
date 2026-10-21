@@ -134,6 +134,8 @@ class _WireRetryPolicy:
     before_retry_calls: int = 0
     hosted_in_flight: tuple[str, ...] = ()
     """Hosted tool calls the provider already ran in the failed attempt."""
+    answer_shown: Callable[[], bool] | None = None
+    """Whether the call's streamed answer text showed; None: as it was yielded."""
 
     def backoff_seconds(self, _attempt: int) -> int:
         return 0

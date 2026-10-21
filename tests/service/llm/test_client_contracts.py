@@ -374,61 +374,26 @@ async def test_a_tool_batch_is_published_before_its_tools_run(
 ) -> None:
     """The publisher hears the text beside a batch's calls, or ``""`` as its boundary, before the tools run.
 
-    The send path awaits the async publisher, which the test holds; the
-    stream path calls the sync one as the stream finalizes.
+    Both paths call it once the response lands: the stream path as it
+    finalizes, the send path as the response returns.
     """
     pin_wire_inputs(monkeypatch)
     case = _case(combo, stream=stream)
     wire = ScriptedWire(case.replies if said else _call_only_replies(combo, stream=stream))
-    published: list[tuple[str, str]] = []
-    heard_by_tool: list[list[tuple[str, str]]] = []
-    holding = asyncio.Event()
-    release = asyncio.Event()
-
-    async def on_text_async(text: str) -> None:
-        holding.set()
-        await release.wait()
-        published.append(("async", text))
-
-    def on_text_sync(text: str) -> None:
-        published.append(("sync", text))
+    published: list[str] = []
+    heard_by_tool: list[list[str]] = []
 
     @tool(name="lookup", description="Look up the weather in a city.")
     def lookup(city: str) -> str:
         heard_by_tool.append(list(published))
         return f"Sunny in {city}."
 
-    async with _stack(
-        case,
-        wire.transport,
-        monkeypatch,
-        on_intermediate_text_async=on_text_async,
-        on_intermediate_text_sync=on_text_sync,
-    ) as stack:
+    async with _stack(case, wire.transport, monkeypatch, on_intermediate_text=published.append) as stack:
         options = {**_options(case), "tools": [lookup]}
-        run = asyncio.create_task(
-            _land(stack.get_response(case.messages(), stream=stream, options=options), stream=stream)
-        )
-        try:
-            if not stream:
-                await wait_for(
-                    lambda: holding.is_set() or run.done(),
-                    timeout=ENGINE_TEST_WAIT_TIMEOUT,
-                    description="the publisher holds the batch",
-                )
-                if run.done():
-                    await run
-                assert not await wait_until(lambda: heard_by_tool or run.done(), timeout=0.2)
-            release.set()
-            await run
-        finally:
-            release.set()
-            run.cancel()
-            await asyncio.gather(run, return_exceptions=True)
+        await _land(stack.get_response(case.messages(), stream=stream, options=options), stream=stream)
 
-    heard = [("sync" if stream else "async", said)]
-    assert heard_by_tool == [heard]
-    assert published == heard
+    assert heard_by_tool == [[said]]
+    assert published == [said]
 
 
 # ---------------------------------------------------------------------------
@@ -452,21 +417,9 @@ async def test_internal_side_calls_are_neither_timed_nor_published(
     wire = ScriptedWire(case.replies[:1])
     sink = FakeSink()
     context = make_context(sink).with_cycle(new_analytics_id()).with_exchange(new_analytics_id())
-    published: list[tuple[str, str]] = []
+    published: list[str] = []
 
-    async def on_text_async(text: str) -> None:
-        published.append(("async", text))
-
-    def on_text_sync(text: str) -> None:
-        published.append(("sync", text))
-
-    async with _stack(
-        case,
-        wire.transport,
-        monkeypatch,
-        on_intermediate_text_async=on_text_async,
-        on_intermediate_text_sync=on_text_sync,
-    ) as stack:
+    async with _stack(case, wire.transport, monkeypatch, on_intermediate_text=published.append) as stack:
         client = stack.inner.inner
         with trajectory_scope(context), internal_side_call_scope() if side_call else contextlib.nullcontext():
             result = client.get_response(
@@ -492,7 +445,7 @@ async def test_internal_side_calls_are_neither_timed_nor_published(
         assert sink.drafts == []
     else:
         assert stamps == [[MESSAGE_CREATED_AT_KEY, TRAJECTORY_TIMING_KEY]] * len(response.messages)
-        assert published == [("sync" if stream else "async", FIRST_TURN_TEXT)]
+        assert published == [FIRST_TURN_TEXT]
         assert exchange_events == [1, 1]
 
 

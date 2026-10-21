@@ -34,7 +34,7 @@ from chrys.foundation.trajectory.envelope import (
 )
 from chrys.foundation.trajectory.event_types import EventType, ExchangeOutcome
 from chrys.foundation.trajectory.finalizers import RecordingFinalizers
-from chrys.foundation.trajectory.ids import ANALYTICS_ID_HEX_LENGTH, new_analytics_id
+from chrys.foundation.trajectory.ids import ANALYTICS_ID_HEX_LENGTH
 from chrys.foundation.trajectory.revisions import RevisionRegistry
 from chrys.foundation.trajectory.writer import EmitResult
 
@@ -291,7 +291,6 @@ class ExchangeTrace:
         "_first_chunk_ns",
         "_first_visible_ns",
         "_gaps_ms",
-        "_generation",
         "_last_chunk_ns",
         "_outcome_override",
         "_stall_count",
@@ -305,7 +304,6 @@ class ExchangeTrace:
         if context.exchange_operation_id is None:
             raise ValueError("ExchangeTrace requires a context narrowed to an exchange operation.")
         self.context = context
-        self._generation = 0
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -327,28 +325,6 @@ class ExchangeTrace:
         if self.context.exchange_operation_id is None:
             raise RuntimeError("An exchange scope requires an operation id.")
         return self.context.exchange_operation_id
-
-    @property
-    def generation(self) -> int:
-        """How many times the trace was re-issued (0 for the original acquisition)."""
-        return self._generation
-
-    def reissue(self, operation_id: str | None = None) -> str:
-        """Roll the trace onto a new exchange operation for an in-place re-send.
-
-        A middleware that re-issues the request beneath the kernel (response
-        validation) keeps the kernel's handle but must record a new exchange:
-        the finished acquisition is closed (abandoned if the client never
-        closed it), every chunk/timing counter resets and the new operation
-        id is returned so the caller can link the retry.
-        """
-        if self._started and not self._finished:
-            self.abandon()
-        new_id = operation_id or new_analytics_id()
-        self.context = self.context.with_exchange(new_id)
-        self._generation += 1
-        self._reset_state()
-        return new_id
 
     @property
     def is_started(self) -> bool:

@@ -19,6 +19,7 @@ import chrys.orchestration.workflows.agent_node_build as agent_node_build_module
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.errors import ErrorKind, classify_error
 from chrys.foundation.events.types import (
+    InvocationContentDelta,
     InvocationResumed,
     InvocationRetryAttempt,
     InvocationToolCallStart,
@@ -28,10 +29,13 @@ from chrys.foundation.events.types import (
 from chrys.foundation.hosted_tools import HostedToolStatus
 from chrys.kernel import ChatResponseUpdate, Content, FinishReason, FinishReasonLiteral, FunctionTool, Message
 from chrys.orchestration.invoker.resources import PreparedAgent
+from chrys.orchestration.session_host import ChrysSessionHost
 from chrys.service.acp_client import AcpAgentClient, AcpConnectError
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.profiles.agents.schema import AcpAgentConfig, AgentProfile
 from chrys.service.tools.registry import ToolRegistry
+from chrys.service.workflows.layout import run_dir
+from chrys.service.workflows.transcript import read_node_transcript
 from tests.orchestration.workflows._hosting import (
     PROFILE,
     confirm,
@@ -169,6 +173,50 @@ async def test_a_pass_that_times_out_after_a_tool_resumes_without_running_the_to
         resumed, _options = client.call_history[2]
         assert _user_texts(list(resumed)) == ["Review the reference."]
         assert _results_for(list(resumed)) == ["call_1"]
+    finally:
+        await host.shutdown()
+
+
+@pytest.mark.parametrize("narration", ["", "Let me read the reference."], ids=["silent", "narrated"])
+async def test_a_resumed_attempt_keeps_the_narration_of_a_completed_tool_exchange(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, narration: str
+) -> None:
+    """The resumed attempt continues after the narration in its history and never writes it again."""
+    expire = _hold_node_deadline(monkeypatch)
+    project = make_project(tmp_path)
+    reference = project / "reference.txt"
+    reference.write_text("reference", encoding="utf-8")
+    client = MockChatClient(
+        responses=[
+            MockResponse(text=narration, tool_calls=[("read_file", "call_1", {"path": str(reference)})]),
+            MockResponse(text="never", delay=3600),
+            MockResponse(text="reviewed"),
+        ]
+    )
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
+    write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT))
+    host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.read"])])
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged) as events:
+            task = asyncio.create_task(run(host, "review", input_text="Review the reference."))
+            await wait_for(
+                lambda: len(client.call_history) == 2 or task.done(),
+                timeout=ENGINE_TURN_TIMEOUT,
+                description="the model call after the tool is in flight",
+            )
+            assert not task.done()
+            expire.set()
+            result, _stream = await task
+        assert result.outcome.value == "completed"
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_timeout"),
+            ("running", 2, ""),
+            ("completed", 2, ""),
+        ]
+        resumed, _options = client.call_history[2]
+        assert [message.text for message in resumed if message.role == "assistant"] == [narration]
     finally:
         await host.shutdown()
 
@@ -656,8 +704,8 @@ async def test_a_timeout_that_abandons_a_running_background_response_is_not_retr
 async def test_a_failed_poll_of_a_background_response_never_creates_its_hosted_work_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The next attempt polls the response the failed pass left running; when the poll comes back empty, a fresh
-    request would run the response's hosted call again, so the node fails instead."""
+    """The next attempt polls the response the failed pass left running; the poll's empty response is rejected
+    for good, so the node fails rather than send a fresh request that would run the hosted call again."""
     monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
     # A background response runs a hosted MCP call and drops; polling it returns nothing; a new request answers.
     client = HostedMockChatClient(
@@ -692,7 +740,7 @@ async def test_a_failed_poll_of_a_background_response_never_creates_its_hosted_w
             ("running", 1, ""),
             ("retrying", 1, "agent_transient"),
             ("running", 2, ""),
-            ("failed", 2, "agent_transient"),
+            ("failed", 2, "agent_non_transient"),
         ]
         assert len(client.call_history) == 2
         _messages, poll_options = client.call_history[1]
@@ -818,3 +866,197 @@ async def test_an_acp_agent_its_connection_retries_cannot_reach_is_not_retried_b
         assert connects == 6
     finally:
         await host.shutdown()
+
+
+class _ShowsThenStops(MockChatClient):
+    """Each scripted request streams one update, then fails or never answers again; the next answers "reviewed"."""
+
+    def __init__(self, *passes: tuple[bool, BaseException | None]) -> None:
+        super().__init__(
+            responses=[*(MockResponse(text="never streamed") for _ in passes), MockResponse(text="reviewed")]
+        )
+        self._passes = list(passes)
+        self.streaming = asyncio.Event()
+
+    async def _stream_updates(
+        self, resp: MockResponse, model_id: str, finish_reason: FinishReasonLiteral | FinishReason
+    ) -> AsyncIterable[ChatResponseUpdate]:
+        if not self._passes:
+            async for update in super()._stream_updates(resp, model_id, finish_reason):
+                yield update
+            return
+        shows_text, failure = self._passes.pop(0)
+        # Progress either way; only the shown kind carries text the node streams on.
+        yield ChatResponseUpdate(
+            contents=[Content.from_text("Looking. ")] if shows_text else [], role="assistant", model=model_id
+        )
+        self.streaming.set()
+        if failure is not None:
+            raise failure
+        await asyncio.Event().wait()
+
+
+def _archived_answers(host: ChrysSessionHost, run_id: str) -> list[str]:
+    stored = read_node_transcript(run_dir(host.workflow_session_dir, run_id), "review@iter#1", 1)
+    assert stored is not None
+    return [
+        content["text"]
+        for message in stored.replay.messages
+        if message["role"] == "assistant"
+        for content in message["contents"]
+        if content["type"] == "text"
+    ]
+
+
+@pytest.mark.parametrize("shows_text", [True, False], ids=["shown", "nothing-shown"])
+async def test_a_transient_failure_resumes_and_asks_again_for_the_answer_it_cut_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shows_text: bool
+) -> None:
+    """The next attempt starts by itself, and its request no longer ends with the half answer."""
+    client = _ShowsThenStops((shows_text, ConnectionResetError("connection reset by peer")))
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=2))
+    host = make_host(
+        tmp_path, project=project, stream=True, settings=Settings(model_profile="mock-profile", max_transient_retries=0)
+    )
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged) as events:
+            result, _stream = await run(host, "review", input_text="x")
+        assert result.outcome.value == "completed"
+        assert result.outputs[0].value.text == "reviewed"
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_transient"),
+            ("running", 2, ""),
+            ("completed", 2, ""),
+        ]
+        assert len(client.call_history) == 2
+        resumed, _options = client.call_history[1]
+        assert _user_texts(list(resumed)) == ["x"]
+        assert [message.text for message in resumed if message.role == "assistant"] == []
+        if shows_text:
+            # The shown text stays in the first attempt's transcript, as node details show it after a reload.
+            assert _archived_answers(host, result.run_id) == ["Looking. "]
+    finally:
+        await host.shutdown()
+
+
+def _answer_segments(events: list[Any]) -> list[tuple[int, str]]:
+    """Each answer segment the node showed, whole, with the attempt that showed it."""
+    segments: dict[str, tuple[int, str]] = {}
+    for event in of_type(events, InvocationContentDelta):
+        if event.channel == "answer":
+            attempt, text = segments.get(event.segment_id, (event.origin.attempt, ""))
+            segments[event.segment_id] = (attempt, text + event.text)
+    return list(segments.values())
+
+
+async def test_under_service_side_storage_a_failure_after_shown_text_is_left_to_the_next_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A whole-run retry would send the request again and show a second answer, so the attempt fails instead."""
+    monkeypatch.setattr(agent_node_build_module, "RETRY_BACKOFF_SCHEDULE", (0,))
+    failure = ConnectionResetError("connection reset by peer")
+    # The whole-run lane would retry this failure had the pass shown nothing.
+    assert classify_error(failure).retryable
+    client = _ShowsThenStops((True, failure))
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=2))
+    host = make_host(
+        tmp_path,
+        project=project,
+        stream=True,
+        chat_options=_SERVICE_SIDE_STORAGE,
+        settings=Settings(model_profile="mock-profile", max_transient_retries=3),
+    )
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(
+            host.event_bus, WorkflowNodeStateChanged, InvocationRetryAttempt, InvocationContentDelta
+        ) as events:
+            result, _stream = await run(host, "review", input_text="x")
+        assert result.outcome.value == "completed"
+        assert result.outputs[0].value.text == "reviewed"
+        assert of_type(events, InvocationRetryAttempt) == []
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_transient"),
+            ("running", 2, ""),
+            ("completed", 2, ""),
+        ]
+        # The first attempt showed its text once and nothing after it; only the next attempt answers.
+        assert _answer_segments(events) == [(1, "Looking. "), (2, "reviewed")]
+        assert len(client.call_history) == 2
+        resumed, _options = client.call_history[1]
+        assert [message.text for message in resumed if message.role == "assistant"] == []
+        assert _archived_answers(host, result.run_id) == ["Looking. "]
+    finally:
+        await host.shutdown()
+
+
+@pytest.mark.parametrize("shows_text", [True, False], ids=["shown", "nothing-shown"])
+async def test_a_timeout_resumes_and_asks_again_for_the_answer_it_cut_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shows_text: bool
+) -> None:
+    expire = _hold_node_deadline(monkeypatch)
+    client = _ShowsThenStops((shows_text, None))
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=2, timeout=_NODE_TIMEOUT))
+    host = make_host(tmp_path, project=project, stream=True)
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(host.event_bus, WorkflowNodeStateChanged) as events:
+            task = asyncio.create_task(run(host, "review", input_text="x"))
+            # The update was handled before the stream is pulled again, so any text it carried is shown.
+            await wait_for(
+                lambda: client.streaming.is_set() or task.done(),
+                timeout=ENGINE_TURN_TIMEOUT,
+                description="the first pass streamed its update",
+            )
+            assert not task.done()
+            expire.set()
+            result, _stream = await task
+        assert result.outcome.value == "completed"
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_timeout"),
+            ("running", 2, ""),
+            ("completed", 2, ""),
+        ]
+        assert len(client.call_history) == 2
+        resumed, _options = client.call_history[1]
+        assert [message.text for message in resumed if message.role == "assistant"] == []
+        if shows_text:
+            assert _archived_answers(host, result.run_id) == ["Looking. "]
+    finally:
+        await host.shutdown()
+
+
+async def test_a_cancelled_node_keeps_the_answer_it_showed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _ShowsThenStops((True, None))
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client])
+    project = make_project(tmp_path)
+    write_workflow(project, "review", _workflow(max_attempts=2))
+    host = make_host(tmp_path, project=project, stream=True)
+    task: asyncio.Task[Any] | None = None
+    try:
+        await confirm(host, "review")
+        task = asyncio.create_task(run(host, "review", input_text="x"))
+        await wait_for(
+            lambda: client.streaming.is_set() or task.done(),
+            timeout=ENGINE_TURN_TIMEOUT,
+            description="the pass streamed its update",
+        )
+        assert not task.done()
+        await host.cancel_workflow()
+        result, _stream = await task
+        assert result.outcome.value == "cancelled"
+        assert _archived_answers(host, result.run_id) == ["Looking. "]
+    finally:
+        await host.shutdown()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)

@@ -112,7 +112,7 @@ async def test_collapsed_completed_tool_group_prunes_and_rebuilds_file_diff() ->
             25,
             file_snapshot=("old\n", "new\n"),
         )
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
 
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
@@ -143,7 +143,7 @@ async def test_completed_tool_subtree_posts_idle_reclaim_after_awaited_removal()
         await panel.add_user_message("tools")
         await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
         await panel.add_tool_result("tool1", "plain_tool", "done", 10)
-        await panel.add_agent_message("done", is_final=True)
+        await panel.add_agent_message("done")
         group = panel.query_one(ToolGroup)
 
         await wait_for(lambda: app.gc_messages, pilot=pilot, description="app.gc_messages")
@@ -178,7 +178,7 @@ async def test_completed_tool_subtree_removal_names_its_nodes_only_while_no_free
         subtree = tool.walk_children(with_self=True)
         if frozen_after_build:
             _model_coordinator_freeze(monkeypatch)
-        await panel.add_agent_message("done", is_final=True)
+        await panel.add_agent_message("done")
 
         await _prune_drained(group, pilot)
 
@@ -204,7 +204,7 @@ async def test_restored_tool_subtree_removal_names_its_nodes_only_while_no_freez
         await panel.add_user_message("tools")
         await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
         await panel.add_tool_result("tool1", "plain_tool", "done", 10)
-        await panel.add_agent_message("done", is_final=True)
+        await panel.add_agent_message("done")
         group = panel.query_one(ToolGroup)
         await _prune_drained(group, pilot)
 
@@ -229,7 +229,7 @@ async def test_plain_restored_tool_subtree_posts_stable_content_absorb() -> None
         await panel.add_user_message("tools")
         await panel.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
         await panel.add_tool_result("tool1", "plain_tool", "done", 10)
-        await panel.add_agent_message("done", is_final=True)
+        await panel.add_agent_message("done")
         group = panel.query_one(ToolGroup)
 
         await wait_for(
@@ -333,7 +333,7 @@ async def test_tool_group_expand_restores_cards_before_pending_diff_prepare_fini
             file_snapshot=("old\n", "new\n"),
             lazy=True,
         )
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
 
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
         assert group._content_mounted is False
@@ -599,7 +599,7 @@ async def test_shell_tool_nonzero_exit_rebuild_uses_complete_path_metadata() -> 
         assert str(panel.border_subtitle) == "Errored [42]"
         assert exec_panel_text(shell) == "boom"
 
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
@@ -622,7 +622,7 @@ async def test_tool_group_restore_reprunes_when_collapsed_mid_rebuild(monkeypatc
         await cp.add_user_message("tools")
         await cp.add_tool_start("tool1", "plain_tool", "", args={"value": 1})
         await cp.add_tool_result("tool1", "plain_tool", "done", 10)
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
 
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")

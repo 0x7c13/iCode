@@ -21,6 +21,8 @@ from chrys.app.tui.support.gc_freeze import (
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     UserInterrupt,
     UserMessage,
@@ -71,6 +73,9 @@ class _FakeInputFlowView:
     def hide_trailing_status_action(self) -> None:
         self.calls.append("hide_status_action")
 
+    async def remove_answer_before_failure(self) -> None:
+        self.calls.append("remove_answer")
+
     def set_retry_pending(self, pending: bool) -> None:
         self.calls.append(("retry_pending", pending))
 
@@ -102,6 +107,7 @@ def _make_input_flow_controller(
     state: MainScreenState | None = None,
     view: _FakeInputFlowView | None = None,
     handle_agent_message: object | None = None,
+    handle_agent_content: object | None = None,
     handle_error: object | None = None,
     running: list[bool] | None = None,
     has_messages: list[bool] | None = None,
@@ -114,6 +120,9 @@ def _make_input_flow_controller(
 
     async def _default_handle_agent_message(event: InvocationMessage) -> None:
         view.calls.append(f"agent:{event.text}")
+
+    async def _default_handle_agent_content(event: InvocationContentDelta | InvocationContentFinished) -> None:
+        view.calls.append(f"content:{event.segment_id}")
 
     async def _default_handle_error(event: Error) -> None:
         view.calls.append(f"error:{event.message}")
@@ -135,6 +144,7 @@ def _make_input_flow_controller(
         view=view,
         start_worker=start_worker or _unexpected_start_worker,
         handle_agent_message=handle_agent_message or _default_handle_agent_message,
+        handle_agent_content=handle_agent_content or _default_handle_agent_content,
         handle_error=handle_error or _default_handle_error,
         set_agent_running=_set_agent_running,
         set_has_messages=_set_has_messages,
@@ -288,6 +298,19 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
         assert published == ["first note", "try again"]
 
 
+@pytest.mark.parametrize("text", ["", "a note"], ids=["bare", "with-note"])
+async def test_only_a_bare_retry_removes_the_answer_the_failed_pass_showed(text: str) -> None:
+    """The backend drops that answer and asks for it again only when the retry carries no note."""
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(EventBus(), start_worker=scheduled.append)
+
+    controller.request_retry(text)
+    await _run_started(scheduled)
+
+    assert state.run.agent_running
+    assert ("remove_answer" in view.calls) is (not text)
+
+
 @pytest.mark.parametrize(
     "error_code",
     [
@@ -336,7 +359,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             order.append(f"error:{message}:{action_label}")
 
     def query_one(cls: object) -> object:
@@ -667,41 +690,96 @@ def test_send_user_message_defers_fast_agent_message_until_user_bubble_is_render
     view = _FakeInputFlowView()
 
     async def _on_agent_message(event: InvocationMessage) -> None:
-        if state.render_gate.active:
+        if state.render_gate.defers(event):
             state.render_gate.defer(event)
             return
         view.calls.append(f"agent:{event.text}")
+
+    async def _on_agent_content(event: InvocationContentDelta | InvocationContentFinished) -> None:
+        if state.render_gate.defers(event):
+            state.render_gate.defer(event)
+            return
+        view.calls.append(f"delta:{event.text}" if isinstance(event, InvocationContentDelta) else "finished")
 
     controller, _state, view = _make_input_flow_controller(
         bus,
         state=state,
         view=view,
         handle_agent_message=_on_agent_message,
+        handle_agent_content=_on_agent_content,
     )
 
     async def _accept_and_finish(event: UserMessage) -> None:
         event.prepared_contents = ["hello", "prepared-image-content"]
         event.started_turn = True
+        origin = InvocationOrigin("turn", event.session_id or "", "turn-test", None)
         await bus.publish(
-            InvocationMessage(
-                text=f"done:{event.text}",
-                is_final=True,
-                session_id=event.session_id,
-                origin=InvocationOrigin("turn", event.session_id or "", "turn-test", None),
+            InvocationContentDelta(
+                origin=origin, session_id=event.session_id, segment_id="s1", channel="answer", text="done"
             )
+        )
+        await bus.publish(
+            InvocationContentFinished(origin=origin, session_id=event.session_id, segment_id="s1", channel="answer")
+        )
+        await bus.publish(
+            InvocationMessage(text=f"done:{event.text}", is_final=True, session_id=event.session_id, origin=origin)
         )
 
     async def _run() -> None:
         await bus.subscribe(UserMessage, _accept_and_finish)
+        await bus.subscribe(InvocationContentDelta, _on_agent_content)
+        await bus.subscribe(InvocationContentFinished, _on_agent_content)
         await bus.subscribe(InvocationMessage, _on_agent_message)
         await controller.send_user_message("hello")
 
     asyncio.run(_run())
 
+    # Streamed text and the final both wait for the user bubble, then replay in order.
     user_index = view.calls.index("user:hello")
-    agent_index = view.calls.index("agent:done:hello")
-    assert user_index < agent_index
+    assert view.calls[user_index + 1 : user_index + 4] == ["delta:done", "finished", "agent:done:hello"]
     assert view.user_contents == [["hello", "prepared-image-content"]]
+
+
+def test_text_arriving_while_deferred_text_replays_waits_behind_it() -> None:
+    """A replayed delta can await a mount; a live one arriving meanwhile must not overtake the backlog."""
+    bus = EventBus()
+    state = MainScreenState()
+    view = _FakeInputFlowView()
+    origin = InvocationOrigin("turn", "", "turn-test", None)
+
+    def _delta(text: str) -> InvocationContentDelta:
+        return InvocationContentDelta(origin=origin, segment_id="s1", channel="answer", text=text)
+
+    live = _delta("C")
+
+    async def _on_agent_content(event: InvocationContentDelta | InvocationContentFinished) -> None:
+        if state.render_gate.defers(event):
+            state.render_gate.defer(event)
+            return
+        if isinstance(event, InvocationContentDelta):
+            view.calls.append(f"delta:{event.text}")
+            if event.text == "A":
+                # The engine streams on while this delta's mount is awaited.
+                await bus.publish(live)
+
+    controller, _state, view = _make_input_flow_controller(
+        bus, state=state, view=view, handle_agent_content=_on_agent_content
+    )
+
+    async def _accept_and_stream(event: UserMessage) -> None:
+        event.started_turn = True
+        await bus.publish(_delta("A"))
+        await bus.publish(_delta("B"))
+
+    async def _run() -> None:
+        await bus.subscribe(UserMessage, _accept_and_stream)
+        await bus.subscribe(InvocationContentDelta, _on_agent_content)
+        await controller.send_user_message("hello")
+
+    asyncio.run(_run())
+
+    assert [call for call in view.calls if str(call).startswith("delta:")] == ["delta:A", "delta:B", "delta:C"]
+    assert state.render_gate.active is False
 
 
 def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> None:
@@ -729,7 +807,7 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             order.append(f"error:{message}:{action_label}")
 
     def query_one(cls: object) -> object:

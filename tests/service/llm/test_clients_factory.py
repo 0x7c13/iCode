@@ -1534,20 +1534,13 @@ async def test_create_client_mock() -> None:
     assert isinstance(client, MockChatClient)
 
 
-async def test_create_client_mock_passes_intermediate_callbacks() -> None:
+async def test_create_client_mock_passes_intermediate_callback() -> None:
     from chrys.service.llm.mock import MockChatClient
 
-    async def _acb(_text: str) -> None:
+    def _cb(_text: str) -> None:
         pass
 
-    def _scb(_text: str) -> None:
-        pass
-
-    client = await create_client(
-        _profile(provider="mock"),
-        on_intermediate_text_async=_acb,
-        on_intermediate_text_sync=_scb,
-    )
+    client = await create_client(_profile(provider="mock"), on_intermediate_text=_cb)
     assert isinstance(client, MockChatClient)
 
 
@@ -1634,46 +1627,44 @@ async def test_create_client_openai_like_passes_model_id_header(
 # ───────────────────────── stack assembly ─────────────────────────────
 
 
-async def test_create_client_anthropic_forwards_async_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_client_anthropic_forwards_intermediate_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     """An intermediate-text callback reaches the assembled Anthropic stack."""
     _patch_sdks(monkeypatch)
     captured = _capture_assembly(monkeypatch)
 
-    async def _acb(_text: str) -> None:
+    def _cb(_text: str) -> None:
         pass
 
     result = await create_client(
         _profile(provider="anthropic", api_key="k", model_id="claude-Y"),
-        on_intermediate_text_async=_acb,
+        on_intermediate_text=_cb,
     )
     assert result == _ASSEMBLED
     assert captured["client_cls"] is AnthropicMessagesClient
     assert isinstance(captured["sdk_client"], _Spy)
     assert captured["model_id"] == "claude-Y"
-    assert captured["on_intermediate_text_async"] is _acb
-    assert captured["on_intermediate_text_sync"] is None
+    assert captured["on_intermediate_text"] is _cb
 
 
-async def test_create_client_openai_forwards_sync_callback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OpenAI profiles assemble the plain Chat Completions client; sync
-    callbacks are forwarded without DeepSeek compatibility by default."""
+async def test_create_client_openai_forwards_intermediate_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenAI profiles assemble the plain Chat Completions client; the
+    callback is forwarded without DeepSeek compatibility by default."""
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-anything")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     captured = _capture_assembly(monkeypatch)
 
-    def _scb(_text: str) -> None:
+    def _cb(_text: str) -> None:
         pass
 
     result = await create_client(
         _profile(provider="openai", model_id="gpt-Y"),
-        on_intermediate_text_sync=_scb,
+        on_intermediate_text=_cb,
         use_route_session_context=True,
     )
     assert result == _ASSEMBLED
     assert captured["model_id"] == "gpt-Y"
-    assert captured["on_intermediate_text_sync"] is _scb
-    assert captured["on_intermediate_text_async"] is None
+    assert captured["on_intermediate_text"] is _cb
     assert captured["use_route_session_context"] is True
     assert captured["client_cls"] is ChatCompletionsClient
 
@@ -1746,31 +1737,25 @@ async def test_create_client_glm_forwards_glm_chat_client_cls(monkeypatch: pytes
     assert captured["model_id"] == "glm-5.2"
 
 
-async def test_create_client_deepseek_forwards_intermediate_text_callbacks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stream + non-stream intermediate-text callbacks must reach the deepseek branch.
+async def test_create_client_deepseek_forwards_intermediate_text_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The intermediate-text callback must reach the deepseek branch.
 
-    This is one of the chrys touch surfaces that needs parity across all
-    providers: real-time rendering of agent text emitted alongside tool
-    calls, in both stream and non-stream modes."""
+    Every provider needs it: it numbers the tool batches of each response
+    that asks for tools, in both stream and non-stream modes."""
     _patch_sdks(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
     captured = _capture_assembly(monkeypatch)
 
-    async def _acb(_text: str) -> None:
-        pass
-
-    def _scb(_text: str) -> None:
+    def _cb(_text: str) -> None:
         pass
 
     result = await create_client(
         _profile(provider="deepseek-openai", model_id="deepseek-chat"),
-        on_intermediate_text_async=_acb,
-        on_intermediate_text_sync=_scb,
+        on_intermediate_text=_cb,
     )
 
     assert result == _ASSEMBLED
-    assert captured["on_intermediate_text_async"] is _acb
-    assert captured["on_intermediate_text_sync"] is _scb
+    assert captured["on_intermediate_text"] is _cb
 
 
 # ───────────────────────── httpx.Timeout wiring ───────────────────────

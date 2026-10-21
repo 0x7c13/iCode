@@ -18,14 +18,12 @@ that client sends (one *acquisition*). For each acquisition it:
   that attempt id on the messages the provider newly returned (never on
   contents, and never on echoed messages);
 - hands the text the model wrote beside its tool calls to the intermediate-text
-  callback before the tool loop sees the response, so the UI can show it ahead
-  of the tool calls. Non-streaming responses go to the async callback, awaited
-  before the response is returned; streams go to the sync callback from a
-  result hook, which runs when the stream finalizes and before the tool loop
-  inspects the response. The streaming callback typically stores the text in
-  an ``IntermediateTextBuffer`` that is released before the next
-  ``ToolCallStart`` (or, for a call that starts no tool, the next response or
-  the pass end).
+  callback before the tool loop sees the response, which numbers the
+  response's tool batch and records the text for the session's
+  ``_intermediate_text`` sidecar (the UI shows model text from the caller's
+  content projector, not from here). It is called as a non-streaming response
+  lands, and for a stream from a result hook, which runs when the stream
+  finalizes and before the tool loop inspects the response.
 
 Internal side calls (the LAST_WORDS completer, below ``get_response``) never
 join the conversation: they keep their exchange report but get neither timing
@@ -357,16 +355,10 @@ class WireCallObserver:
     share no state.
     """
 
-    __slots__ = ("_on_intermediate_text_async", "_on_intermediate_text_sync")
+    __slots__ = ("_on_intermediate_text",)
 
-    def __init__(
-        self,
-        *,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
-        on_intermediate_text_sync: Callable[[str], None] | None = None,
-    ) -> None:
-        self._on_intermediate_text_async = on_intermediate_text_async
-        self._on_intermediate_text_sync = on_intermediate_text_sync
+    def __init__(self, *, on_intermediate_text: Callable[[str], None] | None = None) -> None:
+        self._on_intermediate_text = on_intermediate_text
 
     def begin(
         self,
@@ -391,15 +383,14 @@ class WireCallObserver:
             recorder,
             stream=stream,
             timing=_ResponseTiming.start(messages),
-            on_intermediate_text_async=self._on_intermediate_text_async,
-            on_intermediate_text_sync=self._on_intermediate_text_sync,
+            on_intermediate_text=self._on_intermediate_text,
         )
 
 
 class WireCall:
     """One acquisition's reporting; *timing* is None for an internal side call."""
 
-    __slots__ = ("_on_async", "_on_sync", "_recorder", "_requests", "_stream", "_timing")
+    __slots__ = ("_on_intermediate_text", "_recorder", "_requests", "_stream", "_timing")
 
     def __init__(
         self,
@@ -407,15 +398,13 @@ class WireCall:
         *,
         stream: bool,
         timing: _ResponseTiming | None = None,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
-        on_intermediate_text_sync: Callable[[str], None] | None = None,
+        on_intermediate_text: Callable[[str], None] | None = None,
     ) -> None:
         self._recorder = recorder
         self._requests = RequestTracking(recorder.context if recorder is not None else None)
         self._stream = stream
         self._timing = timing
-        self._on_async = on_intermediate_text_async
-        self._on_sync = on_intermediate_text_sync
+        self._on_intermediate_text = on_intermediate_text
 
     def failed(self, exc: BaseException) -> None:
         """The request failed before it returned a response or a stream."""
@@ -447,12 +436,10 @@ class WireCall:
         timing = self._timing
         if timing is None:
             return
-        on_sync = self._on_sync
 
         def _on_finalized(response: ChatResponse[Any]) -> ChatResponse[Any]:
             timing.stamp(response)
-            if on_sync is not None and (signal := intermediate_text_signal(response)) is not None:
-                on_sync(signal)
+            self._signal_intermediate_text(response)
             return response
 
         stream.with_result_hook(_on_finalized)
@@ -460,9 +447,12 @@ class WireCall:
     async def _land(self, observed: Awaitable[ChatResponse[Any]], timing: _ResponseTiming) -> ChatResponse[Any]:
         response = await observed
         timing.stamp(response)
-        if self._on_async is not None and (signal := intermediate_text_signal(response)) is not None:
-            await self._on_async(signal)
+        self._signal_intermediate_text(response)
         return response
+
+    def _signal_intermediate_text(self, response: ChatResponse[Any]) -> None:
+        if self._on_intermediate_text is not None and (signal := intermediate_text_signal(response)) is not None:
+            self._on_intermediate_text(signal)
 
     async def _track_request(self, result: Awaitable[ChatResponse[Any]]) -> ChatResponse[Any]:
         with self._requests.scope():

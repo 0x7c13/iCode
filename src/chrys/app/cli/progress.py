@@ -57,12 +57,13 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentAbandoned,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationContextPressure,
     InvocationEvent,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -104,8 +105,9 @@ _ACCENT: Final = "cyan"
 _NAMED_EVENTS: Final = (
     InvocationStarted,
     InvocationMessage,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
+    InvocationContentDelta,
+    InvocationContentFinished,
+    InvocationContentAbandoned,
     InvocationToolCallStart,
     InvocationToolCallArgsUpdated,
     InvocationToolCallStatusUpdated,
@@ -309,8 +311,11 @@ class _Call:
 
 
 @dataclass(slots=True)
-class _Provisional:
-    segments: dict[str, str] = field(default_factory=dict)
+class _PendingAnswer:
+    """Answer text streamed for one invocation attempt whose role is not known yet."""
+
+    lead: str
+    segments: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _depth(origin: InvocationOrigin) -> int:
@@ -329,6 +334,13 @@ class InvocationActivity:
     ``prefix(origin)`` returns the lead every line for that origin starts with
     (``""`` for a chat turn, ``"  [node] "`` for a workflow node), or ``None``
     when the origin is not this command's to show.
+
+    Streamed answer text waits until its role is known: text a tool call
+    follows is commentary, text the final message completes is the answer,
+    which goes to stdout, and the partial text of a failed or interrupted
+    pass is commentary too. Text a retry gave up is never shown, unless a
+    hosted card that started mid-stream already printed it. Reasoning is
+    never shown.
     """
 
     def __init__(self, writer: ProgressWriter, *, prefix: Callable[[InvocationOrigin], str | None], render: Render):
@@ -337,7 +349,7 @@ class InvocationActivity:
         self._render = render
         self._calls: dict[CallKey, _Call] = {}
         self._names: dict[str, str] = {}
-        self._provisional: dict[tuple[str, int, str], _Provisional] = {}
+        self._answers: dict[tuple[str, int], _PendingAnswer] = {}
         self.top_level_calls = 0
 
     def handle(self, event: InvocationEvent) -> None:
@@ -352,6 +364,7 @@ class InvocationActivity:
             case InvocationStarted():
                 return
             case InvocationToolCallStart():
+                self._flush_answer(origin, lead)
                 self._tool_start(event, lead, nested=nested)
             case InvocationToolCallArgsUpdated():
                 self._tool_args(event)
@@ -359,12 +372,29 @@ class InvocationActivity:
                 self._tool_status(event)
             case InvocationToolCallResult():
                 self._tool_result(event)
+            case InvocationContentDelta():
+                if not nested and event.channel == "answer":
+                    # Child prose stays private.
+                    key = (origin.invocation_id, origin.attempt)
+                    answer = self._answers.get(key)
+                    if answer is None:
+                        answer = self._answers[key] = _PendingAnswer(lead)
+                    answer.segments.setdefault(event.segment_id, []).append(event.text)
+            case InvocationContentAbandoned():
+                # A retry gave this text up: it was never shown, and the run keeps none of it.
+                answer = self._answers.get((origin.invocation_id, origin.attempt))
+                if answer is not None:
+                    for segment_id in event.segment_ids:
+                        answer.segments.pop(segment_id, None)
+            case InvocationContentFinished():
+                if event.status != "completed":
+                    self._flush_answer(origin, lead)
             case InvocationMessage():
-                self._message(event, lead, nested=nested)
-            case InvocationPresentationAttemptAccepted():
-                self._accept(event, lead, nested=nested)
-            case InvocationPresentationAttemptRejected():
-                self._provisional.pop((origin.invocation_id, origin.attempt, event.attempt_id), None)
+                # The final answer goes to stdout; text it does not hold was commentary no tool card followed.
+                answer = self._answers.pop((origin.invocation_id, origin.attempt), None)
+                for parts in answer.segments.values() if answer is not None else ():
+                    if (text := "".join(parts)) not in event.text:
+                        self._commentary(lead, text)
             case InvocationRetryAttempt():
                 self._retry(event, lead)
             case InvocationPaused():
@@ -564,28 +594,23 @@ class InvocationActivity:
 
     # -- commentary --------------------------------------------------------------------------
 
-    def _message(self, event: InvocationMessage, lead: str, *, nested: bool) -> None:
-        if nested or not event.is_intermediate:
-            # Child prose stays private, and the final answer goes to stdout.
-            return
-        if event.presentation is not None:
-            origin = event.origin
-            buffer = self._provisional.setdefault(
-                (origin.invocation_id, origin.attempt, event.presentation.attempt_id), _Provisional()
-            )
-            buffer.segments[event.presentation.segment_id] = event.text
-            return
-        self._commentary(lead, event.text)
+    def flush_pending(self, invocation_id: str | None = None) -> None:
+        """Print the answer text still held, all of it or *invocation_id*'s, as commentary.
 
-    def _accept(self, event: InvocationPresentationAttemptAccepted, lead: str, *, nested: bool) -> None:
-        origin = event.origin
-        buffer = self._provisional.pop((origin.invocation_id, origin.attempt, event.attempt_id), None)
-        if buffer is None or nested:
-            return
-        for segment_id in event.segment_ids:
-            text = buffer.segments.pop(segment_id, None)
-            if text is not None:
-                self._commentary(lead, text)
+        Its pass failed, so no later fact says what it was: a segment a
+        streamed call closed has ended as ``completed`` even when that call
+        never ran.
+        """
+        for key in [key for key in self._answers if invocation_id is None or key[0] == invocation_id]:
+            answer = self._answers.pop(key)
+            for parts in answer.segments.values():
+                self._commentary(answer.lead, "".join(parts))
+
+    def _flush_answer(self, origin: InvocationOrigin, lead: str) -> None:
+        answer = self._answers.pop((origin.invocation_id, origin.attempt), None)
+        if answer is not None:
+            for parts in answer.segments.values():
+                self._commentary(lead, "".join(parts))
 
     def _commentary(self, lead: str, text: str) -> None:
         body = sanitize_terminal_block(surrogate_safe_text(text)).strip("\n")
@@ -735,6 +760,10 @@ class TurnProgress:
             parts.append(display_path(context.workdir))
         return parts
 
+    def failed(self) -> None:
+        """The turn failed: the answer text it streamed shows before the error."""
+        self._activity.flush_pending()
+
     def succeeded(self, *, duration: float, session_id: str) -> None:
         count = self._activity.top_level_calls
         calls = f"{count} tool call" if count == 1 else f"{count} tool calls"
@@ -753,6 +782,8 @@ class WorkflowProgress:
         self._render = render
         self._nodes: dict[str, str] = {}
         self._running: dict[tuple[str, int], datetime] = {}
+        # Each running agent attempt's invocation: a failed one's held answer text shows before its state.
+        self._invocations: dict[tuple[str, int], str] = {}
         self._session_id = ""
         self._activity = InvocationActivity(writer, prefix=self._prefix, render=render)
 
@@ -796,6 +827,10 @@ class WorkflowProgress:
             case _:
                 return
 
+    def _flush_attempt(self, attempt_key: tuple[str, int]) -> None:
+        if invocation_id := self._invocations.pop(attempt_key, ""):
+            self._activity.flush_pending(invocation_id)
+
     def _header(self, event: WorkflowRunStarted) -> None:
         workflow_id = _scalar(event.workflow_id, 80)
         title = _scalar(event.title, 120)
@@ -814,10 +849,12 @@ class WorkflowProgress:
             case "running":
                 if event.invocation_id:
                     self._nodes[event.invocation_id] = _scalar(event.node_id, 80)
+                    self._invocations[attempt_key] = event.invocation_id
                 self._running[attempt_key] = event.timestamp
                 attempt = f" (attempt {event.attempt})" if event.attempt > 1 else ""
                 self._writer.line(("▸ ", _ACCENT), f"{node} running{attempt}")
             case "completed":
+                self._invocations.pop(attempt_key, None)
                 started = self._running.pop(attempt_key, None)
                 duration: list[Part] = []
                 if started is not None:
@@ -825,15 +862,18 @@ class WorkflowProgress:
                 self._writer.line(("✓ ", _OK), f"{node} completed", *duration)
             case "failed":
                 self._running.pop(attempt_key, None)
+                self._flush_attempt(attempt_key)
                 self._writer.line(("✗ ", _FAIL), f"{node} failed", f": {error}" if error else "")
                 self._error_detail(error_lines)
             case "retrying" | "awaiting_retry":
                 self._running.pop(attempt_key, None)
+                self._flush_attempt(attempt_key)
                 state = event.state.replace("_", " ")
                 self._writer.line(("↻ ", _NOTE), f"{node} {state}", f": {error}" if error else "")
                 self._error_detail(error_lines)
             case "skipped" | "cancelled":
                 self._running.pop(attempt_key, None)
+                self._flush_attempt(attempt_key)
                 self._writer.line(("· ", _DIM), f"{node} {event.state}")
             case _:
                 return
@@ -854,6 +894,10 @@ class WorkflowProgress:
                 self._writer.always(f"{label}: some output was omitted by the capture limit.")
         if diagnostics.get("error"):
             self._writer.always(_unclamped(diagnostics["error"]))
+
+    def failed(self) -> None:
+        """The run ended early: the answer text its nodes streamed shows before the error."""
+        self._activity.flush_pending()
 
     def succeeded(self, *, duration: float) -> None:
         self._writer.line(("✓ ", _OK), "Workflow completed", (" · ", _DIM), format_duration(duration))

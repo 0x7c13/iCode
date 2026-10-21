@@ -89,9 +89,7 @@ async def test_session_messages_persist_created_at_for_user_and_assistant(tmp_pa
         assert isinstance(tool_timing["duration_ms"], int)
         assert tool_timing["duration_ms"] >= 0
         final_events = [
-            e
-            for e in ctx.events
-            if (isinstance(e, InvocationMessage) and e.origin.kind == "turn") and e.is_final and not e.is_intermediate
+            e for e in ctx.events if (isinstance(e, InvocationMessage) and e.origin.kind == "turn") and e.is_final
         ]
         assert final_events
         assert utc_iso(final_events[-1].timestamp) == next(iter(assistant_timestamps))
@@ -311,6 +309,7 @@ async def test_post_run_backfills_interrupt_recovery_messages(*, engine_services
         run_failed = False
         was_interrupted = True
         last_error = ""
+        partial_answer = ()
 
         def drain_batch_records(self) -> list[object]:
             return []

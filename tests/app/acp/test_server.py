@@ -21,7 +21,7 @@ from chrys.foundation.events.types import (
     AskUserResponse,
     Error,
     Event,
-    InvocationMessage,
+    InvocationContentDelta,
     QuestionToUser,
     SessionTitleUpdated,
     TodoListUpdated,
@@ -88,7 +88,9 @@ class _RecordingUsageEngine(_FakeEngine):
         return self._before if self._snapshots == 1 else self._after
 
 
-def _stub_replay(monkeypatch: pytest.MonkeyPatch, *, error: BaseException | None = None) -> list[tuple[Any, ...]]:
+def _stub_replay(
+    monkeypatch: pytest.MonkeyPatch, *, error: BaseException | None = None, trailing: tuple[str, ...] = ()
+) -> list[tuple[Any, ...]]:
     """Replace the module-level history replay and return the calls it records.
 
     The patch target must stay ``server_module``: the server resolves the
@@ -96,10 +98,11 @@ def _stub_replay(monkeypatch: pytest.MonkeyPatch, *, error: BaseException | None
     """
     replays: list[tuple[Any, ...]] = []
 
-    async def _replay(*args: Any, **_kwargs: Any) -> None:
+    async def _replay(*args: Any, **_kwargs: Any) -> tuple[str, ...]:
         replays.append(args)
         if error is not None:
             raise error
+        return trailing
 
     monkeypatch.setattr(server_module, "replay_session_history", _replay)
     return replays
@@ -134,9 +137,9 @@ async def test_prompt_returns_cancelled_stop_reason() -> None:
     host = _FakeHost(
         event_bus=EventBus(),
         events=[
-            InvocationMessage(
+            InvocationContentDelta(
                 text="working",
-                is_final=False,
+                segment_id="seg-1",
                 session_id="s1",
                 origin=InvocationOrigin("turn", "s1", "turn-test", None),
             )
@@ -628,6 +631,36 @@ async def test_extension_rollback_to_turn_sends_plan_update_after_replay(monkeyp
     plans = _plan_updates(client)
     assert len(plans) == 1
     assert [(entry.content, entry.status) for entry in plans[0].entries] == [("turn two step", "pending")]
+
+
+@pytest.mark.anyio
+async def test_load_session_keeps_the_replayed_answer_a_bare_retry_withdraws(monkeypatch) -> None:
+    manager = _FakeLoadManager(reused_existing=True)
+    manager.session.trailing_answer_message_ids = ("before-the-reload",)
+    server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(_FakeClient())
+    _stub_replay(monkeypatch, trailing=("replayed-half-answer",))
+
+    await server.load_session(cwd="/workspace", session_id="s1")
+
+    assert manager.session.trailing_answer_message_ids == ("replayed-half-answer",)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("target_turn", "expected"), [(2, ("replayed-half-answer",)), (0, ())])
+async def test_rollback_keeps_the_replayed_answer_a_bare_retry_withdraws(
+    monkeypatch, target_turn: int, expected: tuple[str, ...]
+) -> None:
+    host = _FakeHost(event_bus=EventBus())
+    manager = _FakeManager(host)
+    manager.get("s1").trailing_answer_message_ids = ("before-the-rollback",)
+    server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(_FakeClient())
+    _stub_replay(monkeypatch, trailing=("replayed-half-answer",))
+
+    await server.ext_method("session/rollback", {"sessionId": "s1", "targetTurn": target_turn})
+
+    assert manager.get("s1").trailing_answer_message_ids == expected
 
 
 @pytest.mark.anyio

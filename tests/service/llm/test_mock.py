@@ -427,48 +427,26 @@ async def test_mock_wire_method_receives_client_kwargs_and_layer_function_invoca
 
 
 @pytest.mark.asyncio
-async def test_mock_intermediate_async_callback_suppressed_in_internal_side_call() -> None:
-    fired: list[str] = []
-
-    async def _acb(text: str) -> None:
-        fired.append(text)
-
-    client = MockChatClient(
-        responses=[
-            MockResponse(text="thinking", tool_calls=[("t", "c1", {})]),
-            MockResponse(text="thinking", tool_calls=[("t", "c2", {})]),
-        ],
-        on_intermediate_text_async=_acb,
-    )
-    messages = [Message(role="user", contents=["hi"])]
-
-    with internal_side_call_scope():
-        await client._inner_get_response(messages=messages, stream=False, options={})
-    assert fired == []
-
-    # Control: outside the scope the callback fires.
-    await client._inner_get_response(messages=messages, stream=False, options={})
-    assert fired == ["thinking"]
-
-
-@pytest.mark.asyncio
-async def test_mock_intermediate_sync_callback_suppressed_in_internal_side_call() -> None:
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+async def test_mock_intermediate_callback_suppressed_in_internal_side_call(stream: bool) -> None:
     fired: list[str] = []
     client = MockChatClient(
         responses=[
             MockResponse(text="thinking", tool_calls=[("t", "c1", {})]),
             MockResponse(text="thinking", tool_calls=[("t", "c2", {})]),
         ],
-        on_intermediate_text_sync=fired.append,
+        on_intermediate_text=fired.append,
     )
     messages = [Message(role="user", contents=["hi"])]
 
+    async def respond() -> None:
+        result = client._inner_get_response(messages=messages, stream=stream, options={})
+        await (result.get_final_response() if stream else result)
+
     with internal_side_call_scope():
-        stream = client._inner_get_response(messages=messages, stream=True, options={})
-        await stream.get_final_response()
+        await respond()
     assert fired == []
 
-    # Control: outside the scope the result hook publishes on finalization.
-    stream = client._inner_get_response(messages=messages, stream=True, options={})
-    await stream.get_final_response()
+    # Control: outside the scope the callback fires once the response lands.
+    await respond()
     assert fired == ["thinking"]

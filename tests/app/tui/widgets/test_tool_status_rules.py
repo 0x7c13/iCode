@@ -48,7 +48,7 @@ async def test_shell_tool_streamed_tail_survives_prune_rebuild() -> None:
         shell = cp.query_one(ExecuteToolCall)
         assert exec_panel_text(shell).splitlines() == expected_tail
 
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
@@ -86,7 +86,7 @@ async def test_shell_tool_timeout_result_overrides_streamed_progress_on_rebuild(
         assert str(panel.border_subtitle) == "Errored"
         assert exec_panel_text(shell).startswith("Error: command timed out")
 
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 
@@ -157,7 +157,7 @@ async def test_shell_tool_exit_code_zero_overrides_error_prefixed_stdout_on_rebu
         assert shell.has_class("-success")
         assert not shell.has_class("-error")
 
-        await cp.add_agent_message("done", is_final=True)
+        await cp.add_agent_message("done")
         group = cp.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")
 

@@ -234,9 +234,7 @@ async def tool_runs(*replies: Reply, stream: bool = True, options: Mapping[str, 
         return f"Sunny in {city}."
 
     async with responses_client(*replies) as (client, wire):
-        layer = InvariantCheckedToolLoopLayer(
-            ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware(backoff_schedule=(0,))])
-        )
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware()]))
         result = layer.get_response(
             [Message("user", ["What is the weather in Paris?"])],
             stream=stream,

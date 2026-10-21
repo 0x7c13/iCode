@@ -15,7 +15,7 @@ from typing import Any, ClassVar, Final, Literal, TypeGuard, TypeVar, cast
 
 from typing_extensions import TypedDict
 
-from chrys.foundation.hosted_tools import PRESENTATION_TEXT_SEGMENT_ID_KEY, HostedToolFamily
+from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.reasoning_origin import REASONING_ORIGIN_KEY
 from chrys.foundation.text.model_json import model_json
 
@@ -1813,26 +1813,10 @@ def _combine_additional_props(
     self_additional_properties: dict[str, Any], other_additional_properties: dict[str, Any]
 ) -> dict[str, Any]:
     """Combine additional properties for addition operations."""
-    combined = {
+    return {
         **other_additional_properties,
         **self_additional_properties,
     }
-    left_segment_ids = self_additional_properties.get(PRESENTATION_TEXT_SEGMENT_ID_KEY)
-    right_segment_ids = other_additional_properties.get(PRESENTATION_TEXT_SEGMENT_ID_KEY)
-    if left_segment_ids is not None and right_segment_ids is not None:
-        combined[PRESENTATION_TEXT_SEGMENT_ID_KEY] = tuple(
-            dict.fromkeys(
-                segment_id
-                for value in (left_segment_ids, right_segment_ids)
-                for segment_id in (
-                    value
-                    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
-                    else (value,)
-                )
-                if isinstance(segment_id, str) and segment_id
-            )
-        )
-    return combined
 
 
 def _combine_raw_representations(

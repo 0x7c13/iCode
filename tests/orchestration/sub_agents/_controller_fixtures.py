@@ -82,6 +82,7 @@ def _make_controller(
     hosted_commits_probe=None,
     stream: bool = False,
     human_failure_decisions: bool = True,
+    shows_answer_text: bool = True,
 ):
     return kernel_shell(
         conversation=Conversation(),
@@ -104,6 +105,7 @@ def _make_controller(
         pass_start_hooks=pass_start_hooks,
         hosted_commits_probe=hosted_commits_probe,
         stream=stream,
+        shows_answer_text=shows_answer_text,
     )
 
 

@@ -142,6 +142,9 @@ class ManagedSession:
     # a turn admitted exclusively has to be counted, not inferred.
     _turns_reserved: int = 0
     closing: bool = False
+    # The answer messages the last turn ended with (``AcpEventBridge.trailing_answer_message_ids``):
+    # a bare retry asks for that answer again, so the client is told to drop them.
+    trailing_answer_message_ids: tuple[str, ...] = ()
 
     @property
     def turns_reserved(self) -> bool:

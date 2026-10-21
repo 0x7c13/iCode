@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import contextlib
-import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Group
 from rich.text import Text
 from textual.containers import Horizontal
-from textual.geometry import Region
+from textual.geometry import Region, Size
 from textual.message import Message
 from textual.reactive import reactive
 from textual.selection import Selection
@@ -37,8 +37,6 @@ from chrys.foundation.util.time import parse_created_at
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-
-_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
 
 INTERRUPTED_ERROR_HEADER_MESSAGE = msg(
     "transcript.interrupted.error_header",
@@ -67,12 +65,17 @@ INTERRUPTED_CONTINUE_ACTION_MESSAGE = msg(
     fallback="Continue",
 )
 _AGENT_RESPONSE_COPIED = msg("tui.copy.agent_response", fallback="Copied agent response")
-_THINK_PREFIX = msg("tui.chat.think_prefix", fallback="Think: {body}", multiline=True)
 _AGENT_RESPONSE_COPY_TOOLTIP = msg(
     "tui.chat.copy_agent_response_tooltip",
     fallback="Copy raw agent response",
 )
 COPY_MESSAGE_BUTTON = msg("tui.chat.copy_message_button", fallback="copy")
+_STREAMED_BODY_INTERVAL_SECONDS = 0.15
+"""Shortest time between two markdown updates of a streaming answer.
+
+Each one parses the whole answer again and, once it adds a row, lays out the
+whole transcript again: one per delta would keep a CPU core busy.
+"""
 _USER_MESSAGE_COPIED = msg("tui.copy.user_message", fallback="Copied your message")
 _USER_MESSAGE_COPY_TOOLTIP = msg("tui.chat.copy_user_message_tooltip", fallback="Copy your raw message")
 _AGENT_FALLBACK_LABEL = msg("tui.chat.agent_fallback_label", fallback="Agent")
@@ -127,46 +130,6 @@ def format_message_created_at(value: Any) -> str:
     hour = local.hour % 12 or 12
     suffix = "AM" if local.hour < 12 else "PM"
     return f"- {hour}:{local.minute:02d} {suffix}"
-
-
-def strip_think(text: str) -> str:
-    """Remove ``<think>…</think>`` blocks entirely."""
-    return _THINK_RE.sub("", text).strip()
-
-
-def think_to_italic(
-    text: str,
-    render_message: Callable[[MessageRef], str] = format_message,
-) -> str:
-    """Convert ``<think>…</think>`` blocks to italic markdown with a *Think:* prefix."""
-
-    def _repl(m: re.Match[str]) -> str:
-        inner = m.group(1).strip()
-        if not inner:
-            return ""
-        # Wrap each paragraph with * for italic.  A single * pair around a
-        # multi-paragraph block breaks in CommonMark, so wrap per paragraph.
-        parts: list[str] = []
-        for para in re.split(r"\n{2,}", inner):
-            stripped = para.strip()
-            if stripped:
-                parts.append(f"*{stripped}*")
-        body = "\n\n".join(parts)
-        return render_message(_THINK_PREFIX.bind(body=DisplayBlock(body)))
-
-    return _THINK_RE.sub(_repl, text).strip()
-
-
-def process_think_tags(
-    text: str,
-    *,
-    intermediate: bool = False,
-    render_message: Callable[[MessageRef], str] = format_message,
-) -> str:
-    """Process ``<think>`` tags: italic for intermediate messages, strip for final."""
-    if not text:
-        return text
-    return think_to_italic(text, render_message) if intermediate else strip_think(text)
 
 
 def format_chat_copy_payload(messages: list[tuple[str, str]]) -> str:
@@ -459,11 +422,11 @@ class AgentMessage(Widget):
         border-left: thick $tui-border-agent-message $border-opacity;
         height: auto;
     }
-    AgentMessage.--intermediate {
+    AgentMessage.--intermediate, AgentMessage.--streaming {
         border-left: thick $tui-border-neutral-gray $border-opacity;
         color: $text-muted;
     }
-    AgentMessage.--intermediate > VirtualizedMarkdown {
+    AgentMessage.--intermediate > VirtualizedMarkdown, AgentMessage.--streaming > VirtualizedMarkdown {
         color: $text-muted;
     }
     AgentMessage.--compressed {
@@ -481,10 +444,10 @@ class AgentMessage(Widget):
         height: auto;
         min-height: 1;
         background: transparent;
-    }
-    AgentMessage > .agent-cursor {
-        height: 1;
-        padding: 0 1;
+        /* Sized by its text, the body never scrolls. While streamed text grows
+           past the height of the last arrange, a scrollbar would narrow it for
+           a frame and shift its code blocks' right edge. */
+        overflow-y: hidden;
     }
     """
 
@@ -502,13 +465,12 @@ class AgentMessage(Widget):
         duration_ms: int | None = None,
     ) -> None:
         self._source_text = text
-        self._processed_text = process_think_tags(text, intermediate=is_intermediate)
-        self._processed_text_stale = False
-        """``_source_text`` changed since ``_processed_text`` was derived; ``text`` re-derives it."""
         self._body_stale = False
         """The markdown body has not been handed the latest streamed text."""
         self._body_sync_scheduled = False
         """A callback that brings the markdown body up to date is queued on this widget."""
+        self._body_synced_at = float("-inf")
+        """When the markdown body was last handed new text (``time.monotonic()``)."""
         self._is_final = is_final
         self._profile_name = profile_name
         self._is_intermediate = is_intermediate
@@ -526,15 +488,15 @@ class AgentMessage(Widget):
             cls = "--compressed"
         elif is_structured_completion:
             cls = "--structured-completion"
+        if not is_final:
+            # Muted until the text is known to be the answer, not text before tool calls.
+            cls = f"{cls} --streaming".strip()
         super().__init__(classes=cls)
 
     @property
     def text(self) -> str:
-        """The response text with think blocks processed, as of the latest ``stream_update()``."""
-        if self._processed_text_stale:
-            self._processed_text = process_think_tags(self._source_text)
-            self._processed_text_stale = False
-        return self._processed_text
+        """The response text as of the latest ``stream_update()``."""
+        return self._source_text.strip()
 
     @property
     def profile_name(self) -> str:
@@ -558,13 +520,6 @@ class AgentMessage(Widget):
         return render_str(widget_localizer(self), reference)
 
     def compose(self) -> ComposeResult:
-        if self._is_intermediate:
-            self._processed_text = process_think_tags(
-                self._source_text,
-                intermediate=True,
-                render_message=self._render_message,
-            )
-            self._processed_text_stale = False
         with MessageHeaderRow():
             yield _AgentHeader(self._copy_label(), self._header_text())
             copy_button = MessageCopyButton(
@@ -577,8 +532,6 @@ class AgentMessage(Widget):
         # The body starts from the current text, so a queued sync has nothing to hand it.
         self._body_stale = False
         yield self._md_widget
-        if not self._is_final:
-            yield Static(Text(" \u258d", style="bold green"), classes="agent-cursor")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Agent content is copied by its header/body children."""
@@ -703,32 +656,41 @@ class AgentMessage(Widget):
     def stream_update(self, text: str, is_final: bool = False, *, timestamp: str = "") -> None:
         """Update the message text (for streaming).
 
-        The main turn replays its buffered answer as a synchronous burst of
-        cumulative updates, one per line. A non-final update only records the
-        newest text: the markdown body catches up once per message-loop turn,
-        so a burst costs one think-tag pass and one markdown update instead of
-        one per line, while ``text`` always reads the newest text. A final
-        update hands the body its text before the cursor and copy button change.
+        A non-final update only records the newest text: the markdown body
+        catches up at most every ``_STREAMED_BODY_INTERVAL_SECONDS``, so a
+        stream of deltas costs one markdown update per interval instead of one
+        per delta, while ``text`` always reads the newest text. A final update
+        hands the body its text at once, before the style and copy button change.
         """
         self._source_text = text
-        self._processed_text_stale = True
         self._body_stale = True
         self._is_final = is_final
         if timestamp:
             self.set_timestamp(timestamp)
         if is_final:
             self._sync_body()
-            try:
-                cursor = self.query_one(".agent-cursor")
-                cursor.remove()
-            except Exception:
-                pass
+            self.remove_class("--streaming")
             self._show_copy_button_if_ready()
         elif not self._body_sync_scheduled:
+            delay = self._body_synced_at + _STREAMED_BODY_INTERVAL_SECONDS - time.monotonic()
+            if delay > 0:
+                self.set_timer(delay, self._run_scheduled_body_sync)
+                self._body_sync_scheduled = True
+                return
             self._body_sync_scheduled = self.call_later(self._run_scheduled_body_sync)
             if not self._body_sync_scheduled:
                 # The message pump is closing and refused the callback.
                 self._sync_body()
+
+    def append_text(self, text: str) -> None:
+        """Stream *text* onto the end of this message."""
+        self.stream_update(self._source_text + text)
+
+    def settle_intermediate(self) -> None:
+        """End streaming as text the agent wrote between tool calls: muted, with no copy button."""
+        self._is_intermediate = True
+        self.add_class("--intermediate")
+        self.stream_update(self._source_text, is_final=True)
 
     def _run_scheduled_body_sync(self) -> None:
         self._body_sync_scheduled = False
@@ -739,8 +701,16 @@ class AgentMessage(Widget):
         if not self._body_stale:
             return
         self._body_stale = False
+        self._body_synced_at = time.monotonic()
         if self._md_widget is not None:
             self._md_widget.update(self.text)
+
+    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
+        # Textual sets a changed virtual size as a reactive that asks for another
+        # layout, but the layout calling this has placed the message already and a
+        # message shows no scrollbar: each row a streamed answer adds would lay the
+        # whole transcript out twice.
+        return super()._size_updated(size, virtual_size, container_size, layout=False)
 
 
 class SystemMessage(Static):
@@ -805,9 +775,11 @@ class ErrorMessage(Widget):
     }
     """
 
-    def __init__(self, text: str, *, action_label: str | None = None) -> None:
+    def __init__(self, text: str, *, action_label: str | None = None, ends_turn: bool = True) -> None:
         self._text = text
         self._action_label = action_label
+        self.ends_turn = ends_turn
+        """Whether this error ended a running turn, rather than refusing a request outside one."""
         super().__init__()
 
     def _render_text(self) -> Text:

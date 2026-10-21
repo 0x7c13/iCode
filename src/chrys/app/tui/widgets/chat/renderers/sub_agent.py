@@ -28,15 +28,14 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     TranscriptAssistantOp,
     TranscriptCompactionFinishedOp,
     TranscriptCompactionStartOp,
-    TranscriptPresentationAcceptedOp,
-    TranscriptPresentationRejectedOp,
+    TranscriptPausedOp,
+    TranscriptResumedOp,
     TranscriptToolArgsOp,
     TranscriptToolProgressOp,
     TranscriptToolResultOp,
     TranscriptToolStartOp,
     TranscriptToolStatusOp,
 )
-from chrys.app.tui.widgets.chat.messages import process_think_tags
 from chrys.app.tui.widgets.chat.renderers.sleep import SleepSkipClicked
 from chrys.app.tui.widgets.chat.tool_call import (
     TOOL_CARD_COMPLETED,
@@ -67,7 +66,6 @@ from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_T
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
 
 _SUB_AGENT_TASK = msg("tui.tool_card.sub_agent.task", fallback="Task")
@@ -127,6 +125,8 @@ _COMPACTION_ENTRY_KIND = "compaction"
 _OWN_AGENT_PREFIX = re.compile(r"sub-agent '[^']*' (?:failed —\s*)?")
 # Far wider than any card: the activity line ellipsizes to its own width.
 _ERROR_REASON_MAX_CHARS = 400
+# The start of an answer the activity line shows; text past it never reaches the line.
+_ACTIVITY_TEXT_LIMIT = 512
 
 
 def _error_reason(result: str) -> str:
@@ -149,14 +149,6 @@ class _InnerToolEntry:
     args: dict[str, Any]
     status: str = "running"
     completion_counted: bool = False
-
-
-@dataclass
-class _ActivityHistoryEntry:
-    """One rollback-aware candidate for the compact latest-activity line."""
-
-    activity: MessageRef | str
-    presentation: ProvisionalPresentation | None = None
 
 
 class _SubAgentActivityText(Static):
@@ -362,7 +354,6 @@ class SubAgentToolCall(BaseToolCard):
         self._transcript_profile_name = tool_name
         self._linked_display_name = ""
         initial_activity = tool_activity_reference(tool_name, KIND_SUB_AGENT, {"agent_name": tool_name})
-        self._activity_history = [_ActivityHistoryEntry(initial_activity)]
         self._latest_activity: MessageRef | str = initial_activity
 
         self._invocation_id: str | None = None
@@ -399,45 +390,10 @@ class SubAgentToolCall(BaseToolCard):
         plain = activity if isinstance(activity, str) else self._render_message(activity)
         return Text(plain, no_wrap=True, overflow="ellipsis")
 
-    def _remember_activity(
-        self,
-        activity: MessageRef | str,
-        *,
-        presentation: ProvisionalPresentation | None = None,
-    ) -> MessageRef | str:
-        if presentation is None:
-            self._activity_history = [_ActivityHistoryEntry(activity)]
-        else:
-            self._activity_history.append(_ActivityHistoryEntry(activity, presentation))
+    def _remember_activity(self, activity: MessageRef | str) -> MessageRef | str:
         self._latest_activity = activity
         self._sync_activity_summary()
         return activity
-
-    def _resolve_activity_presentation(
-        self,
-        attempt_id: str,
-        accepted_segment_ids: set[str],
-    ) -> MessageRef | str:
-        resolved: list[_ActivityHistoryEntry] = []
-        for entry in self._activity_history:
-            presentation = entry.presentation
-            if presentation is None or presentation.attempt_id != attempt_id:
-                resolved.append(entry)
-            elif presentation.segment_id in accepted_segment_ids:
-                resolved.append(_ActivityHistoryEntry(entry.activity))
-        if not resolved:
-            fallback = tool_activity_reference(
-                self.tool_name,
-                KIND_SUB_AGENT,
-                {"agent_name": self.tool_name},
-            )
-            resolved = [_ActivityHistoryEntry(fallback)]
-        if not any(entry.presentation is not None for entry in resolved):
-            resolved = [resolved[-1]]
-        self._activity_history = resolved
-        self._latest_activity = resolved[-1].activity
-        self._sync_activity_summary()
-        return self._latest_activity
 
     def _sync_activity_summary(self) -> None:
         with suppress(Exception):
@@ -680,9 +636,9 @@ class SubAgentToolCall(BaseToolCard):
         transcript_final = metadata.get(SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY)
         fallback_final_text = self.result_text
         if transcript_final == "" and self._transcript_journal.has_activity:
-            # The empty override means the parent result was already emitted
-            # as an intermediate segment. Suppress fallback only while that
-            # live evidence is retained; a failed durable replay must still
+            # The empty override means the parent result already showed in the
+            # transcript as its answer segments. Suppress fallback only while
+            # that live evidence is retained; a failed durable replay must still
             # fall back to the authoritative parent result.
             fallback_final_text = ""
         metadata_log_file = metadata.get("sub_agent_log_file")
@@ -722,38 +678,21 @@ class SubAgentToolCall(BaseToolCard):
         """Install the screen-owned safe persisted-transcript loader."""
         self._transcript_loader = loader
 
-    def add_assistant_message(
-        self,
-        text: str,
-        *,
-        presentation: ProvisionalPresentation | None = None,
-        profile_name: str = "",
-    ) -> MessageRef | str:
-        """Append an invocation-scoped intermediate assistant message."""
+    def add_answer(self, segment_id: str, text: str, *, profile_name: str = "") -> MessageRef | str | None:
+        """Add one whole answer segment to the nested transcript; return the new latest activity, if it changed."""
         if profile_name and not self._linked_display_name:
             self._transcript_profile_name = profile_name
-        self._transcript_journal.record(TranscriptAssistantOp(text=text, final=False, presentation=presentation))
-        visible = process_think_tags(text, intermediate=True)
-        if not visible:
-            return self._latest_activity
-        single_line = sanitize_legacy_scalar(" ".join(visible.splitlines()).strip())
-        return self._remember_activity(single_line, presentation=presentation)
+        self._transcript_journal.record(TranscriptAssistantOp(text, segment_id=segment_id))
+        single_line = sanitize_legacy_scalar(" ".join(text[:_ACTIVITY_TEXT_LIMIT].splitlines()).strip())
+        if not single_line or single_line == self._latest_activity:
+            return None
+        return self._remember_activity(single_line)
 
-    def accept_presentation_attempt(self, attempt_id: str, segment_ids: tuple[str, ...]) -> MessageRef | str:
-        """Commit provisional transcript messages for one provider attempt."""
-        self._transcript_journal.record(TranscriptPresentationAcceptedOp(attempt_id, segment_ids))
-        return self._resolve_activity_presentation(attempt_id, set(segment_ids))
-
-    def reject_presentation_attempt(self, attempt_id: str) -> MessageRef | str:
-        """Retract provisional transcript messages for one provider attempt."""
-        self._transcript_journal.record(TranscriptPresentationRejectedOp(attempt_id))
-        return self._resolve_activity_presentation(attempt_id, set())
-
-    def _record_final_transcript(self, text: str) -> None:
+    def _record_final_transcript(self, text: str, *, streamed: bool) -> None:
         if self._final_transcript_recorded:
             return
         self._final_transcript_recorded = True
-        self._transcript_journal.record(TranscriptAssistantOp(text=text, final=True))
+        self._transcript_journal.record(TranscriptAssistantOp(text=text, final=True, streamed=streamed))
 
     # --- Invocation linking ---
 
@@ -1096,7 +1035,13 @@ class SubAgentToolCall(BaseToolCard):
         transcript_final = metadata.get(SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY)
         has_transcript_override = status == "complete" and isinstance(transcript_final, str)
         if not has_transcript_override or transcript_final:
-            self._record_final_transcript(transcript_final if has_transcript_override else result)
+            # Only a completed result is the answer the transcript streamed.
+            self._record_final_transcript(
+                transcript_final if has_transcript_override else result, streamed=status == "complete"
+            )
+        elif self._transcript_journal.has_activity:
+            # The answer segments already showed the result: the last one settles as it, nothing is added.
+            self._record_final_transcript("", streamed=True)
         self._transcript_journal.finalize_retention(
             durable_replay_available=(
                 bool(metadata.get("sub_agent_log_file")) and metadata.get("sub_agent_audit_complete") is True
@@ -1271,6 +1216,7 @@ class SubAgentToolCall(BaseToolCard):
         shown above the raw text.
         """
         self.status = "paused"
+        self._transcript_journal.record(TranscriptPausedOp())
         # Paused supersedes the retrying banner — the retry run completed
         # (unsuccessfully). Keep visual history of the last error only.
         self.remove_class("-retrying")
@@ -1314,6 +1260,7 @@ class SubAgentToolCall(BaseToolCard):
         if self.status != "paused":
             return
         self.status = "running"
+        self._transcript_journal.record(TranscriptResumedOp())
         self.remove_class("-paused")
         self._sync_activity_summary()
         self._refresh_sleep_action_state()

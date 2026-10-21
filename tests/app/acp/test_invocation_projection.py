@@ -9,7 +9,7 @@ import pytest
 from chrys.app.acp.bridge import AcpEventBridge
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import InvocationMessage, InvocationStarted
+from chrys.foundation.events.types import InvocationStarted
 from chrys.foundation.models.invocations import InvocationOrigin
 from tests.app.acp._server_fakes import _FakeClient, _FakeHost, _FakeManager
 from tests.support.invocation_events import ORIGIN_IDS, ORIGINS, PHASES, PROSE_PHASES, has_chat_card, projection_event
@@ -23,9 +23,9 @@ async def test_standard_and_extension_projection_matrix(origin: InvocationOrigin
     event = projection_event(origin, phase)
     updates = bridge.updates_for_event(event)
     chat_child = has_chat_card(origin)
-    standard_allowed = (
-        origin.kind == "turn" and phase in ("intermediate", "final", "provisional", "tool", "args")
-    ) or (chat_child and phase not in PROSE_PHASES and phase != "pressure")
+    standard_allowed = (origin.kind == "turn" and phase in ("answer", "reasoning", "tool", "args")) or (
+        chat_child and phase not in PROSE_PHASES and phase != "pressure"
+    )
     assert bool(updates) is standard_allowed
     if chat_child:
         assert all(update.session_update == "tool_call_update" for update in updates)
@@ -58,11 +58,12 @@ async def test_standard_and_extension_projection_matrix(origin: InvocationOrigin
         assert "scope" not in payload
 
 
-async def test_child_final_and_retraction_do_not_reset_parent_cumulative_stream() -> None:
+async def test_child_prose_never_touches_the_parent_segment() -> None:
     bridge = AcpEventBridge()
-    first = bridge.updates_for_event(InvocationMessage(origin=ORIGINS[0], text="hello", is_final=False))
-    assert first[0].content.text == "hello"
-    for phase in ("final", "provisional", "accepted", "rejected", "wire"):
+    first = bridge.updates_for_event(projection_event(ORIGINS[0], "answer"))
+    # The child's segment shares the parent's id, so only its origin keeps them apart.
+    for phase in [*sorted(PROSE_PHASES), "wire"]:
         assert bridge.updates_for_event(projection_event(ORIGINS[1], phase)) == []
-    final = bridge.updates_for_event(InvocationMessage(origin=ORIGINS[0], text="hello world", is_final=True))
-    assert final[0].content.text == " world"
+    second = bridge.updates_for_event(projection_event(ORIGINS[0], "answer"))
+    assert [update.content.text for update in first + second] == ["main answer", "main answer"]
+    assert first[0].message_id == second[0].message_id

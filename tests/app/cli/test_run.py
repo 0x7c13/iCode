@@ -35,6 +35,8 @@ from chrys.foundation.events.types import (
     AgentRuntimeDetails,
     Error,
     Event,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationToolCallStart,
     RuntimeModelDetails,
     Warning,
@@ -1350,6 +1352,35 @@ def test_an_interrupted_run_ends_its_progress_with_the_error(
     # No success summary: the error is the last line.
     assert out.err == "→ shell\nError: Interrupted by user.\n"
     assert InterruptedHost.instances[-1].shutdown_called
+
+
+def test_a_failed_run_shows_the_answer_text_it_streamed_before_the_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A call cut off mid-stream ends the text before it as completed; no tool card or final answer follows."""
+
+    class CutOffHost(FakeHost):
+        async def run_until_final(
+            self,
+            prompt: str,
+            *,
+            timeout: float | None = None,
+            on_event: Callable[[Event], None] | None = None,
+        ) -> HeadlessRunResult:
+            assert on_event is not None
+            origin = InvocationOrigin("turn", "session-1", "turn-1", None)
+            on_event(InvocationContentDelta(origin=origin, segment_id="s1", text="I'll write the config now."))
+            on_event(InvocationContentFinished(origin=origin, segment_id="s1"))
+            raise HeadlessRunError(Error(code="boom", message="failed", session_id="session-1"))
+
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(run_cli, "ChrysSessionHost", CutOffHost)
+
+    assert run_cli.main(["hello", "--agent", "Headless"]) == 1
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == "I'll write the config now.\nError: failed\n"
 
 
 def test_run_command_requires_agent() -> None:

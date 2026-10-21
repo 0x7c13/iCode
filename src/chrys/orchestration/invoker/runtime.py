@@ -153,7 +153,7 @@ class SharedRuntime:
 
 @dataclass(frozen=True, slots=True)
 class MainRecipe:
-    """Root context/usage before injection, image, reminder, validation."""
+    """Injection, image, reminder and validation, then the context's usage innermost."""
 
     context: ContextInputs
     reminder: ReminderInputs
@@ -253,7 +253,6 @@ def create_runtime(
         injection.set_on_drained_reminders(reminder.queue_drained_injection_reminders)
     chain: list[ChatMiddleware] = []
     if isinstance(recipe, MainRecipe):
-        chain.extend(ctx.middleware)
         if injection is None:
             raise RuntimeError("The main agent recipe requires injection middleware.")
         chain.append(injection)
@@ -265,6 +264,8 @@ def create_runtime(
         if validation is None:
             raise RuntimeError("The main agent recipe requires response validation middleware.")
         chain.append(validation)
+        # Usage innermost: it counts every landed response before validation may reject it.
+        chain.extend(ctx.middleware)
     providers = [*ctx.providers, *shared.providers]
     if isinstance(recipe, MainRecipe):
         providers.append(
@@ -306,7 +307,5 @@ def create_ask_user(owner: Conversation, inputs: AskUserInputs) -> AskUserMiddle
     return owner.retain(AskUserMiddleware(**inputs))
 
 
-def create_validation(
-    owner: Conversation, *, publish_retry: Callable[[RetryAttemptInfo], Awaitable[None]] | None
-) -> ResponseValidationMiddleware:
-    return owner.retain(ResponseValidationMiddleware(publish_retry=publish_retry))
+def create_validation(owner: Conversation) -> ResponseValidationMiddleware:
+    return owner.retain(ResponseValidationMiddleware())

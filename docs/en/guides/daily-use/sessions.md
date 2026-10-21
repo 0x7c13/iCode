@@ -39,6 +39,8 @@ The terminal tab shows your latest message, or the session title once iCode upda
 
 A task you stop shows no mark, and the mark clears when you start the next task. Some terminals do not show tab titles.
 
+When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session, and the agent reads it when you send your next message. If you click **Retry** or **Continue** without typing anything instead, that part is removed and the agent writes the reply again.
+
 ## Resume an existing session
 
 When the agent is idle, enter `/resume` in the input field to resume the most recent chat session.

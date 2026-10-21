@@ -16,6 +16,8 @@ from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     UserInjectCancel,
     UserInterrupt,
@@ -24,6 +26,7 @@ from chrys.foundation.events.types import (
 )
 
 if TYPE_CHECKING:
+    from chrys.app.tui.screens.main.state import DeferredTurnEvent
     from chrys.foundation.events.bus import EventBus
 
 
@@ -38,6 +41,7 @@ class InputFlowController:
         view: InputFlowView,
         start_worker: StartWorker,
         handle_agent_message: Callable[[InvocationMessage], Awaitable[None]],
+        handle_agent_content: Callable[[InvocationContentDelta | InvocationContentFinished], Awaitable[None]],
         handle_error: Callable[[Error], Awaitable[None]],
         set_agent_running: Callable[[bool], None],
         set_has_messages: Callable[[bool], None],
@@ -52,6 +56,7 @@ class InputFlowController:
         self._view = view
         self._start_worker = start_worker
         self._handle_agent_message = handle_agent_message
+        self._handle_agent_content = handle_agent_content
         self._handle_error = handle_error
         self._set_agent_running = set_agent_running
         self._set_has_messages = set_has_messages
@@ -211,12 +216,16 @@ class InputFlowController:
         self._debug("UserInjectCancel", injection_id)
 
     async def flush_deferred_agent_messages(self) -> None:
-        """Render backend events that arrived while the user bubble was mounting."""
-        for event in self._state.render_gate.consume_deferred():
-            if isinstance(event, InvocationMessage):
-                await self._handle_agent_message(event)
-            elif isinstance(event, Error):
-                await self._handle_error(event)
+        """Render backend events that arrived while the user bubble was mounting, in arrival order."""
+        await self._state.render_gate.drain(self._replay_deferred)
+
+    async def _replay_deferred(self, event: DeferredTurnEvent) -> None:
+        if isinstance(event, InvocationMessage):
+            await self._handle_agent_message(event)
+        elif isinstance(event, InvocationContentDelta | InvocationContentFinished):
+            await self._handle_agent_content(event)
+        elif isinstance(event, Error):
+            await self._handle_error(event)
 
     async def publish_interrupt(self) -> None:
         """Publish an interrupt and update local UI state after the backend sees it."""
@@ -289,7 +298,10 @@ class InputFlowController:
             await self.flush_deferred_agent_messages()
             self._view.update_toc()
         else:
-            self._state.render_gate.finish(rendered=True)
-            await self.flush_deferred_agent_messages()
+            try:
+                # The backend drops the answer the failed pass showed and asks for it again.
+                await self._view.remove_answer_before_failure()
+            finally:
+                await self.flush_deferred_agent_messages()
 
         self._debug("UserRetry", text[:60] if text else "")

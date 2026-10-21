@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from acp.exceptions import RequestError
 from acp.schema import (
     AgentMessageChunk,
+    AgentThoughtChunk,
     AudioContentBlock,
     ContentToolCallContent,
     EmbeddedResourceContentBlock,
@@ -43,7 +44,6 @@ from chrys.foundation.events.types import (
     ApprovalResponse,
     AskUserResponse,
     AskUserTimedOut,
-    InvocationMessage,
     InvocationProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
@@ -72,8 +72,12 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
 
+from .content_projection import ContentProjector
+from .origin import BoundEmitter
+
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.invocations import ContentStatus
     from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
     from chrys.service.approval.turn_context import TurnContextReader
 
@@ -333,6 +337,8 @@ class AcpUpdateTranslator:
         self.latest_context_size: int | None = None
         self._segments: list[str] = []
         self._open_segment = ""
+        # Streams the remote's message and thought chunks as they arrive.
+        self._content = ContentProjector(BoundEmitter(event_bus, origin), agent_name=agent_name)
         self._text_finalized = False
         self._unpublished_final_text = ""
         self._message_id: str | None = None
@@ -364,10 +370,13 @@ class AcpUpdateTranslator:
             # keeps streaming around a running call — last_segment would
             # otherwise return just the suffix.
             if isinstance(update, ToolCallStart):
-                await self._seal_segment(publish=True)
+                await self._seal_segment()
             await self._merge_tool(update)
         elif isinstance(update, AgentMessageChunk):
             await self._consume_message(update)
+        elif isinstance(update, AgentThoughtChunk):
+            if isinstance(update.content, TextContentBlock) and update.content.text:
+                await self._content.publish_text("reasoning", update.content.text)
         elif isinstance(update, UsageUpdate):
             # PR-1 validates raw exact-int usage before SDK coercion. Keep this
             # defensive check for direct translator tests and custom sinks.
@@ -629,16 +638,22 @@ class AcpUpdateTranslator:
         for record in list(self.calls.values()):
             if not record.terminal_published:
                 await self._publish_terminal(record, interrupted=True)
+        await self._content.finish("interrupted")
+
+    async def finish_content(self, status: ContentStatus) -> None:
+        """End the streamed text's open segment with *status*."""
+        await self._content.finish(status)
 
     async def _consume_message(self, update: AgentMessageChunk) -> None:
         if update.message_id is not None and self._message_id is not None and update.message_id != self._message_id:
-            await self._seal_segment(publish=True)
+            await self._seal_segment()
         if update.message_id is not None:
             self._message_id = update.message_id
         text = _content_block_text(update.content)
         if text:
             self._charge(text)
             self._open_segment += text
+            await self._content.publish_text("answer", text)
 
     def _take_open_segment(self) -> str:
         segment = self._open_segment
@@ -647,19 +662,9 @@ class AcpUpdateTranslator:
             self._segments.append(segment)
         return segment
 
-    async def _seal_segment(self, *, publish: bool) -> None:
-        segment = self._take_open_segment()
-        if publish and segment.strip() and self._bus is not None:
-            await self._bus.publish(
-                InvocationMessage(
-                    is_final=False,
-                    is_intermediate=True,
-                    origin=self.origin,
-                    agent_name=self.agent_name,
-                    text=segment,
-                    session_id=self._session_id,
-                )
-            )
+    async def _seal_segment(self) -> None:
+        self._take_open_segment()
+        await self._content.end_segment()
 
     def result_text(self) -> str:
         self._finalize_text()
@@ -671,7 +676,7 @@ class AcpUpdateTranslator:
         return segments[-1]
 
     def unpublished_final_text(self) -> str:
-        """Return the final segment that was not emitted as an intermediate event."""
+        """Return the final segment: the text after the last tool call start."""
         self._finalize_text()
         return self._unpublished_final_text
 

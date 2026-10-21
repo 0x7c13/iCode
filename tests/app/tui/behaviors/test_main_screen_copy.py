@@ -385,7 +385,7 @@ async def test_chat_panel_visible_drag_selection_skips_textual_full_walk(monkeyp
         await _maximize_chat_panel_for_selection_test(app, pilot)
         panel = app.main_screen.query_one(ChatPanel)
         for index in range(16):
-            await panel.add_agent_message(f"visible fast path message {index}", is_final=True)
+            await panel.add_agent_message(f"visible fast path message {index}")
         await pilot.pause()
 
         panel.scroll_to(y=panel.max_scroll_y / 2, animate=False, immediate=True)
@@ -432,7 +432,7 @@ async def test_chat_panel_fast_selection_skips_tool_ui_descendants() -> None:
     async with app.run_test(size=(100, 24)) as pilot:
         await _maximize_chat_panel_for_selection_test(app, pilot)
         panel = app.main_screen.query_one(ChatPanel)
-        await panel.add_agent_message("before tool card", is_final=True)
+        await panel.add_agent_message("before tool card")
         await panel.add_tool_start(
             "call_1",
             "write_file",
@@ -441,7 +441,7 @@ async def test_chat_panel_fast_selection_skips_tool_ui_descendants() -> None:
             args={"path": "README_zh.md"},
         )
         await panel.add_tool_result("call_1", "write_file", "Wrote README_zh.md", 12)
-        await panel.add_agent_message("after tool card", is_final=True)
+        await panel.add_agent_message("after tool card")
         await pilot.pause()
 
         markdown_widgets = list(panel.query(VirtualizedMarkdown))
@@ -495,7 +495,7 @@ async def _chat_panel_with_messages(app: _MainScreenApp, pilot: Pilot[None], cou
     await _maximize_chat_panel_for_selection_test(app, pilot)
     panel = app.main_screen.query_one(ChatPanel)
     for index in range(count):
-        await panel.add_agent_message(f"cross viewport message {index} payload", is_final=True)
+        await panel.add_agent_message(f"cross viewport message {index} payload")
     await pilot.pause()
     return panel
 
@@ -830,13 +830,14 @@ async def test_agent_copy_button_only_shows_after_streaming_finalizes() -> None:
     app = _MainScreenApp()
     async with app.run_test() as pilot:
         panel = app.main_screen.query_one(ChatPanel)
-        await panel.add_agent_message("partial", is_final=False)
+        await panel.add_answer_delta("s1", "partial")
         await pilot.pause()
 
         button = app.main_screen.query_one(MessageCopyButton)
         assert button.display is False
 
-        await panel.add_agent_message("full response", is_final=True)
+        await panel.add_answer_delta("s1", " response")
+        await panel.add_agent_message("partial response")
         await pilot.pause()
 
         button = app.main_screen.query_one(MessageCopyButton)
@@ -848,7 +849,9 @@ async def test_agent_copy_button_hidden_for_intermediate_agent_text() -> None:
     app = _MainScreenApp()
     async with app.run_test() as pilot:
         panel = app.main_screen.query_one(ChatPanel)
-        await panel.add_agent_message("working", is_final=True, is_intermediate=True)
+        await panel.add_answer_delta("s1", "working")
+        # A tool call after the text makes it intermediate.
+        await panel.add_tool_start("c1", "read_file", "", args={"path": "a.py"})
         await pilot.pause()
 
         button = app.main_screen.query_one(MessageCopyButton)

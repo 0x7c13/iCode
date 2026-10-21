@@ -30,11 +30,12 @@ from chrys.app.tui.widgets.chat.scroll_controller import ManualScrollGcGuard
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.foundation.errors.display import DISPLAY_WITH_HINT
-from chrys.foundation.events.types import ProvisionalPresentation
+from chrys.foundation.events.types import InvocationContentDelta
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.patches.textual_precompose import precompose_tree
 
 if TYPE_CHECKING:
+    from chrys.foundation.events.types import InvocationContentFinished
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
 
 
@@ -52,26 +53,13 @@ class TranscriptUserOp:
 
 @dataclass(frozen=True, slots=True)
 class TranscriptAssistantOp:
-    """One assistant presentation boundary."""
+    """Assistant text: one whole answer segment (:class:`AnswerSegments`), or the invocation's final text."""
 
     text: str
     final: bool = False
-    presentation: ProvisionalPresentation | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TranscriptPresentationAcceptedOp:
-    """Commit provisional assistant segments."""
-
-    attempt_id: str
-    segment_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class TranscriptPresentationRejectedOp:
-    """Retract provisional assistant segments."""
-
-    attempt_id: str
+    segment_id: str = ""
+    streamed: bool = True
+    """Whether a final text is the answer its segments showed; one that is not shows as its own message."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +156,11 @@ class TranscriptErrorOp:
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptPausedOp:
+    """A failed attempt paused for Retry or Abort: the answer it was writing stops streaming."""
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptResumedOp:
     """Clear a failed attempt's status before accepting the next attempt."""
 
@@ -195,8 +188,6 @@ class TranscriptWarningOp:
 type AgentTranscriptOp = (
     TranscriptUserOp
     | TranscriptAssistantOp
-    | TranscriptPresentationAcceptedOp
-    | TranscriptPresentationRejectedOp
     | TranscriptToolStartOp
     | TranscriptToolArgsOp
     | TranscriptToolStatusOp
@@ -206,10 +197,50 @@ type AgentTranscriptOp = (
     | TranscriptCompactionFinishedOp
     | TranscriptInterruptedOp
     | TranscriptErrorOp
+    | TranscriptPausedOp
     | TranscriptResumedOp
     | TranscriptRetryOp
     | TranscriptWarningOp
 )
+
+
+@dataclass(slots=True)
+class _OpenAnswer:
+    segment_id: str
+    parts: list[str] = field(default_factory=list)
+
+
+class AnswerSegments:
+    """Streamed answer text, held until its segment ends.
+
+    A nested transcript shows each answer segment whole, as a run that does not
+    stream does: a view few people watch live takes no work per delta. A tool
+    call's card starts after the text before it ended its segment, so that text
+    shows above the card. A segment cut off by a failure or an interrupt shows
+    nothing; a retry asks for that answer again.
+    """
+
+    def __init__(self) -> None:
+        # The open answer segment of each invocation attempt: it has one at a time.
+        self._open: dict[tuple[str, int], _OpenAnswer] = {}
+
+    def take(self, event: InvocationContentDelta | InvocationContentFinished) -> TranscriptAssistantOp | None:
+        """Hold an answer delta; return the answer segment *event* completes, if it is not blank."""
+        key = (event.origin.invocation_id, event.origin.attempt)
+        answer = self._open.get(key)
+        if isinstance(event, InvocationContentDelta):
+            if event.channel == "answer":
+                if answer is None or answer.segment_id != event.segment_id:
+                    answer = self._open[key] = _OpenAnswer(event.segment_id)
+                answer.parts.append(event.text)
+            return None
+        if answer is None or answer.segment_id != event.segment_id:
+            return None
+        del self._open[key]
+        text = "".join(answer.parts)
+        if event.status != "completed" or not text.strip():
+            return None
+        return TranscriptAssistantOp(text, segment_id=answer.segment_id)
 
 
 class AgentTranscriptJournal:
@@ -262,10 +293,16 @@ class AgentTranscriptJournal:
     def continue_from(self, earlier: AgentTranscriptJournal) -> None:
         """Take *earlier*'s retained transcript as this one's beginning: an attempt resuming another.
 
-        Called on an empty journal before its first operation; live subscribers receive the carried
-        operations in order.
+        The answer *earlier* had shown when it failed is left out: the resumed attempt asks for it
+        again, as a bare Continue does. Called on an empty journal before its first operation; live
+        subscribers receive the carried operations in order.
         """
-        operations = earlier.operations
+        operations = list(earlier.operations)
+        if operations and isinstance(operations[-1], TranscriptErrorOp):
+            start = len(operations) - 1
+            while start and isinstance(answer := operations[start - 1], TranscriptAssistantOp) and not answer.final:
+                start -= 1
+            del operations[start:-1]
         self._operations.extend(operations)
         self._progress_positions = {
             call_id: position + len(self._operations) - len(operations)
@@ -473,7 +510,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
             self,
             self,
             self,
-            finalize_agent_message=self._finalize_current_agent_message,
+            finalize_agent_message=self._settle_answer_before_tools,
             tool_groups_expanded=lambda: False,
         )
         localization = _TranscriptLocalization(self._render_message)
@@ -638,16 +675,10 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
         if isinstance(operation, TranscriptUserOp):
             await self._live.add_user_message(operation.text)
         elif isinstance(operation, TranscriptAssistantOp):
-            await self._live.add_agent_message(
-                operation.text,
-                is_final=operation.final,
-                is_intermediate=not operation.final,
-                presentation=operation.presentation,
-            )
-        elif isinstance(operation, TranscriptPresentationAcceptedOp):
-            await self._live.accept_presentation_attempt(operation.attempt_id, operation.segment_ids)
-        elif isinstance(operation, TranscriptPresentationRejectedOp):
-            await self._live.reject_presentation_attempt(operation.attempt_id)
+            if operation.final:
+                await self._live.add_agent_message(operation.text, streamed=operation.streamed)
+            else:
+                await self._live.add_answer_delta(operation.segment_id, operation.text)
         elif isinstance(operation, TranscriptToolStartOp):
             await self.remove_trailing_status()
             await self._tools.add_tool_start(
@@ -704,14 +735,20 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
                 failure_reason=operation.failure_reason,
             )
         elif isinstance(operation, TranscriptInterruptedOp):
-            self._finalize_current_agent_message()
             await self._live.add_interrupted(self._render_message(operation.reason), source="system", show_action=False)
         elif isinstance(operation, TranscriptErrorOp):
-            self._finalize_current_agent_message()
             await self._live.add_error(self._render_message(operation.reason), action_label=None)
+        elif isinstance(operation, TranscriptPausedOp):
+            # As the main chat's error card does; Retry then removes the text, Abort keeps it.
+            self._live.stop_answer()
         elif isinstance(operation, TranscriptResumedOp):
+            # Released as intermediate text, not finalized: it is removed below.
+            self._live.settle_answer_before_tools()
             await self._live.prepare_retry()
             await self.remove_trailing_status()
+            # The resumed attempt asks again for the answer the failed one was writing.
+            while isinstance(answer := self.failed_turn_status(), AgentMessage):
+                await remove_shielded(answer)
         elif isinstance(operation, TranscriptRetryOp):
             message = self._render_message(operation.message)
             if operation.hint is not None:
@@ -732,8 +769,8 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
     def _render_message(self, message: str | MessageRef) -> str:
         return message if isinstance(message, str) else render_str(widget_localizer(self), message)
 
-    def _finalize_current_agent_message(self) -> None:
-        self._live._finalize_current_agent_message()
+    def _settle_answer_before_tools(self) -> None:
+        self._live.settle_answer_before_tools()
 
     async def mount_transcript_widget(self, widget: Widget) -> bool:
         if not self._accepts_transcript_updates():

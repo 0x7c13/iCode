@@ -13,7 +13,7 @@ from chrys.kernel import Message, resolve_storage_mode_and_handles
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
 
 if TYPE_CHECKING:
-    from chrys.kernel import AgentSession, LoopRecorder
+    from chrys.kernel import AgentSession, Content, LoopRecorder
     from chrys.kernel.client import BaseChatClient
 
 
@@ -60,10 +60,13 @@ class ChildHistory:
             state["messages"] = messages
         return messages
 
-    def repair_after_failure(self, active_input: Sequence[Any], pass_start_index: int) -> None:
-        """Keep completed local work and discard the failed service continuation."""
+    def repair_after_failure(
+        self, active_input: Sequence[Any], pass_start_index: int, partial_answer: Sequence[Content] = ()
+    ) -> None:
+        """Keep completed local work and the answer the pass showed; discard the failed service continuation."""
         messages = self.messages()
-        if self.recorder.loop_messages:
+        # Kept work or a kept answer needs the prompt it answers in front of it.
+        if self.recorder.loop_messages or any((content.text or "").strip() for content in partial_answer):
             input_message = active_input_message(active_input)
             if input_message is not None and not messages:
                 messages.append(input_message)
@@ -73,13 +76,18 @@ class ChildHistory:
         manager.bind(state)
         manager.merge_loop_messages(self.recorder, insert_index=pass_start_index)
         manager.trim_to_last_complete_tool_results()
+        manager.keep_partial_answer(partial_answer)
         self.session.service_session_id = None
 
     def retry_input(self, seed: Callable[[], list[Any]]) -> list[Any]:
         """Continue completed work, otherwise replay the seed without duplicating its anchor.
 
-        Synthetic continuation nudges cannot become the user anchor for this decision.
+        Synthetic continuation nudges cannot become the user anchor for this decision. An answer
+        the failed pass left at the end is asked for again, as a bare Continue of a turn does.
         """
+        manager = SessionHistoryManager()
+        manager.bind(self.state())
+        manager.remove_trailing_answer()
         messages = self.messages()
         user_idx = -1
         for i in range(len(messages) - 1, -1, -1):

@@ -49,6 +49,7 @@ from chrys.orchestration.invoker.attempts import (
 )
 from chrys.orchestration.invoker.child_compaction import CompactionRollback
 from chrys.orchestration.invoker.child_history import ChildHistory, service_storage_side
+from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.contracts import (
     AbortCause,
     ContinuationTicket,
@@ -65,9 +66,6 @@ from chrys.orchestration.invoker.kernel import KernelConversation
 from chrys.orchestration.invoker.origin import BoundEmitter
 from chrys.orchestration.invoker.resources import Conversation, PassResources
 from chrys.service.agent_middleware.events.hosted_tools import FinalSegment, adapt_hosted_tool, hosted_replay_status
-from chrys.service.agent_middleware.response_validation import (
-    RetryableResponseValidationError,
-)
 from chrys.service.context.compaction.last_words import LastWordsGenerationError
 from chrys.service.session.sub_agent_logs import preview_text
 from chrys.service.tools.result_metadata import record_tool_success, tool_error
@@ -77,7 +75,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from chrys.foundation.i18n import MessageRef
-    from chrys.kernel import Agent, AgentSession
+    from chrys.foundation.models.invocations import ContentStatus
+    from chrys.kernel import Agent, AgentSession, ChatResponse
     from chrys.service.agent_middleware.control.sleep import SleepMiddleware
     from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
     from chrys.service.session.sub_agent_logs import SubAgentLogStats, SubAgentSessionLogWriter
@@ -121,8 +120,6 @@ def _service_retry_reason(exc: BaseException) -> str:
     """Closed trajectory reason for a sub-agent whole-run retry."""
     if isinstance(exc, StreamStall | StreamStallExhausted):
         return RetryReason.STREAM_STALL
-    if isinstance(exc, RetryableResponseValidationError):
-        return RetryReason.VALIDATION_REJECTED
     return RetryReason.TRANSIENT_ERROR
 
 
@@ -163,6 +160,7 @@ class KernelSubAgentPolicy:
         tool_event_middleware: SubAgentEventMiddleware | None = None,
         stream: bool = False,
         stream_attempt_timeout: float | None = None,
+        shows_answer_text: bool = True,
         sleep_middleware: SleepMiddleware | None = None,
         pass_start_hooks: Sequence[Callable[[], None]] = (),
         hosted_commits_probe: Callable[[], tuple[str, ...]] | None = None,
@@ -212,15 +210,17 @@ class KernelSubAgentPolicy:
         self._stream_attempt_timeout = (
             stream_attempt_timeout if stream_attempt_timeout is not None else _DEFAULT_STREAM_ATTEMPT_TIMEOUT
         )
+        # Whether a frontend shows this child's answer text; text nobody sees never stops a retry.
+        self._shows_answer_text = shows_answer_text
         self._sleep_middleware = sleep_middleware
         # The hosted baseline reads this policy's own request options, not the caller's run_kwargs: a
         # whole-run retry replaces them, so only these say whether the pass polls a background response.
         self._begin_hosted_baseline_hook = begin_hosted_baseline
         # Fired at the start of every pass (initial run, or a user Retry
         # decision after a pause).  Components carrying state across a pass's
-        # whole-run retry attempts — the validation middleware's retry budget —
-        # register here so an aborted pass cannot leak state into the next
-        # one; mirrors the main executor's run_cycle_start_hooks.
+        # whole-run retry attempts register here so an aborted pass cannot
+        # leak state into the next one; mirrors the main executor's
+        # run_cycle_start_hooks.
         self._pass_start_hooks = (*pass_start_hooks, self._begin_hosted_baseline)
         # Validation-middleware probe for provider-hosted tool executions the
         # loop recorder cannot see; consulted by the whole-run retry gate.
@@ -236,6 +236,9 @@ class KernelSubAgentPolicy:
         self._retry_attempts_total: int = 0
         # The answer of the pass that completed the invocation, if any.
         self.final_segment: FinalSegment | None = None
+        # The pass's only publisher of model text, and how its open segment ends.
+        self._projector: ContentProjector | None = None
+        self._pass_status: ContentStatus = "completed"
         # The seed prompt is one persisted context item: it keeps a single
         # analytics identity across prompt replays so the trajectory can
         # account for every model request that re-sent it.
@@ -271,7 +274,8 @@ class KernelSubAgentPolicy:
                 service_side=lambda: self._service_storage,
                 committed=lambda: self._loop_recorder.committed_count > 0,
             ),
-            stream_observer=None,
+            stream_observer=lambda: self._projector,
+            content_exposed=lambda: self._shows_answer_text and self._projector is not None and self._projector.exposed,
             publish_retry=self._publish_service_retry_attempt,
             interruptible_sleep=self._sleep_for_service_retry,
             max_retries=lambda: self.max_retries,
@@ -299,6 +303,11 @@ class KernelSubAgentPolicy:
 
     async def begin(self, request: RunRequest, resources: PassResources) -> None:
         self._pass_start_index = len(self._history.messages())
+        # Sub-agent views show each answer segment whole once it completes.
+        self._projector = ContentProjector(self._emitter, agent_name=self._agent_name, shows_whole_segments=True)
+        if self._tool_event_middleware is not None:
+            self._tool_event_middleware.bind_text_segments(self._projector.end_segment)
+        self._pass_status = "completed"
         resources.begin()
         self._shell.set_status(SubAgentStatus.RUNNING)
         await self._write_log(status="running")
@@ -309,16 +318,22 @@ class KernelSubAgentPolicy:
             await self._tool_event_middleware.reconcile_hosted_response(response.messages)
 
     async def failed(self, error: Exception) -> None:
+        self._pass_status = "failed"
         self._record_failure(error)
 
     async def finished(self) -> None:
-        # A failed or interrupted pass publishes no outcome, and the buffer
-        # spans the invocation: its text must not wait for a later pass.
-        if self._tool_event_middleware is not None:
-            await self._tool_event_middleware.finish_intermediate_text()
+        # The pass's open segment ends with it, keeping the text it showed.
+        if self._projector is not None:
+            await self._projector.finish(self._pass_status)
 
     def cancelled(self) -> None:
-        pass
+        self._pass_status = "interrupted"
+
+    async def response_ready(self, response: ChatResponse) -> None:
+        """The kernel landed a response: the pass projector shows what it did not stream."""
+        if self._projector is not None:
+            shown = self._tool_event_middleware.hosted_text_shown if self._tool_event_middleware is not None else None
+            await self._projector.response_ready(response, shown=shown)
 
     def abort_cause(self) -> AbortCause | None:
         return self._shell.owner_close_cause or (AbortCause.CASCADE if self._shell.cascade_requested else None)
@@ -505,6 +520,10 @@ class KernelSubAgentPolicy:
         """Use the controller's cascade-aware backoff for kernel retries."""
         return await self._interruptible_sleep(seconds)
 
+    def wire_answer_shown(self) -> bool:
+        """Whether the wire call being streamed showed answer text: an answer segment completed where it shows."""
+        return self._shows_answer_text and self._projector is not None and self._projector.response_exposed
+
     def observe_continuation_token(self, token: Any) -> None:
         """Mirror the kernel's live continuation token into retry-owned options.
 
@@ -585,7 +604,9 @@ class KernelSubAgentPolicy:
         return self._terminal_audit_persisted
 
     def _repair_paused_history(self) -> None:
-        self._history.repair_after_failure(self._active_run_input, self._pass_start_index)
+        # Taken once: a pause and a later cancel both repair the same pass.
+        partial_answer = self._projector.take_unlanded_answer() if self._projector is not None else ()
+        self._history.repair_after_failure(self._active_run_input, self._pass_start_index, partial_answer)
 
     def _prepare_retry_input(self) -> None:
         self._next_run_input = self._history.retry_input(self._seed_input)

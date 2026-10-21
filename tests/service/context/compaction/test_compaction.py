@@ -39,6 +39,7 @@ from tests.service.context.compaction._compaction_helpers import (
     _estimate_tokens,
     _forced_phase4,
     _make_strategy,
+    _tokenizer,
     _tool_result,
     _user,
 )
@@ -102,6 +103,32 @@ async def test_png_attachment_does_not_trigger_auto_compaction_at_low_usage(
     assert not changed
     assert events == []
     assert strategy.last_included_tokens < ceiling
+
+
+async def test_a_note_a_user_message_no_longer_carries_does_not_count_toward_the_trigger() -> None:
+    """Each call's copy of a user message shares its count with history, so the count must follow this call's copy."""
+    messages = _build_multi_turn(6)
+    opener_index = [index for index, message in enumerate(messages) if message.role == "user"][3]
+    opener = messages[opener_index]
+    # The call that last counted this opener sent it with a last-words note.
+    noted = Message(
+        "user", [*opener.contents, Content.from_text("progress note " * 3_000)], message_id=opener.message_id
+    )
+    noted.additional_properties = opener.additional_properties
+    messages[opener_index] = noted
+    stale_tokens = _estimate_tokens(messages)
+    messages[opener_index] = opener
+    messages.append(_user("Turn 7 request"))
+    events: list[CompactionInfo] = []
+    strategy = _make_strategy(max_context_tokens=14_000, trigger_pct=0.85, on_compaction=_async_appender(events))
+
+    changed = await strategy(messages)
+
+    assert not changed
+    assert events == []
+    tokens = sum(chrys_compaction._message_token_estimate(message, _tokenizer) for message in messages)
+    assert strategy.last_included_tokens == tokens
+    assert tokens < 0.85 * 14_000 < stale_tokens
 
 
 async def test_no_tool_groups_no_change():

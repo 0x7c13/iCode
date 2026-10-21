@@ -14,7 +14,7 @@ from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoi
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.models.execution import ExecutionSnapshot
-from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import (
     WorkflowModelSelection,
@@ -373,14 +373,6 @@ class TurnStarted(Event):
     """Id of the user message that opened the turn, when it has one."""
 
 
-@dataclass(frozen=True)
-class ProvisionalPresentation:
-    """Identity of one retractable text segment from a response attempt."""
-
-    attempt_id: str
-    segment_id: str
-
-
 @dataclass
 class InvocationStarted(InvocationEvent):
     """A sub-agent invocation has started — binds invocation_id to parent call_id.
@@ -415,31 +407,60 @@ class InvocationStarted(InvocationEvent):
 
 @dataclass
 class InvocationMessage(InvocationEvent):
-    """Assistant output owned by an invocation; consumers choose its projection."""
+    """An invocation's completion snapshot: its final answer, which content deltas already carried.
+
+    Frontends that render the deltas never append ``text`` after them; it
+    serves consumers that need the whole answer at once (headless results).
+    """
 
     agent_name: str = ""
     text: str = ""
     is_final: bool = True
-    is_intermediate: bool = False
     structured_output_completed: bool = False
-    presentation: ProvisionalPresentation | None = None
 
 
 @dataclass
-class InvocationPresentationAttemptAccepted(InvocationEvent):
-    """Commit provisional sub-agent transcript segments from one attempt."""
+class InvocationContentDelta(InvocationEvent):
+    """Text appended to one segment of an invocation's model output, as it arrives.
+
+    A segment is one run of same-channel text within one model response; a
+    tool call, a channel change or the response's end closes it. The first
+    delta of a ``segment_id`` opens the segment; ``text`` is only the new
+    text, never the text before it. Opaque reasoning (signatures, encrypted
+    payloads) never produces a delta.
+    """
 
     agent_name: str = ""
-    attempt_id: str = ""
+    segment_id: str = ""
+    channel: ContentChannel = "answer"
+    text: str = ""
+
+
+@dataclass
+class InvocationContentFinished(InvocationEvent):
+    """One content segment ended; no further delta carries its ``segment_id``.
+
+    A segment's end is not the invocation's: the final ``InvocationMessage``
+    still completes the turn, as a snapshot frontends never append.
+    """
+
+    agent_name: str = ""
+    segment_id: str = ""
+    channel: ContentChannel = "answer"
+    status: ContentStatus = "completed"
+
+
+@dataclass
+class InvocationContentAbandoned(InvocationEvent):
+    """A retry gave up the response these segments belong to: none of their text is kept.
+
+    Published at the retry boundary, before the open segment's
+    ``InvocationContentFinished``; segments of a response that landed never
+    appear here.
+    """
+
+    agent_name: str = ""
     segment_ids: tuple[str, ...] = ()
-
-
-@dataclass
-class InvocationPresentationAttemptRejected(InvocationEvent):
-    """Retract provisional sub-agent transcript segments from one attempt."""
-
-    agent_name: str = ""
-    attempt_id: str = ""
 
 
 @dataclass
@@ -610,7 +631,8 @@ class InvocationCompactionCommitted(InvocationEvent):
 class InvocationRetryAttempt(InvocationEvent):
     """Executor is retrying a transient error (published before each retry sleep).
 
-    Also announces the one resend after a context overflow, which compacts first.
+    Also announces the one resend after a context overflow, which compacts first,
+    and the one resend after a response that showed nothing.
     """
 
     agent_name: str = ""

@@ -53,7 +53,6 @@ def shape_checkpoint_interruption(
     if consumed_injections:
         manager.replay_consumed_injections(consumed_injections)
     manager.trim_to_last_complete_tool_results()
-    manager.remove_trailing_agent_text()
     manager.insert_interrupted_marker(
         reason=format_message(SESSION_CLOSED_MESSAGE.bind()),
         source=source,

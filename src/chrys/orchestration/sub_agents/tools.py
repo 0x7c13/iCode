@@ -29,7 +29,6 @@ from chrys.foundation.events.types import (
     InvocationCompactionFinished,
     InvocationCompactionStarted,
     InvocationContextPressure,
-    InvocationMessage,
     InvocationRetryAttempt,
     InvocationStarted,
     Warning,
@@ -58,6 +57,7 @@ from chrys.foundation.util.sub_agent_context import (
     sub_agent_parent_result_metadata,
 )
 from chrys.kernel import (
+    RESPONSE_READY_KWARG,
     Agent,
     FunctionTool,
     LoopRecorder,
@@ -90,7 +90,6 @@ from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
 from chrys.service.acp_client import AcpConfigError
 from chrys.service.agent_middleware import (
     ApprovalMiddleware,
-    IntermediateTextBuffer,
     SleepMiddleware,
     SubAgentEventMiddleware,
     SubAgentStatsMiddleware,
@@ -311,6 +310,7 @@ class SubAgentTools:
         tool_result_ceiling_tokens: int | None = None,
         allow_user_interaction: bool = True,
         human_failure_decisions: bool = True,
+        shows_answer_text: bool = True,
     ) -> None:
         self._max_total = max_total_concurrency
         self._bus = event_bus
@@ -351,6 +351,8 @@ class SubAgentTools:
         # Whether a failed child pauses for the user's Retry/Abort on its card; a caller whose
         # surface shows no such card ends the child instead, its error becoming the tool result.
         self._human_failure_decisions = human_failure_decisions
+        # Whether a frontend shows a kernel child's answer text: only then does text it wrote stop a retry.
+        self._shows_answer_text = shows_answer_text
         self._turn_context = turn_context or TurnContextHolder()
         self._agent_active: dict[str, int] = {}  # tool_name → active count
         self._agent_max: dict[str, int] = {}  # tool_name → per-agent limit
@@ -374,7 +376,6 @@ class SubAgentTools:
         # this registry so the right sub-agent receives the decision.
         self._controllers: dict[str, SubAgentToolShell] = {}
         self._pending_cleanup_paths: set[Path] = set()
-        self._intermediate_buffers: dict[str, IntermediateTextBuffer] = {}
         self._invocation_emitters: dict[str, BoundEmitter] = {}
 
     def _emitter_for(self, invocation_id: str) -> BoundEmitter:
@@ -431,37 +432,8 @@ class SubAgentTools:
                 route_parts=(tool_name, profile.name),
                 model_profile=sub_active_profile,
             )
-            agent_display_name = profile.display_name or profile.name
-
-            async def _on_intermediate_async(text: str) -> None:
-                invocation_id = invocation_routing_key.get()
-                buffer = self._intermediate_buffers.get(invocation_id)
-                if buffer is None:
-                    return
-                emitter = self._emitter_for(invocation_id)
-                buffer.new_batch()
-                if self._bus is not None:
-                    await emitter.publish(
-                        InvocationMessage(
-                            is_final=False,
-                            is_intermediate=True,
-                            origin=emitter.origin,
-                            agent_name=agent_display_name,
-                            text=text,
-                            session_id=self._session_id,
-                        )
-                    )
-
-            def _on_intermediate_sync(text: str) -> None:
-                invocation_id = invocation_routing_key.get()
-                buffer = self._intermediate_buffers.get(invocation_id)
-                if buffer is not None:
-                    buffer.store(text)
-
             client = await create_client(
                 sub_active_profile,
-                on_intermediate_text_async=_on_intermediate_async,
-                on_intermediate_text_sync=_on_intermediate_sync,
                 session_id=sub_agent_session_id,
                 parent_session_id=self._session_id,
                 use_route_session_context=True,
@@ -1466,8 +1438,6 @@ class SubAgentTools:
                 )
                 emitter = BoundEmitter(self._bus, origin)
                 self._invocation_emitters[invocation_id] = emitter
-                intermediate_buffer = IntermediateTextBuffer()
-                self._intermediate_buffers[invocation_id] = intermediate_buffer
                 invocation_session_id = _derive_invocation_session_id(invocation_id)
                 invocation_token = invocation_routing_key.set(invocation_id)
                 # In-process: the child's events inline into this writer under
@@ -1582,7 +1552,6 @@ class SubAgentTools:
                         serialize_implicit_windows=self._serialize_implicit_windows,
                         stats=log_stats,
                         tool_result_ceiling_tokens=self._tool_result_ceiling_tokens,
-                        intermediate_buffer=intermediate_buffer,
                     )
                     middleware.append(sub_event_mw)
                     # AskUser middleware — sub-agent ask_user calls show the
@@ -1647,6 +1616,12 @@ class SubAgentTools:
                 # so calibration/overhead/LAST_WORDS state cannot leak between
                 # same-tool concurrent runs.
                 ctx = invocation_ctx
+                # Run-scoped middleware is concatenated AFTER the agent's own
+                # chat middleware, so the last listed sits innermost: the
+                # validation middleware judges each landed response, and the
+                # usage middleware under it counts every one of them first.
+                validation_middleware = create_validation(conversation)
+                middleware.append(validation_middleware)
                 if ctx:
                     parent_cb = self._on_sub_agent_usage
                     total_usage_tokens = 0
@@ -1708,40 +1683,6 @@ class SubAgentTools:
                         use_local_context_estimate_for_hosted_usage=(ctx.use_local_context_estimate_for_hosted_usage),
                     )
                     middleware.append(per_invocation_usage)
-
-                # Response-validation middleware — appended AFTER all other
-                # per-invocation middleware so it ends up innermost in the
-                # chat pipeline (closest to ``_inner_get_response``).  Run-
-                # scoped middleware is concatenated AFTER the agent's own
-                # chat middleware, so listing it last here means it sits
-                # last overall.  Retries are therefore invisible to outer
-                # instrumentation — the per-invocation usage middleware
-                # above, and the agent-level system_reminder / ctx.middleware
-                # — which each fire exactly once per turn.
-                # ``publish_retry`` surfaces client-mode validation retries
-                # as ``InvocationRetryAttempt`` keyed to this invocation;
-                # service-side failures raise to the whole-run retry loop,
-                # which publishes its own retry events.
-                if self._bus is not None:
-
-                    async def _publish_validation_retry(info: RetryAttemptInfo) -> None:
-                        await emitter.publish(
-                            InvocationRetryAttempt(
-                                scope="wire",
-                                origin=emitter.origin,
-                                agent_name=self._display_names.get(tool_name, tool_name),
-                                message=f"Invalid response: {info.reason}",
-                                attempt=info.attempt,
-                                max_attempts=info.max_attempts,
-                                delay_seconds=int(info.delay_seconds),
-                                session_id=self._session_id,
-                            )
-                        )
-
-                    validation_middleware = create_validation(conversation, publish_retry=_publish_validation_retry)
-                else:
-                    validation_middleware = create_validation(conversation, publish_retry=None)
-                middleware.append(validation_middleware)
 
                 run_kwargs: AgentRunKwargs = {}
                 sub_session = invocation_agent.create_session()
@@ -1816,11 +1757,11 @@ class SubAgentTools:
                     tool_event_middleware=sub_event_mw,
                     stream=stream,
                     stream_attempt_timeout=stream_attempt_timeout,
+                    shows_answer_text=self._shows_answer_text,
                     sleep_middleware=sleep_mw,
                     pass_start_hooks=(
                         *((begin_web_pass,) if begin_web_pass is not None else ()),
                         _begin_hosted_pass,
-                        validation_middleware.reset_service_retry_state,
                     ),
                     hosted_commits_probe=validation_middleware.hosted_commits_observed,
                     begin_hosted_baseline=validation_middleware.begin_pass_hosted_baseline,
@@ -1842,6 +1783,9 @@ class SubAgentTools:
                     ) -> Awaitable[None]:
                         return policy.publish_wire_retry_attempt(message, attempt, maximum, delay, exc)
 
+                    def _answer_shown() -> bool:
+                        return policy.wire_answer_shown()
+
                     run_client_kwargs["wire_retry_policy"] = WireRecipe(
                         max_retries=lambda: policy.max_retries,
                         stall_timeout_seconds=stream_attempt_timeout,
@@ -1853,8 +1797,10 @@ class SubAgentTools:
                         publish_retry=_wire_notice,
                         prepare_retry=None,
                         hosted_commits_in_flight=validation_middleware.hosted_commits_in_flight,
+                        answer_shown=_answer_shown,
                     ).build()
                 run_client_kwargs["continuation_token_observer"] = policy.observe_continuation_token
+                run_client_kwargs[RESPONSE_READY_KWARG] = policy.response_ready
                 self._controllers[invocation_id] = controller
                 try:
                     with (
@@ -1967,7 +1913,6 @@ class SubAgentTools:
                         logger.warning("sub-agent end hook failed for invocation %s", invocation_id, exc_info=True)
                 if invocation_id:
                     self._controllers.pop(invocation_id, None)
-                    self._intermediate_buffers.pop(invocation_id, None)
                     self._invocation_emitters.pop(invocation_id, None)
                 if stopped and background_tasks is not None:
                     # Ended before the turn goes on, which an interrupt (cancelling

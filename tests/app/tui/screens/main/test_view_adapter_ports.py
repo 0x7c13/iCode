@@ -65,14 +65,19 @@ def test_main_screen_view_adapter_implements_view_ports(protocol: type[Protocol]
 async def test_main_view_status_callers_preserve_message_refs_for_live_retranslation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from types import SimpleNamespace
+
     from textual.widgets import Footer
 
     from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
     from chrys.app.tui.terminal.panel import ShellPanel
+    from chrys.app.tui.widgets.chrome import status_bar as status_bar_module
     from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
 
     controller = LocaleController(Settings(locale="en"))
     monkeypatch.setattr(tui_i18n, "persist_locale", lambda _locale: None)
+    now = [100.0]
+    monkeypatch.setattr(status_bar_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
 
     class _RetryPanel:
         async def prepare_retry(self) -> None:
@@ -150,6 +155,7 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
         assert isinstance(status_bar.status, MessageRef)
         assert status_bar.query_one("#status-text", Static).render().plain == "正在运行：read_file"  # noqa: RUF001
 
+        now[0] += 1
         await adapter.show_retry_attempt("temporary", 2, 4, 1)
         assert isinstance(status_bar.status, MessageRef)
         assert status_bar.query_one("#status-text", Static).render().plain == "正在重试（2/4）..."  # noqa: RUF001

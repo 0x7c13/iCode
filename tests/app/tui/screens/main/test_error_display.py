@@ -28,7 +28,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.i18n import Localizer, MessageRef
 from tests.support.provider_errors import anthropic_status
-from tests.support.tui_helpers import make_backend_handler
+from tests.support.tui_helpers import fake_session_title, make_backend_handler
 
 _RAW = "Connection error."
 _DNS = _DNS_FAILED.bind(host="api.example.com")
@@ -48,6 +48,7 @@ class _Surfaces:
 
     status: list[MessageRef | str] = field(default_factory=list)
     chat_errors: list[str] = field(default_factory=list)
+    errors_ending_turns: list[bool] = field(default_factory=list)
     retry_banners: list[str] = field(default_factory=list)
     sub_agent_retries: list[str] = field(default_factory=list)
     sub_agent_pauses: list[tuple[Any, ...]] = field(default_factory=list)
@@ -81,8 +82,9 @@ def _handler(
             return False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             surfaces.chat_errors.append(message)
+            surfaces.errors_ending_turns.append(ends_turn)
 
         async def prepare_retry(self) -> None:
             return
@@ -107,6 +109,7 @@ def _handler(
         _state=MainScreenState(run=RunState(agent_running=running, agent_loading=loading)),
         query_one=lambda cls: widgets[cls.__name__],
         _debug=lambda key, message: surfaces.debug.append((key, message)),
+        _session_title=fake_session_title(),
     )
     handler = make_backend_handler(screen, locale_controller=locale_controller)
     handler._agent_load_dialog = None
@@ -129,6 +132,15 @@ def test_a_turn_error_says_what_went_wrong_then_the_raw_text() -> None:
         f"Error: {Localizer('en').render(_DNS)}"
     ]
     assert surfaces.debug == [("Error", f"[executor_error] {_RAW}")]
+
+
+@pytest.mark.parametrize("running", [True, False], ids=["turn", "no-turn"])
+def test_an_error_card_says_whether_it_ended_a_turn(running: bool) -> None:
+    handler, surfaces = _handler(LocaleController(Settings(locale="en")), running=running)
+
+    asyncio.run(handler.on_error(_turn_error()))
+
+    assert surfaces.errors_ending_turns == [running]
 
 
 def test_other_errors_with_a_display_still_show_it_alone() -> None:

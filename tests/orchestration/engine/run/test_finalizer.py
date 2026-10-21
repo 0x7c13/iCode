@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.kernel import Content
 from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
@@ -32,6 +34,7 @@ class _Executor:
         self.run_failed = True
         self.was_interrupted = True
         self.last_error = "interrupted"
+        self.partial_answer = ()
         self.service_session_id = "service-session"
         self.history_state: dict[str, Any] = {}
         self.trajectory_context = None
@@ -83,8 +86,8 @@ class _History:
     def trim_to_last_complete_tool_results(self) -> None:
         self._order.append("trim_to_last_complete_tool_results")
 
-    def remove_trailing_agent_text(self) -> None:
-        self._order.append("remove_trailing_agent_text")
+    def keep_partial_answer(self, contents: Sequence[Content]) -> None:
+        self._order.append(f"keep_partial_answer:{''.join(content.text or '' for content in contents)}")
 
     def persist_batch_ids(self, _batch_records: list[Any]) -> dict[int, Any]:
         self._order.append("persist_batch_ids")
@@ -217,6 +220,8 @@ async def test_failed_run_metadata_before_trim_and_injection_drain_before_transi
 
     trim_index = order.index("trim_to_last_complete_tool_results")
     assert order.index("persist_approval_decisions:['approval']:start=7") < trim_index
+    # The streamed answer the trim cannot see lands after it, interrupted or not.
+    assert order.index("keep_partial_answer:") == trim_index + 1
     assert order.index("drain_pending") < order.index("transition:RUN_INTERRUPTED")
     assert host._turn_state.lease.injection_admission_open is False
     assert host._turn_state.paused_sub_agents == set()

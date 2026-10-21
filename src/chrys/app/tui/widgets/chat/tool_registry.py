@@ -31,7 +31,6 @@ from chrys.app.tui.widgets.chat.ports import ChatMountPort, StatusCleanupPort, T
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserToolCall
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
-from chrys.foundation.events.types import ProvisionalPresentation
 
 if TYPE_CHECKING:
     from chrys.app.tui.widgets import PromptDraft
@@ -483,43 +482,13 @@ class ToolGroupRegistry:
         """Resolve a widget after invocation-start established its route."""
         return self._sub_agent_widgets.get(invocation_id)
 
-    def add_sub_agent_message(
-        self,
-        agent_name: str,
-        invocation_id: str,
-        text: str,
-        *,
-        presentation: ProvisionalPresentation | None = None,
-    ) -> None:
-        """Route intermediate assistant prose to one sub-agent transcript."""
+    def add_sub_agent_answer(self, agent_name: str, invocation_id: str, segment_id: str, text: str) -> None:
+        """Route one whole answer segment to one sub-agent transcript."""
         widget = self._resolve_sub_agent(invocation_id)
         if widget is not None:
-            activity = widget.add_assistant_message(text, presentation=presentation, profile_name=agent_name)
+            activity = widget.add_answer(segment_id, text, profile_name=agent_name)
             group = self._sub_agent_owning_group(widget)
-            if group is not None:
-                group.update_sub_agent_activity(widget.call_id, activity)
-
-    def accept_sub_agent_presentation(
-        self,
-        invocation_id: str,
-        attempt_id: str,
-        segment_ids: tuple[str, ...],
-    ) -> None:
-        """Commit provisional transcript messages for one sub-agent attempt."""
-        widget = self._sub_agent_widgets.get(invocation_id)
-        if widget is not None:
-            activity = widget.accept_presentation_attempt(attempt_id, segment_ids)
-            group = self._sub_agent_owning_group(widget)
-            if group is not None:
-                group.update_sub_agent_activity(widget.call_id, activity)
-
-    def reject_sub_agent_presentation(self, invocation_id: str, attempt_id: str) -> None:
-        """Retract provisional transcript messages for one sub-agent attempt."""
-        widget = self._sub_agent_widgets.get(invocation_id)
-        if widget is not None:
-            activity = widget.reject_presentation_attempt(attempt_id)
-            group = self._sub_agent_owning_group(widget)
-            if group is not None:
+            if activity is not None and group is not None:
                 group.update_sub_agent_activity(widget.call_id, activity)
 
     async def add_sub_agent_tool_start(

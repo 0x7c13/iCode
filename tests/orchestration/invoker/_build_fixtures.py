@@ -99,8 +99,8 @@ async def build_recipe_engine(
 
     def client_for(profile: ModelProfile, **kwargs: object) -> CountedClient:
         client = main_client if profile.id == "root-model" else child_client
-        client._on_intermediate_text_async = kwargs["on_intermediate_text_async"]
-        client._on_intermediate_text_sync = kwargs["on_intermediate_text_sync"]
+        # Only the main client numbers tool batches; a sub-agent's is built without the callbacks.
+        client._on_intermediate_text = kwargs.get("on_intermediate_text")
         return client
 
     monkeypatch.setattr(builder, "create_client", create_autospec(builder.create_client, side_effect=client_for))

@@ -69,7 +69,7 @@ def test_non_streaming_reasoning_payload_survives_persistence_round_trip() -> No
 
     assert [content.text for content in reasoning_contents] == ["Private reasoning", "Visible summary"]
     assert reasoning_contents[0].additional_properties["reasoning_text"] is True
-    assert reasoning_contents[1].additional_properties == {}
+    assert reasoning_contents[1].additional_properties == {"reasoning_summary": True}
     assert [content.protected_data for content in reasoning_contents] == ["encrypted-payload", None]
 
 
@@ -101,7 +101,7 @@ def test_streaming_reasoning_snapshot_emits_content_and_summary_siblings() -> No
 
     assert [(content.text, content.additional_properties) for content in response.messages[0].contents] == [
         ("Private reasoning", {"reasoning_text": True}),
-        ("Visible summary", {}),
+        ("Visible summary", {"reasoning_summary": True}),
     ]
 
 
@@ -174,7 +174,7 @@ def test_streamed_summary_and_reasoning_text_remain_distinct_after_coalescing() 
     reasoning_contents = response.messages[0].contents
 
     assert [(content.text, content.additional_properties) for content in reasoning_contents] == [
-        ("Visible summary", {}),
+        ("Visible summary", {"reasoning_summary": True}),
         ("Private reasoning", {"reasoning_text": True}),
     ]
     assert [content.protected_data for content in reasoning_contents] == [None, "encrypted-mixed"]

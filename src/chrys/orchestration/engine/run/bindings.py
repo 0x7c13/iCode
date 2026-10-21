@@ -17,15 +17,12 @@ from chrys.foundation.events.types import (
     AgentThinking,
     Error,
     InvocationMessage,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationRetryAttempt,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
-    ProvisionalPresentation,
 )
 from chrys.foundation.hosted_tools import HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY, HostedToolStatus
 from chrys.foundation.retry import (
@@ -35,6 +32,7 @@ from chrys.foundation.retry import (
 from chrys.foundation.trajectory.envelope import Link, LinkRelation
 from chrys.foundation.util.time import parse_created_at
 from chrys.kernel import (
+    RESPONSE_READY_KWARG,
     Agent,
     AgentSession,
     ConsumedInjectionMessageProbe,
@@ -58,6 +56,7 @@ from chrys.orchestration.invoker.attempts import (
     continuation_token_observer_for,
     is_string_keyed_dict,
 )
+from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.contracts import (
     AbortCause,
     FailureDisposition,
@@ -71,8 +70,8 @@ from chrys.orchestration.invoker.resources import Conversation, PassResources
 from chrys.service.agent_middleware import (
     ApprovalMiddleware,
     AskUserMiddleware,
-    IntermediateTextBuffer,
     InterruptMiddleware,
+    ResponseBatchCounter,
     SleepMiddleware,
     ToolEventMiddleware,
 )
@@ -85,9 +84,6 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     HostedToolResultOp,
     HostedToolStartOp,
     HostedToolStatusOp,
-    IntermediateTextOp,
-    PresentationAttemptAcceptedOp,
-    PresentationAttemptRejectedOp,
     PresentationSinkOperation,
     next_hosted_run_generation,
 )
@@ -101,11 +97,12 @@ from chrys.service.session.message_metadata import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Callable, Sequence
 
     from chrys.foundation.events.bus import EventBus
+    from chrys.foundation.models.invocations import ContentStatus
     from chrys.foundation.trajectory.context import TrajectoryContext
-    from chrys.kernel import AgentResponse, AgentResponseUpdate, LoopRecorder
+    from chrys.kernel import AgentResponse, ChatResponse, LoopRecorder
     from chrys.kernel.middleware import FunctionMiddleware
     from chrys.service.agent_middleware.injection import InjectionMiddleware, QueuedInjection
     from chrys.service.context.compaction import UnifiedContextStrategy
@@ -160,6 +157,7 @@ class TurnBindings:
     _hosted_commits_in_flight_probe: Callable[[], tuple[str, ...]] | None = None
     _max_retries_override: int | None = None
     _hosted_bridge: HostedPresentationBridge | None = None
+    _projector: ContentProjector | None = None
 
     def __init__(
         self,
@@ -175,7 +173,7 @@ class TurnBindings:
         session_id: str | None = None,
         compaction_strategy: UnifiedContextStrategy | None = None,
         stream: bool = False,
-        intermediate_buffer: IntermediateTextBuffer | None = None,
+        batch_counter: ResponseBatchCounter | None = None,
         chat_options: dict[str, Any] | None = None,
         mutation_tracker: MutationTracker | None = None,
         mutation_coordinator: MutationCoordinator | None = None,
@@ -190,11 +188,10 @@ class TurnBindings:
         hosted_commits_probe: Callable[[], tuple[str, ...]] | None = None,
         hosted_commits_in_flight_probe: Callable[[], tuple[str, ...]] | None = None,
         response_validation_middleware: ResponseValidationMiddleware | None = None,
-        publish_intermediate_text: Callable[[str], Awaitable[None]] | None = None,
         invocation_publishers: InvocationPublishers | None = None,
-        commit_intermediate_text: Callable[[str, int], None] | None = None,
         tool_result_ceiling_tokens: int | None = None,
         background_tasks: BackgroundTasks | None = None,
+        shows_answer_text: bool = True,
     ) -> None:
         self.resource_scope = conversation
         self._agent = agent
@@ -219,22 +216,22 @@ class TurnBindings:
             stream_attempt_timeout if stream_attempt_timeout is not None else self._DEFAULT_STREAM_ATTEMPT_TIMEOUT
         )
         self._max_retries_override = max_transient_retries
+        # Whether the frontend shows answer text as it streams; text nobody saw never stops a retry.
+        self._shows_answer_text = shows_answer_text
 
-        self._intermediate_buffer = intermediate_buffer
+        self._batch_counter = batch_counter
         self._response_validation = response_validation_middleware
-        self._publish_intermediate_text = publish_intermediate_text
-        self._commit_intermediate_text = commit_intermediate_text
-        self._provisional_intermediate_batches: dict[tuple[str, str], int] = {}
         self._hosted_run_generation = 0
         self._hosted_bridge = None
+        # The pass's only publisher of model text, made at pass start.
+        self._projector = None
         self._interrupt = InterruptMiddleware()
         self._extra_function_middleware = tuple(extra_function_middleware)
         # Fired once at the start of every user-initiated run cycle, before
         # the first attempt.  Components that carry state across the cycle's
-        # whole-run retry attempts (e.g. the validation middleware's retry
-        # budget) register here so an aborted cycle — interrupt during outer
-        # backoff, unrelated exception — cannot leak state into the next
-        # independent run.
+        # whole-run retry attempts register here so an aborted cycle —
+        # interrupt during outer backoff, unrelated exception — cannot leak
+        # state into the next independent run.
         self._attempt_handle = AttemptTaskHandle()
         self.state = TurnPassState()
         # Validation-middleware probes for provider-hosted tool executions the
@@ -284,7 +281,8 @@ class TurnBindings:
             retry_participant=self._injection,
             interrupt=self._interrupt,
             trace=self._attempt_trace,
-            stream_observer=self._make_stream_observer,
+            stream_observer=lambda: self._projector,
+            content_exposed=lambda: self._shows_answer_text and self._projector is not None and self._projector.exposed,
             publish_retry=self._publish_retry_notice,
             interruptible_sleep=self._interruptible_sleep,
             max_retries=self._effective_max_retries,
@@ -320,7 +318,7 @@ class TurnBindings:
             event_bus,
             origin=self.inputs.origin,
             session_id=session_id,
-            intermediate_buffer=intermediate_buffer,
+            batch_counter=batch_counter,
             mutation_tracker=mutation_tracker,
             hook_manager=hook_manager,
             profile_name=profile_name,
@@ -403,64 +401,6 @@ class TurnBindings:
 
     async def _publish_hosted_operation(self, operation: PresentationSinkOperation, *, emitter: BoundEmitter) -> None:
         """Map one provider-neutral presentation operation onto EventBus events."""
-        if isinstance(operation, IntermediateTextOp):
-            if operation.provisional:
-                segment_id = operation.segment_ids[0] if operation.segment_ids else ""
-                if self._intermediate_buffer is not None:
-                    self._intermediate_buffer.new_batch()
-                    self._provisional_intermediate_batches[(operation.attempt_id, segment_id)] = (
-                        self._intermediate_buffer.batch_id
-                    )
-                await emitter.publish(
-                    InvocationMessage(
-                        origin=emitter.origin,
-                        text=operation.text,
-                        is_final=False,
-                        is_intermediate=True,
-                        presentation=ProvisionalPresentation(operation.attempt_id, segment_id),
-                        session_id=self._session_id,
-                    )
-                )
-                return
-            if self._publish_intermediate_text is not None:
-                await self._publish_intermediate_text(operation.text)
-            else:
-                await emitter.publish(
-                    InvocationMessage(
-                        origin=emitter.origin,
-                        text=operation.text,
-                        is_final=False,
-                        is_intermediate=True,
-                        session_id=self._session_id,
-                    )
-                )
-            return
-        if isinstance(operation, PresentationAttemptAcceptedOp):
-            accepted_ids = tuple(segment_id for segment in operation.segments for segment_id in segment.segment_ids)
-            if self._commit_intermediate_text is not None:
-                for segment in operation.segments:
-                    segment_id = segment.segment_ids[0] if segment.segment_ids else ""
-                    batch_id = self._provisional_intermediate_batches.get((operation.attempt_id, segment_id))
-                    if batch_id is not None:
-                        self._commit_intermediate_text(segment.text, batch_id)
-            self._drop_provisional_batches(operation.attempt_id)
-            await emitter.publish(
-                InvocationPresentationAttemptAccepted(
-                    origin=emitter.origin,
-                    attempt_id=operation.attempt_id,
-                    segment_ids=accepted_ids,
-                    session_id=self._session_id,
-                )
-            )
-            return
-        if isinstance(operation, PresentationAttemptRejectedOp):
-            self._drop_provisional_batches(operation.attempt_id)
-            await emitter.publish(
-                InvocationPresentationAttemptRejected(
-                    origin=emitter.origin, attempt_id=operation.attempt_id, session_id=self._session_id
-                )
-            )
-            return
         if isinstance(operation, FinalTextOp):
             await emitter.publish(
                 InvocationMessage(
@@ -570,11 +510,6 @@ class TurnBindings:
                 )
             )
 
-    def _drop_provisional_batches(self, attempt_id: str) -> None:
-        stale = [key for key in self._provisional_intermediate_batches if key[0] == attempt_id]
-        for key in stale:
-            self._provisional_intermediate_batches.pop(key, None)
-
     def _build_run_kwargs(self, wire_retry_policy: WireRetryPolicy | None = None) -> AgentRunKwargs:
         """Build common kwargs for agent.run()."""
         # ToolEventMiddleware owns hook dispatch too, so hook-modified args
@@ -589,6 +524,7 @@ class TurnBindings:
             client_kwargs["loop_recorder"] = self._loop_recorder
         if wire_retry_policy is not None:
             client_kwargs["wire_retry_policy"] = wire_retry_policy
+        client_kwargs[RESPONSE_READY_KWARG] = self._response_ready
         client_kwargs["consumed_injection_message_probe"] = ConsumedInjectionMessageProbe(
             drain_consumed_injection_messages=self._injection.drain_consumed_injection_messages,
             commit_consumed_injections=self._injection.commit_logical_call,
@@ -652,6 +588,7 @@ class TurnBindings:
             publish_retry=self._publish_wire_retry_attempt,
             prepare_retry=self._injection.restore_for_retry,
             hosted_commits_in_flight=self._hosted_commits_in_flight_probe,
+            answer_shown=None if self._shows_answer_text else lambda: False,
         ).build()
 
     def _effective_max_retries(self) -> int:
@@ -681,15 +618,15 @@ class TurnBindings:
         self.state.was_interrupted = False
         self.state.run_failed = False
         self.state.last_error = ""
+        self.state.partial_answer = ()
         self._interrupt.reset()
         self._attempt_trace.reset()
         self._hosted_run_generation = next_hosted_run_generation()
         emitter = self._emitter
+        self._projector = ContentProjector(emitter)
         self._hosted_bridge = HostedPresentationBridge(
             lambda operation: self._publish_hosted_operation(operation, emitter=emitter),
             run_generation=self._hosted_run_generation,
-            batch_id=self._intermediate_buffer.batch_id if self._intermediate_buffer is not None else 0,
-            before_response=self.tool_events.release_intermediate_text,
         )
         if self._response_validation is not None:
             self._response_validation.set_observation_hook(self._hosted_bridge)
@@ -701,6 +638,7 @@ class TurnBindings:
 
     async def succeeded(self, result: AgentResponse[Any]) -> None:
         if not self._interrupt.is_interrupted:
+            await self._finish_content("completed")
             await self._publish_response_text(result)
 
     def cancelled(self) -> None:
@@ -718,8 +656,8 @@ class TurnBindings:
         self.state.run_failed = True
         self.state.last_error = clean_error_message(e)
         tb = traceback.format_exc()
-        # Text left buffered by a call that started no tool precedes the error.
-        await self.tool_events.release_intermediate_text()
+        # What the failed pass showed stays; its open segment ends before the error.
+        await self._finish_content("failed")
         err_msg = self.state.last_error
         logger.error("Turn error: %s", err_msg)
         if self._hosted_bridge is not None:
@@ -742,16 +680,12 @@ class TurnBindings:
 
     async def finished(self) -> None:
         try:
-            # An interrupted or cancelled pass publishes no outcome, and the
-            # buffer outlives the pass: text still waiting for a tool start
-            # would otherwise surface at a tool start in a later turn.
-            await self.tool_events.finish_intermediate_text()
+            # An interrupted or cancelled pass publishes no outcome: its open
+            # segment ends here, keeping the text it showed.
+            interrupted = self._interrupt.is_interrupted or self.state.was_interrupted
+            await self._finish_content("interrupted" if interrupted else "completed")
             if self._interrupt.is_interrupted and self._hosted_bridge is not None:
-                await self._hosted_bridge.attempt_rejected(
-                    "Execution interrupted",
-                    status=HostedToolStatus.INTERRUPTED,
-                    preserve_provisional=True,
-                )
+                await self._hosted_bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
         finally:
             # Close can cancel the awaits above. The reset must not erase an
             # interrupt that arrived while they ran.
@@ -759,6 +693,9 @@ class TurnBindings:
                 self.state.was_interrupted = True
             if self._response_validation is not None:
                 self._response_validation.set_observation_hook(None)
+            if self._projector is not None:
+                self.state.partial_answer = self._projector.take_unlanded_answer()
+            self._projector = None
             self._interrupt.reset()
             self.state.running = False
             if self._bound_emitter is not None:
@@ -844,16 +781,22 @@ class TurnBindings:
             )
         )
 
+    async def _response_ready(self, response: ChatResponse) -> None:
+        """The kernel landed a response: the pass projector shows what it did not stream."""
+        if self._projector is not None:
+            shown = self._hosted_bridge.text_shown if self._hosted_bridge is not None else None
+            await self._projector.response_ready(response, shown=shown)
+
+    async def _finish_content(self, status: ContentStatus) -> None:
+        if self._projector is not None:
+            await self._projector.finish(status)
+
     async def _publish_response_text(self, result: AgentResponse[Any]) -> None:
-        """Publish the final text from a completed AgentResponse.
+        """Publish the completion of a pass that answered.
 
-        Only publishes the *last* message — intermediate text is handled
-        by ``IntermediateTextBuffer`` + ``ToolEventMiddleware``.
-
-        The final event is also the frontend's turn-complete signal.  It
-        must be emitted even when the final text is empty, for example
-        after response validation exhausts retries and drops an empty /
-        whitespace-only assistant message.
+        The final event is the frontend's turn-complete signal; its text is
+        the last message's answer, which was already shown as it arrived. It
+        is emitted even when the final text is empty.
         """
         if self._response_has_hosted_contents(result) and self._hosted_bridge is not None:
             await self._hosted_bridge.reconcile_accepted(result.messages, final=True)
@@ -883,11 +826,7 @@ class TurnBindings:
         generation = self._hosted_run_generation
         self._interrupt.set_interrupted()
         if self._hosted_bridge is not None:
-            await self._hosted_bridge.attempt_rejected(
-                "Execution interrupted",
-                status=HostedToolStatus.INTERRUPTED,
-                preserve_provisional=True,
-            )
+            await self._hosted_bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
         if self._hosted_run_generation != generation:
             return
         if self._attempt_handle.active:
@@ -971,8 +910,8 @@ class TurnBindings:
         """
         self.approval.reset()
         self.tool_events.reset_invocation_order()
-        if reset_batch_id and self._intermediate_buffer is not None:
-            self._intermediate_buffer.batch_id = 0
+        if reset_batch_id and self._batch_counter is not None:
+            self._batch_counter.batch_id = 0
 
     def _get_history_messages(self) -> list:
         """Return the message list from the history provider state."""
@@ -1028,76 +967,3 @@ class TurnBindings:
     async def _reject_stream(self, reason: str) -> None:
         if self._hosted_bridge is not None:
             await self._hosted_bridge.attempt_rejected(reason)
-
-    def _make_stream_observer(self) -> _MainStreamObserver:
-        return _MainStreamObserver(self)
-
-
-class _MainStreamObserver:
-    """The main shell's final-response text projection for one stream attempt.
-
-    ``on_update`` accumulates text, discarding intermediate tool-response
-    text that the wire client's ``result_hook`` publishes separately.
-    Two signals discard the buffer: a non-informational ``function_call``
-    in the update, or a change in ``IntermediateTextBuffer.batch_id`` between
-    updates. The hook advances the batch at the end of a tool-calling response;
-    text/tool order within the same update therefore does not matter.
-
-    ``on_retry_boundary`` discards text from the rejected provider attempt.
-    ``before_finalize`` first publishes intermediate text no tool start or
-    response start has released, then checks the batch once more after
-    iteration as a safety net for a last tool response with no following
-    update. It emits the final
-    response's remaining text as one cumulative ``InvocationMessage(is_final=False)``
-    snapshot before ``_publish_response_text`` emits ``is_final=True``. The text
-    was buffered whole, so replaying it line by line only fakes streaming: every
-    line would publish the whole text so far through the bus and every subscriber.
-    When the hosted bridge owns the text, this observer discards its buffer and
-    emits no text; interruption also suppresses emission.
-    """
-
-    def __init__(self, executor: TurnBindings) -> None:
-        self._executor = executor
-        self._emitter = executor._emitter
-        self._buffer = ""
-        self._bridge_owns_text = False
-        self._ibuf = executor._intermediate_buffer
-        self._last_batch_id = self._ibuf.batch_id if self._ibuf is not None else 0
-
-    async def on_retry_boundary(self) -> None:
-        self._buffer = ""
-        executor = self._executor
-        if executor._hosted_bridge is not None and executor.inputs.pending_continuation_token is None:
-            await executor._hosted_bridge.attempt_rejected("Provider response attempt retried")
-
-    def on_update(self, update: AgentResponseUpdate) -> None:
-        if self._ibuf is not None and self._ibuf.batch_id != self._last_batch_id:
-            self._buffer = ""
-            self._last_batch_id = self._ibuf.batch_id
-        text_chunk = ""
-        has_function_call = False
-        for content in update.contents or []:
-            if content.type == "text" and content.text:
-                text_chunk += content.text
-            elif content.type == "function_call" and not content.informational_only:
-                has_function_call = True
-            if content.provider_hosted:
-                self._bridge_owns_text = True
-        self._buffer += text_chunk
-        if has_function_call or self._bridge_owns_text:
-            self._buffer = ""
-
-    async def before_finalize(self) -> None:
-        if self._ibuf is not None and self._ibuf.batch_id != self._last_batch_id:
-            self._buffer = ""
-        executor = self._executor
-        # Text streamed with a call that started no tool precedes the final
-        # text. The next response's start releases it, and a run that ends
-        # without one releases it here.
-        await executor.tool_events.release_intermediate_text()
-        if self._buffer and not self._bridge_owns_text and not executor._interrupt.is_interrupted:
-            await self._emitter.publish(
-                InvocationMessage(
-                    origin=self._emitter.origin, text=self._buffer, is_final=False, session_id=executor._session_id
-                )
-            )

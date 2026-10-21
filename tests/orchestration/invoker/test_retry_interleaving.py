@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Validation exemptions and transient budgets remain independent in both shells."""
+"""Whole-run transient retries keep one pass and its budget in both shells."""
 
 from __future__ import annotations
 
@@ -16,10 +16,6 @@ from chrys.orchestration.invoker.resources import Conversation
 from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
 from chrys.service.agent_middleware.control.ask_user import AskUserMiddleware
 from chrys.service.agent_middleware.injection import InjectionMiddleware
-from chrys.service.agent_middleware.response_validation import (
-    RetryableResponseValidationError,
-    ValidationRetryExemption,
-)
 from chrys.service.approval.policy import ApprovalPolicy
 from chrys.service.llm.mock import MockChatClient
 from chrys.service.profiles.agents.schema import ApprovalConfig
@@ -29,19 +25,13 @@ from tests.support.event_capture import capture_event_sequence
 
 
 @pytest.mark.parametrize("shell", ["turn", "child"])
-async def test_validation_transient_interleaving_preserves_budgets_and_pass_hooks(
+async def test_whole_run_transient_retries_share_one_budget_and_pass_hooks(
     monkeypatch: pytest.MonkeyPatch, shell: str
 ) -> None:
     bus = EventBus()
     hooks: list[str] = []
     outcomes = [
-        RetryableResponseValidationError(
-            "empty", exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=0)
-        ),
         ConnectionError("transport one"),
-        RetryableResponseValidationError(
-            "whitespace", exemption=ValidationRetryExemption(attempt=2, max_attempts=3, delay_seconds=0)
-        ),
         ConnectionError("transport two"),
         AgentResponse(messages=[Message("assistant", ["done"])]),
     ]
@@ -88,8 +78,8 @@ async def test_validation_transient_interleaving_preserves_budgets_and_pass_hook
             )
             assert await controller.run() == "done"
     assert hooks == ["pass"]
-    assert agent.run.call_count == 5
+    assert agent.run.call_count == 3
     assert outcomes == []
-    assert [(event.attempt, event.max_attempts) for event in events] == [(1, 3), (1, 2), (2, 3), (2, 2)]
+    assert [(event.attempt, event.max_attempts) for event in events] == [(1, 2), (2, 2)]
     inputs = [[message.text for message in call.args[0]] for call in agent.run.call_args_list]
-    assert inputs == [["work" if shell == "turn" else "do the thing"]] * 5
+    assert inputs == [["work" if shell == "turn" else "do the thing"]] * 3

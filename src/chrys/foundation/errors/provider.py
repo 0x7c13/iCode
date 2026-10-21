@@ -201,14 +201,18 @@ def in_band_failure_retryable(code: str) -> bool:
 
 
 class ContinuationVerdictError(Exception):
-    """A failure that states whether it judged the response terminal.
+    """A failure that states what it judged of the response it ended.
 
-    True means a live continuation token now names a completed, immutable
-    response: a retry must issue a fresh request, never re-poll it.  Raisers
-    in higher tiers subclass this so the classifier reads a typed field.
+    ``invalidates_continuation_token`` true means a live continuation token
+    now names a completed, immutable response: a retry must issue a fresh
+    request, never re-poll it.  ``blank_response`` true means that response
+    showed nothing — no answer text, no call — so sampling the same request
+    again may answer (:func:`is_blank_response`).  Raisers in higher tiers
+    subclass this so the kernel and the classifier read typed fields.
     """
 
     invalidates_continuation_token: bool = False
+    blank_response: bool = False
 
 
 class ProviderResponseError(ContinuationVerdictError):

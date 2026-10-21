@@ -4,9 +4,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
 
 import pytest
@@ -24,6 +23,7 @@ from chrys.foundation.events.types import (
     SetApprovalMode,
 )
 from chrys.foundation.tool_result_metadata import TOOL_RESULT_METADATA_KEY
+from chrys.kernel import ChatResponseUpdate, Content
 from chrys.orchestration.invoker.resources import Conversation
 from chrys.orchestration.invoker.runtime import ApprovalInputs
 from chrys.orchestration.workflows.agent_node_build import KernelNodeParts
@@ -40,6 +40,7 @@ from chrys.service.profiles.agents.schema import (
 from chrys.service.session.sub_agent_logs import pending_dir, sessions_dir
 from chrys.service.workflows.layout import run_dir
 from chrys.service.workflows.transcript import read_node_transcript
+from tests.orchestration.sub_agents._pipeline import use_fast_sub_agent_policy
 from tests.orchestration.workflows._hosting import (
     PROFILE,
     confirm,
@@ -52,6 +53,11 @@ from tests.orchestration.workflows._hosting import (
 )
 from tests.support.event_capture import capture_events
 from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from chrys.kernel import FinishReason, FinishReasonLiteral
 
 _WORKFLOW = (
     "from chrys.workflows import WorkflowBuilder\nwf = WorkflowBuilder('agent')\n"
@@ -78,16 +84,12 @@ def _hand_out_child_client(monkeypatch: pytest.MonkeyPatch, client: MockChatClie
     async def create_client(
         model_profile: Any,
         *,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]],
-        on_intermediate_text_sync: Callable[[str], None],
         session_id: str,
         parent_session_id: str,
         use_route_session_context: bool,
         session_dir: Path,
         tool_result_ceiling_tokens: int | None,
     ) -> MockChatClient:
-        client._on_intermediate_text_async = on_intermediate_text_async
-        client._on_intermediate_text_sync = on_intermediate_text_sync
         return client
 
     monkeypatch.setattr(sub_agent_module, "create_client", create_client)
@@ -247,6 +249,53 @@ async def test_a_failed_node_child_ends_without_a_pause(tmp_path: Path, monkeypa
     assert not pending_dir(session_dir).exists() or list(pending_dir(session_dir).iterdir()) == []
 
 
+async def test_the_text_a_node_child_wrote_never_stops_its_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No workflow surface shows a node's sub-agent text: a stream dropped after a completed answer segment is
+    sent again in place, as the chat child's would be had nothing shown."""
+    use_fast_sub_agent_policy(monkeypatch)
+    node_client = MockChatClient(responses=[_delegate("inspect the tree"), MockResponse(text="node done")])
+    child_client = MockChatClient(
+        responses=[
+            MockResponse(text="Shown part.Cut off", chunk_size=11, chunk_delay=0),
+            MockResponse(text="child retried answer"),
+        ]
+    )
+    original = child_client._stream_updates
+
+    async def cut(
+        resp: MockResponse, model_id: str, finish_reason: FinishReasonLiteral | FinishReason
+    ) -> AsyncIterator[ChatResponseUpdate]:
+        first = child_client.call_count == 1
+        async for update in original(resp, model_id, finish_reason):
+            yield update
+            if first and update.text:
+                # Reasoning completes the first answer segment before the stream drops.
+                yield ChatResponseUpdate(role="assistant", contents=[Content.from_text_reasoning(text="hmm")])
+                raise ConnectionError("dropped")
+
+    monkeypatch.setattr(child_client, "_stream_updates", cut)
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
+    _hand_out_child_client(monkeypatch, child_client)
+    project = make_project(tmp_path)
+    write_workflow(project, "retried", _WORKFLOW)
+    host = make_host(tmp_path, project=project, profiles=[_delegating_profile(), _child_profile()], stream=True)
+    paused = await capture_events(host.event_bus, InvocationPaused)
+    tool_results = await capture_events(host.event_bus, InvocationToolCallResult)
+    try:
+        await confirm(host, "retried")
+        result, _events = await run(host, "retried", input_text="Go")
+    finally:
+        await host.shutdown()
+
+    assert result.outcome.value == "completed"
+    assert child_client.call_count == 2
+    assert paused == []
+    (delegated,) = [event for event in tool_results if event.origin.kind == "workflow_node"]
+    assert delegated.result == "child retried answer"
+
+
 async def test_a_mode_change_during_node_construction_reaches_its_sub_agents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -274,7 +323,6 @@ async def test_a_mode_change_during_node_construction_reaches_its_sub_agents(
         res: Any,
         archive: Any,
         callbacks: Any,
-        intermediate_buffer: Any,
         stats: Any,
     ) -> KernelNodeParts:
         parts = await real_build(
@@ -285,7 +333,6 @@ async def test_a_mode_change_during_node_construction_reaches_its_sub_agents(
             res=res,
             archive=archive,
             callbacks=callbacks,
-            intermediate_buffer=intermediate_buffer,
             stats=stats,
         )
         built.append(parts)

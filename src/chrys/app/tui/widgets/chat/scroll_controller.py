@@ -385,7 +385,15 @@ class ChatScrollController:
         programmatic = self.programmatic_scroll
         self.programmatic_scroll = True
         try:
-            return self._host.call_super_size_updated(size, virtual_size, container_size, layout)
+            # Textual would set a changed virtual size as a reactive, whose refresh
+            # lays the whole transcript out a second time; the layout calling this
+            # placed it already (a scrollbar that appears asks for its own), so only
+            # the watcher runs.
+            old_virtual_size = self._host.virtual_size
+            changed = self._host.call_super_size_updated(size, virtual_size, container_size, False)
+            if layout and self._host.virtual_size != old_virtual_size:
+                self.watch_virtual_size(old_virtual_size, self._host.virtual_size)
+            return changed
         finally:
             self.programmatic_scroll = programmatic
 

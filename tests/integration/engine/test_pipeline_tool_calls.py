@@ -16,8 +16,8 @@ import pytest
 
 from chrys.service.llm.mock import MockResponse
 from tests.support.pipeline_helpers import (
+    extract_answer_segments,
     extract_final_messages,
-    extract_intermediate_messages,
     extract_session_batch_ids,
     extract_session_intermediate_texts,
     extract_session_tool_names,
@@ -179,10 +179,10 @@ class TestParallelToolCalls:
 
 
 class TestIntermediateText:
-    """LLM returns text alongside tool calls — mock client now fires callbacks."""
+    """LLM returns text alongside tool calls."""
 
-    async def test_intermediate_text_callback(self, make_pipeline_ctx):
-        """Mock client fires intermediate text callback for text+tools response."""
+    async def test_intermediate_text_streams_as_segment(self, make_pipeline_ctx):
+        """Text beside tool calls streams as its own answer segment before the final one."""
         responses = [
             MockResponse(text="Let me search...", tool_calls=[("echo", "it1", {"message": "query"})]),
             MockResponse(text="Found the answer!"),
@@ -191,9 +191,7 @@ class TestIntermediateText:
 
         await ctx.send_message("Search for something")
 
-        # Intermediate text should be captured via the callback
-        intermediates = extract_intermediate_messages(ctx.events)
-        assert len(intermediates) >= 1
+        assert extract_answer_segments(ctx.events) == ["Let me search...", "Found the answer!"]
 
         # Final message should arrive
         finals = extract_final_messages(ctx.events)

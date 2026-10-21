@@ -152,10 +152,11 @@ def test_base_nonstreaming_captures_reasoning_content_with_marker_and_props() ->
     )
 
     message = parsed.messages[0]
-    assert message.contents[0].text == "Answer."
-    reasoning = message.contents[1]
+    reasoning, answer = message.contents
+    assert answer.text == "Answer."
     assert reasoning.type == "text_reasoning"
-    assert reasoning.protected_data == json.dumps("GLM thinking")
+    assert reasoning.text == "GLM thinking"
+    assert reasoning.protected_data is None
     assert reasoning.additional_properties["openai_reasoning_format"] == "reasoning_content"
     assert message.additional_properties["reasoning_content"] == "GLM thinking"
     assert message.additional_properties["openai_reasoning_format"] == "reasoning_content"
@@ -170,9 +171,9 @@ def test_base_nonstreaming_captures_vllm_reasoning_with_marker_props_and_exact_r
     )
 
     message = parsed.messages[0]
-    reasoning = message.contents[1]
+    reasoning = message.contents[0]
     assert reasoning.type == "text_reasoning"
-    assert reasoning.protected_data == json.dumps("thinking")
+    assert reasoning.text == "thinking"
     assert reasoning.additional_properties["openai_reasoning_format"] == "reasoning"
     assert message.additional_properties == {
         "reasoning": "thinking",
@@ -222,7 +223,7 @@ def test_vllm_reasoning_survives_openai_sdk_wire_validation_for_blocking_and_str
     blocking = decode_completion(completion, {}, variant=client.VARIANT)
     (streaming,) = parse_stream_chunks(client, chunk)
 
-    assert blocking.messages[0].contents[1].protected_data == json.dumps("blocking chain")
+    assert blocking.messages[0].contents[0].text == "blocking chain"
     assert streaming.contents[0].text == "streaming chain"
     assert streaming.contents[0].additional_properties["openai_reasoning_format"] == "reasoning"
 
@@ -335,11 +336,42 @@ def test_base_nonstreaming_captures_reasoning_details_stamped() -> None:
     )
 
     message = parsed.messages[0]
-    reasoning = message.contents[1]
+    reasoning = message.contents[0]
     assert reasoning.protected_data == json.dumps(details)
+    assert reasoning.text == "chain"
     assert reasoning.additional_properties["openai_reasoning_format"] == "reasoning_details"
     assert message.additional_properties["reasoning_details"] == details
     assert message.additional_properties["openai_reasoning_format"] == "reasoning_details"
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+@pytest.mark.parametrize(
+    ("details", "text", "summary"),
+    [
+        (
+            [{"type": "reasoning.summary", "summary": "brief"}, {"type": "reasoning.encrypted", "data": "x"}],
+            "brief",
+            True,
+        ),
+        ([{"type": "reasoning.text", "text": "full"}, {"type": "reasoning.summary", "summary": "+"}], "full+", False),
+        ([{"type": "reasoning.encrypted", "data": "opaque"}], None, False),
+    ],
+)
+def test_reasoning_details_show_their_text_and_summaries_on_both_paths(
+    stream: bool, details: list[dict[str, str]], text: str | None, summary: bool
+) -> None:
+    if stream:
+        (update,) = parse_stream_chunks(
+            _client(), _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=details))
+        )
+        contents = update.contents
+    else:
+        message = ChatCompletionMessage.model_construct(role="assistant", content="A", reasoning_details=details)
+        contents = decode_completion(_completion(message), {}, variant=OPENAI).messages[0].contents
+
+    reasoning = contents[0]
+    assert (reasoning.text, reasoning.protected_data) == (text, json.dumps(details))
+    assert reasoning.additional_properties.get("reasoning_summary", False) is summary
 
 
 def test_base_nonstreaming_dual_field_capture_details_first() -> None:
@@ -374,7 +406,8 @@ def test_base_nonstreaming_dual_field_capture_details_first() -> None:
     ("established_fields", "expected_markers"),
     [
         ({"reasoning_details": [{"type": "reasoning.text", "text": "OpenRouter"}]}, ["reasoning_details"]),
-        ({"reasoning_content": "legacy vLLM"}, ["reasoning_content"]),
+        ({"reasoning_content": "mirrored plaintext"}, ["reasoning_content"]),
+        ({"reasoning_content": "another chain"}, ["reasoning_content", "reasoning"]),
         (
             {
                 "reasoning_details": [{"type": "reasoning.text", "text": "OpenRouter"}],
@@ -384,7 +417,7 @@ def test_base_nonstreaming_dual_field_capture_details_first() -> None:
         ),
     ],
 )
-def test_base_nonstreaming_reasoning_is_fallback_to_established_fields(
+def test_base_nonstreaming_reasoning_counts_only_when_it_mirrors_no_established_field(
     established_fields: dict[str, Any],
     expected_markers: list[str],
 ) -> None:
@@ -402,7 +435,10 @@ def test_base_nonstreaming_reasoning_is_fallback_to_established_fields(
     assert [content.additional_properties["openai_reasoning_format"] for content in reasoning_contents] == (
         expected_markers
     )
-    assert "reasoning" not in kernel_message.additional_properties
+    assert ("reasoning" in kernel_message.additional_properties) is ("reasoning" in expected_markers)
+    if "reasoning_details" in expected_markers:
+        # Beside the details, the gateway's plaintext is their display text.
+        assert reasoning_contents[0].text == "mirrored plaintext"
 
 
 def test_base_streaming_captures_reasoning_content_as_visible_text() -> None:
@@ -434,10 +470,10 @@ def test_base_streaming_captures_vllm_reasoning_as_visible_text() -> None:
     ("established_fields", "expected_markers"),
     [
         ({"reasoning_details": [{"type": "reasoning.text", "text": "OpenRouter"}]}, ["reasoning_details"]),
-        ({"reasoning_content": "legacy vLLM"}, ["reasoning_content"]),
+        ({"reasoning_content": "mirrored plaintext"}, ["reasoning_content"]),
     ],
 )
-def test_base_streaming_reasoning_is_fallback_to_established_fields(
+def test_base_streaming_reasoning_counts_only_when_it_mirrors_no_established_field(
     established_fields: dict[str, Any],
     expected_markers: list[str],
 ) -> None:
@@ -456,16 +492,17 @@ def test_base_streaming_reasoning_is_fallback_to_established_fields(
     assert [content.additional_properties["openai_reasoning_format"] for content in reasoning_contents] == (
         expected_markers
     )
+    assert [content.text for content in reasoning_contents] == ["mirrored plaintext"]
 
 
-def test_base_streaming_captures_reasoning_details_as_protected_json() -> None:
+def test_base_streaming_captures_reasoning_details_as_protected_json_shown_as_their_text() -> None:
     details = [{"type": "reasoning.text", "text": "delta"}]
     (update,) = parse_stream_chunks(
         _client(), _chunk(ChunkChoiceDelta.model_construct(role="assistant", reasoning_details=details))
     )
 
     reasoning = next(content for content in update.contents if content.type == "text_reasoning")
-    assert reasoning.text is None
+    assert reasoning.text == "delta"
     assert reasoning.protected_data == json.dumps(details)
     assert reasoning.additional_properties["openai_reasoning_format"] == "reasoning_details"
 

@@ -50,6 +50,9 @@ MAX_DISPLAY_LINES = 1500
 MAX_DISPLAY_LINE_CHARS = 2048
 _TRUNCATED_LINE_SUFFIX = "..."
 MAX_BUFFER_LINES = MAX_DISPLAY_LINES * 2
+MAX_BUFFER_LINE_CHARS = 16 * 1024
+"""Longest record the handler keeps whole for copying; a longer one keeps its head
+and tail. SDK DEBUG records can carry a whole request body (the conversation so far)."""
 _LOAD_BATCH_LINES = 250
 
 # Interval in seconds between log refresh ticks
@@ -80,6 +83,7 @@ class _TuiLogHandler(logging.Handler):
     even when the in-memory buffer is trimmed, so buffer trimming never
     causes readers to skip new lines.  Each buffered entry carries the
     record's numeric level so the UI can re-filter without re-parsing.
+    A record longer than ``MAX_BUFFER_LINE_CHARS`` is kept cut short.
     """
 
     def __init__(self) -> None:
@@ -97,7 +101,7 @@ class _TuiLogHandler(logging.Handler):
         module = record.name.split(".")[0]
         if module not in MODULE_WHITELIST:
             return
-        line = self.format(record)
+        line = _truncate_buffered_line(self.format(record))
         buf = self._buffers.setdefault(module, [])
         buf.append((record.levelno, line))
         self._totals[module] = self._totals.get(module, 0) + 1
@@ -204,8 +208,16 @@ def _make_log_widget(module: str) -> RichLog:
     return widget
 
 
+def _truncate_buffered_line(line: str) -> str:
+    if len(line) <= MAX_BUFFER_LINE_CHARS:
+        return line
+    # The head names the record; a traceback ends with the exception raised.
+    half = MAX_BUFFER_LINE_CHARS // 2
+    return f"{line[:half]} ... [{len(line) - 2 * half} of {len(line)} chars cut] ... {line[-half:]}"
+
+
 def _truncate_display_line(line: str) -> str:
-    """Return a display-bounded log line while preserving full lines in the handler."""
+    """Return a display-bounded log line while the handler keeps longer lines for copying."""
     if len(line) <= MAX_DISPLAY_LINE_CHARS:
         return line
     # Formatted exception records can contain embedded newlines; bounding the
@@ -478,8 +490,8 @@ class LogViewerScreen(BaseDialog[None]):
             return
 
         # Snapshot from 0 under the current filter so the clipboard matches
-        # the visible line set. Lines remain full-fidelity even when display
-        # rendering truncates long records.
+        # the visible line set. Lines are copied as the handler keeps them,
+        # longer than display rendering shows them.
         lines, _ = self._handler.snapshot(module, 0, self._filter_level, limit=MAX_DISPLAY_LINES)
         if not lines:
             level_name = logging.getLevelName(self._filter_level)

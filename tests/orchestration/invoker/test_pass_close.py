@@ -56,12 +56,12 @@ async def test_abort_cross_await_does_not_cancel_successor(executor, monkeypatch
             original = bridge.attempt_rejected
             first_notice = True
 
-            async def reject(reason="", *, status=HostedToolStatus.FAILED, preserve_provisional=False):
+            async def reject(reason="", *, status=HostedToolStatus.FAILED):
                 nonlocal first_notice
                 if first_notice:
                     first_notice = False
                     await wait_for_interrupt()
-                await original(reason, status=status, preserve_provisional=preserve_provisional)
+                await original(reason, status=status)
 
             monkeypatch.setattr(bridge, "attempt_rejected", create_autospec(original, side_effect=reject))
         else:
@@ -130,10 +130,10 @@ async def test_real_interrupt_cancels_replacement_attempt_in_same_pass(executor,
         await asyncio.wait_for(entered[0].wait(), 5)
         original = executor._hosted_bridge.attempt_rejected
 
-        async def reject(reason="", *, status=HostedToolStatus.FAILED, preserve_provisional=False):
+        async def reject(reason="", *, status=HostedToolStatus.FAILED):
             interrupt_entered.set()
             await interrupt_release.wait()
-            await original(reason, status=status, preserve_provisional=preserve_provisional)
+            await original(reason, status=status)
 
         monkeypatch.setattr(executor._hosted_bridge, "attempt_rejected", create_autospec(original, side_effect=reject))
         # Exercise the observer itself so backend.abort's final cancellation

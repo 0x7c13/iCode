@@ -10,9 +10,6 @@ from typing import Final
 
 from chrys.foundation.tool_kinds import KIND_MCP, KIND_SEARCH, KIND_SHELL
 
-PRESENTATION_TEXT_SEGMENT_ID_KEY: Final[str] = "_chrys_presentation_text_segment_id"
-"""Private Content metadata key identifying one streamed output-text item."""
-
 ANTHROPIC_HOSTED_WIRE_BLOCK_KEY: Final[str] = "anthropic.hosted_block"
 OPENAI_HOSTED_WIRE_ITEM_KEY: Final[str] = "openai.responses.hosted_item"
 HOSTED_WIRE_REPLAY_PROPERTY_KEYS: Final[frozenset[str]] = frozenset(

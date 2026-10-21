@@ -64,6 +64,9 @@ class SubAgentPolicyDouble:
     def observe_continuation_token(self, token):
         pass
 
+    async def response_ready(self, response):
+        pass
+
     async def finish_run(self):
         pass
 

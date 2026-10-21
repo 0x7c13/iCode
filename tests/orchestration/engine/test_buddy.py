@@ -24,6 +24,7 @@ class _FakeExecutor:
     run_failed = False
     was_interrupted = False
     last_error = None
+    partial_answer: tuple[Any, ...] = ()
 
     def drain_batch_records(self) -> list[Any]:
         return []

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 from chrys.foundation.reasoning_origin import replays_to
 from chrys.kernel import Content, Message
 from chrys.kernel._content import _ANTHROPIC_REDACTED_THINKING_KEY
+from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 
 if TYPE_CHECKING:
     from chrys.foundation.reasoning_origin import ReasoningOrigin
@@ -42,32 +43,59 @@ REASONING_FIELDS: tuple[str, ...] = (REASONING_DETAILS_FIELD, REASONING_CONTENT_
 def reasoning_fields(source: Any) -> dict[str, Any]:
     """The reasoning fields an SDK message or delta carries, by wire name.
 
-    ``reasoning_details`` and ``reasoning_content`` come first, as they may
-    hold state the provider needs back. A gateway can mirror the same
-    plaintext into ``reasoning`` too, so that field counts only when neither
-    of the others is present.
+    ``reasoning`` counts only when it is not a mirror: beside
+    ``reasoning_details`` it is that structure's plaintext, kept as the
+    details content's display text (:func:`details_display`), and equal to
+    ``reasoning_content`` it is the same text twice.
     """
     found = {
         name: value
         for name in (REASONING_DETAILS_FIELD, REASONING_CONTENT_FIELD)
         if (value := getattr(source, name, None)) is not None
     }
-    if not found and (mirror := getattr(source, REASONING_FIELD, None)) is not None:
-        found[REASONING_FIELD] = mirror
+    plain = getattr(source, REASONING_FIELD, None)
+    if plain is not None and REASONING_DETAILS_FIELD not in found and found.get(REASONING_CONTENT_FIELD) != plain:
+        found[REASONING_FIELD] = plain
     return found
+
+
+def details_display(source: Any, details: Any) -> tuple[str | None, bool]:
+    """The readable text of a ``reasoning_details`` value, and whether it is only a summary.
+
+    A gateway's plaintext ``reasoning`` beside it is that text; otherwise it
+    is the text of the details' ``reasoning.text`` and ``reasoning.summary``
+    items. Encrypted and unknown items have none.
+    """
+    kinds: set[str] = set()
+    texts: list[str] = []
+    for item in cast("list[Any]", details) if isinstance(details, list) else ():
+        if not isinstance(item, Mapping):
+            continue
+        item = cast("Mapping[str, Any]", item)
+        kind = item.get("type")
+        text = item.get("text") if kind == "reasoning.text" else item.get("summary")
+        if kind in ("reasoning.text", "reasoning.summary") and isinstance(text, str):
+            kinds.add(kind)
+            texts.append(text)
+    plain = getattr(source, REASONING_FIELD, None)
+    text = plain if isinstance(plain, str) else "".join(texts)
+    return text or None, kinds == {"reasoning.summary"}
 
 
 # --- capture ----------------------------------------------------------------
 
 
 def message_reasoning(message: Any, *, origin: ReasoningOrigin | None = None) -> list[Content]:
-    """A whole choice message's reasoning: one protected JSON payload per field.
+    """A whole choice message's reasoning, one content per field, shaped as a streamed delta's.
 
-    ``reasoning_details`` is stamped with *origin*, the endpoint that sent it.
+    A plaintext field that is not a string keeps the protected JSON payload
+    it replays as.
     """
     return [
-        Content.from_text_reasoning(
-            protected_data=json.dumps(value), additional_properties=_capture_props(name, origin)
+        _reasoning_content(name, value, origin=origin, source=message)
+        if name == REASONING_DETAILS_FIELD or isinstance(value, str)
+        else Content.from_text_reasoning(
+            protected_data=json.dumps(value), additional_properties={REASONING_FORMAT_KEY: name}
         )
         for name, value in reasoning_fields(message).items()
     ]
@@ -89,29 +117,35 @@ def message_reasoning_props(message: Any, *, origin: ReasoningOrigin | None = No
 
 
 def delta_reasoning(
-    fields: Mapping[str, Any], *, include_plain: bool, origin: ReasoningOrigin | None = None
+    fields: Mapping[str, Any], *, include_plain: bool, origin: ReasoningOrigin | None = None, source: Any = None
 ) -> list[Content]:
     """The reasoning contents of one streamed delta's fields.
 
-    ``reasoning_details`` stays a protected payload, stamped with *origin*. A
-    plaintext field is the display text itself, left out when
-    *include_plain* is false.
+    A plaintext field is the display text itself, left out when
+    *include_plain* is false; *source* is the delta the fields were read from.
     """
     contents: list[Content] = []
     for name, value in fields.items():
-        if name == REASONING_DETAILS_FIELD:
-            contents.append(
-                Content.from_text_reasoning(
-                    protected_data=json.dumps(value), additional_properties=_capture_props(name, origin)
-                )
-            )
-        elif not include_plain:
-            continue
-        elif isinstance(value, str):
-            contents.append(Content.from_text_reasoning(text=value, additional_properties={REASONING_FORMAT_KEY: name}))
-        else:
+        if name == REASONING_DETAILS_FIELD or (include_plain and isinstance(value, str)):
+            contents.append(_reasoning_content(name, value, origin=origin, source=source))
+        elif include_plain:
             logger.debug("Ignoring non-string Chat Completions reasoning delta of type %s", type(value).__name__)
     return contents
+
+
+def _reasoning_content(name: str, value: Any, *, origin: ReasoningOrigin | None, source: Any) -> Content:
+    """One field's reasoning content: plaintext as its text, ``reasoning_details`` as a protected payload.
+
+    The details are stamped with *origin*, the endpoint that sent them, and
+    shown as the text :func:`details_display` reads from *source*.
+    """
+    properties = _capture_props(name, origin)
+    if name != REASONING_DETAILS_FIELD:
+        return Content.from_text_reasoning(text=value, additional_properties=properties)
+    text, summary = details_display(source, value)
+    if summary:
+        properties[REASONING_SUMMARY_KEY] = True
+    return Content.from_text_reasoning(text=text, protected_data=json.dumps(value), additional_properties=properties)
 
 
 def _capture_props(field: str, origin: ReasoningOrigin | None) -> dict[str, Any]:

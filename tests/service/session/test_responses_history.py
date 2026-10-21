@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -450,7 +451,7 @@ async def test_engine_save_clears_service_session_when_response_storage_disabled
                 service_session_id="resp_123",
                 service_session_storage_enabled=False,
             ),
-            state=SimpleNamespace(run_failed=False, was_interrupted=False),
+            state=SimpleNamespace(run_failed=False, was_interrupted=False, partial_answer=()),
         ),
     )
 
@@ -492,7 +493,7 @@ async def test_engine_save_clears_service_session_after_failed_or_interrupted_tu
                 service_session_id="resp_123",
                 service_session_storage_enabled=True,
             ),
-            state=SimpleNamespace(run_failed=True, was_interrupted=False),
+            state=SimpleNamespace(run_failed=True, was_interrupted=False, partial_answer=()),
         ),
     )
 
@@ -527,6 +528,9 @@ async def test_post_run_clears_in_memory_service_session_after_failed_turn() -> 
         def trim_to_last_complete_tool_results(self) -> None:
             pass
 
+        def keep_partial_answer(self, _contents: Sequence[Content]) -> None:
+            pass
+
         def insert_interrupted_marker(self, *, reason: str = "", source: str = "") -> None:
             pass
 
@@ -549,7 +553,7 @@ async def test_post_run_clears_in_memory_service_session_after_failed_turn() -> 
             pass
 
     executor = SimpleNamespace(
-        state=SimpleNamespace(run_failed=True, was_interrupted=False, last_error="network failed"),
+        state=SimpleNamespace(run_failed=True, was_interrupted=False, last_error="network failed", partial_answer=()),
         backend=SimpleNamespace(service_session_id="resp_incomplete"),
         approval=SimpleNamespace(drain_decisions=list),
         tool_events=SimpleNamespace(drain_batch_records=list),
@@ -607,7 +611,7 @@ async def test_post_run_uses_phase3_pre_output_floor_for_metadata_and_backfill()
     history = SessionHistoryManager()
     history.bind(history_state)
     executor = SimpleNamespace(
-        state=SimpleNamespace(run_failed=False, was_interrupted=False),
+        state=SimpleNamespace(run_failed=False, was_interrupted=False, partial_answer=()),
         approval=SimpleNamespace(
             drain_decisions=lambda: [
                 {
@@ -691,7 +695,7 @@ async def test_post_run_uses_refreshed_floor_after_force_compress_rewrites_phase
     history = SessionHistoryManager()
     history.bind(history_state)
     executor = SimpleNamespace(
-        state=SimpleNamespace(run_failed=False, was_interrupted=False),
+        state=SimpleNamespace(run_failed=False, was_interrupted=False, partial_answer=()),
         approval=SimpleNamespace(
             drain_decisions=lambda: [
                 {

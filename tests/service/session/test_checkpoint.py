@@ -113,6 +113,34 @@ def test_checkpoint_preserves_completed_tool_batch() -> None:
     assert _marker_kind(messages[-1]) == HistoryMarkerKind.TURN
 
 
+def test_checkpoint_keeps_a_trailing_text_only_answer() -> None:
+    """The answer the user saw is part of the recovered turn, ahead of its markers."""
+    user = Message("user", ["explain"])
+    answer = Message("assistant", ["Here is what I found so far"])
+    live_state = {"messages": [user], "compressed_msgs": [], "turn_counter": 0}
+    capture = LoopRecorder()
+    capture._initial_count = 1
+    capture._captured = [user, answer]
+
+    recovered = build_recovery_state(
+        live_state,
+        capture,
+        mutation_tracker=None,
+        runtime_meta=SessionRuntimeMetadata(),
+        user_text=None,
+        user_contents=None,
+        user_created_at=None,
+    )
+
+    assert recovered is not None
+    messages = recovered["messages"]
+    assert [message.role for message in messages] == ["user", "assistant", "assistant", "assistant"]
+    assert messages[1].text == "Here is what I found so far"
+    assert _marker_kind(messages[1]) is None
+    assert _marker_kind(messages[2]) == HistoryMarkerKind.INTERRUPTED
+    assert _marker_kind(messages[3]) == HistoryMarkerKind.TURN
+
+
 def test_checkpoint_trim_does_not_mutate_captured_loop_messages() -> None:
     user = Message("user", ["do work"])
     assistant = Message(

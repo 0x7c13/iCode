@@ -141,7 +141,7 @@ class _LoaderFixture:
     def __init__(self, bus: EventBus, executor: _FakeExecutor) -> None:
         self.current = SimpleNamespace(loaded=SimpleNamespace(), manifest=make_manifest())
         self.permits = _Permits()
-        self.session = _BuildSession(session_dir=None, background_tasks=None)
+        self.session = _BuildSession(session_dir=None, background_tasks=None, surface=None)
         self.session.agent_profile = AgentProfile(name="Code")
         self.session.workspace = None
         self.session.session_id = "session-1"
@@ -767,47 +767,42 @@ async def _build_with_captured_callbacks() -> tuple[_LoaderFixture, dict]:
 
 
 @pytest.mark.asyncio
-async def test_intermediate_capture_async_records_batch_id_at_capture_time() -> None:
-    """The async callback maps the POST-increment batch id — the same id the
+async def test_intermediate_capture_records_batch_id_at_capture_time() -> None:
+    """The callback maps the POST-increment batch id — the same id the
     batch's subsequent tool records are stamped with — to the captured text.
     An empty-text boundary advances the counter but writes no mapping entry.
     """
     engine, captured = await _build_with_captured_callbacks()
-    on_async = captured["on_intermediate_async"]
-    buffer = captured["intermediate_buffer"]
+    on_intermediate = captured["on_intermediate"]
+    counter = captured["batch_counter"]
 
-    await on_async("")  # tool-only boundary
-    assert buffer.batch_id == 1
+    on_intermediate("")  # tool-only boundary
+    assert counter.batch_id == 1
     assert engine.current.loaded.intermediate_texts == {}
 
-    await on_async("first text")
-    assert buffer.batch_id == 2
+    on_intermediate("first text")
+    assert counter.batch_id == 2
     assert engine.current.loaded.intermediate_texts == {2: "first text"}
 
-    await on_async("")  # another boundary — mapping unchanged
-    assert buffer.batch_id == 3
+    on_intermediate("")  # another boundary — mapping unchanged
+    assert counter.batch_id == 3
     assert engine.current.loaded.intermediate_texts == {2: "first text"}
 
 
 @pytest.mark.asyncio
-async def test_intermediate_capture_sync_and_async_paths_yield_identical_mappings() -> None:
-    """The same event sequence — including a second pass continuing the counter
-    (``reset_batch_id=False`` retry semantics: nothing resets the buffer) —
-    produces the same ``batch_id → text`` mapping on both paths.
-    """
-    engine_a, captured_a = await _build_with_captured_callbacks()
-    engine_s, captured_s = await _build_with_captured_callbacks()
-    on_async = captured_a["on_intermediate_async"]
-    on_sync = captured_s["on_intermediate_sync"]
+async def test_intermediate_capture_continues_numbering_across_passes() -> None:
+    """A second pass continues the counter (retry semantics: nothing resets it)."""
+    engine, captured = await _build_with_captured_callbacks()
+    on_intermediate = captured["on_intermediate"]
 
     sequence = ["", "first text", "", "second text", ""]
-    for text in sequence:  # pass 1 + retry continuation, uninterrupted counter
-        await on_async(text)
-    for text in sequence:
-        on_sync(text)
+    for text in [*sequence, *sequence]:  # pass 1 + retry continuation, uninterrupted counter
+        on_intermediate(text)
 
-    expected = {2: "first text", 4: "second text"}
-    assert engine_a.current.loaded.intermediate_texts == expected
-    assert engine_s.current.loaded.intermediate_texts == expected
-    assert captured_a["intermediate_buffer"].batch_id == len(sequence)
-    assert captured_s["intermediate_buffer"].batch_id == len(sequence)
+    assert engine.current.loaded.intermediate_texts == {
+        2: "first text",
+        4: "second text",
+        7: "first text",
+        9: "second text",
+    }
+    assert captured["batch_counter"].batch_id == 2 * len(sequence)

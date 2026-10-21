@@ -39,18 +39,19 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentAbandoned,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationContextPressure,
+    InvocationEvent,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationRetryAttempt,
     InvocationStarted,
     InvocationToolCallArgsUpdated,
     InvocationToolCallResult,
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
-    ProvisionalPresentation,
     TodoListUpdated,
     ToolCompacted,
     Warning,
@@ -62,7 +63,7 @@ from chrys.foundation.events.types import (
     WorkflowRunStarted,
 )
 from chrys.foundation.i18n import Localizer
-from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.invocations import ContentChannel, InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import WorkflowIdentity, WorkflowSessionSelection, WorkspaceSnapshot
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_MCP, KIND_SHELL, KIND_SUB_AGENT, KIND_TODO
@@ -359,44 +360,124 @@ def test_the_builtin_todo_tool_is_silent_and_the_list_prints_instead() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_commentary_prints_intermediate_turn_text_only() -> None:
+def _delta(
+    origin: InvocationOrigin, segment_id: str, text: str, channel: ContentChannel = "answer"
+) -> InvocationContentDelta:
+    return InvocationContentDelta(origin=origin, segment_id=segment_id, channel=channel, text=text)
+
+
+def test_commentary_prints_turn_answer_text_a_tool_call_follows() -> None:
     progress, buffer = _turn()
 
-    progress.handle(InvocationMessage(origin=TURN, text="Looking at the parser.\n\nThen tests.", is_intermediate=True))
-    progress.handle(InvocationMessage(origin=TURN, text="\x1b[31mred\x1b[0m", is_intermediate=True))
-    progress.handle(InvocationMessage(origin=TURN, text="   \n", is_intermediate=True))
-    progress.handle(InvocationMessage(origin=CHILD, text="child prose", is_intermediate=True))
+    progress.handle(_delta(TURN, "s1", "Looking at the parser.\n\n"))
+    progress.handle(_delta(TURN, "s1", "Then tests."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s1"))
+    progress.handle(_delta(TURN, "s2", "\x1b[31mred\x1b[0m"))
+    progress.handle(_delta(TURN, "s3", "   \n"))
+    progress.handle(_delta(TURN, "r1", "private thoughts", "reasoning"))
+    progress.handle(_delta(CHILD, "c1", "child prose"))
+    progress.handle(_start(TURN, "t1", "shell", KIND_SHELL, {"command": "ls"}))
+    progress.handle(_delta(TURN, "s4", "the final answer"))
     progress.handle(InvocationMessage(origin=TURN, text="the final answer", is_final=True))
 
     lines = _lines(buffer)
     assert lines[:3] == ["Looking at the parser.", "", "Then tests."]
-    assert len(lines) == 4
     assert "\x1b" not in lines[3]
     assert "red" in lines[3]
+    # Blank text, reasoning, child prose and the final answer (stdout's) never print here.
+    assert lines[4:] == ["→ shell  ls"]
 
 
-def test_provisional_segments_print_once_accepted_and_never_when_rejected() -> None:
+def test_partial_answer_of_a_failed_pass_prints_as_commentary() -> None:
     progress, buffer = _turn()
 
-    def segment(attempt: str, segment_id: str, text: str) -> InvocationMessage:
-        return InvocationMessage(
-            origin=TURN,
-            text=text,
-            is_intermediate=True,
-            presentation=ProvisionalPresentation(attempt, segment_id),
-        )
+    progress.handle(_delta(TURN, "s1", "half an "))
+    progress.handle(_delta(TURN, "s1", "answer"))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s1", status="failed"))
+    progress.handle(_delta(TURN, "s2", "the answer"))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s2"))
+    progress.handle(InvocationMessage(origin=TURN, text="the answer", is_final=True))
 
-    progress.handle(segment("a1", "s1", "rejected text"))
-    progress.handle(InvocationPresentationAttemptRejected(origin=TURN, attempt_id="a1"))
-    progress.handle(segment("a2", "s1", "first"))
-    progress.handle(segment("a2", "s2", "second"))
-    progress.handle(segment("a2", "s3", "unlisted"))
-    assert _lines(buffer) == []
-    progress.handle(InvocationPresentationAttemptAccepted(origin=TURN, attempt_id="a2", segment_ids=("s2", "s1")))
-    progress.handle(InvocationPresentationAttemptAccepted(origin=TURN, attempt_id="a2", segment_ids=("s2", "s1")))
-    progress.handle(segment("a3", "s1", "never accepted"))
+    assert _lines(buffer) == ["half an answer"]
 
-    assert _lines(buffer) == ["second", "first"]
+
+def test_text_no_tool_card_followed_prints_as_commentary_when_the_answer_completes() -> None:
+    """A call that never started (an unknown tool) shows no card, yet the text before it was commentary."""
+    progress, buffer = _turn()
+
+    progress.handle(_delta(TURN, "s1", "Let me inspect."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s1"))
+    progress.handle(_delta(TURN, "s2", "Done."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s2"))
+    progress.handle(InvocationMessage(origin=TURN, text="Done.", is_final=True))
+
+    assert _lines(buffer) == ["Let me inspect."]
+
+
+def _given_up(origin: InvocationOrigin, *segment_ids: str) -> list[InvocationEvent]:
+    """What a retry boundary publishes: the response is given up, then its open segment closes as failed."""
+    return [
+        InvocationContentAbandoned(origin=origin, segment_ids=segment_ids),
+        InvocationContentFinished(origin=origin, segment_id=segment_ids[-1], status="failed"),
+    ]
+
+
+@pytest.mark.parametrize("notice", [True, False], ids=["retry", "stall_fallback"])
+def test_text_a_retry_gave_up_never_prints(notice: bool) -> None:
+    """A stalled stream falls back to a blocking request with no retry notice."""
+    progress, buffer = _turn()
+
+    progress.handle(_delta(TURN, "s1", "First thoughts."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s1"))
+    progress.handle(_delta(TURN, "s2", "Half an an"))
+    if notice:
+        progress.handle(InvocationRetryAttempt(origin=TURN, message="", attempt=1, max_attempts=0, delay_seconds=3))
+    for event in _given_up(TURN, "s1", "s2"):
+        progress.handle(event)
+    progress.handle(_delta(TURN, "s3", "The answer."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s3"))
+    progress.handle(InvocationMessage(origin=TURN, text="The answer.", is_final=True))
+
+    assert _lines(buffer) == (["↻ Retrying in 3s"] if notice else [])
+
+
+def test_a_run_that_fails_after_a_retry_prints_only_what_its_last_attempt_wrote() -> None:
+    progress, buffer = _turn()
+
+    progress.handle(_delta(TURN, "s1", "Given up."))
+    for event in _given_up(TURN, "s1"):
+        progress.handle(event)
+    progress.handle(_delta(TURN, "s2", "Half an"))
+    progress.failed()
+
+    assert _lines(buffer) == ["Half an"]
+
+
+def test_an_interrupt_before_the_retry_gives_up_the_reply_prints_it() -> None:
+    """The run keeps the partial answer of a retry it never made."""
+    progress, buffer = _turn()
+
+    progress.handle(_delta(TURN, "s1", "Half an"))
+    progress.handle(InvocationRetryAttempt(origin=TURN, message="", attempt=1, max_attempts=0, delay_seconds=3))
+    progress.failed()
+
+    assert _lines(buffer) == ["↻ Retrying in 3s", "Half an"]
+
+
+def test_text_before_an_unknown_tool_still_prints_when_a_later_reply_is_given_up() -> None:
+    """The response that called the unknown tool landed: history holds its text."""
+    progress, buffer = _turn()
+
+    progress.handle(_delta(TURN, "s1", "Let me inspect."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s1"))
+    progress.handle(_delta(TURN, "s2", "Given up."))
+    for event in _given_up(TURN, "s2"):
+        progress.handle(event)
+    progress.handle(_delta(TURN, "s3", "Done."))
+    progress.handle(InvocationContentFinished(origin=TURN, segment_id="s3"))
+    progress.handle(InvocationMessage(origin=TURN, text="Done.", is_final=True))
+
+    assert _lines(buffer) == ["Let me inspect."]
 
 
 def test_retry_pause_and_abort_lines() -> None:
@@ -549,9 +630,9 @@ def test_quiet_turn_progress_prints_only_warnings_once() -> None:
     for event in (
         Warning(code="pending", message="said at startup"),
         AgentLoadFinished(agent_profile="Code", display_name="Code", session_id="s1"),
+        _delta(TURN, "s1", "Looking."),
         _start(TURN, "c1", "shell", KIND_SHELL, {"command": "ls"}),
         _result(TURN, "c1"),
-        InvocationMessage(origin=TURN, text="Looking.", is_intermediate=True),
         Warning(code="mcp.connect_failed", message="github: refused"),
         Warning(code="mcp.connect_failed", message="github: refused"),
         CompactionStarted(),
@@ -718,9 +799,12 @@ def test_workflow_progress_prints_header_node_states_and_node_activity() -> None
     progress.handle(WorkflowRunAccepted(request_id="r", run_id="run-1", selection=selection))
     progress.handle(WorkflowRunStarted(run_id="run-1234567890abcdef", workflow_id="review", title="Code review"))
     progress.handle(_node("running", "plan", invocation="inv-1"))
+    progress.handle(_delta(_node_origin("inv-1"), "s1", "Planning."))
     progress.handle(_start(_node_origin("inv-1"), "c1", "read_file", KIND_FILESYSTEM_READ, {"path": "a.py"}))
     progress.handle(_result(_node_origin("inv-1"), "c1", at=0.5))
-    progress.handle(InvocationMessage(origin=_node_origin("inv-1"), text="Planning.", is_intermediate=True))
+    # The node's answer is its output, not commentary.
+    progress.handle(_delta(_node_origin("inv-1"), "s2", "The plan."))
+    progress.handle(InvocationMessage(origin=_node_origin("inv-1"), text="The plan.", is_final=True))
     progress.handle(
         WorkflowNodeOutput(run_id="run-1", node_id="plan", kind=WORKFLOW_OUTPUT_EMIT, summary_text="halfway")
     )
@@ -743,9 +827,9 @@ def test_workflow_progress_prints_header_node_states_and_node_activity() -> None
         "• Starting workflow review…",
         "Workflow Code review (review) · run run123456789 · session session1",
         "▸ [plan] running",
+        "  [plan] Planning.",
         "  [plan] → read   a.py",
         "  [plan]   ✓ 0.5s",
-        "  [plan] Planning.",
         "  [plan] halfway",
         "✓ [plan] completed · 3.0s",
         "▸ [fix] running",
@@ -790,3 +874,39 @@ def test_invocation_activity_ignores_origins_without_a_prefix() -> None:
 
     assert _lines(buffer) == []
     assert activity.top_level_calls == 0
+
+
+def test_a_failed_node_attempt_shows_the_answer_text_it_held_before_its_state() -> None:
+    """A call cut off mid-stream ends the text before it as completed; no tool card or final answer follows."""
+    writer, buffer = _writer()
+    progress = WorkflowProgress(writer, render=RENDER)
+
+    progress.handle(_node("running", "fix", invocation="inv-1"))
+    progress.handle(_delta(_node_origin("inv-1"), "s1", "Writing the fix."))
+    progress.handle(InvocationContentFinished(origin=_node_origin("inv-1"), segment_id="s1"))
+    progress.handle(_node("awaiting_retry", "fix", at=1, error="Stream dropped"))
+    progress.handle(_node("running", "fix", at=2, attempt=2, invocation="inv-2"))
+    progress.handle(_delta(_node_origin("inv-2", 2), "s1", "Writing it again."))
+    progress.handle(InvocationContentFinished(origin=_node_origin("inv-2", 2), segment_id="s1"))
+    progress.handle(_node("failed", "fix", at=3, attempt=2, error="Stream dropped"))
+
+    assert _lines(buffer) == [
+        "▸ [fix] running",
+        "  [fix] Writing the fix.",
+        "↻ [fix] awaiting retry: Stream dropped",
+        "▸ [fix] running (attempt 2)",
+        "  [fix] Writing it again.",
+        "✗ [fix] failed: Stream dropped",
+    ]
+
+
+def test_a_cancelled_node_shows_the_answer_text_it_held_before_its_state() -> None:
+    writer, buffer = _writer()
+    progress = WorkflowProgress(writer, render=RENDER)
+
+    progress.handle(_node("running", "fix", invocation="inv-1"))
+    progress.handle(_delta(_node_origin("inv-1"), "s1", "Writing the fix."))
+    progress.handle(InvocationContentFinished(origin=_node_origin("inv-1"), segment_id="s1"))
+    progress.handle(_node("cancelled", "fix", at=1))
+
+    assert _lines(buffer) == ["▸ [fix] running", "  [fix] Writing the fix.", "· [fix] cancelled"]

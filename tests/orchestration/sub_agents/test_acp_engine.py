@@ -94,8 +94,7 @@ async def _start_acp_engine(
     )
 
     async def create_client(_profile: Any = None, **kwargs: Any) -> MockChatClient:
-        main_client._on_intermediate_text_async = kwargs.get("on_intermediate_text_async")
-        main_client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
+        main_client._on_intermediate_text = kwargs.get("on_intermediate_text")
         return main_client
 
     monkeypatch.setattr(builder_module, "create_client", create_client)

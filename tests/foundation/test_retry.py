@@ -16,7 +16,6 @@ import pytest
 
 from chrys.foundation.retry import (
     HistorySnapshot,
-    RetryAttemptInfo,
     StreamRetryLoop,
     StreamStall,
     StreamStallExhausted,
@@ -77,7 +76,6 @@ class _Harness:
         backoff: tuple[int, ...] = (0, 0, 0, 0),
         restore_on_stall_exhaustion: bool = False,
         after_restore=None,
-        retry_exemption=None,
     ):
         return StreamRetryLoop(
             max_retries=max_retries,
@@ -91,7 +89,6 @@ class _Harness:
             clean_error_message=self.clean_err,
             restore_on_stall_exhaustion=restore_on_stall_exhaustion,
             after_restore=after_restore,
-            retry_exemption=retry_exemption,
         )
 
 
@@ -341,7 +338,7 @@ async def test_retry_gate_preserves_attempt_state_without_restore(
         await loop.run(attempt)
 
     if expected is RuntimeError:
-        assert "preserve the completed work" in str(exc_info.value)
+        assert "keep what was done" in str(exc_info.value)
         assert exc_info.value.__cause__ is exception
     assert h.restore_calls == 0
     assert h.publish_events == []
@@ -549,159 +546,6 @@ async def test_publish_receives_original_exception() -> None:
     assert len(seen) == 2
     assert isinstance(seen[0], Flake)
     assert isinstance(seen[1], StreamStall)
-
-
-@pytest.mark.asyncio
-async def test_exempt_retry_has_independent_accounting_and_integer_delay() -> None:
-    h = _Harness()
-
-    class ExemptFailure(ConnectionError):
-        pass
-
-    loop = h.build(
-        max_retries=1,
-        backoff=(7,),
-        retry_exemption=lambda exc: (
-            RetryAttemptInfo(reason="validation", attempt=2, max_attempts=3, delay_seconds=1.2)
-            if isinstance(exc, ExemptFailure)
-            else None
-        ),
-    )
-    failures: list[BaseException] = [ExemptFailure("invalid"), ConnectionError("transport")]
-
-    async def attempt() -> str:
-        if failures:
-            raise failures.pop(0)
-        return "ok"
-
-    assert await loop.run(attempt) == "ok"
-    assert h.publish_events == [
-        ("validation", 2, 3, 2),
-        ("transport", 1, 1, 7),
-    ]
-    assert h.sleep_calls == [2, 7]
-    assert h.restore_calls == 2
-
-
-@pytest.mark.asyncio
-async def test_zero_budget_allows_exempt_retry_then_stall_exhausts() -> None:
-    h = _Harness()
-    loop = h.build(
-        max_retries=0,
-        restore_on_stall_exhaustion=True,
-        retry_exemption=lambda exc: (
-            RetryAttemptInfo(reason="validation", attempt=1, max_attempts=3, delay_seconds=0)
-            if isinstance(exc, ConnectionError)
-            else None
-        ),
-    )
-    failures: list[BaseException] = [ConnectionError("invalid"), StreamStall("stalled")]
-
-    async def attempt() -> str:
-        raise failures.pop(0)
-
-    with pytest.raises(StreamStallExhausted):
-        await loop.run(attempt)
-
-    assert h.publish_events == [("validation", 1, 3, 0)]
-    assert h.restore_calls == 2
-
-
-@pytest.mark.asyncio
-async def test_exempt_then_transient_then_stall_keeps_per_lane_counters() -> None:
-    """Stall and transport failures share the transient lane; exempt retries touch neither."""
-    h = _Harness()
-
-    class ExemptFailure(ConnectionError):
-        pass
-
-    loop = h.build(
-        max_retries=2,
-        backoff=(5, 9),
-        retry_exemption=lambda exc: (
-            RetryAttemptInfo(reason="validation", attempt=1, max_attempts=3, delay_seconds=0)
-            if isinstance(exc, ExemptFailure)
-            else None
-        ),
-    )
-    failures: list[BaseException] = [
-        ExemptFailure("invalid"),
-        ConnectionError("transport"),
-        StreamStall("stalled"),
-    ]
-
-    async def attempt() -> str:
-        if failures:
-            raise failures.pop(0)
-        return "ok"
-
-    assert await loop.run(attempt) == "ok"
-    assert h.publish_events == [
-        ("validation", 1, 3, 0),
-        ("transport", 1, 2, 5),
-        ("Stream stalled", 2, 2, 9),
-    ]
-    assert h.sleep_calls == [0, 5, 9]
-    assert h.restore_calls == 3
-
-
-@pytest.mark.asyncio
-async def test_retry_gate_vetoes_exempt_retry_before_restore_or_event() -> None:
-    h = _Harness()
-    loop = StreamRetryLoop(
-        max_retries=0,
-        backoff_schedule=(0,),
-        is_retryable=lambda _exc: True,
-        snapshot_history=h.snapshot,
-        restore_history=h.restore,
-        publish_retry_attempt=h.publish,
-        is_interrupted=h.is_interrupted,
-        interruptible_sleep=h.sleep,
-        clean_error_message=h.clean_err,
-        may_retry=lambda _exc: False,
-        retry_exemption=lambda _exc: RetryAttemptInfo("validation", 1, 3, 0),
-    )
-
-    async def attempt() -> str:
-        raise ConnectionError("invalid")
-
-    with pytest.raises(ConnectionError, match="invalid"):
-        await loop.run(attempt)
-
-    assert h.restore_calls == 0
-    assert h.publish_events == []
-
-
-@pytest.mark.asyncio
-async def test_interrupt_during_exempt_backoff_raises_cancelled_after_event() -> None:
-    h = _Harness()
-
-    async def interrupted_sleep(seconds: int) -> bool:
-        h.sleep_calls.append(seconds)
-        return True
-
-    loop = StreamRetryLoop(
-        max_retries=0,
-        backoff_schedule=(0,),
-        is_retryable=lambda _exc: True,
-        snapshot_history=h.snapshot,
-        restore_history=h.restore,
-        publish_retry_attempt=h.publish,
-        is_interrupted=h.is_interrupted,
-        interruptible_sleep=interrupted_sleep,
-        clean_error_message=h.clean_err,
-        retry_exemption=lambda _exc: RetryAttemptInfo("validation", 1, 3, 1),
-    )
-
-    async def attempt() -> str:
-        raise ConnectionError("invalid")
-
-    with pytest.raises(asyncio.CancelledError):
-        await loop.run(attempt)
-
-    assert h.restore_calls == 1
-    assert h.publish_events == [("validation", 1, 3, 1)]
-    assert h.sleep_calls == [1]
 
 
 # ---------------------------------------------------------------------------

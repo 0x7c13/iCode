@@ -35,12 +35,13 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentAbandoned,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationContextPressure,
     InvocationEvent,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -133,6 +134,9 @@ _HEADLESS_RUN_EVENT_TYPES = (
     AgentLoadProgress,
     AgentLoadStarted,
     InvocationMessage,
+    InvocationContentDelta,
+    InvocationContentFinished,
+    InvocationContentAbandoned,
     AgentRuntimeUpdated,
     AgentThinking,
     TurnStarted,
@@ -145,8 +149,6 @@ _HEADLESS_RUN_EVENT_TYPES = (
     InvocationContextPressure,
     Error,
     QuestionToUser,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationRetryAttempt,
     SessionRestored,
     SessionSaved,
@@ -176,6 +178,10 @@ _HEADLESS_RUN_EVENT_TYPES = (
 )
 
 
+_InvocationProse = InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned
+"""Model output a sub-agent keeps private: only its own invocation's stream shows it."""
+
+
 def allows_headless_event(event: Event) -> bool:
     """Keep the existing headless boundary after execution families converge."""
     if not isinstance(event, _HEADLESS_RUN_EVENT_TYPES):
@@ -184,9 +190,7 @@ def allows_headless_event(event: Event) -> bool:
         return True
     if event.origin.root.kind == "workflow_node":
         return False
-    return event.origin.kind == "turn" or not isinstance(
-        event, InvocationMessage | InvocationPresentationAttemptAccepted | InvocationPresentationAttemptRejected
-    )
+    return event.origin.kind == "turn" or not isinstance(event, _InvocationProse)
 
 
 def allows_workflow_node_event(event: Event) -> bool:
@@ -200,9 +204,7 @@ def allows_workflow_node_event(event: Event) -> bool:
         return False
     if event.origin.root.kind != "workflow_node":
         return False
-    return event.origin.kind == "workflow_node" or not isinstance(
-        event, InvocationMessage | InvocationPresentationAttemptAccepted | InvocationPresentationAttemptRejected
-    )
+    return event.origin.kind == "workflow_node" or not isinstance(event, _InvocationProse)
 
 
 @dataclass(frozen=True)
@@ -543,12 +545,7 @@ class ChrysSessionHost:
             nonlocal final, error, question
             # Only the terminal state is kept: a caller that wants the turn's
             # events reads them from this iterator as they stream.
-            if (
-                isinstance(event, InvocationMessage)
-                and event.origin.kind == "turn"
-                and event.is_final
-                and not event.is_intermediate
-            ):
+            if isinstance(event, InvocationMessage) and event.origin.kind == "turn" and event.is_final:
                 final = event
             elif isinstance(event, Error):
                 error = event
@@ -667,12 +664,7 @@ class ChrysSessionHost:
                     on_event(event)
                 if keep_events:
                     events.append(event)
-                if (
-                    isinstance(event, InvocationMessage)
-                    and event.origin.kind == "turn"
-                    and event.is_final
-                    and not event.is_intermediate
-                ):
+                if isinstance(event, InvocationMessage) and event.origin.kind == "turn" and event.is_final:
                     final = event
             if final is None:
                 error_message = "Agent run ended without a final response."

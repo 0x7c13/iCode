@@ -91,6 +91,9 @@ class TurnFinalizer:
         interrupted = loaded.bindings.state.was_interrupted
         approval_decisions = loaded.bindings.approval.drain_decisions()
         metadata_start_index = _post_compaction_history_start_index(self._turn_state, self._current)
+        # Taken once, by every turn: a later failed turn that ran no pass, such as
+        # one interrupted before it started, keeps nothing of an earlier one.
+        partial_answer, loaded.bindings.state.partial_answer = loaded.bindings.state.partial_answer, ()
 
         if failed:
             # The pass-start boundary keeps a retried/resumed pass's recovered
@@ -107,8 +110,8 @@ class TurnFinalizer:
             )
             approval_decisions = []
             self._history.trim_to_last_complete_tool_results()
-            if interrupted:
-                self._history.remove_trailing_agent_text()
+            # What the pass showed stays, also an answer cut off mid-stream.
+            self._history.keep_partial_answer(partial_answer)
 
         await self._drain_abandoned_injections()
         self._persist_history_metadata(

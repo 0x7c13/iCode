@@ -18,6 +18,8 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     InvocationAborted,
     InvocationCascadeAborted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationPaused,
     InvocationResumed,
@@ -699,6 +701,8 @@ async def test_controller_reports_no_unpublished_final_after_terminal_tool_for_e
     from acp.schema import ToolCallStart
 
     bus = EventBus()
+    deltas = await capture_events(bus, InvocationContentDelta)
+    finished = await capture_events(bus, InvocationContentFinished)
     messages = await capture_events(bus, InvocationMessage)
 
     class TextThenToolClient(StreamingAcpClient):
@@ -735,5 +739,10 @@ async def test_controller_reports_no_unpublished_final_after_terminal_tool_for_e
     )
 
     assert await controller.run() == "answer before tool"
-    assert [message.text for message in messages] == ["answer before tool"]
+    # The answer streamed once and its segment ended at the tool call; nothing sends it again.
+    assert [(delta.origin.kind, delta.channel, delta.text) for delta in deltas] == [
+        ("sub_agent", "answer", "answer before tool")
+    ]
+    assert [(event.segment_id, event.status) for event in finished] == [(deltas[0].segment_id, "completed")]
+    assert messages == []
     assert controller.policy.backend.transcript_final_text == ""

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Turn identity on the ACP surface: ``_meta.chrys``, ``messageId``, retry, retraction."""
+"""Turn identity on the ACP surface: ``_meta.chrys``, ``messageId`` and retry."""
 
 from __future__ import annotations
 
@@ -12,11 +12,8 @@ from acp.helpers import text_block
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
-    InvocationMessage,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
+    InvocationContentDelta,
     InvocationRetryAttempt,
-    ProvisionalPresentation,
     TurnStarted,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
@@ -74,10 +71,6 @@ def _server(events: list[Any], *, turns: list[TurnRecord] | None = None) -> tupl
     return server, client
 
 
-def _retractions(client: _FakeClient) -> list[dict[str, Any]]:
-    return [params for method, params in client.ext_notifications if method == "chrys/messages_retracted"]
-
-
 def _retries(client: _FakeClient) -> list[dict[str, Any]]:
     return [params for method, params in client.ext_notifications if method == "chrys/retry_attempt"]
 
@@ -88,7 +81,7 @@ async def test_one_turn_id_reaches_the_response_live_and_history() -> None:
     server, client = _server(
         [
             _turn_started(user_message_id=_CLIENT_MESSAGE_ID),
-            InvocationMessage(text="answer", origin=_origin()),
+            InvocationContentDelta(origin=_origin(), segment_id="seg-1", text="answer"),
         ],
         turns=[
             TurnRecord(turn_number=1, turn_id="turn-a", opening_item_id=_ITEM_ID, user_message_id=_CLIENT_MESSAGE_ID)
@@ -110,7 +103,9 @@ async def test_one_turn_id_reaches_the_response_live_and_history() -> None:
             },
         )
     ]
-    assert client.updates[0].update.field_meta == {"chrys": {"turnId": "turn-a", "turnNumber": 1}}
+    assert client.updates[0].update.field_meta == {
+        "chrys": {"segmentId": "seg-1", "channel": "answer", "turnId": "turn-a", "turnNumber": 1}
+    }
 
     history = await server.ext_method("session/history", {"sessionId": "s1"})
     assert history["turns"] == [{"turnId": "turn-a", "turnNumber": 1, "userMessageId": _CLIENT_MESSAGE_ID}]
@@ -129,30 +124,18 @@ async def test_a_run_with_no_turn_started_reports_no_turn_id() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_rejected_attempt_retracts_both_segments_and_the_answer_is_a_new_message() -> None:
+async def test_a_turn_retry_is_forwarded_with_the_turn_id() -> None:
     server, client = _server(
         [
             _turn_started(),
-            InvocationMessage(
-                text="first", origin=_origin(), presentation=ProvisionalPresentation("attempt-1", "seg-1")
-            ),
-            InvocationMessage(
-                text="second", origin=_origin(), presentation=ProvisionalPresentation("attempt-1", "seg-2")
-            ),
-            InvocationPresentationAttemptRejected(origin=_origin(), attempt_id="attempt-1"),
             InvocationRetryAttempt(
                 origin=_origin(), message="retrying", attempt=2, max_attempts=10, delay_seconds=3, scope="wire"
             ),
-            InvocationMessage(text="final", origin=_origin()),
         ]
     )
 
     await server.prompt([text_block("go")], session_id="s1")
 
-    chunk_ids = [update.update.message_id for update in client.updates]
-    assert _retractions(client) == [{"sessionId": "s1", "turnId": "turn-a", "messageIds": [chunk_ids[0], chunk_ids[1]]}]
-    # The final answer is a fresh message, not a continuation of the retracted ones.
-    assert chunk_ids[2] not in _retractions(client)[0]["messageIds"]
     assert _retries(client) == [
         {
             "sessionId": "s1",
@@ -164,43 +147,6 @@ async def test_a_rejected_attempt_retracts_both_segments_and_the_answer_is_a_new
             "message": "retrying",
         }
     ]
-
-
-@pytest.mark.anyio
-async def test_partial_accept_only_retracts_the_segments_the_backend_dropped() -> None:
-    server, client = _server(
-        [
-            _turn_started(),
-            InvocationMessage(
-                text="keep", origin=_origin(), presentation=ProvisionalPresentation("attempt-1", "seg-1")
-            ),
-            InvocationMessage(
-                text="drop", origin=_origin(), presentation=ProvisionalPresentation("attempt-1", "seg-2")
-            ),
-            InvocationPresentationAttemptAccepted(origin=_origin(), attempt_id="attempt-1", segment_ids=("seg-1",)),
-        ]
-    )
-
-    await server.prompt([text_block("go")], session_id="s1")
-
-    kept_id, dropped_id = (update.update.message_id for update in client.updates)
-    assert _retractions(client) == [{"sessionId": "s1", "turnId": "turn-a", "messageIds": [dropped_id]}]
-    assert kept_id not in _retractions(client)[0]["messageIds"]
-
-
-@pytest.mark.anyio
-async def test_an_attempt_with_nothing_dropped_is_not_a_retraction() -> None:
-    server, client = _server(
-        [
-            _turn_started(),
-            InvocationMessage(text="only", origin=_origin()),
-            InvocationPresentationAttemptAccepted(origin=_origin(), attempt_id="attempt-1", segment_ids=()),
-        ]
-    )
-
-    await server.prompt([text_block("go")], session_id="s1")
-
-    assert _retractions(client) == []
 
 
 @pytest.mark.anyio

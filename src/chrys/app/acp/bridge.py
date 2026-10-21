@@ -25,11 +25,10 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationEvent,
-    InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -232,7 +231,6 @@ class AcpEventBridge:
     def __init__(self) -> None:
         self._sub_agent_parents: dict[str, str] = {}
         self._tool_kinds_by_call_id: dict[str, str] = {}
-        self._last_streaming_agent_text = ""
         # Structured blocks already pushed by hosted progress updates. An ACP
         # content field replaces the card's whole collection, so a later
         # status-only update must re-send these or they vanish.
@@ -246,18 +244,13 @@ class AcpEventBridge:
         # updates that precede any turn carry no turn context.
         self._turn_id: str | None = None
         self._turn_number: int | None = None
-        # The agent message currently being streamed. ACP groups chunks into
-        # one message by this id, so it changes at every boundary the client
-        # must render separately: a new turn, and each tool batch.
-        self._agent_message_id: str | None = None
-        # Provisional text is identified by (attempt_id, segment_id) — the
-        # backend's own naming for one retractable segment — so a retraction
-        # can name exactly the chunks it sent.
-        self._provisional_message_ids: dict[str, dict[str, list[str]]] = {}
-        # The segment the live message belongs to. A different segment is a
-        # different message, so text that moves on to another one starts a new
-        # id rather than continuing the last.
-        self._live_segment: tuple[str, str] | None = None
+        # The message id of each open content segment. ACP groups chunks into
+        # one message by this id, and the backend's segment is that message:
+        # a tool call, a change of channel or a new response starts another.
+        self._segment_message_ids: dict[str, str] = {}
+        # The main turn's answer messages since its last tool call: the answer
+        # a failed turn ends with, which a bare retry asks for again.
+        self._trailing_answer_message_ids: list[str] = []
 
     def begin_turn(self, turn_id: str, turn_number: int) -> None:
         """Label every later update with the turn that opened.
@@ -268,24 +261,17 @@ class AcpEventBridge:
         """
         self._turn_id = turn_id
         self._turn_number = turn_number
-        self._agent_message_id = None
-        self._live_segment = None
+        self._segment_message_ids.clear()
 
     @property
     def turn_id(self) -> str | None:
         """Identity of the turn this bridge is labelling, if one opened."""
         return self._turn_id
 
-    def begin_agent_message(self) -> str:
-        """Start a new agent message and return its id.
-
-        A live message keeps its id: ACP says every chunk of one message shares
-        a ``messageId``, and a change means a new message. Only a boundary —
-        a new turn or a tool call in between — starts another.
-        """
-        if self._agent_message_id is None:
-            self._agent_message_id = str(uuid.uuid4())
-        return self._agent_message_id
+    @property
+    def trailing_answer_message_ids(self) -> tuple[str, ...]:
+        """The ``messageId``s of the answer messages the main turn sent after its last tool call."""
+        return tuple(self._trailing_answer_message_ids)
 
     def _turn_meta(self) -> dict[str, Any]:
         if self._turn_id is None:
@@ -294,25 +280,6 @@ class AcpEventBridge:
         if self._turn_number is not None:
             meta["turnNumber"] = self._turn_number
         return meta
-
-    def take_retractions(self, attempt_id: str, kept_segment_ids: Sequence[str]) -> list[str]:
-        """Message ids of one attempt's segments the backend did NOT keep.
-
-        The backend names exactly which of an attempt's provisional segments
-        survive (:class:`InvocationPresentationAttemptAccepted`); anything this
-        bridge already sent for that attempt and that is absent from
-        *kept_segment_ids* has to be withdrawn. A rejection passes an empty
-        list. The attempt's record is dropped either way — a later event reuses
-        neither its id nor its segment ids.
-        """
-        segments = self._provisional_message_ids.pop(attempt_id, {})
-        kept = set(kept_segment_ids)
-        return [
-            message_id
-            for segment_id, message_ids in segments.items()
-            if segment_id not in kept
-            for message_id in message_ids
-        ]
 
     def updates_for_event(self, event: Event) -> list[SessionUpdate]:
         """Return ACP updates for one Chrys event."""
@@ -323,35 +290,34 @@ class AcpEventBridge:
                 update.field_meta = with_chrys_metadata(update.field_meta, turn_meta)
         return updates
 
-    def _agent_message_update(self, chunk: str, event: InvocationMessage) -> acp_schema.AgentMessageChunk:
-        """One agent text chunk, tagged with the message it belongs to.
+    def _content_chunk(
+        self, event: InvocationContentDelta
+    ) -> acp_schema.AgentMessageChunk | acp_schema.AgentThoughtChunk:
+        """One chunk of a content segment: answer text is a message, reasoning a thought.
 
-        Rebuilt from the schema rather than ``update_agent_message_text``,
-        which takes no ``messageId``. Interim text carries the backend's
-        ``(attempt_id, segment_id)``: those are the ids a retraction names.
+        Rebuilt from the schema rather than the ``update_agent_*_text``
+        helpers, which take no ``messageId``. Every chunk of one segment
+        shares its id; the segment and channel ride ``_meta.chrys``.
         """
-        presentation = event.presentation
-        segment = (presentation.attempt_id, presentation.segment_id) if presentation is not None else None
-        if segment != self._live_segment:
-            # Another segment is another message: text for a retractable
-            # segment never continues the one before it, and ordinary text
-            # after one starts afresh.
-            self._agent_message_id = None
-            self._live_segment = segment
-        message_id = self.begin_agent_message()
-        if presentation is not None:
-            # A segment can arrive in several chunks; every id it carried has to
-            # be retractable, so the record keeps all of them.
-            sent = self._provisional_message_ids.setdefault(presentation.attempt_id, {}).setdefault(
-                presentation.segment_id, []
+        message_id = self._segment_message_ids.get(event.segment_id)
+        if message_id is None:
+            message_id = self._segment_message_ids[event.segment_id] = str(uuid.uuid4())
+            if event.channel == "answer":
+                self._trailing_answer_message_ids.append(message_id)
+        content = acp_schema.TextContentBlock(type="text", text=event.text)
+        chunk: acp_schema.AgentMessageChunk | acp_schema.AgentThoughtChunk
+        if event.channel == "answer":
+            chunk = acp_schema.AgentMessageChunk(
+                sessionUpdate="agent_message_chunk", content=content, messageId=message_id
             )
-            if message_id not in sent:
-                sent.append(message_id)
-        return acp_schema.AgentMessageChunk(
-            sessionUpdate="agent_message_chunk",
-            content=acp_schema.TextContentBlock(type="text", text=chunk),
-            messageId=message_id,
+        else:
+            chunk = acp_schema.AgentThoughtChunk(
+                sessionUpdate="agent_thought_chunk", content=content, messageId=message_id
+            )
+        chunk.field_meta = with_chrys_metadata(
+            chunk.field_meta, {"segmentId": event.segment_id, "channel": event.channel}
         )
+        return chunk
 
     def _project_event(self, event: Event) -> list[SessionUpdate]:
         if isinstance(event, InvocationEvent):
@@ -359,30 +325,20 @@ class AcpEventBridge:
                 return []
             if event.origin.kind == "sub_agent":
                 return self._sub_agent_updates(event)
-        if isinstance(event, InvocationMessage):
-            chunk = self._agent_message_delta(event)
-            if not chunk:
+        if isinstance(event, InvocationContentDelta):
+            if not event.text:
                 return []
-            return [self._agent_message_update(chunk, event)]
+            return [self._content_chunk(event)]
+        if isinstance(event, InvocationContentFinished):
+            # Its text already streamed; a finished segment takes no more chunks.
+            self._segment_message_ids.pop(event.segment_id, None)
+            return []
         if isinstance(event, AgentThinking):
             if not event.text:
                 return []
             return [update_agent_thought_text(event.text)]
-        if isinstance(event, InvocationPresentationAttemptAccepted):
-            return []
-        if isinstance(event, InvocationPresentationAttemptRejected):
-            # ACP has no text-retraction primitive. Keep the already-sent
-            # stale partial visible, matching its existing retry behavior,
-            # but start the next cumulative stream from a clean baseline.
-            self._last_streaming_agent_text = ""
-            return []
-        if isinstance(event, InvocationRetryAttempt):
-            self._last_streaming_agent_text = ""
-            return []
         if isinstance(event, InvocationToolCallStart):
-            # A client groups streamed text into one message; a tool card in
-            # between is a boundary, so the text after it is a new message.
-            self._agent_message_id = None
+            self._trailing_answer_message_ids.clear()
             if event.call_id:
                 self._tool_kinds_by_call_id[event.call_id] = event.tool_kind
             update = start_tool_call(
@@ -711,21 +667,6 @@ class AcpEventBridge:
         for call_blocks in self._sub_agent_hosted_blocks.get(invocation_id, {}).values():
             blocks.extend(call_blocks)
         return blocks
-
-    def _agent_message_delta(self, event: InvocationMessage) -> str:
-        text = event.text
-        if not text:
-            return ""
-        if event.is_intermediate:
-            self._last_streaming_agent_text = ""
-            return text
-        if self._last_streaming_agent_text and not text.startswith(self._last_streaming_agent_text):
-            logger.warning("ACP agent message stream was not cumulative; emitting full snapshot text.")
-            self._last_streaming_agent_text = "" if event.is_final else text
-            return text
-        delta = text.removeprefix(self._last_streaming_agent_text) if self._last_streaming_agent_text else text
-        self._last_streaming_agent_text = "" if event.is_final else text
-        return delta
 
 
 def _text_tool_content(text: str) -> acp_schema.ContentToolCallContent:

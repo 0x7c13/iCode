@@ -238,7 +238,7 @@ def _wire_policy(validation: ResponseValidationMiddleware, retried: list[BaseExc
 
 @pytest.mark.parametrize("stream", [True, False], ids=["stream", "blocking"])
 async def test_the_wire_retry_sends_again_after_a_transient_error_envelope(stream: bool) -> None:
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     retried: list[BaseException] = []
     answer = _answer("Hi") if stream else json_reply(_completion("Hi"))
 
@@ -258,7 +258,7 @@ async def test_the_wire_retry_sends_again_after_a_transient_error_envelope(strea
 
 
 async def test_the_wire_retry_does_not_send_again_after_a_final_error_envelope() -> None:
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     retried: list[BaseException] = []
     bad_key = {"code": "invalid_api_key", "type": "invalid_request_error", "message": "Incorrect API key provided."}
 

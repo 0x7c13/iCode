@@ -37,11 +37,11 @@ def test_anthropic_stop_reason_survives_all_response_paths(reason, expected, mod
         response = ChatResponse.from_updates([update])
     assert response.finish_reason == expected
     result = DefaultResponseValidator().validate(response)
-    if expected == "length":
-        assert result.code == ValidationReason.OUTPUT_TRUNCATED
-        assert not result.retryable
-    else:
-        assert result.retryable
+    # An empty reply is rejected either way; only the length stop reads as truncated output.
+    assert not result.ok
+    assert result.code == (
+        ValidationReason.OUTPUT_TRUNCATED if expected == "length" else ValidationReason.EMPTY_CONTENTS
+    )
 
 
 def _refused(*content: object) -> BetaMessage:

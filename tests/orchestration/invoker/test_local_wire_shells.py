@@ -15,7 +15,7 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import InvocationPaused, InvocationRetryAttempt
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.platform import get_platform
-from chrys.kernel import Agent, AgentSession, ChatResponse, ResponseStream
+from chrys.kernel import Agent, AgentSession, ChatResponse, ChatResponseUpdate, ResponseStream
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.resources import Conversation
 from chrys.orchestration.sub_agents import tools as tools_module
@@ -50,7 +50,8 @@ async def test_local_shell_policy_records_wire_inputs_and_attempts(
 
     def stalled() -> ResponseStream:
         async def updates():
-            yield _text_update("discarded")
+            # Progress with nothing readable, so the stall stays retryable.
+            yield ChatResponseUpdate(contents=[], role="assistant")
             await asyncio.Event().wait()
 
         return ResponseStream(updates(), finalizer=ChatResponse.from_updates)

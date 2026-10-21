@@ -424,9 +424,8 @@ def _process_update(
     valid call into an argument-parsing failure; the blocking path already
     collapses identity duplicates within one response to a single copy at
     landing, and assembly-scoped dedup gives streamed responses the same
-    semantics (per attempt, so a validation retry re-emitting an object a
-    REJECTED attempt streamed is unaffected — each assembly seeds its own
-    memo). The memo maps id -> content precisely to RETAIN each object for
+    semantics (per attempt: each assembly seeds its own memo, so a retry
+    re-emitting an object an earlier attempt streamed is unaffected). The memo maps id -> content precisely to RETAIN each object for
     the pass: generator-fed assembly holds no other reference to consumed
     fragments, and a merged-away fragment released mid-pass would let
     CPython hand a later fresh fragment the same id — silently dropping it.
@@ -1905,6 +1904,7 @@ class ResponseStream[UpdateT, FinalT](AsyncIterable[UpdateT]):
     async def __anext__(self) -> UpdateT:
         if self._closed:
             raise StopAsyncIteration
+        ended = False
         try:
             with contextlib.ExitStack() as stack:
                 for factory in self._pull_context_manager_factories:
@@ -1918,10 +1918,7 @@ class ResponseStream[UpdateT, FinalT](AsyncIterable[UpdateT]):
                     self._iterator = stream.__aiter__()
                 update: UpdateT = await self._iterator.__anext__()
         except StopAsyncIteration:
-            self._consumed = True
-            await self._run_cleanup_hooks()
-            await self.get_final_response()
-            raise
+            ended = True
         except asyncio.CancelledError:
             try:
                 await self.aclose()
@@ -1935,6 +1932,13 @@ class ResponseStream[UpdateT, FinalT](AsyncIterable[UpdateT]):
             finally:
                 self._stream_error = None
             raise
+        if ended:
+            # Finalized outside the handler: an error a hook raises is its own,
+            # not one raised while the end of iteration was being handled.
+            self._consumed = True
+            await self._run_cleanup_hooks()
+            await self.get_final_response()
+            raise StopAsyncIteration
         if self._map_update is not None:
             update = await _resolve_maybe_awaitable(self._map_update(update))
         if self._update_filters and (self._map_update is not None or not isinstance(self._stream, ResponseStream)):

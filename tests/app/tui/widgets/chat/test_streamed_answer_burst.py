@@ -1,33 +1,31 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A streamed answer burst costs one think-tag pass, one parse and a bounded number of layouts.
+"""A streamed answer burst costs one parse and a bounded number of layouts.
 
-A synchronous burst of cumulative ``InvocationMessage`` snapshots, such as
-the per-line replay of a buffered answer the main turn once published, must
-not cost per event. Each event used to process think tags over the whole text
-and queue a full markdown parse plus a transcript relayout, so an N-line
-answer cost O(N^2) parsing after it had already arrived.
+A synchronous burst of answer deltas, such as a buffered answer whose lines
+arrive in one loop step, must not cost per delta: each delta queuing a full
+markdown parse plus a transcript relayout would make an N-line answer cost
+O(N^2) parsing after it had already arrived.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from types import ModuleType
 
 import pytest
 from textual.await_complete import AwaitComplete
 from textual.geometry import Size
+from textual.timer import Timer, TimerCallback
 
 from chrys.app.tui.widgets.chat import messages as messages_module
-from chrys.app.tui.widgets.chat.messages import AgentMessage, MessageCopyButton
+from chrys.app.tui.widgets.chat.messages import _STREAMED_BODY_INTERVAL_SECONDS, AgentMessage, MessageCopyButton
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
-from chrys.foundation.i18n import MessageRef
-from chrys.foundation.i18n.formatting import format_message
 from chrys.kernel import Content, Message
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import ChatPanelApp, WidgetApp
-from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, with_wait_deadline
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, wait_for, wait_until, with_wait_deadline
 
 _ANSWER_LINES = 200
 _SCREEN_LAYOUT_BOUND = 12
@@ -46,16 +44,6 @@ def _answer(lines: int) -> str:
     return "".join(parts)
 
 
-def _cumulative_lines(text: str) -> list[str]:
-    """Cumulative snapshots of ``text``, one per line, as a line-by-line replay publishes them."""
-    emitted = ""
-    out: list[str] = []
-    for line in text.splitlines(keepends=True):
-        emitted += line
-        out.append(emitted)
-    return out
-
-
 def _transcript(turns: int) -> list[dict[str, object]]:
     history: list[dict[str, object]] = []
     for index in range(turns):
@@ -69,10 +57,10 @@ def _transcript(turns: int) -> list[dict[str, object]]:
     return history
 
 
-async def test_a_streamed_burst_processes_and_hands_the_body_its_text_once(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_streamed_burst_hands_the_body_its_text_once(monkeypatch: pytest.MonkeyPatch) -> None:
     answer = _answer(_ANSWER_LINES)
-    cumulative = _cumulative_lines(answer)
-    message = AgentMessage(cumulative[0], is_final=False)
+    lines = answer.splitlines(keepends=True)
+    message = AgentMessage(lines[0], is_final=False)
 
     async with WidgetApp(lambda: message).run_test() as pilot:
         body = message.query_one(VirtualizedMarkdown)
@@ -86,50 +74,99 @@ async def test_a_streamed_burst_processes_and_hands_the_body_its_text_once(monke
             handed.append(markdown)
             return real_update(markdown)
 
-        processed: list[str] = []
-        real_process = messages_module.process_think_tags
-
-        def recording_process(
-            text: str,
-            *,
-            intermediate: bool = False,
-            render_message: Callable[[MessageRef], str] = format_message,
-        ) -> str:
-            processed.append(text)
-            return real_process(text, intermediate=intermediate, render_message=render_message)
-
         monkeypatch.setattr(body, "update", recording_update)
-        monkeypatch.setattr(messages_module, "process_think_tags", recording_process)
 
-        for text in cumulative[1:]:
-            message.stream_update(text, is_final=False)
+        for line in lines[1:]:
+            message.append_text(line)
 
         assert handed == []
-        assert processed == []
-        # Readers never see a stale answer, even before the body catches up.
-        assert message.text == real_process(answer)
-        assert message.format_agent_response_copy() == real_process(answer)
-        assert processed == [answer]
+        # Readers never see a stale answer, even before the body catches up;
+        # think tags are answer text, kept as written.
+        assert message.text == answer.strip()
+        assert message.format_agent_response_copy() == answer.strip()
 
         await wait_for(lambda: handed, pilot=pilot, description="body synced once per loop turn")
-        assert handed == [real_process(answer)]
-        assert processed == [answer]
+        assert handed == [answer.strip()]
 
-        final = answer + "Done.\n"
+        message.append_text("Done.\n")
+        final = message.text
         message.stream_update(final, is_final=True)
 
         # The final update reaches the body before the cursor and copy button change.
-        assert handed == [real_process(answer), real_process(final)]
+        assert handed == [answer.strip(), final]
         await wait_for(
-            lambda: not message.query(".agent-cursor") and message.query_one(MessageCopyButton).display,
+            lambda: not message.has_class("--streaming") and message.query_one(MessageCopyButton).display,
             pilot=pilot,
-            description="cursor removed and copy button shown",
+            description="streaming ended and copy button shown",
         )
         await wait_for(
-            lambda: body.source == real_process(final) and not body.lock.is_locked,
+            lambda: body.source == final and not body.lock.is_locked,
             pilot=pilot,
             description="final parse installed",
         )
+
+
+async def test_streamed_text_reaches_the_body_at_most_once_per_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each body update parses the whole answer and may lay out the transcript, so a steady stream is paced."""
+    now = [0.0]
+    clock = ModuleType("time")
+    clock.monotonic = lambda: now[0]  # type: ignore[attr-defined]
+    monkeypatch.setattr(messages_module, "time", clock)
+    message = AgentMessage("first", is_final=False)
+
+    async with WidgetApp(lambda: message).run_test() as pilot:
+        body = message.query_one(VirtualizedMarkdown)
+        await wait_for(lambda: body.source and body._blocks, pilot=pilot, description="first text parsed")
+
+        handed: list[str] = []
+        real_update = body.update
+
+        def recording_update(markdown: str) -> AwaitComplete:
+            handed.append(markdown)
+            return real_update(markdown)
+
+        # The test fires each paced sync itself, so nothing but the timer can deliver it.
+        timers: list[tuple[float, TimerCallback]] = []
+
+        def recording_set_timer(
+            delay: float, callback: TimerCallback | None = None, *, name: str | None = None, pause: bool = False
+        ) -> Timer:
+            assert callback is not None
+            timers.append((delay, callback))
+            return Timer(message, delay, name=name, callback=callback, pause=pause)
+
+        monkeypatch.setattr(body, "update", recording_update)
+        monkeypatch.setattr(message, "set_timer", recording_set_timer)
+
+        message.append_text(" second")
+        await wait_for(lambda: handed, pilot=pilot, description="first streamed text handed over")
+        assert handed == ["first second"]
+        assert timers == []
+
+        # Within the interval of that update: the newest text waits for the timer.
+        message.append_text(" third")
+        message.append_text(" fourth")
+        assert not await wait_until(lambda: len(handed) > 1, pilot=pilot, timeout=0.3)
+        assert [delay for delay, _ in timers] == [_STREAMED_BODY_INTERVAL_SECONDS]
+        timers[0][1]()
+        assert handed == ["first second", "first second third fourth"]
+
+        now[0] += 1
+        message.append_text(" fifth")
+        await wait_for(lambda: len(handed) == 3, pilot=pilot, description="update after the interval handed over")
+        assert handed[-1] == "first second third fourth fifth"
+        assert len(timers) == 1
+
+        # A final update while a paced sync is pending hands over its text at once; the timer then finds nothing new.
+        message.append_text(" sixth")
+        final = "first second third fourth fifth sixth seventh"
+        message.stream_update(final, is_final=True)
+        assert len(timers) == 2
+        assert handed[-1] == final
+        timers[1][1]()
+        await pilot.pause()
+        assert handed[-1] == final
+        assert len(handed) == 4
 
 
 @with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
@@ -137,8 +174,8 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     answer = _answer(_ANSWER_LINES)
-    cumulative = _cumulative_lines(answer)
-    final_body = messages_module.process_think_tags(answer)
+    lines = answer.splitlines(keepends=True)
+    final_body = answer.strip()
 
     async with ChatPanelApp().run_test(size=(120, 36)) as pilot:
         app = pilot.app
@@ -156,7 +193,7 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
         )
 
         # The first event mounts the streamed message; its body parses the first line on mount.
-        await panel.add_agent_message(cumulative[0], is_final=False)
+        await panel.add_answer_delta("answer", lines[0])
         message = panel.query(AgentMessage).last()
         body = message.query_one(VirtualizedMarkdown)
         await wait_for(lambda: body._blocks, pilot=pilot, description="streamed message mounted")
@@ -181,9 +218,10 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
         monkeypatch.setattr(screen, "_refresh_layout", recording_refresh_layout)
 
         # MainScreen awaits each event's handler inline, so the whole burst runs in one loop step.
-        for text in cumulative[1:]:
-            await panel.add_agent_message(text, is_final=False)
-        await panel.add_agent_message(answer, is_final=True)
+        for line in lines[1:]:
+            await panel.add_answer_delta("answer", line)
+        panel.finish_answer_segment("answer", completed=True)
+        await panel.add_agent_message(answer)
 
         await wait_for(
             # The lock is held from the parse of the final text until its blocks are installed.
@@ -197,3 +235,41 @@ async def test_a_long_answer_burst_into_a_populated_transcript_parses_once_with_
         assert body.source == final_body
         assert message.text == final_body
         assert len(layouts) <= _SCREEN_LAYOUT_BOUND, f"{len(layouts)} screen layouts for one streamed answer"
+
+
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_each_row_a_streamed_answer_adds_lays_the_transcript_out_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new row moves the whole transcript, so its layout costs in proportion to the transcript: one is enough."""
+    async with ChatPanelApp().run_test(size=(120, 36)) as pilot:
+        app = pilot.app
+        screen = app.screen
+        panel = app.query_one(ChatPanel)
+        await panel.replay_history(_transcript(24))
+        await panel.add_user_message("Explain the streaming pipeline in depth.")
+        await panel.add_answer_delta("answer", _answer(60))
+        message = panel.query(AgentMessage).last()
+        body = message.query_one(VirtualizedMarkdown)
+        await wait_for(
+            lambda: body._blocks and screen_is_settled(app, screen), pilot=pilot, description="settled before growth"
+        )
+
+        full_layouts: list[None] = []
+        real_refresh_layout = screen._refresh_layout
+
+        def recording_refresh_layout(size: Size | None = None, scroll: bool = False) -> None:
+            if not scroll:
+                full_layouts.append(None)
+            real_refresh_layout(size, scroll)
+
+        monkeypatch.setattr(screen, "_refresh_layout", recording_refresh_layout)
+
+        for row in range(3):
+            height = message.size.height
+            await panel.add_answer_delta("answer", f"\nRow {row}: a paragraph of its own.\n")
+            await wait_for(
+                lambda height=height: message.size.height > height and screen_is_settled(app, screen),
+                pilot=pilot,
+                description=f"row {row} laid out",
+            )
+
+        assert len(full_layouts) == 3

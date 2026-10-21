@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from chrys.foundation.errors import ErrorKind, ProviderResponseError, classify_error, invalidates_continuation_token
-from chrys.kernel import Message, ResponseStream
+from chrys.kernel import ChatClientException, Message, ResponseStream
 from chrys.kernel.loop import StallExhaustedAction
 from chrys.kernel.middleware import ChatMiddlewareLayer
 from chrys.orchestration.invoker.attempts import WireRetryPolicyAdapter
@@ -243,7 +243,7 @@ async def _observe_tokens(
 ) -> tuple[list[Any], BaseException | None, list[str]]:
     """Run one stream through the kernel: the tokens it reported, what it raised and the requests sent."""
     observed: list[Any] = []
-    middleware = [ResponseValidationMiddleware(backoff_schedule=(0,))] if validate else []
+    middleware = [ResponseValidationMiddleware()] if validate else []
     async with responses_client(*(script.reply() for script in scripts)) as (client, wire):
         layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=middleware))
         result = layer.get_response(
@@ -501,7 +501,7 @@ async def test_hosted_work_on_a_failed_response_stops_the_wire_retry(stream: boo
     else:
         failed = blocking(*work, status="failed", error={"code": "server_error", "message": "It broke."})
         recovered = blocking(resp_message("msg_1", "Sunny."))
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     retries: list[BaseException] = []
 
     async with responses_client(failed, recovered) as (client, wire):
@@ -532,7 +532,7 @@ async def test_hosted_work_held_behind_an_unfinished_call_stops_the_wire_retry(h
         # Ran, but waits behind the call, which the cut stream never finishes.
         cut.hosted(1, mcp_item("mcp_1"))
     recovered = Script().started().text(0, "msg_1", "Sunny.").finished(resp_message("msg_1", "Sunny."))
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     retries: list[BaseException] = []
 
     async with responses_client(cut.reply(), recovered.reply()) as (client, wire):
@@ -558,7 +558,7 @@ async def test_hosted_work_held_behind_an_unfinished_call_stops_the_wire_retry(h
 
 
 async def test_hosted_work_on_a_failed_service_side_stream_is_recorded_as_committed() -> None:
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
 
     async with responses_client(Script().started().failed(mcp_item("mcp_1")).reply()) as (client, _):
         layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[validation]))
@@ -713,8 +713,9 @@ async def test_a_refused_stream_runs_none_of_its_calls(script: Script) -> None:
     [(True, True), (True, False), (False, True)],
     ids=["refusal_with_a_call", "refusal_only", "call_only"],
 )
-async def test_a_stream_that_breaks_off_is_sent_again_unless_it_refused_with_calls(refusal: bool, call: bool) -> None:
-    refused = refusal and call
+async def test_a_stream_that_breaks_off_is_sent_again_only_when_it_showed_and_refused_nothing(
+    refusal: bool, call: bool
+) -> None:
     broken = Script().started()
     if refusal:
         broken.refusal(0, "msg_1", _REFUSAL)
@@ -722,7 +723,7 @@ async def test_a_stream_that_breaks_off_is_sent_again_unless_it_refused_with_cal
         broken.call(1, "fc_1", "call_1")
     broken.breaks_off()
     recovered = Script().started().text(0, "msg_2", "Sunny.").finished(resp_message("msg_2", "Sunny."))
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     retries: list[BaseException] = []
 
     async with responses_client(broken.reply(), recovered.reply()) as (client, wire):
@@ -735,17 +736,22 @@ async def test_a_stream_that_breaks_off_is_sent_again_unless_it_refused_with_cal
             client_kwargs={"wire_retry_policy": _policy(validation, retries)},
         )
         assert isinstance(result, ResponseStream)
-        if refused:
-            with pytest.raises(ProviderResponseError) as raised:
-                await result.get_final_response()
-            _assert_failure(raised.value, "content_filter", retryable=False)
-            assert paths(wire.requests) == ["POST /v1/responses"]
-            assert retries == []
-        else:
+        if not refusal:
             response = await result.get_final_response()
             assert response.text == "Sunny."
             assert paths(wire.requests) == ["POST /v1/responses", "POST /v1/responses"]
             assert len(retries) == 1
+            return
+        if call:
+            with pytest.raises(ProviderResponseError) as raised:
+                await result.get_final_response()
+            _assert_failure(raised.value, "content_filter", retryable=False)
+        else:
+            # The refusal text already streamed to the caller: sending again would show it twice.
+            with pytest.raises(ChatClientException):
+                await result.get_final_response()
+        assert paths(wire.requests) == ["POST /v1/responses"]
+        assert retries == []
 
 
 @pytest.mark.parametrize("mode", ["create", "parsed"])
@@ -754,7 +760,7 @@ async def test_a_stream_is_not_read_past_its_terminal_event(mode: str) -> None:
     # one would meet the filter again.
     finished = _answer().finished(resp_message("msg_1", WEATHER_REPORT_JSON)).breaks_off()
     again = _answer().finished(resp_message("msg_1", WEATHER_REPORT_JSON))
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     retries: list[BaseException] = []
 
     async with responses_client(finished.reply(), again.reply()) as (client, wire):

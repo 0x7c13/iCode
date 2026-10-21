@@ -1,11 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Unit tests for LoopRecorder, _merge_loop_messages, and _remove_trailing_agent_text.
+"""Unit tests for LoopRecorder and _merge_loop_messages.
 
 Verifies that:
 - LoopRecorder correctly captures tool loop messages
 - _merge_loop_messages inserts recovered messages at the correct position
-- _remove_trailing_agent_text drops leaked final responses on interrupt
 - Normal completion (no lost messages) is a no-op
 - Edge cases: single iteration, no tool calls, empty state
 - Driven through the production loop stack: pre-call snapshots, checkpoint
@@ -980,105 +979,6 @@ class TestMergeLoopMessages:
         history.merge_loop_messages(capture, insert_index=1)
 
         assert messages == [user_msg, injection, loop_call, loop_result]
-
-
-# ---------------------------------------------------------------------------
-# _remove_trailing_agent_text logic tests
-# ---------------------------------------------------------------------------
-
-
-def _remove_trailing_agent_text(messages: list[Message]) -> bool:
-    """Replicate the engine's _remove_trailing_agent_text logic for testing.
-
-    Returns True if a message was removed.
-    """
-    if not messages:
-        return False
-    last = messages[-1]
-    if getattr(last, "role", "") != "assistant":
-        return False
-    props = getattr(last, "additional_properties", None) or {}
-    if props.get(HistoryMarkerKind.KEY):
-        return False
-    contents = getattr(last, "contents", [])
-    has_function_call = any(getattr(c, "type", "") == "function_call" for c in contents)
-    if has_function_call:
-        return False
-    messages.pop()
-    return True
-
-
-class TestRemoveTrailingAgentText:
-    """Test _remove_trailing_agent_text logic."""
-
-    def test_removes_text_only_assistant(self):
-        """Trailing text-only assistant message is removed."""
-        user_msg = Message("user", ["do something"])
-        tool_assistant = Message("assistant", [Content("function_call", name="echo", call_id="c1")])
-        tool_result = Message("tool", [Content("function_result", call_id="c1", result="done")])
-        final_text = Message("assistant", ["Here is the final answer."])
-
-        messages = [user_msg, tool_assistant, tool_result, final_text]
-        removed = _remove_trailing_agent_text(messages)
-
-        assert removed
-        assert len(messages) == 3
-        assert messages[-1] is tool_result
-
-    def test_preserves_assistant_with_function_calls(self):
-        """Assistant message with function_calls is not removed."""
-        user_msg = Message("user", ["do something"])
-        tool_assistant = Message("assistant", [Content("function_call", name="echo", call_id="c1")])
-
-        messages = [user_msg, tool_assistant]
-        removed = _remove_trailing_agent_text(messages)
-
-        assert not removed
-        assert len(messages) == 2
-        assert messages[-1] is tool_assistant
-
-    def test_preserves_tool_message(self):
-        """Trailing tool message is not removed (role != assistant)."""
-        user_msg = Message("user", ["do something"])
-        tool_result = Message("tool", [Content("function_result", call_id="c1", result="done")])
-
-        messages = [user_msg, tool_result]
-        removed = _remove_trailing_agent_text(messages)
-
-        assert not removed
-        assert len(messages) == 2
-
-    def test_preserves_chrys_marker(self):
-        """Chrys internal markers are not removed."""
-        user_msg = Message("user", ["do something"])
-        marker = Message("assistant", ["Execution interrupted"])
-        marker.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.INTERRUPTED
-
-        messages = [user_msg, marker]
-        removed = _remove_trailing_agent_text(messages)
-
-        assert not removed
-        assert len(messages) == 2
-
-    def test_empty_messages_noop(self):
-        """Empty message list is a no-op."""
-        messages: list[Message] = []
-        removed = _remove_trailing_agent_text(messages)
-
-        assert not removed
-        assert len(messages) == 0
-
-    def test_removes_when_no_tools_at_all(self):
-        """If LLM returned text-only on first call (no tools), still removes."""
-        user_msg = Message("user", ["explain something"])
-        text_response = Message("assistant", ["Here is my explanation."])
-
-        messages = [user_msg, text_response]
-        removed = _remove_trailing_agent_text(messages)
-
-        assert removed
-        assert len(messages) == 1
-        assert messages[0] is user_msg
 
 
 # ---------------------------------------------------------------------------
